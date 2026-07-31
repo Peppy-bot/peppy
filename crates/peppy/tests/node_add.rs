@@ -212,7 +212,10 @@ fn node_add_command_with_run_arg_succeeds() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The stack_list at the end asserts this instance is still running, so its
+    // lifetime is tied to the test rather than to a fixed `sleep`.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -535,7 +538,11 @@ fn node_add_same_node_shutdown_existing_instances() {
     );
 
     // Avoid spawning a real node binary; provide `node_ready` + `node_health` in-process.
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The instance this spawns is the premise of the test — it has to still be
+    // running when the second `add` re-adds the node — so its lifetime is tied
+    // to the test rather than to a fixed `sleep`.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -720,7 +727,14 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // This instance is the premise: the confirmation path under test only
+    // engages because `fetch_node_info` finds a RUNNING instance to warn
+    // about. It has to survive the git repo construction between the two
+    // adds, so tie it to the test instead of a fixed `sleep` —
+    // otherwise a loaded machine turns this into a silent no-op that
+    // confirms nothing.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
     let _node_ready_handle = rt
@@ -1106,6 +1120,7 @@ fn write_consumer_with_pinned_depends_on(
     consumer_name: &str,
     producer_name: &str,
     link_ids: &[&str],
+    instances: &peppy::test_support::InstanceLifetime,
 ) -> std::path::PathBuf {
     let consumer_dir = work_dir.join(consumer_name);
     std::fs::create_dir_all(&consumer_dir).expect("create consumer dir");
@@ -1116,6 +1131,10 @@ fn write_consumer_with_pinned_depends_on(
         })
         .collect::<Vec<_>>()
         .join(",\n");
+    // Keep-alive rather than a fixed `sleep`: some callers leave this consumer
+    // running as the backdrop for a later assertion, and none of them want a
+    // stray process outliving the test either.
+    let run_cmd = instances.keep_alive_run_cmd();
     let body = format!(
         r#"{{
     peppy_schema: "node/v1",
@@ -1130,7 +1149,7 @@ fn write_consumer_with_pinned_depends_on(
     }},
     execution: {{
         language: "rust",
-        run_cmd: ["sleep", "30"]
+        run_cmd: {run_cmd}
     }}
 }}
 "#
@@ -1185,7 +1204,14 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
     .execute(&node_ctx)
     .expect("producer node init should succeed");
     let producer_path = work_dir.path().join(producer_name);
-    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    // No instance of either node is ever expected to spawn here (the unknown
+    // key is rejected before the chained run), but the consumer manifest still
+    // needs a lifetime to name, and a guard keeps that honest if it ever does.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(
+        &producer_path.join("peppy.json5"),
+        &instances.sentinel(),
+    );
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(producer_path.display().to_string()),
@@ -1212,6 +1238,7 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
         consumer_name,
         producer_name,
         &["wrist_left"],
+        &instances,
     );
 
     let result = NodeCommand {
@@ -1302,7 +1329,16 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     .execute(&node_ctx)
     .expect("producer node init should succeed");
     let producer_path = work_dir.path().join(producer_name);
-    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    // `cam_a` has to still be in the stack when the consumer's
+    // `add -r --link wrist_left@cam_a` is validated, several CLI round-trips
+    // later. a fixed `sleep 4` would make that a race
+    // against the machine's load, so gate the instance on the test's own
+    // lifetime instead of on a duration.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(
+        &producer_path.join("peppy.json5"),
+        &instances.sentinel(),
+    );
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(producer_path.display().to_string()),
@@ -1363,6 +1399,7 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         consumer_name,
         producer_name,
         &["wrist_left"],
+        &instances,
     );
 
     let _consumer_ready = rt
@@ -1463,7 +1500,14 @@ fn node_add_with_run_rejects_dead_binding_key() {
     .execute(&node_ctx)
     .expect("producer node init should succeed");
     let producer_path = work_dir.path().join(producer_name);
-    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    // `cam_a` backs the binding VALUE the dead-key case is built around; keep
+    // it in the stack for the whole test rather than for a fixed 4s, so the
+    // rejection under test is always the dead KEY and never a reaped producer.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(
+        &producer_path.join("peppy.json5"),
+        &instances.sentinel(),
+    );
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(producer_path.display().to_string()),
@@ -1522,6 +1566,7 @@ fn node_add_with_run_rejects_dead_binding_key() {
         consumer_name,
         producer_name,
         &["wrist_left"],
+        &instances,
     );
 
     let result = NodeCommand {
@@ -1607,7 +1652,18 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     .execute(&node_ctx)
     .expect("producer node init should succeed");
     let producer_path = work_dir.path().join(producer_name);
-    peppy::test_support::override_run_cmd(&producer_path.join("peppy.json5"));
+    // Both producer instances must still be in the stack at the final
+    // `add -r` below, which binds `only_pin` to `cam_left`. That is several
+    // CLI round-trips away (the bystander's whole add+build+run, plus this
+    // consumer's), so a fixed `sleep 4` made the test a
+    // race: once the machine is loaded enough for that stretch to take >4s,
+    // the producers exit, the daemon reaps them, and the binding fails with
+    // `unknown instance_id cam_left`. Tie their lifetime to the test instead.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(
+        &producer_path.join("peppy.json5"),
+        &instances.sentinel(),
+    );
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(producer_path.display().to_string()),
@@ -1685,6 +1741,7 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         bystander_name,
         producer_name,
         &["wrist_left", "wrist_right"],
+        &instances,
     );
     let _bystander_ready = rt
         .block_on(listen_for_node_ready(
@@ -1732,6 +1789,7 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         new_consumer_name,
         producer_name,
         &["only_pin"],
+        &instances,
     );
     let _new_consumer_ready = rt
         .block_on(listen_for_node_ready(

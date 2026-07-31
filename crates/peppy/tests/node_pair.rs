@@ -16,7 +16,7 @@ use std::sync::Arc;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::context::AppContext;
-use peppy::test_support::ServeCommandEmulation;
+use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::messaging::PeerPinState;
 use peppylib::services::peer_update::listen_for_peer_update;
@@ -28,11 +28,15 @@ use super::common::{
 
 /// A node declaring one pairing slot, with the `interfaces.topics` entries
 /// the role owes: `emits` must cover the role's topics exactly, `consumes`
-/// names the counterpart's. `run_cmd` is a plain `sleep` so the daemon has a
-/// real process to own; the node's services are emulated in-process by the
-/// test.
-fn node_config(name: &str, role: &str, link_id: &str) -> String {
+/// names the counterpart's. `run_cmd` is a keep-alive so the daemon has a real
+/// process to own; the node's services are emulated in-process by the test.
+/// The keep-alive is bounded by `instances` rather than by a duration: this
+/// test drives a long establish/stop/repair/remove sequence and every step
+/// needs its instances still in the stack, which a fixed `sleep` cannot
+/// promise on a loaded machine.
+fn node_config(name: &str, role: &str, link_id: &str, instances: &InstanceLifetime) -> String {
     let (emits, consumes) = arm_link_topics(role);
+    let run_cmd = instances.keep_alive_run_cmd();
     format!(
         r#"{{
             peppy_schema: "node/v1",
@@ -51,7 +55,7 @@ fn node_config(name: &str, role: &str, link_id: &str) -> String {
                     consumes: [{{ link_id: "{link_id}", name: "{consumes}" }}]
                 }}
             }},
-            execution: {{ language: "rust", run_cmd: ["sleep", "30"] }}
+            execution: {{ language: "rust", run_cmd: {run_cmd} }}
         }}"#
     )
 }
@@ -106,6 +110,10 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
+    // Both instances must stay in the stack across the whole
+    // establish/stop/repair/exclusivity/remove sequence below.
+    let instances = InstanceLifetime::new();
+
     // Pairing doc into the daemon's repo cache, then both nodes.
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
@@ -113,13 +121,13 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     add_built_node(
         &ctx,
         arm_dir.path(),
-        &node_config("robot_arm", "arm", "controller"),
+        &node_config("robot_arm", "arm", "controller", &instances),
     );
     let ctrl_dir = tempfile::tempdir().expect("controller node dir");
     add_built_node(
         &ctx,
         ctrl_dir.path(),
-        &node_config("arm_controller", "controller", "arm"),
+        &node_config("arm_controller", "controller", "arm", &instances),
     );
 
     // ── Coverage is enforced loudly ─────────────────────────────────────
