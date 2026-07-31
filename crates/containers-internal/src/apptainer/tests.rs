@@ -1246,6 +1246,40 @@ fn prepare_scratch_dir_creates_missing_directory() {
     );
 }
 
+/// Regression: concurrent preparation of the same scratch directory must
+/// succeed on every thread. `Apptainer::new()` is called from several test
+/// threads at once (and from more than one daemon thread in production), so a
+/// write probe named only after the process id had them all racing on a single
+/// path: the first `remove_file` to land won and the losers reported
+/// `ScratchDirUnavailable { NotFound }` against a perfectly writable directory.
+#[test]
+fn prepare_scratch_dir_tolerates_concurrent_preparation() {
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let scratch = tmp.path().join("apptainer");
+
+    let failures: Vec<Error> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16)
+            .map(|_| scope.spawn(|| prepare_scratch_dir(&scratch)))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().expect("probe thread should not panic").err())
+            .collect()
+    });
+
+    assert!(
+        failures.is_empty(),
+        "concurrent probes of a writable scratch directory should all succeed, got: {failures:?}"
+    );
+    assert_eq!(
+        fs::read_dir(&scratch)
+            .expect("scratch dir should be readable")
+            .count(),
+        0,
+        "every write probe should clean up after itself"
+    );
+}
+
 /// Regression: an existing but non-writable scratch directory must fail at
 /// construction, not survive `create_dir_all` (which succeeds on any existing
 /// directory, whatever its mode) only to fail later inside apptainer as an

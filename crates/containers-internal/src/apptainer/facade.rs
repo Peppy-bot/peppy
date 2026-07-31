@@ -3,6 +3,7 @@ use super::lima;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Serializes Lima VM initialization to prevent concurrent boot/sync races.
@@ -47,13 +48,29 @@ fn apptainer_scratch_dir() -> PathBuf {
 /// fallback. Probing here surfaces it at construction, named and pointed at the
 /// offending path. The probe is a file rather than a directory (which would
 /// mirror apptainer's own `os.MkdirTemp` more closely) because it needs the
-/// same `w`+`x` bits on the parent and `File::create` truncates rather than
-/// failing on a stale probe left by a process that died mid-check.
+/// same `w`+`x` bits on the parent.
+///
+/// The probe name is unique per call, not merely per process: several threads
+/// can build an `Apptainer` at once (the unit tests do), and a name keyed only
+/// on the pid has them all probing one shared path, where the first
+/// `remove_file` to land leaves the others failing `ENOENT` on a scratch
+/// directory that is perfectly writable. For the same reason a probe that has
+/// already vanished is not an error — the `create` is what proves writability,
+/// and the `remove` only keeps apptainer's `--tmpdir` free of litter.
 pub(crate) fn prepare_scratch_dir(tmp_dir: &Path) -> Result<()> {
-    let probe = tmp_dir.join(format!(".peppy-scratch-probe-{}", std::process::id()));
+    static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let probe = tmp_dir.join(format!(
+        ".peppy-scratch-probe-{}-{}",
+        std::process::id(),
+        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(tmp_dir)
         .and_then(|()| std::fs::File::create(&probe))
-        .and_then(|_| std::fs::remove_file(&probe))
+        .and_then(|_| match std::fs::remove_file(&probe) {
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        })
         .map_err(|source| Error::ScratchDirUnavailable {
             path: tmp_dir.display().to_string(),
             source,
