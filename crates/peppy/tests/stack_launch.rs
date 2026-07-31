@@ -2439,7 +2439,11 @@ async fn stack_launch_establishes_launcher_pairings() {
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let run_cmd = vec!["sleep".to_string(), "30".to_string()];
+    // Keep-alive rather than `sleep 30`: both instances must be live for the
+    // pin assertions, and the teardown below ends them explicitly instead of
+    // leaving the daemon to wait out its force-kill deadline once per instance.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let run_cmd = instances.keep_alive_argv();
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
         "robot_arm",
@@ -2573,6 +2577,9 @@ async fn stack_launch_establishes_launcher_pairings() {
     assert_eq!(pin.producer.instance_id, "arm_1");
     assert_eq!(pin.peer_link_id, "controller");
 
+    // Assertions are done; ending the keep-alive first lets each Stop observe
+    // an already-exited process instead of waiting out the force-kill deadline.
+    drop(instances);
     for instance_id in ["ctrl_1", "arm_1"] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
@@ -2607,7 +2614,11 @@ async fn stack_launch_delivers_observer_source_pin() {
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let run_cmd = vec!["sleep".to_string(), "30".to_string()];
+    // Keep-alive rather than `sleep 30`: both instances must be live for the
+    // pin assertions, and the teardown below ends them explicitly instead of
+    // leaving the daemon to wait out its force-kill deadline once per instance.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let run_cmd = instances.keep_alive_argv();
     // The source plays the `arm` role through its participant slot `controller`.
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -2764,6 +2775,9 @@ async fn stack_launch_delivers_observer_source_pin() {
         state.source_generation
     );
 
+    // Assertions are done; ending the keep-alive first lets each Stop observe
+    // an already-exited process instead of waiting out the force-kill deadline.
+    drop(instances);
     for instance_id in ["rec_1", "arm_1"] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {

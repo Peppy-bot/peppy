@@ -561,7 +561,7 @@ fn node_add_same_node_shutdown_existing_instances() {
             test_node_target(node_name),
         ))
         .expect("node health service should start");
-    let (_node_shutdown_handle, _shutdown_rx) = rt
+    let (_node_shutdown_handle, shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
             &core_node_name,
@@ -569,6 +569,13 @@ fn node_add_same_node_shutdown_existing_instances() {
             test_node_target(node_name),
         ))
         .expect("node shutdown service should start");
+    // Model a node that actually exits when asked: ending the keep-alive on the
+    // cooperative shutdown request lets the re-add below complete at once
+    // instead of waiting out the daemon's force-kill deadline.
+    rt.spawn(async move {
+        let _ = shutdown_rx.await;
+        drop(instances);
+    });
 
     // Step 1: Add the node with start=true to create an instance
     NodeCommand {
@@ -753,7 +760,7 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             test_node_target(node_name),
         ))
         .expect("node health service should start");
-    let (_node_shutdown_handle, _shutdown_rx) = rt
+    let (_node_shutdown_handle, shutdown_rx) = rt
         .block_on(listen_for_shutdown(
             &node_messenger,
             &core_node_name,
@@ -761,6 +768,13 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
             test_node_target(node_name),
         ))
         .expect("node shutdown service should start");
+    // Model a node that actually exits when asked: ending the keep-alive on the
+    // cooperative shutdown request lets the re-add below complete at once
+    // instead of waiting out the daemon's force-kill deadline.
+    rt.spawn(async move {
+        let _ = shutdown_rx.await;
+        drop(instances);
+    });
 
     // Step 1: Add the node from local filesystem with start=true
     NodeCommand {

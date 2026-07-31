@@ -57,6 +57,12 @@ impl InstanceLifetime {
         keep_alive_script_for(&self.sentinel())
     }
 
+    /// The keep-alive `run_cmd` as an argv, for tests that build a node config
+    /// from owned strings.
+    pub fn keep_alive_argv(&self) -> Vec<String> {
+        keep_alive_argv(&self.sentinel())
+    }
+
     /// The keep-alive `run_cmd` as a JSON5 array literal, for tests that write
     /// their manifests as raw text instead of going through
     /// [`override_run_cmd_while`].

@@ -23,7 +23,8 @@ use peppylib::services::peer_update::listen_for_peer_update;
 use tokio::sync::watch;
 
 use super::common::{
-    add_built_node, emulate_startup_services, node_run_command, seed_pairing_repo, test_node_target,
+    add_built_node, emulate_cooperative_shutdown, emulate_startup_services, node_run_command,
+    seed_pairing_repo, test_node_target,
 };
 
 /// A node declaring one pairing slot, with the `interfaces.topics` entries
@@ -34,9 +35,21 @@ use super::common::{
 /// test drives a long establish/stop/repair/remove sequence and every step
 /// needs its instances still in the stack, which a fixed `sleep` cannot
 /// promise on a loaded machine.
-fn node_config(name: &str, role: &str, link_id: &str, instances: &InstanceLifetime) -> String {
+fn node_config(
+    name: &str,
+    role: &str,
+    link_id: &str,
+    instances: &InstanceLifetime,
+    pidfile: &std::path::Path,
+) -> String {
     let (emits, consumes) = arm_link_topics(role);
-    let run_cmd = instances.keep_alive_run_cmd();
+    // Records the daemon-tracked pid ($$ is the shell it spawned) before
+    // waiting, so `emulate_cooperative_shutdown` can end this exact process.
+    let run_cmd = format!(
+        r#"["sh", "-c", "echo $$ > '{}'; {}"]"#,
+        pidfile.display(),
+        instances.keep_alive_script()
+    );
     format!(
         r#"{{
             peppy_schema: "node/v1",
@@ -71,15 +84,24 @@ fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
 }
 
 /// Emulates a spawned instance's in-process services (ready, health,
-/// peer_update) and hands back the pairing slot's pin-state watch.
+/// shutdown, peer_update) and hands back the pairing slot's pin-state watch.
 async fn emulate_instance_services(
     messenger: &MessengerHandle,
     core_node_name: &str,
     node_name: &str,
     instance_id: &str,
     link_id: &str,
+    pidfile: &std::path::Path,
 ) -> watch::Receiver<PeerPinState> {
     emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
+    emulate_cooperative_shutdown(
+        messenger,
+        core_node_name,
+        node_name,
+        instance_id,
+        pidfile.to_path_buf(),
+    )
+    .await;
 
     let (tx, rx) = watch::channel(PeerPinState::unpaired());
     let slots = Arc::new(BTreeMap::from([(link_id.to_string(), tx)]));
@@ -114,6 +136,13 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     // establish/stop/repair/exclusivity/remove sequence below.
     let instances = InstanceLifetime::new();
 
+    // Each node records its live instance's pid here, so a stop ends the
+    // process instead of waiting out the daemon's deadline. One file per node
+    // is exact: this test never runs two instances of the same node at once.
+    let pid_dir = tempfile::tempdir().expect("temp pid dir");
+    let arm_pidfile = pid_dir.path().join("robot_arm.pid");
+    let ctrl_pidfile = pid_dir.path().join("arm_controller.pid");
+
     // Pairing doc into the daemon's repo cache, then both nodes.
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
@@ -121,13 +150,19 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     add_built_node(
         &ctx,
         arm_dir.path(),
-        &node_config("robot_arm", "arm", "controller", &instances),
+        &node_config("robot_arm", "arm", "controller", &instances, &arm_pidfile),
     );
     let ctrl_dir = tempfile::tempdir().expect("controller node dir");
     add_built_node(
         &ctx,
         ctrl_dir.path(),
-        &node_config("arm_controller", "controller", "arm", &instances),
+        &node_config(
+            "arm_controller",
+            "controller",
+            "arm",
+            &instances,
+            &ctrl_pidfile,
+        ),
     );
 
     // ── Coverage is enforced loudly ─────────────────────────────────────
@@ -147,6 +182,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "robot_arm",
         "arm_1",
         "controller",
+        &arm_pidfile,
     )
     .await;
     node_run_command(
@@ -169,6 +205,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "arm_controller",
         "ctrl_1",
         "arm",
+        &ctrl_pidfile,
     )
     .await;
     node_run_command(
@@ -210,6 +247,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "arm_controller",
         "ctrl_2",
         "arm",
+        &ctrl_pidfile,
     )
     .await;
     let err = node_run_command(
@@ -250,6 +288,14 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     // The instance passes startup, but the daemon cannot deliver its pin;
     // the pair is reverted and the run fails loudly.
     emulate_startup_services(&messenger, &core_node_name, "arm_controller", "ctrl_2b").await;
+    emulate_cooperative_shutdown(
+        &messenger,
+        &core_node_name,
+        "arm_controller",
+        "ctrl_2b",
+        ctrl_pidfile.clone(),
+    )
+    .await;
     let err = node_run_command(
         "ctrl_2b",
         "arm_controller",
@@ -271,6 +317,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "arm_controller",
         "ctrl_3",
         "arm",
+        &ctrl_pidfile,
     )
     .await;
     node_run_command(
