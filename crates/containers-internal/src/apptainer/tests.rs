@@ -1,4 +1,4 @@
-use super::facade::{Apptainer, Backend, is_uri};
+use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
 use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
 use crate::error::Error;
@@ -62,6 +62,11 @@ fn ready_apptainer_dir() -> PathBuf {
         .expect("resolve_apptainer_dir should succeed; apptainer is bundled at compile time")
 }
 
+/// Scratch directory the [`native_facade`] fixture reports as its
+/// `APPTAINER_TMPDIR`. A fixed literal, not the real resolved one: these tests
+/// assert on assembled commands and must not depend on host state.
+const NATIVE_FIXTURE_TMP_DIR: &str = "/opt/peppy-tmp/apptainer";
+
 /// Builds a Native-backend facade for command-assembly and path-translation
 /// tests without touching host state. The apptainer path need not exist: these
 /// tests only inspect assembled argv, translated paths, and the no-op kill path.
@@ -70,6 +75,7 @@ fn native_facade() -> Apptainer {
         apptainer_dir: PathBuf::from("/opt/apptainer"),
         backend: Backend::Native {
             apptainer_bin: PathBuf::from("/opt/apptainer/bin/apptainer"),
+            tmp_dir: PathBuf::from(NATIVE_FIXTURE_TMP_DIR),
         },
         extra_mounts: Vec::new(),
     }
@@ -348,7 +354,9 @@ fn test_from_valid_dir() {
         facade.apptainer_dir.display()
     );
     let apptainer_bin = match &facade.backend {
-        Backend::Native { apptainer_bin } | Backend::Lima { apptainer_bin, .. } => apptainer_bin,
+        Backend::Native { apptainer_bin, .. } | Backend::Lima { apptainer_bin, .. } => {
+            apptainer_bin
+        }
     };
     assert!(
         !apptainer_bin.as_os_str().is_empty(),
@@ -927,8 +935,9 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
 /// Verifies that the compile-time `APPTAINER_INSTALL_DIR` injected by build.rs
 /// points to a valid cache directory with the expected sentinel and binary. The
 /// sentinel path comes from build.rs too, via `APPTAINER_CACHE_SENTINEL`: the
-/// name is version and recipe keyed, so re-deriving it here would go stale the
-/// next time the cache key changes.
+/// name is keyed on every input that changes the produced tree (apptainer
+/// version, recipe revision, squashfuse version), so re-deriving it here would
+/// go stale the next time the cache key changes.
 ///
 /// If this test fails after deleting `~/.peppy`, it means the build cache is
 /// stale and `cargo build` needs to re-run build.rs (which the
@@ -1078,6 +1087,238 @@ fn gocryptfs_path_matches_apptainer_search_dir() {
         expected.exists(),
         "gocryptfs should be bundled at {:?}",
         expected
+    );
+}
+
+// ---------------------------------------------------------------------------
+// squashfuse bundling tests
+//
+// Apptainer mounts a SIF's squashfs partition through `squashfuse_ll`, found in
+// `${prefix}/libexec/apptainer/bin/` ahead of `$PATH`. When it is missing the
+// run still "works", just by extracting the whole rootfs into --tmpdir first,
+// so nothing short of asserting on the binary itself catches its absence.
+// ---------------------------------------------------------------------------
+
+/// Verifies the squashfuse binary is bundled under the name apptainer's
+/// `FindBin` looks for, in the directory it searches first.
+#[test]
+fn squashfuse_bundled_in_apptainer_install_dir() {
+    // The install dir is the *host-side* installation root for both backends:
+    // on macOS the same layout (including libexec/) is synced into the Lima
+    // guest. Resolved directly so this needs no host prerequisites and boots
+    // no VM.
+    let squashfuse_bin = ready_apptainer_dir().join("libexec/apptainer/bin/squashfuse_ll");
+    assert!(
+        squashfuse_bin.exists(),
+        "squashfuse_ll missing at {:?}; apptainer would extract every SIF into --tmpdir \
+         instead of FUSE-mounting it",
+        squashfuse_bin
+    );
+}
+
+/// Runs the bundled `squashfuse_ll` and confirms it reports the pinned release.
+/// This catches a truncated or wrong-architecture binary that the existence
+/// check above would miss.
+#[cfg(target_os = "linux")]
+#[test]
+fn squashfuse_bundled_binary_is_runnable() {
+    let install_dir = env!("APPTAINER_INSTALL_DIR");
+    let squashfuse_bin = Path::new(install_dir).join("libexec/apptainer/bin/squashfuse_ll");
+
+    // Invoked with no arguments: `squashfuse_ll` has no `--version` flag, and
+    // its usage banner carries the version. Apptainer scans the same output for
+    // `-o uid=` to decide whether it can map ownership, so this doubles as a
+    // check that the multithreaded build really does support it.
+    let output = Command::new(&squashfuse_bin).stdin(Stdio::null()).output();
+
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => {
+                eprintln!(
+                    "SKIPPING: cannot invoke bundled squashfuse_ll at {:?}: {} (likely a sandboxed test env)",
+                    squashfuse_bin, e
+                );
+                return;
+            }
+            _ => panic!(
+                "unexpected error invoking bundled squashfuse_ll at {:?}: {} (kind: {:?})",
+                squashfuse_bin,
+                e,
+                e.kind()
+            ),
+        },
+    };
+
+    // The usage banner goes to stderr on some builds and stdout on others;
+    // apptainer merges the two streams for the same reason.
+    let banner = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let expected = format!("squashfuse {}", crate::SQUASHFUSE_VERSION);
+    assert!(
+        banner.contains(&expected),
+        "bundled squashfuse version mismatch: expected to find {:?} in {:?}",
+        expected,
+        banner
+    );
+    assert!(
+        banner.contains("-o uid="),
+        "bundled squashfuse_ll does not advertise `-o uid=`, so apptainer will not map file \
+         ownership into the container; banner was {:?}",
+        banner
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scratch directory: apptainer is pointed away from the host's /tmp, which on
+// some distros is a tmpfs under a systemd per-user quota.
+// ---------------------------------------------------------------------------
+
+/// Value an assembled command sets for `key`, or `None` when it sets none.
+/// Inherited process environment is invisible here, which is what we want:
+/// these tests assert on what the facade itself puts on the command.
+fn command_env(cmd: &Command, key: &str) -> Option<PathBuf> {
+    cmd.get_envs()
+        .find(|(name, _)| name.to_str() == Some(key))
+        .and_then(|(_, value)| value)
+        .map(PathBuf::from)
+}
+
+/// The native backend exports its scratch directory as `APPTAINER_TMPDIR`, the
+/// env spelling of apptainer's hidden `--tmpdir` flag.
+#[test]
+fn native_command_sets_apptainer_tmpdir() {
+    let facade = native_facade();
+    let cmd = facade
+        .run("image.sif")
+        .into_std_command()
+        .expect("native command assembly should succeed");
+
+    assert_eq!(
+        command_env(&cmd, "APPTAINER_TMPDIR"),
+        Some(PathBuf::from(NATIVE_FIXTURE_TMP_DIR)),
+        "the native backend should point apptainer at its own scratch directory"
+    );
+}
+
+/// The Lima backend leaves it unset: the command is handed to `limactl shell`,
+/// which does not carry the host environment into the guest, so setting it
+/// would only look like it worked.
+#[test]
+fn lima_command_does_not_set_apptainer_tmpdir() {
+    let facade = lima_facade();
+    // Under Lima the image path must be one the guest can see, i.e. under $HOME.
+    let home = std::env::var("HOME").expect("HOME must be set");
+    let sif = PathBuf::from(&home).join("peppy_tmpdir_test/node.sif");
+
+    let cmd = facade
+        .run(sif.to_str().expect("utf-8 sif path"))
+        .into_std_command()
+        .expect("lima command assembly should succeed");
+
+    assert_eq!(
+        command_env(&cmd, "APPTAINER_TMPDIR"),
+        None,
+        "a host-side APPTAINER_TMPDIR would not survive the hop into the guest"
+    );
+}
+
+/// The happy path: a missing scratch directory is created, and the write probe
+/// cleans up after itself rather than littering apptainer's `--tmpdir`.
+#[test]
+fn prepare_scratch_dir_creates_missing_directory() {
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let scratch = tmp.path().join("peppy-tmp/apptainer");
+
+    prepare_scratch_dir(&scratch).expect("a fresh scratch directory should be usable");
+
+    assert!(scratch.is_dir(), "the scratch directory should be created");
+    assert_eq!(
+        fs::read_dir(&scratch)
+            .expect("scratch dir should be readable")
+            .count(),
+        0,
+        "the write probe should leave nothing behind"
+    );
+}
+
+/// Regression: concurrent preparation of the same scratch directory must
+/// succeed on every thread. `Apptainer::new()` is called from several test
+/// threads at once (and from more than one daemon thread in production), so a
+/// write probe named only after the process id had them all racing on a single
+/// path: the first `remove_file` to land won and the losers reported
+/// `ScratchDirUnavailable { NotFound }` against a perfectly writable directory.
+#[test]
+fn prepare_scratch_dir_tolerates_concurrent_preparation() {
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let scratch = tmp.path().join("apptainer");
+
+    let failures: Vec<Error> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16)
+            .map(|_| scope.spawn(|| prepare_scratch_dir(&scratch)))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().expect("probe thread should not panic").err())
+            .collect()
+    });
+
+    assert!(
+        failures.is_empty(),
+        "concurrent probes of a writable scratch directory should all succeed, got: {failures:?}"
+    );
+    assert_eq!(
+        fs::read_dir(&scratch)
+            .expect("scratch dir should be readable")
+            .count(),
+        0,
+        "every write probe should clean up after itself"
+    );
+}
+
+/// Regression: an existing but non-writable scratch directory must fail at
+/// construction, not survive `create_dir_all` (which succeeds on any existing
+/// directory, whatever its mode) only to fail later inside apptainer as an
+/// opaque `MkdirTemp` error on the extract fallback.
+#[cfg(unix)]
+#[test]
+fn prepare_scratch_dir_rejects_existing_non_writable_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let scratch = tmp.path().join("apptainer");
+    fs::create_dir(&scratch).expect("mkdir scratch");
+    fs::set_permissions(&scratch, fs::Permissions::from_mode(0o500)).expect("chmod scratch");
+
+    // Privileged processes ignore the mode bits, so confirm the directory is
+    // genuinely unwritable here before asserting on the failure it should
+    // produce; restore the mode either way so the TempDir can clean itself up.
+    let bypasses_modes = fs::File::create(scratch.join(".privilege-check")).is_ok();
+    let result = if bypasses_modes {
+        Ok(())
+    } else {
+        prepare_scratch_dir(&scratch)
+    };
+    fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).expect("restore scratch mode");
+
+    if bypasses_modes {
+        eprintln!(
+            "SKIPPING: this process writes into mode-0o500 directories, so an \
+             unwritable scratch directory cannot be simulated"
+        );
+        return;
+    }
+
+    let err = result.expect_err("a non-writable scratch directory should be rejected");
+    assert!(
+        matches!(&err, Error::ScratchDirUnavailable { path, .. } if path == &scratch.display().to_string()),
+        "expected ScratchDirUnavailable naming {:?}, got: {:?}",
+        scratch,
+        err
     );
 }
 

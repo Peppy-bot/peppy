@@ -6,6 +6,10 @@ edition.workspace = true
 
 [dependencies]
 config = { workspace = true }
+# `PeppyDirs::tmp_dir` roots the scratch directory handed to apptainer as
+# `APPTAINER_TMPDIR`, so it lands on the same peppy-owned tree as every other
+# peppy temporary instead of the host's `/tmp`.
+daemon-config = { workspace = true }
 serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"
@@ -13,8 +17,6 @@ tracing = "0.1"
 [dev-dependencies]
 # Only `test_tmp_root` is needed (no git fixtures), so no `git_fixtures` feature.
 config-test-support = { workspace = true }
-# `DEFAULT_ALPINE_BASE_IMAGE` in tests/facade.rs.
-daemon-config = { workspace = true }
 tempfile = "3"
 
 [build-dependencies]
