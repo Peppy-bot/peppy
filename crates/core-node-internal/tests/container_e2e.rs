@@ -106,7 +106,9 @@ mod container_e2e_tests {
 
         // Step 4: Start the container against a real messaging endpoint.
         // This mirrors real world usage and avoids mocked ready/health responders.
-        let (messaging_host, messaging_port) = started
+        // The daemon assembles the runtime config from its own endpoint, so the
+        // test only asserts that endpoint is up rather than passing it along.
+        started
             .caller_handle
             .messaging_endpoint()
             .await
@@ -264,7 +266,9 @@ mod container_e2e_tests {
 
         // Step 4: Start the container against a real messaging endpoint.
         // This mirrors real world usage and avoids mocked ready/health responders.
-        let (messaging_host, messaging_port) = started
+        // The daemon assembles the runtime config from its own endpoint, so the
+        // test only asserts that endpoint is up rather than passing it along.
+        started
             .caller_handle
             .messaging_endpoint()
             .await
