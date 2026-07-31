@@ -288,6 +288,7 @@ async fn resolve_transitive_closure<'a>(
     let mut to_add: Vec<ResolvedBatchNode> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut missing: Vec<(String, String)> = Vec::new();
+    let mut ambiguous: Vec<String> = Vec::new();
     let mut pending: Vec<(String, String, bool)> =
         vec![(root_name.to_owned(), root_tag.to_owned(), true)];
     let mut in_flight: FuturesUnordered<BoxFuture<'a, MaterializeOutput>> = FuturesUnordered::new();
@@ -303,7 +304,17 @@ async fn resolve_transitive_closure<'a>(
             // pushed. `push_config_impl` handles in-place replacement for
             // keys already in the stack, including the live-instance and
             // dependents safety gates.
-            let Some(entry) = cache::lookup(entries, &name, &tag) else {
+            // An identity claimed twice is present, not absent, so it is
+            // kept out of `missing`: telling the user it is missing sends
+            // them to add a node that is already there twice.
+            let resolved = match cache::lookup(entries, &name, &tag) {
+                Ok(resolved) => resolved,
+                Err(ambiguity) => {
+                    ambiguous.push(ambiguity.to_string());
+                    continue;
+                }
+            };
+            let Some(entry) = resolved else {
                 missing.push(key);
                 continue;
             };
@@ -368,16 +379,25 @@ async fn resolve_transitive_closure<'a>(
         });
     }
 
+    // Everything wrong with the closure is reported in one pass, sorted,
+    // so a user with several problems fixes them all after one run.
+    let mut problems: Vec<String> = Vec::new();
+    ambiguous.sort();
+    problems.append(&mut ambiguous);
     if !missing.is_empty() {
+        missing.sort();
         let list = missing
             .iter()
             .map(|(n, t)| format!("{}:{}", n, t))
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(format!(
+        problems.push(format!(
             "Dependencies missing from nodes cache ({}): {list}. Run `peppy repo refresh` or add the missing nodes to a configured repository.",
             cache::nodes_repo_cache_path(peppy_dirs).display()
         ));
+    }
+    if !problems.is_empty() {
+        return Err(daemon_config::format_bulleted(&problems));
     }
 
     Ok(Resolution { to_add })

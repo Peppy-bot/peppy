@@ -5,6 +5,7 @@ mod init;
 mod list;
 mod refresh;
 mod remove;
+pub(crate) mod status;
 
 pub use add::listen_for_repo_add;
 pub use exclude::listen_for_repo_exclude;
@@ -13,7 +14,7 @@ pub use list::listen_for_repo_list;
 pub use refresh::listen_for_repo_refresh;
 pub use remove::listen_for_repo_remove;
 
-use core_node_api::encoding::RepoSource;
+use core_node_api::encoding::{RepoSource, RepoSourceKind};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
@@ -116,6 +117,70 @@ pub(crate) fn json_entry_identity(entry: &Value) -> Option<String> {
     }
 }
 
+/// Whether a cache entry was discovered under the repository described by
+/// the `repositories.json5` entry `repo`.
+///
+/// The one definition of "this entry belongs to that repository", so
+/// `repo_id` tagging at load time, retention of a failed repository's
+/// previous entries, and `repo list` grouping cannot drift apart.
+///
+/// - `fs`: the entry's path lies inside the repository's directory.
+/// - `git`: the url matches, and a non-empty pinned `ref` must equal the
+///   entry's `resolved_ref`. An unpinned repository matches any ref,
+///   since whatever branch was checked out did come from it. The ref
+///   check matters: without it, two entries for one url on different
+///   refs both attribute to the lower id and read as one repository
+///   claiming an identity twice.
+/// - `url`: the url matches.
+pub(crate) fn entry_belongs_to_repo(
+    repo: &Value,
+    source_type: RepoSourceKind,
+    source_uri: Option<&str>,
+    resolved_ref: Option<&str>,
+    path: &str,
+) -> bool {
+    let Some(typ) = repo.get("type").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let repo_url = repo.get("url").and_then(|v| v.as_str());
+    match source_type {
+        RepoSourceKind::Fs if typ == "fs" => repo
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| Path::new(path).starts_with(Path::new(p))),
+        RepoSourceKind::Git if typ == "git" => {
+            repo_url == source_uri
+                && match repo.get("ref").and_then(|v| v.as_str()) {
+                    Some(pinned) if !pinned.is_empty() => Some(pinned) == resolved_ref,
+                    _ => true,
+                }
+        }
+        RepoSourceKind::Url if typ == "url" => repo_url == source_uri,
+        _ => false,
+    }
+}
+
+/// Id of the repository that owns this cache entry: the first match in
+/// id order, which (since `repos` arrives sorted by id) is the
+/// highest-priority repository that could have produced it. `None` when
+/// no configured repository matches.
+///
+/// Nested fs repositories can both contain an entry; first-match makes
+/// exactly one of them its owner, so retention and `repo_id` tagging
+/// never double-count.
+pub(crate) fn owning_repo_id(
+    repos: &[Value],
+    source_type: RepoSourceKind,
+    source_uri: Option<&str>,
+    resolved_ref: Option<&str>,
+    path: &str,
+) -> Option<u64> {
+    repos
+        .iter()
+        .find(|repo| entry_belongs_to_repo(repo, source_type, source_uri, resolved_ref, path))
+        .and_then(|repo| repo.get("id").and_then(|v| v.as_u64()))
+}
+
 /// Normalize a list of repo JSON entries: auto-assign missing `id` fields,
 /// detect duplicate ids, sort by id, and write back if any ids were assigned.
 pub(crate) fn normalize_repo_entries(
@@ -182,8 +247,9 @@ mod tests {
     // Coverage for `source_identity` (relocated here from `core-node-api`
     // alongside the function, which moved out of the pure wire-codec crate
     // because its `Fs` arm canonicalizes against the real filesystem).
-    use super::source_identity;
-    use core_node_api::encoding::RepoSource;
+    use super::{entry_belongs_to_repo, source_identity};
+    use core_node_api::encoding::{RepoSource, RepoSourceKind};
+    use serde_json::Value;
 
     #[test]
     fn identity_git_distinguishes_refs() {
@@ -260,5 +326,110 @@ mod tests {
     fn identity_url_is_unchanged() {
         let src = RepoSource::Url("https://example.com/packages".to_string());
         assert_eq!(source_identity(&src), "https://example.com/packages");
+    }
+
+    fn git_repo(url: &str, git_ref: Option<&str>) -> Value {
+        let mut map = serde_json::Map::new();
+        map.insert("type".into(), Value::String("git".into()));
+        map.insert("url".into(), Value::String(url.into()));
+        if let Some(r) = git_ref {
+            map.insert("ref".into(), Value::String(r.into()));
+        }
+        Value::Object(map)
+    }
+
+    /// Two repositories on one url pinned to different refs are different
+    /// repositories. Attributing by url alone would give both the lower
+    /// id, which makes their entries look like one repository claiming an
+    /// identity twice.
+    #[test]
+    fn git_attribution_distinguishes_pinned_refs() {
+        let main = git_repo("https://example.com/hub.git", Some("main"));
+        let dev = git_repo("https://example.com/hub.git", Some("dev"));
+        let url = Some("https://example.com/hub.git");
+
+        assert!(entry_belongs_to_repo(
+            &main,
+            RepoSourceKind::Git,
+            url,
+            Some("main"),
+            "node/peppy.json5"
+        ));
+        assert!(!entry_belongs_to_repo(
+            &main,
+            RepoSourceKind::Git,
+            url,
+            Some("dev"),
+            "node/peppy.json5"
+        ));
+        assert!(entry_belongs_to_repo(
+            &dev,
+            RepoSourceKind::Git,
+            url,
+            Some("dev"),
+            "node/peppy.json5"
+        ));
+    }
+
+    /// An unpinned repository takes whatever branch was checked out, so
+    /// it matches any resolved ref on its url.
+    #[test]
+    fn git_attribution_unpinned_repo_matches_any_ref() {
+        let unpinned = git_repo("https://example.com/hub.git", None);
+        let url = Some("https://example.com/hub.git");
+
+        assert!(entry_belongs_to_repo(
+            &unpinned,
+            RepoSourceKind::Git,
+            url,
+            Some("some-branch"),
+            "node/peppy.json5"
+        ));
+        assert!(
+            !entry_belongs_to_repo(
+                &unpinned,
+                RepoSourceKind::Git,
+                Some("https://example.com/other.git"),
+                Some("main"),
+                "node/peppy.json5"
+            ),
+            "a different url is a different repository"
+        );
+    }
+
+    /// An fs entry belongs to the repository whose directory contains it,
+    /// and to no other.
+    #[test]
+    fn fs_attribution_matches_by_containment() {
+        let repo = serde_json::json!({ "type": "fs", "path": "/home/user/workspace" });
+
+        assert!(entry_belongs_to_repo(
+            &repo,
+            RepoSourceKind::Fs,
+            None,
+            None,
+            "/home/user/workspace/arm/peppy.json5"
+        ));
+        assert!(!entry_belongs_to_repo(
+            &repo,
+            RepoSourceKind::Fs,
+            None,
+            None,
+            "/home/user/elsewhere/arm/peppy.json5"
+        ));
+    }
+
+    /// Source kinds never cross-attribute, even when the other fields
+    /// would otherwise line up.
+    #[test]
+    fn attribution_requires_matching_source_kind() {
+        let git = git_repo("https://example.com/hub.git", None);
+        assert!(!entry_belongs_to_repo(
+            &git,
+            RepoSourceKind::Url,
+            Some("https://example.com/hub.git"),
+            None,
+            "node/peppy.json5"
+        ));
     }
 }

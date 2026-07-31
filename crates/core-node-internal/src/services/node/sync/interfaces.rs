@@ -390,9 +390,11 @@ pub(crate) fn resolve_contract_doc(
     let cache = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
 
+    // A sha pin names one exact manifest, so it is never ambiguous.
     let entry = match sha256_pin {
         Some(sha) => repo_cache::lookup_contract_by_sha256(&cache, name, tag, sha),
-        None => repo_cache::lookup_contract(&cache, name, tag),
+        None => repo_cache::lookup_contract(&cache, name, tag)
+            .map_err(|ambiguity| ambiguity.to_string())?,
     };
 
     repo_cache::resolve_cached_doc(

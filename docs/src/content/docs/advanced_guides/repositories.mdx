@@ -33,6 +33,7 @@ Repository configuration lives in `~/.peppy/conf/`, and the indexes built by `pe
 | `cache/launchers.json5` | Index of launch files discovered across repositories |
 | `cache/contracts.json5` | Index of contract definitions discovered across repositories |
 | `cache/pairings.json5` | Index of pairing definitions discovered across repositories |
+| `cache/repo_status.json5` | Per-repository read status: when each one was last read successfully, and how its most recent read failed |
 
 The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if missing), a `type`, and source-specific fields:
 
@@ -69,7 +70,16 @@ Syncs `repositories.json5` with the bundled default template. If the file does n
 peppy repo list
 ```
 
-Shows all discovered nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, and path. Duplicate nodes (same `name:tag` provided by multiple repositories) are flagged so you can see which repository currently wins resolution.
+Shows the indexed nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, and path.
+
+The list reflects the index, not the filesystem, so it shows what will actually resolve at launch. A node added to a local repository since the last refresh does not appear until you run `peppy repo refresh` — which is also when it becomes launchable.
+
+Two different situations are flagged, and they mean opposite things:
+
+- `(shadowed by <repository>)` — another repository with a lower `id` provides the same `name:tag`. This resolves deterministically to the named repository; the shadowed entry is recorded and inspectable but not used. A supported arrangement, not a problem.
+- `(conflict: claimed twice here)` — **one** repository claims this `name:tag` more than once. There is no priority rule that can settle this, so the identity does not resolve at all. `peppy repo refresh` refuses a repository in this state, so seeing it here means the index predates that check; re-running `peppy repo refresh` will report the offending files.
+
+A repository whose last refresh failed is marked `[retained, last read <date>]`, with the reason on the following line. Its entries are the ones it last published successfully, so anything referencing them keeps working; the date tells you how old they are.
 
 ### Refresh the index
 
@@ -84,11 +94,42 @@ Re-scans all configured repositories and rebuilds the node, launcher, contract, 
 - Walks local directories and shallow-clones git repositories.
 - Records every `peppy.json5` as a node, every `.json5` file whose body declares `peppy_schema: "launcher/v1"` as a launcher (file stem becomes the launcher name), every `.json5` file whose body declares `peppy_schema: "contract/v1"` as a contract (keyed by the `name:tag` in its manifest), and every `.json5` file whose body declares `peppy_schema: "pairing/v1"` as a pairing (also keyed by its manifest `name:tag`).
 - Reports each discovered node, launcher, contract, pairing, and excluded repository in real time.
-- Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, and `~/.peppy/cache/pairings.json5`.
+- Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, and `~/.peppy/cache/pairings.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
 
 On completion it prints a summary, for example `Repository refresh complete. 12 node(s), 3 launcher(s), 5 contract(s), 2 pairing(s) found.`
 
-When multiple repositories provide the same `name:tag` pair, the repository with the lower `id` takes priority. The duplicate is still recorded and shown in `repo list` but does not override the primary source.
+When **multiple repositories** provide the same `name:tag` pair, the repository with the lower `id` takes priority. The shadowed entry is still recorded and shown in `repo list` but does not override the primary source.
+
+When **one repository** provides the same `name:tag` twice, there is no winner to pick. That repository fails its refresh; see [When a repository fails](#when-a-repository-fails) below.
+
+### When a repository fails
+
+A failure is scoped to the repository that caused it. The repositories that read cleanly are indexed as usual, so a problem in one hub never blocks picking up changes from the others.
+
+A repository that fails **keeps the entries it last published**. Nothing disappears out from under a launcher that references it, and the machine keeps launching everything it could launch before. `peppy repo list` marks those entries as retained, with the date they were read.
+
+The run itself still fails, and names every repository that failed in one message, so you fix everything after one run rather than running repeatedly:
+
+```text
+2 of the configured repositories could not be updated. Every other repository was updated normally.
+  - repository 1000 (https://github.com/Peppy-bot/nodes-hub.git (ref: main)) contradicts itself [conflict]: 2 node manifests claim `uvc_camera_video_reconstruction:v1`: uvc_camera_video_reconstruction/python/peppy.json5, uvc_camera_video_reconstruction/rust/peppy.json5. Kept 18 entries from its last successful read
+  - repository 1002 (https://github.com/Peppy-bot/contracts-hub.git (ref: main)) could not be read [unreachable]: failed to connect to github.com. Kept 8 entries from its last successful read
+```
+
+Two kinds of failure are reported, and the distinction matters because they send you to different places:
+
+| Kind | Meaning | Typical cause |
+| --- | --- | --- |
+| `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a local path that is not mounted, an unrecognized entry in `repositories.json5`. |
+| `conflict` | The repository was read fine, but its contents contradict themselves: one identity is claimed by more than one manifest. | Two `peppy.json5` files declaring the same `name:tag`, or two launcher files with the same filename. |
+
+An `unreachable` repository is an outage, so the fix is usually to wait or fix connectivity. A `conflict` is a content bug in the repository, and the message names the exact files, so the fix is a change to that repository.
+
+The report is ordered by repository `id` and never inherits the filesystem's directory order, so two machines seeing the same problem report it identically.
+
+:::caution
+A machine that has **never** read a repository successfully has nothing to fall back to. Containment gets it every other repository, but a broken repository gives it nothing, and excluding a repository is the only local lever — it removes every identity that repository provides, not just the offending one. The real fix for a broken shared repository is to stop it being published broken.
+:::
 
 ### Add a repository
 
@@ -150,6 +191,19 @@ peppy node add uvc_camera:v1
 ```
 
 This is the shortest form of `peppy node add`. It works for any node provided by any repository listed in `repositories.json5`, including the default [nodes-hub](https://github.com/Peppy-bot/nodes-hub.git) community repository. When several repositories provide the same `name:tag`, the [resolution rule from `repo refresh`](#refresh-the-index) applies: the repository with the lower `id` wins.
+
+Resolving a `name:tag` has three outcomes, not two:
+
+- **Resolved.** Exactly one repository wins, either because it is the only one providing the identity or because it has the lowest `id`.
+- **Not found.** No repository provides it. The error names the cache file it looked in, and if you have excluded any repositories it says so, since an excluded repository is never indexed and may well have been the one that provided it.
+- **Ambiguous.** The winning repository claims the identity more than once. This is a distinct error naming both files, never a "not found" — reporting it as missing would send you to add a node that is already there twice:
+
+  ```text
+  2 node entries in repository 1000 claim `uvc_camera_video_reconstruction:v1`:
+  uvc_camera_video_reconstruction/python/peppy.json5,
+  uvc_camera_video_reconstruction/rust/peppy.json5;
+  fix the repository so one manifest claims it, then run `peppy repo refresh`
+  ```
 
 One constraint applies to this source shape:
 

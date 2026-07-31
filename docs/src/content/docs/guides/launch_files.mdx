@@ -47,7 +47,9 @@ The `source` attribute supports four formats:
  - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
 
 :::note
-The repository source resolves nodes from a locally cached index. Run `peppy repo refresh` before launching to ensure the cache is up to date. If a node or tag is missing from the cache, the launch will fail with a "not found" error.
+The repository source resolves nodes from a locally cached index. Run `peppy repo refresh` before launching to ensure the cache is up to date.
+
+If a node or tag is missing from the cache, the launch fails with a "not found" error. If the cache instead contains the same `name:tag` **twice from one repository**, the launch fails with a distinct ambiguity error naming both manifests — never "not found", since the node is present rather than absent. The refusal happens while sources are being resolved, before anything is added, built, or run, and it covers transitive dependencies too: an ambiguity two levels down is exactly as fatal as one at the top. See [Using a repository-indexed node](/advanced_guides/repositories/#using-a-repository-indexed-node).
 :::
 
 ```json5
@@ -103,7 +105,9 @@ Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guide
 peppy stack launch openarm01_sim_teleop
 ```
 
-An argument that contains a path separator or ends in `.json5` is always resolved as a filesystem path. A bare name (no separator, no extension) is first tried on disk as `<name>.json5` next to your current directory, and only falls back to the repository cache at `~/.peppy/cache/launchers.json5` when no such file exists. Run `peppy repo refresh` first to ensure the launcher cache is populated. If the name resolves neither to a file nor to a cached launcher, the launch fails with an explicit "not found" error.
+An argument that contains a path separator or ends in `.json5` is always resolved as a filesystem path. A bare name (no separator, no extension) is first tried on disk as `<name>.json5` next to your current directory, and only falls back to the repository cache at `~/.peppy/cache/launchers.json5` when no such file exists. Run `peppy repo refresh` first to ensure the launcher cache is populated.
+
+If the name resolves neither to a file nor to a cached launcher, the launch fails with an explicit "not found" error. If one repository provides two launcher files with that name, the launch fails with a distinct ambiguity error naming both — launchers are keyed by filename, so two identically named `.json5` files anywhere in one repository contest the same name even in different directories.
 
 :::caution
 Running the `peppy stack launch` command clears the existing node stack and stops all running instances

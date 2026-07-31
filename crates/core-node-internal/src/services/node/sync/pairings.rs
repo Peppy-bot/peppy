@@ -36,9 +36,11 @@ fn resolve_pairing_doc_cached(
     sha256_pin: Option<&str>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PeppyPairing, String> {
+    // A sha pin names one exact manifest, so it is never ambiguous.
     let entry = match sha256_pin {
         Some(sha) => repo_cache::lookup_pairing_by_sha256(cache, name, tag, sha),
-        None => repo_cache::lookup_pairing(cache, name, tag),
+        None => repo_cache::lookup_pairing(cache, name, tag)
+            .map_err(|ambiguity| ambiguity.to_string())?,
     };
 
     repo_cache::resolve_cached_doc(

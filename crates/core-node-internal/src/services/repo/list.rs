@@ -1,12 +1,14 @@
 use crate::Result;
-use crate::services::repo::cache::nodes_repo_cache_path;
+use crate::services::repo::cache::{NodeCacheEntry, load_repo_cache};
 use crate::services::repo::exclude::ExclusionSet;
-use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos, walk_directory};
-use crate::services::repo::source_identity;
+use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos};
+use crate::services::repo::status::{self, RepoStatus};
+use crate::services::repo::{owning_repo_id, source_identity};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    RepoListNodeEntry, RepoListRequest, RepoListResponse, RepoSource, RepoSourceKind,
+    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailure, RepoListRepoFailureKind,
+    RepoListRequest, RepoListResponse,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -14,7 +16,6 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
-use serde_json::Value;
 use std::collections::HashSet;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -55,6 +56,14 @@ async fn handle_repo_list_request(
     )
 }
 
+/// Lists what will actually resolve.
+///
+/// Every source kind is read from `nodes.json5` rather than re-walked
+/// live. Walking fs repositories on the fly would show whatever is on
+/// disk right now, which is a different question: after a failed refresh
+/// it would display the entries peppy refused, and at any time it would
+/// display nodes added since the last refresh that cannot yet resolve.
+/// Reading the cache is what makes a partial update legible.
 fn handle_repo_list_request_inner(
     context: &ServiceRequestContext,
     peppy_dirs: &PeppyDirs,
@@ -72,12 +81,48 @@ fn handle_repo_list_request_inner(
     };
 
     let exclusions = ExclusionSet::load(peppy_dirs);
+    let statuses = status::read(peppy_dirs);
+    let cached: Vec<NodeCacheEntry> = load_repo_cache(peppy_dirs).unwrap_or_else(|e| {
+        warn!("Failed to read the nodes cache: {e}");
+        Vec::new()
+    });
 
-    // Read cached nodes for git/url repos
-    let cached_nodes = read_cached_nodes(peppy_dirs);
+    // Identities claimed more than once by a single repository. Refresh
+    // refuses such a repository, so this only fires for a cache written
+    // by an older peppy or hand-edited, which is exactly when a user
+    // needs to be told which entry is poisoned.
+    let mut claims: HashSet<(u32, &str, &str)> = HashSet::new();
+    let mut conflicted: HashSet<(u32, &str, &str)> = HashSet::new();
+    for node in &cached {
+        let key = (
+            node.repo_id,
+            node.node_name.as_str(),
+            node.node_tag.as_str(),
+        );
+        if !claims.insert(key) {
+            conflicted.insert(key);
+        }
+    }
 
-    let mut global_seen: HashSet<(String, String)> = HashSet::new();
+    // Each cached node's owning repository, resolved once. The loop below
+    // considers every node for every repository, and resolving inside it
+    // re-scans the repository list on each of those visits.
+    let owners: Vec<Option<u64>> = cached
+        .iter()
+        .map(|node| {
+            owning_repo_id(
+                &repos,
+                node.source_type,
+                node.source_uri.as_deref(),
+                node.resolved_ref.as_deref(),
+                &node.path,
+            )
+        })
+        .collect();
+
+    let mut global_seen: HashSet<(&str, &str)> = HashSet::new();
     let mut all_entries: Vec<RepoListNodeEntry> = Vec::new();
+    let mut all_repos: Vec<RepoListRepoEntry> = Vec::new();
 
     for entry in &repos {
         let Some(source) = parse_repo_entry(entry) else {
@@ -86,118 +131,84 @@ fn handle_repo_list_request_inner(
         };
 
         let identity = source_identity(&source);
-
         if exclusions.is_excluded(&identity) {
             debug!("Excluding repository from list: {}", identity);
             continue;
         }
 
         let repo_id_u64 = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-        let repo_id = match u32::try_from(repo_id_u64) {
-            Ok(id) => id,
-            Err(_) => {
-                warn!(
-                    "Skipping repository entry with id {} (exceeds u32 wire-format limit)",
-                    repo_id_u64
-                );
-                continue;
-            }
+        let Ok(repo_id) = u32::try_from(repo_id_u64) else {
+            warn!(
+                "Skipping repository entry with id {} (exceeds u32 wire-format limit)",
+                repo_id_u64
+            );
+            continue;
         };
 
-        match source {
-            RepoSource::Fs(path) => {
-                if !path.exists() {
-                    debug!("Skipping non-existent FS repository: {}", path.display());
-                    continue;
-                }
-                let repo_label = path.to_string_lossy().into_owned();
-                let walked =
-                    walk_directory(&path, RepoSourceKind::Fs, None, None, &exclusions.fs_paths);
-                for node in walked.nodes {
-                    let key = (node.node_name.clone(), node.node_tag.clone());
-                    let duplicate = !global_seen.insert(key);
-                    all_entries.push(RepoListNodeEntry {
-                        node_name: node.node_name,
-                        node_tag: node.node_tag,
-                        source_type: node.source_type,
-                        path: node.path,
-                        duplicate,
-                        repo_id,
-                        repo_label: repo_label.clone(),
-                    });
-                }
+        let repo_label = source.display_label();
+        let status = statuses.iter().find(|s| s.id == repo_id_u64);
+        all_repos.push(repo_entry(repo_id, &repo_label, &source, status));
+
+        for (node, owner) in cached.iter().zip(&owners) {
+            if *owner != Some(repo_id_u64) {
+                continue;
             }
-            RepoSource::Git { repo_url, repo_ref } => {
-                for cached in &cached_nodes {
-                    if cached.get("source_type").and_then(|v| v.as_str()) != Some("git") {
-                        continue;
-                    }
-                    if cached.get("source_uri").and_then(|v| v.as_str()) != Some(&repo_url) {
-                        continue;
-                    }
-                    let resolved_ref = cached
-                        .get("resolved_ref")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("HEAD");
-                    // When the repo entry pins a specific ref, only match cached
-                    // nodes whose resolved_ref equals it. Otherwise match any ref.
-                    if let Some(pinned) = repo_ref.as_deref()
-                        && !pinned.is_empty()
-                        && pinned != resolved_ref
-                    {
-                        continue;
-                    }
-                    let name = cached
-                        .get("node_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let tag = cached
-                        .get("node_tag")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let key = (name.to_string(), tag.to_string());
-                    let duplicate = !global_seen.insert(key);
-                    let repo_label = format!("{repo_url} (ref: {resolved_ref})");
-                    all_entries.push(RepoListNodeEntry {
-                        node_name: name.to_string(),
-                        node_tag: tag.to_string(),
-                        source_type: RepoSourceKind::Git,
-                        path: cached
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        duplicate,
-                        repo_id,
-                        repo_label,
-                    });
-                }
-            }
-            RepoSource::Url(url) => {
-                warn!("Skipping URL repository (not yet supported): {}", url);
-            }
+            let key = (node.node_name.as_str(), node.node_tag.as_str());
+            let duplicate = !global_seen.insert(key);
+            all_entries.push(RepoListNodeEntry {
+                node_name: node.node_name.clone(),
+                node_tag: node.node_tag.clone(),
+                source_type: node.source_type,
+                path: node.path.clone(),
+                duplicate,
+                repo_id,
+                repo_label: repo_label.clone(),
+                conflict: conflicted.contains(&(repo_id, key.0, key.1)),
+            });
         }
     }
 
-    RepoListResponse::success(all_entries)
+    RepoListResponse::success(all_entries, all_repos)
         .encode()
         .map_err(Into::into)
 }
 
-/// Read cached node entries from nodes.json5 in the cache directory.
-fn read_cached_nodes(peppy_dirs: &PeppyDirs) -> Vec<Value> {
-    let cache_path = nodes_repo_cache_path(peppy_dirs);
-    if !cache_path.exists() {
-        return Vec::new();
+/// Projects one repository's recorded status onto the wire. A repository
+/// with no status line has never been through a refresh that recorded
+/// one, so it reads as never-read rather than as failed.
+fn repo_entry(
+    repo_id: u32,
+    label: &str,
+    source: &core_node_api::encoding::RepoSource,
+    status: Option<&RepoStatus>,
+) -> RepoListRepoEntry {
+    RepoListRepoEntry {
+        id: repo_id,
+        label: label.to_owned(),
+        source_type: source.kind(),
+        last_read_unix_secs: status.and_then(|s| s.last_read_unix_secs),
+        retained: status.is_some_and(|s| s.is_retained()),
+        failure: status
+            .and_then(|s| s.last_failure.as_ref())
+            .map(|f| wire_failure(&f.kind, &f.message)),
     }
-    match std::fs::read_to_string(&cache_path) {
-        Ok(content) => serde_json5::from_str(&content).unwrap_or_else(|e| {
-            warn!(
-                "Failed to parse nodes cache (nodes.json5) at {}: {e}",
-                cache_path.display()
-            );
-            Vec::new()
-        }),
-        Err(_) => Vec::new(),
+}
+
+/// Projects a recorded failure onto the wire's closed kind. The status
+/// file keeps the kind as text so a value written by a future peppy is a
+/// label rather than a parse error; the wire has two kinds only, so an
+/// unrecognized one reads as unreachable with its raw label kept in the
+/// detail. Dropping the failure instead would show a retained repository
+/// with no reason at all.
+fn wire_failure(kind: &str, message: &str) -> RepoListRepoFailure {
+    match RepoListRepoFailureKind::parse(kind) {
+        Some(kind) => RepoListRepoFailure {
+            kind,
+            detail: message.to_owned(),
+        },
+        None => RepoListRepoFailure {
+            kind: RepoListRepoFailureKind::Unreachable,
+            detail: format!("{kind}: {message}"),
+        },
     }
 }
