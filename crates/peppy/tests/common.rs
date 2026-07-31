@@ -145,6 +145,50 @@ pub async fn emulate_startup_services(
     .expect("health service should start");
 }
 
+/// Installs the shutdown service an emulated instance owes, wired to actually
+/// end the process — the daemon's cooperative request is answered *and* the
+/// `run_cmd` is killed, so the stop completes at once.
+///
+/// Without this a stopped instance answers nothing and the daemon falls back to
+/// waiting out its deadline (~12s per stop, 5s on a run-failure unwind), which
+/// is pure dead time in tests that stop instances.
+///
+/// `pidfile` is where the node's own `run_cmd` recorded `$$`. It is read at
+/// shutdown time, not at install time, so it names the live process even for a
+/// run that failed before the CLI could log a pid. A node whose instances run
+/// sequentially (the usual emulated shape) therefore always kills the right
+/// one; the file is rewritten by each spawn.
+pub async fn emulate_cooperative_shutdown(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+    pidfile: std::path::PathBuf,
+) {
+    let (handle, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("shutdown service should start");
+    tokio::spawn(async move {
+        // Held for the task's life so the service outlives the run it guards.
+        let _handle = handle;
+        if shutdown_rx.await.is_err() {
+            return;
+        }
+        let Ok(pid) = std::fs::read_to_string(&pidfile) else {
+            return;
+        };
+        let pid = pid.trim();
+        if !pid.is_empty() {
+            let _ = Command::new("kill").args(["-KILL", pid]).status();
+        }
+    });
+}
+
 /// A minimal two-role pairing document, shared by the pairing e2e tests
 /// (`node_pair`, `repo_refresh`, `node_sync`).
 pub const ARM_LINK_PAIRING: &str = r#"{

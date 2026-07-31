@@ -25,11 +25,118 @@ fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node:
     config::fingerprint::create_codegen_fingerprint(peppy_json5, Path::new(PEPPYGEN_OUTPUT_PATH));
 }
 
-/// Overrides the node run command to `sleep 4` and disables the build command,
-/// preventing the test from spawning a real binary.
-pub fn override_run_cmd(peppy_json5: &Path) {
+/// Scope guard for instances that must stay in the daemon's stack for as long
+/// as the test still refers to them.
+///
+/// Hold one per test and pass [`InstanceLifetime::sentinel`] to
+/// [`override_run_cmd_while`] (or splice it into a hand-written manifest with
+/// [`InstanceLifetime::keep_alive_run_cmd`]) for every node whose instance
+/// outlives its own spawn. Every such instance ends when this value drops, so
+/// a test's instances are tied to the test rather than to a stopwatch.
+#[must_use = "instances stay alive only while this guard is held"]
+pub struct InstanceLifetime {
+    dir: TempDir,
+}
+
+impl InstanceLifetime {
+    pub fn new() -> Self {
+        let dir = TempDir::new().expect("failed to create instance lifetime dir");
+        std::fs::write(dir.path().join(LIFETIME_SENTINEL), b"")
+            .expect("failed to write instance lifetime sentinel");
+        Self { dir }
+    }
+
+    /// Path whose existence keeps the instances alive; removed on drop.
+    pub fn sentinel(&self) -> PathBuf {
+        self.dir.path().join(LIFETIME_SENTINEL)
+    }
+
+    /// The keep-alive shell script on its own, for tests that need to compose
+    /// it with a prologue of their own (recording the pid before waiting, say).
+    pub fn keep_alive_script(&self) -> String {
+        keep_alive_script_for(&self.sentinel())
+    }
+
+    /// The keep-alive `run_cmd` as an argv, for tests that build a node config
+    /// from owned strings.
+    pub fn keep_alive_argv(&self) -> Vec<String> {
+        keep_alive_argv(&self.sentinel())
+    }
+
+    /// The keep-alive `run_cmd` as a JSON5 array literal, for tests that write
+    /// their manifests as raw text instead of going through
+    /// [`override_run_cmd_while`].
+    pub fn keep_alive_run_cmd(&self) -> String {
+        let argv = keep_alive_argv(&self.sentinel());
+        let quoted = argv
+            .iter()
+            .map(|a| format!("{:?}", a))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[{quoted}]")
+    }
+}
+
+impl Default for InstanceLifetime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const LIFETIME_SENTINEL: &str = "instances.alive";
+
+/// The keep-alive argv shared by [`override_run_cmd_while`] and
+/// [`InstanceLifetime::keep_alive_run_cmd`]. See the former for why neither
+/// exit condition is a duration.
+fn keep_alive_argv(sentinel: &Path) -> Vec<String> {
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        keep_alive_script_for(sentinel),
+    ]
+}
+
+/// The keep-alive shell script. `$owner` is deliberately unquoted: it only ever
+/// holds a PID, and staying free of double quotes lets callers splice this
+/// straight into a JSON5 string literal.
+fn keep_alive_script_for(sentinel: &Path) -> String {
+    format!(
+        "owner=$PPID; while [ -e '{}' ] && kill -0 $owner 2>/dev/null; do sleep 0.1; done",
+        sentinel.display()
+    )
+}
+
+/// Points a node's `run_cmd` at a keep-alive process bounded by `sentinel`
+/// rather than by a duration, and clears `build_cmd`, so the test never spawns
+/// a real binary.
+///
+/// This replaces the `sleep 4` these tests used to use, which silently made
+/// "the rest of the test finishes within 4 seconds" a precondition. A test that
+/// spawns an instance and then keeps referring to it — a producer named by a
+/// later `--link`, say — passed on an idle machine and failed under load with
+/// `unknown instance_id`, because the daemon reaped the exited process out of
+/// the stack mid-test. Bounding on a sentinel removes the wall-clock
+/// dependency: the instance is alive whenever the test still wants it to be.
+///
+/// Point `sentinel` at a path inside a `TempDir` the test owns. Dropping that
+/// `TempDir` at the end of the test ends the process within one poll interval,
+/// so the keep-alive is not traded for a long-lived orphan.
+///
+/// Neither exit condition is a duration, so there is no window to outgrow:
+///
+/// 1. the sentinel exists — the normal path, ending at `TempDir` drop; and
+/// 2. the process that spawned it (the test binary, which hosts the daemon)
+///    is still alive. `$PPID` is captured up front rather than read in the
+///    loop, because a hard-killed test binary reparents this process to init
+///    and `$PPID` would then read as a live PID 1 forever. This is what makes
+///    a time cap unnecessary: a `TempDir` that never got cleaned up (SIGKILL,
+///    a CI timeout) cannot strand an immortal process.
+///
+/// The wait is a loop of short sleeps rather than one long `sleep` so that a
+/// SIGKILL on the `sh` cannot orphan a long-lived grandchild.
+pub fn override_run_cmd_while(peppy_json5: &Path, sentinel: &Path) {
     modify_node_config(peppy_json5, |cfg| {
-        cfg.execution.run_cmd = Some(vec!["sleep".to_string(), "4".to_string()]);
+        cfg.execution.run_cmd = Some(keep_alive_argv(sentinel));
         cfg.execution.build_cmd = None;
     });
 }
