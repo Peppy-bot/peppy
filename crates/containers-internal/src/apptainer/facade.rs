@@ -15,6 +15,27 @@ static LIMA_INIT: Mutex<()> = Mutex::new(());
 /// Lima hostname that resolves to the macOS host IP from inside the guest VM.
 const LIMA_HOST_GATEWAY: &str = "host.lima.internal";
 
+/// Apptainer's env spelling of its hidden `--tmpdir` flag.
+const APPTAINER_TMPDIR_ENV: &str = "APPTAINER_TMPDIR";
+
+/// Scratch directory handed to apptainer as its `--tmpdir`.
+///
+/// Apptainer only falls back to this when it cannot FUSE-mount an image's
+/// squashfs partition, in which case it `unsquashfs`-extracts the entire rootfs
+/// there ("Converting SIF file to temporary sandbox..."). peppy bundles
+/// `squashfuse_ll` precisely so that path is never taken, but the fallback is
+/// still reachable on a host with no `/dev/fuse`, and apptainer's own default
+/// (`/tmp`) is the worst possible place for it: on a distro that backs `/tmp`
+/// with tmpfs under a systemd per-user quota, extracting several node images
+/// fails with "Disk quota exceeded" partway through a stack launch. Rooting it
+/// in the peppy tree puts it on real storage sized like the rest of peppy's
+/// data.
+fn apptainer_scratch_dir() -> PathBuf {
+    daemon_config::consts::PeppyDirs::default()
+        .tmp_dir()
+        .join("apptainer")
+}
+
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
 /// rather than a filesystem path.
 pub(crate) fn is_uri(s: &str) -> bool {
@@ -25,7 +46,15 @@ pub(crate) fn is_uri(s: &str) -> bool {
 #[derive(Debug)]
 pub(crate) enum Backend {
     /// Linux: run apptainer directly on the host.
-    Native { apptainer_bin: PathBuf },
+    Native {
+        apptainer_bin: PathBuf,
+        /// Host-side scratch directory exported as `APPTAINER_TMPDIR`; see
+        /// [`apptainer_scratch_dir`]. The Lima backend has no counterpart: its
+        /// commands run over `limactl shell`, which does not carry the host
+        /// environment into the guest, and the guest's own `/tmp` is ordinary
+        /// disk-backed storage inside the VM rather than a quota-limited tmpfs.
+        tmp_dir: PathBuf,
+    },
     /// macOS: route commands through a Lima VM.
     Lima {
         /// Path to `bin/apptainer` used for invocation (guest-side inside the VM).
@@ -403,7 +432,10 @@ impl Apptainer {
                 lima_home,
             }
         } else {
-            Backend::Native { apptainer_bin }
+            Backend::Native {
+                apptainer_bin,
+                tmp_dir: apptainer_scratch_dir(),
+            }
         };
 
         let mut facade = Self {
@@ -418,14 +450,26 @@ impl Apptainer {
     /// Ensures the execution backend is fully ready for running commands.
     /// Called once during construction.
     ///
-    /// On Linux (`Backend::Native`): verifies user namespace prerequisites (AppArmor).
+    /// On Linux (`Backend::Native`): creates the scratch directory apptainer is
+    /// pointed at and verifies user namespace prerequisites (AppArmor).
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
     /// on first run.
     fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
-            Backend::Native { .. } => {
+            Backend::Native { tmp_dir, .. } => {
+                // Created up front rather than on first use: apptainer's
+                // `os.MkdirTemp` into `--tmpdir` fails outright when the
+                // directory is absent, and that only ever happens on the
+                // extract fallback, i.e. the one path that is already
+                // struggling.
+                std::fs::create_dir_all(&*tmp_dir).map_err(|source| {
+                    Error::ScratchDirUnavailable {
+                        path: tmp_dir.display().to_string(),
+                        source,
+                    }
+                })?;
                 #[cfg(target_os = "linux")]
                 check_userns_prerequisites(&self.apptainer_dir)?;
                 Ok(())
@@ -906,7 +950,9 @@ impl Apptainer {
     /// Build a [`Command`] that will invoke apptainer with the given arguments.
     ///
     /// On Linux: runs `{apptainer_bin} <args...>` directly, with `working_dir`
-    /// (when set) applied via [`Command::current_dir`].
+    /// (when set) applied via [`Command::current_dir`] and `APPTAINER_TMPDIR`
+    /// pointed at the backend's scratch directory (see
+    /// [`apptainer_scratch_dir`]).
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary. A
     /// `working_dir` is translated via [`translate_path`](Self::translate_path)
@@ -931,8 +977,12 @@ impl Apptainer {
         working_dir: Option<&Path>,
     ) -> Result<Command> {
         match &self.backend {
-            Backend::Native { apptainer_bin } => {
+            Backend::Native {
+                apptainer_bin,
+                tmp_dir,
+            } => {
                 let mut cmd = Command::new(apptainer_bin);
+                cmd.env(APPTAINER_TMPDIR_ENV, tmp_dir);
                 cmd.args(args);
                 if let Some(dir) = working_dir {
                     cmd.current_dir(dir);

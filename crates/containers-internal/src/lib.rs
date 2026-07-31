@@ -25,3 +25,12 @@ pub const LIMA_VERSION: &str = env!("LIMA_VERSION");
 /// without requiring users to install gocryptfs via their distro package
 /// manager.
 pub const GOCRYPTFS_VERSION: &str = env!("GOCRYPTFS_VERSION");
+/// Pinned squashfuse version compiled and shipped alongside the apptainer
+/// install.
+///
+/// Apptainer auto-discovers `squashfuse_ll` in `libexec/apptainer/bin/` and
+/// uses it to FUSE-mount a SIF's squashfs partition. Without it every
+/// `apptainer run` first extracts the whole image into a temporary sandbox,
+/// which is both slow and fatal on hosts whose `/tmp` is a quota-limited
+/// tmpfs.
+pub const SQUASHFUSE_VERSION: &str = env!("SQUASHFUSE_VERSION");

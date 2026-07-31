@@ -276,7 +276,13 @@ rm -f /tmp/go-{GO_VERSION}.tar.gz
 
 
 def ensure_rust_in_vm(limactl: Path) -> None:
-    """Install Rust and cross-compilation tools inside the Lima VM if missing."""
+    """Install Rust and cross-compilation tools inside the Lima VM if missing.
+
+    The apt list also carries the apptainer build dependencies: the release
+    build runs cargo in this VM, and containers-internal's build script compiles
+    apptainer (and the squashfuse it bundles) from source there. Keep it in sync
+    with `APPTAINER_BUILD_DEPS` in that build script.
+    """
     _ensure_pinned_go_in_vm(limactl)
     check = _run_limactl(
         limactl,
@@ -306,7 +312,9 @@ export PATH="{GUEST_CARGO_HOME}/bin:$PATH"
 rustup target add x86_64-unknown-linux-gnu
 sudo apt-get update -qq
 sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu \
-    libseccomp-dev make pkg-config squashfs-tools cryptsetup > /dev/null 2>&1
+    libseccomp-dev make pkg-config squashfs-tools cryptsetup \
+    autoconf automake libtool libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
+    liblzma-dev libzstd-dev > /dev/null 2>&1
 """
     result = _lima_shell(limactl, install_script)
     if result.returncode != 0:

@@ -34,7 +34,13 @@ mod apptainer_build {
     /// libraries, a different install layout. It is part of the cache sentinel
     /// filename, so a bump invalidates every previously built cache instead of
     /// silently shipping a tree built by the old recipe.
-    const APPTAINER_RECIPE_REVISION: u32 = 1;
+    ///
+    /// r2 added the bundled `squashfuse_ll` (see [`SQUASHFUSE_VERSION`]). It has
+    /// to be a revision bump rather than a retrofit of existing caches: unlike
+    /// gocryptfs (a prebuilt download that can be dropped into any cache
+    /// afterwards) squashfuse is compiled for the target ISA, so it can only be
+    /// produced inside the build environment that built apptainer itself.
+    const APPTAINER_RECIPE_REVISION: u32 = 2;
 
     /// Directory, relative to the apptainer install prefix, holding the shared
     /// libraries bundled with the binaries (see [`APPTAINER_CGO_LDFLAGS`]).
@@ -86,6 +92,26 @@ mod apptainer_build {
     const GOCRYPTFS_ARM64_SHA256: &str =
         "64576d550ab8af3f1dc729e93779540c5ecc00967d0185aae51a29a3755d86d0";
 
+    /// Pinned squashfuse version, matching the one apptainer's own RPM spec
+    /// (`dist/rpm/apptainer.spec.in`) bundles for this apptainer release.
+    ///
+    /// Apptainer mounts a SIF's squashfs partition through `squashfuse_ll`,
+    /// which it discovers in `${prefix}/libexec/apptainer/bin/` ahead of
+    /// `$PATH`. Without it the image driver reports no `SquashFeature` and
+    /// `apptainer run` falls back to `unsquashfs`-extracting the ENTIRE rootfs
+    /// into `--tmpdir` ("Converting SIF file to temporary sandbox..."). On a
+    /// distro that puts `/tmp` on tmpfs with a systemd per-user quota that
+    /// fails with "Disk quota exceeded" once a few node instances are up, so
+    /// bundling this binary is what keeps a stack launch off the extract path
+    /// entirely. `mconfig`/`make` do not build it: apptainer's own packaging
+    /// compiles it separately and installs it next to `starter`, which is what
+    /// [`build_and_install_squashfuse`] mirrors.
+    const SQUASHFUSE_VERSION: &str = "0.6.2";
+    /// SHA-256 of `squashfuse-{SQUASHFUSE_VERSION}.tar.gz` from the GitHub
+    /// source archive. Bump alongside `SQUASHFUSE_VERSION`.
+    const SQUASHFUSE_SHA256: &str =
+        "ae194df463ac5a9cbb25f94021d44bfb14dc21a0fc577e16348eca2fdc77c83b";
+
     const LIMA_VERSION: &str = "2.1.3";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
         "52bcf0780fcb28128ac9f6924d4410a6bc7c92fa80c9a858d89ae34ec3ce4f35";
@@ -114,8 +140,21 @@ mod apptainer_build {
     /// absent: it is pinned and SHA-verified via `GO_VERSION` (see
     /// `apptainer_compile_steps`) rather than taken from apt, which ships a Go
     /// too old for apptainer's `mconfig`.
-    const APPTAINER_BUILD_DEPS: &str =
-        "libseccomp-dev make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates";
+    ///
+    /// The second line covers the bundled squashfuse build (see
+    /// [`SQUASHFUSE_VERSION`]): autotools to run its `autogen.sh`, plus headers
+    /// for FUSE and for every compressor a squashfs image may use (zlib, lzo,
+    /// lz4, xz, zstd). They are only ever linked statically into
+    /// `squashfuse_ll`, so nothing here has to exist on the machines peppy
+    /// installs onto.
+    ///
+    /// `scripts/functions/lima.py` installs the same set into the release VM,
+    /// where cargo (and therefore this build script) runs against a guest this
+    /// list never provisions itself. Keep the two in sync.
+    const APPTAINER_BUILD_DEPS: &str = "libseccomp-dev make gcc pkg-config squashfs-tools \
+         cryptsetup curl ca-certificates \
+         autoconf automake libtool libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev liblzma-dev \
+         libzstd-dev";
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
     /// Must match the `--prefix` used at build time.
@@ -929,18 +968,206 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
+    // squashfuse: compiled from source, installed next to `starter`
+    //
+    // Same auto-discovery mechanism as gocryptfs above, but it cannot be a
+    // prebuilt download: upstream publishes no binary releases, so the tool is
+    // compiled here from the pinned source archive with the recipe apptainer's
+    // own packaging uses (`scripts/compile-dependencies`). Because it is
+    // compiled, it can only be produced for the ISA of the machine doing the
+    // build, which is why it is a step of the apptainer build itself (host
+    // build and Lima guest build alike) rather than something bolted onto a
+    // finished install tree.
+    // -----------------------------------------------------------------------
+
+    fn squashfuse_archive_url(version: &str) -> String {
+        format!("https://github.com/vasi/squashfuse/archive/{version}/squashfuse-{version}.tar.gz")
+    }
+
+    /// Path apptainer's `FindBin` looks at for the squashfs FUSE mounter.
+    fn squashfuse_binary_path(install_dir: &Path) -> PathBuf {
+        install_dir.join("libexec/apptainer/bin/squashfuse_ll")
+    }
+
+    /// Compile `squashfuse_ll` for the build machine's own architecture and
+    /// install it into `<install_dir>/libexec/apptainer/bin`.
+    ///
+    /// The binary is linked fully statically (`-all-static`, the libtool
+    /// spelling that survives to the final `gcc` link; a plain `-static` in
+    /// `LDFLAGS` is swallowed by libtool and silently produces a dynamic
+    /// executable). That is not just tidiness: FUSE's SONAME differs across the
+    /// distros peppy builds on and installs onto (`libfuse3.so.3` on Ubuntu
+    /// 24.04, `libfuse3.so.4` on Debian 13), so a dynamically linked
+    /// `squashfuse_ll` would be unloadable on half of them, and the alternative
+    /// (bundling libfuse plus the five compression libraries into
+    /// `<prefix>/lib` behind an rpath, the way [`bundle_libseccomp`] handles
+    /// libseccomp) buys nothing here: none of these libraries talk to the host
+    /// kernel through anything but the stable `/dev/fuse` protocol.
+    fn build_and_install_squashfuse(install_dir: &Path) -> bool {
+        let dest = squashfuse_binary_path(install_dir);
+        println!(
+            "cargo:warning=Building squashfuse {} into {:?}",
+            SQUASHFUSE_VERSION, dest
+        );
+
+        let source_cache = build_helpers::cache_dir("squashfuse-source");
+
+        // Same rationale as the apptainer source build: serialize concurrent
+        // invocations so one run cannot delete the source tree another is
+        // compiling in.
+        let lock_path = source_cache.join(".build.lock");
+        let _build_lock = build_helpers::acquire_file_lock(&lock_path);
+
+        let tarball_path = source_cache.join(format!("squashfuse-{}.tar.gz", SQUASHFUSE_VERSION));
+        let source_dir = source_cache.join(format!("squashfuse-{}", SQUASHFUSE_VERSION));
+
+        if source_dir.exists() {
+            std::fs::remove_dir_all(&source_dir).ok();
+        }
+
+        if !download_squashfuse_archive(&tarball_path) {
+            return false;
+        }
+
+        if !build_helpers::run_command(
+            Command::new("tar")
+                .args(["-xzf"])
+                .arg(&tarball_path)
+                .arg("-C")
+                .arg(&source_cache),
+            "extract squashfuse source archive",
+        ) {
+            return false;
+        }
+        std::fs::remove_file(&tarball_path).ok();
+
+        // `autogen.sh` regenerates configure (the GitHub source archive ships
+        // none), `FLAGS=-std=c99` and `--enable-multithreading` mirror
+        // apptainer's `scripts/compile-dependencies` recipe, and only the
+        // `squashfuse_ll` target is built: apptainer never invokes the
+        // high-level `squashfuse` binary or installs the library.
+        let steps: [(&str, &[&str]); 3] = [
+            ("./autogen.sh", &[]),
+            ("./configure", &["--enable-multithreading"]),
+            ("make", &["squashfuse_ll", "LDFLAGS=-all-static", "-j"]),
+        ];
+        for (program, args) in steps {
+            if !run_squashfuse_step(&source_dir, program, args) {
+                std::fs::remove_dir_all(&source_dir).ok();
+                return false;
+            }
+        }
+
+        let built = source_dir.join("squashfuse_ll");
+        if !built.exists() {
+            println!(
+                "cargo:warning=squashfuse build reported success but {:?} is missing",
+                built
+            );
+            std::fs::remove_dir_all(&source_dir).ok();
+            return false;
+        }
+
+        let installed = install_squashfuse_binary(&built, &dest);
+        std::fs::remove_dir_all(&source_dir).ok();
+        installed
+    }
+
+    /// Run one step of the squashfuse recipe inside the unpacked source tree.
+    ///
+    /// `FLAGS` is what squashfuse's `configure` reads to pick the C dialect;
+    /// the other steps ignore it, so it is set unconditionally rather than
+    /// threaded through per step.
+    fn run_squashfuse_step(source_dir: &Path, program: &str, args: &[&str]) -> bool {
+        build_helpers::run_command_streaming(
+            Command::new(program)
+                .current_dir(source_dir)
+                .env("FLAGS", "-std=c99")
+                .args(args),
+            &format!("squashfuse-{}", program.trim_start_matches("./")),
+        )
+        .success
+    }
+
+    /// Download the pinned squashfuse source archive to `dest`, reusing an
+    /// existing file only when it still matches [`SQUASHFUSE_SHA256`].
+    fn download_squashfuse_archive(dest: &Path) -> bool {
+        if dest.exists()
+            && build_helpers::verify_sha256(dest, SQUASHFUSE_SHA256, "squashfuse source archive")
+        {
+            return true;
+        }
+
+        let url = squashfuse_archive_url(SQUASHFUSE_VERSION);
+        if !build_helpers::run_command(
+            Command::new("curl").args(["-fsSL", &url, "-o"]).arg(dest),
+            &format!("download squashfuse {} source archive", SQUASHFUSE_VERSION),
+        ) {
+            return false;
+        }
+
+        if !build_helpers::verify_sha256(dest, SQUASHFUSE_SHA256, "squashfuse source archive") {
+            std::fs::remove_file(dest).ok();
+            return false;
+        }
+        true
+    }
+
+    /// Copy the freshly built `squashfuse_ll` into apptainer's search directory.
+    fn install_squashfuse_binary(built: &Path, dest: &Path) -> bool {
+        let bin_dir = dest.parent().expect("squashfuse dest always has a parent");
+        if let Err(e) = std::fs::create_dir_all(bin_dir) {
+            println!(
+                "cargo:warning=Failed to create squashfuse install directory {:?}: {}",
+                bin_dir, e
+            );
+            return false;
+        }
+        if let Err(e) = std::fs::copy(built, dest) {
+            println!(
+                "cargo:warning=Failed to copy squashfuse binary to {:?}: {}",
+                dest, e
+            );
+            return false;
+        }
+        build_helpers::set_executable(dest);
+        true
+    }
+
+    /// Fail the build when an apptainer tree that is about to be shipped has no
+    /// bundled `squashfuse_ll`.
+    ///
+    /// Reached only for a tree accepted without rebuilding (a cache hit, or the
+    /// macOS-side cache copied into a Lima guest). Those trees are gated on a
+    /// sentinel carrying [`APPTAINER_RECIPE_REVISION`], so a missing binary
+    /// means the tree was tampered with rather than merely stale, and the only
+    /// honest recovery is to delete it and rebuild: squashfuse cannot be
+    /// retrofitted onto a foreign-architecture tree.
+    fn assert_squashfuse_bundled(install_dir: &Path) {
+        let squashfuse = squashfuse_binary_path(install_dir);
+        assert!(
+            squashfuse.exists(),
+            "Bundled squashfuse missing at {:?}. Without it apptainer extracts every SIF \
+             into --tmpdir instead of FUSE-mounting it. Remove {:?} and rebuild.",
+            squashfuse,
+            install_dir
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Build apptainer from source
     // -----------------------------------------------------------------------
 
     /// Build apptainer from source on the local host (native builds only).
     ///
     /// Downloads the source tarball from GitHub, builds with `mconfig` + `make`,
-    /// and installs to `install_dir`. Requires Go, make, gcc, libseccomp-dev,
-    /// and pkg-config to be available on the host.
+    /// installs to `install_dir`, and adds the bundled squashfuse. Requires the
+    /// packages listed in [`APPTAINER_BUILD_DEPS`] (plus Go, which the host
+    /// build takes from `$PATH`) to be available on the host.
     fn build_apptainer_from_source(version: &str, install_dir: &Path, target_arch: &str) -> bool {
         println!(
-            "cargo:warning=Building apptainer {} from source (requires Go, make, gcc, libseccomp-dev)...",
-            version
+            "cargo:warning=Building apptainer {} from source (requires Go and {})...",
+            version, APPTAINER_BUILD_DEPS
         );
 
         let source_cache = build_helpers::cache_dir("apptainer-source");
@@ -1054,7 +1281,10 @@ mod apptainer_build {
             return false;
         }
 
-        true
+        // Compiled here, next to the apptainer build, because it has to match
+        // the target ISA and this host build is the only place that ISA is the
+        // one being compiled for.
+        build_and_install_squashfuse(install_dir)
     }
 
     /// Build apptainer from source inside a Lima VM and copy the result back.
@@ -1156,7 +1386,8 @@ mod apptainer_build {
 
     /// The apptainer build commands shared by every strategy: install the pinned
     /// Go toolchain, download + verify the source, configure, compile, install
-    /// to `install_dir`, and bundle libseccomp there. Runs without `sudo`
+    /// to `install_dir`, then bundle libseccomp and a freshly compiled
+    /// `squashfuse_ll` there. Runs without `sudo`
     /// (callers supply root where the environment needs it), and is embedded verbatim into a quoted `bash`
     /// here-doc on the Rosetta path, so its `$(nproc)`, `$go_arch` and other
     /// shell expansions must survive unexpanded until the guest runs them.
@@ -1220,6 +1451,23 @@ if [ -z "$seccomp_so" ] || [ ! -e "$seccomp_so" ]; then
 fi
 mkdir -p {install_dir}/{lib_dir}
 cp -L "$seccomp_so" {install_dir}/{lib_dir}/{libseccomp}
+echo "=== Building squashfuse {sq_version} ==="
+# Built here, in the guest that just built apptainer, because the binary has to
+# match the target ISA. Statically linked for the reasons in
+# `build_and_install_squashfuse`; the recipe is apptainer's own.
+cd /tmp
+rm -rf squashfuse-{sq_version} squashfuse-{sq_version}.tar.gz
+curl -fsSL {sq_url} -o squashfuse-{sq_version}.tar.gz
+echo "=== Verifying squashfuse source archive SHA-256 ==="
+echo "{sq_sha}  squashfuse-{sq_version}.tar.gz" | sha256sum -c -
+tar -xzf squashfuse-{sq_version}.tar.gz
+cd squashfuse-{sq_version}
+./autogen.sh
+FLAGS=-std=c99 ./configure --enable-multithreading
+make squashfuse_ll LDFLAGS=-all-static -j"$(nproc)"
+install -m 755 squashfuse_ll {install_dir}/libexec/apptainer/bin/squashfuse_ll
+cd /tmp
+rm -rf squashfuse-{sq_version} squashfuse-{sq_version}.tar.gz
 rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             version = version,
             install_dir = install_dir,
@@ -1230,6 +1478,9 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             cgo_ldflags = APPTAINER_CGO_LDFLAGS,
             libseccomp = LIBSECCOMP_SONAME,
             lib_dir = APPTAINER_BUNDLED_LIB_DIR,
+            sq_version = SQUASHFUSE_VERSION,
+            sq_sha = SQUASHFUSE_SHA256,
+            sq_url = squashfuse_archive_url(SQUASHFUSE_VERSION),
         )
     }
 
@@ -1413,6 +1664,7 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
         println!("cargo:rustc-env=LIMA_VERSION={}", LIMA_VERSION);
         println!("cargo:rustc-env=GOCRYPTFS_VERSION={}", GOCRYPTFS_VERSION);
+        println!("cargo:rustc-env=SQUASHFUSE_VERSION={}", SQUASHFUSE_VERSION);
         println!(
             "cargo:rustc-env=GUEST_APPTAINER_DIR={}",
             GUEST_APPTAINER_DIR
@@ -1554,6 +1806,10 @@ echo "=== Apptainer build complete ==="
                 GOCRYPTFS_VERSION,
                 target
             );
+            // Built inside the guest by `apptainer_compile_steps`; assert here
+            // so a guest-side failure surfaces as a missing binary rather than
+            // as a silently slow, quota-bound extract at run time.
+            assert_squashfuse_bundled(&target_cache);
             write_cache_sentinel(&target_cache, APPTAINER_VERSION);
         }
     }
@@ -1602,6 +1858,7 @@ echo "=== Apptainer build complete ==="
                 GOCRYPTFS_VERSION,
                 cache_dir
             );
+            assert_squashfuse_bundled(&cache_dir);
             return cache_dir;
         }
 
@@ -1616,6 +1873,7 @@ echo "=== Apptainer build complete ==="
                 GOCRYPTFS_VERSION,
                 arch
             );
+            assert_squashfuse_bundled(&cache_dir);
             write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
             return cache_dir;
         }
@@ -1629,8 +1887,8 @@ echo "=== Apptainer build complete ==="
         assert!(
             success,
             "Failed to build apptainer {} from source for {}. \
-             Ensure Go, make, gcc, libseccomp-dev, and pkg-config are installed.",
-            APPTAINER_VERSION, arch
+             Ensure Go is installed, along with: {}.",
+            APPTAINER_VERSION, arch, APPTAINER_BUILD_DEPS
         );
         assert!(
             cache_dir.join("bin/apptainer").exists(),
@@ -1643,6 +1901,7 @@ echo "=== Apptainer build complete ==="
             GOCRYPTFS_VERSION,
             arch
         );
+        assert_squashfuse_bundled(&cache_dir);
         write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
 
         cache_dir
@@ -1697,7 +1956,12 @@ echo "=== Apptainer build complete ==="
         // avoiding mtime bumps that trigger unnecessary recompilation.
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
         let sentinel_path = out_install_dir.join(".copy-source");
-        let sentinel_content = format!("{}\ngocryptfs={}", cache_dir.display(), GOCRYPTFS_VERSION);
+        let sentinel_content = format!(
+            "{}\ngocryptfs={}\nsquashfuse={}",
+            cache_dir.display(),
+            GOCRYPTFS_VERSION,
+            SQUASHFUSE_VERSION
+        );
         let needs_copy = !sentinel_path.exists()
             || std::fs::read_to_string(&sentinel_path)
                 .map_or(true, |s| s.trim() != sentinel_content.trim());
