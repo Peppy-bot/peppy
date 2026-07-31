@@ -494,7 +494,7 @@ mod tests {
                 None,
             ),
             row(
-                "uvc_camera_video_reconstruction",
+                "uvc_camera_video_reconstruction_rust",
                 "uvc_camera_python_mock",
                 "video_stream",
                 "camera",
@@ -516,7 +516,7 @@ mod tests {
                 Some("payload 64B → 4.0KB (rebuild producer for sized replies)"),
             ),
             row(
-                "uvc_camera_video_reconstruction",
+                "uvc_camera_video_reconstruction_rust",
                 "uvc_camera_python_mock",
                 "video_stream",
                 "camera",
@@ -549,7 +549,7 @@ mod tests {
         let contract_edge = edge_cell(&rows[1], false);
         assert_eq!(
             contract_edge,
-            "uvc_camera_video_reconstruction:v1\n➔ uvc_camera_python_mock:v1\n  /video_stream"
+            "uvc_camera_video_reconstruction_rust:v1\n➔ uvc_camera_python_mock:v1\n  /video_stream"
         );
     }
 
