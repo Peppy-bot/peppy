@@ -93,7 +93,11 @@ fn handle_repo_list_request_inner(
     let mut claims: HashSet<(u32, &str, &str)> = HashSet::new();
     let mut conflicted: HashSet<(u32, &str, &str)> = HashSet::new();
     for node in &cached {
-        let key = (node.repo_id, node.node_name.as_str(), node.node_tag.as_str());
+        let key = (
+            node.repo_id,
+            node.node_name.as_str(),
+            node.node_tag.as_str(),
+        );
         if !claims.insert(key) {
             conflicted.insert(key);
         }
@@ -174,11 +178,11 @@ fn repo_entry(
         source_type: source.kind(),
         last_read_unix_secs: status.and_then(|s| s.last_read_unix_secs),
         retained: status.is_some_and(|s| s.is_retained()),
-        failure: status.and_then(|s| s.last_failure.as_ref()).map(|f| {
-            RepoListRepoFailure {
+        failure: status
+            .and_then(|s| s.last_failure.as_ref())
+            .map(|f| RepoListRepoFailure {
                 kind: f.kind.clone(),
                 detail: f.message.clone(),
-            }
-        }),
+            }),
     }
 }

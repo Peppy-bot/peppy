@@ -50,9 +50,7 @@ async fn handle_repo_remove_request(
 
     // The removal itself already landed, so `success` stays true; the
     // report says whether the re-read that makes it take effect worked.
-    if needs_refresh
-        && let Some(report) = reindex_after_change(&peppy_dirs).await
-    {
+    if needs_refresh && let Some(report) = reindex_after_change(&peppy_dirs).await {
         warn!("Re-indexing after the removal reported problems: {report}");
         response = RepoRemoveResponse::success_with_refresh_report(report);
     }

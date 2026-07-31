@@ -86,7 +86,9 @@ pub(crate) fn read(peppy_dirs: &PeppyDirs) -> Vec<RepoStatus> {
     }
     let parsed = std::fs::read_to_string(&path)
         .map_err(|e| e.to_string())
-        .and_then(|content| serde_json5::from_str::<Vec<RepoStatus>>(&content).map_err(|e| e.to_string()));
+        .and_then(|content| {
+            serde_json5::from_str::<Vec<RepoStatus>>(&content).map_err(|e| e.to_string())
+        });
     match parsed {
         Ok(statuses) => statuses,
         Err(e) => {

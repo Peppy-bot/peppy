@@ -53,7 +53,10 @@ async fn exclude_repo_async(
         // what a blocked user reaches for, and they need to know whether
         // it unblocked them.
         if !response.refresh_report.is_empty() {
-            warn!("Re-indexing after the exclusion: {}", response.refresh_report);
+            warn!(
+                "Re-indexing after the exclusion: {}",
+                response.refresh_report
+            );
         }
         Ok(())
     } else {

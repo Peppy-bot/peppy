@@ -100,7 +100,10 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
         println!(
             "{}",
             paint(
-                &format!("  last refresh failed ({}): {}", failure.kind, failure.detail),
+                &format!(
+                    "  last refresh failed ({}): {}",
+                    failure.kind, failure.detail
+                ),
                 "\x1b[31m",
                 colorize,
             )
@@ -108,11 +111,7 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
     }
 }
 
-fn print_nodes(
-    nodes: &[&RepoListNodeEntry],
-    winner: &HashMap<(&str, &str), &str>,
-    colorize: bool,
-) {
+fn print_nodes(nodes: &[&RepoListNodeEntry], winner: &HashMap<(&str, &str), &str>, colorize: bool) {
     let max_name_len = nodes.iter().map(|n| n.node_name.len()).max().unwrap_or(0);
     let max_tag_len = nodes.iter().map(|n| n.node_tag.len()).max().unwrap_or(0);
 
@@ -128,11 +127,7 @@ fn print_nodes(
                 .get(&(node.node_name.as_str(), node.node_tag.as_str()))
                 .copied()
                 .unwrap_or("a higher-priority repository");
-            paint(
-                &format!("  (shadowed by {by})"),
-                "\x1b[38;5;208m",
-                colorize,
-            )
+            paint(&format!("  (shadowed by {by})"), "\x1b[38;5;208m", colorize)
         } else {
             String::new()
         };

@@ -272,10 +272,21 @@ pub(crate) enum RepoFailureKind {
 }
 
 impl RepoFailureKind {
+    /// Stable machine-readable value, recorded in `repo_status.json5` and
+    /// put on the wire. Kept separate from [`Self::describe`] so the
+    /// prose can be reworded without changing what tools match on.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             RepoFailureKind::Unreachable => "unreachable",
             RepoFailureKind::Conflict => "conflict",
+        }
+    }
+
+    /// Predicate that reads as a sentence about the repository.
+    fn describe(self) -> &'static str {
+        match self {
+            RepoFailureKind::Unreachable => "could not be read",
+            RepoFailureKind::Conflict => "contradicts itself",
         }
     }
 }
@@ -298,22 +309,20 @@ impl std::fmt::Display for RepoFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "repository {} ({}) is {}: {}",
+            "repository {} ({}) {} [{}]: {}",
             self.id,
             self.label,
+            self.kind.describe(),
             self.kind.as_str(),
             self.detail
         )?;
-        if self.retained > 0 {
-            write!(
-                f,
-                " (kept {} entry/entries from its last successful read)",
-                self.retained
-            )?;
-        } else {
-            f.write_str(" (nothing previously read from it, so it contributes nothing)")?;
+        match self.retained {
+            0 => f.write_str(
+                ". Nothing had been read from it before, so it contributes nothing this time",
+            ),
+            1 => f.write_str(". Kept 1 entry from its last successful read"),
+            n => write!(f, ". Kept {n} entries from its last successful read"),
         }
-        Ok(())
     }
 }
 
@@ -1432,9 +1441,53 @@ mod tests {
         assert_eq!(failure.id, 2);
         assert_eq!(failure.kind, RepoFailureKind::Conflict);
         assert_eq!(failure.retained, 1, "one node kept from the last read");
-        assert!(failure.detail.contains("contested:v1"), "{}", failure.detail);
+        assert!(
+            failure.detail.contains("contested:v1"),
+            "{}",
+            failure.detail
+        );
         assert!(failure.detail.contains("dup_a"), "{}", failure.detail);
         assert!(failure.detail.contains("dup_b"), "{}", failure.detail);
+    }
+
+    /// The report reads as prose while still carrying the machine value,
+    /// so an operator can act on it and a tool can match on it.
+    #[test]
+    fn failure_report_reads_as_a_sentence_and_names_the_kind() {
+        let unreachable = RepoFailure {
+            id: 1002,
+            label: "https://example.com/hub.git (ref: main)".to_owned(),
+            kind: RepoFailureKind::Unreachable,
+            detail: "failed to connect".to_owned(),
+            retained: 8,
+        };
+        let conflict = RepoFailure {
+            id: 1000,
+            label: "/home/user/workspace".to_owned(),
+            kind: RepoFailureKind::Conflict,
+            detail: "2 node manifests claim `a:v1`".to_owned(),
+            retained: 0,
+        };
+
+        let report = failure_report(&[conflict, unreachable]);
+
+        assert!(
+            report.contains("could not be read [unreachable]"),
+            "{report}"
+        );
+        assert!(report.contains("contradicts itself [conflict]"), "{report}");
+        assert!(
+            report.contains("Kept 8 entries from its last successful read"),
+            "{report}"
+        );
+        assert!(
+            report.contains("contributes nothing this time"),
+            "a machine with nothing to fall back to says so: {report}"
+        );
+        assert!(
+            report.contains("Every other repository was updated normally"),
+            "{report}"
+        );
     }
 
     /// A failing repository keeps the timestamp of its last successful
@@ -1449,7 +1502,10 @@ mod tests {
         write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
         write_repos(
             &peppy_dirs,
-            &format!(r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#, repo.display()),
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
         );
 
         let first_read = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
@@ -1488,7 +1544,10 @@ mod tests {
         write_peppy_json5(&repo.join("dup_b"), "contested", "v1");
         write_repos(
             &peppy_dirs,
-            &format!(r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#, repo.display()),
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
         );
 
         let broken = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
@@ -1573,11 +1632,8 @@ mod tests {
 
         let refreshed = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
 
-        let seen: Vec<(u64, RepoFailureKind)> = refreshed
-            .failures
-            .iter()
-            .map(|f| (f.id, f.kind))
-            .collect();
+        let seen: Vec<(u64, RepoFailureKind)> =
+            refreshed.failures.iter().map(|f| (f.id, f.kind)).collect();
         assert_eq!(
             seen,
             vec![
@@ -1876,7 +1932,8 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let RefreshedRepos { contracts, .. } =
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
@@ -1936,7 +1993,8 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let RefreshedRepos { contracts, .. } =
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
@@ -2131,10 +2189,7 @@ mod tests {
         assert_eq!(walked.conflicts.len(), 1);
         assert_eq!(walked.conflicts[0].kind, RepoItemKind::Launcher);
         assert_eq!(walked.conflicts[0].name, "bringup");
-        assert_eq!(
-            walked.conflicts[0].tag, "",
-            "launchers carry no tag"
-        );
+        assert_eq!(walked.conflicts[0].tag, "", "launchers carry no tag");
         assert_eq!(walked.conflicts[0].paths.len(), 2);
     }
 
@@ -2316,7 +2371,8 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } =
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(
             launchers.len(),
             1,
@@ -2345,7 +2401,8 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } =
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         write_repo_cache(&peppy_dirs, &launchers).unwrap();
 
         let cache_path = launchers_repo_cache_path(&peppy_dirs);
@@ -2424,7 +2481,8 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } =
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(launchers.len(), 1, "exactly one launcher expected");
         let launcher = &launchers[0];
         assert_eq!(launcher.launcher_name, "openarm01_teleop");

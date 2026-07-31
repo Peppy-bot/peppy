@@ -57,9 +57,7 @@ async fn handle_repo_exclude_request(
 
     // The exclusion itself already landed, so `success` stays true; the
     // report says whether the re-read that makes it take effect worked.
-    if needs_refresh
-        && let Some(report) = reindex_after_change(&peppy_dirs).await
-    {
+    if needs_refresh && let Some(report) = reindex_after_change(&peppy_dirs).await {
         warn!("Re-indexing after the exclusion reported problems: {report}");
         response = RepoExcludeResponse::success_with_refresh_report(report);
     }

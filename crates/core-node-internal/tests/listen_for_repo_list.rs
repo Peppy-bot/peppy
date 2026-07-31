@@ -451,7 +451,11 @@ async fn list_omits_nodes_that_are_on_disk_but_not_indexed() {
 
     let resp = send_repo_list(&started).await;
     assert!(resp.success);
-    assert_eq!(resp.nodes.len(), 1, "only the indexed node should be listed");
+    assert_eq!(
+        resp.nodes.len(),
+        1,
+        "only the indexed node should be listed"
+    );
     assert_eq!(resp.nodes[0].node_name, "keep_node");
 }
 
