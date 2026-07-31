@@ -34,6 +34,7 @@ mod internal {
     pub mod launcher;
     pub mod pairing;
     pub mod peppy_config;
+    pub mod repository;
     pub mod source;
 }
 
@@ -70,7 +71,8 @@ pub mod consts {
     pub use crate::internal::consts::{
         AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
         DEFAULT_RUST_BASE_IMAGE, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPYLIB_OUTPUT_PATH, PeppyDirs, non_empty_env_path, peppy_root_dir, set_app_env,
+        PEPPYLIB_OUTPUT_PATH, PeppyDirs, REPOSITORY_INDEX_FILE, non_empty_env_path, peppy_root_dir,
+        set_app_env,
     };
 }
 
@@ -105,6 +107,14 @@ pub mod contract {
 // -- pairing --
 pub mod pairing {
     pub use crate::internal::pairing::{PairingTopic, PeppyPairing, PeppyPairingParser};
+}
+
+// -- repository --
+pub mod repository {
+    pub use crate::internal::repository::{
+        DeclaredItem, DeclaredPaths, IndexedItem, ItemName, ItemTag, PeppyRepositoryIndexParser,
+        RepoItemKind, RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
+    };
 }
 
 // -- source --

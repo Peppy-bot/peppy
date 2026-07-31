@@ -6,6 +6,11 @@ pub const PEPPYLIB_OUTPUT_PATH: &str = ".peppy/libs/peppylib";
 /// login` flow; never committed and never world-readable.
 pub const CREDENTIALS_FILE: &str = "credentials.json5";
 
+/// Filename of a repository's index, at the root of the tree peppy is
+/// configured to scan. A repository states there what it publishes and where
+/// each item is declared; without it the repository does not resolve.
+pub const REPOSITORY_INDEX_FILE: &str = "peppy_repository.json5";
+
 pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 
 /// Default base container image for Rust nodes (Ubuntu 24.04 + Rust via rustup, build-essential).

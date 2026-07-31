@@ -11,6 +11,10 @@ pub use services::repo::cache::{
     contracts_repo_cache_path, launchers_repo_cache_path, nodes_repo_cache_path,
     pairings_repo_cache_path, repositories_list_path,
 };
+pub use services::repo::index::{
+    IndexDrift, IndexError, RepoConflict, check_repository_index, generate_repository_index,
+    read_repository_index, write_repository_index,
+};
 pub use services::repo::{InitOutcome, ensure_default_repos};
 pub use services::{
     CoreNode, CoreNodeArguments, CoreNodeConfig, NAME_CLAIM_LINKED_SETTLE, TEARDOWN_REAP_BUDGET,

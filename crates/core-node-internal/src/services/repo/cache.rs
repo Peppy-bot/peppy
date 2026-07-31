@@ -159,8 +159,20 @@ pub struct PairingCacheEntry {
     pub repo_id: u32,
 }
 
+/// One repository's items, split by kind. Whatever learned what the
+/// repository holds (walking its tree, or reading its index) hands back
+/// this shape, so the merge, retention and cache-writing below it are
+/// written once.
+#[derive(Debug, Default)]
+pub(crate) struct RepoItems {
+    pub nodes: Vec<NodeCacheEntry>,
+    pub launchers: Vec<LauncherCacheEntry>,
+    pub contracts: Vec<ContractCacheEntry>,
+    pub pairings: Vec<PairingCacheEntry>,
+}
+
 /// Kind-independent fields of a just-discovered cache entry, produced
-/// by the shared collector in `refresh.rs` and turned into a concrete
+/// by the shared collector in `index.rs` and turned into a concrete
 /// entry by [`RepoCacheEntry::from_discovered`]. `tag` is empty for
 /// untagged kinds (launchers).
 pub(crate) struct DiscoveredEntry {
