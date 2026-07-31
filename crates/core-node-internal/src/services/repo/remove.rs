@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::services::repo::cache::repositories_list_path;
-use crate::services::repo::refresh::{process_refresh, read_or_create_repos, write_all_caches};
+use crate::services::repo::refresh::{read_or_create_repos, reindex_after_change};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{RepoRemoveRequest, RepoRemoveResponse};
@@ -43,40 +43,30 @@ async fn handle_repo_remove_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let (payload, needs_refresh) = into_service_response(
+    let (mut response, needs_refresh) = into_service_response(
         &context,
         handle_repo_remove_request_inner(&context, &peppy_dirs),
     )?;
 
-    if needs_refresh {
-        let dirs = peppy_dirs.clone();
-        match tokio::task::spawn_blocking(move || {
-            let _guard = crate::services::repo::refresh_lock().lock();
-            match process_refresh(&dirs, &mut |_| {}) {
-                Ok(refreshed) => write_all_caches(&dirs, &refreshed),
-                Err(e) => Err(e),
-            }
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                warn!("Failed to refresh after repo removal: {}", e);
-            }
-            Err(e) => {
-                warn!("Refresh task panicked after repo removal: {}", e);
-            }
-        }
+    // The removal itself already landed, so `success` stays true; the
+    // report says whether the re-read that makes it take effect worked.
+    if needs_refresh
+        && let Some(report) = reindex_after_change(&peppy_dirs).await
+    {
+        warn!("Re-indexing after the removal reported problems: {report}");
+        response = RepoRemoveResponse::success_with_refresh_report(report);
     }
 
-    Ok(payload)
+    into_service_response(&context, response.encode().map_err(Into::into))
 }
 
-/// Returns `(payload, needs_refresh)`.
+/// Returns `(response, needs_refresh)`. The response is returned
+/// unencoded so the caller can fold the post-change re-index report into
+/// it before putting it on the wire.
 fn handle_repo_remove_request_inner(
     context: &ServiceRequestContext,
     peppy_dirs: &PeppyDirs,
-) -> Result<(Payload, bool)> {
+) -> Result<(RepoRemoveResponse, bool)> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -94,7 +84,7 @@ fn handle_repo_remove_request_inner(
     let mut repos = match read_or_create_repos(peppy_dirs) {
         Ok(repos) => repos,
         Err(e) => {
-            return Ok((RepoRemoveResponse::failure(e.to_string()).encode()?, false));
+            return Ok((RepoRemoveResponse::failure(e.to_string()), false));
         }
     };
 
@@ -105,8 +95,7 @@ fn handle_repo_remove_request_inner(
 
     let Some(pos) = position else {
         return Ok((
-            RepoRemoveResponse::failure(format!("repository with id {} not found", request.id))
-                .encode()?,
+            RepoRemoveResponse::failure(format!("repository with id {} not found", request.id)),
             false,
         ));
     };
@@ -120,6 +109,5 @@ fn handle_repo_remove_request_inner(
 
     drop(_guard);
 
-    let payload = RepoRemoveResponse::success().encode()?;
-    Ok((payload, true))
+    Ok((RepoRemoveResponse::success(), true))
 }

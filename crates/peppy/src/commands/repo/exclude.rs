@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::{RepoExcludeRequest, RepoSource};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::commands::repo::add::parse_repo_source;
@@ -48,6 +48,13 @@ async fn exclude_repo_async(
 
     if response.success {
         info!("Repository '{label}' excluded successfully");
+        // The exclusion landed, but the re-index that makes it take
+        // effect may not have. Saying so matters most here: excluding is
+        // what a blocked user reaches for, and they need to know whether
+        // it unblocked them.
+        if !response.refresh_report.is_empty() {
+            warn!("Re-indexing after the exclusion: {}", response.refresh_report);
+        }
         Ok(())
     } else {
         Err(Error::ExecutionFailed(format!(

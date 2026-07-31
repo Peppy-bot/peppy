@@ -7,6 +7,7 @@ use crate::services::repo::cache::{
     RepoCacheEntry, write_repo_cache,
 };
 use crate::services::repo::exclude::ExclusionSet;
+use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
 use crate::services::repo::{normalize_repo_entries, source_identity};
 use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
@@ -14,8 +15,8 @@ use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
-    RepoSourceKind,
+    RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
+    RepoSource, RepoSourceKind,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -28,8 +29,9 @@ use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -146,27 +148,26 @@ impl GoalHandler for RepoRefreshGoalHandler {
             });
 
             let dirs = peppy_dirs;
-            let scan = tokio::task::spawn_blocking(move || {
+            let scan = tokio::task::spawn_blocking(move || -> Result<RefreshCounts> {
                 let _guard = crate::services::repo::refresh_lock().lock();
                 let mut emit = |fb: RepoRefreshFeedback| {
                     let _ = tx.send(fb);
                 };
-                match process_refresh(&dirs, &mut emit) {
-                    Ok(refreshed) => {
-                        // Caches store every discovered entry so that
-                        // `repo list` can display every source and users
-                        // can pick a specific `sha256` when they need to.
-                        write_all_caches(&dirs, &refreshed)?;
-                        Ok((
-                            count_unique(&refreshed.nodes),
-                            count_unique(&refreshed.launchers),
-                            count_unique(&refreshed.contracts),
-                            count_unique(&refreshed.pairings),
-                            refreshed.excluded,
-                        ))
-                    }
-                    Err(e) => Err(e),
-                }
+                let refreshed = process_refresh(&dirs, SystemTime::now(), &mut emit)?;
+                // Written whether or not a repository failed: the whole
+                // point of containing a failure is that the repositories
+                // that did update take effect, and that the ones that
+                // did not keep the entries they last published. Caches
+                // store every entry so that `repo list` can display every
+                // source and users can pick a specific `sha256`.
+                write_all_caches(&dirs, &refreshed)?;
+                Ok((
+                    count_unique(&refreshed.nodes),
+                    count_unique(&refreshed.launchers),
+                    count_unique(&refreshed.contracts),
+                    count_unique(&refreshed.pairings),
+                    refreshed.failures,
+                ))
             })
             .await;
 
@@ -176,13 +177,14 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     unique_launchers,
                     unique_contracts,
                     unique_pairings,
-                    _excluded,
-                ))) => RepoRefreshResult::success(
+                    failures,
+                ))) if failures.is_empty() => RepoRefreshResult::success(
                     unique_nodes,
                     unique_launchers,
                     unique_contracts,
                     unique_pairings,
                 ),
+                Ok(Ok((.., failures))) => RepoRefreshResult::failure(failure_report(&failures)),
                 Ok(Err(e)) => {
                     warn!("Repo refresh failed: {}", e);
                     RepoRefreshResult::failure(e.to_string())
@@ -202,6 +204,50 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
+/// Unique-identity counts for the four caches, plus the repositories
+/// that failed. What one refresh has to report back.
+type RefreshCounts = (u32, u32, u32, u32, Vec<RepoFailure>);
+
+/// One message naming every repository that failed and why, so a user
+/// with four problems fixes four things after one run rather than
+/// running four times. `failures` arrives in repository id order, which
+/// is what makes the report reproducible between machines.
+pub(crate) fn failure_report(failures: &[RepoFailure]) -> String {
+    let lines: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
+    format!(
+        "{} of the configured repositories could not be updated. \
+         Every other repository was updated normally.{}",
+        failures.len(),
+        daemon_config::format_bulleted(&lines)
+    )
+}
+
+/// Re-indexes after a change to the repository list, returning a report
+/// of everything that went wrong, or `None` when it all worked.
+///
+/// The caller's own edit has already been applied; this is the re-read
+/// that makes it take effect. Its problems belong in the caller's
+/// response rather than in a log nobody reads: this is the recovery
+/// path, where a user who just added, removed or excluded a repository
+/// to unblock themselves needs to know whether it worked.
+pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<String> {
+    let dirs = peppy_dirs.clone();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<Vec<RepoFailure>> {
+        let _guard = crate::services::repo::refresh_lock().lock();
+        let refreshed = process_refresh(&dirs, SystemTime::now(), &mut |_| {})?;
+        write_all_caches(&dirs, &refreshed)?;
+        Ok(refreshed.failures)
+    })
+    .await;
+
+    match outcome {
+        Ok(Ok(failures)) if failures.is_empty() => None,
+        Ok(Ok(failures)) => Some(failure_report(&failures)),
+        Ok(Err(e)) => Some(format!("re-indexing failed: {e}")),
+        Err(e) => Some(format!("re-indexing task panicked: {e}")),
+    }
+}
+
 /// A repository that was skipped during refresh because it appears in the
 /// `excluded_repositories.json5` configuration.
 #[derive(Debug, Clone)]
@@ -210,26 +256,148 @@ pub(crate) struct ExcludedRepo {
     pub(crate) identity: String,
 }
 
-/// Aggregated output of [`process_refresh`]: all discovered entries
-/// (nodes, launchers, contracts) plus the repositories that were
-/// skipped because they appear in the exclusion list.
+/// Why one repository contributed nothing new to a refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepoFailureKind {
+    /// Could not be read at all: the clone failed, the configured path is
+    /// gone, the configuration entry is unrecognized. Kept distinct from
+    /// [`RepoFailureKind::Conflict`] because an outage is not a content
+    /// bug, and reporting one as the other sends the user to the wrong
+    /// place entirely.
+    Unreachable,
+    /// Read fine; the contents are wrong. An identity is claimed by
+    /// several manifests, so the repository states two different answers
+    /// to the same question and there is no defensible winner.
+    Conflict,
+}
+
+impl RepoFailureKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            RepoFailureKind::Unreachable => "unreachable",
+            RepoFailureKind::Conflict => "conflict",
+        }
+    }
+}
+
+/// One repository whose read failed, and what the machine fell back to.
+/// A failure is scoped to its own repository: the others still update.
+#[derive(Debug, Clone)]
+pub(crate) struct RepoFailure {
+    pub(crate) id: u64,
+    /// Human-facing label (path for fs, `url (ref: r)` for git).
+    pub(crate) label: String,
+    pub(crate) kind: RepoFailureKind,
+    pub(crate) detail: String,
+    /// Previous entries kept in place for this repository, across all
+    /// four kinds. Zero on a machine that has never read it successfully.
+    pub(crate) retained: usize,
+}
+
+impl std::fmt::Display for RepoFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "repository {} ({}) is {}: {}",
+            self.id,
+            self.label,
+            self.kind.as_str(),
+            self.detail
+        )?;
+        if self.retained > 0 {
+            write!(
+                f,
+                " (kept {} entry/entries from its last successful read)",
+                self.retained
+            )?;
+        } else {
+            f.write_str(" (nothing previously read from it, so it contributes nothing)")?;
+        }
+        Ok(())
+    }
+}
+
+/// Aggregated output of [`process_refresh`]: all entries that belong in
+/// the caches (freshly read, plus previous entries retained for
+/// repositories that failed), the repositories skipped by the exclusion
+/// list, and the repositories that failed.
 pub(crate) struct RefreshedRepos {
     pub(crate) nodes: Vec<NodeCacheEntry>,
     pub(crate) launchers: Vec<LauncherCacheEntry>,
     pub(crate) contracts: Vec<ContractCacheEntry>,
     pub(crate) pairings: Vec<PairingCacheEntry>,
+    /// Reported to the client through [`RepoRefreshFeedback::Excluded`]
+    /// as the scan runs, so the handler has nothing left to do with it;
+    /// kept on the result because the tests assert against it.
+    #[allow(dead_code)]
     pub(crate) excluded: Vec<ExcludedRepo>,
+    pub(crate) failures: Vec<RepoFailure>,
+    /// One entry per repository that was actually read (excluded ones are
+    /// absent), carrying when it last read cleanly and how it last failed.
+    pub(crate) statuses: Vec<RepoStatus>,
 }
 
-/// Publishes every cache file from one refresh result. The four caches
-/// must always move together: rewriting only a subset leaves the
+/// The four caches as they stood before this refresh. A repository that
+/// fails its read keeps serving what it last published, so its
+/// identities do not vanish out from under launchers that reference
+/// them.
+struct PreviousCaches {
+    nodes: Vec<NodeCacheEntry>,
+    launchers: Vec<LauncherCacheEntry>,
+    contracts: Vec<ContractCacheEntry>,
+    pairings: Vec<PairingCacheEntry>,
+}
+
+impl PreviousCaches {
+    /// A cache that cannot be read is treated as empty rather than fatal:
+    /// this runs on the recovery path, where refusing to start because
+    /// the fallback is also broken helps nobody.
+    fn load(peppy_dirs: &PeppyDirs) -> Self {
+        fn read<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Vec<E> {
+            crate::services::repo::cache::load_repo_cache::<E>(peppy_dirs).unwrap_or_else(|e| {
+                warn!("Could not read the previous {} cache: {e}", E::KIND);
+                Vec::new()
+            })
+        }
+        Self {
+            nodes: read(peppy_dirs),
+            launchers: read(peppy_dirs),
+            contracts: read(peppy_dirs),
+            pairings: read(peppy_dirs),
+        }
+    }
+}
+
+/// The previous entries of one kind that `repo_id` owns, using the same
+/// attribution rule that tags entries at lookup time so a retained entry
+/// keeps exactly the priority it had.
+fn retained_entries<E: RepoCacheEntry>(previous: &[E], repos: &[Value], repo_id: u64) -> Vec<E> {
+    previous
+        .iter()
+        .filter(|e| {
+            crate::services::repo::owning_repo_id(
+                repos,
+                e.source_type(),
+                e.source_uri(),
+                e.resolved_ref(),
+                e.path(),
+            ) == Some(repo_id)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Publishes every cache file from one refresh result. The four entry
+/// caches must always move together: rewriting only a subset leaves the
 /// untouched files still listing items from repositories that are no
-/// longer configured.
+/// longer configured. The status file moves with them so it always
+/// describes the entries that are actually on disk.
 pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepos) -> Result<()> {
     write_repo_cache(peppy_dirs, &refreshed.nodes)?;
     write_repo_cache(peppy_dirs, &refreshed.launchers)?;
     write_repo_cache(peppy_dirs, &refreshed.contracts)?;
-    write_repo_cache(peppy_dirs, &refreshed.pairings)
+    write_repo_cache(peppy_dirs, &refreshed.pairings)?;
+    status::write(peppy_dirs, &refreshed.statuses)
 }
 
 /// Source-and-file context shared by every `.json5` collector. The
@@ -300,8 +468,8 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 }
 
 /// Main synchronous processing: reads repos, walks each source, returns
-/// discovered nodes, launchers, contracts, and the list of
-/// repositories that were excluded.
+/// the entries that belong in the caches plus the repositories that were
+/// excluded or failed.
 ///
 /// Every discovered entry is kept in the result so the cache (and
 /// `repo list`) can display every source. When several repositories
@@ -310,8 +478,21 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 /// distinguish entries with the same identity but different content.
 /// Discovery feedback is emitted once per unique identity from the
 /// highest-priority repository; extra entries are silently cached.
+///
+/// A failure is contained to the repository that caused it: that
+/// repository keeps its previous entries and is recorded in `failures`,
+/// while every other repository updates normally. The caller decides
+/// what a non-empty `failures` means for the run as a whole. One
+/// consequence is deliberate and worth knowing: a cache can then hold
+/// entries read at two different times. The caches never had a notion of
+/// a synchronised snapshot across repositories, so this is not a new
+/// class of skew, but anything that later needs one coherent set of
+/// bytes must establish that itself.
+/// `now` is passed in rather than read from the clock so that tests are
+/// deterministic.
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
+    now: SystemTime,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> Result<RefreshedRepos> {
     let (repos, exclusions) = {
@@ -320,6 +501,11 @@ pub(crate) fn process_refresh(
         let exclusions = ExclusionSet::load(peppy_dirs);
         (repos, exclusions)
     };
+    let previous = PreviousCaches::load(peppy_dirs);
+    let previous_statuses = status::read(peppy_dirs);
+    let stamp = status::unix_secs(now);
+    let mut failures: Vec<RepoFailure> = Vec::new();
+    let mut statuses: Vec<RepoStatus> = Vec::new();
 
     let mut global_seen_nodes: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_launchers: HashSet<(String, String)> = HashSet::new();
@@ -346,8 +532,18 @@ pub(crate) fn process_refresh(
     }
 
     for entry in &repos {
+        let id = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        // An entry peppy cannot parse has no source kind or identity to
+        // record, so it is reported but gets no status line.
         let Some(source) = parse_repo_entry(entry) else {
-            warn!("Skipping unrecognized repository entry: {:?}", entry);
+            failures.push(RepoFailure {
+                id,
+                label: entry.to_string(),
+                kind: RepoFailureKind::Unreachable,
+                detail: "unrecognized repository entry".to_owned(),
+                retained: 0,
+            });
             continue;
         };
 
@@ -358,20 +554,28 @@ pub(crate) fn process_refresh(
             continue;
         }
 
-        let walked = match source {
+        let read = match &source {
             RepoSource::Url(url) => {
+                // Not a failure: URL repositories are unimplemented, not
+                // broken, so they must not fail a run that is otherwise fine.
                 debug!("Skipping URL repository (not yet implemented): {}", url);
                 continue;
             }
             RepoSource::Fs(path) => {
-                if !path.exists() {
-                    debug!("Skipping non-existent FS repository: {}", path.display());
-                    continue;
+                if path.exists() {
+                    on_feedback(RepoRefreshFeedback::Progress {
+                        message: format!("Scanning {}", path.display()),
+                    });
+                    Ok(walk_directory(
+                        path,
+                        RepoSourceKind::Fs,
+                        None,
+                        None,
+                        &exclusions.fs_paths,
+                    ))
+                } else {
+                    Err(format!("path does not exist: {}", path.display()))
                 }
-                on_feedback(RepoRefreshFeedback::Progress {
-                    message: format!("Scanning {}", path.display()),
-                });
-                walk_directory(&path, RepoSourceKind::Fs, None, None, &exclusions.fs_paths)
             }
             RepoSource::Git { repo_url, repo_ref } => {
                 let ref_suffix = repo_ref
@@ -381,21 +585,91 @@ pub(crate) fn process_refresh(
                 on_feedback(RepoRefreshFeedback::Progress {
                     message: format!("Cloning {}{}", repo_url, ref_suffix),
                 });
-                match clone_and_walk_git_repo(
-                    &repo_url,
-                    repo_ref.as_deref(),
-                    peppy_dirs,
-                    on_feedback,
-                ) {
-                    Ok(walked) => walked,
-                    Err(e) => {
-                        warn!("Failed to refresh git repository {}: {}", repo_url, e);
-                        continue;
-                    }
-                }
+                clone_and_walk_git_repo(repo_url, repo_ref.as_deref(), peppy_dirs, on_feedback)
             }
         };
 
+        // A repository that could not be read and one whose contents
+        // contradict themselves both fall back to their previous entries;
+        // only the wording differs, so an outage never reads as a content
+        // bug.
+        let failure = match &read {
+            Err(detail) => Some((RepoFailureKind::Unreachable, detail.clone())),
+            Ok(walked) if !walked.conflicts.is_empty() => Some((
+                RepoFailureKind::Conflict,
+                walked
+                    .conflicts
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )),
+            Ok(_) => None,
+        };
+
+        let previous_read = previous_statuses
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| s.last_read_unix_secs);
+
+        let walked = match failure {
+            None => {
+                statuses.push(RepoStatus {
+                    id,
+                    identity: identity.clone(),
+                    source_type: source.kind(),
+                    last_read_unix_secs: Some(stamp),
+                    // Cleared on success, so a repository that recovered
+                    // stops reporting an old failure.
+                    last_failure: None,
+                });
+                read.expect("checked to be Ok above")
+            }
+            Some((kind, detail)) => {
+                let retained = WalkResult {
+                    nodes: retained_entries(&previous.nodes, &repos, id),
+                    launchers: retained_entries(&previous.launchers, &repos, id),
+                    contracts: retained_entries(&previous.contracts, &repos, id),
+                    pairings: retained_entries(&previous.pairings, &repos, id),
+                    conflicts: Vec::new(),
+                };
+                let count = retained.nodes.len()
+                    + retained.launchers.len()
+                    + retained.contracts.len()
+                    + retained.pairings.len();
+                let failure = RepoFailure {
+                    id,
+                    label: source.display_label(),
+                    kind,
+                    detail,
+                    retained: count,
+                };
+                statuses.push(RepoStatus {
+                    id,
+                    identity: identity.clone(),
+                    source_type: source.kind(),
+                    // Carried forward untouched: the retained entries are
+                    // still the ones read at that time, and overwriting it
+                    // with now would claim they are current.
+                    last_read_unix_secs: previous_read,
+                    last_failure: Some(RepoStatusFailure {
+                        kind: failure.kind.as_str().to_owned(),
+                        message: failure.detail.clone(),
+                        unix_secs: stamp,
+                    }),
+                });
+                warn!("{failure}");
+                on_feedback(RepoRefreshFeedback::Progress {
+                    message: failure.to_string(),
+                });
+                failures.push(failure);
+                retained
+            }
+        };
+
+        // Merged in this repository's own slot in the id-ordered loop,
+        // retained or not, so priority order and the first-seen discovery
+        // feedback stay exactly as they would have been.
         merge_walked(
             walked.nodes,
             &mut global_seen_nodes,
@@ -428,6 +702,8 @@ pub(crate) fn process_refresh(
         contracts: all_contracts,
         pairings: all_pairings,
         excluded: excluded_repos,
+        failures,
+        statuses,
     })
 }
 
@@ -437,6 +713,75 @@ pub(crate) struct WalkResult {
     pub launchers: Vec<LauncherCacheEntry>,
     pub contracts: Vec<ContractCacheEntry>,
     pub pairings: Vec<PairingCacheEntry>,
+    /// Identities claimed by more than one manifest in this repository.
+    /// Non-empty means the repository has no defensible answer for those
+    /// identities, so the caller refuses it rather than picking one.
+    pub conflicts: Vec<RepoConflict>,
+}
+
+/// An identity claimed by several manifests inside one repository. There
+/// is no priority rule that can settle this: the repository states two
+/// different answers to the same question.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RepoConflict {
+    pub kind: RepoItemKind,
+    pub name: String,
+    /// Empty for untagged kinds (launchers).
+    pub tag: String,
+    /// Every claimant's path, sorted.
+    pub paths: Vec<String>,
+}
+
+impl RepoConflict {
+    /// `name:tag` label, or the bare name for untagged kinds.
+    fn display_id(&self) -> String {
+        if self.tag.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}:{}", self.name, self.tag)
+        }
+    }
+}
+
+impl std::fmt::Display for RepoConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} manifests claim `{}`: {}",
+            self.paths.len(),
+            self.kind,
+            self.display_id(),
+            self.paths.join(", ")
+        )
+    }
+}
+
+/// Every path that claimed a given `(name, tag)` during one repository
+/// walk, in the order the walker met them. Recording all of them (rather
+/// than remembering only that the identity was seen) is what lets a
+/// conflict name both files instead of silently keeping one.
+type ClaimMap = HashMap<(String, String), Vec<String>>;
+
+/// Turns one kind's claim map into the conflicts it holds: every identity
+/// with more than one claimant. Sorted by identity, with sorted paths, so
+/// the report never inherits the filesystem's walk order and stays
+/// comparable between machines.
+fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConflict> {
+    let mut conflicts: Vec<RepoConflict> = claims
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .map(|((name, tag), mut paths)| {
+            paths.sort();
+            RepoConflict {
+                kind,
+                name,
+                tag,
+                paths,
+            }
+        })
+        .collect();
+    conflicts.sort_by(|a, b| (&a.name, &a.tag).cmp(&(&b.name, &b.tag)));
+    conflicts
 }
 
 /// Appends one repository's walked entries to the running cross-repo
@@ -483,9 +828,14 @@ fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
 /// Each `.json5` file is read once. Files named `peppy.json5` are tried
 /// as nodes first (preserves filename-driven node ergonomics); any
 /// `.json5` whose body declares a `peppy_schema` value is dispatched to
-/// the matching collector. Within a single repository walk, a given
-/// `(name, tag)` (or launcher name) is collected only once; the
-/// global cross-repo dedup happens in `process_refresh`.
+/// the matching collector.
+///
+/// A given `(name, tag)` (or launcher name) reaches the entry vectors at
+/// most once per walk, but every claimant is recorded: an identity with
+/// several claimants comes back in `conflicts` for the caller to refuse
+/// the repository over. The cross-repo merge, where several repositories
+/// claiming one identity is a supported feature rather than a conflict,
+/// happens in `process_refresh`.
 pub(crate) fn walk_directory(
     root: &Path,
     source_type: RepoSourceKind,
@@ -518,10 +868,10 @@ pub(crate) fn walk_directory(
         })
         .build();
 
-    let mut nodes_seen: HashSet<(String, String)> = HashSet::new();
-    let mut launchers_seen: HashSet<(String, String)> = HashSet::new();
-    let mut contracts_seen: HashSet<(String, String)> = HashSet::new();
-    let mut pairings_seen: HashSet<(String, String)> = HashSet::new();
+    let mut nodes_seen = ClaimMap::new();
+    let mut launchers_seen = ClaimMap::new();
+    let mut contracts_seen = ClaimMap::new();
+    let mut pairings_seen = ClaimMap::new();
     let mut nodes: Vec<NodeCacheEntry> = Vec::new();
     let mut launchers: Vec<LauncherCacheEntry> = Vec::new();
     let mut contracts: Vec<ContractCacheEntry> = Vec::new();
@@ -584,11 +934,23 @@ pub(crate) fn walk_directory(
         }
     }
 
+    let mut conflicts = conflicts_from_claims(RepoItemKind::Node, nodes_seen);
+    conflicts.extend(conflicts_from_claims(
+        RepoItemKind::Launcher,
+        launchers_seen,
+    ));
+    conflicts.extend(conflicts_from_claims(
+        RepoItemKind::Contract,
+        contracts_seen,
+    ));
+    conflicts.extend(conflicts_from_claims(RepoItemKind::Pairing, pairings_seen));
+
     WalkResult {
         nodes,
         launchers,
         contracts,
         pairings,
+        conflicts,
     }
 }
 
@@ -611,7 +973,7 @@ fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
 }
 
 /// Shared body of the four collectors: UTF-8 check, strict parse via
-/// `identity`, intra-repo dedup, then entry construction through
+/// `identity`, claim recording, then entry construction through
 /// [`RepoCacheEntry::from_discovered`]. The strict parse catches
 /// structural problems (unknown fields, malformed sections) that the
 /// cheap schema peek can't.
@@ -623,13 +985,19 @@ fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
 /// the node parse is usually a different document kind rather than a
 /// malformed node, so the node collector logs "non-node".
 ///
+/// Every claimant is recorded in `claims`, including the second and
+/// later ones that are not pushed to `out`; the caller turns identities
+/// with several claimants into [`RepoConflict`]s and refuses the whole
+/// repository. Which claimant reaches `out` is walk-order dependent and
+/// deliberately not relied upon.
+///
 /// Returns `false` only on parse failure, so the node collector can
-/// fall back to schema dispatch; intra-repo duplicates return `true`
-/// because the file is a valid document of the kind.
+/// fall back to schema dispatch; repeat claimants return `true` because
+/// the file is a valid document of the kind.
 fn collect_repo_entry<E: RepoCacheEntry>(
     ctx: &EntryContext<'_>,
     parse_failure_label: &str,
-    seen: &mut HashSet<(String, String)>,
+    claims: &mut ClaimMap,
     out: &mut Vec<E>,
     identity: impl FnOnce(&str) -> std::result::Result<Option<(String, String)>, String>,
 ) -> bool {
@@ -659,7 +1027,10 @@ fn collect_repo_entry<E: RepoCacheEntry>(
         }
     };
 
-    if !seen.insert((name.clone(), tag.clone())) {
+    let path = relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type);
+    let claimants = claims.entry((name.clone(), tag.clone())).or_default();
+    claimants.push(path.clone());
+    if claimants.len() > 1 {
         return true;
     }
 
@@ -667,7 +1038,7 @@ fn collect_repo_entry<E: RepoCacheEntry>(
         name,
         tag,
         sha256: fingerprint_for_bytes(ctx.bytes),
-        path: relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type),
+        path,
         source_type: ctx.source_type,
         source_uri: ctx.source_uri.map(str::to_owned),
         resolved_ref: ctx.resolved_ref.map(str::to_owned),
@@ -675,16 +1046,15 @@ fn collect_repo_entry<E: RepoCacheEntry>(
     true
 }
 
-/// Returns `true` when the file parsed cleanly as a node and was
-/// collected (or skipped because of an intra-repo duplicate). `false`
-/// means parsing failed; the caller can fall back to a different
-/// schema dispatch.
+/// Returns `true` when the file parsed cleanly as a node and its claim
+/// was recorded. `false` means parsing failed; the caller can fall back
+/// to a different schema dispatch.
 fn try_collect_node_entry(
     ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
+    claims: &mut ClaimMap,
     nodes: &mut Vec<NodeCacheEntry>,
 ) -> bool {
-    collect_repo_entry(ctx, "non-node", seen, nodes, |content| {
+    collect_repo_entry(ctx, "non-node", claims, nodes, |content| {
         let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
         Ok(Some((
             parsed.manifest.name.as_str().to_string(),
@@ -695,10 +1065,10 @@ fn try_collect_node_entry(
 
 fn collect_launcher_entry(
     ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
+    claims: &mut ClaimMap,
     launchers: &mut Vec<LauncherCacheEntry>,
 ) {
-    collect_repo_entry(ctx, "malformed launcher", seen, launchers, |content| {
+    collect_repo_entry(ctx, "malformed launcher", claims, launchers, |content| {
         let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
         if parsed.peppy_schema != PeppySchema::LauncherV1 {
             return Ok(None);
@@ -718,10 +1088,10 @@ fn collect_launcher_entry(
 
 fn collect_contract_entry(
     ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
+    claims: &mut ClaimMap,
     contracts: &mut Vec<ContractCacheEntry>,
 ) {
-    collect_repo_entry(ctx, "malformed contract", seen, contracts, |content| {
+    collect_repo_entry(ctx, "malformed contract", claims, contracts, |content| {
         let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
         Ok(Some((
             parsed.manifest.name.as_str().to_string(),
@@ -732,10 +1102,10 @@ fn collect_contract_entry(
 
 fn collect_pairing_entry(
     ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
+    claims: &mut ClaimMap,
     pairings: &mut Vec<PairingCacheEntry>,
 ) {
-    collect_repo_entry(ctx, "malformed pairing", seen, pairings, |content| {
+    collect_repo_entry(ctx, "malformed pairing", claims, pairings, |content| {
         let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
         Ok(Some((
             parsed.manifest.name.as_str().to_string(),
@@ -834,6 +1204,10 @@ fn clone_and_walk_git_repo(
 mod tests {
     use super::*;
     use crate::services::repo::cache::repositories_list_path;
+
+    /// A fixed instant for every refresh under test, so nothing depends
+    /// on the host clock or on how fast the test runs.
+    const TEST_NOW: SystemTime = SystemTime::UNIX_EPOCH;
 
     #[test]
     fn read_or_create_repos_creates_file_when_missing() {
@@ -1000,6 +1374,265 @@ mod tests {
         std::fs::write(conf_dir.join("excluded_repositories.json5"), content).unwrap();
     }
 
+    /// The load-bearing case: a failure is scoped to the repository that
+    /// caused it. The healthy repository picks up its change, the broken
+    /// one keeps the entries it last published, and only the broken one
+    /// is named.
+    #[test]
+    fn process_refresh_contains_a_failure_to_its_own_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let healthy = tmp.path().join("healthy");
+        let broken = tmp.path().join("broken");
+        write_peppy_json5(&healthy.join("first"), "first", "v1");
+        write_peppy_json5(&broken.join("kept"), "kept", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                healthy.display(),
+                broken.display()
+            ),
+        );
+
+        // A clean run first, so the broken repository has something to
+        // fall back to.
+        let clean = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        assert!(clean.failures.is_empty());
+        write_all_caches(&peppy_dirs, &clean).unwrap();
+
+        // Now break the second repository and add a node to the first.
+        write_peppy_json5(&healthy.join("second"), "second", "v1");
+        write_peppy_json5(&broken.join("dup_a"), "contested", "v1");
+        write_peppy_json5(&broken.join("dup_b"), "contested", "v1");
+
+        let refreshed = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        let names: HashSet<&str> = refreshed
+            .nodes
+            .iter()
+            .map(|n| n.node_name.as_str())
+            .collect();
+        assert!(
+            names.contains("first") && names.contains("second"),
+            "the healthy repository still picked up its change: {names:?}"
+        );
+        assert!(
+            names.contains("kept"),
+            "the broken repository kept its previous entries: {names:?}"
+        );
+        assert!(
+            !names.contains("contested"),
+            "the contested identity is not resolved to an arbitrary winner: {names:?}"
+        );
+
+        assert_eq!(refreshed.failures.len(), 1, "only the broken repo failed");
+        let failure = &refreshed.failures[0];
+        assert_eq!(failure.id, 2);
+        assert_eq!(failure.kind, RepoFailureKind::Conflict);
+        assert_eq!(failure.retained, 1, "one node kept from the last read");
+        assert!(failure.detail.contains("contested:v1"), "{}", failure.detail);
+        assert!(failure.detail.contains("dup_a"), "{}", failure.detail);
+        assert!(failure.detail.contains("dup_b"), "{}", failure.detail);
+    }
+
+    /// A failing repository keeps the timestamp of its last successful
+    /// read rather than being stamped with now: the retained entries are
+    /// still the ones read at that time, and restamping them would claim
+    /// they are current.
+    #[test]
+    fn process_refresh_carries_forward_the_last_successful_read_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#, repo.display()),
+        );
+
+        let first_read = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let clean = process_refresh(&peppy_dirs, first_read, &mut |_| {}).unwrap();
+        write_all_caches(&peppy_dirs, &clean).unwrap();
+        assert_eq!(clean.statuses.len(), 1);
+        assert_eq!(clean.statuses[0].last_read_unix_secs, Some(1_000));
+        assert!(!clean.statuses[0].is_retained());
+
+        // Break it, and refresh much later.
+        write_peppy_json5(&repo.join("dup_a"), "contested", "v1");
+        write_peppy_json5(&repo.join("dup_b"), "contested", "v1");
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(99_000);
+        let failed = process_refresh(&peppy_dirs, later, &mut |_| {}).unwrap();
+
+        let status = &failed.statuses[0];
+        assert_eq!(
+            status.last_read_unix_secs,
+            Some(1_000),
+            "the entries still date from the last clean read"
+        );
+        assert!(status.is_retained());
+        let failure = status.last_failure.as_ref().expect("failure recorded");
+        assert_eq!(failure.kind, "conflict");
+        assert_eq!(failure.unix_secs, 99_000, "the failure itself is recent");
+    }
+
+    /// A repository that recovers stops reporting its old failure, so a
+    /// fixed problem does not linger in the diagnostics.
+    #[test]
+    fn process_refresh_clears_the_failure_once_a_repository_recovers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("dup_a"), "contested", "v1");
+        write_peppy_json5(&repo.join("dup_b"), "contested", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#, repo.display()),
+        );
+
+        let broken = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        write_all_caches(&peppy_dirs, &broken).unwrap();
+        assert!(broken.statuses[0].is_retained());
+
+        std::fs::remove_dir_all(repo.join("dup_b")).unwrap();
+        let fixed = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        assert!(fixed.failures.is_empty());
+        assert!(!fixed.statuses[0].is_retained());
+        assert!(fixed.statuses[0].last_failure.is_none());
+    }
+
+    /// A repository that cannot be reached at all is reported as
+    /// unreachable, not as broken content: an outage and a content bug
+    /// send the user to completely different places.
+    #[test]
+    fn process_refresh_reports_a_missing_fs_repo_as_unreachable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let healthy = tmp.path().join("healthy");
+        write_peppy_json5(&healthy.join("node_a"), "node_a", "v1");
+        let gone = tmp.path().join("not-mounted");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                healthy.display(),
+                gone.display()
+            ),
+        );
+
+        let refreshed = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        assert_eq!(refreshed.nodes.len(), 1, "the healthy repository updated");
+        assert_eq!(refreshed.failures.len(), 1);
+        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+        assert_eq!(
+            refreshed.failures[0].retained, 0,
+            "nothing was ever read from it"
+        );
+    }
+
+    /// An unrecognized `repositories.json5` entry is a failure rather
+    /// than a silent skip: a typo in the configuration should not look
+    /// like a repository that simply has no content.
+    #[test]
+    fn process_refresh_reports_an_unrecognized_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        write_repos(&peppy_dirs, r#"[{ "id": 1, "type": "nonsense" }]"#);
+
+        let refreshed = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        assert_eq!(refreshed.failures.len(), 1);
+        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+    }
+
+    /// Several failures across several repositories come back in one
+    /// pass, ordered by repository id, so one run tells the user
+    /// everything they have to fix.
+    #[test]
+    fn process_refresh_reports_every_failure_in_repository_id_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let conflicted = tmp.path().join("conflicted");
+        write_peppy_json5(&conflicted.join("a"), "contested", "v1");
+        write_peppy_json5(&conflicted.join("b"), "contested", "v1");
+        let gone = tmp.path().join("not-mounted");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 5, "type": "fs", "path": "{}" }}, {{ "id": 9, "type": "fs", "path": "{}" }}]"#,
+                gone.display(),
+                conflicted.display()
+            ),
+        );
+
+        let refreshed = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        let seen: Vec<(u64, RepoFailureKind)> = refreshed
+            .failures
+            .iter()
+            .map(|f| (f.id, f.kind))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (5, RepoFailureKind::Unreachable),
+                (9, RepoFailureKind::Conflict)
+            ]
+        );
+
+        let report = failure_report(&refreshed.failures);
+        assert!(report.contains("unreachable"), "{report}");
+        assert!(report.contains("conflict"), "{report}");
+    }
+
+    /// Retention follows the same attribution rule as lookup, so a
+    /// retained entry keeps exactly the priority it had and a failing
+    /// repository never inherits another repository's entries.
+    #[test]
+    fn process_refresh_retains_only_the_failed_repositorys_own_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let one = tmp.path().join("one");
+        let two = tmp.path().join("two");
+        write_peppy_json5(&one.join("from_one"), "from_one", "v1");
+        write_peppy_json5(&two.join("from_two"), "from_two", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                one.display(),
+                two.display()
+            ),
+        );
+        let clean = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        write_all_caches(&peppy_dirs, &clean).unwrap();
+
+        // Break repository 2 only.
+        write_peppy_json5(&two.join("dup_a"), "contested", "v1");
+        write_peppy_json5(&two.join("dup_b"), "contested", "v1");
+        let refreshed = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        assert_eq!(refreshed.failures.len(), 1);
+        assert_eq!(
+            refreshed.failures[0].retained, 1,
+            "only `from_two` is retained, not `from_one`"
+        );
+        let retained: Vec<&str> = refreshed
+            .nodes
+            .iter()
+            .filter(|n| n.path.starts_with(two.to_string_lossy().as_ref()))
+            .map(|n| n.node_name.as_str())
+            .collect();
+        assert_eq!(retained, vec!["from_two"]);
+    }
+
     #[test]
     fn process_refresh_skips_excluded_fs_repo() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1030,7 +1663,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "only non-excluded repo nodes returned");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
@@ -1077,7 +1710,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(
             discovered.len(),
             1,
@@ -1125,7 +1758,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "git repo should be excluded");
@@ -1154,7 +1787,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "node should be found normally");
         assert!(excluded.is_empty(), "no repos should be excluded");
     }
@@ -1186,7 +1819,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(excluded.len(), 1, "url repo should be excluded");
         assert_eq!(excluded[0].source_type, RepoSourceKind::Url);
@@ -1243,7 +1876,7 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
@@ -1303,7 +1936,7 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
@@ -1365,7 +1998,7 @@ mod tests {
 
         let mut feedbacks = Vec::new();
         let RefreshedRepos { contracts, .. } =
-            process_refresh(&peppy_dirs, &mut |fb| feedbacks.push(fb)).unwrap();
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb)).unwrap();
 
         assert_eq!(
             contracts.len(),
@@ -1424,6 +2057,148 @@ mod tests {
         assert_eq!(walked.launchers[0].launcher_name, "teleop");
         assert_eq!(walked.contracts.len(), 1, "one contract");
         assert_eq!(walked.contracts[0].contract_name, "uvc_camera");
+        assert!(walked.conflicts.is_empty(), "nothing claimed twice");
+    }
+
+    /// Helper: write a minimal valid pairing manifest at `path`.
+    fn write_pairing_json5(path: &Path, name: &str, tag: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(
+            path,
+            format!(
+                r#"{{
+  peppy_schema: "pairing/v1",
+  manifest: {{ name: "{name}", tag: "{tag}" }},
+  roles: ["leader", "follower"],
+  topics: [
+    {{ emitted_by: "leader", name: "setpoints" }},
+    {{ emitted_by: "follower", name: "states" }}
+  ]
+}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// The motivating case: one repository declaring one node identity
+    /// twice. Both claimants are named, so the report points at the two
+    /// files to look at rather than silently keeping whichever the
+    /// filesystem happened to yield first.
+    #[test]
+    fn walk_directory_reports_node_claimed_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("nodes-hub");
+        write_peppy_json5(&repo.join("uvc_recon/rust"), "uvc_recon", "v1");
+        write_peppy_json5(&repo.join("uvc_recon/python"), "uvc_recon", "v1");
+
+        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
+
+        assert_eq!(walked.conflicts.len(), 1, "one contested identity");
+        let conflict = &walked.conflicts[0];
+        assert_eq!(conflict.kind, RepoItemKind::Node);
+        assert_eq!(conflict.name, "uvc_recon");
+        assert_eq!(conflict.tag, "v1");
+        assert_eq!(conflict.paths.len(), 2, "both claimants named");
+        assert!(
+            conflict.paths.iter().any(|p| p.contains("rust")),
+            "got: {:?}",
+            conflict.paths
+        );
+        assert!(
+            conflict.paths.iter().any(|p| p.contains("python")),
+            "got: {:?}",
+            conflict.paths
+        );
+        // Only one claimant reaches the entry vector; which one is walk
+        // order and deliberately not asserted.
+        assert_eq!(walked.nodes.len(), 1);
+    }
+
+    /// Launchers are keyed by file stem, so two identically named
+    /// launcher files in one repository contest the same identity even
+    /// though they live in different directories.
+    #[test]
+    fn walk_directory_reports_launcher_stem_claimed_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("launchers-hub");
+        write_launcher_json5(&repo.join("sim/bringup.json5"));
+        write_launcher_json5(&repo.join("real/bringup.json5"));
+
+        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
+
+        assert_eq!(walked.conflicts.len(), 1);
+        assert_eq!(walked.conflicts[0].kind, RepoItemKind::Launcher);
+        assert_eq!(walked.conflicts[0].name, "bringup");
+        assert_eq!(
+            walked.conflicts[0].tag, "",
+            "launchers carry no tag"
+        );
+        assert_eq!(walked.conflicts[0].paths.len(), 2);
+    }
+
+    /// Contracts and pairings are contested the same way as nodes, so a
+    /// duplicate in either is caught rather than silently resolved.
+    #[test]
+    fn walk_directory_reports_contract_and_pairing_claimed_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("contracts-hub");
+        write_contract_json5(&repo.join("a/rgb.json5"), "rgb_camera", "v1");
+        write_contract_json5(&repo.join("b/rgb.json5"), "rgb_camera", "v1");
+        write_pairing_json5(&repo.join("a/joint.json5"), "joint_link", "v1");
+        write_pairing_json5(&repo.join("b/joint.json5"), "joint_link", "v1");
+
+        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
+
+        let kinds: Vec<RepoItemKind> = walked.conflicts.iter().map(|c| c.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![RepoItemKind::Contract, RepoItemKind::Pairing],
+            "one conflict per kind, grouped by kind"
+        );
+        assert_eq!(walked.conflicts[0].name, "rgb_camera");
+        assert_eq!(walked.conflicts[1].name, "joint_link");
+    }
+
+    /// The report is ordered by identity with sorted paths, so it is
+    /// reproducible in a test and comparable between two machines whose
+    /// filesystems hand back directories in different orders.
+    #[test]
+    fn walk_directory_conflicts_are_ordered_independently_of_walk_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        for dir in ["zzz", "aaa", "mmm"] {
+            write_peppy_json5(&repo.join(dir), "beta", "v1");
+        }
+        write_peppy_json5(&repo.join("one"), "alpha", "v1");
+        write_peppy_json5(&repo.join("two"), "alpha", "v1");
+
+        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
+
+        let names: Vec<&str> = walked.conflicts.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"], "sorted by identity");
+
+        let beta_paths = &walked.conflicts[1].paths;
+        assert_eq!(beta_paths.len(), 3, "every claimant is named, not just two");
+        let mut sorted = beta_paths.clone();
+        sorted.sort();
+        assert_eq!(beta_paths, &sorted, "paths sorted");
+    }
+
+    /// Same name under different tags is two identities, not a conflict.
+    /// This is the guard against the check firing on ordinary versioning.
+    #[test]
+    fn walk_directory_same_name_different_tags_is_not_a_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("v1"), "my_sensor", "v1");
+        write_peppy_json5(&repo.join("v2"), "my_sensor", "v2");
+
+        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
+
+        assert!(walked.conflicts.is_empty(), "{:?}", walked.conflicts);
+        assert_eq!(walked.nodes.len(), 2);
     }
 
     /// Process_refresh discovers launcher files (any `.json5` filename
@@ -1459,7 +2234,7 @@ mod tests {
             nodes: discovered,
             launchers,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "node_a should be the only node");
         assert_eq!(
             launchers.len(),
@@ -1541,7 +2316,7 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(
             launchers.len(),
             1,
@@ -1570,7 +2345,7 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         write_repo_cache(&peppy_dirs, &launchers).unwrap();
 
         let cache_path = launchers_repo_cache_path(&peppy_dirs);
@@ -1649,7 +2424,7 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(launchers.len(), 1, "exactly one launcher expected");
         let launcher = &launchers[0];
         assert_eq!(launcher.launcher_name, "openarm01_teleop");
@@ -1707,7 +2482,7 @@ mod tests {
         );
 
         let mut feedbacks: Vec<RepoRefreshFeedback> = Vec::new();
-        let _ = process_refresh(&peppy_dirs, &mut |fb| feedbacks.push(fb)).unwrap();
+        let _ = process_refresh(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb)).unwrap();
 
         let progress_messages: Vec<&str> = feedbacks
             .iter()

@@ -471,7 +471,13 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
     let entries = raw
         .into_iter()
         .map(|mut e| {
-            let id = lookup_repo_id(&repos, e.source_type(), e.source_uri(), e.path());
+            let id = lookup_repo_id(
+                &repos,
+                e.source_type(),
+                e.source_uri(),
+                e.resolved_ref(),
+                e.path(),
+            );
             e.set_repo_id(id);
             e
         })
@@ -490,19 +496,83 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
     Ok(entries)
 }
 
+/// One identity answered more than once by a single repository. Unlike
+/// two repositories claiming an identity, which the `repo_id` order
+/// settles deterministically, this has no defensible winner: picking one
+/// would be an arbitrary choice presented as an answer.
+///
+/// `repo refresh` refuses a repository that contains such a conflict, so
+/// reaching this at lookup means the cache predates that check or was
+/// hand-edited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoAmbiguity {
+    /// Singular kind label ("node", "launcher", ...).
+    pub kind: &'static str,
+    /// `name:tag` label, or the bare name for untagged kinds.
+    pub id: String,
+    pub repo_id: u32,
+    /// Every claimant's path, sorted.
+    pub paths: Vec<String>,
+}
+
+impl std::fmt::Display for RepoAmbiguity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} entries in repository {} claim `{}`: {}; \
+             fix the repository so one manifest claims it, then run \
+             `peppy repo refresh`",
+            self.paths.len(),
+            self.kind,
+            self.repo_id,
+            self.id,
+            self.paths.join(", ")
+        )
+    }
+}
+
 /// Returns the highest-priority (lowest `repo_id`) entry matching
-/// `(name, tag)`, or `None`. The repo-priority tiebreak lives here so
-/// all four caches resolve cross-repo name collisions identically.
-/// Untagged kinds (launchers) match with `tag = ""`.
+/// `(name, tag)`, `None` when nothing matches, or an error when the
+/// winning repository claims the identity more than once.
+///
+/// The repo-priority tiebreak lives here so all four caches resolve
+/// cross-repo name collisions identically. Untagged kinds (launchers)
+/// match with `tag = ""`.
+///
+/// Only entries tied at the winning `repo_id` are ambiguous. A
+/// lower-id repository shadowing a higher-id one stays a supported
+/// feature with a documented order, and still resolves.
 pub(crate) fn lookup_repo_entry<'a, E: RepoCacheEntry>(
     entries: &'a [E],
     name: &str,
     tag: &str,
-) -> Option<&'a E> {
-    entries
+) -> std::result::Result<Option<&'a E>, RepoAmbiguity> {
+    let matches: Vec<&E> = entries
         .iter()
         .filter(|e| e.name() == name && e.tag() == tag)
-        .min_by_key(|e| e.repo_id())
+        .collect();
+    let Some(winning_id) = matches.iter().map(|e| e.repo_id()).min() else {
+        return Ok(None);
+    };
+
+    let mut winners = matches.into_iter().filter(|e| e.repo_id() == winning_id);
+    let first = winners.next().expect("min came from a non-empty set");
+    let contested: Vec<&E> = winners.collect();
+    if contested.is_empty() {
+        return Ok(Some(first));
+    }
+
+    let mut paths: Vec<String> = std::iter::once(first)
+        .chain(contested)
+        .map(|e| e.path().to_owned())
+        .collect();
+    paths.sort();
+    Err(RepoAmbiguity {
+        kind: E::KIND,
+        id: first.display_id(),
+        repo_id: winning_id,
+        paths,
+    })
 }
 
 /// Returns the entry whose `(name, tag, sha256)` triple matches
@@ -557,59 +627,50 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
+/// Owning repository id narrowed to the wire's `u32`, defaulting to 0
+/// (highest priority) when no repository matches, which preserves
+/// resolution for hand-written caches.
 fn lookup_repo_id(
     repos: &[serde_json::Value],
     source_type: RepoSourceKind,
     uri: Option<&str>,
+    resolved_ref: Option<&str>,
     path: &str,
 ) -> u32 {
-    for entry in repos {
-        let Some(typ) = entry.get("type").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let matches = match source_type {
-            RepoSourceKind::Fs if typ == "fs" => entry
-                .get("path")
-                .and_then(|v| v.as_str())
-                .is_some_and(|p| Path::new(path).starts_with(Path::new(p))),
-            RepoSourceKind::Git if typ == "git" => entry.get("url").and_then(|v| v.as_str()) == uri,
-            RepoSourceKind::Url if typ == "url" => entry.get("url").and_then(|v| v.as_str()) == uri,
-            _ => false,
-        };
-        if matches {
-            let id = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-            return u32::try_from(id).unwrap_or(0);
-        }
-    }
-    0
+    crate::services::repo::owning_repo_id(repos, source_type, uri, resolved_ref, path)
+        .and_then(|id| u32::try_from(id).ok())
+        .unwrap_or(0)
 }
 
 /// Returns the highest-priority (lowest `repo_id`) node entry for
-/// `(name, tag)`. Returns `None` when no entry matches.
+/// `(name, tag)`, `None` when no entry matches, or [`RepoAmbiguity`]
+/// when the winning repository claims it more than once.
 pub fn lookup<'a>(
     entries: &'a [NodeCacheEntry],
     name: &str,
     tag: &str,
-) -> Option<&'a NodeCacheEntry> {
+) -> std::result::Result<Option<&'a NodeCacheEntry>, RepoAmbiguity> {
     lookup_repo_entry(entries, name, tag)
 }
 
 /// Returns the highest-priority (lowest `repo_id`) launcher entry
-/// matching `name`. Returns `None` when no entry matches.
+/// matching `name`, `None` when no entry matches, or [`RepoAmbiguity`]
+/// when the winning repository claims it more than once.
 pub fn lookup_launcher<'a>(
     entries: &'a [LauncherCacheEntry],
     name: &str,
-) -> Option<&'a LauncherCacheEntry> {
+) -> std::result::Result<Option<&'a LauncherCacheEntry>, RepoAmbiguity> {
     lookup_repo_entry(entries, name, "")
 }
 
 /// Returns the highest-priority (lowest `repo_id`) contract entry
-/// matching `(name, tag)`. Returns `None` when no entry matches.
+/// matching `(name, tag)`, `None` when no entry matches, or
+/// [`RepoAmbiguity`] when the winning repository claims it more than once.
 pub fn lookup_contract<'a>(
     entries: &'a [ContractCacheEntry],
     name: &str,
     tag: &str,
-) -> Option<&'a ContractCacheEntry> {
+) -> std::result::Result<Option<&'a ContractCacheEntry>, RepoAmbiguity> {
     lookup_repo_entry(entries, name, tag)
 }
 
@@ -625,12 +686,13 @@ pub fn lookup_contract_by_sha256<'a>(
 }
 
 /// Returns the highest-priority (lowest `repo_id`) pairing entry
-/// matching `(name, tag)`. Returns `None` when no entry matches.
+/// matching `(name, tag)`, `None` when no entry matches, or
+/// [`RepoAmbiguity`] when the winning repository claims it more than once.
 pub fn lookup_pairing<'a>(
     entries: &'a [PairingCacheEntry],
     name: &str,
     tag: &str,
-) -> Option<&'a PairingCacheEntry> {
+) -> std::result::Result<Option<&'a PairingCacheEntry>, RepoAmbiguity> {
     lookup_repo_entry(entries, name, tag)
 }
 
@@ -643,6 +705,33 @@ pub fn lookup_pairing_by_sha256<'a>(
     sha256: &str,
 ) -> Option<&'a PairingCacheEntry> {
     lookup_repo_entry_by_sha256(entries, name, tag, sha256)
+}
+
+/// Suffix appended to a cache-miss message when the machine excludes
+/// repositories, so an identity that is absent because its repository was
+/// excluded is attributable rather than looking like missing content.
+///
+/// An excluded repository is never scanned, so peppy cannot know whether
+/// it would have provided the identity; the wording says so instead of
+/// implying it did.
+fn excluded_repositories_hint(peppy_dirs: &PeppyDirs) -> String {
+    let excluded = crate::services::repo::exclude::ExclusionSet::load(peppy_dirs);
+    if excluded.entries.is_empty() {
+        return String::new();
+    }
+    let mut identities: Vec<&str> = excluded
+        .entries
+        .iter()
+        .map(|e| e.identity.as_str())
+        .collect();
+    identities.sort();
+    let plural = if identities.len() == 1 { "y" } else { "ies" };
+    format!(
+        ". {} excluded repositor{plural} ({}) {} not indexed at all and may have provided it",
+        identities.len(),
+        identities.join(", "),
+        if identities.len() == 1 { "is" } else { "are" },
+    )
 }
 
 pub fn nodes_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
@@ -688,12 +777,15 @@ pub(crate) fn resolve_repo_node_source(
     let (entries, _) =
         load_with_generation(peppy_dirs).map_err(|e| format!("failed to load nodes cache: {e}"))?;
     let id = format!("{name}:{tag}");
-    let entry = lookup(&entries, name, tag).ok_or_else(|| {
-        format!(
-            "repo-node `{id}` not found in {}",
-            nodes_repo_cache_path(peppy_dirs).display()
-        )
-    })?;
+    let entry = lookup(&entries, name, tag)
+        .map_err(|ambiguity| ambiguity.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "repo-node `{id}` not found in {}{}",
+                nodes_repo_cache_path(peppy_dirs).display(),
+                excluded_repositories_hint(peppy_dirs)
+            )
+        })?;
 
     match entry.source_type {
         RepoSourceKind::Fs => {
@@ -765,12 +857,15 @@ pub(crate) fn resolve_repo_launcher_path(
     let entries: Vec<LauncherCacheEntry> =
         load_repo_cache(peppy_dirs).map_err(|e| format!("failed to load launcher cache: {e}"))?;
 
-    let entry = lookup_launcher(&entries, name).ok_or_else(|| {
-        format!(
-            "launcher `{name}` not found in {}",
-            launchers_repo_cache_path(peppy_dirs).display()
-        )
-    })?;
+    let entry = lookup_launcher(&entries, name)
+        .map_err(|ambiguity| ambiguity.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "launcher `{name}` not found in {}{}",
+                launchers_repo_cache_path(peppy_dirs).display(),
+                excluded_repositories_hint(peppy_dirs)
+            )
+        })?;
 
     resolve_cached_artifact_path(
         peppy_dirs,
@@ -860,12 +955,15 @@ pub(crate) fn resolve_cached_doc<T>(
     parse: impl FnOnce(&str) -> std::result::Result<T, String>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<T, String> {
-    let entry = entry.ok_or_else(|| match sha256_pin {
-        Some(sha) => format!(
-            "{kind} `{id}` (sha256 `{sha}`) not in {kind} cache; \
-             run `peppy repo refresh`"
-        ),
-        None => format!("{kind} `{id}` not in {kind} cache; run `peppy repo refresh`"),
+    let entry = entry.ok_or_else(|| {
+        let hint = excluded_repositories_hint(peppy_dirs);
+        match sha256_pin {
+            Some(sha) => format!(
+                "{kind} `{id}` (sha256 `{sha}`) not in {kind} cache; \
+                 run `peppy repo refresh`{hint}"
+            ),
+            None => format!("{kind} `{id}` not in {kind} cache; run `peppy repo refresh`{hint}"),
+        }
     })?;
 
     let resolved_path = resolve_cached_artifact_path(
@@ -1050,7 +1148,9 @@ mod tests {
             mk_entry("a", "v1", 2),
             mk_entry("a", "v1", 9),
         ];
-        let hit = lookup(&entries, "a", "v1").unwrap();
+        let hit = lookup(&entries, "a", "v1")
+            .expect("distinct repo ids are not ambiguous")
+            .expect("should resolve");
         assert_eq!(hit.repo_id, 2);
     }
 
@@ -1059,8 +1159,98 @@ mod tests {
     #[test]
     fn lookup_returns_highest_priority_when_multiple_match() {
         let entries = vec![mk_entry("a", "v1", 7), mk_entry("a", "v1", 3)];
-        let hit = lookup(&entries, "a", "v1").unwrap();
+        let hit = lookup(&entries, "a", "v1")
+            .expect("distinct repo ids are not ambiguous")
+            .expect("should resolve");
         assert_eq!(hit.repo_id, 3);
+    }
+
+    /// Two entries tied at the winning repo id have no defensible
+    /// winner, so lookup reports the ambiguity instead of picking one.
+    #[test]
+    fn lookup_reports_ambiguity_within_one_repo() {
+        let mut first = mk_entry("a", "v1", 2);
+        first.path = "/repo/rust/peppy.json5".to_owned();
+        let mut second = mk_entry("a", "v1", 2);
+        second.path = "/repo/python/peppy.json5".to_owned();
+
+        let err = lookup(&[first, second], "a", "v1").expect_err("should be ambiguous");
+
+        assert_eq!(err.kind, "node");
+        assert_eq!(err.id, "a:v1");
+        assert_eq!(err.repo_id, 2);
+        assert_eq!(
+            err.paths,
+            vec!["/repo/python/peppy.json5", "/repo/rust/peppy.json5"],
+            "both claimants named, sorted"
+        );
+    }
+
+    /// The message names both files and says what to do. It must not
+    /// read as "not found": the identity is present, twice.
+    #[test]
+    fn ambiguity_message_names_both_claimants() {
+        let mut first = mk_entry("uvc_recon", "v1", 1000);
+        first.path = "uvc_recon/rust/peppy.json5".to_owned();
+        let mut second = mk_entry("uvc_recon", "v1", 1000);
+        second.path = "uvc_recon/python/peppy.json5".to_owned();
+
+        let msg = lookup(&[first, second], "uvc_recon", "v1")
+            .expect_err("should be ambiguous")
+            .to_string();
+
+        assert!(msg.contains("uvc_recon:v1"), "got: {msg}");
+        assert!(msg.contains("uvc_recon/rust/peppy.json5"), "got: {msg}");
+        assert!(msg.contains("uvc_recon/python/peppy.json5"), "got: {msg}");
+        assert!(msg.contains("repository 1000"), "got: {msg}");
+        assert!(!msg.contains("not found"), "got: {msg}");
+    }
+
+    /// A lower-id repository shadowing a higher-id one is a supported
+    /// feature, so a tie at the *losing* id must not make the winner
+    /// ambiguous.
+    #[test]
+    fn lookup_ignores_ties_below_the_winning_repo_id() {
+        let entries = vec![
+            mk_entry("a", "v1", 1),
+            mk_entry("a", "v1", 7),
+            mk_entry("a", "v1", 7),
+        ];
+
+        let hit = lookup(&entries, "a", "v1")
+            .expect("only the winning id is checked")
+            .expect("should resolve");
+
+        assert_eq!(hit.repo_id, 1);
+    }
+
+    /// Launchers are untagged, so the ambiguity label is the bare name
+    /// rather than a `name:` with an empty tag.
+    #[test]
+    fn launcher_ambiguity_uses_the_bare_name() {
+        let entries = vec![
+            mk_launcher_entry(
+                "bringup",
+                RepoSourceKind::Fs,
+                None,
+                None,
+                "/repo/sim/bringup.json5",
+                3,
+            ),
+            mk_launcher_entry(
+                "bringup",
+                RepoSourceKind::Fs,
+                None,
+                None,
+                "/repo/real/bringup.json5",
+                3,
+            ),
+        ];
+
+        let err = lookup_launcher(&entries, "bringup").expect_err("should be ambiguous");
+
+        assert_eq!(err.kind, "launcher");
+        assert_eq!(err.id, "bringup");
     }
 
     /// `lookup_repo_entry_by_sha256` returns the entry whose content fingerprint
@@ -1388,7 +1578,9 @@ mod tests {
                 1,
             ),
         ];
-        let hit = lookup_launcher(&entries, "demo").expect("should resolve");
+        let hit = lookup_launcher(&entries, "demo")
+            .expect("distinct repo ids are not ambiguous")
+            .expect("should resolve");
         assert_eq!(hit.repo_id, 1);
         assert!(hit.path.ends_with("demo_high_priority.json5"));
     }
@@ -1663,7 +1855,9 @@ mod tests {
                 1,
             ),
         ];
-        let hit = lookup_contract(&entries, "uvc_camera", "v1").unwrap();
+        let hit = lookup_contract(&entries, "uvc_camera", "v1")
+            .expect("distinct repo ids are not ambiguous")
+            .expect("should resolve");
         assert_eq!(hit.repo_id, 1);
         assert_eq!(hit.sha256, "aaaa");
     }

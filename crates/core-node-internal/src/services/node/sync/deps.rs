@@ -79,7 +79,12 @@ pub(super) async fn materialize_repo_deps(
             );
         }
         let (entries, cache_generation) = cache.as_ref().expect("cache loaded above");
-        let Some(entry) = repo_cache::lookup(entries, &name, &tag) else {
+        // An ambiguity two levels down the closure is exactly as fatal as
+        // one at the top, and must not read as "not found": the dep is
+        // present, twice.
+        let cache_hit =
+            repo_cache::lookup(entries, &name, &tag).map_err(|ambiguity| ambiguity.to_string())?;
+        let Some(entry) = cache_hit else {
             return Err(format!(
                 "dep `{name}:{tag}` not found in node stack or repository cache; \
                  run `peppy repo refresh`"
