@@ -210,7 +210,11 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The instance must still be running when `Remove` reaches it — the test
+    // waits on a shutdown request that is only ever sent for a live instance —
+    // so tie its lifetime to the test rather than to a fixed 4s.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Start in-process node services for health/shutdown so node_run can succeed.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -354,7 +358,11 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The instance must still be running when `Remove { stop_instances: true }`
+    // reaches it — the test waits on a shutdown request that is only ever sent
+    // for a live instance — so tie its lifetime to the test, not to a fixed 4s.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
 

@@ -381,8 +381,19 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         &consumer_path.join("peppy.json5"),
         provider_name,
     );
-    peppy::test_support::override_run_cmd(&provider_path.join("peppy.json5"));
-    peppy::test_support::override_run_cmd(&consumer_path.join("peppy.json5"));
+    // Both instances have to be alive at the `list_nodes_collecting` below —
+    // the assertions read the cross-daemon binding row off the rendered
+    // output — and the provider is spawned a full round-trip before the
+    // consumer. A fixed 4s lifetime would race the rest of the test.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(
+        &provider_path.join("peppy.json5"),
+        &instances.sentinel(),
+    );
+    peppy::test_support::override_run_cmd_while(
+        &consumer_path.join("peppy.json5"),
+        &instances.sentinel(),
+    );
 
     add_ready_node(&local_ctx, &provider_path);
     add_ready_node(&remote_ctx, &provider_path);

@@ -152,7 +152,11 @@ async fn node_launch_command_succeed() {
 
     let node_b_path = nodes_dir.path().join(node_b_name);
     let node_b_peppy_json5_path = node_b_path.join(NODE_CONFIG_FILE);
-    peppy::test_support::override_run_cmd(&node_b_peppy_json5_path);
+    // The launched instance has to survive the post-launch
+    // `instance_count() == 1` check and the explicit stop that follows, so tie
+    // it to the test instead of a fixed `sleep`.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&node_b_peppy_json5_path, &instances.sentinel());
 
     let messenger_handle = ctx
         .messenger_handle()
@@ -199,7 +203,7 @@ async fn node_launch_command_succeed() {
     )
     .await
     .expect("node health service should start");
-    let (_node_shutdown_handle, _node_shutdown_rx) = listen_for_shutdown(
+    let (_node_shutdown_handle, node_shutdown_rx) = listen_for_shutdown(
         &node_messenger,
         &core_node_name,
         instance_id,
@@ -207,6 +211,15 @@ async fn node_launch_command_succeed() {
     )
     .await
     .expect("node shutdown service should start");
+
+    // Model a node that actually exits when asked: end the keep-alive as soon
+    // as the cooperative shutdown request arrives. Without this the process
+    // would sit there until the daemon's force-kill grace elapsed, adding the
+    // whole grace period to the stop below.
+    tokio::spawn(async move {
+        let _ = node_shutdown_rx.await;
+        drop(instances);
+    });
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
     let node_b_path = nodes_dir.path().join(node_b_name);
@@ -752,6 +765,9 @@ fn write_node_config_for_helper(
 /// runtime), so this is the boundary that surfaces the silent-loss bug.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_populates_link_ids_from_launcher_bindings() {
+    // Instances must stay in the stack until the assertions below have read
+    // them; a fixed `sleep` would make that a race against machine load.
+    let instances = peppy::test_support::InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -781,8 +797,9 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
-            producer_dump.display()
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            producer_dump.display(),
+            instances.keep_alive_script(),
         ),
     ];
     let producer_path = write_node_config_for_helper(
@@ -800,8 +817,9 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
-            consumer_dump.display()
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            consumer_dump.display(),
+            instances.keep_alive_script(),
         ),
     ];
     let consumer_depends_on = format!(
@@ -941,8 +959,10 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Stop both instances after both dumps are captured so a failure
-    // doesn't leak `sleep 30` subprocesses past the test.
+    // The dumps are captured, so nothing below needs these instances. Ending
+    // the keep-alive first lets each Stop observe an already-exited process
+    // instead of waiting out the daemon's force-kill grace.
+    drop(instances);
     for instance_id in [consumer_instance_id, producer_instance_id] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
@@ -991,6 +1011,9 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
 /// launcher parse, plan validation, and boot-config serialization.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
+    // Instances must stay in the stack until the assertions below have read
+    // them; a fixed `sleep` would make that a race against machine load.
+    let instances = peppy::test_support::InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1012,7 +1035,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     let producer_run_cmd = vec![
         "sh".to_string(),
         "-c".to_string(),
-        "exec sleep 30".to_string(),
+        instances.keep_alive_script(),
     ];
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -1029,8 +1052,9 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
-            consumer_dump.display()
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            consumer_dump.display(),
+            instances.keep_alive_script(),
         ),
     ];
     let consumer_depends_on = format!(
@@ -1143,6 +1167,10 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
+    // The dumps are captured, so nothing below needs these instances. Ending
+    // the keep-alive first lets each Stop observe an already-exited process
+    // instead of waiting out the daemon's force-kill grace three times over.
+    drop(instances);
     for instance_id in [consumer_instance_id, front_instance_id, rear_instance_id] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
@@ -1176,6 +1204,9 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 /// validation, before any node is added, built, or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_array_binding_on_a_one_slot() {
+    // Instances must stay in the stack until the assertions below have read
+    // them; a fixed `sleep` would make that a race against machine load.
+    let instances = peppy::test_support::InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_mock()
         .await
         .expect("failed to create serve emulation");
@@ -1191,7 +1222,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
     let run_cmd = vec![
         "sh".to_string(),
         "-c".to_string(),
-        "exec sleep 30".to_string(),
+        instances.keep_alive_script(),
     ];
     let producer_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -1448,6 +1479,9 @@ fn write_contract_v1_doc_with_topic(
 /// with the full launch pipeline (cache resolution + daemon node-add).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
+    // Instances must stay in the stack until the assertions below have read
+    // them; a fixed `sleep` would make that a race against machine load.
+    let instances = peppy::test_support::InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -1493,7 +1527,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     let producer_run_cmd = vec![
         "sh".to_string(),
         "-c".to_string(),
-        "exec sleep 30".to_string(),
+        instances.keep_alive_script(),
     ];
     let producer_implements =
         format!(r#"[{{ name: "{contract_name}", tag: "{contract_tag}", link_id: "cam" }}]"#);
@@ -1515,8 +1549,9 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
-            consumer_dump.display()
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            consumer_dump.display(),
+            instances.keep_alive_script(),
         ),
     ];
     let consumer_depends_on = format!(
@@ -1650,6 +1685,10 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
+    // The dumps are captured, so nothing below needs these instances. Ending
+    // the keep-alive first lets each Stop observe an already-exited process
+    // instead of waiting out the daemon's force-kill grace.
+    drop(instances);
     for instance_id in [consumer_instance_id, producer_instance_id] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
@@ -1938,6 +1977,9 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
 /// `peppylib/tests/topics.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_binds_contract_slots_in_both_directions() {
+    // Instances must stay in the stack until the assertions below have read
+    // them; a fixed `sleep` would make that a race against machine load.
+    let instances = peppy::test_support::InstanceLifetime::new();
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -2004,8 +2046,9 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
-            controller_dump.display()
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            controller_dump.display(),
+            instances.keep_alive_script(),
         ),
     ];
     let controller_depends_on = format!(
@@ -2042,8 +2085,9 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && exec sleep 30",
-            arm_dump.display()
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            arm_dump.display(),
+            instances.keep_alive_script(),
         ),
     ];
     let arm_depends_on = format!(
@@ -2202,6 +2246,10 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
+    // The dumps are captured, so nothing below needs these instances. Ending
+    // the keep-alive first lets each Stop observe an already-exited process
+    // instead of waiting out the daemon's force-kill grace.
+    drop(instances);
     for instance_id in [controller_instance_id, arm_instance_id] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
@@ -2391,7 +2439,11 @@ async fn stack_launch_establishes_launcher_pairings() {
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let run_cmd = vec!["sleep".to_string(), "30".to_string()];
+    // Keep-alive rather than `sleep 30`: both instances must be live for the
+    // pin assertions, and the teardown below ends them explicitly instead of
+    // leaving the daemon to wait out its force-kill deadline once per instance.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let run_cmd = instances.keep_alive_argv();
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
         "robot_arm",
@@ -2525,6 +2577,9 @@ async fn stack_launch_establishes_launcher_pairings() {
     assert_eq!(pin.producer.instance_id, "arm_1");
     assert_eq!(pin.peer_link_id, "controller");
 
+    // Assertions are done; ending the keep-alive first lets each Stop observe
+    // an already-exited process instead of waiting out the force-kill deadline.
+    drop(instances);
     for instance_id in ["ctrl_1", "arm_1"] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
@@ -2559,7 +2614,11 @@ async fn stack_launch_delivers_observer_source_pin() {
     super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
     let git_hash = read_daemon_git_hash(serve.daemon_state_path());
-    let run_cmd = vec!["sleep".to_string(), "30".to_string()];
+    // Keep-alive rather than `sleep 30`: both instances must be live for the
+    // pin assertions, and the teardown below ends them explicitly instead of
+    // leaving the daemon to wait out its force-kill deadline once per instance.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let run_cmd = instances.keep_alive_argv();
     // The source plays the `arm` role through its participant slot `controller`.
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
@@ -2716,6 +2775,9 @@ async fn stack_launch_delivers_observer_source_pin() {
         state.source_generation
     );
 
+    // Assertions are done; ending the keep-alive first lets each Stop observe
+    // an already-exited process instead of waiting out the force-kill deadline.
+    drop(instances);
     for instance_id in ["rec_1", "arm_1"] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
