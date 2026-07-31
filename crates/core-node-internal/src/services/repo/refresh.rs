@@ -161,30 +161,24 @@ impl GoalHandler for RepoRefreshGoalHandler {
                 // store every entry so that `repo list` can display every
                 // source and users can pick a specific `sha256`.
                 write_all_caches(&dirs, &refreshed)?;
-                Ok((
-                    count_unique(&refreshed.nodes),
-                    count_unique(&refreshed.launchers),
-                    count_unique(&refreshed.contracts),
-                    count_unique(&refreshed.pairings),
-                    refreshed.failures,
-                ))
+                Ok(RefreshCounts {
+                    nodes: count_unique(&refreshed.nodes),
+                    launchers: count_unique(&refreshed.launchers),
+                    contracts: count_unique(&refreshed.contracts),
+                    pairings: count_unique(&refreshed.pairings),
+                    failures: refreshed.failures,
+                })
             })
             .await;
 
             let result = match scan {
-                Ok(Ok((
-                    unique_nodes,
-                    unique_launchers,
-                    unique_contracts,
-                    unique_pairings,
-                    failures,
-                ))) if failures.is_empty() => RepoRefreshResult::success(
-                    unique_nodes,
-                    unique_launchers,
-                    unique_contracts,
-                    unique_pairings,
+                Ok(Ok(counts)) if counts.failures.is_empty() => RepoRefreshResult::success(
+                    counts.nodes,
+                    counts.launchers,
+                    counts.contracts,
+                    counts.pairings,
                 ),
-                Ok(Ok((.., failures))) => RepoRefreshResult::failure(failure_report(&failures)),
+                Ok(Ok(counts)) => RepoRefreshResult::failure(failure_report(&counts.failures)),
                 Ok(Err(e)) => {
                     warn!("Repo refresh failed: {}", e);
                     RepoRefreshResult::failure(e.to_string())
@@ -205,8 +199,16 @@ impl GoalHandler for RepoRefreshGoalHandler {
 }
 
 /// Unique-identity counts for the four caches, plus the repositories
-/// that failed. What one refresh has to report back.
-type RefreshCounts = (u32, u32, u32, u32, Vec<RepoFailure>);
+/// that failed. What one refresh has to report back. Named fields rather
+/// than a tuple: four `u32`s in a row are indistinguishable at the call
+/// site, and swapping two of them would go unnoticed.
+struct RefreshCounts {
+    nodes: u32,
+    launchers: u32,
+    contracts: u32,
+    pairings: u32,
+    failures: Vec<RepoFailure>,
+}
 
 /// One message naming every repository that failed and why, so a user
 /// with four problems fixes four things after one run rather than
@@ -616,9 +618,13 @@ pub(crate) fn process_refresh(
             Ok(_) => None,
         };
 
+        // Matched on identity as well as id: an id repointed at another
+        // path or url is a different repository, and carrying the old
+        // read timestamp forward would date entries this source never
+        // published.
         let previous_read = previous_statuses
             .iter()
-            .find(|s| s.id == id)
+            .find(|s| s.id == id && s.identity == identity)
             .and_then(|s| s.last_read_unix_secs);
 
         let walked = match failure {
@@ -1448,6 +1454,57 @@ mod tests {
         );
         assert!(failure.detail.contains("dup_a"), "{}", failure.detail);
         assert!(failure.detail.contains("dup_b"), "{}", failure.detail);
+    }
+
+    /// A re-index that reads every repository cleanly has nothing to add
+    /// to the caller's response, and publishes the caches that make the
+    /// caller's edit take effect.
+    #[tokio::test]
+    async fn reindex_after_change_reports_nothing_when_the_re_read_is_clean() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("first"), "first", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+
+        assert_eq!(reindex_after_change(&peppy_dirs).await, None);
+
+        let cached = crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+            .expect("the re-index published the node cache");
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].node_name, "first");
+    }
+
+    /// A re-index that cannot read the configuration at all reports it:
+    /// the caller just changed that configuration, so this belongs in
+    /// their response rather than in a log nobody reads.
+    #[tokio::test]
+    async fn reindex_after_change_reports_a_re_read_that_failed_outright() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        write_repos(
+            &peppy_dirs,
+            r#"[
+                { "id": 1, "type": "fs", "path": "/a" },
+                { "id": 1, "type": "fs", "path": "/b" }
+            ]"#,
+        );
+
+        let report = reindex_after_change(&peppy_dirs)
+            .await
+            .expect("a re-read that failed outright is reported");
+        assert!(report.starts_with("re-indexing failed:"), "got: {report}");
+        assert!(
+            report.contains("duplicate repository id 1"),
+            "the report names what to fix, got: {report}"
+        );
     }
 
     /// The report reads as prose while still carrying the machine value,

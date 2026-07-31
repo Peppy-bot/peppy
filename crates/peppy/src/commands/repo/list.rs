@@ -11,6 +11,13 @@ use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Orange, for the two states that are not errors but are not the plain
+/// answer either: entries kept from an earlier read, and an identity a
+/// higher-priority repository already answers.
+const ORANGE: &str = "\x1b[38;5;208m";
+/// Red, for what does not resolve at all.
+const RED: &str = "\x1b[31m";
+
 pub(super) fn list_repos(ctx: &Arc<AppContext>) -> Result<()> {
     crate::commands::block_on(list_repos_async(ctx))
 }
@@ -75,10 +82,11 @@ async fn list_repos_async(ctx: &Arc<AppContext>) -> Result<()> {
 
 fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool) {
     let mut header = format!(
-        "{} ({} {} nodes):",
+        "{} ({} {} node{}):",
         repo.label,
         node_count,
-        repo.source_type.as_str()
+        repo.source_type.as_str(),
+        if node_count == 1 { "" } else { "s" }
     );
     if repo.retained {
         // Retention is the whole point of containment, but entries kept
@@ -90,7 +98,7 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
             .unwrap_or_else(|| "never".to_owned());
         header.push_str(&paint(
             &format!("  [retained, last read {when}]"),
-            "\x1b[38;5;208m",
+            ORANGE,
             colorize,
         ));
     }
@@ -104,7 +112,7 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
                     "  last refresh failed ({}): {}",
                     failure.kind, failure.detail
                 ),
-                "\x1b[31m",
+                RED,
                 colorize,
             )
         );
@@ -121,13 +129,13 @@ fn print_nodes(nodes: &[&RepoListNodeEntry], winner: &HashMap<(&str, &str), &str
         // conflict has no winner and does not resolve at all. Reading the
         // second as the first is what let the original defect hide.
         let suffix = if node.conflict {
-            paint("  (conflict: claimed twice here)", "\x1b[31m", colorize)
+            paint("  (conflict: claimed twice here)", RED, colorize)
         } else if node.duplicate {
             let by = winner
                 .get(&(node.node_name.as_str(), node.node_tag.as_str()))
                 .copied()
                 .unwrap_or("a higher-priority repository");
-            paint(&format!("  (shadowed by {by})"), "\x1b[38;5;208m", colorize)
+            paint(&format!("  (shadowed by {by})"), ORANGE, colorize)
         } else {
             String::new()
         };

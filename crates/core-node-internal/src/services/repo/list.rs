@@ -7,7 +7,8 @@ use crate::services::repo::{owning_repo_id, source_identity};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailure, RepoListRequest, RepoListResponse,
+    RepoListNodeEntry, RepoListRepoEntry, RepoListRepoFailure, RepoListRepoFailureKind,
+    RepoListRequest, RepoListResponse,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -103,6 +104,22 @@ fn handle_repo_list_request_inner(
         }
     }
 
+    // Each cached node's owning repository, resolved once. The loop below
+    // considers every node for every repository, and resolving inside it
+    // re-scans the repository list on each of those visits.
+    let owners: Vec<Option<u64>> = cached
+        .iter()
+        .map(|node| {
+            owning_repo_id(
+                &repos,
+                node.source_type,
+                node.source_uri.as_deref(),
+                node.resolved_ref.as_deref(),
+                &node.path,
+            )
+        })
+        .collect();
+
     let mut global_seen: HashSet<(&str, &str)> = HashSet::new();
     let mut all_entries: Vec<RepoListNodeEntry> = Vec::new();
     let mut all_repos: Vec<RepoListRepoEntry> = Vec::new();
@@ -132,15 +149,8 @@ fn handle_repo_list_request_inner(
         let status = statuses.iter().find(|s| s.id == repo_id_u64);
         all_repos.push(repo_entry(repo_id, &repo_label, &source, status));
 
-        for node in &cached {
-            if owning_repo_id(
-                &repos,
-                node.source_type,
-                node.source_uri.as_deref(),
-                node.resolved_ref.as_deref(),
-                &node.path,
-            ) != Some(repo_id_u64)
-            {
+        for (node, owner) in cached.iter().zip(&owners) {
+            if *owner != Some(repo_id_u64) {
                 continue;
             }
             let key = (node.node_name.as_str(), node.node_tag.as_str());
@@ -180,9 +190,25 @@ fn repo_entry(
         retained: status.is_some_and(|s| s.is_retained()),
         failure: status
             .and_then(|s| s.last_failure.as_ref())
-            .map(|f| RepoListRepoFailure {
-                kind: f.kind.clone(),
-                detail: f.message.clone(),
-            }),
+            .map(|f| wire_failure(&f.kind, &f.message)),
+    }
+}
+
+/// Projects a recorded failure onto the wire's closed kind. The status
+/// file keeps the kind as text so a value written by a future peppy is a
+/// label rather than a parse error; the wire has two kinds only, so an
+/// unrecognized one reads as unreachable with its raw label kept in the
+/// detail. Dropping the failure instead would show a retained repository
+/// with no reason at all.
+fn wire_failure(kind: &str, message: &str) -> RepoListRepoFailure {
+    match RepoListRepoFailureKind::parse(kind) {
+        Some(kind) => RepoListRepoFailure {
+            kind,
+            detail: message.to_owned(),
+        },
+        None => RepoListRepoFailure {
+            kind: RepoListRepoFailureKind::Unreachable,
+            detail: format!("{kind}: {message}"),
+        },
     }
 }

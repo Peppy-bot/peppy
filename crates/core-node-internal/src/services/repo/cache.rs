@@ -449,9 +449,10 @@ pub(crate) fn write_repo_cache<E: RepoCacheEntry>(
 /// Reads `E`'s cache file, tags each entry with the `repo_id` of its
 /// originating repository entry (derived from `repositories.json5` at
 /// read time; never serialized back), and drops malformed entries with
-/// a warning. Missing repository matches default to id 0 (highest
-/// priority) to preserve behavior for hand-written caches. Returns an
-/// empty vec when the file is missing.
+/// a warning. Entries no repository claims fall back to
+/// [`UNOWNED_REPO_ID`], so a hand-written cache still resolves without
+/// outranking a configured repository. Returns an empty vec when the
+/// file is missing.
 pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Result<Vec<E>> {
     let path = repo_cache_path::<E>(peppy_dirs);
     if !path.exists() {
@@ -627,9 +628,21 @@ fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-/// Owning repository id narrowed to the wire's `u32`, defaulting to 0
-/// (highest priority) when no repository matches, which preserves
-/// resolution for hand-written caches.
+/// Priority given to a cached entry that no configured repository
+/// claims: the lowest there is. Such an entry still resolves when
+/// nothing else claims its identity, which is what keeps a hand-written
+/// cache working, but it never outranks a configured repository.
+///
+/// Configuration and the caches are published as separate files, so an
+/// entry outlives its repository for as long as the re-index that
+/// follows a `repo remove` or `repo exclude` takes to land, and longer
+/// still when that re-index fails. Treating those entries as the highest
+/// priority would let the repository a user just removed shadow the ones
+/// they kept.
+pub(crate) const UNOWNED_REPO_ID: u32 = u32::MAX;
+
+/// Owning repository id narrowed to the wire's `u32`, falling back to
+/// [`UNOWNED_REPO_ID`] when no repository matches.
 fn lookup_repo_id(
     repos: &[serde_json::Value],
     source_type: RepoSourceKind,
@@ -639,7 +652,7 @@ fn lookup_repo_id(
 ) -> u32 {
     crate::services::repo::owning_repo_id(repos, source_type, uri, resolved_ref, path)
         .and_then(|id| u32::try_from(id).ok())
-        .unwrap_or(0)
+        .unwrap_or(UNOWNED_REPO_ID)
 }
 
 /// Returns the highest-priority (lowest `repo_id`) node entry for
@@ -1314,6 +1327,55 @@ mod tests {
         assert_eq!(loaded[0].sha256, "aaaa");
         assert_eq!(loaded[1].node_name, "b");
         assert_eq!(loaded[1].sha256, "bbbb");
+    }
+
+    /// An entry no configured repository claims must not outrank one that
+    /// a repository does claim. `repo remove` and `repo exclude` publish
+    /// the new configuration before the re-index rewrites the caches, and
+    /// a lookup landing in that window (or after a re-index that failed)
+    /// would otherwise resolve to the repository the user just dropped.
+    #[test]
+    fn unowned_entries_rank_below_configured_repositories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let live = tmp.path().join("live_repo");
+        let dropped = tmp.path().join("dropped_repo");
+        std::fs::create_dir_all(peppy_dirs.conf_dir()).unwrap();
+        std::fs::write(
+            repositories_list_path(&peppy_dirs),
+            serde_json::to_string(&serde_json::json!([
+                { "id": 7, "type": "fs", "path": live.to_string_lossy() }
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        write_repo_cache(
+            &peppy_dirs,
+            &[
+                mk_fs_entry("a", "v1", &dropped.join("a/peppy.json5").to_string_lossy()),
+                mk_fs_entry("a", "v1", &live.join("a/peppy.json5").to_string_lossy()),
+                mk_fs_entry("b", "v1", &dropped.join("b/peppy.json5").to_string_lossy()),
+            ],
+        )
+        .unwrap();
+
+        let entries = load_repo_cache::<NodeCacheEntry>(&peppy_dirs).unwrap();
+        assert_eq!(entries[0].repo_id, UNOWNED_REPO_ID);
+        assert_eq!(entries[1].repo_id, 7);
+
+        let hit = lookup(&entries, "a", "v1")
+            .expect("one entry per repository is not ambiguous")
+            .expect("should resolve");
+        assert_eq!(hit.repo_id, 7, "the configured repository wins");
+
+        // Still resolvable on its own: a hand-written cache with no
+        // matching repository entry keeps working.
+        let hit = lookup(&entries, "b", "v1")
+            .expect("a single claimant is not ambiguous")
+            .expect("should resolve");
+        assert_eq!(hit.repo_id, UNOWNED_REPO_ID);
     }
 
     // -- resolve_repo_node_source tests --

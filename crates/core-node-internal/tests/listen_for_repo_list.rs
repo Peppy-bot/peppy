@@ -3,7 +3,9 @@ mod common;
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
 use core_node::{nodes_repo_cache_path, repositories_list_path};
-use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
+use core_node_api::encoding::{
+    RepoListRepoFailureKind, RepoListRequest, RepoListResponse, RepoSourceKind,
+};
 use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
@@ -620,7 +622,8 @@ async fn list_reports_retained_entries_and_the_failure_reason() {
     );
     let failure = repo_status.failure.as_ref().expect("reason reported");
     assert_eq!(
-        failure.kind, "unreachable",
+        failure.kind,
+        RepoListRepoFailureKind::Unreachable,
         "an outage must not read as a content bug"
     );
 
@@ -663,6 +666,7 @@ async fn list_reports_a_healthy_repository_as_current() {
     assert_eq!(resp.repos.len(), 1);
     assert!(!resp.repos[0].retained);
     assert!(resp.repos[0].failure.is_none());
+    assert_eq!(resp.nodes.len(), 1);
     assert!(!resp.nodes[0].conflict);
     assert!(!resp.nodes[0].duplicate);
 }

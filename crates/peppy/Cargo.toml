@@ -18,7 +18,8 @@ node-stack = { workspace = true }
 latency-report = { workspace = true }
 json5-pretty = { workspace = true }
 bytes = "1"
-chrono = "0.4"
+# 0.4.31 for `DateTime::from_timestamp`, used to render repo read times.
+chrono = "0.4.31"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gix-url = "0.37"
