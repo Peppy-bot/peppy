@@ -36,6 +36,30 @@ fn apptainer_scratch_dir() -> PathBuf {
         .join("apptainer")
 }
 
+/// Creates the scratch directory and confirms this process can actually write
+/// into it.
+///
+/// The write probe is not redundant with the creation: `create_dir_all`
+/// succeeds on a directory that already exists whatever its mode, so a scratch
+/// dir left behind non-writable — the classic case being one created while the
+/// daemon ran under `sudo` and now owned by root — passes creation and only
+/// fails later, inside apptainer, as an opaque `MkdirTemp` error on the extract
+/// fallback. Probing here surfaces it at construction, named and pointed at the
+/// offending path. The probe is a file rather than a directory (which would
+/// mirror apptainer's own `os.MkdirTemp` more closely) because it needs the
+/// same `w`+`x` bits on the parent and `File::create` truncates rather than
+/// failing on a stale probe left by a process that died mid-check.
+pub(crate) fn prepare_scratch_dir(tmp_dir: &Path) -> Result<()> {
+    let probe = tmp_dir.join(format!(".peppy-scratch-probe-{}", std::process::id()));
+    std::fs::create_dir_all(tmp_dir)
+        .and_then(|()| std::fs::File::create(&probe))
+        .and_then(|_| std::fs::remove_file(&probe))
+        .map_err(|source| Error::ScratchDirUnavailable {
+            path: tmp_dir.display().to_string(),
+            source,
+        })
+}
+
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
 /// rather than a filesystem path.
 pub(crate) fn is_uri(s: &str) -> bool {
@@ -450,7 +474,7 @@ impl Apptainer {
     /// Ensures the execution backend is fully ready for running commands.
     /// Called once during construction.
     ///
-    /// On Linux (`Backend::Native`): creates the scratch directory apptainer is
+    /// On Linux (`Backend::Native`): prepares the scratch directory apptainer is
     /// pointed at and verifies user namespace prerequisites (AppArmor).
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
@@ -459,17 +483,12 @@ impl Apptainer {
     fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
             Backend::Native { tmp_dir, .. } => {
-                // Created up front rather than on first use: apptainer's
+                // Prepared up front rather than on first use: apptainer's
                 // `os.MkdirTemp` into `--tmpdir` fails outright when the
-                // directory is absent, and that only ever happens on the
-                // extract fallback, i.e. the one path that is already
+                // directory is absent or unwritable, and that only ever happens
+                // on the extract fallback, i.e. the one path that is already
                 // struggling.
-                std::fs::create_dir_all(&*tmp_dir).map_err(|source| {
-                    Error::ScratchDirUnavailable {
-                        path: tmp_dir.display().to_string(),
-                        source,
-                    }
-                })?;
+                prepare_scratch_dir(tmp_dir)?;
                 #[cfg(target_os = "linux")]
                 check_userns_prerequisites(&self.apptainer_dir)?;
                 Ok(())

@@ -60,7 +60,7 @@ pub enum Error {
     #[error("Failed to sync apptainer installation to Lima VM: {0}")]
     LimaSyncFailed(String),
 
-    #[error("Failed to create the apptainer scratch directory {path}: {source}")]
+    #[error("Failed to prepare the apptainer scratch directory {path}: {source}")]
     ScratchDirUnavailable {
         path: String,
         source: std::io::Error,

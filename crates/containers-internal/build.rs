@@ -1,7 +1,7 @@
 mod apptainer_build {
     use std::env;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::time::Duration;
 
     const APPTAINER_VERSION: &str = "1.5.2";
@@ -34,6 +34,9 @@ mod apptainer_build {
     /// libraries, a different install layout. It is part of the cache sentinel
     /// filename, so a bump invalidates every previously built cache instead of
     /// silently shipping a tree built by the old recipe.
+    ///
+    /// Bumping [`SQUASHFUSE_VERSION`] is not one of those occasions: it is keyed
+    /// into the sentinel filename in its own right.
     ///
     /// r2 added the bundled `squashfuse_ll` (see [`SQUASHFUSE_VERSION`]). It has
     /// to be a revision bump rather than a retrofit of existing caches: unlike
@@ -106,11 +109,20 @@ mod apptainer_build {
     /// entirely. `mconfig`/`make` do not build it: apptainer's own packaging
     /// compiles it separately and installs it next to `starter`, which is what
     /// [`build_and_install_squashfuse`] mirrors.
+    ///
+    /// Keyed into the cache sentinel filename (see
+    /// [`apptainer_cache_sentinel_path`]), so a bump here invalidates every
+    /// cached tree on its own and needs no [`APPTAINER_RECIPE_REVISION`] bump.
     const SQUASHFUSE_VERSION: &str = "0.6.2";
-    /// SHA-256 of `squashfuse-{SQUASHFUSE_VERSION}.tar.gz` from the GitHub
-    /// source archive. Bump alongside `SQUASHFUSE_VERSION`.
+    /// SHA-256 of `squashfuse-{SQUASHFUSE_VERSION}.tar.gz` as published on the
+    /// GitHub *release*. Bump alongside `SQUASHFUSE_VERSION`.
+    ///
+    /// The release asset, not the `/archive/` snapshot of the same tag: the two
+    /// share a filename but not their contents, and only the release one is an
+    /// autotools `dist` tarball carrying a pre-generated `configure` (see
+    /// [`squashfuse_source_url`]).
     const SQUASHFUSE_SHA256: &str =
-        "ae194df463ac5a9cbb25f94021d44bfb14dc21a0fc577e16348eca2fdc77c83b";
+        "267f2852d6e20147eb1e21931f9d0fe7634a66612f1ede27e15fa60e56ce0eac";
 
     const LIMA_VERSION: &str = "2.1.3";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
@@ -141,20 +153,73 @@ mod apptainer_build {
     /// `apptainer_compile_steps`) rather than taken from apt, which ships a Go
     /// too old for apptainer's `mconfig`.
     ///
-    /// The second line covers the bundled squashfuse build (see
-    /// [`SQUASHFUSE_VERSION`]): autotools to run its `autogen.sh`, plus headers
-    /// for FUSE and for every compressor a squashfs image may use (zlib, lzo,
-    /// lz4, xz, zstd). They are only ever linked statically into
-    /// `squashfuse_ll`, so nothing here has to exist on the machines peppy
-    /// installs onto.
+    /// The second group covers the bundled squashfuse build (see
+    /// [`SQUASHFUSE_VERSION`]): headers for FUSE and for every compressor a
+    /// squashfs image may use (zlib, lzo, lz4, xz, zstd). They are only ever
+    /// linked statically into `squashfuse_ll`, so nothing here has to exist on
+    /// the machines peppy installs onto. Autotools is deliberately absent:
+    /// squashfuse is built from a `dist` tarball that already carries
+    /// `configure` (see [`squashfuse_source_url`]).
+    ///
+    /// Each entry pairs the package with the probe [`assert_host_build_deps`]
+    /// uses to prove it is present. The probes mirror how the consumer actually
+    /// looks the dependency up — `mconfig` and `configure` find FUSE and
+    /// libseccomp through pkg-config, and the compressors through a plain
+    /// `#include` — so peppy never rejects a host that would have built fine.
     ///
     /// `scripts/functions/lima.py` installs the same set into the release VM,
     /// where cargo (and therefore this build script) runs against a guest this
     /// list never provisions itself. Keep the two in sync.
-    const APPTAINER_BUILD_DEPS: &str = "libseccomp-dev make gcc pkg-config squashfs-tools \
-         cryptsetup curl ca-certificates \
-         autoconf automake libtool libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev liblzma-dev \
-         libzstd-dev";
+    const APPTAINER_BUILD_DEPS: &[BuildDep] = &[
+        BuildDep::new("make", DepProbe::Binary("make")),
+        BuildDep::new("gcc", DepProbe::Binary(HOST_CC)),
+        BuildDep::new("pkg-config", DepProbe::Binary("pkg-config")),
+        BuildDep::new("squashfs-tools", DepProbe::Binary("unsquashfs")),
+        BuildDep::new("cryptsetup", DepProbe::Binary("cryptsetup")),
+        BuildDep::new("curl", DepProbe::Binary("curl")),
+        // Carries no build input of its own: it is what makes the `curl`
+        // downloads above trust their TLS peers in a bare chroot.
+        BuildDep::new("ca-certificates", DepProbe::Unprobed),
+        BuildDep::new("libseccomp-dev", DepProbe::PkgConfig("libseccomp")),
+        BuildDep::new("libfuse3-dev", DepProbe::PkgConfig("fuse3")),
+        BuildDep::new("zlib1g-dev", DepProbe::Header("zlib.h")),
+        BuildDep::new("liblzo2-dev", DepProbe::Header("lzo/lzo1x.h")),
+        BuildDep::new("liblz4-dev", DepProbe::Header("lz4.h")),
+        BuildDep::new("liblzma-dev", DepProbe::Header("lzma.h")),
+        BuildDep::new("libzstd-dev", DepProbe::Header("zstd.h")),
+    ];
+
+    /// The C compiler both apptainer's `mconfig` and squashfuse's `configure`
+    /// default to, and therefore the one whose include path decides whether a
+    /// [`DepProbe::Header`] is really reachable.
+    const HOST_CC: &str = "cc";
+
+    /// One apt package the apptainer + squashfuse build needs, and the probe
+    /// that proves the host has it.
+    struct BuildDep {
+        /// Debian/Ubuntu package name, as passed to `apt-get install`.
+        package: &'static str,
+        probe: DepProbe,
+    }
+
+    impl BuildDep {
+        const fn new(package: &'static str, probe: DepProbe) -> Self {
+            Self { package, probe }
+        }
+    }
+
+    /// How to tell whether a [`BuildDep`] is installed.
+    enum DepProbe {
+        /// Executable that must be spawnable from `$PATH`.
+        Binary(&'static str),
+        /// pkg-config module that must resolve.
+        PkgConfig(&'static str),
+        /// Header that must be reachable on [`HOST_CC`]'s default search path.
+        Header(&'static str),
+        /// Nothing to probe: the package supplies data, not a build input.
+        Unprobed,
+    }
+
     const LIMA_TEMPLATE: &str = "template:ubuntu-24.04";
     /// Guest-side installation path for apptainer inside the Lima VM.
     /// Must match the `--prefix` used at build time.
@@ -164,10 +229,19 @@ mod apptainer_build {
     // Cache helpers
     // -----------------------------------------------------------------------
 
+    /// Name of the file marking a cache directory as built by *this* recipe.
+    ///
+    /// Every consumer validates the cache by testing this path for existence
+    /// (the contents are for humans), so everything that changes the produced
+    /// tree has to be keyed into the name or a stale cache is silently reused.
+    /// [`SQUASHFUSE_VERSION`] is keyed in alongside the recipe revision because
+    /// squashfuse is compiled into the tree with no version marker of its own —
+    /// unlike gocryptfs, which carries a version-keyed sentinel of its own
+    /// ([`gocryptfs_sentinel_path`]) and so re-installs itself on a bump.
     fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
         cache_dir.join(format!(
-            ".peppy-version-{}-r{}",
-            version, APPTAINER_RECIPE_REVISION
+            ".peppy-version-{}-r{}-sq{}",
+            version, APPTAINER_RECIPE_REVISION, SQUASHFUSE_VERSION
         ))
     }
 
@@ -176,8 +250,8 @@ mod apptainer_build {
         std::fs::write(
             &sentinel,
             format!(
-                "version={}\nrecipe={}\n",
-                version, APPTAINER_RECIPE_REVISION
+                "version={}\nrecipe={}\nsquashfuse={}\n",
+                version, APPTAINER_RECIPE_REVISION, SQUASHFUSE_VERSION
             ),
         )
         .unwrap_or_else(|e| panic!("Failed to write cache sentinel {:?}: {}", sentinel, e));
@@ -980,8 +1054,20 @@ mod apptainer_build {
     // finished install tree.
     // -----------------------------------------------------------------------
 
-    fn squashfuse_archive_url(version: &str) -> String {
-        format!("https://github.com/vasi/squashfuse/archive/{version}/squashfuse-{version}.tar.gz")
+    /// URL of the squashfuse release tarball.
+    ///
+    /// Deliberately the release asset rather than the `/archive/` snapshot
+    /// GitHub generates for the same tag. The snapshot is the bare source tree,
+    /// so building it starts with `./autogen.sh` and therefore demands
+    /// autoconf, automake and libtool on every machine that builds peppy; the
+    /// release asset is a `make dist` tarball with `configure` already
+    /// generated, which drops all three from
+    /// [`APPTAINER_BUILD_DEPS`]. Same upstream sources either way — only the
+    /// build-time toolchain requirement differs.
+    fn squashfuse_source_url(version: &str) -> String {
+        format!(
+            "https://github.com/vasi/squashfuse/releases/download/{version}/squashfuse-{version}.tar.gz"
+        )
     }
 
     /// Path apptainer's `FindBin` looks at for the squashfs FUSE mounter.
@@ -1041,13 +1127,13 @@ mod apptainer_build {
         }
         std::fs::remove_file(&tarball_path).ok();
 
-        // `autogen.sh` regenerates configure (the GitHub source archive ships
-        // none), `FLAGS=-std=c99` and `--enable-multithreading` mirror
-        // apptainer's `scripts/compile-dependencies` recipe, and only the
-        // `squashfuse_ll` target is built: apptainer never invokes the
-        // high-level `squashfuse` binary or installs the library.
-        let steps: [(&str, &[&str]); 3] = [
-            ("./autogen.sh", &[]),
+        // No `autogen.sh`: the release tarball ships a generated `configure`
+        // (see [`squashfuse_source_url`]). `FLAGS=-std=c99` and
+        // `--enable-multithreading` mirror apptainer's
+        // `scripts/compile-dependencies` recipe, and only the `squashfuse_ll`
+        // target is built: apptainer never invokes the high-level `squashfuse`
+        // binary or installs the library.
+        let steps: [(&str, &[&str]); 2] = [
             ("./configure", &["--enable-multithreading"]),
             ("make", &["squashfuse_ll", "LDFLAGS=-all-static", "-j"]),
         ];
@@ -1098,7 +1184,7 @@ mod apptainer_build {
             return true;
         }
 
-        let url = squashfuse_archive_url(SQUASHFUSE_VERSION);
+        let url = squashfuse_source_url(SQUASHFUSE_VERSION);
         if !build_helpers::run_command(
             Command::new("curl").args(["-fsSL", &url, "-o"]).arg(dest),
             &format!("download squashfuse {} source archive", SQUASHFUSE_VERSION),
@@ -1158,16 +1244,176 @@ mod apptainer_build {
     // Build apptainer from source
     // -----------------------------------------------------------------------
 
+    /// The package list as an `apt-get install` argument string.
+    fn apptainer_build_deps_apt() -> String {
+        APPTAINER_BUILD_DEPS
+            .iter()
+            .map(|dep| dep.package)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Fail before the build starts when the host is missing anything in
+    /// [`APPTAINER_BUILD_DEPS`], naming every missing package in one message.
+    ///
+    /// Worth checking up front because both ways this fails without it are bad.
+    /// The loud one is merely slow: apptainer compiles for minutes before
+    /// squashfuse's `configure` dies, and it names only the first thing it
+    /// happened to reach for. The quiet one is worse — a dependency that is
+    /// *optional to the tool being configured* gets skipped rather than
+    /// reported, and the build succeeds with a hole in it. `configure` drops a
+    /// compressor whose headers are absent, leaving a `squashfuse_ll` that
+    /// cannot mount a SIF built with it, so apptainer falls back to extracting
+    /// the whole rootfs — the exact behaviour bundling it was meant to prevent.
+    /// `mconfig` logs `libseccomp+headers... no` and builds an apptainer with
+    /// seccomp filtering compiled out. Both surface much later, on a user's
+    /// machine, looking nothing like a missing apt package.
+    ///
+    /// Only the host build needs this: the Lima guest scripts apt-install the
+    /// same list themselves immediately before building.
+    fn assert_host_build_deps() {
+        let mut missing = Vec::new();
+        let mut unverified = Vec::new();
+        for dep in APPTAINER_BUILD_DEPS {
+            match dep.probe.satisfied() {
+                Some(true) => {}
+                Some(false) => missing.push(dep),
+                None => unverified.push(dep.package),
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+
+        let mut report = vec![
+            format!(
+                "Cannot build apptainer {} and its bundled squashfuse {}: {} missing build {} \
+                 on this host.",
+                APPTAINER_VERSION,
+                SQUASHFUSE_VERSION,
+                missing.len(),
+                if missing.len() == 1 {
+                    "dependency"
+                } else {
+                    "dependencies"
+                },
+            ),
+            missing
+                .iter()
+                .map(|dep| format!("  {:<15} {}", dep.package, dep.probe.not_found_hint()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            format!(
+                "Install them with:\n  sudo apt-get install -y {}",
+                missing
+                    .iter()
+                    .map(|dep| dep.package)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        ];
+        // Only ever non-empty alongside a missing pkg-config or C compiler,
+        // which is itself listed above, so this reads as a follow-up rather
+        // than as an unexplained gap.
+        if !unverified.is_empty() {
+            report.push(format!(
+                "Not checked, because a tool listed above is missing: {}. \
+                 Re-run once the install completes.",
+                unverified.join(", ")
+            ));
+        }
+        report.push(
+            "None of these are optional. `configure` silently *skips* a compressor whose headers \
+             it cannot find and still exits 0, producing a squashfuse that cannot mount images \
+             using that compressor."
+                .to_string(),
+        );
+
+        panic!("{}", report.join("\n\n"));
+    }
+
+    impl DepProbe {
+        /// `Some(false)` means proven absent. `None` means the probe could not
+        /// run because the tool it needs (pkg-config, the C compiler) is itself
+        /// one of the missing packages — an unknown answer, not a negative one,
+        /// and reporting it as missing would blame a dozen `-dev` packages on
+        /// one absent compiler.
+        fn satisfied(&self) -> Option<bool> {
+            match self {
+                DepProbe::Unprobed => Some(true),
+                DepProbe::Binary(program) => Some(binary_runs(program)),
+                DepProbe::PkgConfig(module) => binary_runs("pkg-config").then(|| {
+                    probe_succeeds(Command::new("pkg-config").arg("--exists").arg(module))
+                }),
+                // Preprocess an empty translation unit with the header forced
+                // in, which is how `configure` itself decides: the answer comes
+                // from the compiler's own search path rather than from a guess
+                // at where this distro puts its headers.
+                DepProbe::Header(header) => binary_runs(HOST_CC).then(|| {
+                    probe_succeeds(
+                        Command::new(HOST_CC)
+                            .args(["-x", "c", "-E", "-include"])
+                            .arg(header)
+                            .arg("/dev/null"),
+                    )
+                }),
+            }
+        }
+
+        /// How this probe failed, phrased so the reader can re-run it by hand.
+        fn not_found_hint(&self) -> String {
+            match self {
+                DepProbe::Binary(program) => format!("`{}` not on $PATH", program),
+                DepProbe::PkgConfig(module) => {
+                    format!("pkg-config module `{}` not found", module)
+                }
+                DepProbe::Header(header) => format!("<{}> not found by {}", header, HOST_CC),
+                DepProbe::Unprobed => "no probe".to_string(),
+            }
+        }
+    }
+
+    /// Whether `program` can be spawned from `$PATH`.
+    ///
+    /// Spawnability, not exit status: `unsquashfs` rejects `--version` and
+    /// exits non-zero while being perfectly present.
+    fn binary_runs(program: &str) -> bool {
+        silenced(Command::new(program).arg("--version"))
+            .status()
+            .is_ok()
+    }
+
+    /// Run a probe for its exit status, treating a failure to launch as a
+    /// failed probe.
+    fn probe_succeeds(command: &mut Command) -> bool {
+        silenced(command)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    /// Discard a probe's stdio: these run for their exit status alone, and
+    /// their chatter would otherwise land in the cargo build log.
+    fn silenced(command: &mut Command) -> &mut Command {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+    }
+
     /// Build apptainer from source on the local host (native builds only).
     ///
     /// Downloads the source tarball from GitHub, builds with `mconfig` + `make`,
     /// installs to `install_dir`, and adds the bundled squashfuse. Requires the
     /// packages listed in [`APPTAINER_BUILD_DEPS`] (plus Go, which the host
-    /// build takes from `$PATH`) to be available on the host.
+    /// build takes from `$PATH`), which [`assert_host_build_deps`] confirms
+    /// before any of the work below.
     fn build_apptainer_from_source(version: &str, install_dir: &Path, target_arch: &str) -> bool {
+        assert_host_build_deps();
         println!(
             "cargo:warning=Building apptainer {} from source (requires Go and {})...",
-            version, APPTAINER_BUILD_DEPS
+            version,
+            apptainer_build_deps_apt()
         );
 
         let source_cache = build_helpers::cache_dir("apptainer-source");
@@ -1462,7 +1708,7 @@ echo "=== Verifying squashfuse source archive SHA-256 ==="
 echo "{sq_sha}  squashfuse-{sq_version}.tar.gz" | sha256sum -c -
 tar -xzf squashfuse-{sq_version}.tar.gz
 cd squashfuse-{sq_version}
-./autogen.sh
+# No `autogen.sh`: the release tarball ships a generated `configure`.
 FLAGS=-std=c99 ./configure --enable-multithreading
 make squashfuse_ll LDFLAGS=-all-static -j"$(nproc)"
 install -m 755 squashfuse_ll {install_dir}/libexec/apptainer/bin/squashfuse_ll
@@ -1480,7 +1726,7 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             lib_dir = APPTAINER_BUNDLED_LIB_DIR,
             sq_version = SQUASHFUSE_VERSION,
             sq_sha = SQUASHFUSE_SHA256,
-            sq_url = squashfuse_archive_url(SQUASHFUSE_VERSION),
+            sq_url = squashfuse_source_url(SQUASHFUSE_VERSION),
         )
     }
 
@@ -1497,7 +1743,7 @@ sudo apt-get install -y -qq {deps}
 {compile}
 echo "=== Apptainer build complete ==="
 "#,
-            deps = APPTAINER_BUILD_DEPS,
+            deps = apptainer_build_deps_apt(),
             compile = apptainer_compile_steps(version, install_dir),
         )
     }
@@ -1574,7 +1820,7 @@ echo "=== Apptainer build complete ==="
 "#,
             rootfs_url = ubuntu_base_amd64_url(UBUNTU_BASE_VERSION),
             rootfs_sha = UBUNTU_BASE_AMD64_SHA256,
-            deps = APPTAINER_BUILD_DEPS,
+            deps = apptainer_build_deps_apt(),
             compile = apptainer_compile_steps(version, install_dir),
         )
     }
@@ -1888,7 +2134,9 @@ echo "=== Apptainer build complete ==="
             success,
             "Failed to build apptainer {} from source for {}. \
              Ensure Go is installed, along with: {}.",
-            APPTAINER_VERSION, arch, APPTAINER_BUILD_DEPS
+            APPTAINER_VERSION,
+            arch,
+            apptainer_build_deps_apt()
         );
         assert!(
             cache_dir.join("bin/apptainer").exists(),

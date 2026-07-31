@@ -1,4 +1,4 @@
-use super::facade::{Apptainer, Backend, is_uri};
+use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
 use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
 use crate::error::Error;
@@ -935,8 +935,9 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
 /// Verifies that the compile-time `APPTAINER_INSTALL_DIR` injected by build.rs
 /// points to a valid cache directory with the expected sentinel and binary. The
 /// sentinel path comes from build.rs too, via `APPTAINER_CACHE_SENTINEL`: the
-/// name is version and recipe keyed, so re-deriving it here would go stale the
-/// next time the cache key changes.
+/// name is keyed on every input that changes the produced tree (apptainer
+/// version, recipe revision, squashfuse version), so re-deriving it here would
+/// go stale the next time the cache key changes.
 ///
 /// If this test fails after deleting `~/.peppy`, it means the build cache is
 /// stale and `cargo build` needs to re-run build.rs (which the
@@ -1223,6 +1224,67 @@ fn lima_command_does_not_set_apptainer_tmpdir() {
         command_env(&cmd, "APPTAINER_TMPDIR"),
         None,
         "a host-side APPTAINER_TMPDIR would not survive the hop into the guest"
+    );
+}
+
+/// The happy path: a missing scratch directory is created, and the write probe
+/// cleans up after itself rather than littering apptainer's `--tmpdir`.
+#[test]
+fn prepare_scratch_dir_creates_missing_directory() {
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let scratch = tmp.path().join("peppy-tmp/apptainer");
+
+    prepare_scratch_dir(&scratch).expect("a fresh scratch directory should be usable");
+
+    assert!(scratch.is_dir(), "the scratch directory should be created");
+    assert_eq!(
+        fs::read_dir(&scratch)
+            .expect("scratch dir should be readable")
+            .count(),
+        0,
+        "the write probe should leave nothing behind"
+    );
+}
+
+/// Regression: an existing but non-writable scratch directory must fail at
+/// construction, not survive `create_dir_all` (which succeeds on any existing
+/// directory, whatever its mode) only to fail later inside apptainer as an
+/// opaque `MkdirTemp` error on the extract fallback.
+#[cfg(unix)]
+#[test]
+fn prepare_scratch_dir_rejects_existing_non_writable_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().expect("Failed to create temp dir");
+    let scratch = tmp.path().join("apptainer");
+    fs::create_dir(&scratch).expect("mkdir scratch");
+    fs::set_permissions(&scratch, fs::Permissions::from_mode(0o500)).expect("chmod scratch");
+
+    // Privileged processes ignore the mode bits, so confirm the directory is
+    // genuinely unwritable here before asserting on the failure it should
+    // produce; restore the mode either way so the TempDir can clean itself up.
+    let bypasses_modes = fs::File::create(scratch.join(".privilege-check")).is_ok();
+    let result = if bypasses_modes {
+        Ok(())
+    } else {
+        prepare_scratch_dir(&scratch)
+    };
+    fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).expect("restore scratch mode");
+
+    if bypasses_modes {
+        eprintln!(
+            "SKIPPING: this process writes into mode-0o500 directories, so an \
+             unwritable scratch directory cannot be simulated"
+        );
+        return;
+    }
+
+    let err = result.expect_err("a non-writable scratch directory should be rejected");
+    assert!(
+        matches!(&err, Error::ScratchDirUnavailable { path, .. } if path == &scratch.display().to_string()),
+        "expected ScratchDirUnavailable naming {:?}, got: {:?}",
+        scratch,
+        err
     );
 }
 

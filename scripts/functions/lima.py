@@ -313,7 +313,7 @@ rustup target add x86_64-unknown-linux-gnu
 sudo apt-get update -qq
 sudo apt-get install -y -qq build-essential unzip gcc-x86-64-linux-gnu \
     libseccomp-dev make pkg-config squashfs-tools cryptsetup \
-    autoconf automake libtool libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
+    libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
     liblzma-dev libzstd-dev > /dev/null 2>&1
 """
     result = _lima_shell(limactl, install_script)
