@@ -1,16 +1,19 @@
 mod add;
 mod exclude;
+mod index;
 mod init;
 mod list;
 mod refresh;
 mod remove;
 
+pub use index::repo_index;
 pub use init::repo_init_with_dirs;
 
 use std::sync::Arc;
 
 use clap::Subcommand;
 use core_node_api::encoding::RepoSource;
+use std::path::PathBuf;
 
 use super::Command;
 use crate::{context::AppContext, error::Result};
@@ -28,6 +31,24 @@ pub enum RepoCommands {
     /// entries that are missing without touching existing user entries.
     /// Operates on the local config file directly; no daemon required.
     Init,
+    /// Write a repository's `peppy_repository.json5` index, or verify it.
+    ///
+    /// Walks the repository, then records every identity it publishes and
+    /// the file that declares each one. Refuses, naming both files, when one
+    /// identity is claimed twice.
+    ///
+    /// With `--check`, verifies the committed index instead of writing it:
+    /// every item in the tree must be listed, and every listed path must be
+    /// a file inside the repository declaring exactly what it is filed
+    /// under. Run it in CI so a repository cannot merge an index that has
+    /// drifted from its contents. Needs no daemon.
+    Index {
+        /// Repository root to index (defaults to the current directory).
+        path: Option<PathBuf>,
+        /// Verify the committed index instead of writing it.
+        #[arg(long)]
+        check: bool,
+    },
     /// List configured repositories
     List,
     /// Update repository indexes
@@ -79,6 +100,7 @@ impl Command for RepoCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
             RepoCommands::Init => init::repo_init(ctx),
+            RepoCommands::Index { path, check } => index::repo_index(path, check),
             RepoCommands::List => list::list_repos(ctx),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {

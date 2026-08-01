@@ -16,6 +16,7 @@ mod peppy_config_env;
 mod platform_flow;
 mod repo_add;
 mod repo_exclude;
+mod repo_index;
 mod repo_init;
 mod repo_list;
 mod repo_refresh;
