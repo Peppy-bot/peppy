@@ -381,27 +381,6 @@ mod action_message_tests {
 /// or an error string ready to surface to the client. Shared between
 /// [`resolve_implements`] (producer side) and the `depends_on.contracts`
 /// resolution path (consumer side).
-/// Parses the optional `sha256` a manifest pins a contract or pairing to.
-///
-/// A manifest is hand-written, so the pin is a claim until it is parsed. A
-/// malformed one is refused by name here rather than silently matching
-/// nothing and surfacing as "not in cache", which would send the reader to
-/// `peppy repo refresh` for a typo.
-pub(crate) fn parse_sha_pin(
-    kind: &str,
-    name: &str,
-    tag: &str,
-    sha256_pin: Option<&str>,
-) -> std::result::Result<Option<daemon_config::repository::ManifestFingerprint>, String> {
-    sha256_pin
-        .map(|sha| {
-            daemon_config::repository::ManifestFingerprint::parse(sha).map_err(|e| {
-                format!("{kind} `{name}:{tag}` is pinned to an unusable sha256 `{sha}`: {e}")
-            })
-        })
-        .transpose()
-}
-
 pub(crate) fn resolve_contract_doc(
     peppy_dirs: &PeppyDirs,
     name: &str,
@@ -412,20 +391,12 @@ pub(crate) fn resolve_contract_doc(
     let cache = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
 
-    // A sha pin names one exact manifest, so it is never ambiguous.
-    let pinned = parse_sha_pin("contract", name, tag, sha256_pin)?;
-    let entry = match &pinned {
-        Some(sha) => repo_cache::lookup_contract_by_sha256(&cache, name, tag, sha),
-        None => repo_cache::lookup_contract(&cache, name, tag)
-            .map_err(|ambiguity| ambiguity.to_string())?,
-    };
-
     repo_cache::resolve_cached_doc(
         peppy_dirs,
-        "contract",
-        &format!("{name}:{tag}"),
+        &cache,
+        name,
+        tag,
         sha256_pin,
-        entry.map(Into::into),
         |content| {
             daemon_config::contract::PeppyContractParser::from_content(content)
                 .map_err(|e| e.to_string())
@@ -1106,7 +1077,7 @@ mod implements_tests {
             ),
             origin: repo_cache::EntryOrigin::Git {
                 repo_url,
-                repo_ref: branch,
+                repo_ref: Some(branch),
                 commit,
                 path: daemon_config::repository::RepoRelativePath::parse(
                     "cameras/depth_camera.json5",
@@ -1171,7 +1142,7 @@ mod implements_tests {
             sha256: daemon_config::repository::ManifestFingerprint::parse(&"0".repeat(64)).unwrap(),
             origin: repo_cache::EntryOrigin::Git {
                 repo_url,
-                repo_ref: branch,
+                repo_ref: Some(branch),
                 commit,
                 path: daemon_config::repository::RepoRelativePath::parse(
                     "cameras/depth_camera.json5",

@@ -12,9 +12,8 @@ use tempfile::TempDir;
 /// offers a daemon. Call it once the repository holds every item the test
 /// expects to be found.
 pub fn publish_repo_index(root: &Path) {
-    let index = core_node::generate_repository_index(root)
-        .expect("a well-formed test repository can be indexed");
-    core_node::write_repository_index(root, &index).expect("write repository index");
+    core_node::publish_repository_index(root)
+        .expect("a well-formed test repository can be published");
 }
 
 /// Publishes `root`'s index and commits it together with everything else in
@@ -89,7 +88,7 @@ pub struct TestPackagesCache {
 
 /// A distinct, valid fingerprint per `seed`, for entries whose bytes the
 /// test never reads back.
-fn seeded_sha(seed: &str) -> String {
+pub fn seeded_sha(seed: &str) -> String {
     config::fingerprint::fingerprint_for_bytes(seed.as_bytes())
 }
 
@@ -98,7 +97,11 @@ fn seeded_commit(seed: &str) -> String {
     seeded_sha(seed)[..40].to_owned()
 }
 
-fn fs_origin(path: &Path) -> serde_json::Value {
+/// The `origin` object of a cache entry for an item on this machine, in the
+/// shape `repo refresh` writes it. The one spelling of that shape for every
+/// test binary, so a change to it is a change here rather than in each
+/// hand-written fixture.
+pub fn fs_origin(path: &Path) -> serde_json::Value {
     serde_json::json!({
         "source_type": "fs",
         "path": path.to_string_lossy(),
@@ -124,7 +127,10 @@ fn head_commit_of(repo_url: &str, repo_ref: &str, seed: &str) -> String {
         .unwrap_or_else(|| seeded_commit(seed))
 }
 
-fn git_origin(repo_url: &str, repo_ref: &str, path: &str, seed: &str) -> serde_json::Value {
+/// The `origin` object of a cache entry for an item held by a remote, in
+/// the shape `repo refresh` writes it. `path` is repository-relative and
+/// points at the file that declares the item.
+pub fn git_origin(repo_url: &str, repo_ref: &str, path: &str, seed: &str) -> serde_json::Value {
     serde_json::json!({
         "source_type": "git",
         "repo_url": repo_url,

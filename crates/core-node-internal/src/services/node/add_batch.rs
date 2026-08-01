@@ -34,7 +34,7 @@ use tracing::{debug, warn};
 /// enough to avoid saturating a developer laptop.
 const MATERIALIZE_CONCURRENCY: usize = 8;
 
-/// Entry point called from `handle_goal_request` when
+/// Entry point [`super::add::dispatch_node_add`] routes to when
 /// `goal.source` is `NodeSource::RepoNode`.
 pub(crate) async fn run_repo_node_add(
     goal: NodeAddGoal,

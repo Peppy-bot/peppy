@@ -52,11 +52,13 @@ pub enum EntryOrigin {
     },
     Git {
         repo_url: String,
-        /// The ref the repository is configured to follow. Kept beside the
+        /// The ref the repository is configured to follow, absent when it
+        /// follows whatever the remote's default branch is. Kept beside the
         /// commit because a fetch starts from a ref before it can reach a
         /// commit, and because `entry_belongs_to_repo` attributes an entry
         /// to its configured repository by url and ref.
-        repo_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo_ref: Option<String>,
         /// The commit the tree was read at.
         commit: GitCommit,
         /// Path within the repository to the file that declares the item.
@@ -85,6 +87,15 @@ impl EntryOrigin {
         }
     }
 
+    /// Whether resolving this origin to an on-disk path can block on the
+    /// network: a git origin may clone or fetch, while a filesystem origin
+    /// already names a file on this machine. Callers inside tokio use it to
+    /// decide whether [`resolve_cached_artifact_path`] needs
+    /// [`tokio::task::spawn_blocking`].
+    pub fn resolution_may_block(&self) -> bool {
+        matches!(self, EntryOrigin::Git { .. })
+    }
+
     /// The remote a git origin was read from. `None` for a filesystem
     /// origin, which has no remote.
     #[cfg(test)]
@@ -96,12 +107,13 @@ impl EntryOrigin {
     }
 
     /// The ref a git origin is configured to follow. `None` for a
-    /// filesystem origin.
+    /// filesystem origin, and for a git origin that follows the remote's
+    /// default branch.
     #[cfg(test)]
     pub fn repo_ref(&self) -> Option<&str> {
         match self {
             EntryOrigin::Fs { .. } => None,
-            EntryOrigin::Git { repo_ref, .. } => Some(repo_ref),
+            EntryOrigin::Git { repo_ref, .. } => repo_ref.as_deref(),
         }
     }
 
@@ -197,8 +209,11 @@ pub(crate) trait RepoCacheEntry:
 
     fn name(&self) -> &str;
     /// Empty for untagged kinds (launchers), so `(name, tag)` is the
-    /// identity key for every kind.
-    fn tag(&self) -> &str;
+    /// identity key for every kind. Those kinds carry no tag field at all,
+    /// so the default is what they use.
+    fn tag(&self) -> &str {
+        ""
+    }
     fn sha256(&self) -> &ManifestFingerprint;
     fn origin(&self) -> &EntryOrigin;
     fn repo_id(&self) -> u32;
@@ -229,12 +244,9 @@ macro_rules! repo_cache_entry {
             fn name(&self) -> &str {
                 self.$name_field.as_str()
             }
-            fn tag(&self) -> &str {
-                #[allow(unused_mut, unused_assignments)]
-                let mut tag = "";
-                $( tag = self.$tag_field.as_str(); )?
-                tag
-            }
+            $( fn tag(&self) -> &str {
+                self.$tag_field.as_str()
+            } )?
             fn sha256(&self) -> &ManifestFingerprint {
                 &self.sha256
             }
@@ -516,50 +528,6 @@ pub fn lookup_launcher<'a>(
     lookup_repo_entry(entries, name, "")
 }
 
-/// Returns the highest-priority (lowest `repo_id`) contract entry
-/// matching `(name, tag)`, `None` when no entry matches, or
-/// [`RepoAmbiguity`] when the winning repository claims it more than once.
-pub fn lookup_contract<'a>(
-    entries: &'a [ContractCacheEntry],
-    name: &str,
-    tag: &str,
-) -> std::result::Result<Option<&'a ContractCacheEntry>, RepoAmbiguity> {
-    lookup_repo_entry(entries, name, tag)
-}
-
-/// Returns the contract entry whose `(name, tag, sha256)` triple
-/// matches exactly. Returns `None` when no entry matches.
-pub fn lookup_contract_by_sha256<'a>(
-    entries: &'a [ContractCacheEntry],
-    name: &str,
-    tag: &str,
-    sha256: &ManifestFingerprint,
-) -> Option<&'a ContractCacheEntry> {
-    lookup_repo_entry_by_sha256(entries, name, tag, sha256)
-}
-
-/// Returns the highest-priority (lowest `repo_id`) pairing entry
-/// matching `(name, tag)`, `None` when no entry matches, or
-/// [`RepoAmbiguity`] when the winning repository claims it more than once.
-pub fn lookup_pairing<'a>(
-    entries: &'a [PairingCacheEntry],
-    name: &str,
-    tag: &str,
-) -> std::result::Result<Option<&'a PairingCacheEntry>, RepoAmbiguity> {
-    lookup_repo_entry(entries, name, tag)
-}
-
-/// Returns the pairing entry whose `(name, tag, sha256)` triple matches
-/// exactly. Returns `None` when no entry matches.
-pub fn lookup_pairing_by_sha256<'a>(
-    entries: &'a [PairingCacheEntry],
-    name: &str,
-    tag: &str,
-    sha256: &ManifestFingerprint,
-) -> Option<&'a PairingCacheEntry> {
-    lookup_repo_entry_by_sha256(entries, name, tag, sha256)
-}
-
 /// Suffix appended to a cache-miss message when the machine excludes
 /// repositories, so an identity that is absent because its repository was
 /// excluded is attributable rather than looking like missing content.
@@ -699,7 +667,7 @@ pub(crate) fn resolve_cached_artifact_path(
             let checkout = crate::services::node::cache::git::ensure_checkout_at_commit(
                 peppy_dirs,
                 repo_url,
-                Some(repo_ref),
+                repo_ref.as_deref(),
                 commit,
                 on_feedback,
             )?;
@@ -708,38 +676,47 @@ pub(crate) fn resolve_cached_artifact_path(
     }
 }
 
-/// Borrowed view over the entry fields that [`resolve_cached_doc`]
-/// needs, available for every cache-entry kind via [`RepoCacheEntry`].
-pub(crate) struct CachedDocEntryRef<'a> {
-    pub sha256: &'a ManifestFingerprint,
-    pub origin: &'a EntryOrigin,
-}
-
-impl<'a, E: RepoCacheEntry> From<&'a E> for CachedDocEntryRef<'a> {
-    fn from(e: &'a E) -> Self {
-        Self {
-            sha256: e.sha256(),
-            origin: e.origin(),
-        }
-    }
-}
-
-/// Shared tail of the contract/pairing document resolvers: turns a cache
-/// lookup result into a parsed document — resolves the entry's on-disk
-/// path, reads the bytes, rejects fingerprint drift, and hands the UTF-8
-/// content to `parse`. `kind` labels every error ("contract" /
-/// "pairing") and `id` is the document's `name:tag` label; `entry: None`
-/// produces the cache-miss error (naming the sha pin when one was set).
-pub(crate) fn resolve_cached_doc<T>(
+/// Resolves one `name:tag[@sha256]` reference in a manifest into a parsed
+/// document: validates the pin, picks the entry it names (or the
+/// highest-priority entry for `(name, tag)` when there is none), resolves
+/// that entry's on-disk path, reads the bytes, rejects fingerprint drift,
+/// and hands the UTF-8 content to `parse`.
+///
+/// The whole path from what a manifest states to a parsed document lives
+/// here, generic over the cache kind, so contracts and pairings cannot
+/// drift in how a pin is validated, which entry wins, or how a miss is
+/// worded. Errors are labelled with [`RepoCacheEntry::KIND`], so a fifth
+/// kind cannot inherit a fourth's wording by copy-paste.
+pub(crate) fn resolve_cached_doc<E: RepoCacheEntry, T>(
     peppy_dirs: &PeppyDirs,
-    kind: &str,
-    id: &str,
+    entries: &[E],
+    name: &str,
+    tag: &str,
     sha256_pin: Option<&str>,
-    entry: Option<CachedDocEntryRef<'_>>,
     parse: impl FnOnce(&str) -> std::result::Result<T, String>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<T, String> {
-    let entry = entry.ok_or_else(|| {
+    let kind = E::KIND;
+    let id = format!("{name}:{tag}");
+
+    // A manifest is hand-written, so the pin is a claim until it is parsed.
+    // A malformed one is refused by name here rather than silently matching
+    // nothing and surfacing as "not in cache", which would send the reader
+    // to `peppy repo refresh` for a typo.
+    let pinned = sha256_pin
+        .map(|sha| {
+            ManifestFingerprint::parse(sha)
+                .map_err(|e| format!("{kind} `{id}` is pinned to an unusable sha256 `{sha}`: {e}"))
+        })
+        .transpose()?;
+
+    // A sha pin names one exact manifest, so it is never ambiguous.
+    let found = match &pinned {
+        Some(sha) => lookup_repo_entry_by_sha256(entries, name, tag, sha),
+        None => lookup_repo_entry(entries, name, tag).map_err(|ambiguity| ambiguity.to_string())?,
+    };
+
+    let entry = found.ok_or_else(|| {
         let hint = excluded_repositories_hint(peppy_dirs);
         match sha256_pin {
             Some(sha) => format!(
@@ -750,7 +727,7 @@ pub(crate) fn resolve_cached_doc<T>(
         }
     })?;
 
-    let resolved_path = resolve_cached_artifact_path(peppy_dirs, entry.origin, on_feedback)
+    let resolved_path = resolve_cached_artifact_path(peppy_dirs, entry.origin(), on_feedback)
         .map_err(|e| format!("{kind} `{id}`: {e}"))?;
 
     let bytes = std::fs::read(&resolved_path).map_err(|e| {
@@ -760,11 +737,11 @@ pub(crate) fn resolve_cached_doc<T>(
         )
     })?;
     let actual_sha = ManifestFingerprint::of_bytes(&bytes);
-    if &actual_sha != entry.sha256 {
+    if &actual_sha != entry.sha256() {
         return Err(format!(
             "{kind} `{id}` content drifted from cache fingerprint \
              (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
-            entry.sha256
+            entry.sha256()
         ));
     }
 
@@ -838,7 +815,7 @@ pub(crate) mod test_support {
     ) -> EntryOrigin {
         EntryOrigin::Git {
             repo_url: repo_url.to_owned(),
-            repo_ref: repo_ref.to_owned(),
+            repo_ref: Some(repo_ref.to_owned()),
             commit: commit(seed),
             path: RepoRelativePath::parse(path).expect("test path is repository-relative"),
         }
@@ -1360,7 +1337,7 @@ mod tests {
                 "demo",
                 EntryOrigin::Git {
                     repo_url: repo_url.clone(),
-                    repo_ref: branch,
+                    repo_ref: Some(branch),
                     commit,
                     path: RepoRelativePath::parse("launchers/demo.json5").unwrap(),
                 },
@@ -1449,15 +1426,15 @@ mod tests {
             mk_contract_entry("uvc_camera", "v1", "/b/peppy.json5", 5),
             mk_contract_entry("uvc_camera", "v1", "/a/peppy.json5", 1),
         ];
-        let hit = lookup_contract(&entries, "uvc_camera", "v1")
+        let hit = lookup_repo_entry(&entries, "uvc_camera", "v1")
             .expect("distinct repo ids are not ambiguous")
             .expect("should resolve");
         assert_eq!(hit.repo_id, 1);
         assert_eq!(hit.origin.path_str(), "/a/peppy.json5");
     }
 
-    /// `lookup_contract_by_sha256` returns the exact content match
-    /// regardless of repo priority.
+    /// A sha256 lookup returns the exact content match regardless of repo
+    /// priority.
     #[test]
     fn lookup_contract_by_sha256_returns_exact_match() {
         let entries = vec![
@@ -1473,10 +1450,10 @@ mod tests {
             },
         ];
         let hit =
-            lookup_contract_by_sha256(&entries, "uvc_camera", "v1", &fingerprint("b")).unwrap();
+            lookup_repo_entry_by_sha256(&entries, "uvc_camera", "v1", &fingerprint("b")).unwrap();
         assert_eq!(hit.repo_id, 9);
         assert!(
-            lookup_contract_by_sha256(&entries, "uvc_camera", "v1", &fingerprint("absent"))
+            lookup_repo_entry_by_sha256(&entries, "uvc_camera", "v1", &fingerprint("absent"))
                 .is_none()
         );
     }

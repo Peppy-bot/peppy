@@ -20,7 +20,6 @@ use crate::services::repo::cache::{
     RepoItems,
 };
 use crate::services::repo::refresh::RepoFailureKind;
-use config::fingerprint::fingerprint_for_bytes;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
 use core_node_api::encoding::RepoItemKind;
@@ -28,7 +27,7 @@ use daemon_config::contract::PeppyContractParser;
 use daemon_config::launcher::PeppyLauncherParser;
 use daemon_config::pairing::PeppyPairingParser;
 use daemon_config::repository::{
-    DeclaredItem, ItemName, ItemTag, ManifestFingerprint, PeppyRepositoryIndexParser,
+    DeclaredItem, GitCommit, ItemName, ItemTag, ManifestFingerprint, PeppyRepositoryIndexParser,
     RepoRelativePath, RepositoryIndex,
 };
 use serde::Deserialize;
@@ -47,13 +46,14 @@ pub(crate) const PRUNED_DIR_NAMES: &[&str] = &[
     "__pycache__",
 ];
 
-/// One item found in a repository: the identity it declares and where it is
-/// declared, plus the fingerprint of the bytes that declared it.
+/// One item found by walking a repository: the identity it declares and
+/// where it is declared.
 ///
-/// This is the seam between finding items and caching them. Both the walk
-/// and the index reader produce these, and [`build_cache_entries`] is the
-/// single place that turns them into cache entries, so the two ways of
-/// learning what a repository holds cannot drift in what they record.
+/// The input to index generation, and only that: what a machine caches is
+/// built from what the repository's committed index declares, not from one
+/// machine's reading of the tree. The fields are exactly what an index
+/// entry states, so a walk cannot record provenance the index has no way
+/// to publish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WalkedItem {
     pub kind: RepoItemKind,
@@ -62,9 +62,6 @@ pub(crate) struct WalkedItem {
     pub tag: String,
     /// Relative to the root of the scanned tree.
     pub relative_path: String,
-    /// The same file, absolute on this machine.
-    pub absolute_path: PathBuf,
-    pub sha256: String,
 }
 
 /// Items found by walking one repository's working tree.
@@ -161,6 +158,49 @@ pub(crate) struct PublishedItem {
     pub origin: EntryOrigin,
 }
 
+/// Where the tree being read came from, which is all that separates reading
+/// a repository checked out on this machine from reading a clone of a
+/// remote.
+///
+/// Held as data rather than passed as a closure that builds origins, so the
+/// canonical root never leaves [`read_published_items`]: an fs origin is
+/// absolute and canonical by construction instead of by every caller
+/// remembering to resolve the root and join it back on.
+pub(crate) enum ReadSource {
+    /// A tree on this machine, read where it lies.
+    Fs,
+    /// A clone of a remote, read at one commit.
+    Git {
+        repo_url: String,
+        /// The ref the repository is configured to follow, absent when it
+        /// follows whatever the remote's default branch is.
+        repo_ref: Option<String>,
+        commit: GitCommit,
+    },
+}
+
+impl ReadSource {
+    /// The origin the caches record for an item declared at `path`, under a
+    /// `root` that has already been canonicalized.
+    fn origin_of(&self, root: &Path, path: &RepoRelativePath) -> EntryOrigin {
+        match self {
+            ReadSource::Fs => EntryOrigin::Fs {
+                path: root.join(path.as_path()),
+            },
+            ReadSource::Git {
+                repo_url,
+                repo_ref,
+                commit,
+            } => EntryOrigin::Git {
+                repo_url: repo_url.clone(),
+                repo_ref: repo_ref.clone(),
+                commit: commit.clone(),
+                path: path.clone(),
+            },
+        }
+    }
+}
+
 /// Reads what the repository at `root` publishes, and resolves every item
 /// it declares against the tree.
 ///
@@ -169,15 +209,16 @@ pub(crate) struct PublishedItem {
 /// where; a directory walk would instead produce one machine's reading of
 /// the tree and present it as the repository's statement.
 ///
-/// `origin_of` turns an item's repository-relative path into the origin the
-/// caches record, which is the one thing that differs between reading a
-/// checkout on this machine and reading a clone of a remote.
+/// `source` is the one thing that differs between reading a checkout on
+/// this machine and reading a clone of a remote; the origin each item
+/// records is built from it here, against the root this function already
+/// canonicalized.
 ///
 /// Every declared item is resolved before anything is returned, so a
 /// repository with three broken entries reports three rather than the first.
 pub(crate) fn read_published_items(
     root: &Path,
-    origin_of: &dyn Fn(&RepoRelativePath) -> EntryOrigin,
+    source: &ReadSource,
 ) -> std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)> {
     let unreachable = |detail: String| (RepoFailureKind::Unreachable, detail);
     let contradictory = |detail: String| (RepoFailureKind::Conflict, detail);
@@ -205,7 +246,7 @@ pub(crate) fn read_published_items(
                 name: item.name.clone(),
                 tag: item.tag.cloned(),
                 sha256: ManifestFingerprint::of_bytes(&bytes),
-                origin: origin_of(item.path),
+                origin: source.origin_of(&root, item.path),
             }),
             Err(detail) => problems.push(format!("{item} points at {}, which {detail}", item.path)),
         }
@@ -386,6 +427,18 @@ fn declare_walked_item(
     };
     let path = RepoRelativePath::parse(&item.relative_path).map_err(|e| e.to_string())?;
     index.declare(item.kind, name, tag, path)
+}
+
+/// Publishes what `root` holds: generates its index and writes it, returning
+/// the index so a caller can report what it declared.
+///
+/// The pair is what "publishing a repository" means, and every caller wants
+/// both halves, so the pair is named once rather than spelled out at each
+/// site with its own wording for the same two steps.
+pub fn publish_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
+    let index = generate_repository_index(root)?;
+    write_repository_index(root, &index)?;
+    Ok(index)
 }
 
 /// Writes `index` to `root`, replacing any existing one.
@@ -789,8 +842,6 @@ fn collect_item(
         name,
         tag,
         relative_path,
-        absolute_path: ctx.config_path.to_path_buf(),
-        sha256: fingerprint_for_bytes(ctx.bytes),
     });
 }
 
@@ -798,6 +849,7 @@ fn collect_item(
 mod tests {
     use super::*;
     use config::consts::NODE_CONFIG_FILE;
+    use config::fingerprint::fingerprint_for_bytes;
 
     /// Helper: write a minimal valid node manifest under `dir`.
     fn write_node_json5(dir: &Path, name: &str, tag: &str) {
@@ -921,11 +973,6 @@ mod tests {
 
         let item = &walked.items[0];
         assert_eq!(item.relative_path, "nodes/my_sensor/peppy.json5");
-        assert!(item.absolute_path.ends_with("nodes/my_sensor/peppy.json5"));
-        assert!(
-            !item.sha256.is_empty(),
-            "the manifest bytes are fingerprinted"
-        );
     }
 
     /// The repository's own index declares no item. It is the output of
@@ -1091,12 +1138,14 @@ mod tests {
         write_repository_index(&repo, &index).expect("write the index");
 
         let commit = daemon_config::repository::GitCommit::parse(&"a".repeat(40)).unwrap();
-        let git = read_published_items(&repo, &|path| EntryOrigin::Git {
-            repo_url: "https://example.invalid/hub".to_owned(),
-            repo_ref: "main".to_owned(),
-            commit: commit.clone(),
-            path: path.clone(),
-        })
+        let git = read_published_items(
+            &repo,
+            &ReadSource::Git {
+                repo_url: "https://example.invalid/hub".to_owned(),
+                repo_ref: Some("main".to_owned()),
+                commit: commit.clone(),
+            },
+        )
         .expect("read the published items");
         let entries = build_cache_entries(git).expect("build cache entries");
         assert_eq!(entries.nodes.len(), 1);
@@ -1112,12 +1161,15 @@ mod tests {
             "the fingerprint is of the bytes that declare the node"
         );
 
-        let fs = read_published_items(&repo, &|path| EntryOrigin::Fs {
-            path: std::fs::canonicalize(&repo).unwrap().join(path.as_path()),
-        })
-        .expect("read the published items");
+        let fs = read_published_items(&repo, &ReadSource::Fs).expect("read the published items");
         let entries = build_cache_entries(fs).expect("build cache entries");
-        assert!(Path::new(entries.nodes[0].origin.path_str()).is_absolute());
+        let path = Path::new(entries.nodes[0].origin.path_str());
+        assert!(path.is_absolute());
+        assert!(
+            path.starts_with(std::fs::canonicalize(&repo).unwrap()),
+            "an fs origin is joined onto the canonical root, so attribution \
+             and exclusion can compare it against one"
+        );
     }
 
     /// A repository with no index publishes nothing, and the refusal names
@@ -1129,10 +1181,8 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("nodes/a"), "a", "v1");
 
-        let (kind, detail) = read_published_items(&repo, &|path| EntryOrigin::Fs {
-            path: path.as_path().to_path_buf(),
-        })
-        .expect_err("an unpublished repository contributes nothing");
+        let (kind, detail) = read_published_items(&repo, &ReadSource::Fs)
+            .expect_err("an unpublished repository contributes nothing");
         assert_eq!(
             kind,
             RepoFailureKind::Unreachable,
@@ -1157,10 +1207,8 @@ mod tests {
         write_repository_index(&repo, &index).expect("write the index");
         std::fs::remove_file(repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE)).unwrap();
 
-        let (kind, detail) = read_published_items(&repo, &|path| EntryOrigin::Fs {
-            path: path.as_path().to_path_buf(),
-        })
-        .expect_err("a listed path that is not there is a refusal");
+        let (kind, detail) = read_published_items(&repo, &ReadSource::Fs)
+            .expect_err("a listed path that is not there is a refusal");
         assert_eq!(
             kind,
             RepoFailureKind::Conflict,
@@ -1333,11 +1381,12 @@ mod tests {
             .items
             .iter()
             .map(|item| {
+                let bytes = std::fs::read(root.join(&item.relative_path)).expect("walked file");
                 (
                     item.kind.as_str(),
                     format_identity(&item.name, &item.tag),
                     item.relative_path.clone(),
-                    item.sha256.clone(),
+                    fingerprint_for_bytes(&bytes),
                 )
             })
             .collect();

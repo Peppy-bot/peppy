@@ -42,10 +42,6 @@ fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
 }
 
-/// The commit a git-backed fixture entry is pinned to. These tests never
-/// fetch, so any well-formed commit does.
-const FIXTURE_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
-
 /// One `nodes.json5` entry for an fs-discovered node, shaped exactly as
 /// `repo refresh` records it: the origin's path points at the manifest file.
 ///
@@ -63,10 +59,7 @@ fn fs_cache_entry(node_dir: &std::path::Path, name: &str, tag: &str) -> serde_js
         "node_name": name,
         "node_tag": tag,
         "sha256": config::fingerprint::fingerprint_for_bytes(&body),
-        "origin": {
-            "source_type": "fs",
-            "path": manifest.to_string_lossy(),
-        },
+        "origin": common::fs_origin(&manifest),
     })
 }
 
@@ -79,17 +72,12 @@ fn git_cache_entry(
     repo_ref: &str,
     path: &str,
 ) -> serde_json::Value {
+    let id = format!("{name}:{tag}");
     serde_json::json!({
         "node_name": name,
         "node_tag": tag,
-        "sha256": config::fingerprint::fingerprint_for_bytes(format!("{name}:{tag}").as_bytes()),
-        "origin": {
-            "source_type": "git",
-            "repo_url": repo_url,
-            "repo_ref": repo_ref,
-            "commit": FIXTURE_COMMIT,
-            "path": path,
-        },
+        "sha256": common::seeded_sha(&id),
+        "origin": common::git_origin(repo_url, repo_ref, path, &id),
     })
 }
 

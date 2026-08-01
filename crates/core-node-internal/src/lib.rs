@@ -13,7 +13,7 @@ pub use services::repo::cache::{
 };
 pub use services::repo::index::{
     IndexDrift, IndexError, RepoConflict, check_repository_index, generate_repository_index,
-    read_repository_index, write_repository_index,
+    publish_repository_index, read_repository_index, write_repository_index,
 };
 pub use services::repo::{InitOutcome, ensure_default_repos};
 pub use services::{

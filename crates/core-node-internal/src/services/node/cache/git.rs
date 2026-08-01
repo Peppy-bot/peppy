@@ -12,7 +12,7 @@
 //! concern yet; the daemon is the only writer.
 
 use super::super::checkout_repo_ref;
-use super::super::git_utils::{clone_with_progress, fetch_with_progress};
+use super::super::git_utils::{clone_with_progress, fetch_with_progress, head_commit};
 use super::key;
 use super::keyed_lock::KeyedLocks;
 use daemon_config::consts::PeppyDirs;
@@ -25,7 +25,7 @@ static LOCKS: KeyedLocks = KeyedLocks::new();
 /// it has been populated yet). Exposed for tests and diagnostics.
 pub fn checkout_dir_for(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit) -> PathBuf {
     let slug = key::slug(repo_url, "repo");
-    let hash = key::short_hash(repo_url, Some(commit.as_str()));
+    let hash = key::short_hash(repo_url, commit.as_str());
     peppy_dirs
         .git_checkouts_dir()
         .join(format!("{slug}-{hash}"))
@@ -43,19 +43,17 @@ fn is_checked_out_at(dir: &Path, commit: &GitCommit) -> bool {
     let Ok(repo) = git2::Repository::open(dir) else {
         return false;
     };
-    repo.head()
-        .and_then(|head| head.peel_to_commit())
-        .is_ok_and(|head| head.id().to_string() == commit.as_str())
+    head_commit(&repo).is_ok_and(|head| head == *commit)
 }
 
 /// Ensures a checkout of `commit` exists and returns its working-tree
 /// directory.
 ///
-/// `repo_ref` is where the fetch starts: cloning a branch is the cheap way
-/// to reach a commit that is at or near its tip, which is the common case.
-/// A commit the branch has since moved past is fetched by its own hash, and
-/// one the remote no longer holds is refused rather than silently answered
-/// with the branch tip.
+/// The shallow clone of the remote's default branch is the cheap way to
+/// reach a commit at or near its tip, which is the common case. A commit
+/// that clone does not contain is fetched by its own hash, falling back to
+/// deepening `repo_ref`; one the remote no longer holds is refused rather
+/// than silently answered with a branch tip.
 ///
 /// Blocking; callers inside tokio should run this via
 /// [`tokio::task::spawn_blocking`].
@@ -104,8 +102,9 @@ pub fn ensure_checkout_at_commit(
         "Cloning {repo_url} at {commit} into cache at {}",
         dir.display()
     ));
-    // Cloned shallow at the ref first: when the commit is the ref's tip,
-    // which is what a freshly refreshed cache pins, this is the whole job.
+    // Cloned shallow at the remote's default branch first: when the commit
+    // is that branch's tip, which is what a freshly refreshed cache of a
+    // repository followed at its default branch pins, this is the whole job.
     let repo = clone_with_progress(repo_url, None, &dir, true, &mut |line| on_feedback(line))?;
 
     if checkout_repo_ref(&repo, commit.as_str()).is_ok() {

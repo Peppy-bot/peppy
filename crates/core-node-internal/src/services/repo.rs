@@ -140,7 +140,7 @@ pub(crate) fn entry_belongs_to_repo(repo: &Value, origin: &EntryOrigin) -> bool 
         } if typ == "git" => {
             repo.get("url").and_then(|v| v.as_str()) == Some(repo_url.as_str())
                 && match repo.get("ref").and_then(|v| v.as_str()) {
-                    Some(pinned) if !pinned.is_empty() => pinned == repo_ref,
+                    Some(pinned) if !pinned.is_empty() => repo_ref.as_deref() == Some(pinned),
                     _ => true,
                 }
         }
@@ -327,7 +327,7 @@ mod tests {
     fn git_origin(repo_ref: &str) -> EntryOrigin {
         EntryOrigin::Git {
             repo_url: "https://example.com/hub.git".to_owned(),
-            repo_ref: repo_ref.to_owned(),
+            repo_ref: Some(repo_ref.to_owned()),
             commit: daemon_config::repository::GitCommit::parse(&"a".repeat(40)).unwrap(),
             path: daemon_config::repository::RepoRelativePath::parse("node/peppy.json5").unwrap(),
         }

@@ -105,120 +105,113 @@ impl<'de> Deserialize<'de> for RepoRelativePath {
     }
 }
 
-/// The SHA-256 of the bytes of the file that declares one item.
+/// Declares a fixed-width lowercase-hex string newtype: the struct, its
+/// error enum, `parse`, `as_str`, `Display`, and the `Deserialize` that
+/// routes through `parse` so a hand-edited index cannot state a value the
+/// rest of peppy could never key on.
 ///
-/// What a machine compares to decide whether it already holds the same item
-/// another machine is talking about. Provenance answers where something came
-/// from; this answers whether it is the same thing, which is the question that
-/// authorises reuse.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(transparent)]
-pub struct ManifestFingerprint(String);
+/// Parsing lowercases, so a value written by hand in upper case compares
+/// equal to the one the tool that produced it reports.
+macro_rules! hex_identity {
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        $error:ident {
+            $empty:ident = $empty_msg:literal,
+            $malformed:ident = $malformed_msg:literal $(,)?
+        },
+        $width:literal $(,)?
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ManifestFingerprintError {
-    #[error("fingerprint is empty")]
-    Empty,
-    #[error("fingerprint is not 64 hexadecimal characters: {0}")]
-    NotASha256(String),
+        #[derive(Debug, Error, PartialEq, Eq)]
+        pub enum $error {
+            #[error($empty_msg)]
+            $empty,
+            #[error($malformed_msg)]
+            $malformed(String),
+        }
+
+        impl $name {
+            pub fn parse(raw: &str) -> Result<Self, $error> {
+                let value = raw.trim();
+                if value.is_empty() {
+                    return Err($error::$empty);
+                }
+                if value.len() != $width || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err($error::$malformed(value.to_owned()));
+                }
+                Ok(Self(value.to_ascii_lowercase()))
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: de::Deserializer<'de>,
+            {
+                let raw = String::deserialize(deserializer)?;
+                Self::parse(&raw).map_err(de::Error::custom)
+            }
+        }
+    };
 }
 
-impl ManifestFingerprint {
-    pub fn parse(raw: &str) -> Result<Self, ManifestFingerprintError> {
-        let fingerprint = raw.trim();
-        if fingerprint.is_empty() {
-            return Err(ManifestFingerprintError::Empty);
-        }
-        if fingerprint.len() != 64 || !fingerprint.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(ManifestFingerprintError::NotASha256(fingerprint.to_owned()));
-        }
-        Ok(Self(fingerprint.to_ascii_lowercase()))
-    }
+hex_identity!(
+    /// The SHA-256 of the bytes of the file that declares one item.
+    ///
+    /// What a machine compares to decide whether it already holds the same
+    /// item another machine is talking about. Provenance answers where
+    /// something came from; this answers whether it is the same thing, which
+    /// is the question that authorises reuse.
+    ManifestFingerprint,
+    ManifestFingerprintError {
+        Empty = "fingerprint is empty",
+        NotASha256 = "fingerprint is not 64 hexadecimal characters: {0}",
+    },
+    64
+);
 
+impl ManifestFingerprint {
     /// The fingerprint of `bytes`, which is how every fingerprint peppy
     /// records is produced.
     pub fn of_bytes(bytes: &[u8]) -> Self {
         Self(config::fingerprint::fingerprint_for_bytes(bytes))
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
-impl fmt::Display for ManifestFingerprint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for ManifestFingerprint {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse(&raw).map_err(de::Error::custom)
-    }
-}
-
-/// The commit a repository was read at.
-///
-/// A branch name says which line of development to follow, not which bytes to
-/// read; two machines reading `main` a week apart hold different trees. A
-/// commit identifies one tree for as long as the repository exists, which is
-/// what lets one machine tell another where to look and expect the same
-/// answer.
-///
-/// Parsing lowercases, so a commit written by hand in upper case compares
-/// equal to the one libgit2 reports.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(transparent)]
-pub struct GitCommit(String);
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum GitCommitError {
-    #[error("commit is empty")]
-    Empty,
-    #[error("commit is not 40 hexadecimal characters: {0}")]
-    NotAFullHash(String),
-}
-
-impl GitCommit {
-    pub fn parse(raw: &str) -> Result<Self, GitCommitError> {
-        let commit = raw.trim();
-        if commit.is_empty() {
-            return Err(GitCommitError::Empty);
-        }
-        // An abbreviated hash is rejected rather than expanded: expanding one
-        // needs the repository, and the whole point of the value is to be
-        // readable by a machine that does not have it yet.
-        if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(GitCommitError::NotAFullHash(commit.to_owned()));
-        }
-        Ok(Self(commit.to_ascii_lowercase()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for GitCommit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for GitCommit {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse(&raw).map_err(de::Error::custom)
-    }
-}
+hex_identity!(
+    /// The commit a repository was read at.
+    ///
+    /// A branch name says which line of development to follow, not which
+    /// bytes to read; two machines reading `main` a week apart hold different
+    /// trees. A commit identifies one tree for as long as the repository
+    /// exists, which is what lets one machine tell another where to look and
+    /// expect the same answer.
+    ///
+    /// An abbreviated hash is rejected rather than expanded: expanding one
+    /// needs the repository, and the whole point of the value is to be
+    /// readable by a machine that does not have it yet.
+    GitCommit,
+    GitCommitError {
+        Empty = "commit is empty",
+        NotAFullHash = "commit is not 40 hexadecimal characters: {0}",
+    },
+    40
+);
 
 /// Declares a validated string newtype whose `Deserialize` runs `$validate`,
 /// so an index cannot state an identity the repository caches could never
@@ -280,7 +273,9 @@ validated_identity!(
 ///
 /// A caller holding an unvalidated string has a question about equality, not
 /// a value to construct: `entry.name == "uvc_camera"` should not have to
-/// parse the literal first.
+/// parse the literal first. Only the newtype-on-the-left direction is
+/// emitted; the mirrored impls would be four more per type that nothing can
+/// report as unreachable once they stop being called.
 macro_rules! compares_to_str {
     ($ty:ty) => {
         impl PartialEq<str> for $ty {
@@ -292,18 +287,6 @@ macro_rules! compares_to_str {
         impl PartialEq<&str> for $ty {
             fn eq(&self, other: &&str) -> bool {
                 self.0 == *other
-            }
-        }
-
-        impl PartialEq<$ty> for str {
-            fn eq(&self, other: &$ty) -> bool {
-                self == other.0
-            }
-        }
-
-        impl PartialEq<$ty> for &str {
-            fn eq(&self, other: &$ty) -> bool {
-                *self == other.0
             }
         }
     };

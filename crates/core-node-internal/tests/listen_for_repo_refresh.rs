@@ -364,8 +364,8 @@ async fn refresh_cache_written() {
     assert_eq!(git_entry["node_tag"], "v1");
     assert_eq!(git_entry["origin"]["path"], "nodes/git_node/peppy.json5");
     assert_eq!(git_entry["origin"]["repo_url"], git_repo_url);
-    assert_eq!(
-        git_entry["origin"]["repo_ref"], "",
+    assert!(
+        git_entry["origin"].get("repo_ref").is_none(),
         "this repository pins no ref, so the entry records none and the commit is what pins"
     );
     let head = Repository::open(&git_repo_path)

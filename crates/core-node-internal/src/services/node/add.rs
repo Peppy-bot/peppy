@@ -874,8 +874,8 @@ async fn resolve_node_add_source(
             .await
         }
         NodeSource::RepoNode { .. } => {
-            // RepoNode goals are dispatched to `add_batch::run_repo_node_add`
-            // by `handle_goal_request` and never reach `run_node_add`, so this
+            // RepoNode goals are routed to `add_batch::run_repo_node_add` by
+            // [`dispatch_node_add`] and never reach `run_node_add`, so this
             // arm should be unreachable by construction.
             Err("internal error: RepoNode reached the single-source add path".to_owned())
         }
@@ -890,14 +890,46 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     )
 }
 
-/// Runs the full node-add pipeline: resolves the source, renames the log file
-/// to its canonical form, calls [`process_node_add`], and catches panics.
+/// The one place a node-add goal picks its pipeline: a repository source
+/// expands into a closure of nodes and takes the batch path, every other
+/// source names one thing to add and takes the single-source path.
+///
+/// Both the action-server path ([`handle_goal_request`]) and the direct
+/// call from `stack_launch` go through here, so no caller can send a
+/// source down the wrong pipeline by forgetting to check.
+pub(crate) async fn dispatch_node_add(
+    goal: NodeAddGoal,
+    action_context: NodeAddActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
+    timestamp: String,
+) -> NodeAddResult {
+    if matches!(goal.source, NodeSource::RepoNode { .. }) {
+        super::add_batch::run_repo_node_add(goal, action_context, feedback_tx, log_file, log_path)
+            .await
+    } else {
+        run_node_add(
+            goal,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+            timestamp,
+        )
+        .await
+    }
+}
+
+/// Runs the full single-source node-add pipeline: resolves the source,
+/// renames the log file to its canonical form, calls [`process_node_add`],
+/// and catches panics.
 ///
 /// The caller is responsible for creating the log file (so the action-server
 /// path can include its path in the goal response before spawning this).
 ///
-/// This is the shared implementation used by both the action-server path
-/// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
+/// Reached through [`dispatch_node_add`], and directly from `add_batch` for
+/// each node of a batch once the repository source has been expanded.
 pub(crate) async fn run_node_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
@@ -1195,29 +1227,16 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
-        let is_repo_node = matches!(&goal.source, NodeSource::RepoNode { .. });
         let result = tokio::select! {
             biased;
-            result = async {
-                if is_repo_node {
-                    super::add_batch::run_repo_node_add(
-                        goal,
-                        action_context,
-                        feedback_tx,
-                        log_file,
-                        log_path_clone,
-                    ).await
-                } else {
-                    run_node_add(
-                        goal,
-                        action_context,
-                        feedback_tx,
-                        log_file,
-                        log_path_clone,
-                        timestamp,
-                    ).await
-                }
-            } => result,
+            result = dispatch_node_add(
+                goal,
+                action_context,
+                feedback_tx,
+                log_file,
+                log_path_clone,
+                timestamp,
+            ) => result,
             _ = cancel_token_clone.cancelled() => {
                 NodeAddResult::failure(
                     &log_path_for_cancel,

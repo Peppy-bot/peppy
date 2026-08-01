@@ -39,13 +39,21 @@ pub(crate) async fn materialize_entry(
     on_feedback: MaterializeFeedback,
 ) -> Result<(PathBuf, NodeConfig), String> {
     let id = format!("{}:{}", entry.node_name, entry.node_tag);
-    let dirs = peppy_dirs.clone();
-    let origin = entry.origin.clone();
-    let manifest_path = tokio::task::spawn_blocking(move || {
-        resolve_cached_artifact_path(&dirs, &origin, &|line| on_feedback(line))
-    })
-    .await
-    .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
+    // Only an origin that may reach the network is worth a blocking-pool
+    // round trip and the two clones it forces; a filesystem entry already
+    // names a file on this machine, and this runs once per node in a
+    // batch's transitive closure.
+    let manifest_path = if entry.origin.resolution_may_block() {
+        let dirs = peppy_dirs.clone();
+        let origin = entry.origin.clone();
+        tokio::task::spawn_blocking(move || {
+            resolve_cached_artifact_path(&dirs, &origin, &|line| on_feedback(line))
+        })
+        .await
+        .map_err(|e| format!("materialization task for `{id}` failed: {e}"))?
+    } else {
+        resolve_cached_artifact_path(peppy_dirs, &entry.origin, &|line| on_feedback(line))
+    }
     .map_err(|e| format!("node `{id}`: {e}"))?;
 
     // The cache records the file that declares the node; a node is built

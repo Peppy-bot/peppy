@@ -215,9 +215,8 @@ pub const ARM_LINK_PAIRING: &str = r#"{
 /// offers a daemon. Call it once the repository holds every item the test
 /// expects refresh to find.
 pub fn publish_repo_index(root: &std::path::Path) {
-    let index = core_node::generate_repository_index(root)
-        .expect("a well-formed test repository can be indexed");
-    core_node::write_repository_index(root, &index).expect("write repository index");
+    core_node::publish_repository_index(root)
+        .expect("a well-formed test repository can be published");
 }
 
 /// Seeds the daemon's `repositories.json5` with one fs repo containing the

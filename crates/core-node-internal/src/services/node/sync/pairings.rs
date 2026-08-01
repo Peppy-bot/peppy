@@ -37,20 +37,12 @@ fn resolve_pairing_doc_cached(
     sha256_pin: Option<&str>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PeppyPairing, String> {
-    // A sha pin names one exact manifest, so it is never ambiguous.
-    let pinned = super::interfaces::parse_sha_pin("pairing", name, tag, sha256_pin)?;
-    let entry = match &pinned {
-        Some(sha) => repo_cache::lookup_pairing_by_sha256(cache, name, tag, sha),
-        None => repo_cache::lookup_pairing(cache, name, tag)
-            .map_err(|ambiguity| ambiguity.to_string())?,
-    };
-
     repo_cache::resolve_cached_doc(
         peppy_dirs,
-        "pairing",
-        &format!("{name}:{tag}"),
+        cache,
+        name,
+        tag,
         sha256_pin,
-        entry.map(Into::into),
         |content| {
             daemon_config::pairing::PeppyPairingParser::from_content(content)
                 .map_err(|e| e.to_string())

@@ -1,7 +1,8 @@
 //! Git utilities shared by the node command handlers: repo-path
-//! sanitization, ref checkout, and a clone that honors a deadline on the
-//! network transfer.
+//! sanitization, ref checkout, reading the commit a working tree sits on,
+//! and a clone that honors a deadline on the network transfer.
 
+use daemon_config::repository::GitCommit;
 use git2::Repository;
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use std::path::{Component, Path, PathBuf};
@@ -90,6 +91,22 @@ pub(crate) fn checkout_repo_ref(
 ///
 /// `shallow` requests a `depth=1` fetch, but is silently downgraded to a
 /// full clone when `repo_url` targets the local transport.
+/// The commit `repo`'s working tree is sitting on.
+///
+/// The one place a `git2::Oid` becomes a [`GitCommit`], so a caller that
+/// wants to know which bytes a checkout holds compares validated commits
+/// rather than rendered strings.
+pub(crate) fn head_commit(repo: &Repository) -> std::result::Result<GitCommit, String> {
+    let head = repo
+        .head()
+        .map_err(|e| format!("the repository has no HEAD to read a commit from: {e}"))?;
+    let commit = head
+        .peel_to_commit()
+        .map_err(|e| format!("the repository's HEAD does not name a commit: {e}"))?;
+    GitCommit::parse(&commit.id().to_string())
+        .map_err(|e| format!("the repository's HEAD is not a usable commit: {e}"))
+}
+
 pub(crate) fn clone_with_progress(
     repo_url: &str,
     repo_ref: Option<&str>,

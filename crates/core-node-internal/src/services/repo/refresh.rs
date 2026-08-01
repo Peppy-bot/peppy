@@ -1,13 +1,15 @@
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
-use crate::services::node::clone_with_progress;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
+use crate::services::node::{clone_with_progress, head_commit};
 use crate::services::repo::cache::{
     ContractCacheEntry, EntryOrigin, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
     RepoCacheEntry, RepoItems, write_repo_cache,
 };
 use crate::services::repo::exclude::ExclusionSet;
-use crate::services::repo::index::{PublishedItem, build_cache_entries, read_published_items};
+use crate::services::repo::index::{
+    PublishedItem, ReadSource, build_cache_entries, read_published_items,
+};
 use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
 use crate::services::repo::{normalize_repo_entries, source_identity};
 use core_node_api::ActionId;
@@ -17,7 +19,6 @@ use core_node_api::encoding::{
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
@@ -543,19 +544,9 @@ pub(crate) fn process_refresh(
         let read = read.and_then(|items| {
             build_cache_entries(items).map_err(|detail| (RepoFailureKind::Conflict, detail))
         });
-        let failure = read.as_ref().err().cloned();
 
-        // Matched on identity as well as id: an id repointed at another
-        // path or url is a different repository, and carrying the old
-        // read timestamp forward would date entries this source never
-        // published.
-        let previous_read = previous_statuses
-            .iter()
-            .find(|s| s.id == id && s.identity == identity)
-            .and_then(|s| s.last_read_unix_secs);
-
-        let items = match failure {
-            None => {
+        let items = match read {
+            Ok(items) => {
                 statuses.push(RepoStatus {
                     id,
                     identity: identity.clone(),
@@ -565,9 +556,17 @@ pub(crate) fn process_refresh(
                     // stops reporting an old failure.
                     last_failure: None,
                 });
-                read.expect("checked to be Ok above")
+                items
             }
-            Some((kind, detail)) => {
+            Err((kind, detail)) => {
+                // Matched on identity as well as id: an id repointed at
+                // another path or url is a different repository, and
+                // carrying the old read timestamp forward would date
+                // entries this source never published.
+                let previous_read = previous_statuses
+                    .iter()
+                    .find(|s| s.id == id && s.identity == identity)
+                    .and_then(|s| s.last_read_unix_secs);
                 let retained = RepoItems {
                     nodes: retained_entries(&previous.nodes, &repos, id),
                     launchers: retained_entries(&previous.launchers, &repos, id),
@@ -721,10 +720,7 @@ fn read_fs_repo(
         message: format!("Reading {}", root.display()),
     });
 
-    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let items = read_published_items(root, &|path| EntryOrigin::Fs {
-        path: canonical.join(path.as_path()),
-    })?;
+    let items = read_published_items(root, &ReadSource::Fs)?;
 
     Ok(items
         .into_iter()
@@ -761,30 +757,23 @@ fn read_git_repo(
         .map_err(|e| unreachable(format!("failed to create temp dir: {e}")))?;
 
     let repo = clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback).map_err(unreachable)?;
-    let commit = head_commit(&repo).map_err(unreachable)?;
-    // Recorded as configured rather than as resolved: it is what
-    // `entry_belongs_to_repo` matches an entry back to its repository with,
-    // and what a later fetch of the pinned commit starts from.
-    let configured_ref = repo_ref.map(str::trim).filter(|r| !r.is_empty());
-
-    read_published_items(tmp.path(), &|path| EntryOrigin::Git {
-        repo_url: repo_url.to_owned(),
-        repo_ref: configured_ref.unwrap_or_default().to_owned(),
-        commit: commit.clone(),
-        path: path.clone(),
-    })
-}
-
-/// The commit a fresh clone is sitting on.
-fn head_commit(repo: &git2::Repository) -> std::result::Result<GitCommit, String> {
-    let head = repo
-        .head()
-        .map_err(|e| format!("the clone has no HEAD to read a commit from: {e}"))?;
-    let commit = head
-        .peel_to_commit()
-        .map_err(|e| format!("the clone's HEAD does not name a commit: {e}"))?;
-    GitCommit::parse(&commit.id().to_string())
-        .map_err(|e| format!("the clone's HEAD is not a usable commit: {e}"))
+    let commit = head_commit(&repo)
+        .map_err(|e| unreachable(format!("the clone of {repo_url} has no usable commit: {e}")))?;
+    read_published_items(
+        tmp.path(),
+        &ReadSource::Git {
+            repo_url: repo_url.to_owned(),
+            // Recorded as configured rather than as resolved: it is what
+            // `entry_belongs_to_repo` matches an entry back to its
+            // repository with, and what a later fetch of the pinned commit
+            // starts from.
+            repo_ref: repo_ref
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned),
+            commit,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -966,10 +955,8 @@ mod tests {
     /// A repository states what it holds by committing this file, so a test
     /// that writes a tree has to publish it before a refresh can read it.
     fn publish_repo(root: &Path) {
-        let index = crate::services::repo::index::generate_repository_index(root)
-            .expect("a well-formed test repository can be indexed");
-        crate::services::repo::index::write_repository_index(root, &index)
-            .expect("write repository index");
+        crate::services::repo::index::publish_repository_index(root)
+            .expect("a well-formed test repository can be published");
     }
 
     /// Publishes `root`'s index and commits it alongside `files`, returning

@@ -2034,10 +2034,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
         {
             "launcher_name": LAUNCHER_NAME,
             "sha256": config::fingerprint::fingerprint_for_bytes(launcher_json5.as_bytes()),
-            "origin": {
-                "source_type": "fs",
-                "path": launcher_file_path.to_string_lossy(),
-            },
+            "origin": common::fs_origin(&launcher_file_path),
         }
     ]);
     let cache_dir = peppy_dirs.cache_dir();

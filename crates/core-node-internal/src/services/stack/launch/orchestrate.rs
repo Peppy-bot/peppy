@@ -3,7 +3,7 @@ use super::phases::run_phase;
 use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_action_log_file,
-    log_label_from_source, run_node_add, run_node_build_for_entity, run_node_run,
+    dispatch_node_add, log_label_from_source, run_node_build_for_entity, run_node_run,
 };
 use chrono::Local;
 use core_node_api::encoding::{
@@ -51,38 +51,15 @@ pub(super) async fn add_node_directly(
     let log_file_for_timeout = log_file.clone();
     let log_path_for_timeout = log_path.clone();
 
-    // A repository source expands into a closure, so it takes the batch
-    // path, exactly as a `node add <name>:<tag>` goal arriving over the wire
-    // does. Calling `run_node_add` for one would reach its unreachable arm.
-    let is_repo_node = matches!(
-        node_add_goal.source,
-        core_node_api::encoding::NodeSource::RepoNode { .. }
-    );
-    let add = async move {
-        if is_repo_node {
-            crate::services::node::run_repo_node_add(
-                node_add_goal,
-                action_context,
-                feedback_tx,
-                log_file,
-                log_path,
-            )
-            .await
-        } else {
-            run_node_add(
-                node_add_goal,
-                action_context,
-                feedback_tx,
-                log_file,
-                log_path,
-                timestamp,
-            )
-            .await
-        }
-    };
-
     let result = run_phase(
-        add,
+        dispatch_node_add(
+            node_add_goal,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+            timestamp,
+        ),
         activity_notify,
         ctx.idle_timeouts.add,
         ctx.launch_deadline,

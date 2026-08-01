@@ -1,8 +1,7 @@
-//! Shared helpers for building deterministic on-disk cache keys used by
-//! [`super::git`] and [`super::bundle`]. Both caches key their directories
-//! as `<slug>-<hash>`: the slug is a human-readable prefix derived from
-//! the source URL, the hash disambiguates different refs/checksums for
-//! the same URL.
+//! Deterministic on-disk cache keys for the git checkout cache in
+//! [`super::git`], which names its directories `<slug>-<hash>`: the slug is
+//! a human-readable prefix derived from the repository URL, the hash
+//! disambiguates the commits cached for that same URL.
 
 use sha2::{Digest, Sha256};
 
@@ -27,13 +26,13 @@ pub(super) fn slug(raw: &str, fallback: &str) -> String {
 }
 
 /// Returns the first 16 hex chars of `sha256(url || '\0' || qualifier)`.
-/// Used as a cache-key suffix so that different `qualifier`s (refs for
-/// git, checksums for http bundles) never collide on the same slug.
-pub(super) fn short_hash(url: &str, qualifier: Option<&str>) -> String {
+/// Used as a cache-key suffix so that two `qualifier`s (the commit, for
+/// the git checkout cache) never collide on the same slug.
+pub(super) fn short_hash(url: &str, qualifier: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
     hasher.update([0u8]);
-    hasher.update(qualifier.unwrap_or("").as_bytes());
+    hasher.update(qualifier.as_bytes());
     let digest = hasher.finalize();
     let mut out = String::with_capacity(16);
     for b in &digest[..8] {
@@ -62,17 +61,15 @@ mod tests {
 
     #[test]
     fn short_hash_differs_on_qualifier() {
-        let a = short_hash("https://example.com/repo.git", Some("v1"));
-        let b = short_hash("https://example.com/repo.git", Some("v2"));
-        let c = short_hash("https://example.com/repo.git", None);
+        let a = short_hash("https://example.com/repo.git", "v1");
+        let b = short_hash("https://example.com/repo.git", "v2");
         assert_ne!(a, b);
-        assert_ne!(a, c);
     }
 
     #[test]
     fn short_hash_stable_for_same_input() {
-        let a = short_hash("https://example.com/repo.git", Some("main"));
-        let b = short_hash("https://example.com/repo.git", Some("main"));
+        let a = short_hash("https://example.com/repo.git", "main");
+        let b = short_hash("https://example.com/repo.git", "main");
         assert_eq!(a, b);
     }
 }

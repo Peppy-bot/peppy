@@ -126,14 +126,13 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
         &serde_json::to_string(&serde_json::json!([{
             "node_name": "git_sensor",
             "node_tag": "v1",
-            "sha256": config::fingerprint::fingerprint_for_bytes(b"git_sensor:v1"),
-            "origin": {
-                "source_type": "git",
-                "repo_url": git_url,
-                "repo_ref": "main",
-                "commit": "0123456789abcdef0123456789abcdef01234567",
-                "path": "nodes/git_sensor/peppy.json5",
-            },
+            "sha256": common::seeded_sha("git_sensor:v1"),
+            "origin": common::git_origin(
+                git_url,
+                "main",
+                "nodes/git_sensor/peppy.json5",
+                "git_sensor:v1",
+            ),
         }]))
         .unwrap(),
     );
