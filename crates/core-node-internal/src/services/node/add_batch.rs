@@ -24,7 +24,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 
@@ -62,7 +61,7 @@ pub(crate) async fn run_repo_node_add(
 
     let peppy_dirs = action_context.peppy_dirs.clone();
 
-    let (entries, cache_generation) = match cache::load_with_generation(&peppy_dirs) {
+    let entries = match cache::load_node_cache(&peppy_dirs) {
         Ok(loaded) => loaded,
         Err(e) => {
             return fail(
@@ -86,7 +85,6 @@ pub(crate) async fn run_repo_node_add(
     let resolution_ctx = BatchResolutionCtx {
         peppy_dirs: &peppy_dirs,
         entries: &entries,
-        cache_generation,
         feedback_tx: &feedback_tx,
     };
     let resolution = match resolve_transitive_closure(resolution_ctx, &root_name, &root_tag).await {
@@ -154,7 +152,7 @@ pub(crate) async fn run_repo_node_add(
                 "Adding {}:{} ({})",
                 node.name,
                 node.tag,
-                kind_label(node.source_kind)
+                node.source_kind.as_str()
             ),
         );
 
@@ -228,14 +226,6 @@ pub(crate) async fn run_repo_node_add(
     NodeAddResult::success(effective_log, root_name, root_tag)
 }
 
-fn kind_label(kind: RepoSourceKind) -> &'static str {
-    match kind {
-        RepoSourceKind::Fs => "fs",
-        RepoSourceKind::Git => "git",
-        RepoSourceKind::Url => "http",
-    }
-}
-
 /// One node that's been materialized on disk and is ready to be fed to
 /// the per-node add pipeline.
 struct ResolvedBatchNode {
@@ -269,7 +259,6 @@ type MaterializeOutput = (
 struct BatchResolutionCtx<'a> {
     peppy_dirs: &'a PeppyDirs,
     entries: &'a [NodeCacheEntry],
-    cache_generation: Option<SystemTime>,
     feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
 }
 
@@ -281,7 +270,6 @@ async fn resolve_transitive_closure<'a>(
     let BatchResolutionCtx {
         peppy_dirs,
         entries,
-        cache_generation,
         feedback_tx,
     } = ctx;
 
@@ -319,7 +307,7 @@ async fn resolve_transitive_closure<'a>(
                 continue;
             };
             let entry = entry.clone();
-            let source_kind = entry.source_type;
+            let source_kind = entry.origin.kind();
             let permit_source = Arc::clone(&semaphore);
             let fb = feedback_tx.clone();
             let on_feedback: node_cache::MaterializeFeedback = Arc::new(move |line: &str| {
@@ -333,13 +321,7 @@ async fn resolve_transitive_closure<'a>(
                     .acquire_owned()
                     .await
                     .expect("materialize semaphore is never closed");
-                let result = node_cache::materialize_entry(
-                    &entry,
-                    peppy_dirs,
-                    cache_generation,
-                    on_feedback,
-                )
-                .await;
+                let result = node_cache::materialize_entry(&entry, peppy_dirs, on_feedback).await;
                 (name, tag, is_root, source_kind, result)
             }));
         }

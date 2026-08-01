@@ -63,7 +63,12 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairings.iter().map(|p| p.link_id()))
+        .flat_map(|d| {
+            d.pairings
+                .iter()
+                .map(|p| p.link_id.as_str())
+                .chain(d.pairing_observers.iter().map(|o| o.link_id.as_str()))
+        })
         .collect()
 }
 
@@ -380,6 +385,27 @@ mod action_message_tests {
 /// or an error string ready to surface to the client. Shared between
 /// [`resolve_implements`] (producer side) and the `depends_on.contracts`
 /// resolution path (consumer side).
+/// Parses the optional `sha256` a manifest pins a contract or pairing to.
+///
+/// A manifest is hand-written, so the pin is a claim until it is parsed. A
+/// malformed one is refused by name here rather than silently matching
+/// nothing and surfacing as "not in cache", which would send the reader to
+/// `peppy repo refresh` for a typo.
+pub(crate) fn parse_sha_pin(
+    kind: &str,
+    name: &str,
+    tag: &str,
+    sha256_pin: Option<&str>,
+) -> std::result::Result<Option<daemon_config::repository::ManifestFingerprint>, String> {
+    sha256_pin
+        .map(|sha| {
+            daemon_config::repository::ManifestFingerprint::parse(sha).map_err(|e| {
+                format!("{kind} `{name}:{tag}` is pinned to an unusable sha256 `{sha}`: {e}")
+            })
+        })
+        .transpose()
+}
+
 pub(crate) fn resolve_contract_doc(
     peppy_dirs: &PeppyDirs,
     name: &str,
@@ -391,7 +417,8 @@ pub(crate) fn resolve_contract_doc(
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
 
     // A sha pin names one exact manifest, so it is never ambiguous.
-    let entry = match sha256_pin {
+    let pinned = parse_sha_pin("contract", name, tag, sha256_pin)?;
+    let entry = match &pinned {
         Some(sha) => repo_cache::lookup_contract_by_sha256(&cache, name, tag, sha),
         None => repo_cache::lookup_contract(&cache, name, tag)
             .map_err(|ambiguity| ambiguity.to_string())?,
@@ -681,7 +708,6 @@ mod implements_tests {
 
     use super::*;
     use config::node::{Interfaces, Manifest};
-    use core_node_api::encoding::RepoSourceKind;
     use generator::InterfaceVariant;
     use std::fs;
     use tempfile::TempDir;
@@ -699,15 +725,11 @@ mod implements_tests {
         let file_name = format!("{name}_{tag}.json5");
         let path = dir.join(&file_name);
         fs::write(&path, body).expect("write contract file");
-        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
         repo_cache::ContractCacheEntry {
-            contract_name: name.to_string(),
-            tag: tag.to_string(),
-            sha256: sha,
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            path: path.to_string_lossy().to_string(),
+            contract_name: daemon_config::repository::ItemName::parse(name).expect("test name is valid"),
+            tag: daemon_config::repository::ItemTag::parse(tag).expect("test tag is valid"),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
+            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
             repo_id: 0,
         }
     }
@@ -999,7 +1021,7 @@ mod implements_tests {
         // the cache's `sha256`, i.e. the cache thinks the file is X but it
         // is now Y. resolve_implements must catch this.
         fs::write(
-            &entry.path,
+            entry.origin.path_str(),
             DEPTH_V1_BODY.replace("video_stream", "video_stream_v2"),
         )
         .unwrap();
@@ -1027,7 +1049,7 @@ mod implements_tests {
         repo_dir: &std::path::Path,
         repo_relative_path: &str,
         body: &str,
-    ) -> String {
+    ) -> (String, daemon_config::repository::GitCommit) {
         let repo = git2::Repository::init(repo_dir).expect("git init");
         let abs = repo_dir.join(repo_relative_path);
         if let Some(parent) = abs.parent() {
@@ -1043,13 +1065,20 @@ mod implements_tests {
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
         let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
-        repo.commit(Some("HEAD"), &sig, &sig, "seed contract", &tree, &[])
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "seed contract", &tree, &[])
             .expect("commit");
-        repo.head()
+        let branch = repo
+            .head()
             .expect("head")
             .shorthand()
             .expect("shorthand")
-            .to_owned()
+            .to_owned();
+        (
+            branch,
+            daemon_config::repository::GitCommit::parse(&oid.to_string())
+                .expect("a real commit is a full hash"),
+        )
     }
 
     /// A `manifest.implements` slot whose cache record is git-sourced (so
@@ -1065,7 +1094,7 @@ mod implements_tests {
         let source_parent = TempDir::new().unwrap();
         let source_repo_dir = source_parent.path().join("contracts_hub");
         fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let branch = init_git_repo_with_contract(
+        let (branch, commit) = init_git_repo_with_contract(
             &source_repo_dir,
             "cameras/depth_camera.json5",
             DEPTH_V1_BODY,
@@ -1073,13 +1102,20 @@ mod implements_tests {
         let repo_url = source_repo_dir.display().to_string();
 
         let entry = repo_cache::ContractCacheEntry {
-            contract_name: "depth_camera".to_string(),
-            tag: "v1".to_string(),
-            sha256: config::fingerprint::fingerprint_for_bytes(DEPTH_V1_BODY.as_bytes()),
-            source_type: RepoSourceKind::Git,
-            source_uri: Some(repo_url),
-            resolved_ref: Some(branch),
-            path: "cameras/depth_camera.json5".to_string(),
+            contract_name: daemon_config::repository::ItemName::parse("depth_camera").unwrap(),
+            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(
+                DEPTH_V1_BODY.as_bytes(),
+            ),
+            origin: repo_cache::EntryOrigin::Git {
+                repo_url,
+                repo_ref: branch,
+                commit,
+                path: daemon_config::repository::RepoRelativePath::parse(
+                    "cameras/depth_camera.json5",
+                )
+                .unwrap(),
+            },
             repo_id: 0,
         };
         let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
@@ -1124,7 +1160,7 @@ mod implements_tests {
         let source_parent = TempDir::new().unwrap();
         let source_repo_dir = source_parent.path().join("contracts_hub");
         fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let branch = init_git_repo_with_contract(
+        let (branch, commit) = init_git_repo_with_contract(
             &source_repo_dir,
             "cameras/depth_camera.json5",
             DEPTH_V1_BODY,
@@ -1132,14 +1168,19 @@ mod implements_tests {
         let repo_url = source_repo_dir.display().to_string();
 
         let entry = repo_cache::ContractCacheEntry {
-            contract_name: "depth_camera".to_string(),
-            tag: "v1".to_string(),
+            contract_name: daemon_config::repository::ItemName::parse("depth_camera").unwrap(),
+            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
             // Deliberately wrong fingerprint; must trigger drift detection.
-            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            source_type: RepoSourceKind::Git,
-            source_uri: Some(repo_url),
-            resolved_ref: Some(branch),
-            path: "cameras/depth_camera.json5".to_string(),
+            sha256: daemon_config::repository::ManifestFingerprint::parse(&"0".repeat(64)).unwrap(),
+            origin: repo_cache::EntryOrigin::Git {
+                repo_url,
+                repo_ref: branch,
+                commit,
+                path: daemon_config::repository::RepoRelativePath::parse(
+                    "cameras/depth_camera.json5",
+                )
+                .unwrap(),
+            },
             repo_id: 0,
         };
         let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
@@ -1269,13 +1310,14 @@ mod implements_tests {
         let pairing_path = tmp.path().join("arm_link_v1.json5");
         fs::write(&pairing_path, ARM_LINK_BODY).expect("write pairing doc");
         let pairing_entry = repo_cache::PairingCacheEntry {
-            pairing_name: "arm_link".to_string(),
-            tag: "v1".to_string(),
-            sha256: config::fingerprint::fingerprint_for_bytes(ARM_LINK_BODY.as_bytes()),
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            path: pairing_path.to_string_lossy().to_string(),
+            pairing_name: daemon_config::repository::ItemName::parse("arm_link").unwrap(),
+            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(
+                ARM_LINK_BODY.as_bytes(),
+            ),
+            origin: repo_cache::EntryOrigin::Fs {
+                path: pairing_path.clone(),
+            },
             repo_id: 0,
         };
         fs::write(

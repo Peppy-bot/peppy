@@ -51,15 +51,38 @@ pub(super) async fn add_node_directly(
     let log_file_for_timeout = log_file.clone();
     let log_path_for_timeout = log_path.clone();
 
+    // A repository source expands into a closure, so it takes the batch
+    // path, exactly as a `node add <name>:<tag>` goal arriving over the wire
+    // does. Calling `run_node_add` for one would reach its unreachable arm.
+    let is_repo_node = matches!(
+        node_add_goal.source,
+        core_node_api::encoding::NodeSource::RepoNode { .. }
+    );
+    let add = async move {
+        if is_repo_node {
+            crate::services::node::run_repo_node_add(
+                node_add_goal,
+                action_context,
+                feedback_tx,
+                log_file,
+                log_path,
+            )
+            .await
+        } else {
+            run_node_add(
+                node_add_goal,
+                action_context,
+                feedback_tx,
+                log_file,
+                log_path,
+                timestamp,
+            )
+            .await
+        }
+    };
+
     let result = run_phase(
-        run_node_add(
-            node_add_goal,
-            action_context,
-            feedback_tx,
-            log_file,
-            log_path,
-            timestamp,
-        ),
+        add,
         activity_notify,
         ctx.idle_timeouts.add,
         ctx.launch_deadline,
@@ -388,6 +411,13 @@ pub(super) async fn validate_and_order_dependencies(
                 .depends_on
                 .as_ref()
                 .map(|d| d.pairings.as_slice())
+                .unwrap_or_default(),
+            observer_deps: p
+                .config
+                .manifest
+                .depends_on
+                .as_ref()
+                .map(|d| d.pairing_observers.as_slice())
                 .unwrap_or_default(),
             preexisting: false,
         })

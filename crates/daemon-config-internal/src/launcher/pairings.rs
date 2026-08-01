@@ -16,23 +16,10 @@ use crate::error::{
     PairingConflict, PairingSha256Mismatch, PairingSlotAlreadyPaired, PairingSlotUncovered,
     PairingTargetAmbiguous, PairingTargetNotComplementary, ParsingError,
 };
-use config::node::{PairingDependency, PairingParticipantDependency};
+use config::node::{PairingObserverDependency, PairingParticipantDependency};
 use std::collections::BTreeMap;
 
 use super::types::{DeploymentInstance, split_link_target};
-
-/// The participant slots of a pairing-dep list, in declaration order. Observer
-/// slots (`observes_role`) never participate in pairing establishment,
-/// exclusivity, or required-slot coverage, so pairing validation steps over
-/// them; an observer is linked to its source through `links`, not `pairings`.
-pub(super) fn participants(
-    deps: &[PairingDependency],
-) -> impl Iterator<Item = &PairingParticipantDependency> {
-    deps.iter().filter_map(|dep| match dep {
-        PairingDependency::Participant(participant) => Some(participant),
-        PairingDependency::Observer(_) => None,
-    })
-}
 
 /// Minimal view of one node's planned (or already-running) instances needed
 /// for pairing validation. Mirrors `BindingValidationItem` for the pairing
@@ -41,9 +28,15 @@ pub struct PairingValidationItem<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,
     pub instances: &'a [DeploymentInstance],
-    /// The node's declared pairing slots (`depends_on.pairings`). Empty when
-    /// the node declares none.
-    pub pairing_deps: &'a [PairingDependency],
+    /// The node's declared participant slots (`depends_on.pairings`). Empty
+    /// when the node declares none.
+    pub pairing_deps: &'a [PairingParticipantDependency],
+    /// The node's declared observer slots (`depends_on.pairing_observers`).
+    /// Observers never take part in pairing establishment, exclusivity, or
+    /// required-slot coverage, so pairing validation reads only the list
+    /// above; this one is here for the observation planner, which resolves
+    /// an observer to its source through `links`.
+    pub observer_deps: &'a [PairingObserverDependency],
     /// `true` for instances already running in the stack, folded in so they
     /// can serve as pair targets. Preexisting instances are exempt from the
     /// coverage rule (they were covered at their own launch) and their
@@ -137,7 +130,7 @@ pub fn validate_pairings(
     )> = Vec::new();
     for item in items.iter().filter(|i| !i.preexisting) {
         let participants_by_link: BTreeMap<&str, &PairingParticipantDependency> =
-            participants(item.pairing_deps)
+            item.pairing_deps.iter()
                 .map(|dependency| (dependency.link_id.as_str(), dependency))
                 .collect();
         for instance in item.instances {
@@ -266,7 +259,7 @@ fn resolve_pair_declaration(
     }
 
     // Candidate peer slots: same pairing (name, tag), opposite role.
-    let complementary: Vec<&PairingParticipantDependency> = participants(target_item.pairing_deps)
+    let complementary: Vec<&PairingParticipantDependency> = target_item.pairing_deps.iter()
         .filter(|d| d.name == own_dep.name && d.tag == own_dep.tag && d.role != own_dep.role)
         .collect();
 
@@ -362,7 +355,7 @@ fn resolve_pair_declaration(
     }
 
     // Rule 6: both-pinned sha256 must match.
-    let peer_dep = participants(target_item.pairing_deps)
+    let peer_dep = target_item.pairing_deps.iter()
         .find(|d| d.link_id == resolved_peer_link)
         .expect("resolved peer slot comes from target_item.pairing_deps");
     if let (Some(sha_own), Some(sha_peer)) = (&own_dep.sha256, &peer_dep.sha256)
@@ -414,7 +407,7 @@ fn validate_coverage_and_defers(
                 // and a defer naming a producer-binding or unknown slot by
                 // `validate_link_slots`; skip both here so each defer is judged
                 // exactly once.
-                let Some(dep) = participants(item.pairing_deps).find(|d| &d.link_id == link_id)
+                let Some(dep) = item.pairing_deps.iter().find(|d| &d.link_id == link_id)
                 else {
                     continue;
                 };
@@ -433,7 +426,7 @@ fn validate_coverage_and_defers(
                     });
                 }
             }
-            for dep in participants(item.pairing_deps) {
+            for dep in item.pairing_deps.iter() {
                 if dep.optional {
                     continue;
                 }
@@ -463,17 +456,17 @@ mod tests {
         serde_json5::from_str(json5).expect("instances fixture should parse")
     }
 
-    fn parse_pairing_deps(json5: &str) -> Vec<PairingDependency> {
+    pub(super) fn parse_pairing_deps(json5: &str) -> Vec<PairingParticipantDependency> {
         serde_json5::from_str(json5).expect("pairing deps fixture should parse")
     }
 
-    fn arm_deps(optional: bool) -> Vec<PairingDependency> {
+    fn arm_deps(optional: bool) -> Vec<PairingParticipantDependency> {
         parse_pairing_deps(&format!(
             r#"[{{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: {optional} }}]"#
         ))
     }
 
-    fn controller_deps() -> Vec<PairingDependency> {
+    fn controller_deps() -> Vec<PairingParticipantDependency> {
         parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }]"#,
         )
@@ -482,13 +475,14 @@ mod tests {
     fn item<'a>(
         node_name: &'a str,
         instances: &'a [DeploymentInstance],
-        pairing_deps: &'a [PairingDependency],
+        pairing_deps: &'a [PairingParticipantDependency],
     ) -> PairingValidationItem<'a> {
         PairingValidationItem {
             node_name,
             node_tag: "v1",
             instances,
             pairing_deps,
+            observer_deps: &[],
             preexisting: false,
         }
     }
@@ -496,7 +490,7 @@ mod tests {
     fn preexisting<'a>(
         node_name: &'a str,
         instances: &'a [DeploymentInstance],
-        pairing_deps: &'a [PairingDependency],
+        pairing_deps: &'a [PairingParticipantDependency],
     ) -> PairingValidationItem<'a> {
         PairingValidationItem {
             preexisting: true,

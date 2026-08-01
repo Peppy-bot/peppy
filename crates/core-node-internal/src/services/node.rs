@@ -27,6 +27,7 @@ use std::sync::Arc;
 // Crate-external re-exports (paths that other crates / other `services::`
 // submodules reference as `crate::services::node::X`).
 pub use add::listen_for_node_add;
+pub(crate) use add_batch::run_repo_node_add;
 pub use builder::listen_for_node_build;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;

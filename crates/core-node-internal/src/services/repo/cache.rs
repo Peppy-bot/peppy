@@ -1,23 +1,21 @@
 //! Typed loaders for the four repo caches written by `repo_refresh`:
 //! `~/.peppy/cache/nodes.json5`, `launchers.json5`, `contracts.json5`,
-//! and `pairings.json5`. Each file lists every item of its kind
-//! discovered across every configured repository (FS, Git, or HTTP).
-//! This module gives the rest of the daemon a typed view over those
-//! entries so callers don't have to dig through `serde_json::Value`
-//! every time.
+//! and `pairings.json5`. Each file lists every item of its kind that the
+//! configured repositories publish. This module gives the rest of the
+//! daemon a typed view over those entries so callers don't have to dig
+//! through `serde_json::Value` every time.
 //!
 //! The four caches share one pipeline: every cache concern (atomic
-//! write, load-time `repo_id` tagging, malformed-entry filtering,
-//! repo-priority lookup, refresh-side collection) is implemented once,
-//! generic over [`RepoCacheEntry`]. The entry structs stay distinct
-//! types because each cache file has its own on-disk field names
-//! (`node_name`, `launcher_name`, …), which must remain stable for
-//! caches written by other peppy versions.
+//! write, load-time `repo_id` tagging, repo-priority lookup, refresh-side
+//! collection) is implemented once, generic over [`RepoCacheEntry`]. The
+//! entry structs stay distinct types because each cache file has its own
+//! on-disk field names (`node_name`, `launcher_name`, …).
 //!
-//! Every entry carries a `sha256` of the raw manifest file bytes. Two
-//! entries that share `(name, tag)` across repositories are kept side
-//! by side in the cache (`sha256` differentiates their content); lookup
-//! picks the entry from the lowest-id repository.
+//! Every entry carries an [`EntryOrigin`], which says both where the
+//! bytes live and which revision they were read at, and a fingerprint of
+//! the manifest file bytes. Two entries that share `(name, tag)` across
+//! repositories are kept side by side (the fingerprint tells them apart);
+//! lookup picks the entry from the lowest-id repository.
 //!
 //! Reads of the nodes cache are memoized by `(mtime-of-cache-file)` per
 //! path so that a daemon hit by many `node add` / launch goals in a row
@@ -25,164 +23,163 @@
 
 use crate::Result;
 use crate::services::repo::refresh::read_or_create_repos;
-use core_node_api::encoding::{NodeSource, RepoItemKind, RepoSourceKind};
+use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
 use daemon_config::consts::PeppyDirs;
+use daemon_config::repository::{
+    GitCommit, ItemName, ItemTag, ManifestFingerprint, RepoRelativePath,
+};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
-use tracing::warn;
+
+/// Where a cached item's bytes live, and which revision they were read at.
+///
+/// A branch name is not a revision: two machines following `main` a week
+/// apart hold different trees while recording the same string. The commit
+/// is what makes an entry mean one set of bytes rather than "whatever that
+/// branch pointed at when this machine last looked".
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "source_type", rename_all = "lowercase")]
+pub enum EntryOrigin {
+    /// A tree on this machine. Nothing off this machine can read it, which
+    /// is why a deployment placed on another core node cannot be backed by
+    /// one.
+    Fs {
+        /// Absolute path to the file that declares the item.
+        path: PathBuf,
+    },
+    Git {
+        repo_url: String,
+        /// The ref the repository is configured to follow. Kept beside the
+        /// commit because a fetch starts from a ref before it can reach a
+        /// commit, and because `entry_belongs_to_repo` attributes an entry
+        /// to its configured repository by url and ref.
+        repo_ref: String,
+        /// The commit the tree was read at.
+        commit: GitCommit,
+        /// Path within the repository to the file that declares the item.
+        path: RepoRelativePath,
+    },
+}
+
+impl EntryOrigin {
+    pub fn kind(&self) -> RepoSourceKind {
+        match self {
+            EntryOrigin::Fs { .. } => RepoSourceKind::Fs,
+            EntryOrigin::Git { .. } => RepoSourceKind::Git,
+        }
+    }
+
+    /// The path as the cache spells it: absolute for fs, repository-relative
+    /// for git. What error messages quote and what repository attribution
+    /// matches against.
+    pub fn path_str(&self) -> &str {
+        match self {
+            // A path that is not valid UTF-8 renders lossily rather than
+            // failing the whole cache: this is display and attribution, and
+            // a lossy rendering still names the file the user has to look at.
+            EntryOrigin::Fs { path } => path.to_str().unwrap_or("<non-UTF-8 path>"),
+            EntryOrigin::Git { path, .. } => path.as_str(),
+        }
+    }
+
+    /// The remote a git origin was read from. `None` for a filesystem
+    /// origin, which has no remote.
+    #[cfg(test)]
+    pub fn repo_url(&self) -> Option<&str> {
+        match self {
+            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Git { repo_url, .. } => Some(repo_url),
+        }
+    }
+
+    /// The ref a git origin is configured to follow. `None` for a
+    /// filesystem origin.
+    #[cfg(test)]
+    pub fn repo_ref(&self) -> Option<&str> {
+        match self {
+            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Git { repo_ref, .. } => Some(repo_ref),
+        }
+    }
+
+    /// The commit a git origin was read at. `None` for a filesystem
+    /// origin, which has no revision to record.
+    #[cfg(test)]
+    pub fn commit(&self) -> Option<&GitCommit> {
+        match self {
+            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Git { commit, .. } => Some(commit),
+        }
+    }
+}
 
 /// One entry as it appears in `nodes.json5`.
-///
-/// `path` points at the `peppy.json5` file itself (matching launcher
-/// and contract semantics). Callers that need the containing directory
-/// derive it via `Path::new(&entry.path).parent()`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeCacheEntry {
-    pub node_name: String,
-    pub node_tag: String,
-    pub source_type: RepoSourceKind,
-    /// Git repository URL or HTTP archive URL. `None` for FS entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_uri: Option<String>,
-    /// Short ref name (branch/tag) actually checked out during the last
-    /// refresh. `None` for FS and HTTP entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_ref: Option<String>,
-    /// SHA-256 of the manifest file bytes. Acts as a content fingerprint
-    /// so two entries that share `(name, tag)` across repositories can
-    /// still be told apart by their content.
-    #[serde(default)]
-    pub sha256: String,
-    /// Recorded SHA-256 for URL-kind entries, when the repository entry
-    /// pinned one at registration time. `None` for FS and Git entries,
-    /// and for URL entries whose repository did not declare a checksum.
-    /// This is a different concept from `sha256`: `checksum` covers the
-    /// HTTP archive integrity declared at repo registration; `sha256`
-    /// fingerprints the manifest file content discovered at refresh.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checksum: Option<String>,
-    /// Absolute path (fs) or repo-relative (git) path to the
-    /// `peppy.json5` manifest file.
-    pub path: String,
-    /// The id of the repository entry this node was discovered
-    /// under (as read from `repositories.json5`). Derived at read time
-    /// and never serialized back to disk.
+    pub node_name: ItemName,
+    pub node_tag: ItemTag,
+    /// Fingerprint of the manifest file bytes. Two entries that share
+    /// `(name, tag)` across repositories are told apart by this.
+    pub sha256: ManifestFingerprint,
+    pub origin: EntryOrigin,
+    /// The id of the repository entry this node was discovered under (as
+    /// read from `repositories.json5`). Derived at read time and never
+    /// serialized back to disk.
     #[serde(skip)]
     pub repo_id: u32,
 }
 
-/// One entry as it appears in `launchers.json5`. Launchers live in the
-/// same kind of repositories as nodes (FS or Git), but they don't carry
-/// a tag; they're just the location of a launcher `.json5` file (any
-/// filename; identified by `peppy_schema: "launcher/v1"` and keyed by
-/// file stem).
+/// One entry as it appears in `launchers.json5`. Launchers carry no tag:
+/// they are identified by `peppy_schema: "launcher/v1"` and keyed by file
+/// stem.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LauncherCacheEntry {
     /// Name of the launcher (file stem of the `.json5` file).
-    pub launcher_name: String,
-    pub source_type: RepoSourceKind,
-    /// Git repository URL or HTTP archive URL. `None` for FS entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_uri: Option<String>,
-    /// Short ref name (branch/tag) actually checked out during the last
-    /// refresh. `None` for FS and HTTP entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_ref: Option<String>,
-    /// SHA-256 of the launcher manifest file bytes.
-    #[serde(default)]
-    pub sha256: String,
-    /// Absolute path for FS entries; path-within-repo for Git entries,
-    /// in both cases pointing at the `.json5` file itself.
-    pub path: String,
-    /// The id of the repository entry this launcher was discovered
-    /// under (as read from `repositories.json5`). Derived at read time
-    /// and never serialized back to disk.
+    pub launcher_name: ItemName,
+    pub sha256: ManifestFingerprint,
+    pub origin: EntryOrigin,
     #[serde(skip)]
     pub repo_id: u32,
 }
 
-/// One entry as it appears in `contracts.json5`. Contracts are
-/// stand-alone JSON5 documents (`peppy_schema: "contract/v1"`) that
-/// describe a reusable contract of topics / services / actions. The
-/// `sha256` of the manifest bytes is the primary way to disambiguate
-/// entries that share `(name, tag)`.
+/// One entry as it appears in `contracts.json5`. Contracts are stand-alone
+/// JSON5 documents (`peppy_schema: "contract/v1"`) describing a reusable
+/// set of topics, services and actions.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContractCacheEntry {
-    pub contract_name: String,
-    pub tag: String,
-    /// SHA-256 of the manifest file bytes.
-    pub sha256: String,
-    pub source_type: RepoSourceKind,
-    /// Git repository URL. `None` for FS entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_uri: Option<String>,
-    /// Short ref name (branch/tag) actually checked out during the last
-    /// refresh. `None` for FS entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_ref: Option<String>,
-    /// Absolute path (fs) or repo-relative (git) path to the contract
-    /// manifest file.
-    pub path: String,
-    /// The id of the repository entry this contract was discovered
-    /// under. Derived at read time and never serialized back to disk.
+    pub contract_name: ItemName,
+    pub tag: ItemTag,
+    pub sha256: ManifestFingerprint,
+    pub origin: EntryOrigin,
     #[serde(skip)]
     pub repo_id: u32,
 }
 
 /// One entry as it appears in `pairings.json5`. Pairings are stand-alone
 /// JSON5 documents (`peppy_schema: "pairing/v1"`) describing a two-role,
-/// topics-only conversation contract. The `sha256` of the manifest bytes
-/// is the primary way to disambiguate entries that share `(name, tag)`.
+/// topics-only conversation contract.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PairingCacheEntry {
-    pub pairing_name: String,
-    pub tag: String,
-    /// SHA-256 of the manifest file bytes.
-    pub sha256: String,
-    pub source_type: RepoSourceKind,
-    /// Git repository URL. `None` for FS entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_uri: Option<String>,
-    /// Short ref name (branch/tag) actually checked out during the last
-    /// refresh. `None` for FS entries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_ref: Option<String>,
-    /// Absolute path (fs) or repo-relative (git) path to the pairing
-    /// manifest file.
-    pub path: String,
-    /// The id of the repository entry this pairing was discovered under.
-    /// Derived at read time and never serialized back to disk.
+    pub pairing_name: ItemName,
+    pub tag: ItemTag,
+    pub sha256: ManifestFingerprint,
+    pub origin: EntryOrigin,
     #[serde(skip)]
     pub repo_id: u32,
 }
 
-/// One repository's items, split by kind. Whatever learned what the
-/// repository holds (walking its tree, or reading its index) hands back
-/// this shape, so the merge, retention and cache-writing below it are
-/// written once.
+/// One repository's items, split by kind. Whatever read the repository
+/// hands back this shape, so the merge, retention and cache-writing below
+/// it are written once.
 #[derive(Debug, Default)]
 pub(crate) struct RepoItems {
     pub nodes: Vec<NodeCacheEntry>,
     pub launchers: Vec<LauncherCacheEntry>,
     pub contracts: Vec<ContractCacheEntry>,
     pub pairings: Vec<PairingCacheEntry>,
-}
-
-/// Kind-independent fields of a just-discovered cache entry, produced
-/// by the shared collector in `index.rs` and turned into a concrete
-/// entry by [`RepoCacheEntry::from_discovered`]. `tag` is empty for
-/// untagged kinds (launchers).
-pub(crate) struct DiscoveredEntry {
-    pub name: String,
-    pub tag: String,
-    pub sha256: String,
-    pub path: String,
-    pub source_type: RepoSourceKind,
-    pub source_uri: Option<String>,
-    pub resolved_ref: Option<String>,
 }
 
 /// Uniform view over the four cache-entry kinds, so the cache plumbing
@@ -198,24 +195,14 @@ pub(crate) trait RepoCacheEntry:
     /// Wire-level kind reported in `repo refresh` discovery feedback.
     const ITEM_KIND: RepoItemKind;
 
-    fn from_discovered(d: DiscoveredEntry) -> Self;
-
     fn name(&self) -> &str;
     /// Empty for untagged kinds (launchers), so `(name, tag)` is the
     /// identity key for every kind.
     fn tag(&self) -> &str;
-    fn sha256(&self) -> &str;
-    fn source_type(&self) -> RepoSourceKind;
-    fn source_uri(&self) -> Option<&str>;
-    fn resolved_ref(&self) -> Option<&str>;
-    fn path(&self) -> &str;
+    fn sha256(&self) -> &ManifestFingerprint;
+    fn origin(&self) -> &EntryOrigin;
     fn repo_id(&self) -> u32;
     fn set_repo_id(&mut self, id: u32);
-
-    /// Whether the entry carries every field its kind requires; entries
-    /// failing this (hand-edited or corrupt cache lines) are dropped
-    /// with a warning at load time.
-    fn is_well_formed(&self) -> bool;
 
     /// `name:tag` label for log messages (bare name for untagged kinds).
     fn display_id(&self) -> String {
@@ -227,215 +214,74 @@ pub(crate) trait RepoCacheEntry:
     }
 }
 
-impl RepoCacheEntry for NodeCacheEntry {
-    const KIND: &'static str = "node";
-    const FILE_NAME: &'static str = "nodes.json5";
-    const ITEM_KIND: RepoItemKind = RepoItemKind::Node;
+/// Writes the [`RepoCacheEntry`] impl for one kind. The four differ only in
+/// their constants and in which field holds the name and the tag, so
+/// spelling the accessors out four times would be four chances to wire one
+/// to the wrong field.
+/// The trailing tag field is omitted for launchers, the one untagged kind.
+macro_rules! repo_cache_entry {
+    ($ty:ident, $kind:literal, $file:literal, $item_kind:ident, $name_field:ident $(, $tag_field:ident)?) => {
+        impl RepoCacheEntry for $ty {
+            const KIND: &'static str = $kind;
+            const FILE_NAME: &'static str = $file;
+            const ITEM_KIND: RepoItemKind = RepoItemKind::$item_kind;
 
-    fn from_discovered(d: DiscoveredEntry) -> Self {
-        Self {
-            node_name: d.name,
-            node_tag: d.tag,
-            source_type: d.source_type,
-            source_uri: d.source_uri,
-            resolved_ref: d.resolved_ref,
-            sha256: d.sha256,
-            checksum: None,
-            path: d.path,
-            repo_id: 0,
+            fn name(&self) -> &str {
+                self.$name_field.as_str()
+            }
+            fn tag(&self) -> &str {
+                #[allow(unused_mut, unused_assignments)]
+                let mut tag = "";
+                $( tag = self.$tag_field.as_str(); )?
+                tag
+            }
+            fn sha256(&self) -> &ManifestFingerprint {
+                &self.sha256
+            }
+            fn origin(&self) -> &EntryOrigin {
+                &self.origin
+            }
+            fn repo_id(&self) -> u32 {
+                self.repo_id
+            }
+            fn set_repo_id(&mut self, id: u32) {
+                self.repo_id = id;
+            }
         }
-    }
-
-    fn name(&self) -> &str {
-        &self.node_name
-    }
-    fn tag(&self) -> &str {
-        &self.node_tag
-    }
-    fn sha256(&self) -> &str {
-        &self.sha256
-    }
-    fn source_type(&self) -> RepoSourceKind {
-        self.source_type
-    }
-    fn source_uri(&self) -> Option<&str> {
-        self.source_uri.as_deref()
-    }
-    fn resolved_ref(&self) -> Option<&str> {
-        self.resolved_ref.as_deref()
-    }
-    fn path(&self) -> &str {
-        &self.path
-    }
-    fn repo_id(&self) -> u32 {
-        self.repo_id
-    }
-    fn set_repo_id(&mut self, id: u32) {
-        self.repo_id = id;
-    }
-    // No sha256 requirement: node caches written before fingerprinting
-    // existed are still valid (`sha256` deserializes to "" by default).
-    fn is_well_formed(&self) -> bool {
-        !self.node_name.is_empty() && !self.node_tag.is_empty() && !self.path.is_empty()
-    }
+    };
 }
 
-impl RepoCacheEntry for LauncherCacheEntry {
-    const KIND: &'static str = "launcher";
-    const FILE_NAME: &'static str = "launchers.json5";
-    const ITEM_KIND: RepoItemKind = RepoItemKind::Launcher;
-
-    fn from_discovered(d: DiscoveredEntry) -> Self {
-        Self {
-            launcher_name: d.name,
-            source_type: d.source_type,
-            source_uri: d.source_uri,
-            resolved_ref: d.resolved_ref,
-            sha256: d.sha256,
-            path: d.path,
-            repo_id: 0,
-        }
-    }
-
-    fn name(&self) -> &str {
-        &self.launcher_name
-    }
-    fn tag(&self) -> &str {
-        ""
-    }
-    fn sha256(&self) -> &str {
-        &self.sha256
-    }
-    fn source_type(&self) -> RepoSourceKind {
-        self.source_type
-    }
-    fn source_uri(&self) -> Option<&str> {
-        self.source_uri.as_deref()
-    }
-    fn resolved_ref(&self) -> Option<&str> {
-        self.resolved_ref.as_deref()
-    }
-    fn path(&self) -> &str {
-        &self.path
-    }
-    fn repo_id(&self) -> u32 {
-        self.repo_id
-    }
-    fn set_repo_id(&mut self, id: u32) {
-        self.repo_id = id;
-    }
-    fn is_well_formed(&self) -> bool {
-        !self.launcher_name.is_empty() && !self.path.is_empty()
-    }
-}
-
-impl RepoCacheEntry for ContractCacheEntry {
-    const KIND: &'static str = "contract";
-    const FILE_NAME: &'static str = "contracts.json5";
-    const ITEM_KIND: RepoItemKind = RepoItemKind::Contract;
-
-    fn from_discovered(d: DiscoveredEntry) -> Self {
-        Self {
-            contract_name: d.name,
-            tag: d.tag,
-            sha256: d.sha256,
-            source_type: d.source_type,
-            source_uri: d.source_uri,
-            resolved_ref: d.resolved_ref,
-            path: d.path,
-            repo_id: 0,
-        }
-    }
-
-    fn name(&self) -> &str {
-        &self.contract_name
-    }
-    fn tag(&self) -> &str {
-        &self.tag
-    }
-    fn sha256(&self) -> &str {
-        &self.sha256
-    }
-    fn source_type(&self) -> RepoSourceKind {
-        self.source_type
-    }
-    fn source_uri(&self) -> Option<&str> {
-        self.source_uri.as_deref()
-    }
-    fn resolved_ref(&self) -> Option<&str> {
-        self.resolved_ref.as_deref()
-    }
-    fn path(&self) -> &str {
-        &self.path
-    }
-    fn repo_id(&self) -> u32 {
-        self.repo_id
-    }
-    fn set_repo_id(&mut self, id: u32) {
-        self.repo_id = id;
-    }
-    // `sha256` is required: it is the primary way sha-pinned syncs
-    // disambiguate same-`(name, tag)` entries.
-    fn is_well_formed(&self) -> bool {
-        !self.contract_name.is_empty()
-            && !self.tag.is_empty()
-            && !self.path.is_empty()
-            && !self.sha256.is_empty()
-    }
-}
-
-impl RepoCacheEntry for PairingCacheEntry {
-    const KIND: &'static str = "pairing";
-    const FILE_NAME: &'static str = "pairings.json5";
-    const ITEM_KIND: RepoItemKind = RepoItemKind::Pairing;
-
-    fn from_discovered(d: DiscoveredEntry) -> Self {
-        Self {
-            pairing_name: d.name,
-            tag: d.tag,
-            sha256: d.sha256,
-            source_type: d.source_type,
-            source_uri: d.source_uri,
-            resolved_ref: d.resolved_ref,
-            path: d.path,
-            repo_id: 0,
-        }
-    }
-
-    fn name(&self) -> &str {
-        &self.pairing_name
-    }
-    fn tag(&self) -> &str {
-        &self.tag
-    }
-    fn sha256(&self) -> &str {
-        &self.sha256
-    }
-    fn source_type(&self) -> RepoSourceKind {
-        self.source_type
-    }
-    fn source_uri(&self) -> Option<&str> {
-        self.source_uri.as_deref()
-    }
-    fn resolved_ref(&self) -> Option<&str> {
-        self.resolved_ref.as_deref()
-    }
-    fn path(&self) -> &str {
-        &self.path
-    }
-    fn repo_id(&self) -> u32 {
-        self.repo_id
-    }
-    fn set_repo_id(&mut self, id: u32) {
-        self.repo_id = id;
-    }
-    fn is_well_formed(&self) -> bool {
-        !self.pairing_name.is_empty()
-            && !self.tag.is_empty()
-            && !self.path.is_empty()
-            && !self.sha256.is_empty()
-    }
-}
+repo_cache_entry!(
+    NodeCacheEntry,
+    "node",
+    "nodes.json5",
+    Node,
+    node_name,
+    node_tag
+);
+repo_cache_entry!(
+    LauncherCacheEntry,
+    "launcher",
+    "launchers.json5",
+    Launcher,
+    launcher_name
+);
+repo_cache_entry!(
+    ContractCacheEntry,
+    "contract",
+    "contracts.json5",
+    Contract,
+    contract_name,
+    tag
+);
+repo_cache_entry!(
+    PairingCacheEntry,
+    "pairing",
+    "pairings.json5",
+    Pairing,
+    pairing_name,
+    tag
+);
 
 /// Path of `E`'s cache file under the peppy cache dir.
 pub(crate) fn repo_cache_path<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> PathBuf {
@@ -458,13 +304,18 @@ pub(crate) fn write_repo_cache<E: RepoCacheEntry>(
     Ok(())
 }
 
-/// Reads `E`'s cache file, tags each entry with the `repo_id` of its
+/// Reads `E`'s cache file and tags each entry with the `repo_id` of its
 /// originating repository entry (derived from `repositories.json5` at
-/// read time; never serialized back), and drops malformed entries with
-/// a warning. Entries no repository claims fall back to
-/// [`UNOWNED_REPO_ID`], so a hand-written cache still resolves without
-/// outranking a configured repository. Returns an empty vec when the
-/// file is missing.
+/// read time; never serialized back). Entries no repository claims fall
+/// back to [`UNOWNED_REPO_ID`], so a hand-written cache still resolves
+/// without outranking a configured repository. Returns an empty vec when
+/// the file is missing.
+///
+/// A file that does not parse is refused whole rather than read for the
+/// entries that happen to be readable. Dropping the rest would leave a
+/// launch resolving part of a graph and reporting nothing about the part
+/// it could not see, which is indistinguishable from a repository that
+/// never published it.
 pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Result<Vec<E>> {
     let path = repo_cache_path::<E>(peppy_dirs);
     if !path.exists() {
@@ -474,7 +325,7 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
     let content = std::fs::read_to_string(&path)?;
     let raw: Vec<E> = serde_json5::from_str(&content).map_err(|e| {
         core_node_api::Error::Decoding(format!(
-            "failed to parse {} cache at {}: {e}",
+            "the {} cache at {} does not parse: {e}. Run `peppy repo update` to rewrite it",
             E::KIND,
             path.display()
         ))
@@ -484,26 +335,9 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
     let entries = raw
         .into_iter()
         .map(|mut e| {
-            let id = lookup_repo_id(
-                &repos,
-                e.source_type(),
-                e.source_uri(),
-                e.resolved_ref(),
-                e.path(),
-            );
+            let id = lookup_repo_id(&repos, e.origin());
             e.set_repo_id(id);
             e
-        })
-        .filter(|e| {
-            let ok = e.is_well_formed();
-            if !ok {
-                warn!(
-                    "Skipping malformed {} entry: {}",
-                    E::FILE_NAME,
-                    e.display_id()
-                );
-            }
-            ok
         })
         .collect();
     Ok(entries)
@@ -577,7 +411,7 @@ pub(crate) fn lookup_repo_entry<'a, E: RepoCacheEntry>(
 
     let mut paths: Vec<String> = std::iter::once(first)
         .chain(contested)
-        .map(|e| e.path().to_owned())
+        .map(|e| e.origin().path_str().to_owned())
         .collect();
     paths.sort();
     Err(RepoAmbiguity {
@@ -596,32 +430,32 @@ pub(crate) fn lookup_repo_entry_by_sha256<'a, E: RepoCacheEntry>(
     entries: &'a [E],
     name: &str,
     tag: &str,
-    sha256: &str,
+    sha256: &ManifestFingerprint,
 ) -> Option<&'a E> {
     entries
         .iter()
         .find(|e| e.name() == name && e.tag() == tag && e.sha256() == sha256)
 }
 
-/// Reads the cache file plus the `nodes.json5` generation used for
-/// the read.
-pub fn load_with_generation(
-    peppy_dirs: &PeppyDirs,
-) -> Result<(Vec<NodeCacheEntry>, Option<SystemTime>)> {
+/// Reads `nodes.json5`, memoized on the mtimes of the cache file and of
+/// `repositories.json5`.
+///
+/// Both mtimes matter: the entries come from the first and the `repo_id`
+/// tagging on each of them from the second, so a memo keyed on the cache
+/// alone would serve stale priorities after a `repo add`.
+pub fn load_node_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<NodeCacheEntry>> {
     let path = repo_cache_path::<NodeCacheEntry>(peppy_dirs);
     let generation = std::fs::metadata(&path)
         .ok()
         .and_then(|m| m.modified().ok());
-    // `repo_id` on each cached entry is derived from `repositories.json5`,
-    // so the memo must invalidate when that file changes too (not just
-    // when nodes.json5 is rewritten). Missing file → UNIX_EPOCH so any
-    // future appearance counts as a change.
+    // Missing file maps to UNIX_EPOCH so any future appearance counts as a
+    // change.
     let repos_mtime = repositories_mtime(peppy_dirs);
 
     if let Some(mtime) = generation
         && let Some(cached) = memo_get(&path, mtime, repos_mtime)
     {
-        return Ok(((*cached).clone(), Some(mtime)));
+        return Ok((*cached).clone());
     }
 
     let entries = load_repo_cache::<NodeCacheEntry>(peppy_dirs)?;
@@ -629,7 +463,7 @@ pub fn load_with_generation(
     if let Some(mtime) = generation {
         memo_put(&path, mtime, repos_mtime, entries.clone());
     }
-    Ok((entries, generation))
+    Ok(entries)
 }
 
 fn repositories_mtime(peppy_dirs: &PeppyDirs) -> SystemTime {
@@ -655,14 +489,8 @@ pub(crate) const UNOWNED_REPO_ID: u32 = u32::MAX;
 
 /// Owning repository id narrowed to the wire's `u32`, falling back to
 /// [`UNOWNED_REPO_ID`] when no repository matches.
-fn lookup_repo_id(
-    repos: &[serde_json::Value],
-    source_type: RepoSourceKind,
-    uri: Option<&str>,
-    resolved_ref: Option<&str>,
-    path: &str,
-) -> u32 {
-    crate::services::repo::owning_repo_id(repos, source_type, uri, resolved_ref, path)
+fn lookup_repo_id(repos: &[serde_json::Value], origin: &EntryOrigin) -> u32 {
+    crate::services::repo::owning_repo_id(repos, origin)
         .and_then(|id| u32::try_from(id).ok())
         .unwrap_or(UNOWNED_REPO_ID)
 }
@@ -705,7 +533,7 @@ pub fn lookup_contract_by_sha256<'a>(
     entries: &'a [ContractCacheEntry],
     name: &str,
     tag: &str,
-    sha256: &str,
+    sha256: &ManifestFingerprint,
 ) -> Option<&'a ContractCacheEntry> {
     lookup_repo_entry_by_sha256(entries, name, tag, sha256)
 }
@@ -727,7 +555,7 @@ pub fn lookup_pairing_by_sha256<'a>(
     entries: &'a [PairingCacheEntry],
     name: &str,
     tag: &str,
-    sha256: &str,
+    sha256: &ManifestFingerprint,
 ) -> Option<&'a PairingCacheEntry> {
     lookup_repo_entry_by_sha256(entries, name, tag, sha256)
 }
@@ -791,80 +619,29 @@ pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntr
     load_repo_cache(peppy_dirs)
 }
 
-/// Looks up `(name, tag)` in the nodes cache and translates the matched
-/// entry into a concrete `NodeSource` (Fs / Git / Http) that downstream
-/// resolution can handle directly.
-pub(crate) fn resolve_repo_node_source(
+/// Looks up `(name, tag)` in the nodes cache and returns the entry that
+/// wins repository priority.
+///
+/// Returns the entry rather than a materialized source: what the entry
+/// says about where the bytes are and which commit they came from is what
+/// callers need, and one of them ships it to another machine.
+pub(crate) fn resolve_repo_node_entry(
     name: &str,
     tag: &str,
     peppy_dirs: &PeppyDirs,
-) -> std::result::Result<NodeSource, String> {
-    let (entries, _) =
-        load_with_generation(peppy_dirs).map_err(|e| format!("failed to load nodes cache: {e}"))?;
-    let id = format!("{name}:{tag}");
-    let entry = lookup(&entries, name, tag)
+) -> std::result::Result<NodeCacheEntry, String> {
+    let entries =
+        load_node_cache(peppy_dirs).map_err(|e| format!("failed to load nodes cache: {e}"))?;
+    lookup(&entries, name, tag)
         .map_err(|ambiguity| ambiguity.to_string())?
+        .cloned()
         .ok_or_else(|| {
             format!(
-                "repo-node `{id}` not found in {}{}",
+                "repo-node `{name}:{tag}` not found in {}{}",
                 nodes_repo_cache_path(peppy_dirs).display(),
                 excluded_repositories_hint(peppy_dirs)
             )
-        })?;
-
-    match entry.source_type {
-        RepoSourceKind::Fs => {
-            // `entry.path` points at the manifest file; the source
-            // root is its parent directory.
-            let dir = Path::new(&entry.path).parent().ok_or_else(|| {
-                format!(
-                    "fs cache entry for `{id}` has no parent directory in path {:?}",
-                    entry.path
-                )
-            })?;
-            Ok(NodeSource::Fs(dir.to_path_buf()))
-        }
-        RepoSourceKind::Git => {
-            let repo_url_str = entry
-                .source_uri
-                .as_deref()
-                .ok_or_else(|| format!("cache entry for `{id}` is git but has no source_uri"))?;
-            let repo_url = gix_url::Url::try_from(repo_url_str)
-                .map_err(|e| format!("invalid git URL in cache entry for `{id}`: {e}"))?;
-            let repo_ref = entry
-                .resolved_ref
-                .clone()
-                .ok_or_else(|| format!("cache entry for `{id}` is git but has no resolved_ref"))?;
-            // `entry.path` is the repo-relative manifest path; the
-            // source root is its parent directory.
-            let repo_path = Path::new(&entry.path)
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned())
-                .ok_or_else(|| {
-                    format!(
-                        "git cache entry for `{id}` has no parent directory in path {:?}",
-                        entry.path
-                    )
-                })?;
-            Ok(NodeSource::Git {
-                repo_url,
-                repo_path,
-                repo_ref: Some(repo_ref),
-            })
-        }
-        RepoSourceKind::Url => {
-            let url_str = entry
-                .source_uri
-                .as_deref()
-                .ok_or_else(|| format!("cache entry for `{id}` is url but has no source_uri"))?;
-            let url = url::Url::parse(url_str)
-                .map_err(|e| format!("invalid url in cache entry for `{id}`: {e}"))?;
-            Ok(NodeSource::Http {
-                url,
-                sha256: entry.checksum.clone(),
-            })
-        }
-    }
+        })
 }
 
 /// Looks up `name` in the launcher cache and resolves it to a concrete
@@ -892,75 +669,57 @@ pub(crate) fn resolve_repo_launcher_path(
             )
         })?;
 
-    resolve_cached_artifact_path(
-        peppy_dirs,
-        entry.source_type,
-        entry.source_uri.as_deref(),
-        entry.resolved_ref.as_deref(),
-        &entry.path,
-        on_feedback,
-    )
-    .map_err(|e| format!("launcher `{name}`: {e}"))
+    resolve_cached_artifact_path(peppy_dirs, &entry.origin, on_feedback)
+        .map_err(|e| format!("launcher `{name}`: {e}"))
 }
 
-/// Translates a cache entry's `(source_type, source_uri, resolved_ref, path)`
-/// tuple into a concrete on-disk path. Shared between launcher and contract
-/// resolution so the Fs/Git/Url branching lives in one place.
+/// Materializes an [`EntryOrigin`] into a concrete on-disk path.
 ///
-/// For Git entries this materializes the repo's checkout via
-/// [`crate::services::node::cache::git::ensure_checkout`] (blocking; wrap
-/// callers in `spawn_blocking` when running inside Tokio) and joins the
-/// repo-relative `path` onto the checkout dir. `on_feedback` receives
-/// clone/refresh progress lines.
+/// For git origins this materializes the checkout of the pinned commit via
+/// [`crate::services::node::cache::git::ensure_checkout_at_commit`]
+/// (blocking; wrap callers in `spawn_blocking` when running inside Tokio)
+/// and joins the repository-relative path onto it. `on_feedback` receives
+/// clone and fetch progress lines.
 ///
 /// Errors are artifact-agnostic (no "launcher" / "contract" wording); the
 /// caller is expected to `map_err` with its own context prefix.
 pub(crate) fn resolve_cached_artifact_path(
     peppy_dirs: &PeppyDirs,
-    source_type: RepoSourceKind,
-    source_uri: Option<&str>,
-    resolved_ref: Option<&str>,
-    path: &str,
+    origin: &EntryOrigin,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
-    match source_type {
-        RepoSourceKind::Fs => Ok(PathBuf::from(path)),
-        RepoSourceKind::Git => {
-            let repo_url =
-                source_uri.ok_or_else(|| "git cache entry missing source_uri".to_string())?;
-            let repo_ref =
-                resolved_ref.ok_or_else(|| "git cache entry missing resolved_ref".to_string())?;
-            let checkout = crate::services::node::cache::git::ensure_checkout(
+    match origin {
+        EntryOrigin::Fs { path } => Ok(path.clone()),
+        EntryOrigin::Git {
+            repo_url,
+            repo_ref,
+            commit,
+            path,
+        } => {
+            let checkout = crate::services::node::cache::git::ensure_checkout_at_commit(
                 peppy_dirs,
                 repo_url,
                 Some(repo_ref),
-                None,
+                commit,
                 on_feedback,
             )?;
-            Ok(checkout.join(path))
+            Ok(checkout.join(path.as_path()))
         }
-        RepoSourceKind::Url => Err("url-sourced cache entry is not yet supported".to_string()),
     }
 }
 
 /// Borrowed view over the entry fields that [`resolve_cached_doc`]
 /// needs, available for every cache-entry kind via [`RepoCacheEntry`].
 pub(crate) struct CachedDocEntryRef<'a> {
-    pub sha256: &'a str,
-    pub source_type: RepoSourceKind,
-    pub source_uri: Option<&'a str>,
-    pub resolved_ref: Option<&'a str>,
-    pub path: &'a str,
+    pub sha256: &'a ManifestFingerprint,
+    pub origin: &'a EntryOrigin,
 }
 
 impl<'a, E: RepoCacheEntry> From<&'a E> for CachedDocEntryRef<'a> {
     fn from(e: &'a E) -> Self {
         Self {
             sha256: e.sha256(),
-            source_type: e.source_type(),
-            source_uri: e.source_uri(),
-            resolved_ref: e.resolved_ref(),
-            path: e.path(),
+            origin: e.origin(),
         }
     }
 }
@@ -991,15 +750,8 @@ pub(crate) fn resolve_cached_doc<T>(
         }
     })?;
 
-    let resolved_path = resolve_cached_artifact_path(
-        peppy_dirs,
-        entry.source_type,
-        entry.source_uri,
-        entry.resolved_ref,
-        entry.path,
-        on_feedback,
-    )
-    .map_err(|e| format!("{kind} `{id}`: {e}"))?;
+    let resolved_path = resolve_cached_artifact_path(peppy_dirs, entry.origin, on_feedback)
+        .map_err(|e| format!("{kind} `{id}`: {e}"))?;
 
     let bytes = std::fs::read(&resolved_path).map_err(|e| {
         format!(
@@ -1007,8 +759,8 @@ pub(crate) fn resolve_cached_doc<T>(
             resolved_path.display()
         )
     })?;
-    let actual_sha = config::fingerprint::fingerprint_for_bytes(&bytes);
-    if actual_sha != entry.sha256 {
+    let actual_sha = ManifestFingerprint::of_bytes(&bytes);
+    if &actual_sha != entry.sha256 {
         return Err(format!(
             "{kind} `{id}` content drifted from cache fingerprint \
              (expected `{}`, got `{actual_sha}`); run `peppy repo refresh`",
@@ -1054,116 +806,108 @@ fn memo_put(path: &Path, mtime: SystemTime, repos_mtime: SystemTime, entries: Ve
     );
 }
 
+/// Constructors for the parsed values cache entries hold, so tests state
+/// the fact they care about rather than a fingerprint and a commit spelled
+/// out in full every time.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A distinct, valid fingerprint per `seed`. Deterministic, so a test
+    /// that asserts on one reads the same way twice.
+    pub(crate) fn fingerprint(seed: &str) -> ManifestFingerprint {
+        ManifestFingerprint::of_bytes(seed.as_bytes())
+    }
+
+    /// A distinct, valid commit per `seed`.
+    pub(crate) fn commit(seed: &str) -> GitCommit {
+        GitCommit::parse(&fingerprint(seed).as_str()[..40]).expect("40 hex chars is a commit")
+    }
+
+    pub(crate) fn fs_origin(path: &str) -> EntryOrigin {
+        EntryOrigin::Fs {
+            path: PathBuf::from(path),
+        }
+    }
+
+    pub(crate) fn git_origin(repo_url: &str, repo_ref: &str, seed: &str, path: &str) -> EntryOrigin {
+        EntryOrigin::Git {
+            repo_url: repo_url.to_owned(),
+            repo_ref: repo_ref.to_owned(),
+            commit: commit(seed),
+            path: RepoRelativePath::parse(path).expect("test path is repository-relative"),
+        }
+    }
+
+    pub(crate) fn node_entry(name: &str, tag: &str, origin: EntryOrigin) -> NodeCacheEntry {
+        NodeCacheEntry {
+            node_name: ItemName::parse(name).expect("test node name is valid"),
+            node_tag: ItemTag::parse(tag).expect("test node tag is valid"),
+            sha256: fingerprint(&format!("{name}:{tag}")),
+            origin,
+            repo_id: 0,
+        }
+    }
+
+    pub(crate) fn launcher_entry(name: &str, origin: EntryOrigin) -> LauncherCacheEntry {
+        LauncherCacheEntry {
+            launcher_name: ItemName::parse(name).expect("test launcher name is valid"),
+            sha256: fingerprint(name),
+            origin,
+            repo_id: 0,
+        }
+    }
+
+    pub(crate) fn contract_entry(name: &str, tag: &str, origin: EntryOrigin) -> ContractCacheEntry {
+        ContractCacheEntry {
+            contract_name: ItemName::parse(name).expect("test contract name is valid"),
+            tag: ItemTag::parse(tag).expect("test contract tag is valid"),
+            sha256: fingerprint(&format!("{name}:{tag}")),
+            origin,
+            repo_id: 0,
+        }
+    }
+
+    /// The same entry, attributed to `repo_id`.
+    pub(crate) fn owned_by(mut entry: NodeCacheEntry, repo_id: u32) -> NodeCacheEntry {
+        entry.repo_id = repo_id;
+        entry
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use super::test_support::*;
+
     fn mk_entry(name: &str, tag: &str, repo_id: u32) -> NodeCacheEntry {
-        NodeCacheEntry {
-            node_name: name.to_owned(),
-            node_tag: tag.to_owned(),
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            sha256: String::new(),
-            checksum: None,
-            path: "/tmp/foo".to_owned(),
-            repo_id,
-        }
+        owned_by(node_entry(name, tag, fs_origin("/tmp/foo/peppy.json5")), repo_id)
     }
 
     fn mk_fs_entry(name: &str, tag: &str, path: &str) -> NodeCacheEntry {
-        NodeCacheEntry {
-            node_name: name.to_owned(),
-            node_tag: tag.to_owned(),
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            sha256: String::new(),
-            checksum: None,
-            path: path.to_owned(),
-            repo_id: 0,
-        }
+        node_entry(name, tag, fs_origin(path))
     }
 
-    fn mk_git_entry(
-        name: &str,
-        tag: &str,
-        uri: Option<&str>,
-        resolved_ref: Option<&str>,
-    ) -> NodeCacheEntry {
-        NodeCacheEntry {
-            node_name: name.to_owned(),
-            node_tag: tag.to_owned(),
-            source_type: RepoSourceKind::Git,
-            source_uri: uri.map(str::to_owned),
-            resolved_ref: resolved_ref.map(str::to_owned),
-            sha256: String::new(),
-            checksum: None,
-            path: "nodes/example".to_owned(),
-            repo_id: 0,
-        }
+    fn mk_launcher_entry(name: &str, path: &str, repo_id: u32) -> LauncherCacheEntry {
+        let mut entry = launcher_entry(name, fs_origin(path));
+        entry.repo_id = repo_id;
+        entry
     }
 
-    fn mk_url_entry(
+    fn mk_git_launcher_entry(
         name: &str,
-        tag: &str,
-        uri: Option<&str>,
-        checksum: Option<&str>,
-    ) -> NodeCacheEntry {
-        NodeCacheEntry {
-            node_name: name.to_owned(),
-            node_tag: tag.to_owned(),
-            source_type: RepoSourceKind::Url,
-            source_uri: uri.map(str::to_owned),
-            resolved_ref: None,
-            sha256: String::new(),
-            checksum: checksum.map(str::to_owned),
-            path: "nodes/example".to_owned(),
-            repo_id: 0,
-        }
-    }
-
-    fn mk_launcher_entry(
-        name: &str,
-        source_type: RepoSourceKind,
-        uri: Option<&str>,
-        resolved_ref: Option<&str>,
+        repo_url: &str,
+        repo_ref: &str,
         path: &str,
-        repo_id: u32,
     ) -> LauncherCacheEntry {
-        LauncherCacheEntry {
-            launcher_name: name.to_owned(),
-            source_type,
-            source_uri: uri.map(str::to_owned),
-            resolved_ref: resolved_ref.map(str::to_owned),
-            sha256: String::new(),
-            path: path.to_owned(),
-            repo_id,
-        }
+        launcher_entry(name, git_origin(repo_url, repo_ref, name, path))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn mk_contract_entry(
-        name: &str,
-        tag: &str,
-        sha256: &str,
-        source_type: RepoSourceKind,
-        uri: Option<&str>,
-        resolved_ref: Option<&str>,
-        path: &str,
-        repo_id: u32,
-    ) -> ContractCacheEntry {
-        ContractCacheEntry {
-            contract_name: name.to_owned(),
-            tag: tag.to_owned(),
-            sha256: sha256.to_owned(),
-            source_type,
-            source_uri: uri.map(str::to_owned),
-            resolved_ref: resolved_ref.map(str::to_owned),
-            path: path.to_owned(),
-            repo_id,
-        }
+    fn mk_contract_entry(name: &str, tag: &str, path: &str, repo_id: u32) -> ContractCacheEntry {
+        let mut entry = contract_entry(name, tag, fs_origin(path));
+        entry.repo_id = repo_id;
+        entry
     }
 
     #[test]
@@ -1194,10 +938,8 @@ mod tests {
     /// winner, so lookup reports the ambiguity instead of picking one.
     #[test]
     fn lookup_reports_ambiguity_within_one_repo() {
-        let mut first = mk_entry("a", "v1", 2);
-        first.path = "/repo/rust/peppy.json5".to_owned();
-        let mut second = mk_entry("a", "v1", 2);
-        second.path = "/repo/python/peppy.json5".to_owned();
+        let first = owned_by(mk_fs_entry("a", "v1", "/repo/rust/peppy.json5"), 2);
+        let second = owned_by(mk_fs_entry("a", "v1", "/repo/python/peppy.json5"), 2);
 
         let err = lookup(&[first, second], "a", "v1").expect_err("should be ambiguous");
 
@@ -1215,10 +957,11 @@ mod tests {
     /// read as "not found": the identity is present, twice.
     #[test]
     fn ambiguity_message_names_both_claimants() {
-        let mut first = mk_entry("uvc_recon", "v1", 1000);
-        first.path = "uvc_recon/rust/peppy.json5".to_owned();
-        let mut second = mk_entry("uvc_recon", "v1", 1000);
-        second.path = "uvc_recon/python/peppy.json5".to_owned();
+        let first = owned_by(mk_fs_entry("uvc_recon", "v1", "uvc_recon/rust/peppy.json5"), 1000);
+        let second = owned_by(
+            mk_fs_entry("uvc_recon", "v1", "uvc_recon/python/peppy.json5"),
+            1000,
+        );
 
         let msg = lookup(&[first, second], "uvc_recon", "v1")
             .expect_err("should be ambiguous")
@@ -1254,22 +997,8 @@ mod tests {
     #[test]
     fn launcher_ambiguity_uses_the_bare_name() {
         let entries = vec![
-            mk_launcher_entry(
-                "bringup",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/repo/sim/bringup.json5",
-                3,
-            ),
-            mk_launcher_entry(
-                "bringup",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/repo/real/bringup.json5",
-                3,
-            ),
+            mk_launcher_entry("bringup", "/repo/sim/bringup.json5", 3),
+            mk_launcher_entry("bringup", "/repo/real/bringup.json5", 3),
         ];
 
         let err = lookup_launcher(&entries, "bringup").expect_err("should be ambiguous");
@@ -1283,23 +1012,23 @@ mod tests {
     #[test]
     fn lookup_by_sha256_returns_exact_match() {
         let mut older = mk_entry("a", "v1", 1);
-        older.sha256 = "aaaa".to_owned();
+        older.sha256 = fingerprint("older");
         let mut newer = mk_entry("a", "v1", 9);
-        newer.sha256 = "bbbb".to_owned();
+        newer.sha256 = fingerprint("newer");
         let entries = vec![older, newer];
 
-        let hit = lookup_repo_entry_by_sha256(&entries, "a", "v1", "bbbb").unwrap();
+        let hit = lookup_repo_entry_by_sha256(&entries, "a", "v1", &fingerprint("newer")).unwrap();
         assert_eq!(hit.repo_id, 9);
-        assert!(lookup_repo_entry_by_sha256(&entries, "a", "v1", "zzzz").is_none());
+        assert!(
+            lookup_repo_entry_by_sha256(&entries, "a", "v1", &fingerprint("absent")).is_none()
+        );
     }
 
     #[test]
     fn load_returns_empty_when_file_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let (entries, generation) = load_with_generation(&peppy_dirs).unwrap();
-        assert!(entries.is_empty());
-        assert!(generation.is_none());
+        assert!(load_node_cache(&peppy_dirs).unwrap().is_empty());
     }
 
     #[test]
@@ -1307,38 +1036,36 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let input = vec![
-            NodeCacheEntry {
-                node_name: "a".to_owned(),
-                node_tag: "v1".to_owned(),
-                source_type: RepoSourceKind::Git,
-                source_uri: Some("https://example.com/repo.git".to_owned()),
-                resolved_ref: Some("main".to_owned()),
-                sha256: "aaaa".to_owned(),
-                checksum: None,
-                path: "nodes/a/peppy.json5".to_owned(),
-                repo_id: 0,
-            },
-            NodeCacheEntry {
-                node_name: "b".to_owned(),
-                node_tag: "v2".to_owned(),
-                source_type: RepoSourceKind::Fs,
-                source_uri: None,
-                resolved_ref: None,
-                sha256: "bbbb".to_owned(),
-                checksum: None,
-                path: "/tmp/b/peppy.json5".to_owned(),
-                repo_id: 0,
-            },
+            node_entry(
+                "a",
+                "v1",
+                git_origin(
+                    "https://example.com/repo.git",
+                    "main",
+                    "a",
+                    "nodes/a/peppy.json5",
+                ),
+            ),
+            node_entry("b", "v2", fs_origin("/tmp/b/peppy.json5")),
         ];
         write_repo_cache(&peppy_dirs, &input).unwrap();
-        let (loaded, generation) = load_with_generation(&peppy_dirs).unwrap();
-        assert!(generation.is_some());
+        let loaded = load_node_cache(&peppy_dirs).unwrap();
         assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].node_name, "a");
-        assert_eq!(loaded[0].resolved_ref.as_deref(), Some("main"));
-        assert_eq!(loaded[0].sha256, "aaaa");
-        assert_eq!(loaded[1].node_name, "b");
-        assert_eq!(loaded[1].sha256, "bbbb");
+        // `repo_id` is re-derived from `repositories.json5` at load time
+        // rather than stored, so it is the one field that does not survive
+        // as written.
+        let written: Vec<NodeCacheEntry> = loaded
+            .into_iter()
+            .map(|mut e| {
+                assert_eq!(e.repo_id, UNOWNED_REPO_ID, "no repository claims these");
+                e.repo_id = 0;
+                e
+            })
+            .collect();
+        assert_eq!(
+            written, input,
+            "an entry survives the round trip whole, commit included"
+        );
     }
 
     /// An entry no configured repository claims must not outrank one that
@@ -1390,137 +1117,47 @@ mod tests {
         assert_eq!(hit.repo_id, UNOWNED_REPO_ID);
     }
 
-    // -- resolve_repo_node_source tests --
+    // -- resolve_repo_node_entry tests --
 
     #[test]
-    fn resolve_fs_success() {
+    fn resolve_returns_the_entry_with_its_origin() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_fs_entry("mynode", "1.0", "/tmp/mynode/peppy.json5")];
-        write_repo_cache(&peppy_dirs, &entries).unwrap();
-
-        let src = resolve_repo_node_source("mynode", "1.0", &peppy_dirs).unwrap();
-        // `entry.path` points at the manifest file; the resolved source
-        // is the containing directory.
-        assert_eq!(src, NodeSource::Fs(PathBuf::from("/tmp/mynode")));
-    }
-
-    #[test]
-    fn resolve_git_success() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let mut entry = mk_git_entry(
+        let entry = node_entry(
             "g",
-            "1.0",
-            Some("https://example.com/repo.git"),
-            Some("main"),
+            "v1",
+            git_origin(
+                "https://example.com/repo.git",
+                "main",
+                "g",
+                "nodes/example/peppy.json5",
+            ),
         );
-        entry.path = "nodes/example/peppy.json5".to_owned();
-        write_repo_cache(&peppy_dirs, &[entry]).unwrap();
+        write_repo_cache(&peppy_dirs, &[entry.clone()]).unwrap();
 
-        let src = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap();
-        match src {
-            NodeSource::Git {
-                repo_url,
-                repo_path,
-                repo_ref,
-            } => {
-                assert!(
-                    repo_url
-                        .to_bstring()
-                        .to_string()
-                        .contains("example.com/repo.git"),
-                    "unexpected repo_url: {repo_url:?}",
-                );
-                // `repo_path` is the parent dir of the manifest file
-                // inside the cloned repo.
-                assert_eq!(repo_path, "nodes/example");
-                assert_eq!(repo_ref.as_deref(), Some("main"));
-            }
-            other => panic!("expected NodeSource::Git, got {other:?}"),
-        }
+        let resolved = resolve_repo_node_entry("g", "v1", &peppy_dirs).unwrap();
+        assert_eq!(
+            resolved.origin, entry.origin,
+            "the commit and path the cache recorded are what resolution returns"
+        );
     }
 
     #[test]
-    fn resolve_url_success() {
+    fn resolve_reports_ambiguity_rather_than_picking_one() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_url_entry(
-            "u",
-            "2.0",
-            Some("https://example.com/archive.tzst"),
-            Some("abc123"),
-        )];
-        write_repo_cache(&peppy_dirs, &entries).unwrap();
+        write_repo_cache(
+            &peppy_dirs,
+            &[
+                mk_fs_entry("a", "v1", "/repo/rust/peppy.json5"),
+                mk_fs_entry("a", "v1", "/repo/python/peppy.json5"),
+            ],
+        )
+        .unwrap();
 
-        let src = resolve_repo_node_source("u", "2.0", &peppy_dirs).unwrap();
-        match src {
-            NodeSource::Http { url, sha256 } => {
-                assert_eq!(url.as_str(), "https://example.com/archive.tzst");
-                assert_eq!(sha256.as_deref(), Some("abc123"));
-            }
-            other => panic!("expected NodeSource::Http, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_git_missing_source_uri() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_git_entry("g", "1.0", None, Some("main"))];
-        write_repo_cache(&peppy_dirs, &entries).unwrap();
-
-        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
-        assert!(err.contains("no source_uri"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn resolve_git_invalid_source_uri() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_git_entry("g", "1.0", Some(""), Some("main"))];
-        write_repo_cache(&peppy_dirs, &entries).unwrap();
-
-        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
-        assert!(err.contains("invalid git URL"), "unexpected error: {err}",);
-    }
-
-    #[test]
-    fn resolve_git_missing_resolved_ref() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_git_entry(
-            "g",
-            "1.0",
-            Some("https://example.com/repo.git"),
-            None,
-        )];
-        write_repo_cache(&peppy_dirs, &entries).unwrap();
-
-        let err = resolve_repo_node_source("g", "1.0", &peppy_dirs).unwrap_err();
-        assert!(err.contains("no resolved_ref"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn resolve_url_missing_source_uri() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_url_entry("u", "1.0", None, None)];
-        write_repo_cache(&peppy_dirs, &entries).unwrap();
-
-        let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
-        assert!(err.contains("no source_uri"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn resolve_url_invalid_source_uri() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_url_entry("u", "1.0", Some("not://[invalid"), None)];
-        write_repo_cache(&peppy_dirs, &entries).unwrap();
-
-        let err = resolve_repo_node_source("u", "1.0", &peppy_dirs).unwrap_err();
-        assert!(err.contains("invalid url"), "unexpected error: {err}");
+        let err = resolve_repo_node_entry("a", "v1", &peppy_dirs).unwrap_err();
+        assert!(err.contains("claim `a:v1`"), "unexpected error: {err}");
+        assert!(!err.contains("not found"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1529,7 +1166,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
         write_repo_cache::<NodeCacheEntry>(&peppy_dirs, &[]).unwrap();
 
-        let err = resolve_repo_node_source("missing", "0.0", &peppy_dirs).unwrap_err();
+        let err = resolve_repo_node_entry("missing", "v1", &peppy_dirs).unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
     }
 
@@ -1542,22 +1179,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
         let entries = vec![
-            mk_launcher_entry(
+            mk_git_launcher_entry(
                 "openarm01_sim_teleop",
-                RepoSourceKind::Git,
-                Some("https://github.com/Peppy-bot/launchers-hub"),
-                Some("main"),
+                "https://github.com/Peppy-bot/launchers-hub",
+                "main",
                 "openarm01_sim_teleop.json5",
-                0,
             ),
-            mk_launcher_entry(
-                "local_demo",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/tmp/local_demo.json5",
-                0,
-            ),
+            mk_launcher_entry("local_demo", "/tmp/local_demo.json5", 0),
         ];
         write_repo_cache(&peppy_dirs, &entries).unwrap();
 
@@ -1575,12 +1203,17 @@ mod tests {
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");
         assert_eq!(
-            arr[0]["source_uri"],
+            arr[0]["origin"]["repo_url"],
             "https://github.com/Peppy-bot/launchers-hub"
         );
-        assert_eq!(arr[0]["resolved_ref"], "main");
+        assert_eq!(arr[0]["origin"]["repo_ref"], "main");
+        assert_eq!(
+            arr[0]["origin"]["commit"].as_str().unwrap().len(),
+            40,
+            "a git origin records the commit it was read at"
+        );
         assert_eq!(arr[1]["launcher_name"], "local_demo");
-        assert_eq!(arr[1]["source_type"], "fs");
+        assert_eq!(arr[1]["origin"]["source_type"], "fs");
     }
 
     // -- resolve_repo_launcher_path tests --
@@ -1596,14 +1229,7 @@ mod tests {
 
         write_repo_cache(
             &peppy_dirs,
-            &[mk_launcher_entry(
-                "demo",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                abs.to_string_lossy().as_ref(),
-                0,
-            )],
+            &[mk_launcher_entry("demo", abs.to_string_lossy().as_ref(), 0)],
         )
         .unwrap();
 
@@ -1635,61 +1261,26 @@ mod tests {
     #[test]
     fn lookup_launcher_picks_lowest_repo_id() {
         let entries = vec![
-            mk_launcher_entry(
-                "demo",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/path/to/demo_low_priority.json5",
-                3,
-            ),
-            mk_launcher_entry(
-                "demo",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/path/to/demo_high_priority.json5",
-                1,
-            ),
+            mk_launcher_entry("demo", "/path/to/demo_low_priority.json5", 3),
+            mk_launcher_entry("demo", "/path/to/demo_high_priority.json5", 1),
         ];
         let hit = lookup_launcher(&entries, "demo")
             .expect("distinct repo ids are not ambiguous")
             .expect("should resolve");
         assert_eq!(hit.repo_id, 1);
-        assert!(hit.path.ends_with("demo_high_priority.json5"));
-    }
-
-    /// `Url` repository launchers are never populated by `repo refresh`
-    /// today, but if a hand-edited cache contains one we surface a clear
-    /// "not yet supported" error rather than an opaque file-not-found.
-    #[test]
-    fn resolve_launcher_url_returns_not_supported_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        write_repo_cache(
-            &peppy_dirs,
-            &[mk_launcher_entry(
-                "demo",
-                RepoSourceKind::Url,
-                Some("https://example.com/archive.tzst"),
-                None,
-                "demo.json5",
-                0,
-            )],
-        )
-        .unwrap();
-
-        let err = resolve_repo_launcher_path("demo", &peppy_dirs, &|_| {})
-            .expect_err("url launcher should error");
-        assert!(err.contains("not yet supported"), "got: {err}");
+        assert!(hit.origin.path_str().ends_with("demo_high_priority.json5"));
     }
 
     // -- resolve_cached_artifact_path tests --
 
     /// Initializes a bare-bones git repository at `repo_dir` and writes a
     /// single committed file at the given repo-relative path. Returns the
-    /// branch name resolved from HEAD (e.g. "main" / "master").
-    fn init_repo_with_file(repo_dir: &Path, file_path: &str, contents: &str) -> String {
+    /// branch name resolved from HEAD and the commit it created.
+    fn init_repo_with_file(
+        repo_dir: &Path,
+        file_path: &str,
+        contents: &str,
+    ) -> (String, GitCommit) {
         let repo = git2::Repository::init(repo_dir).expect("git init");
         let abs = repo_dir.join(file_path);
         if let Some(parent) = abs.parent() {
@@ -1704,14 +1295,20 @@ mod tests {
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
         let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
-        repo.commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "seed", &tree, &[])
             .expect("commit");
 
-        repo.head()
+        let branch = repo
+            .head()
             .expect("head")
             .shorthand()
             .expect("shorthand")
-            .to_owned()
+            .to_owned();
+        (
+            branch,
+            GitCommit::parse(&oid.to_string()).expect("a real commit is a full hash"),
+        )
     }
 
     /// `Fs` entries are already absolute on disk; the helper returns the
@@ -1724,72 +1321,11 @@ mod tests {
 
         let resolved = resolve_cached_artifact_path(
             &peppy_dirs,
-            RepoSourceKind::Fs,
-            None,
-            None,
-            abs.to_string_lossy().as_ref(),
+            &fs_origin(abs.to_string_lossy().as_ref()),
             &|_| {},
         )
         .expect("fs resolve should succeed");
         assert_eq!(resolved, abs);
-    }
-
-    /// `Url` source kind isn't wired through repo refresh yet; the helper
-    /// surfaces a generic (artifact-agnostic) "not yet supported" error so
-    /// callers can layer their own context prefix.
-    #[test]
-    fn resolve_cached_artifact_path_url_returns_not_yet_supported() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let err = resolve_cached_artifact_path(
-            &peppy_dirs,
-            RepoSourceKind::Url,
-            Some("https://example.com/archive.tzst"),
-            None,
-            "artifact.json5",
-            &|_| {},
-        )
-        .expect_err("url should error");
-        assert!(err.contains("not yet supported"), "got: {err}");
-        assert!(
-            !err.contains("launcher") && !err.contains("contract"),
-            "helper error should be artifact-agnostic, got: {err}"
-        );
-    }
-
-    /// Git entries are useless without a clone URL; the helper rejects
-    /// them up-front rather than crashing inside `ensure_checkout`.
-    #[test]
-    fn resolve_cached_artifact_path_git_requires_source_uri() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let err = resolve_cached_artifact_path(
-            &peppy_dirs,
-            RepoSourceKind::Git,
-            None,
-            Some("main"),
-            "artifact.json5",
-            &|_| {},
-        )
-        .expect_err("missing source_uri should error");
-        assert!(err.contains("source_uri"), "got: {err}");
-    }
-
-    /// Git entries are also useless without a resolved ref to check out.
-    #[test]
-    fn resolve_cached_artifact_path_git_requires_resolved_ref() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let err = resolve_cached_artifact_path(
-            &peppy_dirs,
-            RepoSourceKind::Git,
-            Some("https://example.com/repo.git"),
-            None,
-            "artifact.json5",
-            &|_| {},
-        )
-        .expect_err("missing resolved_ref should error");
-        assert!(err.contains("resolved_ref"), "got: {err}");
     }
 
     /// Regression for the launcher side of the bug class: a git-sourced
@@ -1806,18 +1342,19 @@ mod tests {
         let source_parent = tempfile::tempdir().unwrap();
         let source_repo_dir = source_parent.path().join("launchers_hub");
         std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let branch = init_repo_with_file(&source_repo_dir, "launchers/demo.json5", "{}");
+        let (branch, commit) = init_repo_with_file(&source_repo_dir, "launchers/demo.json5", "{}");
         let repo_url = source_repo_dir.display().to_string();
 
         write_repo_cache(
             &peppy_dirs,
-            &[mk_launcher_entry(
+            &[launcher_entry(
                 "demo",
-                RepoSourceKind::Git,
-                Some(&repo_url),
-                Some(&branch),
-                "launchers/demo.json5",
-                0,
+                EntryOrigin::Git {
+                    repo_url: repo_url.clone(),
+                    repo_ref: branch,
+                    commit,
+                    path: RepoRelativePath::parse("launchers/demo.json5").unwrap(),
+                },
             )],
         )
         .unwrap();
@@ -1846,14 +1383,7 @@ mod tests {
         let peppy_dirs = PeppyDirs::new(tmp.path());
         write_repo_cache(
             &peppy_dirs,
-            &[mk_launcher_entry(
-                "demo",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/tmp/demo.json5",
-                0,
-            )],
+            &[mk_launcher_entry("demo", "/tmp/demo.json5", 0)],
         )
         .unwrap();
 
@@ -1872,16 +1402,18 @@ mod tests {
     fn write_contract_cache_serializes_entries() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entries = vec![mk_contract_entry(
+        let entry = contract_entry(
             "uvc_camera",
             "v1",
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
-            RepoSourceKind::Git,
-            Some("https://github.com/Peppy-bot/interfaces_hub"),
-            Some("main"),
-            "uvc_camera/peppy.json5",
-            0,
-        )];
+            git_origin(
+                "https://github.com/Peppy-bot/interfaces_hub",
+                "main",
+                "uvc_camera",
+                "uvc_camera/peppy.json5",
+            ),
+        );
+        let expected_sha = entry.sha256.to_string();
+        let entries = vec![entry];
         write_repo_cache(&peppy_dirs, &entries).unwrap();
 
         let path = contracts_repo_cache_path(&peppy_dirs);
@@ -1894,12 +1426,9 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["contract_name"], "uvc_camera");
         assert_eq!(arr[0]["tag"], "v1");
-        assert_eq!(
-            arr[0]["sha256"],
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
-        assert_eq!(arr[0]["source_type"], "git");
-        assert_eq!(arr[0]["path"], "uvc_camera/peppy.json5");
+        assert_eq!(arr[0]["sha256"], expected_sha);
+        assert_eq!(arr[0]["origin"]["source_type"], "git");
+        assert_eq!(arr[0]["origin"]["path"], "uvc_camera/peppy.json5");
     }
 
     /// Lookup picks the lowest-`repo_id` entry, even when two repos
@@ -1908,32 +1437,14 @@ mod tests {
     #[test]
     fn lookup_contract_picks_highest_priority_repo() {
         let entries = vec![
-            mk_contract_entry(
-                "uvc_camera",
-                "v1",
-                "bbbb",
-                RepoSourceKind::Git,
-                Some("https://example.com/b"),
-                Some("main"),
-                "uvc_camera/peppy.json5",
-                5,
-            ),
-            mk_contract_entry(
-                "uvc_camera",
-                "v1",
-                "aaaa",
-                RepoSourceKind::Git,
-                Some("https://example.com/a"),
-                Some("main"),
-                "uvc_camera/peppy.json5",
-                1,
-            ),
+            mk_contract_entry("uvc_camera", "v1", "/b/peppy.json5", 5),
+            mk_contract_entry("uvc_camera", "v1", "/a/peppy.json5", 1),
         ];
         let hit = lookup_contract(&entries, "uvc_camera", "v1")
             .expect("distinct repo ids are not ambiguous")
             .expect("should resolve");
         assert_eq!(hit.repo_id, 1);
-        assert_eq!(hit.sha256, "aaaa");
+        assert_eq!(hit.origin.path_str(), "/a/peppy.json5");
     }
 
     /// `lookup_contract_by_sha256` returns the exact content match
@@ -1941,29 +1452,23 @@ mod tests {
     #[test]
     fn lookup_contract_by_sha256_returns_exact_match() {
         let entries = vec![
-            mk_contract_entry(
-                "uvc_camera",
-                "v1",
-                "aaaa",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/a/peppy.json5",
-                1,
-            ),
-            mk_contract_entry(
-                "uvc_camera",
-                "v1",
-                "bbbb",
-                RepoSourceKind::Fs,
-                None,
-                None,
-                "/b/peppy.json5",
-                9,
-            ),
+            {
+                let mut e = mk_contract_entry("uvc_camera", "v1", "/a/peppy.json5", 1);
+                e.sha256 = fingerprint("a");
+                e
+            },
+            {
+                let mut e = mk_contract_entry("uvc_camera", "v1", "/b/peppy.json5", 9);
+                e.sha256 = fingerprint("b");
+                e
+            },
         ];
-        let hit = lookup_contract_by_sha256(&entries, "uvc_camera", "v1", "bbbb").unwrap();
+        let hit =
+            lookup_contract_by_sha256(&entries, "uvc_camera", "v1", &fingerprint("b")).unwrap();
         assert_eq!(hit.repo_id, 9);
-        assert!(lookup_contract_by_sha256(&entries, "uvc_camera", "v1", "zzzz").is_none());
+        assert!(
+            lookup_contract_by_sha256(&entries, "uvc_camera", "v1", &fingerprint("absent"))
+                .is_none()
+        );
     }
 }

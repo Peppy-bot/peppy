@@ -247,19 +247,16 @@ async fn resolve_node_config_with_source_path(
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
         NodeSource::RepoNode { name, tag } => {
-            let resolved = repo_cache::resolve_repo_node_source(&name, &tag, peppy_dirs)?;
-            // The packages cache only stores Fs/Git/Http entries, so the
-            // resolved source should never be another RepoNode. Guard against
-            // infinite recursion in case that invariant is ever broken.
-            if matches!(resolved, NodeSource::RepoNode { .. }) {
-                return Err(format!(
-                    "repo-node `{name}:{tag}` resolved to another repo-node source; this is a bug in the packages cache"
-                ));
-            }
-            Box::pin(resolve_node_config_with_source_path(
-                resolved, peppy_dirs, deadline,
-            ))
-            .await
+            let entry = repo_cache::resolve_repo_node_entry(&name, &tag, peppy_dirs)?;
+            let (source_dir, config) = crate::services::node::cache::materialize_entry(
+                &entry,
+                peppy_dirs,
+                crate::services::node::cache::silent_feedback(),
+            )
+            .await?;
+            // The checkout cache owns the directory and keys it by commit, so
+            // nothing here is a temporary the caller has to keep alive.
+            Ok((config, source_dir, None))
         }
     }
 }

@@ -124,13 +124,9 @@ fn print_nodes(nodes: &[&RepoListNodeEntry], winner: &HashMap<(&str, &str), &str
     let max_tag_len = nodes.iter().map(|n| n.node_tag.len()).max().unwrap_or(0);
 
     for node in nodes {
-        // Two situations that used to share one "(duplicate)" label.
-        // Shadowing resolves deterministically and is a feature; a
-        // conflict has no winner and does not resolve at all. Reading the
-        // second as the first is what let the original defect hide.
-        let suffix = if node.conflict {
-            paint("  (conflict: claimed twice here)", RED, colorize)
-        } else if node.duplicate {
+        // Shadowing resolves deterministically and is a feature: the
+        // lower-id repository wins and the label says which one.
+        let suffix = if node.duplicate {
             let by = winner
                 .get(&(node.node_name.as_str(), node.node_tag.as_str()))
                 .copied()

@@ -153,12 +153,10 @@ impl<'a> From<&'a DependsOn> for DeclaredLinkSlots<'a> {
             by_id.insert(link_id, LinkSlotKind::Binding);
         }
         for dep in &depends_on.pairings {
-            let kind = if dep.is_observer() {
-                LinkSlotKind::Observer
-            } else {
-                LinkSlotKind::Participant
-            };
-            by_id.insert(dep.link_id(), kind);
+            by_id.insert(dep.link_id.as_str(), LinkSlotKind::Participant);
+        }
+        for dep in &depends_on.pairing_observers {
+            by_id.insert(dep.link_id.as_str(), LinkSlotKind::Observer);
         }
         Self { by_id }
     }

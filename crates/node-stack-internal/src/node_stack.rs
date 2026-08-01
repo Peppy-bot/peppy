@@ -15,7 +15,7 @@ pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
-    NodeConfig, PairingDependency, PairingParticipantDependency,
+    NodeConfig, PairingParticipantDependency,
     collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
@@ -642,8 +642,9 @@ impl NodeStackInner {
                 .iter()
                 .find(|inst| inst.instance_id().as_str() == slot.instance_id)
                 .map(|inst| {
-                    // Only a participant slot can be paired; an observer slot
-                    // with this link_id is treated as not a pair slot.
+                    // Only a participant slot can be paired. Observers live
+                    // in their own list, so one sharing this link_id is
+                    // simply not found here.
                     let dep = entity
                         .config()
                         .manifest
@@ -653,15 +654,8 @@ impl NodeStackInner {
                             depends_on
                                 .pairings
                                 .iter()
-                                .find_map(|dependency| match dependency {
-                                    PairingDependency::Participant(participant)
-                                        if participant.link_id == slot.link_id =>
-                                    {
-                                        Some(participant.clone())
-                                    }
-                                    PairingDependency::Participant(_)
-                                    | PairingDependency::Observer(_) => None,
-                                })
+                                .find(|participant| participant.link_id == slot.link_id)
+                                .cloned()
                         });
                     (dep, inst.state())
                 })
@@ -850,9 +844,6 @@ impl NodeStackInner {
                     continue;
                 }
                 for dep in &deps.pairings {
-                    let PairingDependency::Participant(dep) = dep else {
-                        continue;
-                    };
                     let slot =
                         SlotAddr::new(&local_core_node, inst.instance_id().as_str(), &dep.link_id);
                     if self.pairing_registry.find_by_slot(&slot).is_none() {
@@ -1456,7 +1447,7 @@ pub struct PairingNodeSnapshot {
     pub node_name: String,
     pub node_tag: String,
     pub instance_ids: Vec<String>,
-    pub pairing_deps: Vec<config::node::PairingDependency>,
+    pub pairing_deps: Vec<config::node::PairingParticipantDependency>,
 }
 
 /// The serialized pairing-slot view of one instance: every declared
@@ -1465,19 +1456,18 @@ pub struct PairingNodeSnapshot {
 /// `node_info` handler so the join rule stays in one place. `core_node`
 /// stamps the peer's `ProducerRef` (stack-scoped v1: every pair lives
 /// under this daemon, so the peer's core_node is the daemon's own).
+///
+/// Observer slots are absent by construction: they live in their own
+/// `depends_on.pairing_observers` list, hold no role and no peer, and are
+/// never paired.
 pub fn pairing_slot_view(
     core_node: &str,
     instance_id: &str,
-    deps: &[config::node::PairingDependency],
+    deps: &[config::node::PairingParticipantDependency],
     live_pairs: &[Pairing],
 ) -> std::collections::BTreeMap<String, SerializedPairingSlot> {
     let mut out = std::collections::BTreeMap::new();
     for dep in deps {
-        // Observer slots are not pairing slots (no role, no peer, never
-        // paired), so they do not appear in the pairing-slot view.
-        let PairingDependency::Participant(dep) = dep else {
-            continue;
-        };
         let slot = SlotAddr::new(core_node, instance_id, &dep.link_id);
         let binding = live_pairs
             .iter()

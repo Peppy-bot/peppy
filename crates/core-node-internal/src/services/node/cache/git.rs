@@ -1,10 +1,10 @@
 //! Persistent Git checkout cache shared across `node add` batches.
 //!
-//! Keyed by `(repo_url, repo_ref)`, entries live under
-//! [`PeppyDirs::git_checkouts_dir`]. A batch that pulls several nodes
-//! from the same repo + ref reuses a single checkout; subsequent batches
-//! that hit the same key skip the clone entirely (only fetching new
-//! commits on the pinned ref).
+//! Keyed by `(repo_url, commit)`, entries live under
+//! [`PeppyDirs::git_checkouts_dir`]. A commit names one tree for as long
+//! as the repository exists, so a populated checkout is already the right
+//! bytes and is reused without touching the network. Several nodes from
+//! one repository at one commit share a single checkout.
 //!
 //! Concurrency is serialized with an in-process mutex map keyed by
 //! `<slug>-<hash>` so two concurrent batches inside the same daemon
@@ -16,60 +16,68 @@ use super::super::git_utils::{clone_with_progress, fetch_with_progress};
 use super::key;
 use super::keyed_lock::KeyedLocks;
 use daemon_config::consts::PeppyDirs;
-use parking_lot::Mutex;
-use std::collections::HashMap;
+use daemon_config::repository::GitCommit;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::SystemTime;
 
 static LOCKS: KeyedLocks = KeyedLocks::new();
 
-/// Path where the checkout for `(repo_url, repo_ref)` lives (whether or
-/// not it has been populated yet). Exposed for tests and diagnostics.
-pub fn checkout_dir_for(peppy_dirs: &PeppyDirs, repo_url: &str, repo_ref: Option<&str>) -> PathBuf {
+/// Path where the checkout for `(repo_url, commit)` lives (whether or not
+/// it has been populated yet). Exposed for tests and diagnostics.
+pub fn checkout_dir_for(peppy_dirs: &PeppyDirs, repo_url: &str, commit: &GitCommit) -> PathBuf {
     let slug = key::slug(repo_url, "repo");
-    let hash = key::short_hash(repo_url, repo_ref);
+    let hash = key::short_hash(repo_url, Some(commit.as_str()));
     peppy_dirs
         .git_checkouts_dir()
         .join(format!("{slug}-{hash}"))
 }
 
-/// Returns `true` when the directory looks like a populated git working
-/// tree (`.git` exists). A stale/partial directory (e.g. the clone
-/// crashed mid-way) is wiped and re-cloned.
-fn is_populated(dir: &Path) -> bool {
-    dir.join(".git").exists()
+/// Whether `dir` is a git working tree already checked out at `commit`.
+///
+/// Both halves matter. A directory without `.git` is a partial or crashed
+/// clone, and one at another commit belongs to a key it no longer matches,
+/// which only a hand-edited cache dir can produce.
+fn is_checked_out_at(dir: &Path, commit: &GitCommit) -> bool {
+    if !dir.join(".git").exists() {
+        return false;
+    }
+    let Ok(repo) = git2::Repository::open(dir) else {
+        return false;
+    };
+    repo.head()
+        .and_then(|head| head.peel_to_commit())
+        .is_ok_and(|head| head.id().to_string() == commit.as_str())
 }
 
-/// Per-process map of cache keys to the repo-cache generation they were
-/// last refreshed against. This keeps repeated materializations within a
-/// single `nodes.json5` snapshot fast without pinning moving refs for
-/// the full daemon lifetime.
-fn refreshed_generations() -> &'static Mutex<HashMap<String, SystemTime>> {
-    static MAP: OnceLock<Mutex<HashMap<String, SystemTime>>> = OnceLock::new();
-    MAP.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Ensures a checkout exists for `(repo_url, repo_ref)` and returns the
-/// working-tree directory. The checkout is populated on first call and
-/// refreshed (fetch + checkout) on subsequent calls so pinned refs that
-/// moved upstream stay current. Callers should pass the same
-/// `nodes.json5` generation they resolved the repo entry from so the
-/// checkout stays consistent with that snapshot.
+/// Ensures a checkout of `commit` exists and returns its working-tree
+/// directory.
+///
+/// `repo_ref` is where the fetch starts: cloning a branch is the cheap way
+/// to reach a commit that is at or near its tip, which is the common case.
+/// A commit the branch has since moved past is fetched by its own hash, and
+/// one the remote no longer holds is refused rather than silently answered
+/// with the branch tip.
 ///
 /// Blocking; callers inside tokio should run this via
 /// [`tokio::task::spawn_blocking`].
-pub fn ensure_checkout(
+pub fn ensure_checkout_at_commit(
     peppy_dirs: &PeppyDirs,
     repo_url: &str,
     repo_ref: Option<&str>,
-    cache_generation: Option<SystemTime>,
+    commit: &GitCommit,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PathBuf, String> {
-    let dir = checkout_dir_for(peppy_dirs, repo_url, repo_ref);
+    let dir = checkout_dir_for(peppy_dirs, repo_url, commit);
     let lock_key = dir.to_string_lossy().into_owned();
     let lock = LOCKS.lock_for(&lock_key);
     let _guard = lock.lock();
+
+    if is_checked_out_at(&dir, commit) {
+        on_feedback(&format!(
+            "Reusing cached checkout of {commit} at {}",
+            dir.display()
+        ));
+        return Ok(dir);
+    }
 
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -81,426 +89,271 @@ pub fn ensure_checkout(
         })?;
     }
 
-    let result = if is_populated(&dir) {
-        if let Some(generation) = cache_generation
-            && refreshed_generations().lock().get(&lock_key) == Some(&generation)
-        {
-            on_feedback(&format!(
-                "Reusing cached checkout at {} (already refreshed for this packages cache generation)",
-                dir.display()
-            ));
-            return Ok(dir);
-        }
-        on_feedback(&format!("Reusing cached checkout at {}", dir.display()));
-        refresh_existing(&dir, repo_url, repo_ref, on_feedback)
-    } else {
-        if dir.exists() {
-            // Partial/stale checkout; wipe and re-clone to avoid git2
-            // tripping on a populated but non-git directory.
-            std::fs::remove_dir_all(&dir).ok();
-        }
-        on_feedback(&format!(
-            "Cloning {} into cache at {}",
-            repo_url,
-            dir.display()
-        ));
-        fresh_clone(&dir, repo_url, repo_ref, on_feedback)
-    };
-
-    if result.is_ok()
-        && let Some(generation) = cache_generation
-    {
-        refreshed_generations().lock().insert(lock_key, generation);
-    }
-    result
-}
-
-fn fresh_clone(
-    dir: &Path,
-    repo_url: &str,
-    repo_ref: Option<&str>,
-    on_feedback: &dyn Fn(&str),
-) -> std::result::Result<PathBuf, String> {
-    clone_with_progress(repo_url, repo_ref, dir, true, &mut |line| on_feedback(line))?;
-    Ok(dir.to_path_buf())
-}
-
-fn refresh_existing(
-    dir: &Path,
-    repo_url: &str,
-    repo_ref: Option<&str>,
-    on_feedback: &dyn Fn(&str),
-) -> std::result::Result<PathBuf, String> {
-    let wipe_and_reclone = |reason: &str| -> std::result::Result<PathBuf, String> {
-        on_feedback(reason);
-        std::fs::remove_dir_all(dir).map_err(|remove_err| {
+    // Anything already here is a checkout that did not finish, since a
+    // finished one at this key is the commit asked for.
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| {
             format!(
-                "Failed to remove stale cached checkout at {}: {}",
-                dir.display(),
-                remove_err
+                "Failed to remove incomplete checkout at {}: {e}",
+                dir.display()
             )
         })?;
-        on_feedback(&format!(
-            "Recloning {} into cache at {}",
-            repo_url,
-            dir.display()
-        ));
-        fresh_clone(dir, repo_url, repo_ref, on_feedback)
-    };
+    }
 
-    let repo = match git2::Repository::open(dir) {
-        Ok(repo) => repo,
-        Err(e) => {
-            return wipe_and_reclone(&format!(
-                "Failed to open cached checkout at {} ({e}); removing stale checkout and recloning",
-                dir.display()
-            ));
-        }
-    };
+    on_feedback(&format!(
+        "Cloning {repo_url} at {commit} into cache at {}",
+        dir.display()
+    ));
+    // Cloned shallow at the ref first: when the commit is the ref's tip,
+    // which is what a freshly refreshed cache pins, this is the whole job.
+    let repo = clone_with_progress(repo_url, None, &dir, true, &mut |line| on_feedback(line))?;
 
-    // Attempt a shallow fetch of the current ref. Some transports reject
-    // depth(1) on refetch (local transport in particular); the helper
-    // downgrades to a non-shallow fetch in that case.
-    let refspec = repo_ref.unwrap_or("HEAD");
-    let fetch_result = repo.find_remote("origin").and_then(|mut remote| {
-        fetch_with_progress(&mut remote, repo_url, refspec, true, &mut |line| {
+    if checkout_repo_ref(&repo, commit.as_str()).is_ok() {
+        return Ok(dir);
+    }
+
+    fetch_commit(&repo, repo_url, repo_ref, commit, on_feedback)?;
+    checkout_repo_ref(&repo, commit.as_str()).map_err(|e| {
+        format!("Failed to check out commit {commit} of {repo_url} after fetching it: {e}")
+    })?;
+    Ok(dir)
+}
+
+/// Brings `commit` into `repo`, having failed to find it in the shallow
+/// clone of the ref.
+///
+/// Two attempts, because two different things are wrong in the two cases.
+/// Asking for the commit by hash covers a branch that moved past it, and
+/// works wherever the host allows it. Deepening the ref covers a host that
+/// does not, at the cost of the history the shallow clone skipped.
+fn fetch_commit(
+    repo: &git2::Repository,
+    repo_url: &str,
+    repo_ref: Option<&str>,
+    commit: &GitCommit,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<(), String> {
+    on_feedback(&format!(
+        "Commit {commit} is not in the shallow clone of {repo_url}; fetching it"
+    ));
+
+    let by_hash = repo.find_remote("origin").and_then(|mut remote| {
+        fetch_with_progress(&mut remote, repo_url, commit.as_str(), true, &mut |line| {
             on_feedback(line)
         })
     });
-
-    if let Err(e) = fetch_result {
-        drop(repo);
-        return wipe_and_reclone(&format!(
-            "Fetch for cached checkout failed ({e}); removing stale checkout and recloning"
-        ));
+    if by_hash.is_ok() && has_commit(repo, commit) {
+        return Ok(());
     }
 
-    checkout_repo_ref(&repo, "FETCH_HEAD")
-        .map_err(|e| format!("Failed to checkout fetched ref for '{}': {}", refspec, e))?;
-    Ok(dir.to_path_buf())
+    let refspec = repo_ref.unwrap_or("HEAD");
+    on_feedback(&format!(
+        "{repo_url} does not serve commits by hash; fetching the full history of {refspec}"
+    ));
+    repo.find_remote("origin")
+        .and_then(|mut remote| {
+            fetch_with_progress(&mut remote, repo_url, refspec, false, &mut |line| {
+                on_feedback(line)
+            })
+        })
+        .map_err(|e| format!("Failed to fetch {refspec} from {repo_url}: {e}"))?;
+
+    if has_commit(repo, commit) {
+        return Ok(());
+    }
+    Err(format!(
+        "commit {commit} is not reachable at {repo_url}. The pin names bytes this remote no \
+         longer serves, which means the repository was rewritten or the commit was never pushed"
+    ))
+}
+
+/// Whether the object database already holds `commit`.
+fn has_commit(repo: &git2::Repository, commit: &GitCommit) -> bool {
+    git2::Oid::from_str(commit.as_str())
+        .and_then(|oid| repo.find_commit(oid))
+        .is_ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::time::{Duration, SystemTime};
 
-    fn commit_file(repo: &git2::Repository, repo_dir: &Path, contents: &str, message: &str) {
-        let file_name = Path::new("tracked.txt");
-        std::fs::write(repo_dir.join(file_name), contents).expect("write tracked file");
-
-        let mut index = repo.index().expect("open index");
-        index.add_path(file_name).expect("add tracked file");
-        index.write().expect("write index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-
-        let parent_commits: Vec<git2::Commit> = repo
-            .head()
-            .ok()
-            .and_then(|head| head.target())
-            .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
-            .unwrap_or_default();
-        let parent_refs: Vec<&git2::Commit> = parent_commits.iter().collect();
+    /// A repository with one commit per entry in `contents`, returning the
+    /// commit of each in order. Built with the local transport, so nothing
+    /// here reaches the network.
+    fn repo_with_commits(dir: &Path, contents: &[&str]) -> Vec<GitCommit> {
+        std::fs::create_dir_all(dir).expect("create source repo dir");
+        let repo = git2::Repository::init(dir).expect("init source repo");
         let signature =
             git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+        let file_name = Path::new("tracked.txt");
 
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            message,
-            &tree,
-            &parent_refs,
-        )
-        .expect("commit tracked file");
+        contents
+            .iter()
+            .map(|content| {
+                std::fs::write(dir.join(file_name), content).expect("write tracked file");
+                let mut index = repo.index().expect("open index");
+                index.add_path(file_name).expect("add tracked file");
+                index.write().expect("write index");
+                let tree_id = index.write_tree().expect("write tree");
+                let tree = repo.find_tree(tree_id).expect("find tree");
+                let parents: Vec<git2::Commit> = repo
+                    .head()
+                    .ok()
+                    .and_then(|head| head.target())
+                    .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
+                    .unwrap_or_default();
+                let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+                let oid = repo
+                    .commit(
+                        Some("HEAD"),
+                        &signature,
+                        &signature,
+                        content,
+                        &tree,
+                        &parent_refs,
+                    )
+                    .expect("commit tracked file");
+                GitCommit::parse(&oid.to_string()).expect("a real commit is a full hash")
+            })
+            .collect()
     }
 
-    fn write_packages_cache_generation(
-        peppy_dirs: &PeppyDirs,
-        marker: &str,
-        previous: Option<SystemTime>,
-    ) -> SystemTime {
-        let cache_path = crate::services::repo::cache::nodes_repo_cache_path(peppy_dirs);
-        std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
-
-        for attempt in 0..20 {
-            let contents = format!(r#"[{{"marker":"{marker}-{attempt}"}}]"#);
-            std::fs::write(&cache_path, contents).expect("write packages cache");
-
-            let modified = std::fs::metadata(&cache_path)
-                .expect("read packages cache metadata")
-                .modified()
-                .expect("read packages cache mtime");
-            match previous {
-                Some(prev) if modified <= prev => std::thread::sleep(Duration::from_millis(100)),
-                _ => return modified,
-            }
-        }
-
-        panic!("failed to advance packages cache generation");
-    }
-
-    #[test]
-    fn checkout_dir_for_distinct_refs_distinct_dirs() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let a = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("v1"));
-        let b = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("v2"));
-        let c = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", None);
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-        assert_ne!(b, c);
-    }
-
-    #[test]
-    fn checkout_dir_for_same_url_same_ref_same_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let a = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("main"));
-        let b = checkout_dir_for(&peppy_dirs, "https://example.com/repo.git", Some("main"));
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn ensure_checkout_refreshes_when_packages_cache_generation_changes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let first_generation = write_packages_cache_generation(&peppy_dirs, "initial", None);
-
-        let source_parent = tempfile::tempdir().unwrap();
-        let source_repo_dir = source_parent.path().join("source-repo");
-        std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let repo = git2::Repository::init(&source_repo_dir).expect("init source repo");
-        commit_file(&repo, &source_repo_dir, "first", "first commit");
-
-        let repo_url = source_repo_dir.display().to_string();
-        let repo_ref = repo
+    fn head_branch(repo_dir: &Path) -> String {
+        git2::Repository::open(repo_dir)
+            .expect("open source repo")
             .head()
             .expect("head")
             .shorthand()
             .expect("branch shorthand")
-            .to_owned();
+            .to_owned()
+    }
 
-        let checkout = ensure_checkout(
-            &peppy_dirs,
-            &repo_url,
-            Some(&repo_ref),
-            Some(first_generation),
-            &|_| {},
-        )
-        .expect("initial checkout");
+    #[test]
+    fn checkout_dir_for_distinct_commits_distinct_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let a = GitCommit::parse(&"a".repeat(40)).unwrap();
+        let b = GitCommit::parse(&"b".repeat(40)).unwrap();
+        let url = "https://example.com/repo.git";
+        assert_ne!(
+            checkout_dir_for(&peppy_dirs, url, &a),
+            checkout_dir_for(&peppy_dirs, url, &b)
+        );
+        assert_eq!(
+            checkout_dir_for(&peppy_dirs, url, &a),
+            checkout_dir_for(&peppy_dirs, url, &a)
+        );
+    }
+
+    #[test]
+    fn ensure_checkout_at_commit_reuses_a_populated_dir_without_fetching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let source = tempfile::tempdir().unwrap();
+        let source_dir = source.path().join("source-repo");
+        let commits = repo_with_commits(&source_dir, &["first"]);
+        let url = source_dir.display().to_string();
+        let branch = head_branch(&source_dir);
+
+        let checkout =
+            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+                .expect("initial checkout");
         assert_eq!(
             std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
             "first"
         );
 
-        commit_file(&repo, &source_repo_dir, "second", "second commit");
-
-        let same_generation_feedback = RefCell::new(Vec::new());
-        let reused_checkout = ensure_checkout(
-            &peppy_dirs,
-            &repo_url,
-            Some(&repo_ref),
-            Some(first_generation),
-            &|line| same_generation_feedback.borrow_mut().push(line.to_owned()),
-        )
-        .expect("reuse checkout within same generation");
-        assert_eq!(checkout, reused_checkout);
+        // Deleting the source proves the second call touched no network:
+        // a clone or fetch against a missing path fails outright.
+        std::fs::remove_dir_all(&source_dir).expect("remove source repo");
+        let lines = std::cell::RefCell::new(Vec::new());
+        let reused = ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
+            lines.borrow_mut().push(l.to_owned())
+        })
+        .expect("a populated checkout needs no remote");
+        assert_eq!(checkout, reused);
         assert_eq!(
-            std::fs::read_to_string(reused_checkout.join("tracked.txt")).unwrap(),
-            "first",
-            "same packages cache generation should keep using the previously refreshed checkout"
-        );
-        assert_eq!(
-            same_generation_feedback.into_inner(),
+            lines.into_inner(),
             vec![format!(
-                "Reusing cached checkout at {} (already refreshed for this packages cache generation)",
-                reused_checkout.display()
-            )],
-            "same packages cache generation should short-circuit before any refetch"
-        );
-
-        let second_generation =
-            write_packages_cache_generation(&peppy_dirs, "refreshed", Some(first_generation));
-        let refreshed_feedback = RefCell::new(Vec::new());
-        let refreshed_checkout = ensure_checkout(
-            &peppy_dirs,
-            &repo_url,
-            Some(&repo_ref),
-            Some(second_generation),
-            &|line| refreshed_feedback.borrow_mut().push(line.to_owned()),
-        )
-        .expect("refresh checkout after packages cache update");
-        let refreshed_feedback = refreshed_feedback.into_inner();
-        assert_eq!(checkout, refreshed_checkout);
-        assert_eq!(
-            std::fs::read_to_string(refreshed_checkout.join("tracked.txt")).unwrap(),
-            "second",
-            "new packages cache generation should refresh moving refs"
-        );
-        assert!(
-            refreshed_feedback.iter().any(|line| line
-                == &format!(
-                    "Reusing cached checkout at {}",
-                    refreshed_checkout.display()
-                )),
-            "new packages cache generation should refresh the cached checkout"
+                "Reusing cached checkout of {} at {}",
+                commits[0],
+                reused.display()
+            )]
         );
     }
 
     #[test]
-    fn ensure_checkout_reclones_when_cached_repo_is_corrupted() {
+    fn ensure_checkout_at_commit_resolves_a_commit_the_branch_moved_past() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let first_generation = write_packages_cache_generation(&peppy_dirs, "initial", None);
+        let source = tempfile::tempdir().unwrap();
+        let source_dir = source.path().join("source-repo");
+        let commits = repo_with_commits(&source_dir, &["first", "second"]);
+        let url = source_dir.display().to_string();
+        let branch = head_branch(&source_dir);
 
-        let source_parent = tempfile::tempdir().unwrap();
-        let source_repo_dir = source_parent.path().join("source-repo");
-        std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let repo = git2::Repository::init(&source_repo_dir).expect("init source repo");
-        commit_file(&repo, &source_repo_dir, "first", "first commit");
-
-        let repo_url = source_repo_dir.display().to_string();
-        let repo_ref = repo
-            .head()
-            .expect("head")
-            .shorthand()
-            .expect("branch shorthand")
-            .to_owned();
-
-        let checkout = ensure_checkout(
-            &peppy_dirs,
-            &repo_url,
-            Some(&repo_ref),
-            Some(first_generation),
-            &|_| {},
-        )
-        .expect("initial checkout");
-
-        commit_file(&repo, &source_repo_dir, "second", "second commit");
-
-        // Corrupt the cached checkout so `Repository::open` fails but
-        // `is_populated` still returns true: replace the `.git` directory
-        // with a regular file containing an invalid gitlink, which libgit2
-        // rejects at open time.
-        std::fs::remove_dir_all(checkout.join(".git")).expect("remove .git dir");
-        std::fs::write(checkout.join(".git"), "not a valid gitlink")
-            .expect("write corrupt .git file");
-
-        let second_generation =
-            write_packages_cache_generation(&peppy_dirs, "refreshed", Some(first_generation));
-        let refreshed_feedback = RefCell::new(Vec::new());
-        let refreshed_checkout = ensure_checkout(
-            &peppy_dirs,
-            &repo_url,
-            Some(&repo_ref),
-            Some(second_generation),
-            &|line| refreshed_feedback.borrow_mut().push(line.to_owned()),
-        )
-        .expect("corrupted cached checkout should be wiped and recloned");
-        let refreshed_feedback = refreshed_feedback.into_inner();
-
-        assert_eq!(checkout, refreshed_checkout);
+        // The branch now points at "second"; the pin names "first".
+        let checkout =
+            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+                .expect("a commit behind the branch tip still resolves");
         assert_eq!(
-            std::fs::read_to_string(refreshed_checkout.join("tracked.txt")).unwrap(),
-            "second",
-            "reclone after corruption must produce a working tree at the latest ref"
+            std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
+            "first",
+            "the pinned commit is what gets checked out, not the branch tip"
         );
-        assert!(
-            refreshed_feedback
-                .iter()
-                .any(|line| line.contains("Failed to open cached checkout")),
-            "expected feedback about the failed open, got: {refreshed_feedback:?}"
-        );
-        assert!(
-            refreshed_feedback.iter().any(|line| {
-                line == &format!(
-                    "Recloning {} into cache at {}",
-                    repo_url,
-                    refreshed_checkout.display()
-                )
-            }),
-            "expected fallback reclone feedback, got: {refreshed_feedback:?}"
+
+        let tip = ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[1], &|_| {})
+            .expect("the tip resolves too");
+        assert_ne!(checkout, tip, "two commits are two checkouts");
+        assert_eq!(
+            std::fs::read_to_string(tip.join("tracked.txt")).unwrap(),
+            "second"
         );
     }
 
     #[test]
-    fn ensure_checkout_reclones_after_failed_refetch() {
+    fn ensure_checkout_at_commit_refuses_a_commit_the_remote_does_not_have() {
         let tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(tmp.path());
-        let first_generation = write_packages_cache_generation(&peppy_dirs, "initial", None);
+        let source = tempfile::tempdir().unwrap();
+        let source_dir = source.path().join("source-repo");
+        repo_with_commits(&source_dir, &["first"]);
+        let url = source_dir.display().to_string();
+        let branch = head_branch(&source_dir);
+        let absent = GitCommit::parse(&"0".repeat(40)).unwrap();
 
-        let source_parent = tempfile::tempdir().unwrap();
-        let source_repo_dir = source_parent.path().join("source-repo");
-        std::fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let repo = git2::Repository::init(&source_repo_dir).expect("init source repo");
-        commit_file(&repo, &source_repo_dir, "first", "first commit");
+        let error = ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &absent, &|_| {})
+            .expect_err("a commit the remote never had cannot be checked out");
+        assert!(
+            error.contains(absent.as_str()) && error.contains("not reachable"),
+            "the refusal names the commit it could not reach, got: {error}"
+        );
+    }
 
-        let repo_url = source_repo_dir.display().to_string();
-        let repo_ref = repo
-            .head()
-            .expect("head")
-            .shorthand()
-            .expect("branch shorthand")
-            .to_owned();
+    #[test]
+    fn ensure_checkout_at_commit_replaces_an_incomplete_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let source = tempfile::tempdir().unwrap();
+        let source_dir = source.path().join("source-repo");
+        let commits = repo_with_commits(&source_dir, &["first"]);
+        let url = source_dir.display().to_string();
+        let branch = head_branch(&source_dir);
 
-        let checkout = ensure_checkout(
-            &peppy_dirs,
-            &repo_url,
-            Some(&repo_ref),
-            Some(first_generation),
-            &|_| {},
-        )
-        .expect("initial checkout");
+        // A directory at the key with no `.git`: what a clone killed
+        // half-way through leaves behind.
+        let dir = checkout_dir_for(&peppy_dirs, &url, &commits[0]);
+        std::fs::create_dir_all(&dir).expect("create partial checkout");
+        std::fs::write(dir.join("tracked.txt"), "garbage").expect("write partial content");
+
+        let checkout =
+            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+                .expect("an incomplete checkout is replaced rather than trusted");
+        assert_eq!(checkout, dir);
         assert_eq!(
             std::fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
             "first"
-        );
-
-        commit_file(&repo, &source_repo_dir, "second", "second commit");
-
-        let checkout_repo = git2::Repository::open(&checkout).expect("open cached checkout");
-        checkout_repo
-            .remote_set_url("origin", "/definitely/missing/remote")
-            .expect("corrupt cached origin URL");
-        drop(checkout_repo);
-
-        let second_generation =
-            write_packages_cache_generation(&peppy_dirs, "refreshed", Some(first_generation));
-        let refreshed_feedback = RefCell::new(Vec::new());
-        let refreshed_checkout = ensure_checkout(
-            &peppy_dirs,
-            &repo_url,
-            Some(&repo_ref),
-            Some(second_generation),
-            &|line| refreshed_feedback.borrow_mut().push(line.to_owned()),
-        )
-        .expect("refresh after failed fetch should recover via reclone");
-        let refreshed_feedback = refreshed_feedback.into_inner();
-
-        assert_eq!(checkout, refreshed_checkout);
-        assert_eq!(
-            std::fs::read_to_string(refreshed_checkout.join("tracked.txt")).unwrap(),
-            "second",
-            "failed refetch must not reuse the stale checkout contents"
-        );
-        assert!(
-            refreshed_feedback
-                .iter()
-                .any(|line| line.contains("Fetch for cached checkout failed")),
-            "expected feedback about the failed refetch"
-        );
-        assert!(
-            refreshed_feedback.iter().any(|line| {
-                line == &format!(
-                    "Recloning {} into cache at {}",
-                    repo_url,
-                    refreshed_checkout.display()
-                )
-            }),
-            "expected fallback reclone feedback, got: {refreshed_feedback:?}"
         );
     }
 }

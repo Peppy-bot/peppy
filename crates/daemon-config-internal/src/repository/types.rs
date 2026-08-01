@@ -105,6 +105,121 @@ impl<'de> Deserialize<'de> for RepoRelativePath {
     }
 }
 
+/// The SHA-256 of the bytes of the file that declares one item.
+///
+/// What a machine compares to decide whether it already holds the same item
+/// another machine is talking about. Provenance answers where something came
+/// from; this answers whether it is the same thing, which is the question that
+/// authorises reuse.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ManifestFingerprint(String);
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ManifestFingerprintError {
+    #[error("fingerprint is empty")]
+    Empty,
+    #[error("fingerprint is not 64 hexadecimal characters: {0}")]
+    NotASha256(String),
+}
+
+impl ManifestFingerprint {
+    pub fn parse(raw: &str) -> Result<Self, ManifestFingerprintError> {
+        let fingerprint = raw.trim();
+        if fingerprint.is_empty() {
+            return Err(ManifestFingerprintError::Empty);
+        }
+        if fingerprint.len() != 64 || !fingerprint.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(ManifestFingerprintError::NotASha256(fingerprint.to_owned()));
+        }
+        Ok(Self(fingerprint.to_ascii_lowercase()))
+    }
+
+    /// The fingerprint of `bytes`, which is how every fingerprint peppy
+    /// records is produced.
+    pub fn of_bytes(bytes: &[u8]) -> Self {
+        Self(config::fingerprint::fingerprint_for_bytes(bytes))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ManifestFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ManifestFingerprint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(de::Error::custom)
+    }
+}
+
+/// The commit a repository was read at.
+///
+/// A branch name says which line of development to follow, not which bytes to
+/// read; two machines reading `main` a week apart hold different trees. A
+/// commit identifies one tree for as long as the repository exists, which is
+/// what lets one machine tell another where to look and expect the same
+/// answer.
+///
+/// Parsing lowercases, so a commit written by hand in upper case compares
+/// equal to the one libgit2 reports.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct GitCommit(String);
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum GitCommitError {
+    #[error("commit is empty")]
+    Empty,
+    #[error("commit is not 40 hexadecimal characters: {0}")]
+    NotAFullHash(String),
+}
+
+impl GitCommit {
+    pub fn parse(raw: &str) -> Result<Self, GitCommitError> {
+        let commit = raw.trim();
+        if commit.is_empty() {
+            return Err(GitCommitError::Empty);
+        }
+        // An abbreviated hash is rejected rather than expanded: expanding one
+        // needs the repository, and the whole point of the value is to be
+        // readable by a machine that does not have it yet.
+        if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(GitCommitError::NotAFullHash(commit.to_owned()));
+        }
+        Ok(Self(commit.to_ascii_lowercase()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for GitCommit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for GitCommit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(de::Error::custom)
+    }
+}
+
 /// Declares a validated string newtype whose `Deserialize` runs `$validate`,
 /// so an index cannot state an identity the repository caches could never
 /// key on. The two identity halves differ only in which shared validator
@@ -160,6 +275,45 @@ validated_identity!(
     config::repo_node_id::validate_repo_node_tag,
     "tag"
 );
+
+/// Comparison against a plain `&str` for the validated string newtypes.
+///
+/// A caller holding an unvalidated string has a question about equality, not
+/// a value to construct: `entry.name == "uvc_camera"` should not have to
+/// parse the literal first.
+macro_rules! compares_to_str {
+    ($ty:ty) => {
+        impl PartialEq<str> for $ty {
+            fn eq(&self, other: &str) -> bool {
+                self.0 == other
+            }
+        }
+
+        impl PartialEq<&str> for $ty {
+            fn eq(&self, other: &&str) -> bool {
+                self.0 == *other
+            }
+        }
+
+        impl PartialEq<$ty> for str {
+            fn eq(&self, other: &$ty) -> bool {
+                self == other.0
+            }
+        }
+
+        impl PartialEq<$ty> for &str {
+            fn eq(&self, other: &$ty) -> bool {
+                *self == other.0
+            }
+        }
+    };
+}
+
+compares_to_str!(RepoRelativePath);
+compares_to_str!(ManifestFingerprint);
+compares_to_str!(GitCommit);
+compares_to_str!(ItemName);
+compares_to_str!(ItemTag);
 
 /// Where one published identity is declared.
 ///

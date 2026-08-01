@@ -41,12 +41,12 @@ fn assert_last_got_next_id(repos: &[serde_json::Value]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn listen_for_repo_add_url_succeed() {
+async fn listen_for_repo_add_second_git_succeed() {
     let started = start_core_node_with_mock_messenger().await;
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/packages"),
+        &RepoAddRequest::new_git("https://example.com/packages.git", None),
     )
     .await;
     assert!(resp.success, "repo_add should succeed");
@@ -59,8 +59,8 @@ async fn listen_for_repo_add_url_succeed() {
 
     // Last entry is the one we just added, with the next available id
     let last = repos.last().unwrap();
-    assert_eq!(last["type"], "url");
-    assert_eq!(last["url"], "https://example.com/packages");
+    assert_eq!(last["type"], "git");
+    assert_eq!(last["url"], "https://example.com/packages.git");
     assert_last_got_next_id(&repos);
 }
 
@@ -112,7 +112,7 @@ async fn listen_for_repo_add_fs_succeed() {
 async fn listen_for_repo_add_duplicate_fails() {
     let started = start_core_node_with_mock_messenger().await;
 
-    let request = RepoAddRequest::new_url("https://example.com/packages");
+    let request = RepoAddRequest::new_git("https://example.com/packages.git", None);
 
     // First add should succeed
     let resp = send_repo_add(&started, &request).await;
@@ -149,7 +149,7 @@ async fn listen_for_repo_add_fails_when_duplicate_ids_in_file() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/new"),
+        &RepoAddRequest::new_git("https://example.com/new.git", None),
     )
     .await;
     assert!(
@@ -175,7 +175,7 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/packages"),
+        &RepoAddRequest::new_git("https://example.com/packages.git", None),
     )
     .await;
     assert!(resp.success, "repo_add should succeed");
@@ -194,7 +194,7 @@ async fn listen_for_repo_add_assigns_id_after_manual_entry() {
     // The new entry should get id 43 (max existing + 1)
     let added = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/packages")
+        .find(|e| e["url"] == "https://example.com/packages.git")
         .unwrap();
     assert_eq!(
         added["id"], 43,
@@ -216,7 +216,7 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/packages").with_top(true),
+        &RepoAddRequest::new_git("https://example.com/packages.git", None).with_top(true),
     )
     .await;
     assert!(resp.success, "repo_add with top should succeed");
@@ -228,7 +228,7 @@ async fn listen_for_repo_add_top_assigns_min_minus_one() {
 
     let added = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/packages")
+        .find(|e| e["url"] == "https://example.com/packages.git")
         .expect("added entry should be present");
     assert_eq!(added["id"], 999, "top=true should assign min(existing)-1");
 }
@@ -247,7 +247,7 @@ async fn listen_for_repo_add_top_sorts_first() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/packages").with_top(true),
+        &RepoAddRequest::new_git("https://example.com/packages.git", None).with_top(true),
     )
     .await;
     assert!(resp.success);
@@ -262,7 +262,7 @@ async fn listen_for_repo_add_top_sorts_first() {
         .iter()
         .min_by_key(|e| e["id"].as_u64().unwrap_or(u64::MAX))
         .expect("file must not be empty");
-    assert_eq!(lowest["url"], "https://example.com/packages");
+    assert_eq!(lowest["url"], "https://example.com/packages.git");
     assert_eq!(lowest["id"], 999);
 }
 
@@ -273,7 +273,7 @@ async fn listen_for_repo_add_top_on_empty_uses_default_floor() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/x").with_top(true),
+        &RepoAddRequest::new_git("https://example.com/x.git", None).with_top(true),
     )
     .await;
     assert!(resp.success);
@@ -295,7 +295,7 @@ async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
     let started = start_core_node_with_mock_messenger().await;
     write_repositories_json5(&started, "[]");
 
-    let resp = send_repo_add(&started, &RepoAddRequest::new_url("https://example.com/x")).await;
+    let resp = send_repo_add(&started, &RepoAddRequest::new_git("https://example.com/x.git", None)).await;
     assert!(resp.success);
 
     let repos_path = repositories_list_path(&started.peppy_dirs);
@@ -318,7 +318,7 @@ async fn listen_for_repo_add_top_fails_when_min_is_zero() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/x").with_top(true),
+        &RepoAddRequest::new_git("https://example.com/x.git", None).with_top(true),
     )
     .await;
     assert!(!resp.success, "top=true on min=0 must fail");
@@ -337,14 +337,14 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
 
     let resp1 = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/first").with_top(true),
+        &RepoAddRequest::new_git("https://example.com/first.git", None).with_top(true),
     )
     .await;
     assert!(resp1.success);
 
     let resp2 = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/second").with_top(true),
+        &RepoAddRequest::new_git("https://example.com/second.git", None).with_top(true),
     )
     .await;
     assert!(resp2.success);
@@ -356,11 +356,11 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
 
     let first = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/first")
+        .find(|e| e["url"] == "https://example.com/first.git")
         .unwrap();
     let second = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/second")
+        .find(|e| e["url"] == "https://example.com/second.git")
         .unwrap();
     assert_eq!(first["id"], 999);
     assert_eq!(second["id"], 998);
@@ -370,7 +370,7 @@ async fn listen_for_repo_add_top_sequential_adds_keep_decreasing() {
         .iter()
         .min_by_key(|e| e["id"].as_u64().unwrap_or(u64::MAX))
         .unwrap();
-    assert_eq!(lowest["url"], "https://example.com/second");
+    assert_eq!(lowest["url"], "https://example.com/second.git");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -381,7 +381,7 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
     let resp = send_repo_add(
         &started,
-        &RepoAddRequest::new_url("https://example.com/x").with_top(false),
+        &RepoAddRequest::new_git("https://example.com/x.git", None).with_top(false),
     )
     .await;
     assert!(resp.success);
@@ -393,7 +393,7 @@ async fn listen_for_repo_add_top_false_preserves_max_plus_one() {
 
     let added = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/x")
+        .find(|e| e["url"] == "https://example.com/x.git")
         .unwrap();
     assert_eq!(added["id"], 1001, "top=false must keep max+1 behavior");
 }

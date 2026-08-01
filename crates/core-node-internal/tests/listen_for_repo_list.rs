@@ -519,8 +519,6 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
     let repo_b = started.peppy_dirs.root().join("repo_b");
     let shadowed_a = create_node_dir(&repo_a, "shadowed", "v1");
     let shadowed_b = create_node_dir(&repo_b, "shadowed", "v1");
-    let contested_one = create_node_dir(&repo_b, "contested_one", "v1");
-    let contested_two = create_node_dir(&repo_b, "contested_two", "v1");
 
     write_repositories_json5(
         &started,
@@ -530,15 +528,11 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
         ]))
         .unwrap(),
     );
-    // `contested` claimed twice inside repo_b: a cache an older peppy
-    // could have written, since refresh now refuses to produce one.
     index_nodes(
         &started,
         vec![
             fs_cache_entry(&shadowed_a, "shadowed", "v1"),
             fs_cache_entry(&shadowed_b, "shadowed", "v1"),
-            fs_cache_entry(&contested_one, "contested", "v1"),
-            fs_cache_entry(&contested_two, "contested", "v1"),
         ],
     );
 
@@ -551,25 +545,19 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
         .filter(|n| n.node_name == "shadowed")
         .collect();
     assert_eq!(shadowed.len(), 2);
-    assert!(
-        shadowed.iter().all(|n| !n.conflict),
-        "shadowing across repositories is not a conflict"
-    );
     assert_eq!(
         shadowed.iter().filter(|n| n.duplicate).count(),
         1,
         "exactly the losing entry is marked as shadowed"
     );
-
-    let contested: Vec<_> = resp
-        .nodes
-        .iter()
-        .filter(|n| n.node_name == "contested")
-        .collect();
-    assert_eq!(contested.len(), 2);
-    assert!(
-        contested.iter().all(|n| n.conflict),
-        "both claimants inside one repository are marked as conflicting"
+    assert_eq!(
+        shadowed
+            .iter()
+            .find(|n| !n.duplicate)
+            .expect("one entry wins")
+            .repo_id,
+        1,
+        "the lower-id repository is the one that resolves"
     );
 }
 
@@ -667,6 +655,5 @@ async fn list_reports_a_healthy_repository_as_current() {
     assert!(!resp.repos[0].retained);
     assert!(resp.repos[0].failure.is_none());
     assert_eq!(resp.nodes.len(), 1);
-    assert!(!resp.nodes[0].conflict);
     assert!(!resp.nodes[0].duplicate);
 }

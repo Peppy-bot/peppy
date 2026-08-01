@@ -87,37 +87,12 @@ fn handle_repo_list_request_inner(
         Vec::new()
     });
 
-    // Identities claimed more than once by a single repository. Refresh
-    // refuses such a repository, so this only fires for a cache written
-    // by an older peppy or hand-edited, which is exactly when a user
-    // needs to be told which entry is poisoned.
-    let mut claims: HashSet<(u32, &str, &str)> = HashSet::new();
-    let mut conflicted: HashSet<(u32, &str, &str)> = HashSet::new();
-    for node in &cached {
-        let key = (
-            node.repo_id,
-            node.node_name.as_str(),
-            node.node_tag.as_str(),
-        );
-        if !claims.insert(key) {
-            conflicted.insert(key);
-        }
-    }
-
     // Each cached node's owning repository, resolved once. The loop below
     // considers every node for every repository, and resolving inside it
     // re-scans the repository list on each of those visits.
     let owners: Vec<Option<u64>> = cached
         .iter()
-        .map(|node| {
-            owning_repo_id(
-                &repos,
-                node.source_type,
-                node.source_uri.as_deref(),
-                node.resolved_ref.as_deref(),
-                &node.path,
-            )
-        })
+        .map(|node| owning_repo_id(&repos, &node.origin))
         .collect();
 
     let mut global_seen: HashSet<(&str, &str)> = HashSet::new();
@@ -156,14 +131,13 @@ fn handle_repo_list_request_inner(
             let key = (node.node_name.as_str(), node.node_tag.as_str());
             let duplicate = !global_seen.insert(key);
             all_entries.push(RepoListNodeEntry {
-                node_name: node.node_name.clone(),
-                node_tag: node.node_tag.clone(),
-                source_type: node.source_type,
-                path: node.path.clone(),
+                node_name: node.node_name.to_string(),
+                node_tag: node.node_tag.to_string(),
+                source_type: node.origin.kind(),
+                path: node.origin.path_str().to_owned(),
                 duplicate,
                 repo_id,
                 repo_label: repo_label.clone(),
-                conflict: conflicted.contains(&(repo_id, key.0, key.1)),
             });
         }
     }

@@ -45,7 +45,7 @@ async fn exclude_url_succeed() {
 
     let resp = send_repo_exclude(
         &started,
-        &RepoExcludeRequest::new_url("https://example.com/packages"),
+        &RepoExcludeRequest::new_git("https://example.com/packages.git", None),
     )
     .await;
     assert!(resp.success, "repo_exclude should succeed");
@@ -126,7 +126,7 @@ async fn exclude_duplicate_fails() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
-    let request = RepoExcludeRequest::new_url("https://example.com/packages");
+    let request = RepoExcludeRequest::new_git("https://example.com/packages.git", None);
 
     // First exclude should succeed
     let resp = send_repo_exclude(&started, &request).await;
@@ -157,7 +157,7 @@ async fn exclude_fails_when_duplicate_ids_in_file() {
 
     let resp = send_repo_exclude(
         &started,
-        &RepoExcludeRequest::new_url("https://example.com/new"),
+        &RepoExcludeRequest::new_git("https://example.com/new.git", None),
     )
     .await;
     assert!(
@@ -184,7 +184,7 @@ async fn exclude_assigns_id_after_manual_entry() {
 
     let resp = send_repo_exclude(
         &started,
-        &RepoExcludeRequest::new_url("https://example.com/packages"),
+        &RepoExcludeRequest::new_git("https://example.com/packages.git", None),
     )
     .await;
     assert!(resp.success, "repo_exclude should succeed");

@@ -669,19 +669,6 @@ fn extract_http_bundle(
     extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
 }
 
-pub(crate) async fn download_and_extract_http_source(
-    url: &url::Url,
-    peppy_dirs: PeppyDirs,
-    expected_sha256: Option<String>,
-) -> std::result::Result<ExtractedHttpSource, String> {
-    let url = url.clone();
-    tokio::task::spawn_blocking(move || {
-        resolve_http_source_download_and_extract(url, &peppy_dirs, expected_sha256, None)
-    })
-    .await
-    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
-}
-
 pub(crate) async fn resolve_http_source(
     url: &url::Url,
     peppy_dirs: PeppyDirs,
