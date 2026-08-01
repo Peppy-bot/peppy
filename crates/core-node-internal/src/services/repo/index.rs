@@ -17,7 +17,6 @@ use crate::services::repo::cache::{
     ContractCacheEntry, DiscoveredEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
     RepoCacheEntry, RepoItems,
 };
-use config::consts::NODE_CONFIG_FILE;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
@@ -360,7 +359,8 @@ pub(crate) fn resolve_declared_item(
     let bytes = std::fs::read(&canonical).map_err(|e| format!("cannot be read: {e}"))?;
     let content = std::str::from_utf8(&bytes).map_err(|e| format!("is not valid UTF-8: {e}"))?;
 
-    let (name, tag) = declared_identity(item.kind, content, item.path.as_path())?;
+    let (name, tag) = identity_of(item.kind, content, item.path.as_path())
+        .map_err(|detail| format!("is not a {}: {detail}", item.kind))?;
     let expected_tag = item.tag.map(ItemTag::as_str).unwrap_or_default();
     if name != item.name.as_str() || tag != expected_tag {
         let found = format_identity(&name, &tag);
@@ -370,30 +370,38 @@ pub(crate) fn resolve_declared_item(
     Ok(bytes)
 }
 
-/// The identity a file declares, read with the parser for `kind`. A file
-/// that is not that kind at all is reported as such, which is what catches
-/// an item filed under the wrong section.
-fn declared_identity(
+/// The identity a document declares when read as `kind`: its `(name, tag)`,
+/// with an empty tag for a launcher.
+///
+/// The single place that maps a kind to its parser and pulls the identity out.
+/// Both the walk (discovering items) and [`resolve_declared_item`] (verifying
+/// a listed path still declares what it was filed under) go through it, so the
+/// two ways of learning what a file declares cannot disagree. `Err` carries why
+/// the file is not a usable `kind`: it does not parse as one, carries a
+/// `peppy_schema` that is not this kind's, or (for a launcher) has no usable
+/// file stem to take a name from.
+fn identity_of(
     kind: RepoItemKind,
     content: &str,
     path: &Path,
 ) -> std::result::Result<(String, String), String> {
-    let not_this_kind = |e: String| format!("is not a {kind}: {e}");
     match kind {
         RepoItemKind::Node => {
-            let parsed = NodeConfigParser::from_content(content)
-                .map_err(|e| not_this_kind(e.to_string()))?;
+            let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
             Ok((
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
             ))
         }
         RepoItemKind::Launcher => {
-            let parsed = PeppyLauncherParser::from_content(content)
-                .map_err(|e| not_this_kind(e.to_string()))?;
+            let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
             if parsed.peppy_schema != PeppySchema::LauncherV1 {
-                return Err(not_this_kind("wrong schema tag".to_owned()));
+                return Err("wrong schema tag".to_owned());
             }
+            // Launcher name = basename without `.json5` (launcher documents
+            // carry no manifest name). This matches `resolve_launcher_path`,
+            // which appends `.json5` to a bare name when looking up a launcher
+            // file.
             let stem = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -402,16 +410,14 @@ fn declared_identity(
             Ok((stem.to_owned(), String::new()))
         }
         RepoItemKind::Contract => {
-            let parsed = PeppyContractParser::from_content(content)
-                .map_err(|e| not_this_kind(e.to_string()))?;
+            let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
             Ok((
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
             ))
         }
         RepoItemKind::Pairing => {
-            let parsed = PeppyPairingParser::from_content(content)
-                .map_err(|e| not_this_kind(e.to_string()))?;
+            let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
             Ok((
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
@@ -509,10 +515,10 @@ fn identity_label(item: &DeclaredItem<'_>) -> String {
 /// Any directory whose path matches one of the `excluded_paths` entries is
 /// pruned from the walk (neither descended into nor scanned).
 ///
-/// Each `.json5` file is read once. Files named `peppy.json5` are tried as
-/// nodes first (preserving the filename-driven node convention); any
-/// `.json5` whose body declares a `peppy_schema` value is dispatched to the
-/// matching collector.
+/// Each `.json5` file is read once and dispatched by the `peppy_schema` value
+/// its body declares. A node manifest is required to declare `node/v1`, so the
+/// filename carries no special meaning here: a node in `peppy.json5` and a node
+/// in any other `.json5` are both found by the same schema dispatch.
 pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkResult {
     // Canonicalize the root so that paths emitted by the walker share a
     // common prefix representation with the excluded paths (which come from
@@ -554,7 +560,6 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
     let mut items: Vec<WalkedItem> = Vec::new();
 
     for entry in walker.flatten() {
-        let file_name = entry.file_name().to_string_lossy();
         let config_path = entry.path();
         if !has_json5_extension(config_path) {
             continue;
@@ -576,33 +581,27 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
             config_path,
             bytes: &bytes,
         };
-        if file_name == NODE_CONFIG_FILE {
-            // Try node parse first to preserve the documented filename
-            // convention for nodes. If the file's schema doesn't match,
-            // fall through to the launcher/contract dispatch; that
-            // way a non-node `peppy.json5` is still discoverable.
-            if collect_node_item(&ctx, &mut nodes_seen, &mut items) {
-                continue;
-            }
-        }
         let Some(schema) = peek_peppy_schema(&bytes) else {
             continue;
         };
         match schema {
             PeppySchema::NodeV1 => {
-                // A non-`peppy.json5` file declaring `node/v1` is unusual
-                // but we still parse it strictly: matches the documented
-                // "schema dispatch" rule for any `.json5`.
-                collect_node_item(&ctx, &mut nodes_seen, &mut items);
+                collect_item(&ctx, RepoItemKind::Node, &mut nodes_seen, &mut items)
             }
-            PeppySchema::LauncherV1 => {
-                collect_launcher_item(&ctx, &mut launchers_seen, &mut items);
-            }
-            PeppySchema::ContractV1 => {
-                collect_contract_item(&ctx, &mut contracts_seen, &mut items);
-            }
+            PeppySchema::LauncherV1 => collect_item(
+                &ctx,
+                RepoItemKind::Launcher,
+                &mut launchers_seen,
+                &mut items,
+            ),
+            PeppySchema::ContractV1 => collect_item(
+                &ctx,
+                RepoItemKind::Contract,
+                &mut contracts_seen,
+                &mut items,
+            ),
             PeppySchema::PairingV1 => {
-                collect_pairing_item(&ctx, &mut pairings_seen, &mut items);
+                collect_item(&ctx, RepoItemKind::Pairing, &mut pairings_seen, &mut items)
             }
             // The repository's own index declares no item. It is the
             // output of this walk, not an input to it.
@@ -651,35 +650,26 @@ struct EntryContext<'a> {
     bytes: &'a [u8],
 }
 
-/// Shared body of the four collectors: UTF-8 check, strict parse via
-/// `identity`, claim recording, then item construction. The strict parse
-/// catches structural problems (unknown fields, malformed sections) that
-/// the cheap schema peek can't.
+/// Reads one discovered `.json5` and, when it declares a usable identity of
+/// `kind`, records the claim and pushes the item.
 ///
-/// `identity` returns the document's `(name, tag)`, `Ok(None)` to skip the
-/// file silently (wrong schema variant, unusable file stem), or `Err` when
-/// the content does not parse as that document kind at all.
-/// `parse_failure_label` words that last case: a `peppy.json5` failing the
-/// node parse is usually a different document kind rather than a malformed
-/// node, so the node collector logs "non-node".
+/// Every claimant is recorded in `claims`, including the second and later ones
+/// that are not pushed to `out`; the caller turns identities with several
+/// claimants into [`RepoConflict`]s and refuses the whole repository. Which
+/// claimant reaches `out` is walk-order dependent and deliberately not relied
+/// upon.
 ///
-/// Every claimant is recorded in `claims`, including the second and later
-/// ones that are not pushed to `out`; the caller turns identities with
-/// several claimants into [`RepoConflict`]s and refuses the whole
-/// repository. Which claimant reaches `out` is walk-order dependent and
-/// deliberately not relied upon.
-///
-/// Returns `false` only on parse failure, so the node collector can fall
-/// back to schema dispatch; repeat claimants return `true` because the file
-/// is a valid document of the kind.
-fn collect_walked_item(
+/// A file that does not name a usable identity (non-UTF-8 bytes, a parse
+/// failure, a launcher with no usable stem) is skipped with a debug line
+/// rather than failing the walk: the strict parse in [`identity_of`] catches
+/// structural problems the cheap schema peek can't, and a repository is free
+/// to hold `.json5` files that declare nothing.
+fn collect_item(
     ctx: &EntryContext<'_>,
     kind: RepoItemKind,
-    parse_failure_label: &str,
     claims: &mut ClaimMap,
     out: &mut Vec<WalkedItem>,
-    identity: impl FnOnce(&str) -> std::result::Result<Option<(String, String)>, String>,
-) -> bool {
+) {
     let content = match std::str::from_utf8(ctx.bytes) {
         Ok(s) => s,
         Err(e) => {
@@ -689,20 +679,19 @@ fn collect_walked_item(
                 ctx.config_path.display(),
                 e
             );
-            return false;
+            return;
         }
     };
-    let (name, tag) = match identity(content) {
-        Ok(Some(identity)) => identity,
-        Ok(None) => return true,
+    let (name, tag) = match identity_of(kind, content, ctx.config_path) {
+        Ok(identity) => identity,
         Err(e) => {
             debug!(
                 "Skipping {} .json5 at {}: {}",
-                parse_failure_label,
+                kind,
                 ctx.config_path.display(),
                 e
             );
-            return false;
+            return;
         }
     };
 
@@ -714,7 +703,7 @@ fn collect_walked_item(
     let claimants = claims.entry((name.clone(), tag.clone())).or_default();
     claimants.push(relative_path.clone());
     if claimants.len() > 1 {
-        return true;
+        return;
     }
 
     out.push(WalkedItem {
@@ -725,96 +714,12 @@ fn collect_walked_item(
         absolute_path: ctx.config_path.to_path_buf(),
         sha256: fingerprint_for_bytes(ctx.bytes),
     });
-    true
-}
-
-/// Returns `true` when the file parsed cleanly as a node and its claim
-/// was recorded. `false` means parsing failed; the caller can fall back
-/// to a different schema dispatch.
-fn collect_node_item(
-    ctx: &EntryContext<'_>,
-    claims: &mut ClaimMap,
-    out: &mut Vec<WalkedItem>,
-) -> bool {
-    collect_walked_item(
-        ctx,
-        RepoItemKind::Node,
-        "non-node",
-        claims,
-        out,
-        |content| {
-            let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok(Some((
-                parsed.manifest.name.as_str().to_string(),
-                parsed.manifest.tag.clone(),
-            )))
-        },
-    )
-}
-
-fn collect_launcher_item(ctx: &EntryContext<'_>, claims: &mut ClaimMap, out: &mut Vec<WalkedItem>) {
-    collect_walked_item(
-        ctx,
-        RepoItemKind::Launcher,
-        "malformed launcher",
-        claims,
-        out,
-        |content| {
-            let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
-            if parsed.peppy_schema != PeppySchema::LauncherV1 {
-                return Ok(None);
-            }
-            // Launcher name = basename without `.json5` (launcher documents
-            // carry no manifest name). This matches `resolve_launcher_path`,
-            // which appends `.json5` to a bare name when looking up a
-            // launcher file.
-            Ok(ctx
-                .config_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .filter(|stem| !stem.is_empty())
-                .map(|stem| (stem.to_string(), String::new())))
-        },
-    );
-}
-
-fn collect_contract_item(ctx: &EntryContext<'_>, claims: &mut ClaimMap, out: &mut Vec<WalkedItem>) {
-    collect_walked_item(
-        ctx,
-        RepoItemKind::Contract,
-        "malformed contract",
-        claims,
-        out,
-        |content| {
-            let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok(Some((
-                parsed.manifest.name.as_str().to_string(),
-                parsed.manifest.tag.clone(),
-            )))
-        },
-    );
-}
-
-fn collect_pairing_item(ctx: &EntryContext<'_>, claims: &mut ClaimMap, out: &mut Vec<WalkedItem>) {
-    collect_walked_item(
-        ctx,
-        RepoItemKind::Pairing,
-        "malformed pairing",
-        claims,
-        out,
-        |content| {
-            let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok(Some((
-                parsed.manifest.name.as_str().to_string(),
-                parsed.manifest.tag.clone(),
-            )))
-        },
-    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::consts::NODE_CONFIG_FILE;
 
     /// Helper: write a minimal valid node manifest under `dir`.
     fn write_node_json5(dir: &Path, name: &str, tag: &str) {
