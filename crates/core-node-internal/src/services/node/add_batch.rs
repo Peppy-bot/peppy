@@ -58,6 +58,24 @@ pub(crate) async fn run_pinned_add(
         })
     };
 
+    // An ABSENT cache is not a problem on the pinned path: content this
+    // machine does not hold is fetched from each pin's own origin, which is
+    // what lets a freshly-provisioned peer join a launch. A cache that exists
+    // but does not parse still refuses, because a machine with broken state
+    // should say so rather than quietly re-fetching everything on every
+    // launch. Loaded once, before the arms, and shared with every
+    // materialization rather than copied per pin.
+    let entries = match repo_cache::load_node_cache(&peppy_dirs) {
+        Ok(loaded) => Arc::new(loaded),
+        Err(e) => {
+            return fail(
+                &log_file,
+                &log_path,
+                format!("Failed to read nodes cache: {}", e),
+            );
+        }
+    };
+
     let (nodes, doc_pins_json5) = match &goal.source {
         NodeSource::Pinned { pin_json5 } => {
             let root: daemon_config::repository::PinnedItem = match serde_json5::from_str(pin_json5)
@@ -82,17 +100,18 @@ pub(crate) async fn run_pinned_add(
                 Ok(closure) => closure,
                 Err(e) => return fail(&log_file, &log_path, e),
             };
-            let doc_pins_json5: Vec<String> = goal
-                .pins_json5
-                .iter()
-                .zip(&closure)
-                .filter(|(_, pin)| pin.kind != PinKind::Node)
-                .map(|(raw, _)| raw.clone())
-                .collect();
-            let node_pins: Vec<_> = closure
+            // Re-encoded from the decoded pins rather than sliced out of the
+            // raw input by position: the split is stated over the values that
+            // carry the kind, not over an assumed correspondence between two
+            // collections, and it is the same round-trip the `ResolveRef` arm
+            // performs below.
+            let (node_pins, doc_pins): (Vec<_>, Vec<_>) = closure
                 .into_iter()
-                .filter(|pin| pin.kind == PinKind::Node)
-                .collect();
+                .partition(|pin| pin.kind == PinKind::Node);
+            let doc_pins_json5 = match pins::encode_pins(&doc_pins) {
+                Ok(encoded) => encoded,
+                Err(e) => return fail(&log_file, &log_path, e),
+            };
 
             emit(
                 &feedback_tx,
@@ -104,22 +123,6 @@ pub(crate) async fn run_pinned_add(
                 ),
             );
 
-            // An ABSENT cache is not a problem here: content this machine
-            // does not hold is fetched from each pin's own origin, which is
-            // what lets a freshly-provisioned peer join a launch. A cache
-            // that exists but does not parse still refuses, because a
-            // machine with broken state should say so rather than quietly
-            // re-fetching everything on every launch.
-            let entries = match repo_cache::load_node_cache(&peppy_dirs) {
-                Ok(loaded) => loaded,
-                Err(e) => {
-                    return fail(
-                        &log_file,
-                        &log_path,
-                        format!("Failed to read nodes cache: {}", e),
-                    );
-                }
-            };
             let nodes = match pins::materialize_pin_set(
                 &peppy_dirs,
                 &entries,
@@ -140,16 +143,6 @@ pub(crate) async fn run_pinned_add(
                 FeedbackStream::Stdout,
                 format!("Resolving {}:{} from repo cache", name, tag),
             );
-            let entries = match repo_cache::load_node_cache(&peppy_dirs) {
-                Ok(loaded) => loaded,
-                Err(e) => {
-                    return fail(
-                        &log_file,
-                        &log_path,
-                        format!("Failed to read nodes cache: {}", e),
-                    );
-                }
-            };
             if entries.is_empty() {
                 return fail(
                     &log_file,
@@ -173,20 +166,16 @@ pub(crate) async fn run_pinned_add(
                 Ok(closure) => closure,
                 Err(e) => return fail(&log_file, &log_path, e),
             };
-            let doc_pins = {
-                let dirs = peppy_dirs.clone();
-                let manifests = closure.manifests();
-                let feedback = Arc::clone(&on_feedback);
-                let minted = tokio::task::spawn_blocking(move || {
-                    pins::doc_pins_for_manifests(&dirs, &manifests, &|line| feedback(line))
-                })
-                .await
-                .map_err(|e| format!("doc pin minting task failed: {e}"))
-                .and_then(|result| result);
-                match minted {
-                    Ok(doc_pins) => doc_pins,
-                    Err(e) => return fail(&log_file, &log_path, e),
-                }
+            let minted = pins::doc_pins_for_manifest_sets_async(
+                &peppy_dirs,
+                vec![closure.manifests()],
+                Arc::clone(&on_feedback),
+            )
+            .await
+            .and_then(|mut sets| sets.remove(0));
+            let doc_pins = match minted {
+                Ok(doc_pins) => doc_pins,
+                Err(e) => return fail(&log_file, &log_path, e),
             };
             let doc_pins_json5 = match pins::encode_pins(&doc_pins) {
                 Ok(encoded) => encoded,

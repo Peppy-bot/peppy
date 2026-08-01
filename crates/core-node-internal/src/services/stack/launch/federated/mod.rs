@@ -92,14 +92,23 @@ fn partition_reservations<'a>(
             .map(|instance| placements.of(instance.instance_id.as_str()))
             .filter(|host| *host != coordinator)
             .collect();
-        for host in hosts {
-            let entry = by_core_node.entry(host.to_owned()).or_default();
-            if let Some(root) = root_pin {
+        // Built and serialized ONCE per deployment, not once per host: every
+        // host of a deployment receives the same closure, and a closure holds
+        // every dependency node plus every contract and pairing document.
+        let encoded = match root_pin.filter(|_| !hosts.is_empty()) {
+            Some(root) => {
                 let pins = DeploymentPins::new(root.clone(), closure_pins.to_vec())?;
-                entry.push(
+                Some(
                     serde_json5::to_string(&pins)
                         .map_err(|e| format!("could not encode a deployment's pins: {e}"))?,
-                );
+                )
+            }
+            None => None,
+        };
+        for host in hosts {
+            let entry = by_core_node.entry(host.to_owned()).or_default();
+            if let Some(encoded) = &encoded {
+                entry.push(encoded.clone());
             }
         }
     }
@@ -425,8 +434,8 @@ mod tests {
         )
     }
 
-    fn partition<'a>(
-        items: &'a [(Deployment, Option<PinnedItem>, Vec<PinnedItem>)],
+    fn partition(
+        items: &[(Deployment, Option<PinnedItem>, Vec<PinnedItem>)],
         placements: &Placements,
     ) -> BTreeMap<String, Vec<String>> {
         partition_reservations(

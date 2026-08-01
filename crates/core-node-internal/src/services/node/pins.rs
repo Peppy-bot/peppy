@@ -75,12 +75,6 @@ impl PinnedClosure {
             .map(|node| node.config.manifest.clone())
             .collect()
     }
-
-    pub fn root(&self) -> &MaterializedPin {
-        self.nodes
-            .first()
-            .expect("a resolved closure always holds its root")
-    }
 }
 
 /// The pin a nodes-cache entry mints: the entry already records the content
@@ -105,7 +99,7 @@ pub(crate) fn pin_for_node_entry(entry: &NodeCacheEntry) -> PinnedItem {
 /// refusals rather than something to run.
 pub(crate) async fn materialize_pinned_node(
     peppy_dirs: &PeppyDirs,
-    entries: &[NodeCacheEntry],
+    entries: &Arc<Vec<NodeCacheEntry>>,
     pin: &PinnedItem,
     on_feedback: node_cache::MaterializeFeedback,
 ) -> std::result::Result<(PathBuf, NodeConfig), String> {
@@ -117,7 +111,10 @@ pub(crate) async fn materialize_pinned_node(
 
     let (manifest_path, bytes) = if may_block {
         let dirs = peppy_dirs.clone();
-        let entries = entries.to_vec();
+        // The index is SHARED with the blocking task, not copied into it:
+        // up to `MATERIALIZE_CONCURRENCY` of these run at once and the index
+        // holds every node the machine's repositories know about.
+        let entries = Arc::clone(entries);
         let pin = pin.clone();
         tokio::task::spawn_blocking(move || {
             repo_cache::resolve_pin_to_bytes(&dirs, &entries, &pin, &|line| on_feedback(line))
@@ -161,12 +158,37 @@ type MaterializeOutput = (
     std::result::Result<(PathBuf, NodeConfig), String>,
 );
 
+/// One bounded materialization, ready to push onto a `FuturesUnordered`.
+///
+/// Both closure walkers below go through this, so the concurrency policy —
+/// how a permit is taken and what a completed materialization reports back —
+/// is stated once rather than restated per walker.
+fn spawn_materialize<'a>(
+    semaphore: &Arc<Semaphore>,
+    peppy_dirs: &'a PeppyDirs,
+    entries: &'a Arc<Vec<NodeCacheEntry>>,
+    pin: PinnedItem,
+    is_root: bool,
+    on_feedback: &node_cache::MaterializeFeedback,
+) -> BoxFuture<'a, MaterializeOutput> {
+    let permit_source = Arc::clone(semaphore);
+    let feedback = Arc::clone(on_feedback);
+    Box::pin(async move {
+        let _permit = permit_source
+            .acquire_owned()
+            .await
+            .expect("materialize semaphore is never closed");
+        let result = materialize_pinned_node(peppy_dirs, entries, &pin, feedback).await;
+        (pin, is_root, result)
+    })
+}
+
 /// Materializes a set of already-minted pins concurrently, root first in the
 /// returned order. The pinned executor's front half: no name is looked up,
 /// no dependency is discovered, the pin set IS the batch.
 pub(crate) async fn materialize_pin_set(
     peppy_dirs: &PeppyDirs,
-    entries: &[NodeCacheEntry],
+    entries: &Arc<Vec<NodeCacheEntry>>,
     root: PinnedItem,
     dep_pins: Vec<PinnedItem>,
     on_feedback: node_cache::MaterializeFeedback,
@@ -177,16 +199,14 @@ pub(crate) async fn materialize_pin_set(
     for (pin, is_root) in
         std::iter::once((root, true)).chain(dep_pins.into_iter().map(|p| (p, false)))
     {
-        let permit_source = Arc::clone(&semaphore);
-        let feedback = Arc::clone(&on_feedback);
-        in_flight.push(Box::pin(async move {
-            let _permit = permit_source
-                .acquire_owned()
-                .await
-                .expect("materialize semaphore is never closed");
-            let result = materialize_pinned_node(peppy_dirs, entries, &pin, feedback).await;
-            (pin, is_root, result)
-        }));
+        in_flight.push(spawn_materialize(
+            &semaphore,
+            peppy_dirs,
+            entries,
+            pin,
+            is_root,
+            &on_feedback,
+        ));
     }
 
     let mut nodes: Vec<MaterializedPin> = Vec::new();
@@ -216,7 +236,7 @@ pub(crate) async fn materialize_pin_set(
 /// all after one run.
 pub(crate) async fn resolve_pinned_closure(
     peppy_dirs: &PeppyDirs,
-    entries: &[NodeCacheEntry],
+    entries: &Arc<Vec<NodeCacheEntry>>,
     root_name: &str,
     root_tag: &str,
     on_feedback: node_cache::MaterializeFeedback,
@@ -251,16 +271,14 @@ pub(crate) async fn resolve_pinned_closure(
                 continue;
             };
             let pin = pin_for_node_entry(entry);
-            let permit_source = Arc::clone(&semaphore);
-            let feedback = Arc::clone(&on_feedback);
-            in_flight.push(Box::pin(async move {
-                let _permit = permit_source
-                    .acquire_owned()
-                    .await
-                    .expect("materialize semaphore is never closed");
-                let result = materialize_pinned_node(peppy_dirs, entries, &pin, feedback).await;
-                (pin, is_root, result)
-            }));
+            in_flight.push(spawn_materialize(
+                &semaphore,
+                peppy_dirs,
+                entries,
+                pin,
+                is_root,
+                &on_feedback,
+            ));
         }
 
         let Some((pin, is_root, result)) = in_flight.next().await else {
@@ -388,9 +406,17 @@ impl DocPins {
 /// The refusal names both fingerprints so the author can align the sha pins.
 #[derive(Default)]
 struct DocPinMinter {
-    by_identity: HashMap<(PinKind, String, String), PinnedItem>,
-    order: Vec<(PinKind, String, String)>,
+    /// Minted pins in first-reference order. A closure references tens of
+    /// documents at most, so the dedup scan is linear over a tiny set and
+    /// the order needs no second container to preserve it.
+    pins: Vec<PinnedItem>,
 }
+
+/// One document reference in a manifest, reduced to what minting needs. The
+/// four reference lists are four types over the same three fields, so they
+/// are normalized here and walked as one contract stream and one pairing
+/// stream.
+type DocRef<'a> = (&'a str, &'a str, Option<&'a str>);
 
 impl DocPinMinter {
     fn mint_for_manifest(
@@ -401,65 +427,54 @@ impl DocPinMinter {
         pairings: &[PairingCacheEntry],
         on_feedback: &dyn Fn(&str),
     ) -> std::result::Result<(), String> {
-        for entry in &manifest.implements {
+        let depends_on = manifest.depends_on.as_ref();
+        let contract_refs = manifest
+            .implements
+            .iter()
+            .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()))
+            .chain(depends_on.into_iter().flat_map(|d| {
+                d.contracts
+                    .iter()
+                    .map(|e| (e.name.as_str(), e.tag.as_str(), e.sha256.as_deref()))
+            }));
+        for (name, tag, sha256) in contract_refs {
             self.mint::<ContractCacheEntry>(
                 peppy_dirs,
                 contracts,
                 PinKind::Contract,
-                entry.name.as_str(),
-                &entry.tag,
-                entry.sha256.as_deref(),
+                (name, tag, sha256),
                 on_feedback,
             )?;
         }
-        let Some(depends_on) = manifest.depends_on.as_ref() else {
-            return Ok(());
-        };
-        for entry in &depends_on.contracts {
-            self.mint::<ContractCacheEntry>(
-                peppy_dirs,
-                contracts,
-                PinKind::Contract,
-                entry.name.as_str(),
-                &entry.tag,
-                entry.sha256.as_deref(),
-                on_feedback,
-            )?;
-        }
-        for slot in &depends_on.pairings {
+
+        let pairing_refs = depends_on.into_iter().flat_map(|d| {
+            d.pairings
+                .iter()
+                .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref()))
+                .chain(
+                    d.pairing_observers
+                        .iter()
+                        .map(|s| (s.name.as_str(), s.tag.as_str(), s.sha256.as_deref())),
+                )
+        });
+        for (name, tag, sha256) in pairing_refs {
             self.mint::<PairingCacheEntry>(
                 peppy_dirs,
                 pairings,
                 PinKind::Pairing,
-                slot.name.as_str(),
-                &slot.tag,
-                slot.sha256.as_deref(),
-                on_feedback,
-            )?;
-        }
-        for slot in &depends_on.pairing_observers {
-            self.mint::<PairingCacheEntry>(
-                peppy_dirs,
-                pairings,
-                PinKind::Pairing,
-                slot.name.as_str(),
-                &slot.tag,
-                slot.sha256.as_deref(),
+                (name, tag, sha256),
                 on_feedback,
             )?;
         }
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)] // One reference, spelled out.
     fn mint<E: RepoCacheEntry>(
         &mut self,
         peppy_dirs: &PeppyDirs,
         entries: &[E],
         kind: PinKind,
-        name: &str,
-        tag: &str,
-        author_sha256: Option<&str>,
+        (name, tag, author_sha256): DocRef<'_>,
         on_feedback: &dyn Fn(&str),
     ) -> std::result::Result<(), String> {
         let (entry, _bytes) = repo_cache::resolve_cached_doc_entry(
@@ -477,50 +492,80 @@ impl DocPinMinter {
             sha256: entry.sha256().clone(),
             origin: entry.origin().clone(),
         };
-        let key = (kind, name.to_owned(), tag.to_owned());
-        match self.by_identity.get(&key) {
+        let existing = self
+            .pins
+            .iter()
+            .find(|p| p.kind == kind && p.name.as_str() == name && p.tag.as_str() == tag)
+            .map(|p| p.sha256.clone());
+        match existing {
             None => {
-                self.order.push(key.clone());
-                self.by_identity.insert(key, pin);
+                self.pins.push(pin);
                 Ok(())
             }
-            Some(existing) if existing.sha256 == pin.sha256 => Ok(()),
+            Some(existing) if existing == pin.sha256 => Ok(()),
             Some(existing) => Err(format!(
                 "{kind} `{name}:{tag}` is needed at two different contents in one closure \
                  (`{}` and `{}`); align the manifests' sha256 pins so one set of bytes serves \
                  every reference",
-                existing.sha256, pin.sha256
+                existing, pin.sha256
             )),
         }
     }
-
-    fn into_pins(self) -> Vec<PinnedItem> {
-        let mut by_identity = self.by_identity;
-        self.order
-            .into_iter()
-            .filter_map(|key| by_identity.remove(&key))
-            .collect()
-    }
 }
 
-/// Mints the doc pins for a set of manifests against this machine's caches:
-/// one pin per contract and pairing document they reference, deduplicated,
-/// refusing one identity at two different contents. Blocking (a drift check
-/// may materialize a checkout); wrap in `spawn_blocking` inside Tokio.
-pub(crate) fn doc_pins_for_manifests(
+/// Mints the doc pins of several manifest sets against ONE load of this
+/// machine's document caches: one pin per contract and pairing document each
+/// set references, deduplicated within the set, refusing one identity at two
+/// different contents.
+///
+/// Batched over sets rather than called per set because the caller is a
+/// launch minting for every deployment, and both caches are read from disk
+/// and parsed on each load. Each set keeps its own result so a deployment
+/// whose documents are missing does not suppress the report for the others.
+///
+/// Blocking (a drift check may materialize a checkout); use
+/// [`doc_pins_for_manifest_sets_async`] inside Tokio.
+pub(crate) fn doc_pins_for_manifest_sets(
     peppy_dirs: &PeppyDirs,
-    manifests: &[Manifest],
+    sets: &[Vec<Manifest>],
     on_feedback: &dyn Fn(&str),
-) -> std::result::Result<Vec<PinnedItem>, String> {
+) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
     let contracts = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
     let pairings = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
-    let mut minted = DocPinMinter::default();
-    for manifest in manifests {
-        minted.mint_for_manifest(peppy_dirs, manifest, &contracts, &pairings, on_feedback)?;
-    }
-    Ok(minted.into_pins())
+    Ok(sets
+        .iter()
+        .map(|manifests| {
+            let mut minted = DocPinMinter::default();
+            for manifest in manifests {
+                minted.mint_for_manifest(
+                    peppy_dirs,
+                    manifest,
+                    &contracts,
+                    &pairings,
+                    on_feedback,
+                )?;
+            }
+            Ok(minted.pins)
+        })
+        .collect())
+}
+
+/// [`doc_pins_for_manifest_sets`] on a blocking thread, with the feedback
+/// sink every async caller already holds. Both minting sites go through
+/// this, so the join-error wording has one owner.
+pub(crate) async fn doc_pins_for_manifest_sets_async(
+    peppy_dirs: &PeppyDirs,
+    sets: Vec<Vec<Manifest>>,
+    on_feedback: node_cache::MaterializeFeedback,
+) -> std::result::Result<Vec<std::result::Result<Vec<PinnedItem>, String>>, String> {
+    let dirs = peppy_dirs.clone();
+    tokio::task::spawn_blocking(move || {
+        doc_pins_for_manifest_sets(&dirs, &sets, &|line| on_feedback(line))
+    })
+    .await
+    .map_err(|e| format!("doc pin minting task failed: {e}"))?
 }
 
 /// Resolves a launcher's `git:` deployment to a pinned root: clones the

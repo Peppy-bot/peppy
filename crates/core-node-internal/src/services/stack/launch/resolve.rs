@@ -308,6 +308,26 @@ pub(super) async fn resolve_deployments(
     )
     .await;
 
+    // The node index, loaded ONCE for the whole launch. Every `repo:`
+    // deployment resolves against the same one, and every materialization
+    // shares it rather than copying it, so a launch pays one read of a file
+    // that lists every node this machine's repositories publish. Loaded
+    // lazily: a launcher with no `repo:` deployment never touches it.
+    let mut node_entries: Option<Arc<Vec<repo_cache::NodeCacheEntry>>> = None;
+    if deployments
+        .iter()
+        .any(|deployment| matches!(deployment.source, DeploymentSource::Repo(_)))
+    {
+        match repo_cache::load_node_cache(&ctx.peppy_dirs) {
+            Ok(entries) => node_entries = Some(Arc::new(entries)),
+            Err(e) => {
+                let msg = format!("failed to load nodes cache: {e}");
+                publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+                return Err(LaunchResult::failure(&ctx.log_path, msg));
+            }
+        }
+    }
+
     let mut planned: Vec<PlannedDeployment> = Vec::new();
     let mut planning_errors: Vec<String> = Vec::new();
     let mut planned_keys: HashSet<NodeKey> = HashSet::new();
@@ -326,12 +346,26 @@ pub(super) async fn resolve_deployments(
         // `resolve_launcher_origin` uses: quiet for cached entries, a few
         // clone lines for fresh fetches, published in order either way.
         let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
-        let resolved = resolve_one(ctx, &deployment, nodes_directory, placements, &collected).await;
+        let resolved = resolve_one(
+            ctx,
+            &deployment,
+            nodes_directory,
+            placements,
+            node_entries.as_ref(),
+            &collected,
+        )
+        .await;
         let captured: Vec<String> = std::mem::take(&mut *collected.lock());
         for line in captured {
             publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
         }
-        let (source, config, root_pin, closure_pins, pin_manifests) = match resolved {
+        let ResolvedDeployment {
+            source,
+            config,
+            root_pin,
+            closure_pins,
+            pin_manifests,
+        } = match resolved {
             Ok(resolved) => resolved,
             Err(err) => {
                 planning_errors.push(err);
@@ -393,17 +427,22 @@ pub(super) async fn resolve_deployments(
     Ok(planned)
 }
 
-/// What one resolved deployment contributes to the plan: the source its adds
-/// dispatch with, its manifest, the root pin when the source is pinned, the
-/// dependency-node pins of its closure, and every manifest in that closure,
-/// from which the doc pins are minted after the graph is validated.
-type ResolvedDeployment = (
-    NodeSource,
-    config::node::NodeConfig,
-    Option<PinnedItem>,
-    Vec<PinnedItem>,
-    Vec<config::node::Manifest>,
-);
+/// What one resolved deployment contributes to the plan, before its identity
+/// and doc pins are folded in. Named fields rather than a tuple: four arms
+/// build one of these and `PlannedDeployment` copies it field by field, so a
+/// pin slot that swapped with another would otherwise do so silently.
+struct ResolvedDeployment {
+    /// The source its adds dispatch with.
+    source: NodeSource,
+    config: config::node::NodeConfig,
+    /// The root pin, when the source is pinned.
+    root_pin: Option<PinnedItem>,
+    /// The dependency-node pins of its closure.
+    closure_pins: Vec<PinnedItem>,
+    /// Every manifest in that closure, from which the doc pins are minted
+    /// after the graph is validated.
+    pin_manifests: Vec<config::node::Manifest>,
+}
 
 /// Whether any instance of `deployment` is placed off this daemon, which is
 /// what obliges every pin it resolves to to be portable.
@@ -433,6 +472,7 @@ async fn resolve_one(
     deployment: &Deployment,
     nodes_directory: &Path,
     placements: &Placements,
+    node_entries: Option<&Arc<Vec<repo_cache::NodeCacheEntry>>>,
     collected: &Arc<StdMutex<Vec<String>>>,
 ) -> std::result::Result<ResolvedDeployment, String> {
     let label = deployment_label(deployment);
@@ -464,14 +504,20 @@ async fn resolve_one(
                     format!("failed to retrieve node config for deployment {label}: {e}")
                 })?;
             let manifests = vec![config.manifest.clone()];
-            Ok((source, config, None, Vec::new(), manifests))
+            Ok(ResolvedDeployment {
+                source,
+                config,
+                root_pin: None,
+                closure_pins: Vec::new(),
+                pin_manifests: manifests,
+            })
         }
         DeploymentSource::Repo(spec) => {
-            let entries = repo_cache::load_node_cache(&ctx.peppy_dirs)
-                .map_err(|e| format!("deployment {label}: failed to load nodes cache: {e}"))?;
+            let entries = node_entries
+                .expect("a repo: deployment always resolves against a loaded node index");
             let closure = pins::resolve_pinned_closure(
                 &ctx.peppy_dirs,
-                &entries,
+                entries,
                 &spec.name,
                 &spec.tag,
                 shared_feedback(),
@@ -483,18 +529,18 @@ async fn resolve_one(
             }
             let dep_pins = closure.dep_pins();
             let manifests = closure.manifests();
-            let root = closure.root();
-            let source = NodeSource::Pinned {
-                pin_json5: serde_json5::to_string(&root.pin)
-                    .map_err(|e| format!("deployment {label}: could not encode its pin: {e}"))?,
-            };
-            Ok((
+            // The closure is owned here, so the root comes out by move: its
+            // config and pin are the two largest things in it.
+            let mut nodes = closure.nodes;
+            let root = nodes.remove(0);
+            let source = pinned_source(&label, &root.pin)?;
+            Ok(ResolvedDeployment {
                 source,
-                root.config.clone(),
-                Some(root.pin.clone()),
-                dep_pins,
-                manifests,
-            ))
+                config: root.config,
+                root_pin: Some(root.pin),
+                closure_pins: dep_pins,
+                pin_manifests: manifests,
+            })
         }
         DeploymentSource::Git(spec) => {
             let root = pins::resolve_git_deployment(
@@ -509,12 +555,15 @@ async fn resolve_one(
             if remote {
                 refuse_unportable_pins(&label, std::iter::once(&root.pin))?;
             }
-            let source = NodeSource::Pinned {
-                pin_json5: serde_json5::to_string(&root.pin)
-                    .map_err(|e| format!("deployment {label}: could not encode its pin: {e}"))?,
-            };
+            let source = pinned_source(&label, &root.pin)?;
             let manifests = vec![root.config.manifest.clone()];
-            Ok((source, root.config, Some(root.pin), Vec::new(), manifests))
+            Ok(ResolvedDeployment {
+                source,
+                config: root.config,
+                root_pin: Some(root.pin),
+                closure_pins: Vec::new(),
+                pin_manifests: manifests,
+            })
         }
         DeploymentSource::Url(spec) => {
             let source = NodeSource::Http {
@@ -528,9 +577,25 @@ async fn resolve_one(
                     format!("failed to retrieve node config for deployment {label}: {e}")
                 })?;
             let manifests = vec![config.manifest.clone()];
-            Ok((source, config, None, Vec::new(), manifests))
+            Ok(ResolvedDeployment {
+                source,
+                config,
+                root_pin: None,
+                closure_pins: Vec::new(),
+                pin_manifests: manifests,
+            })
         }
     }
+}
+
+/// The add source a pinned deployment dispatches with. Shared by the `repo:`
+/// and `git:` arms so the two cannot disagree on how a root pin reaches the
+/// machine that materializes it.
+fn pinned_source(label: &str, pin: &PinnedItem) -> std::result::Result<NodeSource, String> {
+    Ok(NodeSource::Pinned {
+        pin_json5: serde_json5::to_string(pin)
+            .map_err(|e| format!("deployment {label}: could not encode its pin: {e}"))?,
+    })
 }
 
 /// Mints the contract and pairing document pins of every planned deployment,
@@ -550,27 +615,36 @@ pub(super) async fn mint_doc_pins(
     planned: &mut [PlannedDeployment],
     placements: &Placements,
 ) -> std::result::Result<(), LaunchResult> {
-    let mut problems: Vec<String> = Vec::new();
-    for item in planned.iter_mut() {
-        let label = deployment_label(&item.deployment);
-        let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
-        let minted = {
-            let dirs = ctx.peppy_dirs.clone();
-            let manifests = item.pin_manifests.clone();
-            let sink = Arc::clone(&collected);
-            tokio::task::spawn_blocking(move || {
-                pins::doc_pins_for_manifests(&dirs, &manifests, &|line| {
-                    sink.lock().push(line.to_owned())
-                })
-            })
-            .await
-            .map_err(|e| format!("doc pin minting task failed: {e}"))
-            .and_then(|result| result)
-        };
-        let captured: Vec<String> = std::mem::take(&mut *collected.lock());
-        for line in captured {
-            publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+    // Every deployment mints against ONE load of the contract and pairing
+    // caches, on one blocking thread: both are read and parsed per load, and
+    // a launch with N deployments otherwise paid N of each, sequentially, on
+    // the critical path.
+    let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
+    let sets: Vec<Vec<config::node::Manifest>> = planned
+        .iter()
+        .map(|item| item.pin_manifests.clone())
+        .collect();
+    let minted = pins::doc_pins_for_manifest_sets_async(&ctx.peppy_dirs, sets, {
+        let sink = Arc::clone(&collected);
+        Arc::new(move |line: &str| sink.lock().push(line.to_owned()))
+    })
+    .await;
+    let captured: Vec<String> = std::mem::take(&mut *collected.lock());
+    for line in captured {
+        publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+    }
+
+    let minted = match minted {
+        Ok(minted) => minted,
+        Err(reason) => {
+            publish_stderr(ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return Err(LaunchResult::failure(&ctx.log_path, reason));
         }
+    };
+
+    let mut problems: Vec<String> = Vec::new();
+    for (item, minted) in planned.iter_mut().zip(minted) {
+        let label = deployment_label(&item.deployment);
         match minted {
             Ok(doc_pins) => {
                 if has_remote_instances(&item.deployment, placements)

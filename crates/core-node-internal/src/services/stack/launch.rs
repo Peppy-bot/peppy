@@ -378,7 +378,7 @@ async fn add_and_build_group(
         // The identical source and pins a peer would receive: a launch adds
         // one set of bytes wherever a deployment lands, so the local arm
         // must not get to differ from the dispatched one.
-        let node_add_goal = match closure_pins_json5(item) {
+        let node_add_goal = match crate::services::node::pins::encode_pins(&item.closure_pins) {
             Ok(pins) => {
                 NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
                     .with_env_vars(ctx.env_vars.clone())
@@ -447,13 +447,6 @@ async fn add_and_build_group(
     outcome
 }
 
-/// The wire form of a deployment's closure pins, shared by the local and
-/// remote add arms so the two cannot drift on what a deployment's adds
-/// carry.
-fn closure_pins_json5(item: &PlannedDeployment) -> std::result::Result<Vec<String>, String> {
-    crate::services::node::pins::encode_pins(&item.closure_pins)
-}
-
 /// Adds and builds one node on a peer, over the wire.
 ///
 /// The goal carries the same pinned source and closure pins the local arm
@@ -481,7 +474,9 @@ async fn add_and_build_remotely(
     )
     .with_env_vars(ctx.env_vars.clone())
     .with_launch_id(&goal.launch_id)
-    .with_pins(closure_pins_json5(item)?);
+    .with_pins(crate::services::node::pins::encode_pins(
+        &item.closure_pins,
+    )?);
     let added = federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add)
         .await
         .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;

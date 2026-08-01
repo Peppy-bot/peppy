@@ -196,14 +196,12 @@ fn validate_deployment_pins(pins_json5: &[String]) -> std::result::Result<(), St
     for (index, raw) in pins_json5.iter().enumerate() {
         let pins: DeploymentPins = serde_json5::from_str(raw)
             .map_err(|e| format!("deployment pins #{index} are not decodable: {e}"))?;
+        // The same rule the coordinator applied before it ever dispatched,
+        // stated once: a misconfiguration must not read as two different
+        // problems depending on which machine caught it.
         for pin in pins.items() {
-            if pin.origin.checkout().is_none() {
-                return Err(format!(
-                    "{} arrived pinned to a filesystem path, which only the machine that \
-                     minted it could read; a pin that crosses a machine boundary must name a \
-                     git repository",
-                    pin.label()
-                ));
+            if let Some(reason) = crate::services::node::pins::portable_pin_refusal(pin) {
+                return Err(reason);
             }
         }
     }
@@ -490,7 +488,7 @@ mod tests {
     fn a_filesystem_pinned_deployment_is_refused() {
         let raw = pins_json5(r#"{ source_type: "fs", path: "/repo/camera/peppy.json5" }"#);
         let err = validate_deployment_pins(&[raw]).expect_err("an fs pin cannot cross machines");
-        assert!(err.contains("filesystem path"), "{err}");
+        assert!(err.contains("coordinator's filesystem"), "{err}");
         assert!(err.contains("git repository"), "{err}");
     }
 
