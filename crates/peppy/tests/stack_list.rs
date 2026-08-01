@@ -67,6 +67,7 @@ fn make_consumer_depend_on_provider(
         }],
         contracts: vec![],
         pairings: vec![],
+        pairing_observers: vec![],
     });
 
     consumer_cfg.interfaces.topics = Some(TopicInterfaces {

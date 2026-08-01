@@ -150,7 +150,7 @@ Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,p
 - `services.exposes` and `actions.exposes` may only reference a `manifest.implements` slot.
 - `topics.emits` may reference a `manifest.implements` slot or a `depends_on.pairings` slot, because a [pairing](/advanced_guides/pairing/) role produces the document's topics as well as consuming them.
 - `services.consumes` and `actions.consumes` may only reference a `depends_on.{nodes,contracts}` slot; a pairing document declares topics only, so it exposes no service or action to consume.
-- `topics.consumes` may additionally reference a `depends_on.pairings` slot, naming a topic the counterpart role emits.
+- `topics.consumes` may additionally reference a `depends_on.pairings` slot, naming a topic the counterpart role emits, or a `depends_on.pairing_observers` slot, naming a topic the observed role emits.
 
 Pick semantic short names for implements link_ids (`cam`, `collision`, `hw_ready`, `moves`), matching the consumer-side style, rather than echoing the contract name.
 

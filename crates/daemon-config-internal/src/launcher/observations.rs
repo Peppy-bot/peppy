@@ -3,13 +3,13 @@
 //! `--link` / `--defer-link`, which feed the same validator through the
 //! daemon).
 //!
-//! An observer slot (`depends_on.pairings` with `observes_role`) passively taps
+//! An observer slot (`depends_on.pairing_observers`) passively taps
 //! the topics a participant emits for that role, without joining the 1:1
 //! pairing and without claiming any endpoint. So, unlike pairing, observation
 //! is neither exclusive nor two-sided: many observers may watch the same
 //! source, and the source is never coverage-checked for the observer. Every
-//! observer slot is required (the manifest forbids `optional` on the observer
-//! form), so each must be linked to a source or explicitly deferred, or the
+//! observer slot is required (the manifest forbids `optional` on an observer
+//! entry), so each must be linked to a source or explicitly deferred, or the
 //! plan is rejected (`ObservationSlotUncovered`).
 
 use super::types::Placements;
@@ -17,21 +17,12 @@ use crate::error::{
     ObservationSlotUncovered, ObservationTargetAmbiguous, ObservationTargetNotObservable,
     PairingSha256Mismatch, ParsingError,
 };
-use config::node::{PairingDependency, PairingObserverDependency};
+use config::node::PairingObserverDependency;
 use config::runtime::ProducerRef;
 use std::collections::BTreeMap;
 
-use super::pairings::{PairingValidationItem, participants};
+use super::pairings::PairingValidationItem;
 use super::types::split_link_target;
-
-/// The observer slots of a pairing-dep list, in declaration order. Participant
-/// slots are handled by `pairings`; observation validation steps over them.
-fn observers(deps: &[PairingDependency]) -> impl Iterator<Item = &PairingObserverDependency> {
-    deps.iter().filter_map(|dep| match dep {
-        PairingDependency::Observer(observer) => Some(observer),
-        PairingDependency::Participant(_) => None,
-    })
-}
 
 /// One validated observation, ready for the daemon to deliver to the observer
 /// once resolved. The observer subscribes fully pinned to
@@ -72,8 +63,9 @@ pub struct ValidatedObservations {
 ///    an observer entry whose value is an array is `LinkTargetNotScalar`
 ///    (raised by `pairings`' scalar guard is not shared, so it is raised here).
 /// 2. The source instance exists in the plan/stack (`UnknownInstanceId`).
-/// 3. The source declares exactly one participant slot playing `observes_role`
-///    for the observer's pairing `(name, tag)`, or the link names one via the
+/// 3. The source declares exactly one participant slot playing the observed
+///    `role` for the observer's pairing `(name, tag)`, or the link names one
+///    via the
 ///    `/<source_link_id>` suffix (`ObservationTargetNotObservable` /
 ///    `ObservationTargetAmbiguous`). Observation is not exclusive, so every
 ///    such slot is a candidate regardless of who else observes it.
@@ -96,10 +88,11 @@ pub fn validate_observations(
     }
 
     for item in items.iter().filter(|i| !i.preexisting) {
-        let observers_by_link: BTreeMap<&str, &PairingObserverDependency> =
-            observers(item.pairing_deps)
-                .map(|observer| (observer.link_id.as_str(), observer))
-                .collect();
+        let observers_by_link: BTreeMap<&str, &PairingObserverDependency> = item
+            .observer_deps
+            .iter()
+            .map(|observer| (observer.link_id.as_str(), observer))
+            .collect();
 
         for instance in item.instances {
             let owner_id = instance.instance_id.as_str();
@@ -150,10 +143,10 @@ fn resolve_observation(
     // Candidate source slots: participant slots on the source instance playing
     // the observed role for the observer's pairing (name, tag). Observation is
     // not exclusive, so no claim filtering: every match is a candidate.
-    let candidates: Vec<_> = participants(source_item.pairing_deps)
-        .filter(|p| {
-            p.name == own_dep.name && p.tag == own_dep.tag && p.role == own_dep.observes_role
-        })
+    let candidates: Vec<_> = source_item
+        .pairing_deps
+        .iter()
+        .filter(|p| p.name == own_dep.name && p.tag == own_dep.tag && p.role == own_dep.role)
         .collect();
 
     let not_observable = || {
@@ -165,7 +158,7 @@ fn resolve_observation(
             source_tag: source_item.node_tag.to_string(),
             pairing_name: own_dep.name.as_str().to_string(),
             pairing_tag: own_dep.tag.clone(),
-            observed_role: own_dep.observes_role.clone(),
+            observed_role: own_dep.role.clone(),
         }))
     };
 
@@ -191,7 +184,7 @@ fn resolve_observation(
                         source_instance_id: source_instance.to_string(),
                         pairing_name: own_dep.name.as_str().to_string(),
                         pairing_tag: own_dep.tag.clone(),
-                        observed_role: own_dep.observes_role.clone(),
+                        observed_role: own_dep.role.clone(),
                         candidate_link_ids,
                     },
                 )));
@@ -221,7 +214,7 @@ fn resolve_observation(
         observer_link_id: key.to_string(),
         pairing_name: own_dep.name.as_str().to_string(),
         pairing_tag: own_dep.tag.clone(),
-        observed_role: own_dep.observes_role.clone(),
+        observed_role: own_dep.role.clone(),
         source: ProducerRef::new(placements.of(source_instance), source_instance),
         source_link_id: source_dep.link_id.clone(),
     })
@@ -235,7 +228,7 @@ fn validate_coverage(
     errors: &mut Vec<ParsingError>,
 ) {
     let owner_id = instance.instance_id.as_str();
-    for observer in observers(item.pairing_deps) {
+    for observer in item.observer_deps {
         let covered = instance.links.contains_key(&observer.link_id)
             || instance.defer_links.contains(&observer.link_id);
         if !covered {
@@ -245,7 +238,7 @@ fn validate_coverage(
                     link_id: observer.link_id.clone(),
                     pairing_name: observer.name.as_str().to_string(),
                     pairing_tag: observer.tag.clone(),
-                    observed_role: observer.observes_role.clone(),
+                    observed_role: observer.role.clone(),
                 },
             )));
         }
@@ -270,12 +263,12 @@ mod tests {
         serde_json5::from_str(json5).expect("instances fixture should parse")
     }
 
-    fn parse_pairing_deps(json5: &str) -> Vec<PairingDependency> {
+    fn parse_pairing_deps(json5: &str) -> Vec<config::node::PairingParticipantDependency> {
         serde_json5::from_str(json5).expect("pairing deps fixture should parse")
     }
 
     /// A robot arm exposing the `arm` participant role of `arm_link/v1`.
-    fn arm_deps() -> Vec<PairingDependency> {
+    fn arm_deps() -> Vec<config::node::PairingParticipantDependency> {
         parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }]"#,
         )
@@ -283,23 +276,39 @@ mod tests {
 
     /// A recorder observing the `arm` role of `arm_link/v1` through slot
     /// `observed_arm`.
-    fn recorder_deps() -> Vec<PairingDependency> {
-        parse_pairing_deps(
-            r#"[{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "observed_arm" }]"#,
+    fn recorder_deps() -> Vec<PairingObserverDependency> {
+        serde_json5::from_str(
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" }]"#,
         )
+        .expect("observer deps fixture should parse")
     }
 
+    /// A node declaring participant slots only (a potential observation source).
     fn item<'a>(
         node_name: &'a str,
         instances: &'a [DeploymentInstance],
-        pairing_deps: &'a [PairingDependency],
+        pairing_deps: &'a [config::node::PairingParticipantDependency],
     ) -> PairingValidationItem<'a> {
         PairingValidationItem {
             node_name,
             node_tag: "v1",
             instances,
             pairing_deps,
+            observer_deps: &[],
             preexisting: false,
+        }
+    }
+
+    /// A node declaring observer slots only.
+    fn observer_item<'a>(
+        node_name: &'a str,
+        instances: &'a [DeploymentInstance],
+        observer_deps: &'a [PairingObserverDependency],
+    ) -> PairingValidationItem<'a> {
+        PairingValidationItem {
+            observer_deps,
+            pairing_deps: &[],
+            ..item(node_name, instances, &[])
         }
     }
 
@@ -312,7 +321,7 @@ mod tests {
         let rec_deps = recorder_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_deps),
-            item("recorder", &rec_instances, &rec_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
         ];
         let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
@@ -330,7 +339,7 @@ mod tests {
     fn observer_without_source_is_uncovered() {
         let rec_instances = parse_instances(r#"[{ instance_id: "rec_1" }]"#);
         let rec_deps = recorder_deps();
-        let items = vec![item("recorder", &rec_instances, &rec_deps)];
+        let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
         let out = validate_observations(&items, &all_local());
         let info = out
             .errors
@@ -354,7 +363,7 @@ mod tests {
         let rec_instances =
             parse_instances(r#"[{ instance_id: "rec_1", defer_links: ["observed_arm"] }]"#);
         let rec_deps = recorder_deps();
-        let items = vec![item("recorder", &rec_instances, &rec_deps)];
+        let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
         let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert!(out.planned.is_empty());
@@ -372,7 +381,7 @@ mod tests {
         let rec_deps = recorder_deps();
         let items = vec![
             item("arm_controller", &ctrl_instances, &ctrl_deps),
-            item("recorder", &rec_instances, &rec_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
         ];
         let out = validate_observations(&items, &all_local());
         let info = out
@@ -402,7 +411,7 @@ mod tests {
         let rec_deps = recorder_deps();
         let items = vec![
             item("dual_arm", &dual_instances, &dual_deps),
-            item("recorder", &rec_instances, &rec_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
         ];
         let out = validate_observations(&items, &all_local());
         let info = out
@@ -421,7 +430,7 @@ mod tests {
         );
         let items = vec![
             item("dual_arm", &dual_instances, &dual_deps),
-            item("recorder", &rec_instances, &rec_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
         ];
         let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
@@ -441,7 +450,7 @@ mod tests {
         let rec_deps = recorder_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_deps),
-            item("recorder", &rec_instances, &rec_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
         ];
         let out = validate_observations(&items, &all_local());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
@@ -457,7 +466,7 @@ mod tests {
         let rec_deps = recorder_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_deps),
-            item("recorder", &rec_instances, &rec_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
         ];
         let out = validate_observations(&items, &all_local());
         assert!(

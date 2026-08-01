@@ -946,6 +946,9 @@ pub(crate) fn walk_directory(
             PeppySchema::PairingV1 => {
                 collect_pairing_entry(&ctx, &mut pairings_seen, &mut pairings);
             }
+            // A repository index describes the repo itself; it declares no
+            // item the cache holds, so the walk skips it.
+            PeppySchema::RepositoryV1 => {}
         }
     }
 

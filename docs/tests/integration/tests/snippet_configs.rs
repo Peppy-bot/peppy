@@ -97,6 +97,10 @@ fn assert_parses_with_matching_schema(path: &Path) {
                 result.unwrap_err()
             );
         }
+        PeppySchema::RepositoryV1 => panic!(
+            "{} declares repository/v1, which the docs snippets do not cover",
+            path.display()
+        ),
     }
 }
 

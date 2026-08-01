@@ -372,7 +372,8 @@ async fn validate_links_against_stack(
         tag: String,
         instances: Vec<DeploymentInstance>,
         implements: Vec<ImplementsEntry>,
-        pairing_deps: Vec<config::node::PairingDependency>,
+        pairing_deps: Vec<config::node::PairingParticipantDependency>,
+        observer_deps: Vec<config::node::PairingObserverDependency>,
     }
 
     let stack_nodes: Vec<_> = graph
@@ -462,7 +463,14 @@ async fn validate_links_against_stack(
                 .config
                 .manifest
                 .depends_on
-                .map(|d| d.pairings)
+                .as_ref()
+                .map(|d| d.pairings.clone())
+                .unwrap_or_default(),
+            observer_deps: info
+                .config
+                .manifest
+                .depends_on
+                .map(|d| d.pairing_observers)
                 .unwrap_or_default(),
         });
     }
@@ -525,9 +533,13 @@ async fn validate_links_against_stack(
     // Build the pairing/observation view over the same snapshot. Running
     // instances are valid targets but exempt from coverage (their slots were
     // covered at their own start).
-    let target_pairing_deps: Vec<config::node::PairingDependency> = target_depends_on
+    let target_pairing_deps: Vec<config::node::PairingParticipantDependency> = target_depends_on
         .as_ref()
         .map(|d| d.pairings.clone())
+        .unwrap_or_default();
+    let target_observer_deps: Vec<config::node::PairingObserverDependency> = target_depends_on
+        .as_ref()
+        .map(|d| d.pairing_observers.clone())
         .unwrap_or_default();
     let mut pairing_items: Vec<PairingValidationItem<'_>> = snapshot
         .iter()
@@ -536,6 +548,7 @@ async fn validate_links_against_stack(
             node_tag: &s.tag,
             instances: &s.instances,
             pairing_deps: &s.pairing_deps,
+            observer_deps: &s.observer_deps,
             preexisting: true,
         })
         .collect();
@@ -544,6 +557,7 @@ async fn validate_links_against_stack(
         node_tag: target_tag,
         instances: &synthetic_instances,
         pairing_deps: &target_pairing_deps,
+        observer_deps: &target_observer_deps,
         preexisting: false,
     });
     let mut validated = validate_link_plan(
@@ -570,8 +584,7 @@ async fn validate_links_against_stack(
     // `<peer_instance>[/<peer_link_id>]`. Observer links produce no goal state.
     let participant_link_ids: std::collections::BTreeSet<&str> = target_pairing_deps
         .iter()
-        .filter(|d| d.is_participant())
-        .map(|d| d.link_id())
+        .map(|d| d.link_id.as_str())
         .collect();
     let deferred_pairs = defer_links
         .iter()

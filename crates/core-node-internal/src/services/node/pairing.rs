@@ -539,7 +539,7 @@ pub struct PairingRequest<'a> {
     pub node_name: &'a str,
     pub node_tag: &'a str,
     pub instance_id: &'a str,
-    pub pairing_deps: &'a [config::node::PairingDependency],
+    pub pairing_deps: &'a [config::node::PairingParticipantDependency],
     /// `link_id -> peer target` from `--link` / a launch plan.
     pub requested: &'a std::collections::BTreeMap<String, PairTarget>,
     /// Slots deliberately starting unpaired (`--defer-link` / the
@@ -605,13 +605,12 @@ pub fn plan_requested_pairs(
     // Every requested / covered / deferred key must name one of this node's
     // participant pairing slots. `validate_pairings` intentionally SKIPS keys
     // that are not participant slots (the unified `links` map lets producer and
-    // observer keys share the namespace), so this boundary — where the goal has
-    // already classified pairs — is where a stray key is caught. This restores
+    // observer keys share the namespace), so this boundary, where the goal has
+    // already classified pairs, is where a stray key is caught. This restores
     // the old dead-key rejection that the by-validator classification dropped.
     let participant_slots: std::collections::BTreeSet<&str> = pairing_deps
         .iter()
-        .filter(|dependency| dependency.is_participant())
-        .map(|dependency| dependency.link_id())
+        .map(|dependency| dependency.link_id.as_str())
         .collect();
     for link_id in requested
         .keys()
@@ -641,13 +640,9 @@ pub fn plan_requested_pairs(
         .partition(|(_, target)| target.peer.core_node != local_core_node);
 
     let is_optional = |link: &str| {
-        pairing_deps.iter().any(|d| {
-            matches!(
-                d,
-                config::node::PairingDependency::Participant(p)
-                    if p.link_id == link && p.optional
-            )
-        })
+        pairing_deps
+            .iter()
+            .any(|dependency| dependency.link_id == link && dependency.optional)
     };
     let defer_like: Vec<String> = deferred
         .iter()
@@ -702,6 +697,7 @@ pub fn plan_requested_pairs(
             node_tag: &node.node_tag,
             instances,
             pairing_deps: &node.pairing_deps,
+            observer_deps: &[],
             preexisting: true,
         })
         .collect();
@@ -710,6 +706,7 @@ pub fn plan_requested_pairs(
         node_tag,
         instances: &own_instances,
         pairing_deps,
+        observer_deps: &[],
         preexisting: false,
     });
 
@@ -813,10 +810,10 @@ mod tests {
     /// Every instance in these tests lives on one daemon, so slot addresses
     /// and pair targets all carry the same core node.
     const TEST_CORE: &str = "core_a";
-    use config::node::PairingDependency;
+    use config::node::PairingParticipantDependency;
     use std::collections::BTreeMap;
 
-    fn dep(role: &str, link_id: &str, optional: bool) -> PairingDependency {
+    fn dep(role: &str, link_id: &str, optional: bool) -> PairingParticipantDependency {
         serde_json5::from_str(&format!(
             r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}",
                  optional: {optional} }}"#
@@ -827,7 +824,7 @@ mod tests {
     fn snapshot_node(
         name: &str,
         instance_ids: &[&str],
-        deps: &[PairingDependency],
+        deps: &[PairingParticipantDependency],
     ) -> PairingNodeSnapshot {
         PairingNodeSnapshot {
             node_name: name.to_string(),
@@ -1028,7 +1025,7 @@ mod tests {
     fn plan(
         snapshot: &[PairingNodeSnapshot],
         instance_id: &str,
-        deps: &[PairingDependency],
+        deps: &[PairingParticipantDependency],
         req: &BTreeMap<String, PairTarget>,
         deferred: &[String],
     ) -> std::result::Result<Vec<PlannedPair>, String> {
@@ -1244,7 +1241,7 @@ mod tests {
     /// `plan_requested_pairs` with covered slots (the earlier endpoints of
     /// launch-planned pairs) and nothing else.
     fn plan_covered(
-        deps: &[PairingDependency],
+        deps: &[PairingParticipantDependency],
         covered: &BTreeMap<String, PairTarget>,
     ) -> std::result::Result<Vec<PlannedPair>, String> {
         plan_requested_pairs(

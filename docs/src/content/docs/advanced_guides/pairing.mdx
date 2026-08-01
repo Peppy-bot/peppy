@@ -257,14 +257,14 @@ The generated code addresses each arm through its slot module (`paired_topics.le
 
 A pair is exclusive between two instances, but sometimes a third node just wants to *watch* one side's stream: a recorder logging every `joint_states` an arm emits, a dashboard tailing a controller's setpoints. Joining the pair is wrong (it is 1:1, and the watcher has nothing to send back), and a separate contract would duplicate the topic shape. An **observer slot** solves this: it passively taps the topics a chosen role emits, following that source instance's own lifecycle rather than any pairing.
 
-Declare an observer slot in `depends_on.pairings` with `observes_role` instead of `role`, and list the topics it taps in `interfaces.topics.consumes` under its `link_id`. An observer plays no role, claims no endpoint, and emits nothing, so it never needs coverage on an emit side:
+Declare an observer slot in `depends_on.pairing_observers`, where `role` names the role being observed rather than one this node plays, and list the topics it taps in `interfaces.topics.consumes` under its `link_id`. An observer plays no role, claims no endpoint, and emits nothing, so it never needs coverage on an emit side:
 
 ```json5
 // recorder/peppy.json5 (manifest excerpt)
 depends_on: {
-  pairings: [
+  pairing_observers: [
     // Watch whatever the `arm` role of arm_link/v1 publishes.
-    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
   ]
 },
 interfaces: {

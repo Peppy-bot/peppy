@@ -2646,7 +2646,7 @@ async fn stack_launch_delivers_observer_source_pin() {
         &git_hash,
         &run_cmd,
         Some(
-            r#"{ pairings: [{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }] }"#,
+            r#"{ pairing_observers: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }] }"#,
         ),
         None,
         Some(r#"{ topics: { consumes: [{ link_id: "watch", name: "joint_states" }] } }"#),
