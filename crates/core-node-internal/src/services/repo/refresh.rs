@@ -1339,10 +1339,14 @@ mod tests {
             refreshed.failures[0].retained, 1,
             "only `from_two` is retained, not `from_one`"
         );
+        // Node paths are stored canonicalized, so compare against the
+        // canonical form of the repo root (on macOS the tempdir `two` is a
+        // `/var` symlink to `/private/var`).
+        let two_root = std::fs::canonicalize(&two).unwrap();
         let retained: Vec<&str> = refreshed
             .nodes
             .iter()
-            .filter(|n| n.path.starts_with(two.to_string_lossy().as_ref()))
+            .filter(|n| n.path.starts_with(two_root.to_string_lossy().as_ref()))
             .map(|n| n.node_name.as_str())
             .collect();
         assert_eq!(retained, vec!["from_two"]);

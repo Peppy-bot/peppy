@@ -18,7 +18,7 @@ pub use remove::listen_for_repo_remove;
 use core_node_api::encoding::{RepoSource, RepoSourceKind};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Guards read-modify-write cycles on repositories.json5 and
 /// excluded_repositories.json5 to prevent concurrent corruption.
@@ -125,7 +125,8 @@ pub(crate) fn json_entry_identity(entry: &Value) -> Option<String> {
 /// `repo_id` tagging at load time, retention of a failed repository's
 /// previous entries, and `repo list` grouping cannot drift apart.
 ///
-/// - `fs`: the entry's path lies inside the repository's directory.
+/// - `fs`: the entry's path lies inside the repository's directory, tested in
+///   canonical form so a root spelled through a symlink still matches.
 /// - `git`: the url matches, and a non-empty pinned `ref` must equal the
 ///   entry's `resolved_ref`. An unpinned repository matches any ref,
 ///   since whatever branch was checked out did come from it. The ref
@@ -148,7 +149,7 @@ pub(crate) fn entry_belongs_to_repo(
         RepoSourceKind::Fs if typ == "fs" => repo
             .get("path")
             .and_then(|v| v.as_str())
-            .is_some_and(|p| Path::new(path).starts_with(Path::new(p))),
+            .is_some_and(|root| entry_is_within_fs_root(path, root)),
         RepoSourceKind::Git if typ == "git" => {
             repo_url == source_uri
                 && match repo.get("ref").and_then(|v| v.as_str()) {
@@ -159,6 +160,24 @@ pub(crate) fn entry_belongs_to_repo(
         RepoSourceKind::Url if typ == "url" => repo_url == source_uri,
         _ => false,
     }
+}
+
+/// Whether a cache entry stored at `entry_path` sits inside the fs repository
+/// rooted at `configured_root`.
+///
+/// The walk stores entry paths canonicalized: it resolves the root with
+/// `std::fs::canonicalize` before emitting them, so on macOS an entry under a
+/// `/var/...` temp or symlinked directory is spelled `/private/var/...`. The
+/// configured root arrives from `repositories.json5` exactly as the user wrote
+/// it, so it is canonicalized here too before the containment test; without
+/// this the two never share a prefix on such a directory and every entry looks
+/// unowned. A root that cannot be resolved (removed, or momentarily
+/// unreachable) falls back to its written spelling, which still matches on
+/// platforms that do not put the tree behind a symlink.
+fn entry_is_within_fs_root(entry_path: &str, configured_root: &str) -> bool {
+    let root =
+        std::fs::canonicalize(configured_root).unwrap_or_else(|_| PathBuf::from(configured_root));
+    Path::new(entry_path).starts_with(root)
 }
 
 /// Id of the repository that owns this cache entry: the first match in
@@ -418,6 +437,41 @@ mod tests {
             None,
             "/home/user/elsewhere/arm/peppy.json5"
         ));
+    }
+
+    /// A repository configured through a symlinked root still owns the entries
+    /// discovered under it. The walk stores canonicalized entry paths, so the
+    /// configured root has to be canonicalized before the containment test or
+    /// the two never share a prefix. macOS hits this because a `/var` temp dir
+    /// is really `/private/var`; the test creates its own symlink so the case
+    /// is exercised deterministically on every platform, not just where the
+    /// host's tmpdir happens to be symlinked.
+    #[cfg(unix)]
+    #[test]
+    fn fs_attribution_matches_through_a_symlinked_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let real_root = base.join("real");
+        std::fs::create_dir_all(real_root.join("arm")).unwrap();
+
+        let link_root = base.join("link");
+        std::os::unix::fs::symlink(&real_root, &link_root).unwrap();
+
+        // The entry path is canonical (what the walk emits); the configured
+        // root is the symlink spelling (what the user wrote).
+        let entry = real_root.join("arm/peppy.json5");
+        let repo = serde_json::json!({ "type": "fs", "path": link_root.to_str().unwrap() });
+
+        assert!(
+            entry_belongs_to_repo(
+                &repo,
+                RepoSourceKind::Fs,
+                None,
+                None,
+                entry.to_str().unwrap()
+            ),
+            "an entry under the symlink target belongs to the repo configured by the symlink path"
+        );
     }
 
     /// Source kinds never cross-attribute, even when the other fields
