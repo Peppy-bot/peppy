@@ -128,6 +128,21 @@ async fn reserve_inner(
         decoded.launch_id, decoded.coordinator_core_node
     );
 
+    // Validate the pins the coordinator resolved for this slice BEFORE taking
+    // the reservation. Decoding runs every structural rule (a traversal path,
+    // a truncated commit, a malformed fingerprint all fail there), and the
+    // origin check refuses a pin no machine but the coordinator could read.
+    // Nothing here touches the filesystem, the network, or this daemon's
+    // caches: the bytes are materialized at add time, and which bytes those
+    // are was decided on the coordinator. Refusing first means a rejected
+    // slice never took ownership and never spawned a presence watch, so there
+    // is nothing to unwind.
+    if let Err(reason) = validate_deployment_pins(&decoded.deployment_pins_json5) {
+        return ParticipantReserveResponse::rejected(reason, &context.peppy_version)
+            .encode()
+            .map_err(Into::into);
+    }
+
     match context
         .ownership
         .try_reserve(&decoded.launch_id, &decoded.coordinator_core_node)
@@ -158,23 +173,6 @@ async fn reserve_inner(
             watch_coordinator_presence(context, &decoded.coordinator_core_node)
         }
         ReserveOutcome::AlreadyHeld => {}
-    }
-
-    // Validate the pins the coordinator resolved for this slice while the
-    // reservation is still non-destructive. Decoding runs every structural
-    // rule (a traversal path, a truncated commit, a malformed fingerprint
-    // all fail there), and the origin check refuses a pin no machine but
-    // the coordinator could read. Nothing here touches the filesystem, the
-    // network, or this daemon's caches: the bytes are materialized at add
-    // time, and which bytes those are was decided on the coordinator.
-    if let Err(reason) = validate_deployment_pins(&decoded.deployment_pins_json5) {
-        // A validation failure is this participant's refusal, so drop the
-        // reservation we just took rather than holding a machine hostage
-        // to a launch that cannot proceed.
-        context.ownership.release(&decoded.launch_id);
-        return ParticipantReserveResponse::rejected(reason, &context.peppy_version)
-            .encode()
-            .map_err(Into::into);
     }
 
     ParticipantReserveResponse::accepted(&context.peppy_version, &context.root_instance_id)

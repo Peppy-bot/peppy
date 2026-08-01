@@ -95,6 +95,24 @@ impl DeploymentPins {
                 root.label()
             ));
         }
+        // One identity, one content. The minting side already refuses a
+        // closure that needs `name:tag` at two different fingerprints; stating
+        // it here too means a document that arrived over the wire cannot carry
+        // an ambiguity the adds would resolve by whichever pin they read
+        // first. Repeated identical pins are fine: they are the same bytes.
+        for (index, pin) in closure.iter().enumerate() {
+            if let Some(other) = closure[..index].iter().find(|other| {
+                other.kind == pin.kind && other.name == pin.name && other.tag == pin.tag
+            }) && other.sha256 != pin.sha256
+            {
+                return Err(format!(
+                    "{} is pinned at two different contents in one closure (`{}` and `{}`)",
+                    pin.label(),
+                    other.sha256,
+                    pin.sha256
+                ));
+            }
+        }
         Ok(Self { root, closure })
     }
 

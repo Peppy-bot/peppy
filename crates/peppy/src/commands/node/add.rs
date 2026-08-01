@@ -147,7 +147,9 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     //
     // `Git`/`Http` root sources still skip the preflight since we'd need to
     // fetch them to read the manifest; the daemon's add action stops
-    // existing instances transparently in that path.
+    // existing instances transparently in that path. `Pinned` skips it for a
+    // different reason: `parse_node_source` never produces one, so the arm
+    // exists only for exhaustiveness.
     if !force {
         let active_instances = match &node_source {
             NodeSource::Fs(path) => {

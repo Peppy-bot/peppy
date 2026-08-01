@@ -394,13 +394,17 @@ async fn execute_pinned_batch(
         });
     }
 
-    // Batch succeeded; defuse rollback and report.
+    // Batch succeeded; defuse rollback and report. Counted from what rollback
+    // recorded rather than from the pin set: a dependency the stack already
+    // held with an identical manifest was skipped, and reporting it as added
+    // would describe work this batch did not do.
+    let added = rollback.added.len();
     rollback.disarm();
 
     emit(
         &feedback_tx,
         FeedbackStream::Stdout,
-        format!("Batch add complete: {} node(s) added", nodes.len()),
+        format!("Batch add complete: {added} node(s) added"),
     );
 
     let effective_log = last_sub_log_path.unwrap_or(log_path);
