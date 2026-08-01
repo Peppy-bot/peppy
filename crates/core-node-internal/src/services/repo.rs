@@ -112,73 +112,113 @@ pub(crate) fn json_entry_identity(entry: &Value) -> Option<String> {
     }
 }
 
-/// Whether a cache entry was discovered under the repository described by
-/// the `repositories.json5` entry `repo`.
+/// The configured repositories, resolved once so that attributing a whole
+/// cache to them costs one pass over the list per entry rather than one
+/// `canonicalize` per (entry, repository) pair.
 ///
 /// The one definition of "this entry belongs to that repository", so
 /// `repo_id` tagging at load time, retention of a failed repository's
-/// previous entries, and `repo list` grouping cannot drift apart.
-///
-/// - `fs`: the entry's path lies inside the repository's directory, tested in
-///   canonical form so a root spelled through a symlink still matches.
-/// - `git`: the url matches, and a non-empty pinned `ref` must equal the
-///   entry's ref. An unpinned repository matches any ref, since whatever
-///   branch was read did come from it. The ref check matters: without it,
-///   two entries for one url on different refs both attribute to the
-///   lower id and read as one repository claiming an identity twice.
-pub(crate) fn entry_belongs_to_repo(repo: &Value, origin: &EntryOrigin) -> bool {
-    let Some(typ) = repo.get("type").and_then(|v| v.as_str()) else {
-        return false;
-    };
-    match origin {
-        EntryOrigin::Fs { path } if typ == "fs" => repo
-            .get("path")
-            .and_then(|v| v.as_str())
-            .is_some_and(|root| entry_is_within_fs_root(path, root)),
-        EntryOrigin::Git {
-            repo_url, repo_ref, ..
-        } if typ == "git" => {
-            repo.get("url").and_then(|v| v.as_str()) == Some(repo_url.as_str())
-                && match repo.get("ref").and_then(|v| v.as_str()) {
-                    Some(pinned) if !pinned.is_empty() => repo_ref.as_deref() == Some(pinned),
-                    _ => true,
-                }
-        }
-        _ => false,
+/// previous entries, and `repo list` grouping cannot drift apart. Every
+/// caller asks the same question of the same handful of repositories for
+/// every entry it holds, which is why resolving them is worth doing up
+/// front: `repo refresh` alone asks it four times per repository.
+pub(crate) struct RepoOwners(Vec<(Option<u64>, RepoOwner)>);
+
+/// One configured repository, in the form attribution needs it.
+enum RepoOwner {
+    /// A tree on this machine, rooted at a canonicalized path.
+    ///
+    /// Cache entries store their paths canonicalized, so on macOS an entry
+    /// under a `/var/...` temp or symlinked directory is spelled
+    /// `/private/var/...`. The root arrives from `repositories.json5`
+    /// exactly as the user wrote it, so it is canonicalized here before any
+    /// containment test; without that the two never share a prefix on such
+    /// a directory and every entry looks unowned. A root that cannot be
+    /// resolved (removed, or momentarily unreachable) keeps its written
+    /// spelling, which still matches on platforms that do not put the tree
+    /// behind a symlink.
+    Fs { root: PathBuf },
+    /// A remote, optionally pinned to a ref.
+    Git {
+        url: String,
+        /// `None` for a repository that follows whatever branch it is
+        /// given, which therefore matches any ref on its url.
+        pinned_ref: Option<String>,
+    },
+}
+
+impl RepoOwners {
+    /// Resolves the `repositories.json5` entries in `repos`. Entries that
+    /// describe no repository this machine can match against — an
+    /// unrecognized `type`, an `fs` without a `path` — are dropped, since
+    /// nothing could ever attribute to them.
+    pub(crate) fn new(repos: &[Value]) -> Self {
+        let field = |repo: &Value, key: &str| {
+            repo.get(key)
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned)
+        };
+        Self(
+            repos
+                .iter()
+                .filter_map(|repo| {
+                    let owner = match repo.get("type").and_then(|v| v.as_str())? {
+                        "fs" => RepoOwner::Fs {
+                            root: canonical_root(&field(repo, "path")?),
+                        },
+                        "git" => RepoOwner::Git {
+                            url: field(repo, "url")?,
+                            pinned_ref: field(repo, "ref").filter(|r| !r.is_empty()),
+                        },
+                        _ => return None,
+                    };
+                    Some((repo.get("id").and_then(|v| v.as_u64()), owner))
+                })
+                .collect(),
+        )
+    }
+
+    /// Id of the repository that owns this cache entry: the first match in
+    /// id order, which (since `repos` arrives sorted by id) is the
+    /// highest-priority repository that could have produced it. `None` when
+    /// no configured repository matches.
+    ///
+    /// Nested fs repositories can both contain an entry; first-match makes
+    /// exactly one of them its owner, so retention and `repo_id` tagging
+    /// never double-count.
+    pub(crate) fn owner_of(&self, origin: &EntryOrigin) -> Option<u64> {
+        self.0
+            .iter()
+            .find(|(_, owner)| owner.owns(origin))
+            .and_then(|(id, _)| *id)
     }
 }
 
-/// Whether a cache entry stored at `entry_path` sits inside the fs repository
-/// rooted at `configured_root`.
-///
-/// The walk stores entry paths canonicalized: it resolves the root with
-/// `std::fs::canonicalize` before emitting them, so on macOS an entry under a
-/// `/var/...` temp or symlinked directory is spelled `/private/var/...`. The
-/// configured root arrives from `repositories.json5` exactly as the user wrote
-/// it, so it is canonicalized here too before the containment test; without
-/// this the two never share a prefix on such a directory and every entry looks
-/// unowned. A root that cannot be resolved (removed, or momentarily
-/// unreachable) falls back to its written spelling, which still matches on
-/// platforms that do not put the tree behind a symlink.
-fn entry_is_within_fs_root(entry_path: &Path, configured_root: &str) -> bool {
-    let root =
-        std::fs::canonicalize(configured_root).unwrap_or_else(|_| PathBuf::from(configured_root));
-    entry_path.starts_with(root)
+impl RepoOwner {
+    fn owns(&self, origin: &EntryOrigin) -> bool {
+        match (self, origin) {
+            (RepoOwner::Fs { root }, EntryOrigin::Fs { path }) => path.starts_with(root),
+            (
+                RepoOwner::Git { url, pinned_ref },
+                EntryOrigin::Git {
+                    repo_url, repo_ref, ..
+                },
+            ) => {
+                // The ref check matters: without it, two entries for one url
+                // on different refs both attribute to the lower id and read
+                // as one repository claiming an identity twice.
+                url == repo_url
+                    && pinned_ref
+                        .as_deref()
+                        .is_none_or(|pinned| repo_ref.as_deref() == Some(pinned))
+            }
+            _ => false,
+        }
+    }
 }
 
-/// Id of the repository that owns this cache entry: the first match in
-/// id order, which (since `repos` arrives sorted by id) is the
-/// highest-priority repository that could have produced it. `None` when
-/// no configured repository matches.
-///
-/// Nested fs repositories can both contain an entry; first-match makes
-/// exactly one of them its owner, so retention and `repo_id` tagging
-/// never double-count.
-pub(crate) fn owning_repo_id(repos: &[Value], origin: &EntryOrigin) -> Option<u64> {
-    repos
-        .iter()
-        .find(|repo| entry_belongs_to_repo(repo, origin))
-        .and_then(|repo| repo.get("id").and_then(|v| v.as_u64()))
+fn canonical_root(configured: &str) -> PathBuf {
+    std::fs::canonicalize(configured).unwrap_or_else(|_| PathBuf::from(configured))
 }
 
 /// Normalize a list of repo JSON entries: auto-assign missing `id` fields,
@@ -247,7 +287,7 @@ mod tests {
     // Coverage for `source_identity` (relocated here from `core-node-api`
     // alongside the function, which moved out of the pure wire-codec crate
     // because its `Fs` arm canonicalizes against the real filesystem).
-    use super::{entry_belongs_to_repo, source_identity};
+    use super::{RepoOwners, source_identity};
     use crate::services::repo::cache::EntryOrigin;
     use core_node_api::encoding::RepoSource;
     use serde_json::Value;
@@ -347,6 +387,15 @@ mod tests {
         Value::Object(map)
     }
 
+    /// Whether `repo` alone owns `origin`, which is what every attribution
+    /// rule below is really asking. The id is supplied here because
+    /// `normalize_repo_entries` guarantees one by the time attribution runs.
+    fn owns(repo: &Value, origin: &EntryOrigin) -> bool {
+        let mut repo = repo.clone();
+        repo["id"] = Value::from(1);
+        RepoOwners::new(std::slice::from_ref(&repo)).owner_of(origin) == Some(1)
+    }
+
     /// Two repositories on one url pinned to different refs are different
     /// repositories. Attributing by url alone would give both the lower
     /// id, which makes their entries look like one repository claiming an
@@ -356,9 +405,9 @@ mod tests {
         let main = git_repo("https://example.com/hub.git", Some("main"));
         let dev = git_repo("https://example.com/hub.git", Some("dev"));
 
-        assert!(entry_belongs_to_repo(&main, &git_origin("main")));
-        assert!(!entry_belongs_to_repo(&main, &git_origin("dev")));
-        assert!(entry_belongs_to_repo(&dev, &git_origin("dev")));
+        assert!(owns(&main, &git_origin("main")));
+        assert!(!owns(&main, &git_origin("dev")));
+        assert!(owns(&dev, &git_origin("dev")));
     }
 
     /// An unpinned repository takes whatever branch was checked out, so
@@ -367,7 +416,7 @@ mod tests {
     fn git_attribution_unpinned_repo_matches_any_ref() {
         let unpinned = git_repo("https://example.com/hub.git", None);
 
-        assert!(entry_belongs_to_repo(&unpinned, &git_origin("some-branch")));
+        assert!(owns(&unpinned, &git_origin("some-branch")));
 
         let EntryOrigin::Git {
             repo_ref,
@@ -385,7 +434,7 @@ mod tests {
             path,
         };
         assert!(
-            !entry_belongs_to_repo(&unpinned, &other),
+            !owns(&unpinned, &other),
             "a different url is a different repository"
         );
     }
@@ -396,11 +445,11 @@ mod tests {
     fn fs_attribution_matches_by_containment() {
         let repo = serde_json::json!({ "type": "fs", "path": "/home/user/workspace" });
 
-        assert!(entry_belongs_to_repo(
+        assert!(owns(
             &repo,
             &fs_origin("/home/user/workspace/arm/peppy.json5")
         ));
-        assert!(!entry_belongs_to_repo(
+        assert!(!owns(
             &repo,
             &fs_origin("/home/user/elsewhere/arm/peppy.json5")
         ));
@@ -430,7 +479,7 @@ mod tests {
         let repo = serde_json::json!({ "type": "fs", "path": link_root.to_str().unwrap() });
 
         assert!(
-            entry_belongs_to_repo(&repo, &fs_origin(entry)),
+            owns(&repo, &fs_origin(entry)),
             "an entry under the symlink target belongs to the repo configured by the symlink path"
         );
     }
@@ -440,12 +489,12 @@ mod tests {
     #[test]
     fn attribution_requires_matching_source_kind() {
         let git = git_repo("https://example.com/hub.git", None);
-        assert!(!entry_belongs_to_repo(
+        assert!(!owns(
             &git,
             &fs_origin("/home/user/workspace/arm/peppy.json5")
         ));
 
         let fs = serde_json::json!({ "type": "fs", "path": "/home/user/workspace" });
-        assert!(!entry_belongs_to_repo(&fs, &git_origin("main")));
+        assert!(!owns(&fs, &git_origin("main")));
     }
 }

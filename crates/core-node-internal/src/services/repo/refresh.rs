@@ -1,17 +1,18 @@
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use crate::services::node::cache as node_cache;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
-use crate::services::node::{clone_with_progress, head_commit};
+use crate::services::node::{checkout_repo_ref, clone_repo_shallow, head_commit};
 use crate::services::repo::cache::{
-    ContractCacheEntry, EntryOrigin, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
-    RepoCacheEntry, RepoItems, write_repo_cache,
+    ContractCacheEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry, RepoCacheEntry,
+    RepoItems, write_repo_cache,
 };
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::index::{
     PublishedItem, ReadSource, build_cache_entries, read_published_items,
 };
 use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
-use crate::services::repo::{normalize_repo_entries, source_identity};
+use crate::services::repo::{RepoOwners, normalize_repo_entries, source_identity};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
@@ -19,6 +20,7 @@ use core_node_api::encoding::{
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
+use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
@@ -366,10 +368,14 @@ impl PreviousCaches {
 /// The previous entries of one kind that `repo_id` owns, using the same
 /// attribution rule that tags entries at lookup time so a retained entry
 /// keeps exactly the priority it had.
-fn retained_entries<E: RepoCacheEntry>(previous: &[E], repos: &[Value], repo_id: u64) -> Vec<E> {
+fn retained_entries<E: RepoCacheEntry>(
+    previous: &[E],
+    owners: &RepoOwners,
+    repo_id: u64,
+) -> Vec<E> {
     previous
         .iter()
-        .filter(|e| crate::services::repo::owning_repo_id(repos, e.origin()) == Some(repo_id))
+        .filter(|e| owners.owner_of(e.origin()) == Some(repo_id))
         .cloned()
         .collect()
 }
@@ -384,7 +390,29 @@ pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepo
     write_repo_cache(peppy_dirs, &refreshed.launchers)?;
     write_repo_cache(peppy_dirs, &refreshed.contracts)?;
     write_repo_cache(peppy_dirs, &refreshed.pairings)?;
-    status::write(peppy_dirs, &refreshed.statuses)
+    status::write(peppy_dirs, &refreshed.statuses)?;
+
+    // Pruned only once the caches that could still name a checkout have
+    // been replaced, so nothing is dropped while it is still reachable. A
+    // repository whose read failed keeps its previous entries, so its
+    // checkouts stay live along with them.
+    let removed = node_cache::git::prune_checkouts(peppy_dirs, live_checkouts(refreshed));
+    if removed > 0 {
+        debug!("Removed {removed} cached git checkout(s) no repository cache points at");
+    }
+    Ok(())
+}
+
+/// Every `(repo_url, commit)` the four caches still resolve through the
+/// checkout cache.
+fn live_checkouts(refreshed: &RefreshedRepos) -> impl Iterator<Item = (&str, &GitCommit)> {
+    fn checkouts<E: RepoCacheEntry>(entries: &[E]) -> impl Iterator<Item = (&str, &GitCommit)> {
+        entries.iter().filter_map(|entry| entry.origin().checkout())
+    }
+    checkouts(&refreshed.nodes)
+        .chain(checkouts(&refreshed.launchers))
+        .chain(checkouts(&refreshed.contracts))
+        .chain(checkouts(&refreshed.pairings))
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -472,6 +500,10 @@ pub(crate) fn process_refresh(
         (repos, exclusions)
     };
     let previous = PreviousCaches::load(peppy_dirs);
+    // Resolved once for the whole refresh: retention asks which repository
+    // owns an entry for every previous entry of all four kinds, of every
+    // repository that failed.
+    let owners = RepoOwners::new(&repos);
     let previous_statuses = status::read(peppy_dirs);
     let stamp = status::unix_secs(now);
     let mut failures: Vec<RepoFailure> = Vec::new();
@@ -568,10 +600,10 @@ pub(crate) fn process_refresh(
                     .find(|s| s.id == id && s.identity == identity)
                     .and_then(|s| s.last_read_unix_secs);
                 let retained = RepoItems {
-                    nodes: retained_entries(&previous.nodes, &repos, id),
-                    launchers: retained_entries(&previous.launchers, &repos, id),
-                    contracts: retained_entries(&previous.contracts, &repos, id),
-                    pairings: retained_entries(&previous.pairings, &repos, id),
+                    nodes: retained_entries(&previous.nodes, &owners, id),
+                    launchers: retained_entries(&previous.launchers, &owners, id),
+                    contracts: retained_entries(&previous.contracts, &owners, id),
+                    pairings: retained_entries(&previous.pairings, &owners, id),
                 };
                 let count = retained.nodes.len()
                     + retained.launchers.len()
@@ -681,30 +713,11 @@ fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
     set.len() as u32
 }
 
-/// Shallow-clone a git repository into `dst` and check out `repo_ref` if set,
-/// forwarding throttled transfer-progress lines into `on_feedback`.
-pub(crate) fn clone_shallow(
-    repo_url: &str,
-    repo_ref: Option<&str>,
-    dst: &Path,
-    on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> std::result::Result<git2::Repository, String> {
-    clone_with_progress(repo_url, repo_ref, dst, true, &mut |line| {
-        on_feedback(RepoRefreshFeedback::Progress {
-            message: line.to_owned(),
-        });
-    })
-}
-
 /// What one repository read yields, or why it failed.
 type ReadResult = std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)>;
 
-/// Reads a repository that lives on this machine.
-///
-/// Excluded subtrees are applied to the items the index declares rather
-/// than to a traversal: a repository states one location per identity, so
-/// excluding part of the tree is a question about which of those locations
-/// this machine is willing to serve.
+/// Reads a repository that lives on this machine, minus the subtrees this
+/// machine is configured to stay out of.
 fn read_fs_repo(
     root: &Path,
     exclusions: &ExclusionSet,
@@ -720,28 +733,21 @@ fn read_fs_repo(
         message: format!("Reading {}", root.display()),
     });
 
-    let items = read_published_items(root, &ReadSource::Fs)?;
-
-    Ok(items
-        .into_iter()
-        .filter(|item| !is_excluded_path(&item.origin, &exclusions.fs_paths))
-        .collect())
-}
-
-/// Whether an origin's path lies under one of the excluded subtrees.
-fn is_excluded_path(origin: &EntryOrigin, excluded: &[PathBuf]) -> bool {
-    let EntryOrigin::Fs { path } = origin else {
-        return false;
-    };
-    excluded.iter().any(|excluded| path.starts_with(excluded))
+    read_published_items(
+        root,
+        &ReadSource::Fs {
+            excluded: exclusions.fs_paths.clone(),
+        },
+    )
 }
 
 /// Reads a repository held by a remote, at the commit its configured ref
 /// currently points at.
 ///
-/// The clone is thrown away; what survives is the index it published and
-/// the commit it was read at, which is what lets another machine read the
-/// same bytes later.
+/// What survives the read is the index the repository published and the
+/// commit it was read at, which is what lets another machine read the same
+/// bytes later — and the clone itself, which goes to the checkout cache
+/// because it is already the tree every item read here resolves to.
 fn read_git_repo(
     repo_url: &str,
     repo_ref: Option<&str>,
@@ -756,24 +762,52 @@ fn read_git_repo(
     let tmp = tempfile::tempdir_in(&tmp_dir)
         .map_err(|e| unreachable(format!("failed to create temp dir: {e}")))?;
 
-    let repo = clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback).map_err(unreachable)?;
+    let repo = clone_repo_shallow(repo_url, tmp.path(), &mut |line| {
+        on_feedback(RepoRefreshFeedback::Progress {
+            message: line.to_owned(),
+        });
+    })
+    .map_err(unreachable)?;
+
+    // Recorded as configured rather than as resolved: it is what attributes
+    // an entry back to its repository, and what a later fetch of the pinned
+    // commit starts from.
+    let configured_ref = repo_ref.map(str::trim).filter(|r| !r.is_empty());
+
+    // Positioned on the configured ref before the commit is read, so the
+    // pin follows the line of development the repository was added for
+    // rather than whatever the remote's default branch happens to be. A ref
+    // the remote no longer serves is a refusal: pinning the default branch
+    // instead would publish a different tree under the same repository id
+    // without saying so.
+    if let Some(configured_ref) = configured_ref {
+        checkout_repo_ref(&repo, configured_ref).map_err(|e| {
+            unreachable(format!(
+                "{repo_url} does not serve the configured ref `{configured_ref}`: {e}"
+            ))
+        })?;
+    }
     let commit = head_commit(&repo)
         .map_err(|e| unreachable(format!("the clone of {repo_url} has no usable commit: {e}")))?;
-    read_published_items(
+
+    let items = read_published_items(
         tmp.path(),
         &ReadSource::Git {
             repo_url: repo_url.to_owned(),
-            // Recorded as configured rather than as resolved: it is what
-            // `entry_belongs_to_repo` matches an entry back to its
-            // repository with, and what a later fetch of the pinned commit
-            // starts from.
-            repo_ref: repo_ref
-                .map(str::trim)
-                .filter(|r| !r.is_empty())
-                .map(str::to_owned),
-            commit,
+            repo_ref: configured_ref.map(str::to_owned),
+            commit: commit.clone(),
         },
-    )
+    )?;
+
+    // Handed over rather than deleted: this clone is the tree every item
+    // just read resolves to, so donating it is the difference between the
+    // daemon fetching one commit of one repository once and fetching it
+    // again the first time anything from it is materialized. The repository
+    // handle is dropped first so no libgit2 file handle is open across the
+    // move.
+    drop(repo);
+    node_cache::git::adopt_checkout(peppy_dirs, repo_url, &commit, tmp.keep());
+    Ok(items)
 }
 
 #[cfg(test)]
@@ -1545,6 +1579,84 @@ mod tests {
         );
     }
 
+    /// An excluded subtree is one this machine does not answer for, so its
+    /// files are never opened — which is also what keeps a broken manifest
+    /// inside it from failing the repository the user did ask for. The
+    /// index still declares the item; only the read is skipped.
+    #[test]
+    fn process_refresh_does_not_read_an_excluded_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("keep_node"), "keep_node", "v1");
+        write_peppy_json5(&repo.join("secret_node"), "secret_node", "v1");
+        // Published first, so the index declares both, then the excluded
+        // one is made unreadable behind peppy's back.
+        publish_repo(&repo);
+        std::fs::remove_file(repo.join("secret_node").join(NODE_CONFIG_FILE))
+            .expect("remove the excluded manifest");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+        write_excluded_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.join("secret_node").display()
+            ),
+        );
+
+        let RefreshedRepos {
+            nodes: discovered,
+            failures,
+            ..
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        assert!(
+            failures.is_empty(),
+            "an item the machine does not serve cannot break the read: {failures:?}"
+        );
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].node_name, "keep_node");
+    }
+
+    /// The clone `repo refresh` pays for is the tree every item it read
+    /// resolves to, so it becomes the cached checkout instead of being
+    /// deleted and downloaded again on first use.
+    #[test]
+    fn process_refresh_hands_its_clone_to_the_checkout_cache() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        let src = src_tmp.path();
+        let repo = git2::Repository::init(src).expect("init repo");
+        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        let branch = publish_and_commit(&repo, src, &["arm/peppy.json5"]);
+
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+        let repo_url = format!("file://{}", src.display());
+        write_repos(
+            &peppy_dirs,
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#),
+        );
+
+        let RefreshedRepos { nodes, .. } =
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let (url, commit) = nodes[0].origin.checkout().expect("a git origin");
+
+        let checkout =
+            crate::services::node::cache::git::checkout_dir_for(&peppy_dirs, url, commit);
+        assert!(
+            checkout.join("arm").join(NODE_CONFIG_FILE).exists(),
+            "the refresh clone is now the cached checkout at {}",
+            checkout.display()
+        );
+    }
+
     #[test]
     fn process_refresh_skips_excluded_git_repo() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2142,7 +2254,7 @@ mod tests {
         let dst = dst_tmp.path().join("clone");
         let repo_url = format!("file://{}", src_tmp.path().display());
 
-        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
             .expect("file:// clone should succeed (depth must be skipped)");
 
         assert!(
@@ -2162,15 +2274,18 @@ mod tests {
         let dst = dst_tmp.path().join("clone");
         let repo_url = src_tmp.path().display().to_string();
 
-        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
             .expect("raw-path clone should succeed (depth must be skipped)");
 
         assert!(!dst.join(".git/shallow").exists());
         assert_eq!(count_commits(&repo), 3);
     }
 
+    /// The clone and the positioning are two steps, so a caller that wants
+    /// a specific revision gets it from the same clone every other caller
+    /// makes rather than from a clone of its own.
     #[test]
-    fn clone_shallow_ref_checkout_works_on_local_clone() {
+    fn a_shallow_clone_positions_on_any_revision_it_brought() {
         let src_tmp = tempfile::tempdir().unwrap();
         let commits = init_repo_with_commits(src_tmp.path(), 3);
         let target_sha = commits[1].to_string();
@@ -2179,8 +2294,8 @@ mod tests {
         let dst = dst_tmp.path().join("clone");
         let repo_url = format!("file://{}", src_tmp.path().display());
 
-        let repo = clone_shallow(&repo_url, Some(&target_sha), &dst, &mut |_| {})
-            .expect("clone_shallow with ref should succeed");
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {}).expect("clone should succeed");
+        checkout_repo_ref(&repo, &target_sha).expect("position on the revision");
 
         let head = repo.head().expect("head");
         let head_oid = head.target().expect("head oid");

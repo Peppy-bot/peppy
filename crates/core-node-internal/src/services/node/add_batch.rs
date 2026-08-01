@@ -145,6 +145,26 @@ pub(crate) async fn run_repo_node_add(
             );
         };
 
+        // A dependency the stack already holds with this exact manifest is
+        // left alone: re-pushing it would reset the entity to `Added` and
+        // silently discard a built artifact, which breaks any flow that
+        // built the node earlier and still expects to run it (a stack
+        // launch adds and builds each deployment in turn, so a dependency
+        // shared with an earlier deployment has been built by the time it
+        // reappears in a later one's closure). The batch ROOT is exempt:
+        // an explicit `node add X` re-stages X, identical or not.
+        if !node.is_root && stack_holds_identical(&action_context.node_stack, node) {
+            emit(
+                &feedback_tx,
+                FeedbackStream::Stdout,
+                format!(
+                    "Skipping {}:{}: already in the stack with an identical manifest",
+                    node.name, node.tag
+                ),
+            );
+            continue;
+        }
+
         emit(
             &feedback_tx,
             FeedbackStream::Stdout,
@@ -224,6 +244,28 @@ pub(crate) async fn run_repo_node_add(
 
     let effective_log = last_sub_log_path.unwrap_or(log_path);
     NodeAddResult::success(effective_log, root_name, root_tag)
+}
+
+/// Whether the stack already holds `node`'s identity with a config whose
+/// canonical fingerprint matches the freshly materialized one.
+///
+/// Compared by [`super::manifest_fingerprint`] rather than by identity
+/// alone: an entry whose pin moved to a different manifest must still be
+/// replaced, or the batch would keep satisfying dependents with a config
+/// the repository no longer describes. A fingerprint that fails to
+/// compute reports "different", falling back to the replace path.
+fn stack_holds_identical(node_stack: &node_stack::NodeStack, node: &ResolvedBatchNode) -> bool {
+    let Some(handle) = node_stack.find(&node.name, &node.tag) else {
+        return false;
+    };
+    let existing = { handle.read().config().clone() };
+    match (
+        super::manifest_fingerprint(&existing),
+        super::manifest_fingerprint(&node.config_resolved),
+    ) {
+        (Ok(existing), Ok(incoming)) => existing == incoming,
+        _ => false,
+    }
 }
 
 /// One node that's been materialized on disk and is ready to be fed to

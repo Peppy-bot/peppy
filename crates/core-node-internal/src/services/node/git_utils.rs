@@ -107,6 +107,29 @@ pub(crate) fn head_commit(repo: &Repository) -> std::result::Result<GitCommit, S
         .map_err(|e| format!("the repository's HEAD is not a usable commit: {e}"))
 }
 
+/// Shallow-clones `repo_url` into `dst`, leaving the working tree wherever
+/// the remote's HEAD points.
+///
+/// The one way peppy fetches a repository it reads, shared by `repo refresh`
+/// and the commit-keyed checkout cache so the two can never disagree about
+/// what cloning a repository brings. It brings every head the remote
+/// publishes at depth 1: libgit2 clones with the standard
+/// `refs/heads/*:refs/remotes/origin/*` refspec whatever branch is asked
+/// for, so which ref a caller cares about changes nothing about the fetch.
+///
+/// Callers therefore position the working tree themselves, and the
+/// positioning is the only thing that differs between them: refresh onto
+/// the ref a repository is configured to follow, so the commit it pins is
+/// that ref's tip; the checkout cache onto the commit an entry pins, which
+/// is already here whenever it is a head's tip.
+pub(crate) fn clone_repo_shallow(
+    repo_url: &str,
+    dst: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> std::result::Result<Repository, String> {
+    clone_with_progress(repo_url, None, dst, true, on_progress)
+}
+
 pub(crate) fn clone_with_progress(
     repo_url: &str,
     repo_ref: Option<&str>,

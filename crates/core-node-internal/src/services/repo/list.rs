@@ -3,7 +3,7 @@ use crate::services::repo::cache::{NodeCacheEntry, load_repo_cache};
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos};
 use crate::services::repo::status::{self, RepoStatus};
-use crate::services::repo::{owning_repo_id, source_identity};
+use crate::services::repo::{RepoOwners, source_identity};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
@@ -90,9 +90,10 @@ fn handle_repo_list_request_inner(
     // Each cached node's owning repository, resolved once. The loop below
     // considers every node for every repository, and resolving inside it
     // re-scans the repository list on each of those visits.
+    let resolved = RepoOwners::new(&repos);
     let owners: Vec<Option<u64>> = cached
         .iter()
-        .map(|node| owning_repo_id(&repos, &node.origin))
+        .map(|node| resolved.owner_of(&node.origin))
         .collect();
 
     let mut global_seen: HashSet<(&str, &str)> = HashSet::new();

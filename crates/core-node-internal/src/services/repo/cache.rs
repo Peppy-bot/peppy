@@ -22,6 +22,7 @@
 //! doesn't re-read and re-parse the cache file on every request.
 
 use crate::Result;
+use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
 use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
 use daemon_config::consts::PeppyDirs;
@@ -87,13 +88,28 @@ impl EntryOrigin {
         }
     }
 
+    /// The `(repo_url, commit)` this origin resolves through the checkout
+    /// cache, and `None` for a filesystem origin, which resolves in place.
+    ///
+    /// The one statement of what keeps a cached checkout reachable, so
+    /// pruning them cannot go looking in a different place than resolution
+    /// does.
+    pub fn checkout(&self) -> Option<(&str, &GitCommit)> {
+        match self {
+            EntryOrigin::Fs { .. } => None,
+            EntryOrigin::Git {
+                repo_url, commit, ..
+            } => Some((repo_url, commit)),
+        }
+    }
+
     /// Whether resolving this origin to an on-disk path can block on the
     /// network: a git origin may clone or fetch, while a filesystem origin
     /// already names a file on this machine. Callers inside tokio use it to
     /// decide whether [`resolve_cached_artifact_path`] needs
     /// [`tokio::task::spawn_blocking`].
     pub fn resolution_may_block(&self) -> bool {
-        matches!(self, EntryOrigin::Git { .. })
+        self.checkout().is_some()
     }
 
     /// The remote a git origin was read from. `None` for a filesystem
@@ -343,11 +359,11 @@ pub(crate) fn load_repo_cache<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Resu
         ))
     })?;
 
-    let repos = read_or_create_repos(peppy_dirs)?;
+    let owners = RepoOwners::new(&read_or_create_repos(peppy_dirs)?);
     let entries = raw
         .into_iter()
         .map(|mut e| {
-            let id = lookup_repo_id(&repos, e.origin());
+            let id = lookup_repo_id(&owners, e.origin());
             e.set_repo_id(id);
             e
         })
@@ -501,8 +517,9 @@ pub(crate) const UNOWNED_REPO_ID: u32 = u32::MAX;
 
 /// Owning repository id narrowed to the wire's `u32`, falling back to
 /// [`UNOWNED_REPO_ID`] when no repository matches.
-fn lookup_repo_id(repos: &[serde_json::Value], origin: &EntryOrigin) -> u32 {
-    crate::services::repo::owning_repo_id(repos, origin)
+fn lookup_repo_id(owners: &RepoOwners, origin: &EntryOrigin) -> u32 {
+    owners
+        .owner_of(origin)
         .and_then(|id| u32::try_from(id).ok())
         .unwrap_or(UNOWNED_REPO_ID)
 }

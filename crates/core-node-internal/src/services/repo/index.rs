@@ -168,7 +168,14 @@ pub(crate) struct PublishedItem {
 /// remembering to resolve the root and join it back on.
 pub(crate) enum ReadSource {
     /// A tree on this machine, read where it lies.
-    Fs,
+    Fs {
+        /// Subtrees this machine will not answer for. A repository states
+        /// one location per identity, so excluding part of the tree is a
+        /// question about which of those locations to serve, and it is
+        /// asked of the location the index declares rather than of a
+        /// traversal.
+        excluded: Vec<PathBuf>,
+    },
     /// A clone of a remote, read at one commit.
     Git {
         repo_url: String,
@@ -184,7 +191,7 @@ impl ReadSource {
     /// `root` that has already been canonicalized.
     fn origin_of(&self, root: &Path, path: &RepoRelativePath) -> EntryOrigin {
         match self {
-            ReadSource::Fs => EntryOrigin::Fs {
+            ReadSource::Fs { .. } => EntryOrigin::Fs {
                 path: root.join(path.as_path()),
             },
             ReadSource::Git {
@@ -197,6 +204,20 @@ impl ReadSource {
                 commit: commit.clone(),
                 path: path.clone(),
             },
+        }
+    }
+
+    /// Whether this machine answers for the item declared at `origin`.
+    ///
+    /// Only a tree on this machine can have parts of it held back: a git
+    /// origin names a path inside somebody else's repository, which this
+    /// machine has no subtree opinion about.
+    fn serves(&self, origin: &EntryOrigin) -> bool {
+        match (self, origin) {
+            (ReadSource::Fs { excluded }, EntryOrigin::Fs { path }) => {
+                !excluded.iter().any(|subtree| path.starts_with(subtree))
+            }
+            _ => true,
         }
     }
 }
@@ -240,13 +261,21 @@ pub(crate) fn read_published_items(
     let mut items = Vec::new();
     let mut problems = Vec::new();
     for item in index.declared_items() {
+        // Asked before the file is opened: an item this machine does not
+        // answer for is not read, not fingerprinted, and not reported on,
+        // which is the whole point of naming a subtree it should stay out
+        // of.
+        let origin = source.origin_of(&root, item.path);
+        if !source.serves(&origin) {
+            continue;
+        }
         match resolve_declared_item(&root, &item) {
             Ok(bytes) => items.push(PublishedItem {
                 kind: item.kind,
                 name: item.name.clone(),
                 tag: item.tag.cloned(),
                 sha256: ManifestFingerprint::of_bytes(&bytes),
-                origin: source.origin_of(&root, item.path),
+                origin,
             }),
             Err(detail) => problems.push(format!("{item} points at {}, which {detail}", item.path)),
         }
@@ -1161,7 +1190,13 @@ mod tests {
             "the fingerprint is of the bytes that declare the node"
         );
 
-        let fs = read_published_items(&repo, &ReadSource::Fs).expect("read the published items");
+        let fs = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect("read the published items");
         let entries = build_cache_entries(fs).expect("build cache entries");
         let path = Path::new(entries.nodes[0].origin.path_str());
         assert!(path.is_absolute());
@@ -1181,8 +1216,13 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("nodes/a"), "a", "v1");
 
-        let (kind, detail) = read_published_items(&repo, &ReadSource::Fs)
-            .expect_err("an unpublished repository contributes nothing");
+        let (kind, detail) = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect_err("an unpublished repository contributes nothing");
         assert_eq!(
             kind,
             RepoFailureKind::Unreachable,
@@ -1207,8 +1247,13 @@ mod tests {
         write_repository_index(&repo, &index).expect("write the index");
         std::fs::remove_file(repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE)).unwrap();
 
-        let (kind, detail) = read_published_items(&repo, &ReadSource::Fs)
-            .expect_err("a listed path that is not there is a refusal");
+        let (kind, detail) = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect_err("a listed path that is not there is a refusal");
         assert_eq!(
             kind,
             RepoFailureKind::Conflict,

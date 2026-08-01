@@ -7,8 +7,9 @@ use sha2::{Digest, Sha256};
 
 /// Returns a short sanitized slug derived from `raw`. Keeps
 /// `[a-zA-Z0-9._-]`, replaces every other character with `_`, and caps
-/// length at 40. Returns `fallback` when the cleaned result is empty.
-pub(super) fn slug(raw: &str, fallback: &str) -> String {
+/// length at 40. Falls back to `repo`, the only thing this cache names,
+/// when the cleaned result is empty.
+pub(super) fn slug(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
         .map(|c| match c {
@@ -19,7 +20,7 @@ pub(super) fn slug(raw: &str, fallback: &str) -> String {
     let trimmed = cleaned.trim_matches('_');
     let truncated: String = trimmed.chars().take(40).collect();
     if truncated.is_empty() {
-        fallback.to_owned()
+        "repo".to_owned()
     } else {
         truncated
     }
@@ -48,15 +49,15 @@ mod tests {
     #[test]
     fn slug_sanitizes_url_characters() {
         assert_eq!(
-            slug("https://github.com/foo/bar.git", "repo"),
+            slug("https://github.com/foo/bar.git"),
             "https___github.com_foo_bar.git"
         );
     }
 
     #[test]
     fn slug_returns_fallback_for_empty_cleaned_string() {
-        assert_eq!(slug("", "repo"), "repo");
-        assert_eq!(slug("////", "bundle"), "bundle");
+        assert_eq!(slug(""), "repo");
+        assert_eq!(slug("////"), "repo");
     }
 
     #[test]
