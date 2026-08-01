@@ -153,12 +153,10 @@ impl<'a> From<&'a DependsOn> for DeclaredLinkSlots<'a> {
             by_id.insert(link_id, LinkSlotKind::Binding);
         }
         for dep in &depends_on.pairings {
-            let kind = if dep.is_observer() {
-                LinkSlotKind::Observer
-            } else {
-                LinkSlotKind::Participant
-            };
-            by_id.insert(dep.link_id(), kind);
+            by_id.insert(dep.link_id.as_str(), LinkSlotKind::Participant);
+        }
+        for dep in &depends_on.pairing_observers {
+            by_id.insert(dep.link_id.as_str(), LinkSlotKind::Observer);
         }
         Self { by_id }
     }
@@ -215,8 +213,10 @@ mod tests {
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );
@@ -245,8 +245,10 @@ mod tests {
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );
@@ -299,8 +301,10 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );

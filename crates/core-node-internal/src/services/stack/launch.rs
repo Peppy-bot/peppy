@@ -830,8 +830,7 @@ async fn start_node_instances(
             .as_ref()
             .into_iter()
             .flat_map(|depends_on| &depends_on.pairings)
-            .filter(|dependency| dependency.is_participant())
-            .map(|dependency| dependency.link_id())
+            .map(|dependency| dependency.link_id.as_str())
             .collect();
         for instance in &item.deployment.instances {
             start_index.insert(instance.instance_id.as_str(), start_index.len());

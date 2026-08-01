@@ -84,7 +84,8 @@ pub fn scoped_schema_key(origin: Option<&ContractOrigin>, local: &str) -> String
 /// keyed by `link_id` like every other slot-backed category.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerContext {
-    /// The node's own pairing-slot link_id (`depends_on.pairings[].link_id`).
+    /// The node's own pairing-slot link_id (`depends_on.pairings[].link_id` or
+    /// `depends_on.pairing_observers[].link_id`).
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,

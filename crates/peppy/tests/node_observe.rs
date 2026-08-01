@@ -48,8 +48,8 @@ fn observer_config(instances: &InstanceLifetime) -> String {
             name: "recorder",
             tag: "v1",
             depends_on: {{
-                pairings: [
-                    {{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }}
+                pairing_observers: [
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }}
                 ]
             }}
         }},

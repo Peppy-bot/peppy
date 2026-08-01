@@ -48,12 +48,13 @@ pub fn collect_all_deployment_interfaces(
             peppy_dirs,
             on_feedback,
         )
-        .map_err(|reason| format!("failed to resolve `depends_on.pairings`: {reason}"))?,
+        .map_err(|reason| format!("failed to resolve pairing slots: {reason}"))?,
     );
     Ok(interfaces)
 }
 
-/// The `depends_on.pairings` slot link_ids of a manifest. Entries naming one
+/// The pairing slot link_ids of a manifest, participants and observers alike.
+/// Entries naming one
 /// are resolved by `collect_pairing_interfaces` against the pairing document
 /// and generated under `paired_topics/<link_id>/<topic>`, so both the consumed
 /// collector and the implements resolver must step over them: neither knows
@@ -63,7 +64,7 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairings.iter().map(|p| p.link_id()))
+        .flat_map(|d| d.pairing_link_ids())
         .collect()
 }
 
