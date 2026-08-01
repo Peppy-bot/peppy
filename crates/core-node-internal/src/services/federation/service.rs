@@ -15,19 +15,16 @@
 
 use super::{ReserveOutcome, SliceOwnership};
 use crate::Result;
-use crate::services::node::{
-    RelationshipCoordinators, manifest_fingerprint_of_json5, resolve_node_config,
-};
+use crate::services::node::RelationshipCoordinators;
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
     FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantReleaseRequest,
     ParticipantReserveRequest, ParticipantReserveResponse, ParticipantSliceBeginRequest,
-    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck, ResolvedManifest,
+    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
 };
 use core_node_api::names;
-use daemon_config::consts::PeppyDirs;
-use daemon_config::launcher::DeploymentSource;
+use daemon_config::repository::DeploymentPins;
 use peppylib::messaging::{SenderTarget, ServiceRequestContext};
 use peppylib::types::Payload;
 use peppylib::{CoreNodePresenceMessenger, LivelinessEvent, MessengerHandle, ServiceMessenger};
@@ -41,7 +38,6 @@ use tracing::{debug, warn};
 pub(crate) struct FederationServiceContext {
     pub(crate) messenger: MessengerHandle,
     pub(crate) core_node_name: String,
-    pub(crate) peppy_dirs: PeppyDirs,
     pub(crate) ownership: Arc<SliceOwnership>,
     pub(crate) relationships: RelationshipCoordinators,
     /// This daemon's stack, so `participant_slice_begin` can replace the slice
@@ -164,64 +160,54 @@ async fn reserve_inner(
         ReserveOutcome::AlreadyHeld => {}
     }
 
-    // Resolve this slice's manifests here rather than accepting the
-    // coordinator's. The coordinator then needs no reachability to sources it
-    // does not itself use, and the manifest it validates is provably the one
-    // this daemon will spawn from, because it is this daemon's own cache.
-    let manifests = match resolve_slice_manifests(context, &decoded.deployment_sources_json5).await
-    {
-        Ok(manifests) => manifests,
-        Err(reason) => {
-            // A resolution failure is this participant's refusal, so drop the
-            // reservation we just took rather than holding a machine hostage
-            // to a launch that cannot proceed.
-            context.ownership.release(&decoded.launch_id);
-            return ParticipantReserveResponse::rejected(reason, &context.peppy_version)
-                .encode()
-                .map_err(Into::into);
-        }
-    };
+    // Validate the pins the coordinator resolved for this slice while the
+    // reservation is still non-destructive. Decoding runs every structural
+    // rule (a traversal path, a truncated commit, a malformed fingerprint
+    // all fail there), and the origin check refuses a pin no machine but
+    // the coordinator could read. Nothing here touches the filesystem, the
+    // network, or this daemon's caches: the bytes are materialized at add
+    // time, and which bytes those are was decided on the coordinator.
+    if let Err(reason) = validate_deployment_pins(&decoded.deployment_pins_json5) {
+        // A validation failure is this participant's refusal, so drop the
+        // reservation we just took rather than holding a machine hostage
+        // to a launch that cannot proceed.
+        context.ownership.release(&decoded.launch_id);
+        return ParticipantReserveResponse::rejected(reason, &context.peppy_version)
+            .encode()
+            .map_err(Into::into);
+    }
 
-    ParticipantReserveResponse::accepted(
-        &context.peppy_version,
-        &context.root_instance_id,
-        manifests,
-    )
-    .encode()
-    .map_err(Into::into)
+    ParticipantReserveResponse::accepted(&context.peppy_version, &context.root_instance_id)
+        .encode()
+        .map_err(Into::into)
 }
 
-/// Resolves one manifest per requested deployment source, in request order, so
-/// the coordinator can align them with the deployments it asked about.
+/// Decodes every deployment's pins and refuses any that could not be
+/// materialized here: a pin that arrived over the wire must carry a git
+/// origin, because a filesystem origin names a tree on the machine that
+/// minted it.
 ///
-/// Concurrently: each source is a distinct git clone, download, or cache read
-/// with nothing shared between them, and the whole call has to fit inside the
-/// coordinator's preflight budget. Resolving them one at a time would spend
-/// that budget on the sum of every fetch rather than the slowest one.
-/// `try_join_all` preserves request order, which is what the alignment relies
-/// on.
-async fn resolve_slice_manifests(
-    context: &FederationServiceContext,
-    sources_json5: &[String],
-) -> std::result::Result<Vec<ResolvedManifest>, String> {
-    futures::future::try_join_all(sources_json5.iter().enumerate().map(
-        |(index, source_json5)| async move {
-            let source: DeploymentSource = serde_json5::from_str(source_json5)
-                .map_err(|e| format!("deployment source #{index} is not decodable: {e}"))?;
-            let source = crate::services::stack::portable_node_source(&source)?;
-            let config = resolve_node_config(source, &context.peppy_dirs)
-                .await
-                .map_err(|e| format!("deployment source #{index} failed to resolve: {e}"))?;
-            // Serialize once: the fingerprint is defined over exactly these
-            // bytes, so hashing them is the same answer `manifest_fingerprint`
-            // would reach after re-serializing.
-            let config_json5 = json5_pretty::to_string_pretty(&config)
-                .map_err(|e| format!("deployment source #{index} failed to serialize: {e}"))?;
-            let fingerprint = manifest_fingerprint_of_json5(&config_json5);
-            Ok(ResolvedManifest::new(config_json5, fingerprint))
-        },
-    ))
-    .await
+/// A path arriving from a coordinator is untrusted input. Not because the
+/// coordinator is assumed hostile, but because a daemon that trusts a path
+/// it was handed cannot distinguish a coordinator from anything else able
+/// to reach it; the decode is where every structural rule fires, before any
+/// filesystem or network is touched.
+fn validate_deployment_pins(pins_json5: &[String]) -> std::result::Result<(), String> {
+    for (index, raw) in pins_json5.iter().enumerate() {
+        let pins: DeploymentPins = serde_json5::from_str(raw)
+            .map_err(|e| format!("deployment pins #{index} are not decodable: {e}"))?;
+        for pin in pins.items() {
+            if pin.origin.checkout().is_none() {
+                return Err(format!(
+                    "{} arrived pinned to a filesystem path, which only the machine that \
+                     minted it could read; a pin that crosses a machine boundary must name a \
+                     git repository",
+                    pin.label()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Turns the reservation into a LEASE: while this daemon holds a reservation
@@ -471,4 +457,53 @@ async fn notify_inner(
     RelationshipNotificationAck::new()
         .encode()
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pins_json5(origin: &str) -> String {
+        format!(
+            r#"{{ root: {{ kind: "node", name: "camera", tag: "v1", sha256: "{}",
+                      origin: {origin} }} }}"#,
+            "c".repeat(64)
+        )
+    }
+
+    /// Decoding is the validation: a structurally valid, git-pinned set is
+    /// accepted without touching this machine's filesystem or caches.
+    #[test]
+    fn a_git_pinned_deployment_validates() {
+        let raw = pins_json5(&format!(
+            r#"{{ source_type: "git", repo_url: "https://example.com/hub",
+                  commit: "{}", path: "camera/peppy.json5" }}"#,
+            "d".repeat(40)
+        ));
+        assert!(validate_deployment_pins(&[raw]).is_ok());
+    }
+
+    /// A pin that arrived over the wire carrying a filesystem origin names a
+    /// tree only its minting machine could read, so it is refused while the
+    /// reservation is still non-destructive.
+    #[test]
+    fn a_filesystem_pinned_deployment_is_refused() {
+        let raw = pins_json5(r#"{ source_type: "fs", path: "/repo/camera/peppy.json5" }"#);
+        let err = validate_deployment_pins(&[raw]).expect_err("an fs pin cannot cross machines");
+        assert!(err.contains("filesystem path"), "{err}");
+        assert!(err.contains("git repository"), "{err}");
+    }
+
+    /// The structural rules fire at decode: a traversal path is refused
+    /// before any filesystem or network is touched, whoever sent it.
+    #[test]
+    fn a_pin_that_does_not_decode_is_refused() {
+        let raw = pins_json5(&format!(
+            r#"{{ source_type: "git", repo_url: "https://example.com/hub",
+                  commit: "{}", path: "../../etc/passwd" }}"#,
+            "d".repeat(40)
+        ));
+        let err = validate_deployment_pins(&[raw]).expect_err("a traversal path must be refused");
+        assert!(err.contains("not decodable"), "{err}");
+    }
 }

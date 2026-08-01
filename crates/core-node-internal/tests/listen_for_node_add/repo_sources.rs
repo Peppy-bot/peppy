@@ -18,7 +18,7 @@ async fn repo_node_add_single_no_deps_fs_source() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "standalone",
             tag: "v1",
         },
@@ -61,7 +61,7 @@ async fn repo_node_add_chain_of_three_fs() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "c",
             tag: "v1",
         },
@@ -117,7 +117,7 @@ async fn repo_node_add_diamond() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "d",
             tag: "v1",
         },
@@ -183,7 +183,7 @@ async fn repo_node_add_partial_stack_coverage() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },
@@ -238,7 +238,7 @@ async fn repo_node_add_preserves_built_unchanged_dependency() {
     let pre = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "dep",
             tag: "v1",
         },
@@ -259,7 +259,7 @@ async fn repo_node_add_preserves_built_unchanged_dependency() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "top",
             tag: "v1",
         },
@@ -335,7 +335,7 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },
@@ -431,7 +431,7 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },

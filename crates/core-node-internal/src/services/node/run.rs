@@ -694,14 +694,14 @@ fn encode_rejected_start_goal(reason: impl Into<String>) -> PeppyResult<Payload>
     )
 }
 
-/// Closes the preflight-to-dispatch window.
+/// Closes the add-to-start window.
 ///
 /// A federated coordinator validated this instance's whole plan (slots,
-/// cardinality, pairing roles, sha pins) against the manifest THIS daemon
-/// resolved during preflight. If the add phase has since replaced that
-/// manifest, the plan was never checked against what is about to be spawned,
-/// so refuse rather than start a node under a validation that no longer
-/// applies.
+/// cardinality, pairing roles, sha pins) against the manifest it resolved
+/// for the launch, and the add phase staged exactly those bytes here. If
+/// something has since replaced the entity in this stack, the plan was never
+/// checked against what is about to be spawned, so refuse rather than start
+/// a node under a validation that no longer applies.
 ///
 /// `planned` is `None` on the in-process launch path, where planner and spawner
 /// are the same daemon reading the same entity and there is no window to close.

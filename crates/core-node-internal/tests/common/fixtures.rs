@@ -148,12 +148,20 @@ impl TestPackagesCache {
     /// `absolute_path` is the directory containing `peppy.json5`. The
     /// cache stores the manifest file path (path-points-at-file
     /// convention), so we join `NODE_CONFIG_FILE` here.
+    ///
+    /// The fingerprint is computed from the file when it exists, because a
+    /// pinned add verifies the bytes it materializes against the entry's
+    /// fingerprint; a fixture whose file is written later (or never, for a
+    /// lookup-only test) records a seeded one instead.
     pub fn fs_entry(mut self, name: &str, tag: &str, absolute_path: impl AsRef<Path>) -> Self {
         let manifest_path = absolute_path.as_ref().join(NODE_CONFIG_FILE);
+        let sha256 = std::fs::read(&manifest_path)
+            .map(|bytes| config::fingerprint::fingerprint_for_bytes(&bytes))
+            .unwrap_or_else(|_| seeded_sha(&format!("{name}:{tag}")));
         self.entries.push(serde_json::json!({
             "node_name": name,
             "node_tag": tag,
-            "sha256": seeded_sha(&format!("{name}:{tag}")),
+            "sha256": sha256,
             "origin": fs_origin(&manifest_path),
         }));
         self

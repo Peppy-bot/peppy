@@ -40,7 +40,7 @@ pub enum NodeAddSource<'a> {
     },
     /// Add a node by `(name, tag)` against the repo cache; the daemon
     /// resolves transitive deps from `~/.peppy/cache/nodes.json5`.
-    RepoNode { name: &'a str, tag: &'a str },
+    ResolveRef { name: &'a str, tag: &'a str },
 }
 
 impl<'a> From<&'a Path> for NodeAddSource<'a> {
@@ -407,9 +407,9 @@ async fn send_node_add_and_wait_internal<'a>(
             TEST_GIT_HASH,
             result_timeout.as_secs(),
         ),
-        NodeAddSource::RepoNode { name, tag } => {
-            let src = NodeSource::repo_node(*name, *tag)
-                .map_err(|e| format!("invalid repo-node source in test: {e}"))?;
+        NodeAddSource::ResolveRef { name, tag } => {
+            let src = NodeSource::resolve_ref(*name, *tag)
+                .map_err(|e| format!("invalid resolve-ref source in test: {e}"))?;
             NodeAddGoal::from_source(src, TEST_GIT_HASH, result_timeout.as_secs())
         }
     }

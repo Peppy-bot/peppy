@@ -415,8 +415,14 @@ fn resolve_contract_topic_qos(
         let doc = cache
             .entry((contract_name.clone(), contract_tag.clone()))
             .or_insert_with(|| {
-                match resolve_contract_doc(peppy_dirs, &contract_name, &contract_tag, None, &|_| {})
-                {
+                match resolve_contract_doc(
+                    peppy_dirs,
+                    &contract_name,
+                    &contract_tag,
+                    None,
+                    None,
+                    &|_| {},
+                ) {
                     Ok(doc) => Some(doc),
                     Err(e) => {
                         emit_feedback(
@@ -474,7 +480,7 @@ fn resolve_probe_sizes(
                 let doc = contract_cache
                     .entry((name.clone(), tag.clone()))
                     .or_insert_with(|| {
-                        resolve_contract_doc(peppy_dirs, name, tag, None, &|_| {}).ok()
+                        resolve_contract_doc(peppy_dirs, name, tag, None, None, &|_| {}).ok()
                     });
                 formats_from_contract(doc.as_ref(), edge.kind, &edge.interface)
             }

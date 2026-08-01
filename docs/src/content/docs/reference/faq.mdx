@@ -50,11 +50,9 @@ This dashboard will also allow you to "vibecode" robot environements.
 <details>
 <summary>My launch failed with an error that looks unrelated to what I changed. Where do I start?</summary>
 
-Check `peppy repo list` first, before reading the error too literally.
+Check `peppy repo list` on the machine you submitted the launch to, before reading the error too literally.
 
-Peppy's default repositories track a moving branch, so a change merged upstream reaches your machine on the next `peppy repo refresh` without a Peppy release. If a repository ends up declaring the same `name:tag` twice, that identity has no defensible answer, and the symptom can surface far from the cause: two machines in one federated launch may each have resolved a different node, and the launch then fails much later with something like a pairing-slot mismatch between two nodes that were never meant to be in the same graph.
-
-Peppy refuses such an identity up front rather than picking one, naming both manifests. `peppy repo list` marks the offending entries `(conflict: claimed twice here)`, and `peppy repo refresh` reports the exact files. See [When a repository fails](/advanced_guides/repositories/#when-a-repository-fails).
+Peppy's default repositories track a moving branch, so a change merged upstream reaches your machine on the next `peppy repo refresh` without a Peppy release. Only the submitting machine's repositories decide what a launch runs: it resolves every deployment once and every other machine in the launch runs those exact bytes, so a stale or differently-configured cache on another machine is never the cause. If a repository declares the same `name:tag` twice, that identity has no defensible answer and Peppy refuses it up front rather than picking one, naming both manifests. See [When a repository fails](/advanced_guides/repositories/#when-a-repository-fails).
 
 </details>
 

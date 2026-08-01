@@ -24,125 +24,19 @@
 use crate::Result;
 use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
-use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
+use core_node_api::encoding::RepoItemKind;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::repository::{
-    GitCommit, ItemName, ItemTag, ManifestFingerprint, RepoRelativePath,
-};
+use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint, PinnedItem};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
-/// Where a cached item's bytes live, and which revision they were read at.
-///
-/// A branch name is not a revision: two machines following `main` a week
-/// apart hold different trees while recording the same string. The commit
-/// is what makes an entry mean one set of bytes rather than "whatever that
-/// branch pointed at when this machine last looked".
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "source_type", rename_all = "lowercase")]
-pub enum EntryOrigin {
-    /// A tree on this machine. Nothing off this machine can read it, which
-    /// is why a deployment placed on another core node cannot be backed by
-    /// one.
-    Fs {
-        /// Absolute path to the file that declares the item.
-        path: PathBuf,
-    },
-    Git {
-        repo_url: String,
-        /// The ref the repository is configured to follow, absent when it
-        /// follows whatever the remote's default branch is. Kept beside the
-        /// commit because a fetch starts from a ref before it can reach a
-        /// commit, and because `entry_belongs_to_repo` attributes an entry
-        /// to its configured repository by url and ref.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        repo_ref: Option<String>,
-        /// The commit the tree was read at.
-        commit: GitCommit,
-        /// Path within the repository to the file that declares the item.
-        path: RepoRelativePath,
-    },
-}
-
-impl EntryOrigin {
-    pub fn kind(&self) -> RepoSourceKind {
-        match self {
-            EntryOrigin::Fs { .. } => RepoSourceKind::Fs,
-            EntryOrigin::Git { .. } => RepoSourceKind::Git,
-        }
-    }
-
-    /// The path as the cache spells it: absolute for fs, repository-relative
-    /// for git. What error messages quote and what repository attribution
-    /// matches against.
-    pub fn path_str(&self) -> &str {
-        match self {
-            // A path that is not valid UTF-8 renders lossily rather than
-            // failing the whole cache: this is display and attribution, and
-            // a lossy rendering still names the file the user has to look at.
-            EntryOrigin::Fs { path } => path.to_str().unwrap_or("<non-UTF-8 path>"),
-            EntryOrigin::Git { path, .. } => path.as_str(),
-        }
-    }
-
-    /// The `(repo_url, commit)` this origin resolves through the checkout
-    /// cache, and `None` for a filesystem origin, which resolves in place.
-    ///
-    /// The one statement of what keeps a cached checkout reachable, so
-    /// pruning them cannot go looking in a different place than resolution
-    /// does.
-    pub fn checkout(&self) -> Option<(&str, &GitCommit)> {
-        match self {
-            EntryOrigin::Fs { .. } => None,
-            EntryOrigin::Git {
-                repo_url, commit, ..
-            } => Some((repo_url, commit)),
-        }
-    }
-
-    /// Whether resolving this origin to an on-disk path can block on the
-    /// network: a git origin may clone or fetch, while a filesystem origin
-    /// already names a file on this machine. Callers inside tokio use it to
-    /// decide whether [`resolve_cached_artifact_path`] needs
-    /// [`tokio::task::spawn_blocking`].
-    pub fn resolution_may_block(&self) -> bool {
-        self.checkout().is_some()
-    }
-
-    /// The remote a git origin was read from. `None` for a filesystem
-    /// origin, which has no remote.
-    #[cfg(test)]
-    pub fn repo_url(&self) -> Option<&str> {
-        match self {
-            EntryOrigin::Fs { .. } => None,
-            EntryOrigin::Git { repo_url, .. } => Some(repo_url),
-        }
-    }
-
-    /// The ref a git origin is configured to follow. `None` for a
-    /// filesystem origin, and for a git origin that follows the remote's
-    /// default branch.
-    #[cfg(test)]
-    pub fn repo_ref(&self) -> Option<&str> {
-        match self {
-            EntryOrigin::Fs { .. } => None,
-            EntryOrigin::Git { repo_ref, .. } => repo_ref.as_deref(),
-        }
-    }
-
-    /// The commit a git origin was read at. `None` for a filesystem
-    /// origin, which has no revision to record.
-    #[cfg(test)]
-    pub fn commit(&self) -> Option<&GitCommit> {
-        match self {
-            EntryOrigin::Fs { .. } => None,
-            EntryOrigin::Git { commit, .. } => Some(commit),
-        }
-    }
-}
+// One vocabulary for "where bytes live and which revision they were read
+// at", shared with the launch pins (`daemon_config::repository::pins`) so
+// what a cache records and what a coordinator ships cannot drift.
+pub use daemon_config::repository::EntryOrigin;
 
 /// One entry as it appears in `nodes.json5`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -552,7 +446,7 @@ pub fn lookup_launcher<'a>(
 /// An excluded repository is never scanned, so peppy cannot know whether
 /// it would have provided the identity; the wording says so instead of
 /// implying it did.
-fn excluded_repositories_hint(peppy_dirs: &PeppyDirs) -> String {
+pub(crate) fn excluded_repositories_hint(peppy_dirs: &PeppyDirs) -> String {
     let excluded = crate::services::repo::exclude::ExclusionSet::load(peppy_dirs);
     if excluded.entries.is_empty() {
         return String::new();
@@ -602,31 +496,6 @@ pub fn load_contract_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<ContractCacheEn
 /// sync-time event, not a hot path).
 pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntry>> {
     load_repo_cache(peppy_dirs)
-}
-
-/// Looks up `(name, tag)` in the nodes cache and returns the entry that
-/// wins repository priority.
-///
-/// Returns the entry rather than a materialized source: what the entry
-/// says about where the bytes are and which commit they came from is what
-/// callers need, and one of them ships it to another machine.
-pub(crate) fn resolve_repo_node_entry(
-    name: &str,
-    tag: &str,
-    peppy_dirs: &PeppyDirs,
-) -> std::result::Result<NodeCacheEntry, String> {
-    let entries =
-        load_node_cache(peppy_dirs).map_err(|e| format!("failed to load nodes cache: {e}"))?;
-    lookup(&entries, name, tag)
-        .map_err(|ambiguity| ambiguity.to_string())?
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "repo-node `{name}:{tag}` not found in {}{}",
-                nodes_repo_cache_path(peppy_dirs).display(),
-                excluded_repositories_hint(peppy_dirs)
-            )
-        })
 }
 
 /// Looks up `name` in the launcher cache and resolves it to a concrete
@@ -715,6 +584,30 @@ pub(crate) fn resolve_cached_doc<E: RepoCacheEntry, T>(
 ) -> std::result::Result<T, String> {
     let kind = E::KIND;
     let id = format!("{name}:{tag}");
+    let (_entry, bytes) =
+        resolve_cached_doc_entry(peppy_dirs, entries, name, tag, sha256_pin, on_feedback)?;
+    let content = std::str::from_utf8(&bytes)
+        .map_err(|e| format!("cached {kind} `{id}` is not UTF-8: {e}"))?;
+    parse(content).map_err(|e| format!("failed to parse cached {kind} `{id}`: {e}"))
+}
+
+/// The entry-returning core of [`resolve_cached_doc`]: everything up to the
+/// parse, handing back the winning entry beside the verified bytes.
+///
+/// Split out so a launch coordinator can mint a pin from the entry (its
+/// fingerprint and origin) through exactly the rules a plain resolution
+/// uses, rather than restating the pin validation, the priority tiebreak
+/// and the drift check a second way.
+pub(crate) fn resolve_cached_doc_entry<'a, E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    entries: &'a [E],
+    name: &str,
+    tag: &str,
+    sha256_pin: Option<&str>,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<(&'a E, Vec<u8>), String> {
+    let kind = E::KIND;
+    let id = format!("{name}:{tag}");
 
     // A manifest is hand-written, so the pin is a claim until it is parsed.
     // A malformed one is refused by name here rather than silently matching
@@ -761,10 +654,155 @@ pub(crate) fn resolve_cached_doc<E: RepoCacheEntry, T>(
             entry.sha256()
         ));
     }
+    Ok((entry, bytes))
+}
 
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|e| format!("cached {kind} `{id}` is not UTF-8: {e}"))?;
-    parse(content).map_err(|e| format!("failed to parse cached {kind} `{id}`: {e}"))
+/// Materializes a launch pin's bytes from its own origin: the fetch half of
+/// pin resolution, taken when no local content matches.
+///
+/// For a git origin this checks out the pinned commit (blocking; wrap in
+/// `spawn_blocking` inside Tokio), re-checks that the pinned path stays
+/// inside the checkout after symlink resolution, reads the bytes, and
+/// compares their fingerprint against the pin. A mismatch is a refusal
+/// naming both fingerprints: it means the remote moved under the pin or the
+/// path resolved to something else, and neither may be papered over. There
+/// is no fallback to resolving the pin's name.
+///
+/// The path re-check mirrors `resolve_declared_item` in `repo/index.rs`:
+/// [`daemon_config::repository::RepoRelativePath`] already refused traversal
+/// at decode, so what is left is a symlink inside the fetched tree pointing
+/// out of it.
+pub(crate) fn resolve_pinned_bytes(
+    peppy_dirs: &PeppyDirs,
+    pin: &PinnedItem,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<(PathBuf, Vec<u8>), String> {
+    let label = pin.label();
+    let resolved_path = match &pin.origin {
+        EntryOrigin::Fs { path } => path.clone(),
+        EntryOrigin::Git {
+            repo_url,
+            repo_ref,
+            commit,
+            path,
+        } => {
+            let checkout = crate::services::node::cache::git::ensure_checkout_at_commit(
+                peppy_dirs,
+                repo_url,
+                repo_ref.as_deref(),
+                commit,
+                on_feedback,
+            )
+            .map_err(|e| format!("{label}: {e}"))?;
+            let candidate = checkout.join(path.as_path());
+            let canonical_root = checkout.canonicalize().map_err(|e| {
+                format!(
+                    "{label}: checkout {} is unreadable: {e}",
+                    checkout.display()
+                )
+            })?;
+            let canonical = candidate.canonicalize().map_err(|e| {
+                format!(
+                    "{label}: pinned path {} is absent from commit {commit}: {e}",
+                    path.as_str()
+                )
+            })?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err(format!(
+                    "{label}: pinned path {} escapes the fetched tree (resolves to {})",
+                    path.as_str(),
+                    canonical.display()
+                ));
+            }
+            canonical
+        }
+    };
+
+    let bytes = std::fs::read(&resolved_path)
+        .map_err(|e| format!("{label}: failed to read {}: {e}", resolved_path.display()))?;
+    let actual = ManifestFingerprint::of_bytes(&bytes);
+    if actual != pin.sha256 {
+        return Err(format!(
+            "{label}: content at {} does not match its pin (pinned `{}`, got `{actual}`); \
+             the remote moved under the pin or the location resolved to something else",
+            resolved_path.display(),
+            pin.sha256
+        ));
+    }
+    Ok((resolved_path, bytes))
+}
+
+/// The entry whose content matches `pin`, whatever identity or repository it
+/// arrived under.
+///
+/// Content is what authorises reuse, not provenance: a machine holding the
+/// pinned bytes from another repository uses its own copy rather than
+/// fetching. Matching by fingerprint alone (not name-first) also keeps two
+/// same-named entries with different content from shadowing the right one.
+pub(crate) fn lookup_by_content<'a, E: RepoCacheEntry>(
+    entries: &'a [E],
+    pin: &PinnedItem,
+) -> Option<&'a E> {
+    entries.iter().find(|e| e.sha256() == &pin.sha256)
+}
+
+/// Resolves a launch pin to its bytes: the local content match first, the
+/// pin's own origin second, a name lookup never.
+///
+/// The content-match half re-reads and re-fingerprints the local copy, so a
+/// cache whose file drifted since refresh falls through to the fetch instead
+/// of shipping the wrong bytes. Blocking (the fetch half may clone); wrap in
+/// `spawn_blocking` inside Tokio.
+pub(crate) fn resolve_pin_to_bytes<E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    entries: &[E],
+    pin: &PinnedItem,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<(PathBuf, Vec<u8>), String> {
+    if let Some(entry) = lookup_by_content(entries, pin) {
+        match resolve_cached_artifact_path(peppy_dirs, entry.origin(), on_feedback).and_then(
+            |path| match std::fs::read(&path) {
+                Ok(bytes) => Ok((path, bytes)),
+                Err(e) => Err(format!("failed to read {}: {e}", path.display())),
+            },
+        ) {
+            Ok((path, bytes)) if ManifestFingerprint::of_bytes(&bytes) == pin.sha256 => {
+                return Ok((path, bytes));
+            }
+            Ok(_) => on_feedback(&format!(
+                "Local copy of {} drifted from its fingerprint; fetching the pin",
+                pin.label()
+            )),
+            Err(reason) => on_feedback(&format!(
+                "Local copy of {} is unusable ({reason}); fetching the pin",
+                pin.label()
+            )),
+        }
+    }
+    resolve_pinned_bytes(peppy_dirs, pin, on_feedback)
+}
+
+/// Resolves a pinned contract or pairing document to a parsed value, through
+/// [`resolve_pin_to_bytes`]. The pinned counterpart of [`resolve_cached_doc`]:
+/// where that function turns a manifest's `name:tag[@sha256]` reference into
+/// a document via this machine's own cache rules, this one consumes a
+/// coordinator's decision and never consults them.
+pub(crate) fn resolve_pinned_doc<E: RepoCacheEntry, T>(
+    peppy_dirs: &PeppyDirs,
+    entries: &[E],
+    pin: &PinnedItem,
+    parse: impl FnOnce(&str) -> std::result::Result<T, String>,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<T, String> {
+    let (path, bytes) = resolve_pin_to_bytes(peppy_dirs, entries, pin, on_feedback)?;
+    let content = std::str::from_utf8(&bytes).map_err(|e| {
+        format!(
+            "{}: content at {} is not UTF-8: {e}",
+            pin.label(),
+            path.display()
+        )
+    })?;
+    parse(content).map_err(|e| format!("failed to parse pinned {}: {e}", pin.label()))
 }
 
 struct MemoEntry {
@@ -806,6 +844,7 @@ fn memo_put(path: &Path, mtime: SystemTime, repos_mtime: SystemTime, entries: Ve
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
+    use daemon_config::repository::{GitCommit, RepoRelativePath};
 
     /// A distinct, valid fingerprint per `seed`. Deterministic, so a test
     /// that asserts on one reads the same way twice.
@@ -877,6 +916,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daemon_config::repository::{GitCommit, RepoRelativePath};
 
     use super::test_support::*;
 
@@ -1120,59 +1160,6 @@ mod tests {
         assert_eq!(hit.repo_id, UNOWNED_REPO_ID);
     }
 
-    // -- resolve_repo_node_entry tests --
-
-    #[test]
-    fn resolve_returns_the_entry_with_its_origin() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        let entry = node_entry(
-            "g",
-            "v1",
-            git_origin(
-                "https://example.com/repo.git",
-                "main",
-                "g",
-                "nodes/example/peppy.json5",
-            ),
-        );
-        write_repo_cache(&peppy_dirs, std::slice::from_ref(&entry)).unwrap();
-
-        let resolved = resolve_repo_node_entry("g", "v1", &peppy_dirs).unwrap();
-        assert_eq!(
-            resolved.origin, entry.origin,
-            "the commit and path the cache recorded are what resolution returns"
-        );
-    }
-
-    #[test]
-    fn resolve_reports_ambiguity_rather_than_picking_one() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        write_repo_cache(
-            &peppy_dirs,
-            &[
-                mk_fs_entry("a", "v1", "/repo/rust/peppy.json5"),
-                mk_fs_entry("a", "v1", "/repo/python/peppy.json5"),
-            ],
-        )
-        .unwrap();
-
-        let err = resolve_repo_node_entry("a", "v1", &peppy_dirs).unwrap_err();
-        assert!(err.contains("claim `a:v1`"), "unexpected error: {err}");
-        assert!(!err.contains("not found"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn resolve_not_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-        write_repo_cache::<NodeCacheEntry>(&peppy_dirs, &[]).unwrap();
-
-        let err = resolve_repo_node_entry("missing", "v1", &peppy_dirs).unwrap_err();
-        assert!(err.contains("not found"), "unexpected error: {err}");
-    }
-
     // -- launcher cache tests --
 
     /// `write_repo_cache` writes launcher entries to the path returned by
@@ -1374,6 +1361,188 @@ mod tests {
             resolved.exists(),
             "resolved path should exist on disk after ensure_checkout"
         );
+    }
+
+    // -- pin resolution tests --
+
+    use daemon_config::repository::{PinKind, PinnedItem};
+
+    fn pin_for(
+        name: &str,
+        tag: &str,
+        sha256: ManifestFingerprint,
+        origin: EntryOrigin,
+    ) -> PinnedItem {
+        PinnedItem {
+            kind: PinKind::Node,
+            name: ItemName::parse(name).expect("valid name"),
+            tag: ItemTag::parse(tag).expect("valid tag"),
+            sha256,
+            origin,
+        }
+    }
+
+    /// Content authorises reuse, provenance does not: a machine holding the
+    /// pinned bytes as an entry of ANOTHER repository under another identity
+    /// serves them from its own disk, and the pin's own remote is never
+    /// contacted. The unreachable URL in the pin is what proves it: a fetch
+    /// attempt would fail loudly.
+    #[test]
+    fn a_pin_reuses_local_content_from_another_repository_without_fetching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let local_file = tmp.path().join("other_repo").join("peppy.json5");
+        std::fs::create_dir_all(local_file.parent().unwrap()).unwrap();
+        std::fs::write(&local_file, b"{ pinned bytes }").unwrap();
+        let sha = ManifestFingerprint::of_bytes(b"{ pinned bytes }");
+
+        let mut local_entry = node_entry(
+            "other_name",
+            "v9",
+            fs_origin(local_file.to_string_lossy().as_ref()),
+        );
+        local_entry.sha256 = sha.clone();
+
+        let pin = pin_for(
+            "camera",
+            "v1",
+            sha,
+            git_origin(
+                "https://unreachable.invalid/hub.git",
+                "main",
+                "camera:v1",
+                "camera/peppy.json5",
+            ),
+        );
+
+        let (path, bytes) = resolve_pin_to_bytes(
+            &peppy_dirs,
+            std::slice::from_ref(&local_entry),
+            &pin,
+            &|_| {},
+        )
+        .expect("local content serves the pin");
+        assert_eq!(path, local_file);
+        assert_eq!(bytes, b"{ pinned bytes }");
+    }
+
+    /// A local entry whose file drifted from its recorded fingerprint is a
+    /// miss, not an answer: the pin falls through to its own origin rather
+    /// than shipping bytes that no longer match anything.
+    #[test]
+    fn a_drifted_local_copy_falls_through_to_the_pins_origin() {
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("hub");
+        std::fs::create_dir_all(&source_repo_dir).unwrap();
+        let pinned_body = "{ the pinned bytes }";
+        let (branch, commit) =
+            init_repo_with_file(&source_repo_dir, "camera/peppy.json5", pinned_body);
+        let sha = ManifestFingerprint::of_bytes(pinned_body.as_bytes());
+
+        // A local entry claims the same content but its file says otherwise.
+        let drifted = peppy_tmp.path().join("drifted.json5");
+        std::fs::write(&drifted, b"{ something else }").unwrap();
+        let mut local_entry = node_entry(
+            "camera",
+            "v1",
+            fs_origin(drifted.to_string_lossy().as_ref()),
+        );
+        local_entry.sha256 = sha.clone();
+
+        let pin = pin_for(
+            "camera",
+            "v1",
+            sha,
+            EntryOrigin::Git {
+                repo_url: source_repo_dir.display().to_string(),
+                repo_ref: Some(branch),
+                commit,
+                path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
+            },
+        );
+
+        let (path, bytes) = resolve_pin_to_bytes(
+            &peppy_dirs,
+            std::slice::from_ref(&local_entry),
+            &pin,
+            &|_| {},
+        )
+        .expect("the pin's own origin serves it");
+        assert_ne!(path, drifted);
+        assert_eq!(bytes, pinned_body.as_bytes());
+    }
+
+    /// Content fetched from the pin's origin that does not fingerprint to
+    /// the pin is a refusal naming both fingerprints: the remote moved under
+    /// the pin or the location resolved to something else, and neither may
+    /// be papered over by running what was found.
+    #[test]
+    fn fetched_content_that_does_not_match_its_pin_is_refused_naming_both() {
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("hub");
+        std::fs::create_dir_all(&source_repo_dir).unwrap();
+        let (branch, commit) =
+            init_repo_with_file(&source_repo_dir, "camera/peppy.json5", "{ actual bytes }");
+
+        let pinned_sha = ManifestFingerprint::of_bytes(b"{ some other bytes }");
+        let actual_sha = ManifestFingerprint::of_bytes(b"{ actual bytes }");
+        let pin = pin_for(
+            "camera",
+            "v1",
+            pinned_sha.clone(),
+            EntryOrigin::Git {
+                repo_url: source_repo_dir.display().to_string(),
+                repo_ref: Some(branch),
+                commit,
+                path: RepoRelativePath::parse("camera/peppy.json5").unwrap(),
+            },
+        );
+
+        let err = resolve_pinned_bytes(&peppy_dirs, &pin, &|_| {})
+            .expect_err("a fingerprint mismatch must refuse");
+        assert!(err.contains(pinned_sha.as_str()), "names the pin: {err}");
+        assert!(
+            err.contains(actual_sha.as_str()),
+            "names what was found: {err}"
+        );
+        assert!(err.contains("moved under the pin"), "{err}");
+    }
+
+    /// A pinned path that is absent from the pinned commit refuses naming
+    /// the path and the commit, so the operator can see whether the pin or
+    /// the repository is wrong.
+    #[test]
+    fn a_pinned_path_absent_from_the_commit_is_refused() {
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+
+        let source_parent = tempfile::tempdir().unwrap();
+        let source_repo_dir = source_parent.path().join("hub");
+        std::fs::create_dir_all(&source_repo_dir).unwrap();
+        let (branch, commit) = init_repo_with_file(&source_repo_dir, "camera/peppy.json5", "{}");
+
+        let pin = pin_for(
+            "camera",
+            "v1",
+            fingerprint("whatever"),
+            EntryOrigin::Git {
+                repo_url: source_repo_dir.display().to_string(),
+                repo_ref: Some(branch),
+                commit,
+                path: RepoRelativePath::parse("elsewhere/peppy.json5").unwrap(),
+            },
+        );
+
+        let err = resolve_pinned_bytes(&peppy_dirs, &pin, &|_| {})
+            .expect_err("an absent pinned path must refuse");
+        assert!(err.contains("elsewhere/peppy.json5"), "{err}");
+        assert!(err.contains("absent from commit"), "{err}");
     }
 
     /// The write is atomic: the final file is created via a tmp + rename

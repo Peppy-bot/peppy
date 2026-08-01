@@ -173,6 +173,7 @@ pub fn auto_sync_if_missing(
                 params.interfaces,
                 stack_resolver(node_stack),
                 peppy_dirs,
+                None,
                 params.on_feedback,
             )
             .map_err(|reason| crate::Error::Io(std::io::Error::other(reason)))?;

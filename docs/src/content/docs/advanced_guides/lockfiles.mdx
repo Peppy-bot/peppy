@@ -1,10 +1,52 @@
 ---
-title: Lockfiles
-description: Validate dependency interfaces with hashes to prevent consuming from a wrong node
+title: Content pins
+description: How a manifest pins the exact contract or pairing document it was written against, and how that composes with launch-time pinning
 sidebar:
   order: 7
 ---
 
-## Introduction
+Two mechanisms fix which bytes a node's interfaces are generated from, and
+they answer different questions: what an author requires, and what a launch
+decides.
 
-Coming soon!
+## Author pins: what a manifest may state
+
+Every place a manifest references a contract or pairing document by
+`name:tag` accepts an optional `sha256`, the fingerprint of the exact
+document file the author wrote the node against:
+
+```json5
+depends_on: {
+  contracts: [
+    { link_id: "cam", name: "rgb_camera", tag: "v1",
+      sha256: "3f9c0e21ab7e5f6d8a4b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f" }
+  ],
+}
+```
+
+An unpinned reference resolves to whatever the repository caches hold for
+that `name:tag`; a pinned one resolves to exactly the stated content, and
+anything else is refused naming both fingerprints. Pin when a node's
+correctness depends on a specific revision of a document that a tag alone
+does not identify; leave unpinned to follow the document as its repository
+evolves.
+
+An author pin is a statement about authorship: it travels with the manifest,
+so every machine that ever adds the node enforces it.
+
+## Launch pins: what a launch decides
+
+A launch pins everything, whether the manifests do or not. The machine the
+launch is submitted to resolves every node, every transitive dependency, and
+every contract and pairing document once, and every machine in the launch
+runs exactly the content it resolved; see
+[Federation](/advanced_guides/federation/#what-crosses-a-daemon-boundary).
+A launch pin exists for the duration of one launch and is minted from
+whatever the submitting machine's caches held at that moment.
+
+The two compose rather than compete. Where a manifest carries an author pin,
+the launch resolves the reference through it, so the launch pin and the
+author pin name the same bytes. A launch whose closure would need one
+document at two different contents is refused up front, naming both
+fingerprints, because a single launch runs a single answer for each
+identity.

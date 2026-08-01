@@ -801,7 +801,16 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
                 .to_string()
         }
         NodeSource::Git { .. } | NodeSource::Http { .. } => generate_random_id(),
-        NodeSource::RepoNode { name, tag, .. } => format!("{name}_{tag}"),
+        // The pin embeds the identity; decoding it here only to label a log
+        // file would fail the whole goal on a malformed pin before the
+        // executor can report it properly, so a cheap identity probe is
+        // enough and falls back to a generic label.
+        NodeSource::Pinned { pin_json5 } => {
+            serde_json5::from_str::<daemon_config::repository::PinnedItem>(pin_json5)
+                .map(|pin| format!("{}_{}", pin.name, pin.tag))
+                .unwrap_or_else(|_| generate_random_id())
+        }
+        NodeSource::ResolveRef { name, tag } => format!("{name}_{tag}"),
     }
 }
 
@@ -873,11 +882,12 @@ async fn resolve_node_add_source(
             )
             .await
         }
-        NodeSource::RepoNode { .. } => {
-            // RepoNode goals are routed to `add_batch::run_repo_node_add` by
-            // [`dispatch_node_add`] and never reach `run_node_add`, so this
-            // arm should be unreachable by construction.
-            Err("internal error: RepoNode reached the single-source add path".to_owned())
+        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
+            // Pinned and resolve-ref goals are routed to
+            // `add_batch::run_pinned_add` by [`dispatch_node_add`] and never
+            // reach `run_node_add`, so this arm should be unreachable by
+            // construction.
+            Err("internal error: a pinned source reached the single-source add path".to_owned())
         }
     }
 }
@@ -890,9 +900,10 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     )
 }
 
-/// The one place a node-add goal picks its pipeline: a repository source
-/// expands into a closure of nodes and takes the batch path, every other
-/// source names one thing to add and takes the single-source path.
+/// The one place a node-add goal picks its pipeline: a pinned source (or a
+/// `name:tag` reference this daemon resolves into one) is a closure of
+/// nodes and takes the batch path, every other source names one thing to
+/// add and takes the single-source path.
 ///
 /// Both the action-server path ([`handle_goal_request`]) and the direct
 /// call from `stack_launch` go through here, so no caller can send a
@@ -905,8 +916,11 @@ pub(crate) async fn dispatch_node_add(
     log_path: PathBuf,
     timestamp: String,
 ) -> NodeAddResult {
-    if matches!(goal.source, NodeSource::RepoNode { .. }) {
-        super::add_batch::run_repo_node_add(goal, action_context, feedback_tx, log_file, log_path)
+    if matches!(
+        goal.source,
+        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. }
+    ) {
+        super::add_batch::run_pinned_add(goal, action_context, feedback_tx, log_file, log_path)
             .await
     } else {
         run_node_add(
@@ -1169,8 +1183,12 @@ async fn handle_goal_request(
             "Received `node_add` goal from {sender_instance_id}, source=http:{}",
             url
         ),
-        NodeSource::RepoNode { name, tag, .. } => debug!(
-            "Received `node_add` goal from {sender_instance_id}, source=repo:{}:{}",
+        NodeSource::Pinned { .. } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=pinned ({} closure pin(s))",
+            goal.pins_json5.len()
+        ),
+        NodeSource::ResolveRef { name, tag } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=resolve:{}:{}",
             name, tag
         ),
     }
@@ -1441,11 +1459,22 @@ async fn process_node_add_inner(
             line: line.to_string(),
         });
     };
+    // A goal carrying pins fixes which bytes its contract and pairing
+    // documents are: the launch (or the resolve-ref lowering) decided them
+    // once, and this machine's own cache picks must not override that.
+    // A goal without pins keeps the local resolution rules.
+    let doc_pins = if goal.pins_json5.is_empty() {
+        None
+    } else {
+        let decoded = super::pins::decode_pins(&goal.pins_json5)?;
+        Some(super::pins::DocPins::from_pins(&decoded))
+    };
     let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
         &ctx.action.peppy_dirs,
+        doc_pins.as_ref(),
         &interface_feedback,
     )?;
     generate_peppygen_for_node(

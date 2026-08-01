@@ -32,13 +32,20 @@ pub fn collect_all_deployment_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
-    let mut interfaces =
-        collect_consumed_interfaces(manifest, interfaces_cfg, resolve, peppy_dirs, on_feedback)
-            .map_err(|reason| format!("failed to resolve consumed interfaces: {reason}"))?;
+    let mut interfaces = collect_consumed_interfaces(
+        manifest,
+        interfaces_cfg,
+        resolve,
+        peppy_dirs,
+        doc_pins,
+        on_feedback,
+    )
+    .map_err(|reason| format!("failed to resolve consumed interfaces: {reason}"))?;
     interfaces.extend(
-        resolve_implements(manifest, interfaces_cfg, peppy_dirs, on_feedback)
+        resolve_implements(manifest, interfaces_cfg, peppy_dirs, doc_pins, on_feedback)
             .map_err(|reason| format!("failed to resolve `manifest.implements`: {reason}"))?,
     );
     interfaces.extend(
@@ -46,6 +53,7 @@ pub fn collect_all_deployment_interfaces(
             manifest,
             interfaces_cfg,
             peppy_dirs,
+            doc_pins,
             on_feedback,
         )
         .map_err(|reason| format!("failed to resolve pairing slots: {reason}"))?,
@@ -89,6 +97,7 @@ pub fn collect_consumed_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
@@ -122,6 +131,7 @@ pub fn collect_consumed_interfaces(
                     &entry.name,
                     &entry.tag,
                     entry.sha256.as_deref(),
+                    doc_pins,
                     on_feedback,
                 )?;
                 deps.contract_docs.insert(link_id.clone(), parsed);
@@ -386,21 +396,36 @@ pub(crate) fn resolve_contract_doc(
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<daemon_config::contract::PeppyContract, String> {
     let cache = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
+    let parse = |content: &str| {
+        daemon_config::contract::PeppyContractParser::from_content(content)
+            .map_err(|e| e.to_string())
+    };
 
+    // A launch pin fixes the bytes: this machine reuses its own copy on a
+    // content match and fetches the pin's origin otherwise, but its own
+    // priority rules never pick the document. Without one, the local rules
+    // apply, with the manifest's own optional sha pin.
+    if let Some(pins) = doc_pins {
+        let pin = pins.require(
+            daemon_config::repository::PinKind::Contract,
+            name,
+            tag,
+            sha256_pin,
+        )?;
+        return repo_cache::resolve_pinned_doc(peppy_dirs, &cache, pin, parse, on_feedback);
+    }
     repo_cache::resolve_cached_doc(
         peppy_dirs,
         &cache,
         name,
         tag,
         sha256_pin,
-        |content| {
-            daemon_config::contract::PeppyContractParser::from_content(content)
-                .map_err(|e| e.to_string())
-        },
+        parse,
         on_feedback,
     )
 }
@@ -473,6 +498,7 @@ pub fn resolve_implements(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
     if manifest.implements.is_empty() {
@@ -495,6 +521,7 @@ pub fn resolve_implements(
             slot.name.as_str(),
             &slot.tag,
             slot.sha256.as_deref(),
+            doc_pins,
             on_feedback,
         )?;
         docs.insert(slot.link_id.as_str(), (slot, parsed));
@@ -741,8 +768,8 @@ mod implements_tests {
     fn returns_empty_when_no_implements() {
         let dirs = PeppyDirs::new(TempDir::new().unwrap().path().to_path_buf());
         let manifest: Manifest = serde_json5::from_str(r#"{ name: "plain", tag: "v1" }"#).unwrap();
-        let out =
-            resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {}).expect("ok");
+        let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
+            .expect("ok");
         assert!(out.is_empty());
     }
 
@@ -761,7 +788,8 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {}).expect("happy path");
+        let out =
+            resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {}).expect("happy path");
         assert_eq!(out.len(), 1, "should pull the one video_stream topic");
         match out[0].interface() {
             InterfaceVariant::EmittedTopic {
@@ -807,7 +835,7 @@ mod implements_tests {
             }"#,
         );
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("partial coverage must error");
         let ImplementsError::Coverage(mismatches) = &err else {
             panic!("coverage failure must carry structured mismatches, got {err:?}");
@@ -841,7 +869,7 @@ mod implements_tests {
             r#"{ services: { exposes: [{ link_id: "cam", name: "video_stream" }] } }"#,
         );
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("wrong-kind entry must error")
             .to_string();
         assert!(
@@ -876,7 +904,7 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("broken slot must error")
             .to_string();
         assert!(
@@ -904,7 +932,7 @@ mod implements_tests {
 
         let manifest =
             manifest_with_implements(r#"{ name: "empty_contract", tag: "v1", link_id: "noop" }"#);
-        let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {})
+        let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
             .expect("degenerate coverage passes");
         assert!(out.is_empty());
     }
@@ -916,7 +944,7 @@ mod implements_tests {
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
 
-        let err = resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
             .expect_err("miss must error")
             .to_string();
         assert!(
@@ -950,7 +978,8 @@ mod implements_tests {
             }"#,
         );
 
-        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {}).expect("happy path");
+        let out =
+            resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {}).expect("happy path");
 
         let mut saw_service = false;
         let mut saw_action = false;
@@ -1001,7 +1030,7 @@ mod implements_tests {
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("drift must error")
             .to_string();
         assert!(
@@ -1098,7 +1127,7 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let out = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect("git-sourced implements should resolve");
         assert_eq!(out.len(), 1, "should pull the one video_stream topic");
         match out[0].interface() {
@@ -1163,7 +1192,7 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("git-sourced drift must error")
             .to_string();
         assert!(
@@ -1218,7 +1247,7 @@ mod implements_tests {
         )
         .expect("interfaces parses");
 
-        let out = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
+        let out = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
             .expect("response-only service must resolve");
 
         assert_eq!(
@@ -1321,8 +1350,9 @@ mod implements_tests {
             } }"#,
         );
 
-        let out = collect_all_deployment_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
-            .expect("all three kinds resolve together");
+        let out =
+            collect_all_deployment_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
+                .expect("all three kinds resolve together");
 
         let mut emitted_topics = Vec::new();
         let mut peer_emitted = Vec::new();
@@ -1383,7 +1413,7 @@ mod implements_tests {
             r#"{ topics: { consumes: [{ link_id: "cam", name: "video_strem" }] } }"#,
         );
 
-        let err = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
+        let err = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
             .expect_err("a name absent from the contract must not be dropped silently");
         for needle in [
             "video_strem",
@@ -1433,6 +1463,7 @@ mod implements_tests {
             &cfg,
             |name, _| (name == "producer_node").then(|| producer.clone()),
             &dirs,
+            None,
             &|_| {},
         )
         .expect("collection itself must not fail for a node dep");
@@ -1498,6 +1529,7 @@ mod implements_tests {
             &native_cfg,
             |name, _| (name == "hybrid").then(|| producer.clone()),
             &dirs,
+            None,
             &|_| {},
         )
         .expect("native consumption resolves");
@@ -1524,6 +1556,7 @@ mod implements_tests {
             &contract_backed_cfg,
             |name, _| (name == "hybrid").then(|| producer.clone()),
             &dirs,
+            None,
             &|_| {},
         )
         .expect("collection itself does not fail");

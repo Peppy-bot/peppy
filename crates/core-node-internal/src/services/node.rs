@@ -13,6 +13,7 @@ mod init;
 mod logging;
 pub(crate) mod observation;
 pub(crate) mod pairing;
+pub(crate) mod pins;
 mod relationship_notify;
 mod remove;
 mod run;

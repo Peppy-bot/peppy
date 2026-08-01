@@ -429,7 +429,6 @@ impl CoreNode {
         federation::FederationServiceContext {
             messenger: self.messenger.clone(),
             core_node_name: ctx.core_node_name.to_owned(),
-            peppy_dirs: self.peppy_dirs.clone(),
             ownership: Arc::clone(&self.slice_ownership),
             relationships: ctx.relationships.clone(),
             node_stack: Arc::clone(&self.node_stack),

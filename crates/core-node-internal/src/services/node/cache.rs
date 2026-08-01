@@ -10,4 +10,4 @@ mod key;
 mod keyed_lock;
 pub(super) mod materialize;
 
-pub(super) use materialize::{MaterializeFeedback, materialize_entry, silent_feedback};
+pub(crate) use materialize::{MaterializeFeedback, materialize_entry, silent_feedback};

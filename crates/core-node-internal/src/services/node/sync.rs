@@ -246,6 +246,7 @@ async fn handle_node_sync_request_inner(
                     &node_config.interfaces,
                     resolve_dep,
                     &peppy_dirs,
+                    None,
                     &interface_feedback,
                 ) {
                     Ok(v) => v,

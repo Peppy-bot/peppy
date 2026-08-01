@@ -141,9 +141,9 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     // is already in the stack with active instances.
     //
     // - `NodeSource::Fs`: read `(name, tag)` from the local `peppy.json5`.
-    // - `NodeSource::RepoNode`: use the user-supplied `(name, tag)`
+    // - `NodeSource::ResolveRef`: use the user-supplied `(name, tag)`
     //   directly; no parsing needed. (Validated at parse time by
-    //   `NodeSource::repo_node`.)
+    //   `NodeSource::resolve_ref`.)
     //
     // `Git`/`Http` root sources still skip the preflight since we'd need to
     // fetch them to read the manifest; the daemon's add action stops
@@ -158,7 +158,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
                 )
                 .await?
             }
-            NodeSource::RepoNode { name, tag } => {
+            NodeSource::ResolveRef { name, tag } => {
                 fetch_active_instances_for_name_tag(
                     &conn,
                     name.clone(),
@@ -167,7 +167,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
                 )
                 .await?
             }
-            NodeSource::Git { .. } | NodeSource::Http { .. } => None,
+            NodeSource::Git { .. } | NodeSource::Http { .. } | NodeSource::Pinned { .. } => None,
         };
 
         if let Some((node_name, node_tag, instance_ids)) = active_instances {

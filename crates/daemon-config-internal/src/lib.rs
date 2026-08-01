@@ -112,9 +112,10 @@ pub mod pairing {
 // -- repository --
 pub mod repository {
     pub use crate::internal::repository::{
-        DeclaredItem, DeclaredPaths, GitCommit, GitCommitError, IndexedItem, ItemName, ItemTag,
-        ManifestFingerprint, ManifestFingerprintError, PeppyRepositoryIndexParser, RepoItemKind,
-        RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
+        DeclaredItem, DeclaredPaths, DeploymentPins, EntryOrigin, GitCommit, GitCommitError,
+        IndexedItem, ItemName, ItemTag, ManifestFingerprint, ManifestFingerprintError,
+        PeppyRepositoryIndexParser, PinKind, PinnedItem, RepoItemKind, RepoPathError,
+        RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
     };
 }
 

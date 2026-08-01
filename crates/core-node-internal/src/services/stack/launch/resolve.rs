@@ -1,69 +1,34 @@
 use super::feedback::{publish_stderr, publish_stdout};
 use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
+use crate::services::node::pins;
 use crate::services::node::resolve_node_config;
+use crate::services::repo::cache as repo_cache;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource, PlacementSpec,
 };
 use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
+use daemon_config::repository::PinnedItem;
 use parking_lot::Mutex as StdMutex;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Translates a deployment source into one that any daemon in the federation
-/// can fetch for itself.
-///
-/// Two things make this different from
-/// [`node_source_from_deployment_source`], and both are about not letting one
-/// machine's filesystem leak into another's instructions:
-///
-/// - `local:` is REFUSED. Its path names a tree on the coordinator, so a peer
-///   resolving it would read a different tree or nothing at all.
-/// - `repo:` stays a `(name, tag)` reference instead of being resolved through
-///   the caller's own package cache. Resolving it here would pin whatever git
-///   URL or archive THIS machine happens to have cached and hand it to another
-///   machine as fact. Left as a reference, each daemon resolves it against its
-///   own cache, which is the same cache it will spawn from.
-///
-/// Called on both sides for that reason: by the coordinator when it builds a
-/// peer's `node_add`, and by the peer when it resolves its own manifests. Same
-/// function, so the two cannot drift into disagreeing about what a source means.
-pub(crate) fn portable_node_source(
-    source: &DeploymentSource,
-) -> std::result::Result<NodeSource, String> {
-    match source {
-        DeploymentSource::Local(spec) => Err(local_source_refusal(spec)),
-        DeploymentSource::Repo(spec) => NodeSource::repo_node(&spec.name, &spec.tag)
-            .map_err(|e| format!("invalid repo node `{}:{}`: {e}", spec.name, spec.tag)),
-        DeploymentSource::Git(spec) => Ok(NodeSource::Git {
-            repo_url: git_url_from_repo(&spec.repo)?,
-            repo_path: spec.path.clone(),
-            repo_ref: Some(spec.ref_.clone()),
-        }),
-        DeploymentSource::Url(spec) => Ok(NodeSource::Http {
-            url: url::Url::parse(&spec.url)
-                .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?,
-            sha256: Some(spec.sha256.clone()),
-        }),
-    }
-}
-
 /// Why a `local:` source cannot cross a machine boundary.
 ///
-/// Stated once because two sides refuse it at different moments: the
-/// coordinator before it even asks a peer to reserve, and
-/// [`portable_node_source`] when a source is translated for a peer. The two
-/// must say the same thing, or the same misconfiguration reads as two
-/// different problems depending on where it is caught.
+/// Reads as one rule with [`pins::portable_pin_refusal`]: whether the tree a
+/// deployment resolves to sits behind a `local:` path or a filesystem
+/// repository entry, it lives on the coordinator's disk and no other machine
+/// can read it.
 pub(crate) fn local_source_refusal(
     spec: &daemon_config::launcher::DeploymentLocalSource,
 ) -> String {
     format!(
         "`local:{}` cannot be placed on another core node: the path names a tree on the \
          coordinator's filesystem. A `local:` deployment must keep all of its instances on \
-         one core node; publish the node to a repo or url source to split it across machines.",
+         one core node; publish the node to a repo or git-backed source to split it across \
+         machines.",
         spec.local.display()
     )
 }
@@ -74,30 +39,6 @@ fn deployment_label(deployment: &Deployment) -> String {
         DeploymentSource::Git(spec) => format!("git:{}@{}:{}", spec.repo, spec.ref_, spec.path),
         DeploymentSource::Url(spec) => format!("url:{}", spec.url),
         DeploymentSource::Repo(spec) => format!("repo:{}:{}", spec.name, spec.tag),
-    }
-}
-
-fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
-    gix_url::Url::try_from(repo)
-        .or_else(|_| gix_url::Url::try_from(std::path::Path::new(repo)))
-        .map_err(|e| format!("invalid git repo URL `{repo}`: {e}"))
-}
-
-pub(crate) fn node_source_from_deployment_source(
-    deployment: &Deployment,
-    nodes_directory: &std::path::Path,
-) -> std::result::Result<NodeSource, String> {
-    // `local:` is the only shape whose meaning depends on which machine
-    // reads it, so it is the only one handled here; everything else comes
-    // from `portable_node_source`, which cannot then drift apart from what
-    // a peer is told the same source means.
-    match &deployment.source {
-        DeploymentSource::Local(spec) => Ok(NodeSource::Fs(if spec.local.is_absolute() {
-            spec.local.clone()
-        } else {
-            nodes_directory.join(&spec.local)
-        })),
-        portable => portable_node_source(portable),
     }
 }
 
@@ -341,17 +282,24 @@ async fn resolve_launcher_origin(
     }
 }
 
-/// Step 2: Resolve deployments - retrieve node configs for each deployment.
+/// Step 2: Resolve every deployment, once, on this daemon.
 ///
-/// A deployment placed wholly on a peer is NOT resolved here. The peer already
-/// resolved it during preflight and `delegated` carries what it read, so this
-/// daemon needs no reachability to a source it will never fetch, and the
-/// manifest it validates is provably the one that peer will spawn from.
+/// The coordinator decides which bytes the whole launch runs: a `repo:`
+/// deployment resolves its transitive closure here and every resolved item
+/// becomes a pin, a `git:` deployment pins the commit its ref resolved to,
+/// and the contract and pairing documents every manifest names are pinned
+/// beside them. Peers receive those pins and never resolve a name, so their
+/// cache freshness, repository priorities and exclusions cannot change what
+/// this launch runs.
+///
+/// Runs BEFORE the federated preflight: resolution touches no other machine
+/// and tears nothing down, so every refusal here is free, and the pins must
+/// exist before a reservation can carry them.
 pub(super) async fn resolve_deployments(
     ctx: &ProcessLaunchContext,
     deployments: Vec<Deployment>,
     nodes_directory: &Path,
-    delegated: &BTreeMap<usize, super::federated::DelegatedManifest>,
+    placements: &Placements,
 ) -> std::result::Result<Vec<PlannedDeployment>, LaunchResult> {
     publish_stdout(
         ctx,
@@ -364,7 +312,7 @@ pub(super) async fn resolve_deployments(
     let mut planning_errors: Vec<String> = Vec::new();
     let mut planned_keys: HashSet<NodeKey> = HashSet::new();
 
-    for (index, deployment) in deployments.into_iter().enumerate() {
+    for deployment in deployments {
         if deployment.instances.is_empty() {
             planning_errors.push(format!(
                 "deployment {} must have at least one instance",
@@ -373,12 +321,25 @@ pub(super) async fn resolve_deployments(
             continue;
         }
 
-        let resolved = match delegated.get(&index) {
-            Some(manifest) => adopt_delegated_manifest(ctx, &deployment, manifest).await,
-            None => resolve_here(ctx, &deployment, nodes_directory).await,
-        };
-        let (source, config, manifest_sha256) = match resolved {
+        // Resolution runs partly on blocking threads, so progress lines are
+        // buffered through a shared Vec and flushed here, the same shape
+        // `resolve_launcher_origin` uses: quiet for cached entries, a few
+        // clone lines for fresh fetches, published in order either way.
+        let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let resolved = resolve_one(ctx, &deployment, nodes_directory, placements, &collected).await;
+        let captured: Vec<String> = std::mem::take(&mut *collected.lock());
+        for line in captured {
+            publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+        }
+        let (source, config, root_pin, closure_pins, pin_manifests) = match resolved {
             Ok(resolved) => resolved,
+            Err(err) => {
+                planning_errors.push(err);
+                continue;
+            }
+        };
+        let config_sha256 = match crate::services::node::manifest_fingerprint(&config) {
+            Ok(fingerprint) => fingerprint,
             Err(err) => {
                 planning_errors.push(err);
                 continue;
@@ -416,8 +377,10 @@ pub(super) async fn resolve_deployments(
             node_name,
             node_tag,
             config,
-            deployment_index: index,
-            manifest_sha256,
+            config_sha256,
+            root_pin,
+            closure_pins,
+            pin_manifests,
         });
     }
 
@@ -430,150 +393,298 @@ pub(super) async fn resolve_deployments(
     Ok(planned)
 }
 
-/// What one resolved deployment contributes to the plan: how to fetch it, what
-/// its manifest says, and this daemon's own fingerprint of that manifest (only
-/// when this daemon read it, so a straddle can be cross-checked).
-type ResolvedDeployment = (NodeSource, config::node::NodeConfig, Option<String>);
+/// What one resolved deployment contributes to the plan: the source its adds
+/// dispatch with, its manifest, the root pin when the source is pinned, the
+/// dependency-node pins of its closure, and every manifest in that closure,
+/// from which the doc pins are minted after the graph is validated.
+type ResolvedDeployment = (
+    NodeSource,
+    config::node::NodeConfig,
+    Option<PinnedItem>,
+    Vec<PinnedItem>,
+    Vec<config::node::Manifest>,
+);
 
-/// Takes a peer's resolved manifest at face value, but still derives the
-/// portable source: what the coordinator needs from it is the instruction to
-/// send back, not a path on the peer's disk.
-async fn adopt_delegated_manifest(
-    ctx: &ProcessLaunchContext,
-    deployment: &Deployment,
-    manifest: &super::federated::DelegatedManifest,
-) -> std::result::Result<ResolvedDeployment, String> {
-    publish_stdout(
-        ctx,
-        format!(
-            "Using the manifest `{}` resolved for {}",
-            manifest.core_node,
-            deployment_label(deployment)
-        ),
-        LaunchFeedbackStep::LauncherStep,
-    )
-    .await;
-
-    let config: config::node::NodeConfig =
-        serde_json5::from_str(&manifest.config_json5).map_err(|e| {
-            format!(
-                "`{}` sent an undecodable manifest for deployment {}: {e}",
-                manifest.core_node,
-                deployment_label(deployment)
-            )
-        })?;
-    let source = portable_node_source(&deployment.source)?;
-    // No local fingerprint: this daemon did not read the manifest, so it has
-    // nothing of its own to compare, and the straddle check must not compare a
-    // peer's answer against itself.
-    Ok((source, config, None))
+/// Whether any instance of `deployment` is placed off this daemon, which is
+/// what obliges every pin it resolves to to be portable.
+fn has_remote_instances(deployment: &Deployment, placements: &Placements) -> bool {
+    deployment
+        .instances
+        .iter()
+        .any(|instance| placements.of(instance.instance_id.as_str()) != placements.coordinator())
 }
 
-async fn resolve_here(
+/// Refuses any pin in `pins` that another machine could not read, for a
+/// deployment with at least one instance placed elsewhere.
+fn refuse_unportable_pins<'a>(
+    label: &str,
+    pins: impl Iterator<Item = &'a PinnedItem>,
+) -> std::result::Result<(), String> {
+    for pin in pins {
+        if let Some(reason) = pins::portable_pin_refusal(pin) {
+            return Err(format!("deployment {label}: {reason}"));
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_one(
     ctx: &ProcessLaunchContext,
     deployment: &Deployment,
     nodes_directory: &Path,
+    placements: &Placements,
+    collected: &Arc<StdMutex<Vec<String>>>,
 ) -> std::result::Result<ResolvedDeployment, String> {
-    let source =
-        node_source_from_deployment_source(deployment, nodes_directory).map_err(|err| {
-            format!(
-                "failed to resolve source for deployment {}: {err}",
-                deployment_label(deployment)
-            )
-        })?;
-
+    let label = deployment_label(deployment);
     publish_stdout(
         ctx,
-        format!(
-            "Retrieving node config for {}",
-            deployment_label(deployment)
-        ),
+        format!("Retrieving node config for {label}"),
         LaunchFeedbackStep::LauncherStep,
     )
     .await;
+    let remote = has_remote_instances(deployment, placements);
+    let shared_feedback = || -> crate::services::node::cache::MaterializeFeedback {
+        let sink = Arc::clone(collected);
+        Arc::new(move |line: &str| sink.lock().push(line.to_owned()))
+    };
 
-    let config = resolve_node_config(source.clone(), &ctx.peppy_dirs)
-        .await
-        .map_err(|err| {
-            format!(
-                "failed to retrieve node config for deployment {}: {err}",
-                deployment_label(deployment)
+    match &deployment.source {
+        DeploymentSource::Local(spec) => {
+            if remote {
+                return Err(local_source_refusal(spec));
+            }
+            let source = NodeSource::Fs(if spec.local.is_absolute() {
+                spec.local.clone()
+            } else {
+                nodes_directory.join(&spec.local)
+            });
+            let config = resolve_node_config(source.clone(), &ctx.peppy_dirs)
+                .await
+                .map_err(|e| {
+                    format!("failed to retrieve node config for deployment {label}: {e}")
+                })?;
+            let manifests = vec![config.manifest.clone()];
+            Ok((source, config, None, Vec::new(), manifests))
+        }
+        DeploymentSource::Repo(spec) => {
+            let entries = repo_cache::load_node_cache(&ctx.peppy_dirs)
+                .map_err(|e| format!("deployment {label}: failed to load nodes cache: {e}"))?;
+            let closure = pins::resolve_pinned_closure(
+                &ctx.peppy_dirs,
+                &entries,
+                &spec.name,
+                &spec.tag,
+                shared_feedback(),
             )
-        })?;
-    let fingerprint = crate::services::node::manifest_fingerprint(&config)?;
-    Ok((source, config, Some(fingerprint)))
+            .await
+            .map_err(|e| format!("deployment {label}: {e}"))?;
+            if remote {
+                refuse_unportable_pins(&label, closure.nodes.iter().map(|node| &node.pin))?;
+            }
+            let dep_pins = closure.dep_pins();
+            let manifests = closure.manifests();
+            let root = closure.root();
+            let source = NodeSource::Pinned {
+                pin_json5: serde_json5::to_string(&root.pin)
+                    .map_err(|e| format!("deployment {label}: could not encode its pin: {e}"))?,
+            };
+            Ok((
+                source,
+                root.config.clone(),
+                Some(root.pin.clone()),
+                dep_pins,
+                manifests,
+            ))
+        }
+        DeploymentSource::Git(spec) => {
+            let root = pins::resolve_git_deployment(
+                &ctx.peppy_dirs,
+                &spec.repo,
+                &spec.path,
+                Some(spec.ref_.as_str()),
+                shared_feedback(),
+            )
+            .await
+            .map_err(|e| format!("deployment {label}: {e}"))?;
+            if remote {
+                refuse_unportable_pins(&label, std::iter::once(&root.pin))?;
+            }
+            let source = NodeSource::Pinned {
+                pin_json5: serde_json5::to_string(&root.pin)
+                    .map_err(|e| format!("deployment {label}: could not encode its pin: {e}"))?,
+            };
+            let manifests = vec![root.config.manifest.clone()];
+            Ok((source, root.config, Some(root.pin), Vec::new(), manifests))
+        }
+        DeploymentSource::Url(spec) => {
+            let source = NodeSource::Http {
+                url: url::Url::parse(&spec.url)
+                    .map_err(|e| format!("invalid HTTP URL `{}`: {e}", spec.url))?,
+                sha256: Some(spec.sha256.clone()),
+            };
+            let config = resolve_node_config(source.clone(), &ctx.peppy_dirs)
+                .await
+                .map_err(|e| {
+                    format!("failed to retrieve node config for deployment {label}: {e}")
+                })?;
+            let manifests = vec![config.manifest.clone()];
+            Ok((source, config, None, Vec::new(), manifests))
+        }
+    }
+}
+
+/// Mints the contract and pairing document pins of every planned deployment,
+/// after the graph validation has run.
+///
+/// Deliberately a separate step from node resolution: the graph refusals
+/// (an unimplemented binding, an uncovered pairing slot) point at the
+/// launcher and the manifests, and are the more actionable ones when a
+/// document is also missing from this machine's caches. Minting after them
+/// keeps that precedence while still landing every doc refusal before any
+/// machine is reserved or torn down.
+///
+/// The pins land on each deployment's `closure_pins`, beside its
+/// dependency-node pins, so every add of the deployment carries them.
+pub(super) async fn mint_doc_pins(
+    ctx: &ProcessLaunchContext,
+    planned: &mut [PlannedDeployment],
+    placements: &Placements,
+) -> std::result::Result<(), LaunchResult> {
+    let mut problems: Vec<String> = Vec::new();
+    for item in planned.iter_mut() {
+        let label = deployment_label(&item.deployment);
+        let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let minted = {
+            let dirs = ctx.peppy_dirs.clone();
+            let manifests = item.pin_manifests.clone();
+            let sink = Arc::clone(&collected);
+            tokio::task::spawn_blocking(move || {
+                pins::doc_pins_for_manifests(&dirs, &manifests, &|line| {
+                    sink.lock().push(line.to_owned())
+                })
+            })
+            .await
+            .map_err(|e| format!("doc pin minting task failed: {e}"))
+            .and_then(|result| result)
+        };
+        let captured: Vec<String> = std::mem::take(&mut *collected.lock());
+        for line in captured {
+            publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
+        }
+        match minted {
+            Ok(doc_pins) => {
+                if has_remote_instances(&item.deployment, placements)
+                    && let Err(reason) = refuse_unportable_pins(&label, doc_pins.iter())
+                {
+                    problems.push(reason);
+                    continue;
+                }
+                item.closure_pins.extend(doc_pins);
+            }
+            Err(reason) => problems.push(format!("deployment {label}: {reason}")),
+        }
+    }
+    if !problems.is_empty() {
+        let msg = daemon_config::format_bulleted(&problems);
+        publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return Err(LaunchResult::failure(&ctx.log_path, msg));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daemon_config::launcher::DeploymentInstance;
+    use daemon_config::repository::{
+        EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, RepoRelativePath,
+    };
 
     fn source(json5: &str) -> DeploymentSource {
         serde_json5::from_str(json5).expect("valid deployment source")
     }
 
-    /// The hazard this exists to avoid: resolving `repo:` through the caller's
-    /// own package cache would pin whatever git URL THIS machine happens to
-    /// have cached and hand it to another machine as fact. Left as a reference,
-    /// each daemon resolves it against the cache it will actually spawn from.
-    #[test]
-    fn a_repo_source_crosses_machines_as_a_reference_not_a_resolved_url() {
-        let resolved = portable_node_source(&source(r#"{ name: "planner", tag: "v1" }"#))
-            .expect("a repo source is portable");
-        assert_eq!(
-            resolved,
-            NodeSource::RepoNode {
-                name: "planner".to_owned(),
-                tag: "v1".to_owned(),
-            }
-        );
+    fn deployment(source_json5: &str, instance_ids: &[&str]) -> Deployment {
+        Deployment {
+            source: source(source_json5),
+            instances: instance_ids
+                .iter()
+                .map(|id| {
+                    DeploymentInstance::empty(config::runtime::Name::new(*id).expect("valid name"))
+                })
+                .collect(),
+        }
     }
 
+    fn placed(pairs: &[(&str, &str)]) -> Placements {
+        Placements::new(
+            core_node("cn-robot"),
+            pairs
+                .iter()
+                .map(|(id, target)| ((*id).to_owned(), core_node(target)))
+                .collect(),
+        )
+    }
+
+    fn test_pin(origin: EntryOrigin) -> PinnedItem {
+        PinnedItem {
+            kind: PinKind::Node,
+            name: ItemName::parse("planner").expect("valid name"),
+            tag: ItemTag::parse("v1").expect("valid tag"),
+            sha256: ManifestFingerprint::parse(&"a".repeat(64)).expect("valid sha"),
+            origin,
+        }
+    }
+
+    /// A deployment with every instance on the coordinator obliges its pins
+    /// to nothing; one with any instance elsewhere obliges every pin it
+    /// resolves to to be readable off this machine.
     #[test]
-    fn git_and_url_sources_name_the_same_bytes_from_any_machine() {
-        assert!(matches!(
-            portable_node_source(&source(
-                r#"{ repo: "https://example.com/r.git", ref: "main", path: "nodes/a" }"#
-            )),
-            Ok(NodeSource::Git { .. })
-        ));
-        assert!(matches!(
-            portable_node_source(&source(
-                r#"{ url: "https://example.com/a.tar.zst", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#
-            )),
-            Ok(NodeSource::Http { .. })
-        ));
+    fn only_off_coordinator_instances_oblige_portable_pins() {
+        let local_only = deployment(r#"{ name: "planner", tag: "v1" }"#, &["planner_1"]);
+        let placements = placed(&[("cam_cloud", "cn-atlas")]);
+        assert!(!has_remote_instances(&local_only, &placements));
+
+        let split = deployment(
+            r#"{ name: "planner", tag: "v1" }"#,
+            &["planner_1", "cam_cloud"],
+        );
+        assert!(has_remote_instances(&split, &placements));
+    }
+
+    /// The refusal the portability rule produces: a filesystem repository
+    /// entry behind an off-coordinator placement names a tree only this
+    /// machine can read, exactly like a `local:` source, and the message
+    /// says what still works.
+    #[test]
+    fn a_filesystem_backed_pin_is_refused_for_a_remote_placement() {
+        let fs_pin = test_pin(EntryOrigin::Fs {
+            path: "/repo/planner/peppy.json5".into(),
+        });
+        let error = refuse_unportable_pins("repo:planner:v1", std::iter::once(&fs_pin))
+            .expect_err("a filesystem origin cannot cross machines");
+        assert!(error.contains("coordinator's filesystem"), "got: {error}");
+        assert!(error.contains("git repository"), "got: {error}");
+
+        let git_pin = test_pin(EntryOrigin::Git {
+            repo_url: "https://example.com/hub".to_owned(),
+            repo_ref: Some("main".to_owned()),
+            commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
+            path: RepoRelativePath::parse("planner/peppy.json5").expect("valid path"),
+        });
+        assert!(refuse_unportable_pins("repo:planner:v1", std::iter::once(&git_pin)).is_ok());
     }
 
     /// A path names a tree on the coordinator's disk, so a peer resolving it
     /// would read a different tree or nothing at all.
     #[test]
-    fn a_local_source_is_refused_rather_than_translated() {
-        let error = portable_node_source(&source(r#"{ local: "./nodes/planner" }"#))
-            .expect_err("a local path cannot cross machines");
+    fn the_local_source_refusal_names_the_tree_and_the_way_out() {
+        let DeploymentSource::Local(spec) = source(r#"{ local: "./nodes/planner" }"#) else {
+            panic!("expected a local source");
+        };
+        let error = local_source_refusal(&spec);
         assert!(error.contains("names a tree on"), "got: {error}");
-        assert!(error.contains("repo or url source"), "got: {error}");
-    }
-
-    /// The local resolver and the portable one must not drift apart on what a
-    /// host-independent source means, which is why the former delegates to the
-    /// latter for exactly those shapes.
-    #[test]
-    fn the_local_resolver_agrees_with_the_portable_one_on_host_independent_sources() {
-        for json5 in [
-            r#"{ repo: "https://example.com/r.git", ref: "main", path: "nodes/a" }"#,
-            r#"{ url: "https://example.com/a.tar.zst", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }"#,
-        ] {
-            let deployment = Deployment {
-                source: source(json5),
-                instances: Vec::new(),
-            };
-            let local =
-                node_source_from_deployment_source(&deployment, std::path::Path::new("/nodes"))
-                    .expect("resolvable locally");
-            let portable = portable_node_source(&deployment.source).expect("portable");
-            assert_eq!(local, portable, "for {json5}");
-        }
+        assert!(error.contains("repo or git-backed source"), "got: {error}");
     }
 
     // --- Placement: binding a launcher's declared links to real machines ---
