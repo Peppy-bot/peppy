@@ -145,7 +145,7 @@ This is the point of the explicit-entry design: the node's `peppy.json5` shows w
 
 #### link_id rules
 
-Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings}` link_ids; a collision is rejected at parse time. Direction matters:
+Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings,pairing_observers}` link_ids; a collision is rejected at parse time. Direction matters:
 
 - `services.exposes` and `actions.exposes` may only reference a `manifest.implements` slot.
 - `topics.emits` may reference a `manifest.implements` slot or a `depends_on.pairings` slot, because a [pairing](/advanced_guides/pairing/) role produces the document's topics as well as consuming them.
