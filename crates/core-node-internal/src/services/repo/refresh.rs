@@ -3,48 +3,30 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::clone_with_progress;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::repo::cache::{
-    ContractCacheEntry, DiscoveredEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
-    RepoCacheEntry, write_repo_cache,
+    ContractCacheEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry, RepoCacheEntry,
+    RepoItems, write_repo_cache,
 };
 use crate::services::repo::exclude::ExclusionSet;
+use crate::services::repo::index::{WalkResult, build_cache_entries, walk_directory};
 use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
 use crate::services::repo::{normalize_repo_entries, source_identity};
-use config::consts::NODE_CONFIG_FILE;
-use config::fingerprint::fingerprint_for_bytes;
-use config::node::NodeConfigParser;
-use config::schema::PeppySchema;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    RepoItemKind, RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
-    RepoSource, RepoSourceKind,
+    RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
+    RepoSourceKind,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::contract::PeppyContractParser;
-use daemon_config::launcher::PeppyLauncherParser;
-use daemon_config::pairing::PeppyPairingParser;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
-use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
-
-/// Directory names that should never be descended into while searching for
-/// `peppy.json5` files.
-pub(crate) const PRUNED_DIR_NAMES: &[&str] = &[
-    ".git",
-    ".peppy",
-    "target",
-    "node_modules",
-    ".venv",
-    "__pycache__",
-];
 
 pub async fn listen_for_repo_refresh(
     messenger: &MessengerHandle,
@@ -411,17 +393,26 @@ pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepo
     status::write(peppy_dirs, &refreshed.statuses)
 }
 
-/// Source-and-file context shared by every `.json5` collector. The
-/// collectors only need read access; bundling these arguments keeps
-/// their signatures focused on the entry-specific state (seen set +
-/// output vector).
-struct EntryContext<'a> {
-    root: &'a Path,
+/// One repository as read, plus what the entries it yields should be
+/// attributed to. Reading is separated from attribution so the fs and git
+/// branches differ only in how they obtain the tree, not in what happens to
+/// the items afterwards.
+struct ReadRepo {
+    walked: WalkResult,
     source_type: RepoSourceKind,
-    source_uri: Option<&'a str>,
-    resolved_ref: Option<&'a str>,
-    config_path: &'a Path,
-    bytes: &'a [u8],
+    source_uri: Option<String>,
+    resolved_ref: Option<String>,
+}
+
+impl ReadRepo {
+    fn into_cache_entries(self) -> RepoItems {
+        build_cache_entries(
+            self.walked.items,
+            self.source_type,
+            self.source_uri.as_deref(),
+            self.resolved_ref.as_deref(),
+        )
+    }
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -577,13 +568,12 @@ pub(crate) fn process_refresh(
                     on_feedback(RepoRefreshFeedback::Progress {
                         message: format!("Scanning {}", path.display()),
                     });
-                    Ok(walk_directory(
-                        path,
-                        RepoSourceKind::Fs,
-                        None,
-                        None,
-                        &exclusions.fs_paths,
-                    ))
+                    Ok(ReadRepo {
+                        walked: walk_directory(path, &exclusions.fs_paths),
+                        source_type: RepoSourceKind::Fs,
+                        source_uri: None,
+                        resolved_ref: None,
+                    })
                 } else {
                     Err(format!("path does not exist: {}", path.display()))
                 }
@@ -606,9 +596,9 @@ pub(crate) fn process_refresh(
         // bug.
         let failure = match &read {
             Err(detail) => Some((RepoFailureKind::Unreachable, detail.clone())),
-            Ok(walked) if !walked.conflicts.is_empty() => Some((
+            Ok(read) if !read.walked.conflicts.is_empty() => Some((
                 RepoFailureKind::Conflict,
-                walked
+                read.walked
                     .conflicts
                     .iter()
                     .map(|c| c.to_string())
@@ -627,7 +617,7 @@ pub(crate) fn process_refresh(
             .find(|s| s.id == id && s.identity == identity)
             .and_then(|s| s.last_read_unix_secs);
 
-        let walked = match failure {
+        let items = match failure {
             None => {
                 statuses.push(RepoStatus {
                     id,
@@ -638,15 +628,14 @@ pub(crate) fn process_refresh(
                     // stops reporting an old failure.
                     last_failure: None,
                 });
-                read.expect("checked to be Ok above")
+                read.expect("checked to be Ok above").into_cache_entries()
             }
             Some((kind, detail)) => {
-                let retained = WalkResult {
+                let retained = RepoItems {
                     nodes: retained_entries(&previous.nodes, &repos, id),
                     launchers: retained_entries(&previous.launchers, &repos, id),
                     contracts: retained_entries(&previous.contracts, &repos, id),
                     pairings: retained_entries(&previous.pairings, &repos, id),
-                    conflicts: Vec::new(),
                 };
                 let count = retained.nodes.len()
                     + retained.launchers.len()
@@ -686,25 +675,25 @@ pub(crate) fn process_refresh(
         // retained or not, so priority order and the first-seen discovery
         // feedback stay exactly as they would have been.
         merge_walked(
-            walked.nodes,
+            items.nodes,
             &mut global_seen_nodes,
             &mut all_nodes,
             on_feedback,
         );
         merge_walked(
-            walked.launchers,
+            items.launchers,
             &mut global_seen_launchers,
             &mut all_launchers,
             on_feedback,
         );
         merge_walked(
-            walked.contracts,
+            items.contracts,
             &mut global_seen_contracts,
             &mut all_contracts,
             on_feedback,
         );
         merge_walked(
-            walked.pairings,
+            items.pairings,
             &mut global_seen_pairings,
             &mut all_pairings,
             on_feedback,
@@ -723,82 +712,6 @@ pub(crate) fn process_refresh(
 }
 
 /// Items discovered by walking a single repository's working tree.
-pub(crate) struct WalkResult {
-    pub nodes: Vec<NodeCacheEntry>,
-    pub launchers: Vec<LauncherCacheEntry>,
-    pub contracts: Vec<ContractCacheEntry>,
-    pub pairings: Vec<PairingCacheEntry>,
-    /// Identities claimed by more than one manifest in this repository.
-    /// Non-empty means the repository has no defensible answer for those
-    /// identities, so the caller refuses it rather than picking one.
-    pub conflicts: Vec<RepoConflict>,
-}
-
-/// An identity claimed by several manifests inside one repository. There
-/// is no priority rule that can settle this: the repository states two
-/// different answers to the same question.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RepoConflict {
-    pub kind: RepoItemKind,
-    pub name: String,
-    /// Empty for untagged kinds (launchers).
-    pub tag: String,
-    /// Every claimant's path, sorted.
-    pub paths: Vec<String>,
-}
-
-impl RepoConflict {
-    /// `name:tag` label, or the bare name for untagged kinds.
-    fn display_id(&self) -> String {
-        if self.tag.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}:{}", self.name, self.tag)
-        }
-    }
-}
-
-impl std::fmt::Display for RepoConflict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} {} manifests claim `{}`: {}",
-            self.paths.len(),
-            self.kind,
-            self.display_id(),
-            self.paths.join(", ")
-        )
-    }
-}
-
-/// Every path that claimed a given `(name, tag)` during one repository
-/// walk, in the order the walker met them. Recording all of them (rather
-/// than remembering only that the identity was seen) is what lets a
-/// conflict name both files instead of silently keeping one.
-type ClaimMap = HashMap<(String, String), Vec<String>>;
-
-/// Turns one kind's claim map into the conflicts it holds: every identity
-/// with more than one claimant. Sorted by identity, with sorted paths, so
-/// the report never inherits the filesystem's walk order and stays
-/// comparable between machines.
-fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConflict> {
-    let mut conflicts: Vec<RepoConflict> = claims
-        .into_iter()
-        .filter(|(_, paths)| paths.len() > 1)
-        .map(|((name, tag), mut paths)| {
-            paths.sort();
-            RepoConflict {
-                kind,
-                name,
-                tag,
-                paths,
-            }
-        })
-        .collect();
-    conflicts.sort_by(|a, b| (&a.name, &a.tag).cmp(&(&b.name, &b.tag)));
-    conflicts
-}
-
 /// Appends one repository's walked entries to the running cross-repo
 /// collection, emitting a `Discovered` feedback the first time each
 /// `(name, tag)` identity is seen. Every entry is kept (including
@@ -831,323 +744,6 @@ fn merge_walked<E: RepoCacheEntry>(
 fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
     let set: HashSet<(&str, &str)> = entries.iter().map(|e| (e.name(), e.tag())).collect();
     set.len() as u32
-}
-
-/// Walk a directory looking for `peppy.json5` (node) and any `.json5`
-/// file whose body declares `peppy_schema: "launcher/v1"` (launcher),
-/// collecting discovered nodes and launchers.
-///
-/// Any directory whose path matches one of the `excluded_paths` entries is
-/// pruned from the walk (neither descended into nor scanned for config files).
-///
-/// Each `.json5` file is read once. Files named `peppy.json5` are tried
-/// as nodes first (preserves filename-driven node ergonomics); any
-/// `.json5` whose body declares a `peppy_schema` value is dispatched to
-/// the matching collector.
-///
-/// A given `(name, tag)` (or launcher name) reaches the entry vectors at
-/// most once per walk, but every claimant is recorded: an identity with
-/// several claimants comes back in `conflicts` for the caller to refuse
-/// the repository over. The cross-repo merge, where several repositories
-/// claiming one identity is a supported feature rather than a conflict,
-/// happens in `process_refresh`.
-pub(crate) fn walk_directory(
-    root: &Path,
-    source_type: RepoSourceKind,
-    source_uri: Option<&str>,
-    resolved_ref: Option<&str>,
-    excluded_paths: &[PathBuf],
-) -> WalkResult {
-    // Canonicalize the root so that paths emitted by the walker share a
-    // common prefix representation with the excluded paths (which come from
-    // `ExclusionSet::load` already canonicalized). Without this, macOS
-    // `/var/...` symlinks break subdirectory exclusion: the walker emits
-    // `/var/...` while excluded paths resolve to `/private/var/...`.
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let excluded = excluded_paths.to_vec();
-    let walker = ignore::WalkBuilder::new(&root)
-        .hidden(true)
-        .filter_entry(move |entry| {
-            if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
-                return true;
-            }
-            if entry.depth() == 0 {
-                return true;
-            }
-            let name = entry.file_name().to_string_lossy();
-            if PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned) {
-                return false;
-            }
-            let entry_path = entry.path();
-            !excluded.iter().any(|exc| entry_path.starts_with(exc))
-        })
-        .build();
-
-    let mut nodes_seen = ClaimMap::new();
-    let mut launchers_seen = ClaimMap::new();
-    let mut contracts_seen = ClaimMap::new();
-    let mut pairings_seen = ClaimMap::new();
-    let mut nodes: Vec<NodeCacheEntry> = Vec::new();
-    let mut launchers: Vec<LauncherCacheEntry> = Vec::new();
-    let mut contracts: Vec<ContractCacheEntry> = Vec::new();
-    let mut pairings: Vec<PairingCacheEntry> = Vec::new();
-
-    for entry in walker.flatten() {
-        let file_name = entry.file_name().to_string_lossy();
-        let config_path = entry.path();
-        if !has_json5_extension(config_path) {
-            continue;
-        }
-        let bytes = match std::fs::read(config_path) {
-            Ok(bytes) if !bytes.is_empty() => bytes,
-            Ok(_) => continue,
-            Err(e) => {
-                debug!(
-                    "Skipping unreadable .json5 at {}: {}",
-                    config_path.display(),
-                    e
-                );
-                continue;
-            }
-        };
-        let ctx = EntryContext {
-            root: &root,
-            source_type,
-            source_uri,
-            resolved_ref,
-            config_path,
-            bytes: &bytes,
-        };
-        if file_name == NODE_CONFIG_FILE {
-            // Try node parse first to preserve the documented filename
-            // convention for nodes. If the file's schema doesn't match,
-            // fall through to the launcher/contract dispatch; that
-            // way a non-node `peppy.json5` is still discoverable.
-            if try_collect_node_entry(&ctx, &mut nodes_seen, &mut nodes) {
-                continue;
-            }
-        }
-        let Some(schema) = peek_peppy_schema(&bytes) else {
-            continue;
-        };
-        match schema {
-            PeppySchema::NodeV1 => {
-                // A non-`peppy.json5` file declaring `node/v1` is unusual
-                // but we still parse it strictly: matches the documented
-                // "schema dispatch" rule for any `.json5`.
-                try_collect_node_entry(&ctx, &mut nodes_seen, &mut nodes);
-            }
-            PeppySchema::LauncherV1 => {
-                collect_launcher_entry(&ctx, &mut launchers_seen, &mut launchers);
-            }
-            PeppySchema::ContractV1 => {
-                collect_contract_entry(&ctx, &mut contracts_seen, &mut contracts);
-            }
-            PeppySchema::PairingV1 => {
-                collect_pairing_entry(&ctx, &mut pairings_seen, &mut pairings);
-            }
-            // A repository index describes the repo itself; it declares no
-            // item the cache holds, so the walk skips it.
-            PeppySchema::RepositoryV1 => {}
-        }
-    }
-
-    let mut conflicts = conflicts_from_claims(RepoItemKind::Node, nodes_seen);
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::Launcher,
-        launchers_seen,
-    ));
-    conflicts.extend(conflicts_from_claims(
-        RepoItemKind::Contract,
-        contracts_seen,
-    ));
-    conflicts.extend(conflicts_from_claims(RepoItemKind::Pairing, pairings_seen));
-
-    WalkResult {
-        nodes,
-        launchers,
-        contracts,
-        pairings,
-        conflicts,
-    }
-}
-
-fn has_json5_extension(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext == "json5")
-}
-
-/// Cheap schema sniff over the raw bytes. Returns `None` when the file
-/// either doesn't declare a `peppy_schema` field or declares one we
-/// don't know about; the caller treats both as "skip silently".
-fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
-    #[derive(Deserialize)]
-    struct SchemaPeek {
-        peppy_schema: PeppySchema,
-    }
-    let content = std::str::from_utf8(bytes).ok()?;
-    serde_json5::from_str::<SchemaPeek>(content)
-        .ok()
-        .map(|p| p.peppy_schema)
-}
-
-/// Shared body of the four collectors: UTF-8 check, strict parse via
-/// `identity`, claim recording, then entry construction through
-/// [`RepoCacheEntry::from_discovered`]. The strict parse catches
-/// structural problems (unknown fields, malformed sections) that the
-/// cheap schema peek can't.
-///
-/// `identity` returns the document's `(name, tag)` — `Ok(None)` to skip
-/// the file silently (wrong schema variant, unusable file stem), or
-/// `Err` when the content does not parse as `E`'s document kind at all.
-/// `parse_failure_label` words that last case: a `peppy.json5` failing
-/// the node parse is usually a different document kind rather than a
-/// malformed node, so the node collector logs "non-node".
-///
-/// Every claimant is recorded in `claims`, including the second and
-/// later ones that are not pushed to `out`; the caller turns identities
-/// with several claimants into [`RepoConflict`]s and refuses the whole
-/// repository. Which claimant reaches `out` is walk-order dependent and
-/// deliberately not relied upon.
-///
-/// Returns `false` only on parse failure, so the node collector can
-/// fall back to schema dispatch; repeat claimants return `true` because
-/// the file is a valid document of the kind.
-fn collect_repo_entry<E: RepoCacheEntry>(
-    ctx: &EntryContext<'_>,
-    parse_failure_label: &str,
-    claims: &mut ClaimMap,
-    out: &mut Vec<E>,
-    identity: impl FnOnce(&str) -> std::result::Result<Option<(String, String)>, String>,
-) -> bool {
-    let content = match std::str::from_utf8(ctx.bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!(
-                "Skipping non-utf8 {} .json5 at {}: {}",
-                E::KIND,
-                ctx.config_path.display(),
-                e
-            );
-            return false;
-        }
-    };
-    let (name, tag) = match identity(content) {
-        Ok(Some(identity)) => identity,
-        Ok(None) => return true,
-        Err(e) => {
-            debug!(
-                "Skipping {} .json5 at {}: {}",
-                parse_failure_label,
-                ctx.config_path.display(),
-                e
-            );
-            return false;
-        }
-    };
-
-    let path = relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type);
-    let claimants = claims.entry((name.clone(), tag.clone())).or_default();
-    claimants.push(path.clone());
-    if claimants.len() > 1 {
-        return true;
-    }
-
-    out.push(E::from_discovered(DiscoveredEntry {
-        name,
-        tag,
-        sha256: fingerprint_for_bytes(ctx.bytes),
-        path,
-        source_type: ctx.source_type,
-        source_uri: ctx.source_uri.map(str::to_owned),
-        resolved_ref: ctx.resolved_ref.map(str::to_owned),
-    }));
-    true
-}
-
-/// Returns `true` when the file parsed cleanly as a node and its claim
-/// was recorded. `false` means parsing failed; the caller can fall back
-/// to a different schema dispatch.
-fn try_collect_node_entry(
-    ctx: &EntryContext<'_>,
-    claims: &mut ClaimMap,
-    nodes: &mut Vec<NodeCacheEntry>,
-) -> bool {
-    collect_repo_entry(ctx, "non-node", claims, nodes, |content| {
-        let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
-        Ok(Some((
-            parsed.manifest.name.as_str().to_string(),
-            parsed.manifest.tag.clone(),
-        )))
-    })
-}
-
-fn collect_launcher_entry(
-    ctx: &EntryContext<'_>,
-    claims: &mut ClaimMap,
-    launchers: &mut Vec<LauncherCacheEntry>,
-) {
-    collect_repo_entry(ctx, "malformed launcher", claims, launchers, |content| {
-        let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
-        if parsed.peppy_schema != PeppySchema::LauncherV1 {
-            return Ok(None);
-        }
-        // Launcher name = basename without `.json5` (launcher documents
-        // carry no manifest name). This matches `resolve_launcher_path`,
-        // which appends `.json5` to a bare name when looking up a
-        // launcher file.
-        Ok(ctx
-            .config_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|stem| !stem.is_empty())
-            .map(|stem| (stem.to_string(), String::new())))
-    });
-}
-
-fn collect_contract_entry(
-    ctx: &EntryContext<'_>,
-    claims: &mut ClaimMap,
-    contracts: &mut Vec<ContractCacheEntry>,
-) {
-    collect_repo_entry(ctx, "malformed contract", claims, contracts, |content| {
-        let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
-        Ok(Some((
-            parsed.manifest.name.as_str().to_string(),
-            parsed.manifest.tag.clone(),
-        )))
-    });
-}
-
-fn collect_pairing_entry(
-    ctx: &EntryContext<'_>,
-    claims: &mut ClaimMap,
-    pairings: &mut Vec<PairingCacheEntry>,
-) {
-    collect_repo_entry(ctx, "malformed pairing", claims, pairings, |content| {
-        let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
-        Ok(Some((
-            parsed.manifest.name.as_str().to_string(),
-            parsed.manifest.tag.clone(),
-        )))
-    });
-}
-
-/// Returns the path of the manifest file itself (not its parent
-/// directory). For git repos the result is relative to the repo root;
-/// for fs repos it is the absolute path.
-fn relative_or_absolute_file_path(
-    root: &Path,
-    config_path: &Path,
-    source_type: RepoSourceKind,
-) -> String {
-    if source_type == RepoSourceKind::Git {
-        config_path
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    } else {
-        config_path.to_string_lossy().into_owned()
-    }
 }
 
 /// Shallow-clone a git repository into `dst` and check out `repo_ref` if set,
@@ -1200,7 +796,7 @@ fn clone_and_walk_git_repo(
     repo_ref: Option<&str>,
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> std::result::Result<WalkResult, String> {
+) -> std::result::Result<ReadRepo, String> {
     let tmp_dir = peppy_dirs.tmp_dir();
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
     let tmp =
@@ -1209,19 +805,22 @@ fn clone_and_walk_git_repo(
     let repo = clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback)?;
     let resolved_ref = resolve_ref_for_cache(&repo, repo_ref);
 
-    Ok(walk_directory(
-        tmp.path(),
-        RepoSourceKind::Git,
-        Some(repo_url),
-        Some(&resolved_ref),
-        &[],
-    ))
+    // A git repository is read whole: subtree exclusions are expressed as
+    // filesystem paths and have no meaning against a temporary clone.
+    Ok(ReadRepo {
+        walked: walk_directory(tmp.path(), &[]),
+        source_type: RepoSourceKind::Git,
+        source_uri: Some(repo_url.to_owned()),
+        resolved_ref: Some(resolved_ref),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::repo::cache::repositories_list_path;
+    use config::consts::NODE_CONFIG_FILE;
+    use config::fingerprint::fingerprint_for_bytes;
 
     /// A fixed instant for every refresh under test, so nothing depends
     /// on the host clock or on how fast the test runs.
@@ -1740,10 +1339,14 @@ mod tests {
             refreshed.failures[0].retained, 1,
             "only `from_two` is retained, not `from_one`"
         );
+        // Node paths are stored canonicalized, so compare against the
+        // canonical form of the repo root (on macOS the tempdir `two` is a
+        // `/var` symlink to `/private/var`).
+        let two_root = std::fs::canonicalize(&two).unwrap();
         let retained: Vec<&str> = refreshed
             .nodes
             .iter()
-            .filter(|n| n.path.starts_with(two.to_string_lossy().as_ref()))
+            .filter(|n| n.path.starts_with(two_root.to_string_lossy().as_ref()))
             .map(|n| n.node_name.as_str())
             .collect();
         assert_eq!(retained, vec!["from_two"]);
@@ -2151,169 +1754,6 @@ mod tests {
             "first listed repo should win the feedback: {}",
             discovered_paths[0]
         );
-    }
-
-    /// `walk_directory` dispatches `.json5` files by `peppy_schema`:
-    /// a node manifest, a launcher, and a contract coexisting in the
-    /// same repository each land in the matching collector.
-    #[test]
-    fn walk_directory_dispatches_by_schema() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("mixed");
-        write_peppy_json5(&repo.join("nodes/my_sensor"), "my_sensor", "v1");
-        write_launcher_json5(&repo.join("teleop.json5"));
-        write_contract_json5(
-            &repo.join("interfaces/uvc_camera.json5"),
-            "uvc_camera",
-            "v1",
-        );
-
-        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
-        assert_eq!(walked.nodes.len(), 1, "one node");
-        assert_eq!(walked.nodes[0].node_name, "my_sensor");
-        assert_eq!(walked.launchers.len(), 1, "one launcher");
-        assert_eq!(walked.launchers[0].launcher_name, "teleop");
-        assert_eq!(walked.contracts.len(), 1, "one contract");
-        assert_eq!(walked.contracts[0].contract_name, "uvc_camera");
-        assert!(walked.conflicts.is_empty(), "nothing claimed twice");
-    }
-
-    /// Helper: write a minimal valid pairing manifest at `path`.
-    fn write_pairing_json5(path: &Path, name: &str, tag: &str) {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(
-            path,
-            format!(
-                r#"{{
-  peppy_schema: "pairing/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
-  roles: ["leader", "follower"],
-  topics: [
-    {{ emitted_by: "leader", name: "setpoints" }},
-    {{ emitted_by: "follower", name: "states" }}
-  ]
-}}"#
-            ),
-        )
-        .unwrap();
-    }
-
-    /// The motivating case: one repository declaring one node identity
-    /// twice. Both claimants are named, so the report points at the two
-    /// files to look at rather than silently keeping whichever the
-    /// filesystem happened to yield first.
-    #[test]
-    fn walk_directory_reports_node_claimed_twice() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("nodes-hub");
-        write_peppy_json5(&repo.join("uvc_recon/rust"), "uvc_recon", "v1");
-        write_peppy_json5(&repo.join("uvc_recon/python"), "uvc_recon", "v1");
-
-        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
-
-        assert_eq!(walked.conflicts.len(), 1, "one contested identity");
-        let conflict = &walked.conflicts[0];
-        assert_eq!(conflict.kind, RepoItemKind::Node);
-        assert_eq!(conflict.name, "uvc_recon");
-        assert_eq!(conflict.tag, "v1");
-        assert_eq!(conflict.paths.len(), 2, "both claimants named");
-        assert!(
-            conflict.paths.iter().any(|p| p.contains("rust")),
-            "got: {:?}",
-            conflict.paths
-        );
-        assert!(
-            conflict.paths.iter().any(|p| p.contains("python")),
-            "got: {:?}",
-            conflict.paths
-        );
-        // Only one claimant reaches the entry vector; which one is walk
-        // order and deliberately not asserted.
-        assert_eq!(walked.nodes.len(), 1);
-    }
-
-    /// Launchers are keyed by file stem, so two identically named
-    /// launcher files in one repository contest the same identity even
-    /// though they live in different directories.
-    #[test]
-    fn walk_directory_reports_launcher_stem_claimed_twice() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("launchers-hub");
-        write_launcher_json5(&repo.join("sim/bringup.json5"));
-        write_launcher_json5(&repo.join("real/bringup.json5"));
-
-        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
-
-        assert_eq!(walked.conflicts.len(), 1);
-        assert_eq!(walked.conflicts[0].kind, RepoItemKind::Launcher);
-        assert_eq!(walked.conflicts[0].name, "bringup");
-        assert_eq!(walked.conflicts[0].tag, "", "launchers carry no tag");
-        assert_eq!(walked.conflicts[0].paths.len(), 2);
-    }
-
-    /// Contracts and pairings are contested the same way as nodes, so a
-    /// duplicate in either is caught rather than silently resolved.
-    #[test]
-    fn walk_directory_reports_contract_and_pairing_claimed_twice() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("contracts-hub");
-        write_contract_json5(&repo.join("a/rgb.json5"), "rgb_camera", "v1");
-        write_contract_json5(&repo.join("b/rgb.json5"), "rgb_camera", "v1");
-        write_pairing_json5(&repo.join("a/joint.json5"), "joint_link", "v1");
-        write_pairing_json5(&repo.join("b/joint.json5"), "joint_link", "v1");
-
-        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
-
-        let kinds: Vec<RepoItemKind> = walked.conflicts.iter().map(|c| c.kind).collect();
-        assert_eq!(
-            kinds,
-            vec![RepoItemKind::Contract, RepoItemKind::Pairing],
-            "one conflict per kind, grouped by kind"
-        );
-        assert_eq!(walked.conflicts[0].name, "rgb_camera");
-        assert_eq!(walked.conflicts[1].name, "joint_link");
-    }
-
-    /// The report is ordered by identity with sorted paths, so it is
-    /// reproducible in a test and comparable between two machines whose
-    /// filesystems hand back directories in different orders.
-    #[test]
-    fn walk_directory_conflicts_are_ordered_independently_of_walk_order() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
-        for dir in ["zzz", "aaa", "mmm"] {
-            write_peppy_json5(&repo.join(dir), "beta", "v1");
-        }
-        write_peppy_json5(&repo.join("one"), "alpha", "v1");
-        write_peppy_json5(&repo.join("two"), "alpha", "v1");
-
-        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
-
-        let names: Vec<&str> = walked.conflicts.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "beta"], "sorted by identity");
-
-        let beta_paths = &walked.conflicts[1].paths;
-        assert_eq!(beta_paths.len(), 3, "every claimant is named, not just two");
-        let mut sorted = beta_paths.clone();
-        sorted.sort();
-        assert_eq!(beta_paths, &sorted, "paths sorted");
-    }
-
-    /// Same name under different tags is two identities, not a conflict.
-    /// This is the guard against the check firing on ordinary versioning.
-    #[test]
-    fn walk_directory_same_name_different_tags_is_not_a_conflict() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("v1"), "my_sensor", "v1");
-        write_peppy_json5(&repo.join("v2"), "my_sensor", "v2");
-
-        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
-
-        assert!(walked.conflicts.is_empty(), "{:?}", walked.conflicts);
-        assert_eq!(walked.nodes.len(), 2);
     }
 
     /// Process_refresh discovers launcher files (any `.json5` filename

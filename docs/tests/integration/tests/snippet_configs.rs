@@ -97,10 +97,15 @@ fn assert_parses_with_matching_schema(path: &Path) {
                 result.unwrap_err()
             );
         }
-        PeppySchema::RepositoryV1 => panic!(
-            "{} declares repository/v1, which the docs snippets do not cover",
-            path.display()
-        ),
+        PeppySchema::RepositoryV1 => {
+            let result = daemon_config::repository::PeppyRepositoryIndexParser::from_path(path);
+            assert!(
+                result.is_ok(),
+                "failed to parse repository index {}: {:?}",
+                path.display(),
+                result.unwrap_err()
+            );
+        }
     }
 }
 

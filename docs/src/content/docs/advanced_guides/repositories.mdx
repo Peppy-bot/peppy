@@ -182,6 +182,87 @@ peppy repo exclude https://github.com/org/repo.git
 peppy repo exclude /home/user/projects/private-nodes
 ```
 
+## The repository index
+
+A repository index is a `peppy_repository.json5` at the root of the tree Peppy scans, stating what
+the repository publishes and where each item is declared. [`peppy repo index`](#index-a-repository)
+writes it and `--check` verifies it against the tree, and it is committed alongside the items it
+lists, so a contested identity is caught on the branch that created it rather than on every machine
+that later refreshes.
+
+The nesting is the uniqueness rule: name, then tag, then the file that declares the item. A second
+claim on one identity has nowhere to go except a key that is already taken, so a repository cannot
+state two answers to the same question.
+
+```json5
+// peppy_repository.json5, at the root of the tree Peppy scans
+{
+  peppy_schema: "repository/v1",
+
+  nodes: {
+    uvc_camera: {
+      v1: { path: "uvc_camera/rust/peppy.json5" },
+      v2: { path: "uvc_camera/python/peppy.json5" },
+    },
+  },
+  contracts: { rgb_camera: { v1: { path: "cameras/rgb_camera.json5" } } },
+  pairings: { joint_link: { v1: { path: "robot/joint_link.json5" } } },
+
+  // One level deep: a launcher is identified by its file stem and carries no tag.
+  launchers: { openarm_v1_teleop: { path: "openarm/openarm_v1_teleop.json5" } },
+}
+```
+
+Rules worth knowing before you hand-edit one:
+
+- **`path` names the declaring file, not a directory.** One rule across all four kinds, since only
+  nodes are directory-shaped.
+- **A repeated key is an error**, not a last-one-wins overwrite. The message names the identity and
+  both files.
+- **Paths stay inside the repository.** Absolute paths, `..`, `.`, repeated separators, backslashes
+  and trailing separators are all refused, as is a path that reaches its target through a symlink
+  out of the tree.
+- **Only the mapping belongs here.** Nothing is copied out of an item's own manifest, because a copy
+  would drift from the thing it copied.
+- **Unknown fields and unknown versions are refused** rather than ignored, so an index Peppy does not
+  fully understand is rejected outright instead of silently losing part of itself.
+- **An empty index is valid; a missing one is not.** A repository that publishes nothing has an index
+  with no sections, and `--check` fails on a repository that carries no index at all. "Publishes
+  nothing" and "has no index" are different situations and get different answers.
+- **The file is generated.** Comments survive `--check`, but the next `peppy repo index` run
+  discards them.
+
+### Index a repository
+
+```sh
+peppy repo index [PATH]           # write PATH/peppy_repository.json5 (PATH defaults to .)
+peppy repo index [PATH] --check   # verify the committed index instead of writing it
+```
+
+Neither form needs a running daemon, so both work in CI and on a branch before anything is merged.
+
+Writing walks the repository and records what it finds. If one identity is claimed twice, generation
+refuses and names both files:
+
+```
+two manifests claim `uvc_camera_video_reconstruction:v1`:
+  uvc_camera_video_reconstruction/python/peppy.json5,
+  uvc_camera_video_reconstruction/rust/peppy.json5
+```
+
+`--check` verifies three things against the repository, and reports everything it finds at once:
+
+- every item in the tree is listed (the mistake people actually make is adding an item and
+  forgetting the index, which would otherwise leave it silently invisible);
+- every listed path is a real file inside the repository;
+- every listed path declares exactly the kind and identity it is filed under.
+
+Run it on every pull request to a repository others consume. Catching a contested identity on the
+branch of the person who caused it is the entire point: the alternative is every machine in the
+fleet reporting it the next morning, none of which can fix it.
+
+The remedy for any failure is the same: re-run `peppy repo index` and commit the result.
+
 ## Using a repository-indexed node
 
 Once a node appears in `peppy repo list`, you can add it by its `name:tag` without supplying a path or URL; Peppy resolves the source through the cached index at `~/.peppy/cache/nodes.json5`:
@@ -256,11 +337,17 @@ peppy repo refresh
 peppy node sync -r       # picks up uvc_camera, lidar_sensor, ... from ~/code/my-nodes
 ```
 
+Re-run `peppy repo refresh` after adding, moving, or renaming a node in that directory: `repo list`
+and `node sync -r` both read the cache, not the filesystem. If you also publish that directory to
+others, keep its index current with `peppy repo index ~/code/my-nodes`, the same as for any
+repository others consume.
+
 Particularly useful during the early phase of a multi-node project, when the dependency graph is still in flux and you don't want to re-add nodes after every interface change.
 
 ## Directory pruning
 
-When scanning local and git repositories, Peppy automatically skips the following directories:
+When scanning a repository, whether to refresh its cache or to write its index with
+`peppy repo index`, Peppy skips the following directories:
 
 - `.git`
 - `.peppy`
@@ -268,3 +355,7 @@ When scanning local and git repositories, Peppy automatically skips the followin
 - `node_modules`
 - `.venv`
 - `__pycache__`
+
+A repository's own `.gitignore` and `.ignore` files are honoured too. Machine-local git settings are
+not: a global gitignore or a clone's `.git/info/exclude` would otherwise let one contributor's setup
+change the index they generate and commit.
