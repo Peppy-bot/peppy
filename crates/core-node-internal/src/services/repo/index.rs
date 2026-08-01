@@ -1,33 +1,34 @@
 //! Discovering what a repository publishes, and recording it in the
 //! repository's own index.
 //!
-//! The walk here serves both readers of a repository. `peppy repo index`
-//! runs it to produce the repository's `peppy_repository.json5`, which
-//! states the identities the repository publishes and where each is
-//! declared, and `refresh.rs` runs it to build a machine's caches, so what
-//! a repository commits and what a machine caches come from one description
-//! of the tree.
+//! Two directions, and they meet at the index. `peppy repo index` walks a
+//! repository to produce its `peppy_repository.json5`, which states the
+//! identities the repository publishes and where each is declared, and
+//! [`read_published_items`] reads that statement back to build a machine's
+//! caches. The walk is how a repository author states what is there; the
+//! index is what every reader agrees on.
 //!
 //! A given identity reaches [`WalkResult::items`] at most once per walk, but
 //! every claimant is recorded: an identity with several claimants comes back
-//! in [`WalkResult::conflicts`] so the caller refuses rather than silently
+//! in [`WalkResult::conflicts`] so generation refuses rather than silently
 //! promoting one of two answers. The cross-repository merge, where several
 //! repositories claiming one identity is a supported feature rather than a
 //! conflict, happens in `refresh.rs`.
 
 use crate::services::repo::cache::{
-    ContractCacheEntry, DiscoveredEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
-    RepoCacheEntry, RepoItems,
+    ContractCacheEntry, EntryOrigin, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
+    RepoItems,
 };
-use config::fingerprint::fingerprint_for_bytes;
+use crate::services::repo::refresh::RepoFailureKind;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
-use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
+use core_node_api::encoding::RepoItemKind;
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::launcher::PeppyLauncherParser;
 use daemon_config::pairing::PeppyPairingParser;
 use daemon_config::repository::{
-    DeclaredItem, ItemName, ItemTag, PeppyRepositoryIndexParser, RepoRelativePath, RepositoryIndex,
+    DeclaredItem, GitCommit, ItemName, ItemTag, ManifestFingerprint, PeppyRepositoryIndexParser,
+    RepoRelativePath, RepositoryIndex,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -45,13 +46,14 @@ pub(crate) const PRUNED_DIR_NAMES: &[&str] = &[
     "__pycache__",
 ];
 
-/// One item found in a repository: the identity it declares and where it is
-/// declared, plus the fingerprint of the bytes that declared it.
+/// One item found by walking a repository: the identity it declares and
+/// where it is declared.
 ///
-/// This is the seam between finding items and caching them. Both the walk
-/// and the index reader produce these, and [`build_cache_entries`] is the
-/// single place that turns them into cache entries, so the two ways of
-/// learning what a repository holds cannot drift in what they record.
+/// The input to index generation, and only that: what a machine caches is
+/// built from what the repository's committed index declares, not from one
+/// machine's reading of the tree. The fields are exactly what an index
+/// entry states, so a walk cannot record provenance the index has no way
+/// to publish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WalkedItem {
     pub kind: RepoItemKind,
@@ -60,9 +62,6 @@ pub(crate) struct WalkedItem {
     pub tag: String,
     /// Relative to the root of the scanned tree.
     pub relative_path: String,
-    /// The same file, absolute on this machine.
-    pub absolute_path: PathBuf,
-    pub sha256: String,
 }
 
 /// Items found by walking one repository's working tree.
@@ -146,51 +145,198 @@ fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConfli
     conflicts
 }
 
-/// Turns found items into the four cache-entry vectors, attributing each to
-/// the source it came from.
+/// One item a repository publishes, resolved against the tree it was read
+/// from: the identity the index states, the fingerprint of the bytes that
+/// declare it, and where those bytes live.
+#[derive(Debug)]
+pub(crate) struct PublishedItem {
+    pub kind: RepoItemKind,
+    pub name: ItemName,
+    /// `None` for a launcher, the only kind without a tag.
+    pub tag: Option<ItemTag>,
+    pub sha256: ManifestFingerprint,
+    pub origin: EntryOrigin,
+}
+
+/// Where the tree being read came from, which is all that separates reading
+/// a repository checked out on this machine from reading a clone of a
+/// remote.
 ///
-/// Git entries record a repository-relative path because the checkout they
-/// resolve against is materialized per machine; fs entries record the
-/// absolute path, which is also what `entry_belongs_to_repo` matches a
-/// configured repository path against.
-pub(crate) fn build_cache_entries(
-    items: Vec<WalkedItem>,
-    source_type: RepoSourceKind,
-    source_uri: Option<&str>,
-    resolved_ref: Option<&str>,
-) -> RepoItems {
-    let mut built = RepoItems::default();
-    for item in items {
-        let path = if source_type == RepoSourceKind::Git {
-            item.relative_path
-        } else {
-            item.absolute_path.to_string_lossy().into_owned()
-        };
-        let discovered = DiscoveredEntry {
-            name: item.name,
-            tag: item.tag,
-            sha256: item.sha256,
-            path,
-            source_type,
-            source_uri: source_uri.map(str::to_owned),
-            resolved_ref: resolved_ref.map(str::to_owned),
-        };
-        match item.kind {
-            RepoItemKind::Node => built
-                .nodes
-                .push(NodeCacheEntry::from_discovered(discovered)),
-            RepoItemKind::Launcher => built
-                .launchers
-                .push(LauncherCacheEntry::from_discovered(discovered)),
-            RepoItemKind::Contract => built
-                .contracts
-                .push(ContractCacheEntry::from_discovered(discovered)),
-            RepoItemKind::Pairing => built
-                .pairings
-                .push(PairingCacheEntry::from_discovered(discovered)),
+/// Held as data rather than passed as a closure that builds origins, so the
+/// canonical root never leaves [`read_published_items`]: an fs origin is
+/// absolute and canonical by construction instead of by every caller
+/// remembering to resolve the root and join it back on.
+pub(crate) enum ReadSource {
+    /// A tree on this machine, read where it lies.
+    Fs {
+        /// Subtrees this machine will not answer for. A repository states
+        /// one location per identity, so excluding part of the tree is a
+        /// question about which of those locations to serve, and it is
+        /// asked of the location the index declares rather than of a
+        /// traversal.
+        excluded: Vec<PathBuf>,
+    },
+    /// A clone of a remote, read at one commit.
+    Git {
+        repo_url: String,
+        /// The ref the repository is configured to follow, absent when it
+        /// follows whatever the remote's default branch is.
+        repo_ref: Option<String>,
+        commit: GitCommit,
+    },
+}
+
+impl ReadSource {
+    /// The origin the caches record for an item declared at `path`, under a
+    /// `root` that has already been canonicalized.
+    fn origin_of(&self, root: &Path, path: &RepoRelativePath) -> EntryOrigin {
+        match self {
+            ReadSource::Fs { .. } => EntryOrigin::Fs {
+                path: root.join(path.as_path()),
+            },
+            ReadSource::Git {
+                repo_url,
+                repo_ref,
+                commit,
+            } => EntryOrigin::Git {
+                repo_url: repo_url.clone(),
+                repo_ref: repo_ref.clone(),
+                commit: commit.clone(),
+                path: path.clone(),
+            },
         }
     }
-    built
+
+    /// Whether this machine answers for the item declared at `origin`.
+    ///
+    /// Only a tree on this machine can have parts of it held back: a git
+    /// origin names a path inside somebody else's repository, which this
+    /// machine has no subtree opinion about.
+    fn serves(&self, origin: &EntryOrigin) -> bool {
+        match (self, origin) {
+            (ReadSource::Fs { excluded }, EntryOrigin::Fs { path }) => {
+                !excluded.iter().any(|subtree| path.starts_with(subtree))
+            }
+            _ => true,
+        }
+    }
+}
+
+/// Reads what the repository at `root` publishes, and resolves every item
+/// it declares against the tree.
+///
+/// The index is the only input. A repository states its own contents, so
+/// every machine reading a given revision of it agrees on what is there and
+/// where; a directory walk would instead produce one machine's reading of
+/// the tree and present it as the repository's statement.
+///
+/// `source` is the one thing that differs between reading a checkout on
+/// this machine and reading a clone of a remote; the origin each item
+/// records is built from it here, against the root this function already
+/// canonicalized.
+///
+/// Every declared item is resolved before anything is returned, so a
+/// repository with three broken entries reports three rather than the first.
+pub(crate) fn read_published_items(
+    root: &Path,
+    source: &ReadSource,
+) -> std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)> {
+    let unreachable = |detail: String| (RepoFailureKind::Unreachable, detail);
+    let contradictory = |detail: String| (RepoFailureKind::Conflict, detail);
+
+    let root = std::fs::canonicalize(root)
+        .map_err(|e| unreachable(format!("{} cannot be read: {e}", root.display())))?;
+    let index_file = daemon_config::consts::REPOSITORY_INDEX_FILE;
+    if !root.join(index_file).exists() {
+        // Nothing was read, rather than something read wrong: the
+        // repository states nothing about what it holds.
+        return Err(unreachable(format!(
+            "{index_file} is missing from the repository root. A repository publishes what it \
+             holds by committing that file; run `peppy repo index` in the repository and commit \
+             the result"
+        )));
+    }
+
+    let index = read_repository_index(&root).map_err(|e| contradictory(e.to_string()))?;
+    let mut items = Vec::new();
+    let mut problems = Vec::new();
+    for item in index.declared_items() {
+        // Asked before the file is opened: an item this machine does not
+        // answer for is not read, not fingerprinted, and not reported on,
+        // which is the whole point of naming a subtree it should stay out
+        // of.
+        let origin = source.origin_of(&root, item.path);
+        if !source.serves(&origin) {
+            continue;
+        }
+        match resolve_declared_item(&root, &item) {
+            Ok(bytes) => items.push(PublishedItem {
+                kind: item.kind,
+                name: item.name.clone(),
+                tag: item.tag.cloned(),
+                sha256: ManifestFingerprint::of_bytes(&bytes),
+                origin,
+            }),
+            Err(detail) => problems.push(format!("{item} points at {}, which {detail}", item.path)),
+        }
+    }
+
+    if problems.is_empty() {
+        return Ok(items);
+    }
+    Err(contradictory(problems.join("; ")))
+}
+
+/// Turns published items into the four cache-entry vectors.
+///
+/// The one place an identity crosses from what a repository declares into
+/// what a machine caches, so the two cannot disagree about which field
+/// holds what.
+pub(crate) fn build_cache_entries(
+    items: Vec<PublishedItem>,
+) -> std::result::Result<RepoItems, String> {
+    let mut built = RepoItems::default();
+    for item in items {
+        // A tag is present for exactly the three tagged kinds, because the
+        // index nests those under one and launchers one level less deep.
+        // Spelling the mismatch out keeps the conversion total rather than
+        // resting the invariant on a panic.
+        let tagged = |item: &PublishedItem| -> std::result::Result<ItemTag, String> {
+            item.tag
+                .clone()
+                .ok_or_else(|| format!("{} `{}` is indexed without a tag", item.kind, item.name))
+        };
+        match item.kind {
+            RepoItemKind::Node => built.nodes.push(NodeCacheEntry {
+                node_name: item.name.clone(),
+                node_tag: tagged(&item)?,
+                sha256: item.sha256,
+                origin: item.origin,
+                repo_id: 0,
+            }),
+            RepoItemKind::Launcher => built.launchers.push(LauncherCacheEntry {
+                launcher_name: item.name,
+                sha256: item.sha256,
+                origin: item.origin,
+                repo_id: 0,
+            }),
+            RepoItemKind::Contract => built.contracts.push(ContractCacheEntry {
+                contract_name: item.name.clone(),
+                tag: tagged(&item)?,
+                sha256: item.sha256,
+                origin: item.origin,
+                repo_id: 0,
+            }),
+            RepoItemKind::Pairing => built.pairings.push(PairingCacheEntry {
+                pairing_name: item.name.clone(),
+                tag: tagged(&item)?,
+                sha256: item.sha256,
+                origin: item.origin,
+                repo_id: 0,
+            }),
+        }
+    }
+    Ok(built)
 }
 
 /// Why a repository's index could not be produced, read, or trusted.
@@ -310,6 +456,18 @@ fn declare_walked_item(
     };
     let path = RepoRelativePath::parse(&item.relative_path).map_err(|e| e.to_string())?;
     index.declare(item.kind, name, tag, path)
+}
+
+/// Publishes what `root` holds: generates its index and writes it, returning
+/// the index so a caller can report what it declared.
+///
+/// The pair is what "publishing a repository" means, and every caller wants
+/// both halves, so the pair is named once rather than spelled out at each
+/// site with its own wording for the same two steps.
+pub fn publish_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError> {
+    let index = generate_repository_index(root)?;
+    write_repository_index(root, &index)?;
+    Ok(index)
 }
 
 /// Writes `index` to `root`, replacing any existing one.
@@ -713,8 +871,6 @@ fn collect_item(
         name,
         tag,
         relative_path,
-        absolute_path: ctx.config_path.to_path_buf(),
-        sha256: fingerprint_for_bytes(ctx.bytes),
     });
 }
 
@@ -722,6 +878,7 @@ fn collect_item(
 mod tests {
     use super::*;
     use config::consts::NODE_CONFIG_FILE;
+    use config::fingerprint::fingerprint_for_bytes;
 
     /// Helper: write a minimal valid node manifest under `dir`.
     fn write_node_json5(dir: &Path, name: &str, tag: &str) {
@@ -845,11 +1002,6 @@ mod tests {
 
         let item = &walked.items[0];
         assert_eq!(item.relative_path, "nodes/my_sensor/peppy.json5");
-        assert!(item.absolute_path.ends_with("nodes/my_sensor/peppy.json5"));
-        assert!(
-            !item.sha256.is_empty(),
-            "the manifest bytes are fingerprinted"
-        );
     }
 
     /// The repository's own index declares no item. It is the output of
@@ -997,35 +1149,118 @@ mod tests {
         let walked = walk_directory(&repo, &[]);
 
         assert!(walked.conflicts.is_empty(), "{:?}", walked.conflicts);
-        assert_eq!(
-            found(&walked, RepoItemKind::Node),
-            vec!["my_sensor:v1", "my_sensor:v2"]
-        );
+        let mut identities = found(&walked, RepoItemKind::Node);
+        identities.sort();
+        assert_eq!(identities, vec!["my_sensor:v1", "my_sensor:v2"]);
     }
 
-    /// A git repository's entries carry the repository-relative path,
-    /// because the checkout they resolve against is materialized per
-    /// machine; an fs repository's entries carry the absolute path,
-    /// which is what repository attribution matches against.
+    /// Reading a repository yields the identity the index states, the
+    /// fingerprint of the bytes that declare it, and where those bytes are.
+    /// A git origin carries the commit, which is the whole point: it is
+    /// what lets another machine read the same tree.
     #[test]
-    fn build_cache_entries_picks_the_path_form_the_source_needs() {
+    fn read_published_items_records_the_identity_and_where_it_lives() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("nodes/a"), "a", "v1");
-        let items = walk_directory(&repo, &[]).items;
+        let index = generate_repository_index(&repo).expect("index the repository");
+        write_repository_index(&repo, &index).expect("write the index");
 
-        let git = build_cache_entries(
-            items.clone(),
-            RepoSourceKind::Git,
-            Some("https://example.invalid/hub"),
-            Some("main"),
+        let commit = daemon_config::repository::GitCommit::parse(&"a".repeat(40)).unwrap();
+        let git = read_published_items(
+            &repo,
+            &ReadSource::Git {
+                repo_url: "https://example.invalid/hub".to_owned(),
+                repo_ref: Some("main".to_owned()),
+                commit: commit.clone(),
+            },
+        )
+        .expect("read the published items");
+        let entries = build_cache_entries(git).expect("build cache entries");
+        assert_eq!(entries.nodes.len(), 1);
+        assert_eq!(entries.nodes[0].origin.path_str(), "nodes/a/peppy.json5");
+        assert_eq!(entries.nodes[0].origin.commit(), Some(&commit));
+
+        let manifest = repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE);
+        assert_eq!(
+            entries.nodes[0].sha256,
+            daemon_config::repository::ManifestFingerprint::of_bytes(
+                &std::fs::read(&manifest).unwrap()
+            ),
+            "the fingerprint is of the bytes that declare the node"
         );
-        assert_eq!(git.nodes[0].path, "nodes/a/peppy.json5");
-        assert_eq!(git.nodes[0].resolved_ref.as_deref(), Some("main"));
 
-        let fs = build_cache_entries(items, RepoSourceKind::Fs, None, None);
-        assert!(Path::new(&fs.nodes[0].path).is_absolute());
-        assert_eq!(fs.nodes[0].source_uri, None);
+        let fs = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect("read the published items");
+        let entries = build_cache_entries(fs).expect("build cache entries");
+        let path = Path::new(entries.nodes[0].origin.path_str());
+        assert!(path.is_absolute());
+        assert!(
+            path.starts_with(std::fs::canonicalize(&repo).unwrap()),
+            "an fs origin is joined onto the canonical root, so attribution \
+             and exclusion can compare it against one"
+        );
+    }
+
+    /// A repository with no index publishes nothing, and the refusal names
+    /// the file and how to produce it. There is no walk to fall back to:
+    /// what a machine caches is what the repository stated, or nothing.
+    #[test]
+    fn read_published_items_refuses_a_repository_with_no_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        write_node_json5(&repo.join("nodes/a"), "a", "v1");
+
+        let (kind, detail) = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect_err("an unpublished repository contributes nothing");
+        assert_eq!(
+            kind,
+            RepoFailureKind::Unreachable,
+            "nothing was read, which is not the same as reading something wrong"
+        );
+        assert!(
+            detail.contains(daemon_config::consts::REPOSITORY_INDEX_FILE),
+            "got: {detail}"
+        );
+        assert!(detail.contains("peppy repo index"), "got: {detail}");
+    }
+
+    /// An index entry naming a file that is not there names the item and
+    /// the path, rather than dropping it and leaving the identity to
+    /// resolve as "not found" somewhere much later.
+    #[test]
+    fn read_published_items_names_an_entry_whose_file_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        write_node_json5(&repo.join("nodes/a"), "a", "v1");
+        let index = generate_repository_index(&repo).expect("index the repository");
+        write_repository_index(&repo, &index).expect("write the index");
+        std::fs::remove_file(repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE)).unwrap();
+
+        let (kind, detail) = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect_err("a listed path that is not there is a refusal");
+        assert_eq!(
+            kind,
+            RepoFailureKind::Conflict,
+            "the index states something the tree does not hold"
+        );
+        assert!(detail.contains("a:v1"), "got: {detail}");
+        assert!(detail.contains("nodes/a/peppy.json5"), "got: {detail}");
     }
 
     /// The rollout depends on this: a peppy that predates `repository/v1`
@@ -1191,11 +1426,12 @@ mod tests {
             .items
             .iter()
             .map(|item| {
+                let bytes = std::fs::read(root.join(&item.relative_path)).expect("walked file");
                 (
                     item.kind.as_str(),
                     format_identity(&item.name, &item.tag),
                     item.relative_path.clone(),
-                    item.sha256.clone(),
+                    fingerprint_for_bytes(&bytes),
                 )
             })
             .collect();

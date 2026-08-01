@@ -109,6 +109,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     let git_url = "https://github.com/example/repo.git";
     let fs_repo_dir = started.peppy_dirs.root().join("test_repo");
     create_node_dir(&fs_repo_dir, "local_sensor", "v1");
+    common::publish_repo_index(&fs_repo_dir);
 
     // Write repos with both an fs entry and a git entry
     write_repositories_json5(
@@ -122,15 +123,18 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     // Pre-populate stale cache with nodes from the git repo
     write_packages_cache(
         &started,
-        &format!(
-            r#"[{{
-  "node_name": "git_sensor",
-  "node_tag": "v1",
-  "source_type": "git",
-  "source_uri": "{git_url}",
-  "path": "nodes/git_sensor"
-}}]"#
-        ),
+        &serde_json::to_string(&serde_json::json!([{
+            "node_name": "git_sensor",
+            "node_tag": "v1",
+            "sha256": common::seeded_sha("git_sensor:v1"),
+            "origin": common::git_origin(
+                git_url,
+                "main",
+                "nodes/git_sensor/peppy.json5",
+                "git_sensor:v1",
+            ),
+        }]))
+        .unwrap(),
     );
 
     // Remove the git repo by its id (2)
@@ -162,52 +166,8 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
     assert!(
         !cached
             .iter()
-            .any(|n| n.get("source_uri").and_then(|v| v.as_str()) == Some(git_url)),
+            .any(|n| n["origin"]["repo_url"].as_str() == Some(git_url)),
         "cache should not contain nodes from the removed git repo"
-    );
-    let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
-    assert!(
-        launcher_cache_path.exists(),
-        "launchers.json5 cache should exist after refresh"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remove_url_repo_succeeds_and_triggers_refresh() {
-    let started = start_core_node_with_mock_messenger().await;
-
-    let url = "https://example.com/packages";
-    let fs_repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&fs_repo_dir, "local_sensor", "v1");
-
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "url", "url": "{url}" }}]"#,
-            fs_repo_dir.display()
-        ),
-    );
-
-    let resp = send_repo_remove(&started, &RepoRemoveRequest::new(2)).await;
-    assert!(
-        resp.success,
-        "repo_remove should succeed, got error: {}",
-        resp.error_message
-    );
-
-    // Verify the url entry was removed
-    let repos_path = repositories_list_path(&started.peppy_dirs);
-    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
-    let repos: Vec<serde_json::Value> =
-        serde_json5::from_str(&content).expect("parse repos as JSON5");
-    assert_eq!(repos.len(), 1, "only the fs entry should remain");
-    assert_eq!(repos[0]["type"], "fs");
-
-    // Verify refresh was triggered (cache file should be written)
-    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
-    assert!(
-        cache_path.exists(),
-        "nodes.json5 cache should exist after refresh"
     );
     let launcher_cache_path = launchers_repo_cache_path(&started.peppy_dirs);
     assert!(

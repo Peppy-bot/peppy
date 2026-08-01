@@ -4,7 +4,6 @@ use crate::services::node::resolve_node_config;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource, PlacementSpec,
 };
-use daemon_config::consts::PeppyDirs;
 use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
@@ -87,20 +86,17 @@ fn git_url_from_repo(repo: &str) -> std::result::Result<gix_url::Url, String> {
 pub(crate) fn node_source_from_deployment_source(
     deployment: &Deployment,
     nodes_directory: &std::path::Path,
-    peppy_dirs: &PeppyDirs,
 ) -> std::result::Result<NodeSource, String> {
-    // Only the two host-dependent shapes are handled here; the rest are
-    // identical from any machine and come from `portable_node_source`, so the
-    // two functions cannot drift apart on what a `git:` or `url:` source means.
+    // `local:` is the only shape whose meaning depends on which machine
+    // reads it, so it is the only one handled here; everything else comes
+    // from `portable_node_source`, which cannot then drift apart from what
+    // a peer is told the same source means.
     match &deployment.source {
         DeploymentSource::Local(spec) => Ok(NodeSource::Fs(if spec.local.is_absolute() {
             spec.local.clone()
         } else {
             nodes_directory.join(&spec.local)
         })),
-        DeploymentSource::Repo(spec) => crate::services::repo::cache::resolve_repo_node_source(
-            &spec.name, &spec.tag, peppy_dirs,
-        ),
         portable => portable_node_source(portable),
     }
 }
@@ -478,13 +474,13 @@ async fn resolve_here(
     deployment: &Deployment,
     nodes_directory: &Path,
 ) -> std::result::Result<ResolvedDeployment, String> {
-    let source = node_source_from_deployment_source(deployment, nodes_directory, &ctx.peppy_dirs)
-        .map_err(|err| {
-        format!(
-            "failed to resolve source for deployment {}: {err}",
-            deployment_label(deployment)
-        )
-    })?;
+    let source =
+        node_source_from_deployment_source(deployment, nodes_directory).map_err(|err| {
+            format!(
+                "failed to resolve source for deployment {}: {err}",
+                deployment_label(deployment)
+            )
+        })?;
 
     publish_stdout(
         ctx,
@@ -572,12 +568,9 @@ mod tests {
                 source: source(json5),
                 instances: Vec::new(),
             };
-            let local = node_source_from_deployment_source(
-                &deployment,
-                std::path::Path::new("/nodes"),
-                &PeppyDirs::new("/tmp/peppy"),
-            )
-            .expect("resolvable locally");
+            let local =
+                node_source_from_deployment_source(&deployment, std::path::Path::new("/nodes"))
+                    .expect("resolvable locally");
             let portable = portable_node_source(&deployment.source).expect("portable");
             assert_eq!(local, portable, "for {json5}");
         }

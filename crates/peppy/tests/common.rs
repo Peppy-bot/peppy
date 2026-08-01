@@ -211,6 +211,14 @@ pub const ARM_LINK_PAIRING: &str = r#"{
     ]
 }"#;
 
+/// Publishes `root`'s `peppy_repository.json5`, which is what a repository
+/// offers a daemon. Call it once the repository holds every item the test
+/// expects refresh to find.
+pub fn publish_repo_index(root: &std::path::Path) {
+    core_node::publish_repository_index(root)
+        .expect("a well-formed test repository can be published");
+}
+
 /// Seeds the daemon's `repositories.json5` with one fs repo containing the
 /// `arm_link` pairing doc and refreshes, so the doc lands in the daemon's
 /// pairing cache.
@@ -221,6 +229,7 @@ pub fn seed_pairing_repo(
 ) {
     use peppy::commands::Command;
     std::fs::write(repo_dir.join("arm_link.json5"), ARM_LINK_PAIRING).expect("write pairing doc");
+    publish_repo_index(repo_dir);
     let conf_dir = serve.temp_dir().join("conf");
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
     let repos_content = serde_json::to_string_pretty(&serde_json::json!([

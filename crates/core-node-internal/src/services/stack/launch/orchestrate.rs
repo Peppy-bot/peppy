@@ -3,7 +3,7 @@ use super::phases::run_phase;
 use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_action_log_file,
-    log_label_from_source, run_node_add, run_node_build_for_entity, run_node_run,
+    dispatch_node_add, log_label_from_source, run_node_build_for_entity, run_node_run,
 };
 use chrono::Local;
 use core_node_api::encoding::{
@@ -52,7 +52,7 @@ pub(super) async fn add_node_directly(
     let log_path_for_timeout = log_path.clone();
 
     let result = run_phase(
-        run_node_add(
+        dispatch_node_add(
             node_add_goal,
             action_context,
             feedback_tx,

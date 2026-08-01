@@ -8,6 +8,52 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+/// Publishes `root`'s `peppy_repository.json5`, which is what a repository
+/// offers a daemon. Call it once the repository holds every item the test
+/// expects to be found.
+pub fn publish_repo_index(root: &Path) {
+    core_node::publish_repository_index(root)
+        .expect("a well-formed test repository can be published");
+}
+
+/// Publishes `root`'s index and commits it together with everything else in
+/// the work tree, returning the branch HEAD is on.
+///
+/// A git repository is read from a clone, so what it publishes has to be
+/// committed, not merely written.
+pub fn publish_and_commit_repo_index(root: &Path) -> String {
+    publish_repo_index(root);
+
+    let repo = git2::Repository::open(root).expect("open git repository");
+    let mut index = repo.index().expect("open index");
+    index
+        .add_all(["."].iter(), git2::IndexAddOption::DEFAULT, None)
+        .expect("stage the work tree");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let signature = git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+    let parents: Vec<git2::Commit> = repo
+        .head()
+        .ok()
+        .and_then(|head| head.target())
+        .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
+        .unwrap_or_default();
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "publish",
+        &tree,
+        &parent_refs,
+    )
+    .expect("commit the published repository");
+
+    let head = repo.head().expect("read HEAD");
+    head.shorthand().expect("HEAD is on a branch").to_owned()
+}
+
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
 pub fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);
@@ -40,6 +86,60 @@ pub struct TestPackagesCache {
     contracts: Vec<serde_json::Value>,
 }
 
+/// A distinct, valid fingerprint per `seed`, for entries whose bytes the
+/// test never reads back.
+pub fn seeded_sha(seed: &str) -> String {
+    config::fingerprint::fingerprint_for_bytes(seed.as_bytes())
+}
+
+/// A distinct, valid commit per `seed`.
+fn seeded_commit(seed: &str) -> String {
+    seeded_sha(seed)[..40].to_owned()
+}
+
+/// The `origin` object of a cache entry for an item on this machine, in the
+/// shape `repo refresh` writes it. The one spelling of that shape for every
+/// test binary, so a change to it is a change here rather than in each
+/// hand-written fixture.
+pub fn fs_origin(path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "source_type": "fs",
+        "path": path.to_string_lossy(),
+    })
+}
+
+/// The commit `repo_ref` points at in the repository at `repo_url`, so a
+/// fixture pins the bytes the test actually committed.
+///
+/// Falls back to a seeded value when `repo_url` is not a repository on this
+/// machine, which is the case for fixtures that only ever exercise lookup
+/// and never materialize.
+fn head_commit_of(repo_url: &str, repo_ref: &str, seed: &str) -> String {
+    let path = repo_url.strip_prefix("file://").unwrap_or(repo_url);
+    let Ok(repo) = git2::Repository::open(path) else {
+        return seeded_commit(seed);
+    };
+    repo.revparse_single(repo_ref)
+        .or_else(|_| repo.revparse_single("HEAD"))
+        .ok()
+        .and_then(|object| object.peel_to_commit().ok())
+        .map(|commit| commit.id().to_string())
+        .unwrap_or_else(|| seeded_commit(seed))
+}
+
+/// The `origin` object of a cache entry for an item held by a remote, in
+/// the shape `repo refresh` writes it. `path` is repository-relative and
+/// points at the file that declares the item.
+pub fn git_origin(repo_url: &str, repo_ref: &str, path: &str, seed: &str) -> serde_json::Value {
+    serde_json::json!({
+        "source_type": "git",
+        "repo_url": repo_url,
+        "repo_ref": repo_ref,
+        "commit": head_commit_of(repo_url, repo_ref, seed),
+        "path": path,
+    })
+}
+
 impl TestPackagesCache {
     pub fn new() -> Self {
         Self::default()
@@ -50,15 +150,12 @@ impl TestPackagesCache {
     /// convention), so we join `NODE_CONFIG_FILE` here.
     pub fn fs_entry(mut self, name: &str, tag: &str, absolute_path: impl AsRef<Path>) -> Self {
         let manifest_path = absolute_path.as_ref().join(NODE_CONFIG_FILE);
-        let mut m = serde_json::Map::new();
-        m.insert("node_name".into(), serde_json::Value::String(name.into()));
-        m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
-        m.insert("source_type".into(), serde_json::Value::String("fs".into()));
-        m.insert(
-            "path".into(),
-            serde_json::Value::String(manifest_path.to_string_lossy().into_owned()),
-        );
-        self.entries.push(serde_json::Value::Object(m));
+        self.entries.push(serde_json::json!({
+            "node_name": name,
+            "node_tag": tag,
+            "sha256": seeded_sha(&format!("{name}:{tag}")),
+            "origin": fs_origin(&manifest_path),
+        }));
         self
     }
 
@@ -74,26 +171,17 @@ impl TestPackagesCache {
         path_in_repo: &str,
     ) -> Self {
         let manifest_path = Path::new(path_in_repo).join(NODE_CONFIG_FILE);
-        let mut m = serde_json::Map::new();
-        m.insert("node_name".into(), serde_json::Value::String(name.into()));
-        m.insert("node_tag".into(), serde_json::Value::String(tag.into()));
-        m.insert(
-            "source_type".into(),
-            serde_json::Value::String("git".into()),
-        );
-        m.insert(
-            "source_uri".into(),
-            serde_json::Value::String(repo_url.into()),
-        );
-        m.insert(
-            "resolved_ref".into(),
-            serde_json::Value::String(resolved_ref.into()),
-        );
-        m.insert(
-            "path".into(),
-            serde_json::Value::String(manifest_path.to_string_lossy().into_owned()),
-        );
-        self.entries.push(serde_json::Value::Object(m));
+        self.entries.push(serde_json::json!({
+            "node_name": name,
+            "node_tag": tag,
+            "sha256": seeded_sha(&format!("{name}:{tag}")),
+            "origin": git_origin(
+                repo_url,
+                resolved_ref,
+                &manifest_path.to_string_lossy(),
+                &format!("{name}:{tag}"),
+            ),
+        }));
         self
     }
 
@@ -110,31 +198,12 @@ impl TestPackagesCache {
         path_in_repo: &str,
         body: &str,
     ) -> Self {
-        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
-        let mut m = serde_json::Map::new();
-        m.insert(
-            "contract_name".into(),
-            serde_json::Value::String(name.into()),
-        );
-        m.insert("tag".into(), serde_json::Value::String(tag.into()));
-        m.insert("sha256".into(), serde_json::Value::String(sha));
-        m.insert(
-            "source_type".into(),
-            serde_json::Value::String("git".into()),
-        );
-        m.insert(
-            "source_uri".into(),
-            serde_json::Value::String(repo_url.into()),
-        );
-        m.insert(
-            "resolved_ref".into(),
-            serde_json::Value::String(resolved_ref.into()),
-        );
-        m.insert(
-            "path".into(),
-            serde_json::Value::String(path_in_repo.into()),
-        );
-        self.contracts.push(serde_json::Value::Object(m));
+        self.contracts.push(serde_json::json!({
+            "contract_name": name,
+            "tag": tag,
+            "sha256": config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
+            "origin": git_origin(repo_url, resolved_ref, path_in_repo, &format!("{name}:{tag}")),
+        }));
         self
     }
 
@@ -149,20 +218,12 @@ impl TestPackagesCache {
         absolute_path: impl AsRef<Path>,
         body: &str,
     ) -> Self {
-        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
-        let mut m = serde_json::Map::new();
-        m.insert(
-            "contract_name".into(),
-            serde_json::Value::String(name.into()),
-        );
-        m.insert("tag".into(), serde_json::Value::String(tag.into()));
-        m.insert("sha256".into(), serde_json::Value::String(sha));
-        m.insert("source_type".into(), serde_json::Value::String("fs".into()));
-        m.insert(
-            "path".into(),
-            serde_json::Value::String(absolute_path.as_ref().to_string_lossy().into_owned()),
-        );
-        self.contracts.push(serde_json::Value::Object(m));
+        self.contracts.push(serde_json::json!({
+            "contract_name": name,
+            "tag": tag,
+            "sha256": config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
+            "origin": fs_origin(absolute_path.as_ref()),
+        }));
         self
     }
 

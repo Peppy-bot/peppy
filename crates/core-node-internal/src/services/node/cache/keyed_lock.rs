@@ -1,10 +1,11 @@
 //! Per-key in-process locks used to serialize concurrent work on the same
 //! cache directory.
 //!
-//! Each cache module declares its own `static LOCKS: KeyedLocks` so the git
-//! and bundle caches keep separate lock namespaces (their keys are directory
-//! paths under different roots, but sharing a map would still couple their
-//! GC and contention behavior for no benefit).
+//! A cache module declares its own `static LOCKS: KeyedLocks` and keys it by
+//! directory path, so two callers racing on one cache directory serialize
+//! while callers on different ones do not. [`super::git`] is currently the
+//! only such module; a second cache would get its own namespace rather than
+//! sharing this one's GC and contention behavior.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;

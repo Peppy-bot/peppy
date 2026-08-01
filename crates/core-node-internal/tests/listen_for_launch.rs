@@ -2033,8 +2033,8 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     let cache_entries = serde_json::json!([
         {
             "launcher_name": LAUNCHER_NAME,
-            "source_type": "fs",
-            "path": launcher_file_path.to_string_lossy(),
+            "sha256": config::fingerprint::fingerprint_for_bytes(launcher_json5.as_bytes()),
+            "origin": common::fs_origin(&launcher_file_path),
         }
     ]);
     let cache_dir = peppy_dirs.cache_dir();

@@ -11,6 +11,7 @@ pub use core_node_api::encoding::RepoItemKind;
 // identity has nowhere to go except a key that is already taken.
 pub use parse::PeppyRepositoryIndexParser;
 pub use types::{
-    DeclaredItem, DeclaredPaths, IndexedItem, ItemName, ItemTag, RepoPathError, RepoRelativePath,
+    DeclaredItem, DeclaredPaths, GitCommit, GitCommitError, IndexedItem, ItemName, ItemTag,
+    ManifestFingerprint, ManifestFingerprintError, RepoPathError, RepoRelativePath,
     RepositoryIndex, TaggedSection, UniqueMap,
 };

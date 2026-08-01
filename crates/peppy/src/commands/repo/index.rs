@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use core_node::{check_repository_index, generate_repository_index, write_repository_index};
+use core_node::{check_repository_index, publish_repository_index};
 use daemon_config::consts::REPOSITORY_INDEX_FILE;
 use tracing::info;
 
@@ -28,9 +28,9 @@ pub fn repo_index(path: Option<PathBuf>, check: bool) -> Result<()> {
 }
 
 fn write_index(root: &Path) -> Result<()> {
-    let index = generate_repository_index(root).map_err(index_failure)?;
-    let count = index.declared_count();
-    write_repository_index(root, &index).map_err(index_failure)?;
+    let count = publish_repository_index(root)
+        .map_err(index_failure)?
+        .declared_count();
     info!(
         "Indexed {count} item{} into {}",
         if count == 1 { "" } else { "s" },

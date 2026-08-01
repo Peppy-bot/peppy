@@ -64,8 +64,11 @@ fn repo_exclude_fs_path_succeeds() {
     );
 }
 
+/// Exclusion classifies its source the same way `repo add` does, so a URL
+/// that names no repository is refused here too rather than being written
+/// as an exclusion that can never match anything.
 #[test]
-fn repo_exclude_url_succeeds() {
+fn repo_exclude_refuses_a_url_that_is_not_a_git_clone_url() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
@@ -76,10 +79,13 @@ fn repo_exclude_url_succeeds() {
     }
     .execute(&ctx);
 
+    let msg = result
+        .expect_err("a bare http URL is not a repository")
+        .to_string();
+    assert!(msg.contains("git URL"), "error should name git, got: {msg}");
     assert!(
-        result.is_ok(),
-        "repo exclude URL should succeed: {:?}",
-        result.err()
+        msg.contains("directory on this machine"),
+        "error should name fs, got: {msg}"
     );
 }
 

@@ -105,6 +105,114 @@ impl<'de> Deserialize<'de> for RepoRelativePath {
     }
 }
 
+/// Declares a fixed-width lowercase-hex string newtype: the struct, its
+/// error enum, `parse`, `as_str`, `Display`, and the `Deserialize` that
+/// routes through `parse` so a hand-edited index cannot state a value the
+/// rest of peppy could never key on.
+///
+/// Parsing lowercases, so a value written by hand in upper case compares
+/// equal to the one the tool that produced it reports.
+macro_rules! hex_identity {
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        $error:ident {
+            $empty:ident = $empty_msg:literal,
+            $malformed:ident = $malformed_msg:literal $(,)?
+        },
+        $width:literal $(,)?
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        #[derive(Debug, Error, PartialEq, Eq)]
+        pub enum $error {
+            #[error($empty_msg)]
+            $empty,
+            #[error($malformed_msg)]
+            $malformed(String),
+        }
+
+        impl $name {
+            pub fn parse(raw: &str) -> Result<Self, $error> {
+                let value = raw.trim();
+                if value.is_empty() {
+                    return Err($error::$empty);
+                }
+                if value.len() != $width || !value.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Err($error::$malformed(value.to_owned()));
+                }
+                Ok(Self(value.to_ascii_lowercase()))
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: de::Deserializer<'de>,
+            {
+                let raw = String::deserialize(deserializer)?;
+                Self::parse(&raw).map_err(de::Error::custom)
+            }
+        }
+    };
+}
+
+hex_identity!(
+    /// The SHA-256 of the bytes of the file that declares one item.
+    ///
+    /// What a machine compares to decide whether it already holds the same
+    /// item another machine is talking about. Provenance answers where
+    /// something came from; this answers whether it is the same thing, which
+    /// is the question that authorises reuse.
+    ManifestFingerprint,
+    ManifestFingerprintError {
+        Empty = "fingerprint is empty",
+        NotASha256 = "fingerprint is not 64 hexadecimal characters: {0}",
+    },
+    64
+);
+
+impl ManifestFingerprint {
+    /// The fingerprint of `bytes`, which is how every fingerprint peppy
+    /// records is produced.
+    pub fn of_bytes(bytes: &[u8]) -> Self {
+        Self(config::fingerprint::fingerprint_for_bytes(bytes))
+    }
+}
+
+hex_identity!(
+    /// The commit a repository was read at.
+    ///
+    /// A branch name says which line of development to follow, not which
+    /// bytes to read; two machines reading `main` a week apart hold different
+    /// trees. A commit identifies one tree for as long as the repository
+    /// exists, which is what lets one machine tell another where to look and
+    /// expect the same answer.
+    ///
+    /// An abbreviated hash is rejected rather than expanded: expanding one
+    /// needs the repository, and the whole point of the value is to be
+    /// readable by a machine that does not have it yet.
+    GitCommit,
+    GitCommitError {
+        Empty = "commit is empty",
+        NotAFullHash = "commit is not 40 hexadecimal characters: {0}",
+    },
+    40
+);
+
 /// Declares a validated string newtype whose `Deserialize` runs `$validate`,
 /// so an index cannot state an identity the repository caches could never
 /// key on. The two identity halves differ only in which shared validator
@@ -160,6 +268,35 @@ validated_identity!(
     config::repo_node_id::validate_repo_node_tag,
     "tag"
 );
+
+/// Comparison against a plain `&str` for the validated string newtypes.
+///
+/// A caller holding an unvalidated string has a question about equality, not
+/// a value to construct: `entry.name == "uvc_camera"` should not have to
+/// parse the literal first. Only the newtype-on-the-left direction is
+/// emitted; the mirrored impls would be four more per type that nothing can
+/// report as unreachable once they stop being called.
+macro_rules! compares_to_str {
+    ($ty:ty) => {
+        impl PartialEq<str> for $ty {
+            fn eq(&self, other: &str) -> bool {
+                self.0 == other
+            }
+        }
+
+        impl PartialEq<&str> for $ty {
+            fn eq(&self, other: &&str) -> bool {
+                self.0 == *other
+            }
+        }
+    };
+}
+
+compares_to_str!(RepoRelativePath);
+compares_to_str!(ManifestFingerprint);
+compares_to_str!(GitCommit);
+compares_to_str!(ItemName);
+compares_to_str!(ItemTag);
 
 /// Where one published identity is declared.
 ///

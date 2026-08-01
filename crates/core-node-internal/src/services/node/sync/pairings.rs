@@ -37,19 +37,12 @@ fn resolve_pairing_doc_cached(
     sha256_pin: Option<&str>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PeppyPairing, String> {
-    // A sha pin names one exact manifest, so it is never ambiguous.
-    let entry = match sha256_pin {
-        Some(sha) => repo_cache::lookup_pairing_by_sha256(cache, name, tag, sha),
-        None => repo_cache::lookup_pairing(cache, name, tag)
-            .map_err(|ambiguity| ambiguity.to_string())?,
-    };
-
     repo_cache::resolve_cached_doc(
         peppy_dirs,
-        "pairing",
-        &format!("{name}:{tag}"),
+        cache,
+        name,
+        tag,
         sha256_pin,
-        entry.map(Into::into),
         |content| {
             daemon_config::pairing::PeppyPairingParser::from_content(content)
                 .map_err(|e| e.to_string())
@@ -505,7 +498,6 @@ fn duplicated_consumes(coverage: &SlotCoverage) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_node_api::encoding::RepoSourceKind;
     use std::fs;
     use tempfile::TempDir;
 
@@ -528,13 +520,10 @@ mod tests {
         let path = dir.join(format!("{name}_{tag}.json5"));
         fs::write(&path, body).expect("write pairing file");
         repo_cache::PairingCacheEntry {
-            pairing_name: name.to_string(),
-            tag: tag.to_string(),
-            sha256: config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            path: path.to_string_lossy().to_string(),
+            pairing_name: daemon_config::repository::ItemName::parse(name).unwrap(),
+            tag: daemon_config::repository::ItemTag::parse(tag).unwrap(),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
+            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
             repo_id: 0,
         }
     }
@@ -978,7 +967,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
         let good_sha = entry.sha256.clone();
-        let path = entry.path.clone();
+        let path = entry.origin.path_str().to_owned();
         let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         // Pin to a sha not in the cache.
@@ -992,7 +981,7 @@ mod tests {
             ARM_LINK_BODY.replace("joint_states", "joint_states_v2"),
         )
         .unwrap();
-        let err = resolve_pairing_doc(&dirs, "arm_link", "v1", Some(&good_sha), &|_| {})
+        let err = resolve_pairing_doc(&dirs, "arm_link", "v1", Some(good_sha.as_str()), &|_| {})
             .expect_err("drift rejected");
         assert!(err.contains("drifted"), "error: {err}");
     }

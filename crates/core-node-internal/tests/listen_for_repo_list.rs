@@ -43,17 +43,41 @@ fn write_packages_cache(started: &StartedCoreNode, content: &str) {
 }
 
 /// One `nodes.json5` entry for an fs-discovered node, shaped exactly as
-/// `repo refresh` records it: the path points at the manifest file.
+/// `repo refresh` records it: the origin's path points at the manifest file.
 ///
 /// `repo list` reads the caches for every source kind rather than
 /// re-walking fs repositories, so an fs node has to be indexed to be
 /// listed, just like a git one.
 fn fs_cache_entry(node_dir: &std::path::Path, name: &str, tag: &str) -> serde_json::Value {
+    // Canonicalized, as refresh records it, so the entry is attributed to
+    // its repository on a tree that reaches the tempdir through a symlink.
+    let manifest = std::fs::canonicalize(node_dir)
+        .expect("canonicalize the node directory")
+        .join(NODE_CONFIG_FILE);
+    let body = std::fs::read(&manifest).expect("read the manifest the entry points at");
     serde_json::json!({
         "node_name": name,
         "node_tag": tag,
-        "source_type": "fs",
-        "path": node_dir.join(NODE_CONFIG_FILE).to_string_lossy(),
+        "sha256": config::fingerprint::fingerprint_for_bytes(&body),
+        "origin": common::fs_origin(&manifest),
+    })
+}
+
+/// One `nodes.json5` entry for a git-discovered node. `path` is
+/// repo-relative and points at the manifest file.
+fn git_cache_entry(
+    name: &str,
+    tag: &str,
+    repo_url: &str,
+    repo_ref: &str,
+    path: &str,
+) -> serde_json::Value {
+    let id = format!("{name}:{tag}");
+    serde_json::json!({
+        "node_name": name,
+        "node_tag": tag,
+        "sha256": common::seeded_sha(&id),
+        "origin": common::git_origin(repo_url, repo_ref, path, &id),
     })
 }
 
@@ -172,27 +196,12 @@ async fn list_reads_git_nodes_from_cache() {
     );
 
     // Write a nodes.json5 cache with nodes from that git repo
-    write_packages_cache(
+    index_nodes(
         &started,
-        &serde_json::to_string(&serde_json::json!([
-            {
-                "node_name": "git_sensor",
-                "node_tag": "v1",
-                "source_type": "git",
-                "source_uri": git_url,
-                "resolved_ref": "main",
-                "path": "nodes/git_sensor"
-            },
-            {
-                "node_name": "git_actuator",
-                "node_tag": "v2",
-                "source_type": "git",
-                "source_uri": git_url,
-                "resolved_ref": "main",
-                "path": "nodes/git_actuator"
-            }
-        ]))
-        .unwrap(),
+        vec![
+            git_cache_entry("git_sensor", "v1", git_url, "main", "nodes/git_sensor"),
+            git_cache_entry("git_actuator", "v2", git_url, "main", "nodes/git_actuator"),
+        ],
     );
 
     let resp = send_repo_list(&started).await;
@@ -324,14 +333,7 @@ async fn list_marks_git_duplicate_of_fs() {
         &started,
         vec![
             fs_cache_entry(&overlapping, "overlapping", "v1"),
-            serde_json::json!({
-                "node_name": "overlapping",
-                "node_tag": "v1",
-                "source_type": "git",
-                "source_uri": git_url,
-                "resolved_ref": "main",
-                "path": "nodes/overlapping"
-            }),
+            git_cache_entry("overlapping", "v1", git_url, "main", "nodes/overlapping"),
         ],
     );
 
@@ -483,13 +485,7 @@ async fn list_excludes_git_repo() {
         &started,
         vec![
             fs_cache_entry(&fs_node, "fs_node", "v1"),
-            serde_json::json!({
-                "node_name": "git_node",
-                "node_tag": "v1",
-                "source_type": "git",
-                "source_uri": git_url,
-                "path": "nodes/git_node"
-            }),
+            git_cache_entry("git_node", "v1", git_url, "main", "nodes/git_node"),
         ],
     );
     write_excluded_repositories_json5(
@@ -519,8 +515,6 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
     let repo_b = started.peppy_dirs.root().join("repo_b");
     let shadowed_a = create_node_dir(&repo_a, "shadowed", "v1");
     let shadowed_b = create_node_dir(&repo_b, "shadowed", "v1");
-    let contested_one = create_node_dir(&repo_b, "contested_one", "v1");
-    let contested_two = create_node_dir(&repo_b, "contested_two", "v1");
 
     write_repositories_json5(
         &started,
@@ -530,15 +524,11 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
         ]))
         .unwrap(),
     );
-    // `contested` claimed twice inside repo_b: a cache an older peppy
-    // could have written, since refresh now refuses to produce one.
     index_nodes(
         &started,
         vec![
             fs_cache_entry(&shadowed_a, "shadowed", "v1"),
             fs_cache_entry(&shadowed_b, "shadowed", "v1"),
-            fs_cache_entry(&contested_one, "contested", "v1"),
-            fs_cache_entry(&contested_two, "contested", "v1"),
         ],
     );
 
@@ -551,25 +541,19 @@ async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
         .filter(|n| n.node_name == "shadowed")
         .collect();
     assert_eq!(shadowed.len(), 2);
-    assert!(
-        shadowed.iter().all(|n| !n.conflict),
-        "shadowing across repositories is not a conflict"
-    );
     assert_eq!(
         shadowed.iter().filter(|n| n.duplicate).count(),
         1,
         "exactly the losing entry is marked as shadowed"
     );
-
-    let contested: Vec<_> = resp
-        .nodes
-        .iter()
-        .filter(|n| n.node_name == "contested")
-        .collect();
-    assert_eq!(contested.len(), 2);
-    assert!(
-        contested.iter().all(|n| n.conflict),
-        "both claimants inside one repository are marked as conflicting"
+    assert_eq!(
+        shadowed
+            .iter()
+            .find(|n| !n.duplicate)
+            .expect("one entry wins")
+            .repo_id,
+        1,
+        "the lower-id repository is the one that resolves"
     );
 }
 
@@ -667,6 +651,5 @@ async fn list_reports_a_healthy_repository_as_current() {
     assert!(!resp.repos[0].retained);
     assert!(resp.repos[0].failure.is_none());
     assert_eq!(resp.nodes.len(), 1);
-    assert!(!resp.nodes[0].conflict);
     assert!(!resp.nodes[0].duplicate);
 }

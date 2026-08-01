@@ -99,8 +99,8 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
         });
     }
 
-    // Plain URL. But if the user passed `--ref`, try to treat it as a git
-    // clone URL first (e.g. `https://github.com/org/repo` without `.git`).
+    // A URL that did not parse as a git clone URL above. `--ref` narrows
+    // the guess, since only a git source can honour one.
     if git_ref.is_some() {
         if let Ok((repo_url, _repo_path)) = source::parse_git_repo_url_and_path(source_str) {
             return Ok(RepoSource::Git {
@@ -112,7 +112,11 @@ pub(crate) fn parse_repo_source(source_str: &str, git_ref: Option<String>) -> Re
             "`--ref` is only supported for git sources".to_string(),
         ));
     }
-    Ok(RepoSource::Url(source_str.to_string()))
+    Err(Error::ExecutionFailed(format!(
+        "`{source_str}` is not a repository peppy can read. A repository is either a git URL, \
+         which peppy clones and reads the committed index of, or a path to a directory on this \
+         machine"
+    )))
 }
 
 #[cfg(test)]

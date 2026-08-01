@@ -92,7 +92,8 @@ pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> 
 pub(crate) struct ExclusionSet {
     /// Identities (path for fs, url for git/url) of excluded entries.
     pub(crate) identities: HashSet<String>,
-    /// FS paths used for subdirectory pruning inside `walk_directory`.
+    /// FS subtrees this machine does not answer for, applied to the
+    /// locations a repository's index declares before any of them is read.
     pub(crate) fs_paths: Vec<PathBuf>,
     /// Structured list of all excluded entries for feedback reporting.
     pub(crate) entries: Vec<ExcludedEntry>,

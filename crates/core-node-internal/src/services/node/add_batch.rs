@@ -24,7 +24,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 
@@ -35,7 +34,7 @@ use tracing::{debug, warn};
 /// enough to avoid saturating a developer laptop.
 const MATERIALIZE_CONCURRENCY: usize = 8;
 
-/// Entry point called from `handle_goal_request` when
+/// Entry point [`super::add::dispatch_node_add`] routes to when
 /// `goal.source` is `NodeSource::RepoNode`.
 pub(crate) async fn run_repo_node_add(
     goal: NodeAddGoal,
@@ -62,7 +61,7 @@ pub(crate) async fn run_repo_node_add(
 
     let peppy_dirs = action_context.peppy_dirs.clone();
 
-    let (entries, cache_generation) = match cache::load_with_generation(&peppy_dirs) {
+    let entries = match cache::load_node_cache(&peppy_dirs) {
         Ok(loaded) => loaded,
         Err(e) => {
             return fail(
@@ -86,7 +85,6 @@ pub(crate) async fn run_repo_node_add(
     let resolution_ctx = BatchResolutionCtx {
         peppy_dirs: &peppy_dirs,
         entries: &entries,
-        cache_generation,
         feedback_tx: &feedback_tx,
     };
     let resolution = match resolve_transitive_closure(resolution_ctx, &root_name, &root_tag).await {
@@ -147,6 +145,26 @@ pub(crate) async fn run_repo_node_add(
             );
         };
 
+        // A dependency the stack already holds with this exact manifest is
+        // left alone: re-pushing it would reset the entity to `Added` and
+        // silently discard a built artifact, which breaks any flow that
+        // built the node earlier and still expects to run it (a stack
+        // launch adds and builds each deployment in turn, so a dependency
+        // shared with an earlier deployment has been built by the time it
+        // reappears in a later one's closure). The batch ROOT is exempt:
+        // an explicit `node add X` re-stages X, identical or not.
+        if !node.is_root && stack_holds_identical(&action_context.node_stack, node) {
+            emit(
+                &feedback_tx,
+                FeedbackStream::Stdout,
+                format!(
+                    "Skipping {}:{}: already in the stack with an identical manifest",
+                    node.name, node.tag
+                ),
+            );
+            continue;
+        }
+
         emit(
             &feedback_tx,
             FeedbackStream::Stdout,
@@ -154,7 +172,7 @@ pub(crate) async fn run_repo_node_add(
                 "Adding {}:{} ({})",
                 node.name,
                 node.tag,
-                kind_label(node.source_kind)
+                node.source_kind.as_str()
             ),
         );
 
@@ -228,11 +246,25 @@ pub(crate) async fn run_repo_node_add(
     NodeAddResult::success(effective_log, root_name, root_tag)
 }
 
-fn kind_label(kind: RepoSourceKind) -> &'static str {
-    match kind {
-        RepoSourceKind::Fs => "fs",
-        RepoSourceKind::Git => "git",
-        RepoSourceKind::Url => "http",
+/// Whether the stack already holds `node`'s identity with a config whose
+/// canonical fingerprint matches the freshly materialized one.
+///
+/// Compared by [`super::manifest_fingerprint`] rather than by identity
+/// alone: an entry whose pin moved to a different manifest must still be
+/// replaced, or the batch would keep satisfying dependents with a config
+/// the repository no longer describes. A fingerprint that fails to
+/// compute reports "different", falling back to the replace path.
+fn stack_holds_identical(node_stack: &node_stack::NodeStack, node: &ResolvedBatchNode) -> bool {
+    let Some(handle) = node_stack.find(&node.name, &node.tag) else {
+        return false;
+    };
+    let existing = { handle.read().config().clone() };
+    match (
+        super::manifest_fingerprint(&existing),
+        super::manifest_fingerprint(&node.config_resolved),
+    ) {
+        (Ok(existing), Ok(incoming)) => existing == incoming,
+        _ => false,
     }
 }
 
@@ -269,7 +301,6 @@ type MaterializeOutput = (
 struct BatchResolutionCtx<'a> {
     peppy_dirs: &'a PeppyDirs,
     entries: &'a [NodeCacheEntry],
-    cache_generation: Option<SystemTime>,
     feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
 }
 
@@ -281,7 +312,6 @@ async fn resolve_transitive_closure<'a>(
     let BatchResolutionCtx {
         peppy_dirs,
         entries,
-        cache_generation,
         feedback_tx,
     } = ctx;
 
@@ -319,7 +349,7 @@ async fn resolve_transitive_closure<'a>(
                 continue;
             };
             let entry = entry.clone();
-            let source_kind = entry.source_type;
+            let source_kind = entry.origin.kind();
             let permit_source = Arc::clone(&semaphore);
             let fb = feedback_tx.clone();
             let on_feedback: node_cache::MaterializeFeedback = Arc::new(move |line: &str| {
@@ -333,13 +363,7 @@ async fn resolve_transitive_closure<'a>(
                     .acquire_owned()
                     .await
                     .expect("materialize semaphore is never closed");
-                let result = node_cache::materialize_entry(
-                    &entry,
-                    peppy_dirs,
-                    cache_generation,
-                    on_feedback,
-                )
-                .await;
+                let result = node_cache::materialize_entry(&entry, peppy_dirs, on_feedback).await;
                 (name, tag, is_root, source_kind, result)
             }));
         }
