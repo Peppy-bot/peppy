@@ -86,14 +86,21 @@ pub struct RepoConflict {
     pub paths: Vec<String>,
 }
 
+/// `name:tag`, or the bare name when the tag is empty. The empty string is
+/// how the walk and caches spell an untagged identity (launchers), so this is
+/// the single place that renders a `(name, tag)` pair as its label.
+fn format_identity(name: &str, tag: &str) -> String {
+    if tag.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name}:{tag}")
+    }
+}
+
 impl RepoConflict {
     /// `name:tag` label, or the bare name for untagged kinds.
     fn display_id(&self) -> String {
-        if self.tag.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}:{}", self.name, self.tag)
-        }
+        format_identity(&self.name, &self.tag)
     }
 }
 
@@ -356,11 +363,7 @@ pub(crate) fn resolve_declared_item(
     let (name, tag) = declared_identity(item.kind, content, item.path.as_path())?;
     let expected_tag = item.tag.map(ItemTag::as_str).unwrap_or_default();
     if name != item.name.as_str() || tag != expected_tag {
-        let found = if tag.is_empty() {
-            name
-        } else {
-            format!("{name}:{tag}")
-        };
+        let found = format_identity(&name, &tag);
         return Err(format!("declares `{found}`"));
     }
 
@@ -495,10 +498,10 @@ pub fn check_repository_index(root: &Path) -> Result<Vec<IndexDrift>, IndexError
 }
 
 fn identity_label(item: &DeclaredItem<'_>) -> String {
-    match item.tag {
-        Some(tag) => format!("{}:{tag}", item.name),
-        None => item.name.to_string(),
-    }
+    format_identity(
+        item.name.as_str(),
+        item.tag.map(ItemTag::as_str).unwrap_or_default(),
+    )
 }
 
 /// Walk a repository's working tree for the files that declare items.
@@ -891,13 +894,7 @@ mod tests {
             .items
             .iter()
             .filter(|item| item.kind == kind)
-            .map(|item| {
-                if item.tag.is_empty() {
-                    item.name.clone()
-                } else {
-                    format!("{}:{}", item.name, item.tag)
-                }
-            })
+            .map(|item| format_identity(&item.name, &item.tag))
             .collect()
     }
 
@@ -1287,14 +1284,9 @@ mod tests {
             .items
             .iter()
             .map(|item| {
-                let id = if item.tag.is_empty() {
-                    item.name.clone()
-                } else {
-                    format!("{}:{}", item.name, item.tag)
-                };
                 (
                     item.kind.as_str(),
-                    id,
+                    format_identity(&item.name, &item.tag),
                     item.relative_path.clone(),
                     item.sha256.clone(),
                 )

@@ -276,23 +276,21 @@ impl RepositoryIndex {
         path: RepoRelativePath,
     ) -> Result<(), String> {
         let item = IndexedItem { path };
-        let RepoItemKind::Launcher = kind else {
-            let Some(tag) = tag else {
-                return Err(format!("{kind} `{name}` has no tag"));
-            };
-            let section = match kind {
-                RepoItemKind::Node => &mut self.nodes,
-                RepoItemKind::Contract => &mut self.contracts,
-                RepoItemKind::Pairing => &mut self.pairings,
-                RepoItemKind::Launcher => unreachable!("handled by the let-else above"),
-            };
-            let tags = section.entry_or_default(name);
-            return tags.try_insert(tag, item);
+        let section = match kind {
+            RepoItemKind::Launcher => {
+                if tag.is_some() {
+                    return Err(format!("launcher `{name}` cannot carry a tag"));
+                }
+                return self.launchers.try_insert(name, item);
+            }
+            RepoItemKind::Node => &mut self.nodes,
+            RepoItemKind::Contract => &mut self.contracts,
+            RepoItemKind::Pairing => &mut self.pairings,
         };
-        if tag.is_some() {
-            return Err(format!("launcher `{name}` cannot carry a tag"));
-        }
-        self.launchers.try_insert(name, item)
+        let Some(tag) = tag else {
+            return Err(format!("{kind} `{name}` has no tag"));
+        };
+        section.entry_or_default(name).try_insert(tag, item)
     }
 
     /// Every identity the repository publishes, in a deterministic order that
