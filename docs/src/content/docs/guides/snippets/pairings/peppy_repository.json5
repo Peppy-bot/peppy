@@ -1,0 +1,10 @@
+{
+  peppy_schema: "repository/v1",
+  pairings: {
+    arm_link: {
+      v1: {
+        path: "arm_link/peppy.json5"
+      }
+    }
+  }
+}

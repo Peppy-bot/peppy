@@ -268,10 +268,11 @@ mod tests {
         // a clone or fetch against a missing path fails outright.
         std::fs::remove_dir_all(&source_dir).expect("remove source repo");
         let lines = std::cell::RefCell::new(Vec::new());
-        let reused = ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
-            lines.borrow_mut().push(l.to_owned())
-        })
-        .expect("a populated checkout needs no remote");
+        let reused =
+            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
+                lines.borrow_mut().push(l.to_owned())
+            })
+            .expect("a populated checkout needs no remote");
         assert_eq!(checkout, reused);
         assert_eq!(
             lines.into_inner(),

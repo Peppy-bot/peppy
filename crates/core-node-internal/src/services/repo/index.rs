@@ -19,6 +19,7 @@ use crate::services::repo::cache::{
     ContractCacheEntry, EntryOrigin, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
     RepoItems,
 };
+use crate::services::repo::refresh::RepoFailureKind;
 use config::fingerprint::fingerprint_for_bytes;
 use config::node::NodeConfigParser;
 use config::schema::PeppySchema;
@@ -177,19 +178,24 @@ pub(crate) struct PublishedItem {
 pub(crate) fn read_published_items(
     root: &Path,
     origin_of: &dyn Fn(&RepoRelativePath) -> EntryOrigin,
-) -> std::result::Result<Vec<PublishedItem>, String> {
+) -> std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)> {
+    let unreachable = |detail: String| (RepoFailureKind::Unreachable, detail);
+    let contradictory = |detail: String| (RepoFailureKind::Conflict, detail);
+
     let root = std::fs::canonicalize(root)
-        .map_err(|e| format!("{} cannot be read: {e}", root.display()))?;
+        .map_err(|e| unreachable(format!("{} cannot be read: {e}", root.display())))?;
     let index_file = daemon_config::consts::REPOSITORY_INDEX_FILE;
     if !root.join(index_file).exists() {
-        return Err(format!(
+        // Nothing was read, rather than something read wrong: the
+        // repository states nothing about what it holds.
+        return Err(unreachable(format!(
             "{index_file} is missing from the repository root. A repository publishes what it \
              holds by committing that file; run `peppy repo index` in the repository and commit \
              the result"
-        ));
+        )));
     }
 
-    let index = read_repository_index(&root).map_err(|e| e.to_string())?;
+    let index = read_repository_index(&root).map_err(|e| contradictory(e.to_string()))?;
     let mut items = Vec::new();
     let mut problems = Vec::new();
     for item in index.declared_items() {
@@ -208,7 +214,7 @@ pub(crate) fn read_published_items(
     if problems.is_empty() {
         return Ok(items);
     }
-    Err(problems.join("; "))
+    Err(contradictory(problems.join("; ")))
 }
 
 /// Turns published items into the four cache-entry vectors.
@@ -226,9 +232,9 @@ pub(crate) fn build_cache_entries(
         // Spelling the mismatch out keeps the conversion total rather than
         // resting the invariant on a panic.
         let tagged = |item: &PublishedItem| -> std::result::Result<ItemTag, String> {
-            item.tag.clone().ok_or_else(|| {
-                format!("{} `{}` is indexed without a tag", item.kind, item.name)
-            })
+            item.tag
+                .clone()
+                .ok_or_else(|| format!("{} `{}` is indexed without a tag", item.kind, item.name))
         };
         match item.kind {
             RepoItemKind::Node => built.nodes.push(NodeCacheEntry {
@@ -1123,12 +1129,20 @@ mod tests {
         let repo = tmp.path().join("repo");
         write_node_json5(&repo.join("nodes/a"), "a", "v1");
 
-        let err = read_published_items(&repo, &|path| EntryOrigin::Fs {
+        let (kind, detail) = read_published_items(&repo, &|path| EntryOrigin::Fs {
             path: path.as_path().to_path_buf(),
         })
         .expect_err("an unpublished repository contributes nothing");
-        assert!(err.contains(daemon_config::consts::REPOSITORY_INDEX_FILE), "got: {err}");
-        assert!(err.contains("peppy repo index"), "got: {err}");
+        assert_eq!(
+            kind,
+            RepoFailureKind::Unreachable,
+            "nothing was read, which is not the same as reading something wrong"
+        );
+        assert!(
+            detail.contains(daemon_config::consts::REPOSITORY_INDEX_FILE),
+            "got: {detail}"
+        );
+        assert!(detail.contains("peppy repo index"), "got: {detail}");
     }
 
     /// An index entry naming a file that is not there names the item and
@@ -1143,12 +1157,17 @@ mod tests {
         write_repository_index(&repo, &index).expect("write the index");
         std::fs::remove_file(repo.join("nodes/a").join(config::consts::NODE_CONFIG_FILE)).unwrap();
 
-        let err = read_published_items(&repo, &|path| EntryOrigin::Fs {
+        let (kind, detail) = read_published_items(&repo, &|path| EntryOrigin::Fs {
             path: path.as_path().to_path_buf(),
         })
         .expect_err("a listed path that is not there is a refusal");
-        assert!(err.contains("a:v1"), "got: {err}");
-        assert!(err.contains("nodes/a/peppy.json5"), "got: {err}");
+        assert_eq!(
+            kind,
+            RepoFailureKind::Conflict,
+            "the index states something the tree does not hold"
+        );
+        assert!(detail.contains("a:v1"), "got: {detail}");
+        assert!(detail.contains("nodes/a/peppy.json5"), "got: {detail}");
     }
 
     /// The rollout depends on this: a peppy that predates `repository/v1`

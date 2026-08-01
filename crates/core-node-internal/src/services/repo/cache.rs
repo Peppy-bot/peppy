@@ -830,7 +830,12 @@ pub(crate) mod test_support {
         }
     }
 
-    pub(crate) fn git_origin(repo_url: &str, repo_ref: &str, seed: &str, path: &str) -> EntryOrigin {
+    pub(crate) fn git_origin(
+        repo_url: &str,
+        repo_ref: &str,
+        seed: &str,
+        path: &str,
+    ) -> EntryOrigin {
         EntryOrigin::Git {
             repo_url: repo_url.to_owned(),
             repo_ref: repo_ref.to_owned(),
@@ -882,7 +887,10 @@ mod tests {
     use super::test_support::*;
 
     fn mk_entry(name: &str, tag: &str, repo_id: u32) -> NodeCacheEntry {
-        owned_by(node_entry(name, tag, fs_origin("/tmp/foo/peppy.json5")), repo_id)
+        owned_by(
+            node_entry(name, tag, fs_origin("/tmp/foo/peppy.json5")),
+            repo_id,
+        )
     }
 
     fn mk_fs_entry(name: &str, tag: &str, path: &str) -> NodeCacheEntry {
@@ -957,7 +965,10 @@ mod tests {
     /// read as "not found": the identity is present, twice.
     #[test]
     fn ambiguity_message_names_both_claimants() {
-        let first = owned_by(mk_fs_entry("uvc_recon", "v1", "uvc_recon/rust/peppy.json5"), 1000);
+        let first = owned_by(
+            mk_fs_entry("uvc_recon", "v1", "uvc_recon/rust/peppy.json5"),
+            1000,
+        );
         let second = owned_by(
             mk_fs_entry("uvc_recon", "v1", "uvc_recon/python/peppy.json5"),
             1000,
@@ -1019,9 +1030,7 @@ mod tests {
 
         let hit = lookup_repo_entry_by_sha256(&entries, "a", "v1", &fingerprint("newer")).unwrap();
         assert_eq!(hit.repo_id, 9);
-        assert!(
-            lookup_repo_entry_by_sha256(&entries, "a", "v1", &fingerprint("absent")).is_none()
-        );
+        assert!(lookup_repo_entry_by_sha256(&entries, "a", "v1", &fingerprint("absent")).is_none());
     }
 
     #[test]
@@ -1133,7 +1142,7 @@ mod tests {
                 "nodes/example/peppy.json5",
             ),
         );
-        write_repo_cache(&peppy_dirs, &[entry.clone()]).unwrap();
+        write_repo_cache(&peppy_dirs, std::slice::from_ref(&entry)).unwrap();
 
         let resolved = resolve_repo_node_entry("g", "v1", &peppy_dirs).unwrap();
         assert_eq!(

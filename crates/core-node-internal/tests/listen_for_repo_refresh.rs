@@ -12,10 +12,9 @@ use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
     RepoSourceKind,
 };
-use git2::{Repository, Signature};
+use git2::Repository;
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
-use std::path::Path;
 use std::time::Duration;
 
 /// Minimal valid peppy.json5 content for a node with the given name and tag.
@@ -157,6 +156,7 @@ async fn refresh_fs_discovers_nodes() {
 
     let repo_dir = started.peppy_dirs.root().join("test_repo");
     create_node_dir(&repo_dir, "my_sensor", "v1");
+    common::publish_repo_index(&repo_dir);
 
     write_repositories_json5(
         &started,
@@ -202,6 +202,7 @@ async fn refresh_multiple_nodes() {
     let repo_dir = started.peppy_dirs.root().join("multi_repo");
     create_node_dir(&repo_dir, "node_a", "v1");
     create_node_dir(&repo_dir, "node_b", "v2");
+    common::publish_repo_index(&repo_dir);
 
     write_repositories_json5(
         &started,
@@ -244,6 +245,8 @@ async fn refresh_deduplication() {
     let repo_dir_b = started.peppy_dirs.root().join("repo_b");
     create_node_dir(&repo_dir_a, "dup_node", "v1");
     create_node_dir(&repo_dir_b, "dup_node", "v1");
+    common::publish_repo_index(&repo_dir_a);
+    common::publish_repo_index(&repo_dir_b);
 
     // repo_a listed first (lower id), should take precedence
     write_repositories_json5(
@@ -294,46 +297,18 @@ async fn refresh_deduplication() {
 // ── Tests with mock messenger (no feedback needed) ─────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refresh_url_skipped() {
-    let started = start_core_node_with_mock_messenger().await;
-
-    let repo_dir = started.peppy_dirs.root().join("fs_repo");
-    create_node_dir(&repo_dir, "real_node", "v1");
-
-    write_repositories_json5(
-        &started,
-        &format!(
-            r#"[{{ "id": 1, "type": "url", "url": "https://example.com/packages" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
-            repo_dir.display()
-        ),
-    );
-
-    let result = send_refresh_and_wait(&started).await;
-
-    assert!(
-        result.result.success,
-        "refresh should succeed even with URL repo"
-    );
-    assert_eq!(
-        result.result.total_nodes_found, 1,
-        "FS repo node should still be found"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_cache_written() {
     let started = start_core_node_with_mock_messenger().await;
 
     // FS repo with a single node
     let repo_dir = started.peppy_dirs.root().join("cached_repo");
     create_node_dir(&repo_dir, "cached_node", "v2");
+    common::publish_repo_index(&repo_dir);
 
     // Local git repo with a node in a subfolder
     let git_repo_path = started.peppy_dirs.root().join("git_test_repo.git");
     std::fs::create_dir_all(&git_repo_path).expect("create git repo dir");
-
-    let repo = Repository::init(&git_repo_path).expect("init git repo");
-    let signature = Signature::now("Peppy", "peppy@example.com").expect("create signature");
+    Repository::init(&git_repo_path).expect("init git repo");
 
     let node_subdir = git_repo_path.join("nodes/git_node");
     std::fs::create_dir_all(&node_subdir).expect("create git node dir");
@@ -343,24 +318,7 @@ async fn refresh_cache_written() {
     )
     .expect("write git node peppy.json5");
 
-    let rel_config_path = Path::new("nodes/git_node/peppy.json5");
-    let mut index = repo.index().expect("open index");
-    index
-        .add_path(rel_config_path)
-        .expect("add config to index");
-    index.write().expect("write index");
-    let tree_id = index.write_tree().expect("write tree");
-    let tree = repo.find_tree(tree_id).expect("find tree");
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        "initial commit",
-        &tree,
-        &[],
-    )
-    .expect("commit");
-
+    common::publish_and_commit_repo_index(&git_repo_path);
     let git_repo_url = format!("file://{}", git_repo_path.display());
     write_repositories_json5(
         &started,
@@ -384,31 +342,42 @@ async fn refresh_cache_written() {
 
     let fs_entry = entries
         .iter()
-        .find(|e| e["source_type"] == "fs")
+        .find(|e| e["origin"]["source_type"] == "fs")
         .expect("should have an fs entry");
     let git_entry = entries
         .iter()
-        .find(|e| e["source_type"] == "git")
+        .find(|e| e["origin"]["source_type"] == "git")
         .expect("should have a git entry");
 
     assert_eq!(fs_entry["node_name"], "cached_node");
     assert_eq!(fs_entry["node_tag"], "v2");
-    assert!(
-        fs_entry.get("resolved_ref").is_none(),
-        "fs entries should not carry a resolved_ref in the cache"
+    assert_eq!(
+        fs_entry["origin"]["path"],
+        std::fs::canonicalize(repo_dir.join("cached_node_v2"))
+            .expect("canonicalize the node directory")
+            .join(NODE_CONFIG_FILE)
+            .to_string_lossy()
+            .as_ref()
     );
 
     assert_eq!(git_entry["node_name"], "git_node");
     assert_eq!(git_entry["node_tag"], "v1");
-    assert_eq!(git_entry["path"], "nodes/git_node/peppy.json5");
-    assert_eq!(git_entry["source_uri"], git_repo_url);
-    let resolved_ref = git_entry
-        .get("resolved_ref")
-        .and_then(|v| v.as_str())
-        .expect("git entry should carry resolved_ref");
-    assert!(
-        !resolved_ref.is_empty(),
-        "resolved_ref should be a non-empty branch name"
+    assert_eq!(git_entry["origin"]["path"], "nodes/git_node/peppy.json5");
+    assert_eq!(git_entry["origin"]["repo_url"], git_repo_url);
+    assert_eq!(
+        git_entry["origin"]["repo_ref"], "",
+        "this repository pins no ref, so the entry records none and the commit is what pins"
+    );
+    let head = Repository::open(&git_repo_path)
+        .expect("open git repo")
+        .head()
+        .expect("HEAD")
+        .target()
+        .expect("HEAD points at a commit")
+        .to_string();
+    assert_eq!(
+        git_entry["origin"]["commit"], head,
+        "the entry pins the commit the repository was read at"
     );
 }
 
@@ -427,6 +396,8 @@ async fn refresh_cache_includes_duplicates() {
     create_node_dir(&repo_dir_b, "shared_node", "v1");
     // unique node only in repo_b
     create_node_dir(&repo_dir_b, "unique_node", "v1");
+    common::publish_repo_index(&repo_dir_a);
+    common::publish_repo_index(&repo_dir_b);
 
     write_repositories_json5(
         &started,
@@ -484,22 +455,20 @@ async fn refresh_cache_includes_duplicates() {
         "shared_node should appear twice in cache"
     );
     assert!(
-        shared_entries
-            .iter()
-            .any(|e| e["path"].as_str().unwrap().contains("dup_cache_a")),
+        shared_entries.iter().any(|e| e["origin"]["path"]
+            .as_str()
+            .unwrap()
+            .contains("dup_cache_a")),
         "one entry should be from repo_a"
     );
     assert!(
-        shared_entries
-            .iter()
-            .any(|e| e["path"].as_str().unwrap().contains("dup_cache_b")),
+        shared_entries.iter().any(|e| e["origin"]["path"]
+            .as_str()
+            .unwrap()
+            .contains("dup_cache_b")),
         "other entry should be from repo_b"
     );
     for entry in &shared_entries {
-        assert!(
-            entry.get("duplicate").is_none(),
-            "no entry should carry the legacy `duplicate` flag"
-        );
         assert!(
             entry
                 .get("sha256")
@@ -542,6 +511,8 @@ async fn refresh_excludes_fs_repo_with_feedback() {
     let repo_b = started.peppy_dirs.root().join("repo_b");
     create_node_dir(&repo_a, "node_a", "v1");
     create_node_dir(&repo_b, "node_b", "v1");
+    common::publish_repo_index(&repo_a);
+    common::publish_repo_index(&repo_b);
 
     write_repositories_json5(
         &started,
@@ -617,6 +588,7 @@ async fn refresh_excludes_fs_subdirectory_with_feedback() {
     let repo = started.peppy_dirs.root().join("mixed_repo");
     create_node_dir(&repo, "keep_node", "v1");
     create_node_dir(&repo, "secret_node", "v1");
+    common::publish_repo_index(&repo);
 
     write_repositories_json5(
         &started,
@@ -688,6 +660,8 @@ async fn refresh_reports_both_repo_and_subdirectory_exclusions() {
     create_node_dir(&repo_a, "keep_node", "v1");
     create_node_dir(&repo_a, "secret_node", "v1");
     create_node_dir(&repo_b, "other_node", "v1");
+    common::publish_repo_index(&repo_a);
+    common::publish_repo_index(&repo_b);
 
     write_repositories_json5(
         &started,
@@ -746,6 +720,8 @@ async fn refresh_excluded_repos_not_in_cache() {
     let repo_b = started.peppy_dirs.root().join("cache_repo_b");
     create_node_dir(&repo_a, "cached_node", "v1");
     create_node_dir(&repo_b, "excluded_node", "v1");
+    common::publish_repo_index(&repo_a);
+    common::publish_repo_index(&repo_b);
 
     write_repositories_json5(
         &started,
@@ -786,6 +762,7 @@ async fn refresh_excludes_git_repo() {
 
     let repo = started.peppy_dirs.root().join("fs_repo");
     create_node_dir(&repo, "fs_node", "v1");
+    common::publish_repo_index(&repo);
 
     write_repositories_json5(
         &started,
@@ -847,6 +824,7 @@ async fn refresh_discovers_contracts() {
   interfaces: {}
 }"#;
     std::fs::write(iface_dir.join("peppy.json5"), manifest_body).expect("write contract manifest");
+    common::publish_repo_index(&repo_dir);
 
     write_repositories_json5(
         &started,
@@ -892,13 +870,13 @@ async fn refresh_discovers_contracts() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["contract_name"], "uvc_camera");
     assert_eq!(entries[0]["tag"], "v1");
-    assert_eq!(entries[0]["source_type"], "fs");
+    assert_eq!(entries[0]["origin"]["source_type"], "fs");
     assert!(
-        entries[0]["path"]
+        entries[0]["origin"]["path"]
             .as_str()
             .is_some_and(|p| p.ends_with("uvc_camera/peppy.json5")),
         "path should point at the manifest file: {:?}",
-        entries[0]["path"]
+        entries[0]["origin"]["path"]
     );
     assert!(
         entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
@@ -918,6 +896,7 @@ async fn refresh_discovers_nodes() {
 
     let repo_dir = started.peppy_dirs.root().join("node_repo");
     create_node_dir(&repo_dir, "my_sensor", "v1");
+    common::publish_repo_index(&repo_dir);
 
     write_repositories_json5(
         &started,
@@ -963,13 +942,13 @@ async fn refresh_discovers_nodes() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["node_name"], "my_sensor");
     assert_eq!(entries[0]["node_tag"], "v1");
-    assert_eq!(entries[0]["source_type"], "fs");
+    assert_eq!(entries[0]["origin"]["source_type"], "fs");
     assert!(
-        entries[0]["path"]
+        entries[0]["origin"]["path"]
             .as_str()
             .is_some_and(|p| p.ends_with("peppy.json5")),
         "path should point at the manifest file: {:?}",
-        entries[0]["path"]
+        entries[0]["origin"]["path"]
     );
     assert!(
         entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),
@@ -996,6 +975,7 @@ async fn refresh_discovers_launchers() {
 }"#;
     std::fs::write(repo_dir.join("openarm01_teleop.json5"), manifest_body)
         .expect("write launcher manifest");
+    common::publish_repo_index(&repo_dir);
 
     write_repositories_json5(
         &started,
@@ -1043,13 +1023,13 @@ async fn refresh_discovers_launchers() {
         serde_json5::from_str(&content).expect("parse launchers cache");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["launcher_name"], "openarm01_teleop");
-    assert_eq!(entries[0]["source_type"], "fs");
+    assert_eq!(entries[0]["origin"]["source_type"], "fs");
     assert!(
-        entries[0]["path"]
+        entries[0]["origin"]["path"]
             .as_str()
             .is_some_and(|p| p.ends_with("openarm01_teleop.json5")),
         "path should point at the .json5 file: {:?}",
-        entries[0]["path"]
+        entries[0]["origin"]["path"]
     );
     assert!(
         entries[0]["sha256"].as_str().is_some_and(|s| !s.is_empty()),

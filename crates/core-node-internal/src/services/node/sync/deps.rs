@@ -90,8 +90,9 @@ pub(super) async fn materialize_repo_deps(
         let entry = entry.clone();
         let source_kind = entry.origin.kind();
         let (_root_dir, parsed) =
-            node_cache::materialize_entry(&entry, peppy_dirs, node_cache::silent_feedback()).await
-        .map_err(|e| format!("failed to materialize {name}:{tag} from repo cache: {e}"))?;
+            node_cache::materialize_entry(&entry, peppy_dirs, node_cache::silent_feedback())
+                .await
+                .map_err(|e| format!("failed to materialize {name}:{tag} from repo cache: {e}"))?;
 
         // Push transitive deps onto the BFS queue, skipping anything we
         // already plan to visit. Stack-tier shadowing happens at pop time.

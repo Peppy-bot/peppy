@@ -213,8 +213,10 @@ mod tests {
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );
@@ -243,8 +245,10 @@ mod tests {
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );
@@ -297,8 +301,10 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );

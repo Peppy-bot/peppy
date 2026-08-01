@@ -1516,6 +1516,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         contract_name,
         contract_tag,
     );
+    super::common::publish_repo_index(contract_repo_dir.path());
     let conf_dir = serve.temp_dir().join("conf");
     fs::create_dir_all(&conf_dir).expect("create conf dir");
     let repos_content = serde_json::to_string_pretty(&serde_json::json!([
@@ -2032,6 +2033,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             max_velocity: "f64"
         }"#,
     );
+    super::common::publish_repo_index(contract_repo_dir.path());
     let conf_dir = serve.temp_dir().join("conf");
     fs::create_dir_all(&conf_dir).expect("create conf dir");
     let repos_content = serde_json::to_string_pretty(&serde_json::json!([
@@ -2646,7 +2648,7 @@ async fn stack_launch_delivers_observer_source_pin() {
         &git_hash,
         &run_cmd,
         Some(
-            r#"{ pairings: [{ name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }] }"#,
+            r#"{ pairing_observers: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }] }"#,
         ),
         None,
         Some(r#"{ topics: { consumes: [{ link_id: "watch", name: "joint_states" }] } }"#),

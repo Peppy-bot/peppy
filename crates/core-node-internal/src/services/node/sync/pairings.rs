@@ -1,4 +1,5 @@
-//! Pairing-document resolution for `depends_on.pairings`: loading the
+//! Pairing-document resolution for `depends_on.pairings` and
+//! `depends_on.pairing_observers`: loading the
 //! `pairing/v1` doc from the repo cache (sha-pinned, drift-checked) and
 //! validating each manifest entry's role against the doc's two roles.
 
@@ -58,9 +59,9 @@ fn resolve_pairing_doc_cached(
     )
 }
 
-/// Validates every `depends_on.pairings` entry of a manifest against its
-/// resolved pairing document and returns the resolved docs keyed by slot
-/// link_id (ready for the codegen collection step):
+/// Validates every pairing slot of a manifest, participant and observer alike,
+/// against its resolved pairing document and returns the resolved docs keyed by
+/// slot link_id (ready for the codegen collection step):
 ///
 /// - the declared `role` must be one of the doc's two roles (the error
 ///   names them).
@@ -71,81 +72,13 @@ fn resolve_pairing_doc_cached(
 /// pairing artifact instead: with the name and sha256 pin it forms the
 /// `(name, tag, sha256)` key each slot's document is looked up and cached
 /// under.
-/// One declared pairing slot, whichever of the two lists it came from.
-///
-/// The lists differ in what a slot does, not in what resolving it needs:
-/// both name a pairing document and a role in it. Walking them through one
-/// view keeps document resolution and role validation stated once.
-enum PairingSlot<'a> {
-    Participant(&'a config::node::PairingParticipantDependency),
-    Observer(&'a config::node::PairingObserverDependency),
-}
-
-impl<'a> PairingSlot<'a> {
-    fn name(&self) -> &'a config::runtime::Name {
-        match self {
-            PairingSlot::Participant(p) => &p.name,
-            PairingSlot::Observer(o) => &o.name,
-        }
-    }
-
-    fn tag(&self) -> &'a str {
-        match self {
-            PairingSlot::Participant(p) => &p.tag,
-            PairingSlot::Observer(o) => &o.tag,
-        }
-    }
-
-    fn sha256(&self) -> Option<&'a str> {
-        match self {
-            PairingSlot::Participant(p) => p.sha256.as_deref(),
-            PairingSlot::Observer(o) => o.sha256.as_deref(),
-        }
-    }
-
-    fn link_id(&self) -> &'a str {
-        match self {
-            PairingSlot::Participant(p) => &p.link_id,
-            PairingSlot::Observer(o) => &o.link_id,
-        }
-    }
-
-    /// The role this slot names, and the field it was written in. The two
-    /// lists spell it the same way; only the error label differs, because a
-    /// participant plays its role and an observer watches one.
-    fn role(&self) -> (&'static str, &'a str) {
-        match self {
-            PairingSlot::Participant(p) => ("role", p.role.as_str()),
-            PairingSlot::Observer(o) => ("observed role", o.role.as_str()),
-        }
-    }
-}
-
-/// Every pairing slot a manifest declares, participants first.
-fn declared_slots(manifest: &config::node::Manifest) -> Vec<PairingSlot<'_>> {
-    let Some(depends_on) = manifest.depends_on.as_ref() else {
-        return Vec::new();
-    };
-    depends_on
-        .pairings
-        .iter()
-        .map(PairingSlot::Participant)
-        .chain(
-            depends_on
-                .pairing_observers
-                .iter()
-                .map(PairingSlot::Observer),
-        )
-        .collect()
-}
-
 pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<HashMap<String, PeppyPairing>, String> {
-    let pairing_deps = declared_slots(manifest);
-    if pairing_deps.is_empty() {
+    let slots = pairing_slots(manifest);
+    if slots.is_empty() {
         return Ok(HashMap::new());
     }
 
@@ -156,36 +89,69 @@ pub(crate) fn validate_pairing_specs(
     // arms over the same pairing) resolve it once, not once per slot.
     let mut resolved: HashMap<(&str, &str, Option<&str>), PeppyPairing> = HashMap::new();
     let mut out = HashMap::new();
-    for dep in &pairing_deps {
-        let name = dep.name().as_str();
-        let doc = match resolved.entry((name, dep.tag(), dep.sha256())) {
+    for slot in slots {
+        let doc = match resolved.entry((slot.name, slot.tag, slot.sha256)) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => v.insert(resolve_pairing_doc_cached(
                 &cache,
                 peppy_dirs,
-                name,
-                dep.tag(),
-                dep.sha256(),
+                slot.name,
+                slot.tag,
+                slot.sha256,
                 on_feedback,
             )?),
         };
-        let (role_label, role) = dep.role();
-        if !doc.has_role(role) {
+        if !doc.has_role(slot.role) {
             let declared: Vec<&str> = doc.roles.iter().map(|r| r.as_str()).collect();
             return Err(format!(
-                "pairing slot `{}`: {role_label} `{role}` is not declared by pairing `{name}:{}` \
+                "pairing slot `{}`: role `{}` is not declared by pairing `{}:{}` \
                  (declared roles: [{}])",
-                dep.link_id(),
-                dep.tag(),
+                slot.link_id,
+                slot.role,
+                slot.name,
+                slot.tag,
                 declared.join(", "),
             ));
         }
-        out.insert(dep.link_id().to_string(), doc.clone());
+        out.insert(slot.link_id.to_string(), doc.clone());
     }
     Ok(out)
 }
 
-/// A failure resolving `depends_on.pairings` against the declared interface
+/// One pairing slot flattened to the fields document resolution needs. The two
+/// slot lists differ only in what `role` refers to (played vs observed), and
+/// that distinction does not reach the document lookup or the role check.
+struct PairingSlotRef<'a> {
+    name: &'a str,
+    tag: &'a str,
+    sha256: Option<&'a str>,
+    link_id: &'a str,
+    role: &'a str,
+}
+
+/// Every pairing slot of a manifest, participants first then observers.
+fn pairing_slots(manifest: &config::node::Manifest) -> Vec<PairingSlotRef<'_>> {
+    let Some(depends_on) = manifest.depends_on.as_ref() else {
+        return Vec::new();
+    };
+    let participants = depends_on.pairings.iter().map(|p| PairingSlotRef {
+        name: p.name.as_str(),
+        tag: &p.tag,
+        sha256: p.sha256.as_deref(),
+        link_id: &p.link_id,
+        role: &p.role,
+    });
+    let observers = depends_on.pairing_observers.iter().map(|o| PairingSlotRef {
+        name: o.name.as_str(),
+        tag: &o.tag,
+        sha256: o.sha256.as_deref(),
+        link_id: &o.link_id,
+        role: &o.role,
+    });
+    participants.chain(observers).collect()
+}
+
+/// A failure resolving a manifest's pairing slots against the declared interface
 /// entries. Mirrors `ImplementsError`: coverage problems are aggregated per
 /// slot so a node with several wrong entries produces one readable report.
 #[derive(Debug)]
@@ -231,7 +197,7 @@ struct SlotCoverage {
     wrong_role_consumes: Vec<String>,
 }
 
-/// Resolves every `depends_on.pairings` slot into the generator inputs for the
+/// Resolves every pairing slot, participant and observer, into the generator inputs for the
 /// `paired_topics/<link_id>/<topic>` modules, driven by what the node declares:
 /// each pairing-backed `topics.emits` entry becomes peer-emitted and each
 /// pairing-backed `topics.consumes` entry becomes peer-consumed, with shape
@@ -252,31 +218,51 @@ pub fn collect_pairing_interfaces(
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
-    let pairing_deps = declared_slots(manifest);
-    if pairing_deps.is_empty() {
+    let Some(depends_on) = manifest.depends_on.as_ref() else {
+        return Ok(Vec::new());
+    };
+    if depends_on.pairings.is_empty() && depends_on.pairing_observers.is_empty() {
         return Ok(Vec::new());
     }
     let docs = validate_pairing_specs(manifest, peppy_dirs, on_feedback)?;
+    let doc_of = |link_id: &str| {
+        docs.get(link_id)
+            .expect("validate_pairing_specs returns a doc per declared slot")
+    };
+    let context_of = |name: &str, tag: &str, link_id: &str| generator::PeerContext {
+        link_id: link_id.to_string(),
+        pairing_name: name.to_string(),
+        pairing_tag: tag.to_string(),
+    };
 
     let mut out = Vec::new();
     let mut broken = Vec::new();
-    for dep in &pairing_deps {
-        let doc = docs
-            .get(dep.link_id())
-            .expect("validate_pairing_specs returns a doc per declared slot");
-        let context = generator::PeerContext {
-            link_id: dep.link_id().to_string(),
-            pairing_name: dep.name().as_str().to_string(),
-            pairing_tag: dep.tag().to_string(),
-        };
-        let mismatch = match dep {
-            PairingSlot::Participant(participant) => {
-                collect_participant_slot(participant, doc, interfaces_cfg, &context, &mut out)
-            }
-            PairingSlot::Observer(observer) => {
-                collect_observer_slot(observer, doc, interfaces_cfg, &context, &mut out)
-            }
-        };
+    for participant in &depends_on.pairings {
+        let context = context_of(
+            participant.name.as_str(),
+            &participant.tag,
+            &participant.link_id,
+        );
+        let mismatch = collect_participant_slot(
+            participant,
+            doc_of(&participant.link_id),
+            interfaces_cfg,
+            &context,
+            &mut out,
+        );
+        if !mismatch.is_empty() {
+            broken.push(mismatch);
+        }
+    }
+    for observer in &depends_on.pairing_observers {
+        let context = context_of(observer.name.as_str(), &observer.tag, &observer.link_id);
+        let mismatch = collect_observer_slot(
+            observer,
+            doc_of(&observer.link_id),
+            interfaces_cfg,
+            &context,
+            &mut out,
+        );
         if !mismatch.is_empty() {
             broken.push(mismatch);
         }

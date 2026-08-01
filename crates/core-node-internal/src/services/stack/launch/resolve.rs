@@ -474,13 +474,13 @@ async fn resolve_here(
     deployment: &Deployment,
     nodes_directory: &Path,
 ) -> std::result::Result<ResolvedDeployment, String> {
-    let source = node_source_from_deployment_source(deployment, nodes_directory)
-        .map_err(|err| {
-        format!(
-            "failed to resolve source for deployment {}: {err}",
-            deployment_label(deployment)
-        )
-    })?;
+    let source =
+        node_source_from_deployment_source(deployment, nodes_directory).map_err(|err| {
+            format!(
+                "failed to resolve source for deployment {}: {err}",
+                deployment_label(deployment)
+            )
+        })?;
 
     publish_stdout(
         ctx,
@@ -568,8 +568,9 @@ mod tests {
                 source: source(json5),
                 instances: Vec::new(),
             };
-            let local = node_source_from_deployment_source(&deployment, std::path::Path::new("/nodes"))
-            .expect("resolvable locally");
+            let local =
+                node_source_from_deployment_source(&deployment, std::path::Path::new("/nodes"))
+                    .expect("resolvable locally");
             let portable = portable_node_source(&deployment.source).expect("portable");
             assert_eq!(local, portable, "for {json5}");
         }

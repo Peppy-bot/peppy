@@ -249,7 +249,7 @@ mod tests {
     // because its `Fs` arm canonicalizes against the real filesystem).
     use super::{entry_belongs_to_repo, source_identity};
     use crate::services::repo::cache::EntryOrigin;
-use core_node_api::encoding::RepoSource;
+    use core_node_api::encoding::RepoSource;
     use serde_json::Value;
 
     #[test]
@@ -367,10 +367,7 @@ use core_node_api::encoding::RepoSource;
     fn git_attribution_unpinned_repo_matches_any_ref() {
         let unpinned = git_repo("https://example.com/hub.git", None);
 
-        assert!(entry_belongs_to_repo(
-            &unpinned,
-            &git_origin("some-branch")
-        ));
+        assert!(entry_belongs_to_repo(&unpinned, &git_origin("some-branch")));
 
         let EntryOrigin::Git {
             repo_ref,
@@ -399,8 +396,14 @@ use core_node_api::encoding::RepoSource;
     fn fs_attribution_matches_by_containment() {
         let repo = serde_json::json!({ "type": "fs", "path": "/home/user/workspace" });
 
-        assert!(entry_belongs_to_repo(&repo, &fs_origin("/home/user/workspace/arm/peppy.json5")));
-        assert!(!entry_belongs_to_repo(&repo, &fs_origin("/home/user/elsewhere/arm/peppy.json5")));
+        assert!(entry_belongs_to_repo(
+            &repo,
+            &fs_origin("/home/user/workspace/arm/peppy.json5")
+        ));
+        assert!(!entry_belongs_to_repo(
+            &repo,
+            &fs_origin("/home/user/elsewhere/arm/peppy.json5")
+        ));
     }
 
     /// A repository configured through a symlinked root still owns the entries

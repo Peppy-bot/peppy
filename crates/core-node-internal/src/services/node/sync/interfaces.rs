@@ -48,12 +48,13 @@ pub fn collect_all_deployment_interfaces(
             peppy_dirs,
             on_feedback,
         )
-        .map_err(|reason| format!("failed to resolve `depends_on.pairings`: {reason}"))?,
+        .map_err(|reason| format!("failed to resolve pairing slots: {reason}"))?,
     );
     Ok(interfaces)
 }
 
-/// The `depends_on.pairings` slot link_ids of a manifest. Entries naming one
+/// The pairing slot link_ids of a manifest, participants and observers alike.
+/// Entries naming one
 /// are resolved by `collect_pairing_interfaces` against the pairing document
 /// and generated under `paired_topics/<link_id>/<topic>`, so both the consumed
 /// collector and the implements resolver must step over them: neither knows
@@ -63,12 +64,7 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| {
-            d.pairings
-                .iter()
-                .map(|p| p.link_id.as_str())
-                .chain(d.pairing_observers.iter().map(|o| o.link_id.as_str()))
-        })
+        .flat_map(|d| d.pairing_link_ids())
         .collect()
 }
 
@@ -726,7 +722,8 @@ mod implements_tests {
         let path = dir.join(&file_name);
         fs::write(&path, body).expect("write contract file");
         repo_cache::ContractCacheEntry {
-            contract_name: daemon_config::repository::ItemName::parse(name).expect("test name is valid"),
+            contract_name: daemon_config::repository::ItemName::parse(name)
+                .expect("test name is valid"),
             tag: daemon_config::repository::ItemTag::parse(tag).expect("test tag is valid"),
             sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
             origin: repo_cache::EntryOrigin::Fs { path: path.clone() },

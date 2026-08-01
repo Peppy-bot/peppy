@@ -39,7 +39,7 @@ fn write_empty_repositories_json5(started: &StartedCoreNode) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exclude_url_succeed() {
+async fn exclude_git_without_ref_succeed() {
     let started = start_core_node_with_mock_messenger().await;
     write_empty_repositories_json5(&started);
 
@@ -62,8 +62,12 @@ async fn exclude_url_succeed() {
 
     assert_eq!(repos.len(), 1);
     let entry = &repos[0];
-    assert_eq!(entry["type"], "url");
-    assert_eq!(entry["url"], "https://example.com/packages");
+    assert_eq!(entry["type"], "git");
+    assert_eq!(entry["url"], "https://example.com/packages.git");
+    assert!(
+        entry.get("ref").is_none_or(serde_json::Value::is_null),
+        "an exclusion without a ref matches the repository at any ref"
+    );
     assert_eq!(entry["id"], 1, "first entry should get id 1");
 }
 
@@ -206,7 +210,7 @@ async fn exclude_assigns_id_after_manual_entry() {
     // The new entry should get id 43 (max existing + 1)
     let added = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/packages")
+        .find(|e| e["url"] == "https://example.com/packages.git")
         .unwrap();
     assert_eq!(
         added["id"], 43,

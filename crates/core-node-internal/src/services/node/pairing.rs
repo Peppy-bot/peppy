@@ -605,8 +605,8 @@ pub fn plan_requested_pairs(
     // Every requested / covered / deferred key must name one of this node's
     // participant pairing slots. `validate_pairings` intentionally SKIPS keys
     // that are not participant slots (the unified `links` map lets producer and
-    // observer keys share the namespace), so this boundary — where the goal has
-    // already classified pairs — is where a stray key is caught. This restores
+    // observer keys share the namespace), so this boundary, where the goal has
+    // already classified pairs, is where a stray key is caught. This restores
     // the old dead-key rejection that the by-validator classification dropped.
     let participant_slots: std::collections::BTreeSet<&str> = pairing_deps
         .iter()
@@ -642,7 +642,7 @@ pub fn plan_requested_pairs(
     let is_optional = |link: &str| {
         pairing_deps
             .iter()
-            .any(|p| p.link_id == link && p.optional)
+            .any(|dependency| dependency.link_id == link && dependency.optional)
     };
     let defer_like: Vec<String> = deferred
         .iter()
@@ -697,8 +697,6 @@ pub fn plan_requested_pairs(
             node_tag: &node.node_tag,
             instances,
             pairing_deps: &node.pairing_deps,
-            // A pair is only ever established between participant slots, so
-            // the observation planner's list is empty on this path.
             observer_deps: &[],
             preexisting: true,
         })

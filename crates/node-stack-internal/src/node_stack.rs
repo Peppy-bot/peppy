@@ -15,8 +15,8 @@ pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
-    NodeConfig, PairingParticipantDependency,
-    collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
+    NodeConfig, PairingParticipantDependency, collect_contract_implementation_edges,
+    collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
 use core_node_api::{
@@ -642,9 +642,8 @@ impl NodeStackInner {
                 .iter()
                 .find(|inst| inst.instance_id().as_str() == slot.instance_id)
                 .map(|inst| {
-                    // Only a participant slot can be paired. Observers live
-                    // in their own list, so one sharing this link_id is
-                    // simply not found here.
+                    // Only a participant slot can be paired, so an observer
+                    // slot with this link_id resolves to no pair slot.
                     let dep = entity
                         .config()
                         .manifest
@@ -1456,10 +1455,6 @@ pub struct PairingNodeSnapshot {
 /// `node_info` handler so the join rule stays in one place. `core_node`
 /// stamps the peer's `ProducerRef` (stack-scoped v1: every pair lives
 /// under this daemon, so the peer's core_node is the daemon's own).
-///
-/// Observer slots are absent by construction: they live in their own
-/// `depends_on.pairing_observers` list, hold no role and no peer, and are
-/// never paired.
 pub fn pairing_slot_view(
     core_node: &str,
     instance_id: &str,

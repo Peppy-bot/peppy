@@ -29,13 +29,12 @@ pub struct PairingValidationItem<'a> {
     pub node_tag: &'a str,
     pub instances: &'a [DeploymentInstance],
     /// The node's declared participant slots (`depends_on.pairings`). Empty
-    /// when the node declares none.
+    /// when the node declares none. Observer slots never participate in pairing
+    /// establishment, exclusivity, or required-slot coverage, so they live in
+    /// their own field and this validator never reads them.
     pub pairing_deps: &'a [PairingParticipantDependency],
-    /// The node's declared observer slots (`depends_on.pairing_observers`).
-    /// Observers never take part in pairing establishment, exclusivity, or
-    /// required-slot coverage, so pairing validation reads only the list
-    /// above; this one is here for the observation planner, which resolves
-    /// an observer to its source through `links`.
+    /// The node's declared observer slots (`depends_on.pairing_observers`),
+    /// carried here so `observations` validates over the same item list.
     pub observer_deps: &'a [PairingObserverDependency],
     /// `true` for instances already running in the stack, folded in so they
     /// can serve as pair targets. Preexisting instances are exempt from the
@@ -129,10 +128,11 @@ pub fn validate_pairings(
         &str,
     )> = Vec::new();
     for item in items.iter().filter(|i| !i.preexisting) {
-        let participants_by_link: BTreeMap<&str, &PairingParticipantDependency> =
-            item.pairing_deps.iter()
-                .map(|dependency| (dependency.link_id.as_str(), dependency))
-                .collect();
+        let participants_by_link: BTreeMap<&str, &PairingParticipantDependency> = item
+            .pairing_deps
+            .iter()
+            .map(|dependency| (dependency.link_id.as_str(), dependency))
+            .collect();
         for instance in item.instances {
             for (key, value) in &instance.links {
                 // Only this node's participant slots establish pairs. Observer
@@ -259,7 +259,9 @@ fn resolve_pair_declaration(
     }
 
     // Candidate peer slots: same pairing (name, tag), opposite role.
-    let complementary: Vec<&PairingParticipantDependency> = target_item.pairing_deps.iter()
+    let complementary: Vec<&PairingParticipantDependency> = target_item
+        .pairing_deps
+        .iter()
         .filter(|d| d.name == own_dep.name && d.tag == own_dep.tag && d.role != own_dep.role)
         .collect();
 
@@ -355,7 +357,9 @@ fn resolve_pair_declaration(
     }
 
     // Rule 6: both-pinned sha256 must match.
-    let peer_dep = target_item.pairing_deps.iter()
+    let peer_dep = target_item
+        .pairing_deps
+        .iter()
         .find(|d| d.link_id == resolved_peer_link)
         .expect("resolved peer slot comes from target_item.pairing_deps");
     if let (Some(sha_own), Some(sha_peer)) = (&own_dep.sha256, &peer_dep.sha256)
@@ -407,8 +411,7 @@ fn validate_coverage_and_defers(
                 // and a defer naming a producer-binding or unknown slot by
                 // `validate_link_slots`; skip both here so each defer is judged
                 // exactly once.
-                let Some(dep) = item.pairing_deps.iter().find(|d| &d.link_id == link_id)
-                else {
+                let Some(dep) = item.pairing_deps.iter().find(|d| &d.link_id == link_id) else {
                     continue;
                 };
                 let reason = if claims.contains_key(&(owner_id.to_string(), link_id.clone())) {
@@ -426,7 +429,7 @@ fn validate_coverage_and_defers(
                     });
                 }
             }
-            for dep in item.pairing_deps.iter() {
+            for dep in item.pairing_deps {
                 if dep.optional {
                     continue;
                 }
@@ -456,7 +459,7 @@ mod tests {
         serde_json5::from_str(json5).expect("instances fixture should parse")
     }
 
-    pub(super) fn parse_pairing_deps(json5: &str) -> Vec<PairingParticipantDependency> {
+    fn parse_pairing_deps(json5: &str) -> Vec<PairingParticipantDependency> {
         serde_json5::from_str(json5).expect("pairing deps fixture should parse")
     }
 

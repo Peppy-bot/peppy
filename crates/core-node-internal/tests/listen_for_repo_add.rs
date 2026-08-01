@@ -295,7 +295,11 @@ async fn listen_for_repo_add_no_top_on_empty_uses_default_floor() {
     let started = start_core_node_with_mock_messenger().await;
     write_repositories_json5(&started, "[]");
 
-    let resp = send_repo_add(&started, &RepoAddRequest::new_git("https://example.com/x.git", None)).await;
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_git("https://example.com/x.git", None),
+    )
+    .await;
     assert!(resp.success);
 
     let repos_path = repositories_list_path(&started.peppy_dirs);

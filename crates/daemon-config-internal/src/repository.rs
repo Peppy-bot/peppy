@@ -12,6 +12,6 @@ pub use core_node_api::encoding::RepoItemKind;
 pub use parse::PeppyRepositoryIndexParser;
 pub use types::{
     DeclaredItem, DeclaredPaths, GitCommit, GitCommitError, IndexedItem, ItemName, ItemTag,
-    ManifestFingerprint, ManifestFingerprintError, RepoPathError, RepoRelativePath, RepositoryIndex,
-    TaggedSection, UniqueMap,
+    ManifestFingerprint, ManifestFingerprintError, RepoPathError, RepoRelativePath,
+    RepositoryIndex, TaggedSection, UniqueMap,
 };

@@ -396,9 +396,9 @@ pub(super) async fn validate_and_order_dependencies(
             implements: &root_config.manifest.implements,
         });
     }
-    // Pairing and observation share one view over `depends_on.pairings`. A
-    // launch replaces the previous stack, so there are no preexisting
-    // instances or already-claimed slots to fold in.
+    // Pairing and observation share one item list, each reading its own slot
+    // list off it. A launch replaces the previous stack, so there are no
+    // preexisting instances or already-claimed slots to fold in.
     let pairing_items: Vec<daemon_config::launcher::PairingValidationItem<'_>> = planned
         .iter()
         .map(|p| daemon_config::launcher::PairingValidationItem {

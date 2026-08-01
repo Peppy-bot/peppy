@@ -724,8 +724,7 @@ fn read_fs_repo(
     let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let items = read_published_items(root, &|path| EntryOrigin::Fs {
         path: canonical.join(path.as_path()),
-    })
-    .map_err(|detail| (RepoFailureKind::Conflict, detail))?;
+    })?;
 
     Ok(items
         .into_iter()
@@ -774,7 +773,6 @@ fn read_git_repo(
         commit: commit.clone(),
         path: path.clone(),
     })
-    .map_err(|detail| (RepoFailureKind::Conflict, detail))
 }
 
 /// The commit a fresh clone is sitting on.
@@ -1452,7 +1450,11 @@ mod tests {
         let retained: Vec<&str> = refreshed
             .nodes
             .iter()
-            .filter(|n| n.origin.path_str().starts_with(two_root.to_string_lossy().as_ref()))
+            .filter(|n| {
+                n.origin
+                    .path_str()
+                    .starts_with(two_root.to_string_lossy().as_ref())
+            })
             .map(|n| n.node_name.as_str())
             .collect();
         assert_eq!(retained, vec!["from_two"]);
@@ -1989,7 +1991,10 @@ mod tests {
             Some(branch.as_str()),
             "resolved_ref should record the branch we cloned, not literal `HEAD`"
         );
-        assert_eq!(launcher.origin.path_str(), "openarm01/openarm01_teleop.json5");
+        assert_eq!(
+            launcher.origin.path_str(),
+            "openarm01/openarm01_teleop.json5"
+        );
         assert!(
             launcher.sha256.as_str().len() == 64,
             "sha256 should be populated from the manifest file bytes"
@@ -2011,7 +2016,10 @@ mod tests {
         assert_eq!(origin["repo_ref"], branch);
         assert_eq!(origin["path"], "openarm01/openarm01_teleop.json5");
         assert_eq!(
-            origin["commit"].as_str().expect("a commit is recorded").len(),
+            origin["commit"]
+                .as_str()
+                .expect("a commit is recorded")
+                .len(),
             40,
             "the entry records the commit it was read at, not just the branch"
         );
@@ -2191,5 +2199,4 @@ mod tests {
         let head_oid = head.target().expect("head oid");
         assert_eq!(head_oid.to_string(), target_sha);
     }
-
 }

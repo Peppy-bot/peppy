@@ -8,6 +8,53 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+/// Publishes `root`'s `peppy_repository.json5`, which is what a repository
+/// offers a daemon. Call it once the repository holds every item the test
+/// expects to be found.
+pub fn publish_repo_index(root: &Path) {
+    let index = core_node::generate_repository_index(root)
+        .expect("a well-formed test repository can be indexed");
+    core_node::write_repository_index(root, &index).expect("write repository index");
+}
+
+/// Publishes `root`'s index and commits it together with everything else in
+/// the work tree, returning the branch HEAD is on.
+///
+/// A git repository is read from a clone, so what it publishes has to be
+/// committed, not merely written.
+pub fn publish_and_commit_repo_index(root: &Path) -> String {
+    publish_repo_index(root);
+
+    let repo = git2::Repository::open(root).expect("open git repository");
+    let mut index = repo.index().expect("open index");
+    index
+        .add_all(["."].iter(), git2::IndexAddOption::DEFAULT, None)
+        .expect("stage the work tree");
+    index.write().expect("write index");
+    let tree_id = index.write_tree().expect("write tree");
+    let tree = repo.find_tree(tree_id).expect("find tree");
+    let signature = git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+    let parents: Vec<git2::Commit> = repo
+        .head()
+        .ok()
+        .and_then(|head| head.target())
+        .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
+        .unwrap_or_default();
+    let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+    repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "publish",
+        &tree,
+        &parent_refs,
+    )
+    .expect("commit the published repository");
+
+    let head = repo.head().expect("read HEAD");
+    head.shorthand().expect("HEAD is on a branch").to_owned()
+}
+
 /// Writes a node config file and the corresponding fingerprint file expected by `node_add`.
 pub fn write_peppy_json5(dir: &Path, content: &str) {
     let config_path = dir.join(NODE_CONFIG_FILE);
@@ -40,7 +87,7 @@ pub struct TestPackagesCache {
     contracts: Vec<serde_json::Value>,
 }
 
-    /// A distinct, valid fingerprint per `seed`, for entries whose bytes the
+/// A distinct, valid fingerprint per `seed`, for entries whose bytes the
 /// test never reads back.
 fn seeded_sha(seed: &str) -> String {
     config::fingerprint::fingerprint_for_bytes(seed.as_bytes())
