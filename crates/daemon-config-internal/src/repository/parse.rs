@@ -6,8 +6,8 @@ use std::path::Path;
 ///
 /// Unlike the item documents, an index is identified by its filename and its
 /// position at the root of the scanned tree, so a caller never has to try
-/// parsing one speculatively: it is either there and readable or the
-/// repository does not resolve.
+/// parsing one speculatively: it is either there and readable or reading it
+/// is an error.
 pub struct PeppyRepositoryIndexParser;
 
 impl PeppyRepositoryIndexParser {

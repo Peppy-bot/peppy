@@ -184,22 +184,15 @@ peppy repo exclude /home/user/projects/private-nodes
 
 ## The repository index
 
-:::caution[Breaking change ahead]
-A future release will require every repository to carry a `peppy_repository.json5` index at
-the root of the tree Peppy scans. A repository without a valid one will not resolve, and there
-will be no fallback to walking. Generate one now for every repository you own, and commit it:
+A repository index is a `peppy_repository.json5` at the root of the tree Peppy scans, stating what
+the repository publishes and where each item is declared. [`peppy repo index`](#index-a-repository)
+writes it and `--check` verifies it against the tree, and it is committed alongside the items it
+lists, so a contested identity is caught on the branch that created it rather than on every machine
+that later refreshes.
 
-```sh
-peppy repo index /path/to/my/nodes
-```
-
-The file is ignored by the current release, so it is safe to commit ahead of time.
-:::
-
-A repository index states what a repository publishes and where each item is declared, instead of
-leaving Peppy to work it out by walking directories. The nesting is the uniqueness rule: name, then
-tag, then the file that declares the item. A second claim on one identity has nowhere to go except a
-key that is already taken, so a repository cannot state two answers to the same question.
+The nesting is the uniqueness rule: name, then tag, then the file that declares the item. A second
+claim on one identity has nowhere to go except a key that is already taken, so a repository cannot
+state two answers to the same question.
 
 ```json5
 // peppy_repository.json5, at the root of the tree Peppy scans
@@ -231,11 +224,11 @@ Rules worth knowing before you hand-edit one:
   out of the tree.
 - **Only the mapping belongs here.** Nothing is copied out of an item's own manifest, because a copy
   would drift from the thing it copied.
-- **Unknown fields and unknown versions are refused** rather than ignored, so an older Peppy never
-  silently drops part of a newer index.
+- **Unknown fields and unknown versions are refused** rather than ignored, so an index Peppy does not
+  fully understand is rejected outright instead of silently losing part of itself.
 - **An empty index is valid; a missing one is not.** A repository that publishes nothing has an index
-  with no sections. "Publishes nothing" and "has no index" are different situations and get different
-  answers.
+  with no sections, and `--check` fails on a repository that carries no index at all. "Publishes
+  nothing" and "has no index" are different situations and get different answers.
 - **The file is generated.** Comments survive `--check`, but the next `peppy repo index` run
   discards them.
 
@@ -339,15 +332,15 @@ dep `gps_module:v2` not found in node stack or repository cache; run `peppy repo
 When a node depends on another node you maintain locally, registering your workspace directory as a `fs` repository removes the need to `peppy node add` every dependency just to regenerate peppygen for a downstream node:
 
 ```sh
-peppy repo index ~/code/my-nodes    # writes ~/code/my-nodes/peppy_repository.json5
 peppy repo add ~/code/my-nodes
 peppy repo refresh
 peppy node sync -r       # picks up uvc_camera, lidar_sensor, ... from ~/code/my-nodes
 ```
 
-Re-run `peppy repo index` after adding, moving, or renaming a node in that directory. Today a missing
-index only costs you the index; from the release that requires one, `peppy repo add` will refuse a
-directory that has none.
+Re-run `peppy repo refresh` after adding, moving, or renaming a node in that directory: `repo list`
+and `node sync -r` both read the cache, not the filesystem. If you also publish that directory to
+others, keep its index current with `peppy repo index ~/code/my-nodes`, the same as for any
+repository others consume.
 
 Particularly useful during the early phase of a multi-node project, when the dependency graph is still in flux and you don't want to re-add nodes after every interface change.
 

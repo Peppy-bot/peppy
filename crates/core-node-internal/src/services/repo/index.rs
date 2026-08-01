@@ -1,10 +1,12 @@
 //! Discovering what a repository publishes, and recording it in the
 //! repository's own index.
 //!
-//! The walk here is the authoring tool: `peppy repo index` runs it to
-//! produce a repository's `peppy_repository.json5`, which is what states the
-//! identities the repository publishes and where each is declared. Reading
-//! that file is what resolution uses; walking is what writes it.
+//! The walk here serves both readers of a repository. `peppy repo index`
+//! runs it to produce the repository's `peppy_repository.json5`, which
+//! states the identities the repository publishes and where each is
+//! declared, and `refresh.rs` runs it to build a machine's caches, so what
+//! a repository commits and what a machine caches come from one description
+//! of the tree.
 //!
 //! A given identity reaches [`WalkResult::items`] at most once per walk, but
 //! every claimant is recorded: an identity with several claimants comes back
