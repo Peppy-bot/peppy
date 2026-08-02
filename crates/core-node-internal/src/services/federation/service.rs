@@ -13,7 +13,7 @@
 //! coordinator leaves the federation. The state machine itself lives in the
 //! parent module and is tested there without any of this plumbing.
 
-use super::{ReserveOutcome, SliceOwnership};
+use super::{Lease, ReserveOutcome, SliceOwnership};
 use crate::Result;
 use crate::services::node::RelationshipCoordinators;
 use crate::services::response::into_service_response;
@@ -165,14 +165,14 @@ async fn reserve_inner(
             .encode()
             .map_err(Into::into);
         }
-        // Only a FRESH reservation needs a watch. A coordinator retrying a
-        // dropped reply re-reserves what it already holds, and the watch its
-        // first attempt spawned is still supervising that same reservation, so
-        // watching again would leave a presence subscription per retry. The
-        // takeover keeps the same coordinator, and the watch is scoped to the
-        // coordinator, so the stale reservation's watch supervises the new one.
-        ReserveOutcome::Reserved => {
-            watch_coordinator_presence(context, &decoded.coordinator_core_node)
+        // Only a FRESH reservation needs a watch, and the lease it hands back
+        // is what that watch supervises. A coordinator retrying a dropped reply
+        // re-reserves what it already holds, and a takeover moves the launch id
+        // inside the reservation already held: in both cases the live lease is
+        // the one the existing watch is holding, so watching again would leave
+        // a presence subscription per retry.
+        ReserveOutcome::Reserved { lease } => {
+            watch_coordinator_presence(context, &decoded.coordinator_core_node, lease)
         }
         ReserveOutcome::TookOverFromSameCoordinator { stale_launch_id } => {
             warn!(
@@ -216,20 +216,23 @@ fn validate_deployment_pins(pins_json5: &[String]) -> std::result::Result<(), St
     Ok(())
 }
 
-/// Turns the reservation into a LEASE: while this daemon holds a reservation
-/// for `coordinator`, it watches that core node's presence and releases the
-/// moment the token disappears.
+/// Turns the reservation into a LEASE: while `lease` covers this daemon's
+/// reservation for `coordinator`, it watches that core node's presence and
+/// releases the moment the token disappears.
 ///
 /// Without this, a coordinator that died mid-launch would wedge every machine
 /// it had reserved until each daemon restarted, with nothing in the UI to
 /// explain the refusals. That is the exact failure mode this plan refuses to
 /// accept for cross-daemon pairing, so it must not be introduced one level up.
 ///
-/// The task is scoped to the coordinator it watches:
-/// `release_because_coordinator_gone` is a no-op unless that same coordinator
-/// still holds the reservation, so a watch outliving its reservation cannot
-/// free a later one.
-fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &str) {
+/// The task lives exactly as long as the reservation it supervises. Ending the
+/// lease (a release, a `stack reset`, or this task's own) stops the watch, so a
+/// daemon that serves launch after launch holds one presence subscription
+/// rather than one per launch it has ever taken part in. The lease is also what
+/// `release_because_coordinator_gone` is scoped to, so a watch that did outlive
+/// its reservation frees nothing: not a later coordinator's reservation, and
+/// not the next one taken by the coordinator it was watching.
+fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &str, lease: Lease) {
     let messenger = context.messenger.clone();
     let coordinator = coordinator.to_owned();
     let ownership = Arc::clone(&context.ownership);
@@ -247,7 +250,7 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
                      releasing its reservation rather than holding one this daemon \
                      cannot supervise"
                 );
-                ownership.release_because_coordinator_gone(&coordinator);
+                ownership.release_because_coordinator_gone(&lease);
                 return;
             }
         };
@@ -256,6 +259,9 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
             let event = tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => return,
+                // The reservation ended some other way, so there is nothing
+                // left to supervise and the subscription can go.
+                _ = lease.ended() => return,
                 event = watch.rx.recv_async() => match event {
                     Ok(event) => event,
                     // The presence stream ended, so this reservation has lost
@@ -268,7 +274,7 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
                              its reservation rather than holding one this daemon can no longer \
                              supervise"
                         );
-                        ownership.release_because_coordinator_gone(&coordinator);
+                        ownership.release_because_coordinator_gone(&lease);
                         return;
                     }
                 },
@@ -279,7 +285,7 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
             };
             // Stop watching as soon as the reservation is no longer ours to
             // supervise, whether we released it here or it had already gone.
-            match ownership.release_because_coordinator_gone(&coordinator) {
+            match ownership.release_because_coordinator_gone(&lease) {
                 Some(launch_id) => {
                     warn!(
                         "coordinator `{coordinator}` left the federation; released its \

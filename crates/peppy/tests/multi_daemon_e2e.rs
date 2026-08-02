@@ -758,7 +758,7 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
 
 // ── Federated launch ──────────────────────────────────────────────────────
 //
-// Four tests rather than one long one. The fixtures genuinely differ (a
+// Separate tests rather than one long one. The fixtures genuinely differ (a
 // coordinator restart, a killed peer, and `--local` with no peer at all are
 // three different worlds), and a single sequential test would hide every
 // assertion after the first failure behind one stage number.
@@ -782,6 +782,7 @@ const CONTAINER_LAUNCHER_DIR: &str = "/etc/peppy/launchers";
 const SPLIT_COMPUTE_LAUNCHER_FILE: &str = "split_compute_manipulation.json5";
 const HUB_NODE_PROBE_LAUNCHER_FILE: &str = "hub_node_probe.json5";
 const CALLER_ENV_PROBE_LAUNCHER_FILE: &str = "caller_env_probe.json5";
+const UNBINDABLE_PEER_LAUNCHER_FILE: &str = "unbindable_peer.json5";
 
 fn container_launcher(file_name: &str) -> String {
     format!("{CONTAINER_LAUNCHER_DIR}/{file_name}")
@@ -818,6 +819,39 @@ const CALLER_ENV_PROBE_LAUNCHER: &str = r#"{
     {
       source: { name: "my_python_robot_arm", tag: "v1" },
       instances: [{ instance_id: "env_probe_arm_inst", core_node: "remote_worker" }],
+    },
+  ],
+}
+"#;
+
+/// A launch that gets as far as the peer's RUN and fails there.
+///
+/// `uvc_camera_video_reconstruction_python` is a container node whose node
+/// definition binds `/tmp/video_reconstruction`, and that directory exists on
+/// neither daemon: the coordinator creates missing bind sources only for the
+/// instances it runs itself, and a peer creates none at all. So the peer adds
+/// the node, builds it, accepts the run goal, opens its log file, and fails
+/// starting the container. The camera stays on the coordinator, which is what
+/// makes the marked entry evidence of attribution rather than of every entry
+/// belonging to one machine.
+const UNBINDABLE_PEER_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  core_nodes: ["remote_worker"],
+  deployments: [
+    {
+      source: { name: "uvc_camera_python_mock", tag: "v1" },
+      instances: [{ instance_id: "unbindable_cam_inst" }],
+    },
+    {
+      source: { name: "uvc_camera_video_reconstruction_python", tag: "v1" },
+      instances: [
+        {
+          instance_id: "unbindable_recon_inst",
+          core_node: "remote_worker",
+          arguments: { video_duration_seconds: 5 },
+          links: { camera: "unbindable_cam_inst" },
+        },
+      ],
     },
   ],
 }
@@ -998,6 +1032,11 @@ async fn start_federation(prefix: &str) -> Federation {
         CALLER_ENV_PROBE_LAUNCHER,
     )
     .expect("writing the caller-env probe launcher into the launcher mount");
+    std::fs::write(
+        launcher_dir.path().join(UNBINDABLE_PEER_LAUNCHER_FILE),
+        UNBINDABLE_PEER_LAUNCHER,
+    )
+    .expect("writing the unbindable-peer launcher into the launcher mount");
 
     let robot = start_daemon(
         &launch,
@@ -1408,6 +1447,67 @@ async fn an_unreachable_peer_fails_the_launch_and_is_named() {
             .all(|id| !holds_instance(&robot_stack.text, id)),
         "a refused preflight must not have started anything:\n{}",
         robot_stack.text
+    );
+}
+
+/// A phase that fails on a machine the operator cannot see must still name the
+/// file that explains it, on the machine whose filesystem holds it.
+///
+/// The peer accepts the run goal and fails it, which is the only shape that
+/// produces a failed remote log entry: a goal the peer never accepts has no log
+/// file to name, and `an_unreachable_peer_fails_the_launch_and_is_named` covers
+/// that one. Everything asserted here is read from the launch's own listing,
+/// because that listing is the operator's whole route to a log file sitting on
+/// another machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
+    let federation = start_federation("peppy-fed-peer-fail").await;
+
+    let launch = federation
+        .robot
+        .peppy(&[
+            "stack",
+            "launch",
+            "--place",
+            &format!("remote_worker@{}", federation.cloud_core_node),
+            &container_launcher(UNBINDABLE_PEER_LAUNCHER_FILE),
+        ])
+        .await;
+    assert!(
+        !launch.success(),
+        "a peer that cannot start its container must fail the launch:\n{}",
+        launch.text
+    );
+
+    // One phase failed on one machine, so exactly one entry carries the marker,
+    // and it is the peer's.
+    assert_eq!(
+        launch.text.matches("[FAILED]").count(),
+        1,
+        "only the phase that failed may be marked:\n{}",
+        launch.text
+    );
+    let peer_node = "uvc_camera_video_reconstruction_python:v1";
+    assert!(
+        launch.text.contains(&format!(
+            "{peer_node}@{} [FAILED]: ",
+            federation.cloud_core_node
+        )),
+        "the failed run must be listed against the peer holding its log file:\n{}",
+        launch.text
+    );
+
+    // The phases that DID succeed on that same peer keep their entries. A run
+    // that failed is not the whole story of the machine it failed on, and the
+    // add and build logs are where an operator looks next.
+    assert_eq!(
+        launch
+            .text
+            .matches(&format!("{peer_node}@{}: ", federation.cloud_core_node))
+            .count(),
+        2,
+        "the peer's successful Add and Build must still be listed:\n{}",
+        launch.text
     );
 }
 
