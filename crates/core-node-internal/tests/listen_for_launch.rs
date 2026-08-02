@@ -876,6 +876,25 @@ async fn listen_for_launch_configuration_succeed() {
             .map(|e| &e.instance_id)
             .collect::<Vec<_>>()
     );
+
+    // Every log entry names the machine whose filesystem holds the file. This
+    // launch places everything on the coordinator, so every entry carries its
+    // core node.
+    let expected_core_node = &started_core_node.core_node_name;
+    let all_core_nodes: Vec<&str> = result
+        .node_add_logs
+        .iter()
+        .map(|e| e.core_node.as_str())
+        .chain(result.node_build_logs.iter().map(|e| e.core_node.as_str()))
+        .chain(result.node_run_logs.iter().map(|e| e.core_node.as_str()))
+        .collect();
+    assert!(
+        all_core_nodes
+            .iter()
+            .all(|core_node| core_node == expected_core_node),
+        "every log entry should carry the coordinator's core node `{expected_core_node}`, got: \
+         {all_core_nodes:?}"
+    );
 }
 
 /// Launch file references nodes by `{ name, tag }` (long form) and
@@ -1744,6 +1763,10 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     assert!(
         !result.node_run_logs[0].log_path.as_os_str().is_empty(),
         "start log path should be non-empty"
+    );
+    assert_eq!(
+        result.node_run_logs[0].core_node, started_core_node.core_node_name,
+        "a failed start's log entry still names the machine holding the file"
     );
 }
 
