@@ -168,6 +168,9 @@ struct ProcessLaunchContext {
     feedback_publisher: ActionFeedbackPublisher,
     log_file: Arc<StdMutex<File>>,
     log_path: PathBuf,
+    /// The caller's forwarded environment. It describes the machine the launch
+    /// was typed on, so it reaches goals executed on this daemon and stays off
+    /// every goal dispatched to a peer.
     env_vars: Vec<(String, String)>,
     timeouts: StackLaunchTimeouts,
     /// Whole-launch deadline. `None` means the user did not opt into a max; only idle timeouts
@@ -377,7 +380,9 @@ async fn add_and_build_group(
 
         // The identical source and pins a peer would receive: a launch adds
         // one set of bytes wherever a deployment lands, so the local arm
-        // must not get to differ from the dispatched one.
+        // must not get to differ from the dispatched one. The environment is
+        // the one deliberate difference: the caller's env vars describe this
+        // machine, so they apply here and stay off the goals a peer receives.
         let node_add_goal = match crate::services::node::pins::encode_pins(&item.closure_pins) {
             Ok(pins) => {
                 NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
@@ -458,6 +463,12 @@ async fn add_and_build_group(
 /// name files on that machine, and a path the operator cannot open is worse
 /// than no path. What the operator gets instead is the peer's output, relayed
 /// live into this launch's feedback stream and attributed to its core node.
+///
+/// Neither goal carries the caller's forwarded environment. Those values
+/// (PATH first among them) describe the coordinator's machine, and a build
+/// that resolves its tools through another machine's PATH fails on hosts
+/// that have the toolchain installed. The peer's daemon supplies its own
+/// environment to whatever these goals spawn.
 async fn add_and_build_remotely(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
@@ -472,7 +483,6 @@ async fn add_and_build_remotely(
         STACK_LAUNCH_GIT_HASH,
         ctx.idle_timeouts.add.as_secs(),
     )
-    .with_env_vars(ctx.env_vars.clone())
     .with_launch_id(&goal.launch_id)
     .with_pins(crate::services::node::pins::encode_pins(
         &item.closure_pins,
@@ -486,7 +496,6 @@ async fn add_and_build_remotely(
         added.node_tag.unwrap_or_else(|| item.node_tag.clone()),
         ctx.idle_timeouts.build.as_secs(),
     )
-    .with_env_vars(ctx.env_vars.clone())
     .with_launch_id(&goal.launch_id);
     federated::run_remote_goal(ctx, core_node, &build_goal, ctx.idle_timeouts.build)
         .await
@@ -709,10 +718,13 @@ fn mount_source(mount: &str) -> &str {
     mount.split(':').next().unwrap_or(mount)
 }
 
-/// The environment one launched instance is started with: the caller
-/// environment the launch goal forwards to every node, with the instance's own
-/// `env_vars` layered on top so a deployment can pin what differs per instance
-/// (a device path, a board id) without depending on whoever ran the launch.
+/// The environment one launched instance is started with: the forwarded
+/// caller environment, when the instance runs on the coordinator's own
+/// machine, with the instance's own `env_vars` layered on top so a deployment
+/// can pin what differs per instance (a device path, a board id) without
+/// depending on whoever ran the launch. An instance placed on a peer starts
+/// from an empty forwarded set, because the caller's environment describes
+/// the caller's machine and no other.
 ///
 /// A key declared by the instance replaces the forwarded one rather than
 /// appearing twice: the spawn paths differ on duplicates (a process node's
@@ -951,6 +963,10 @@ async fn start_node_instances(
             };
 
             let local = core_node == ctx.bound_core_node;
+            // The caller's forwarded environment applies to instances started
+            // on this machine, which it describes. An instance on a peer gets
+            // only the env_vars its launcher file declares for it.
+            let forwarded_env: &[(String, String)] = if local { &ctx.env_vars } else { &[] };
             let node_run_goal = if local {
                 NodeRunGoal::for_internal_execution(
                     instance_plan,
@@ -967,7 +983,7 @@ async fn start_node_instances(
                     ctx.idle_timeouts.run.as_secs(),
                 )
             }
-            .with_env_vars(instance_environment(&ctx.env_vars, &instance.env_vars))
+            .with_env_vars(instance_environment(forwarded_env, &instance.env_vars))
             .with_requested_pairs(
                 requested_by_instance
                     .remove(instance_id)
@@ -1657,6 +1673,20 @@ mod tests {
                 ("BOARD_ID".to_string(), "3".to_string()),
                 ("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string()),
             ]
+        );
+    }
+
+    /// An instance on a peer starts from no forwarded environment, so the
+    /// env_vars its launcher file declares are the whole environment its run
+    /// goal carries.
+    #[test]
+    fn a_peer_instance_carries_only_its_declared_env_vars() {
+        let mut instance_env = BTreeMap::new();
+        instance_env.insert("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string());
+
+        assert_eq!(
+            instance_environment(&[], &instance_env),
+            vec![("ESP32_DEVICE".to_string(), "/dev/ttyUSB0".to_string())]
         );
     }
 

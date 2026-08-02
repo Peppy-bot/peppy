@@ -171,6 +171,16 @@ replaces them. And the `[cn-atlas-h100]` prefix: the peer's own output is
 relayed into this one stream and attributed, because a launch that ran half its
 work somewhere you cannot see is not one you can debug.
 
+Each machine builds and runs its slice with its own environment. Nothing from
+the machine the launch was typed on crosses over: not its `PATH`, not its
+shell environment. A node's `build_cmd` names its toolchain (`uv` for the
+default Python template, or whatever the node declares), and every machine a
+launch places that node on must have that toolchain installed where its daemon
+can find it; a machine that lacks it fails the launch with an error naming the
+missing program. The one way to hand a value to a remote instance is the
+`env_vars` of that instance in the launcher file, which apply wherever the
+instance is placed.
+
 ## Verifying placement
 
 `peppy stack list` from either machine shows both slices, each attributed to the

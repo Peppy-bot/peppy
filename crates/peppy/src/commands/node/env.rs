@@ -41,6 +41,10 @@ fn should_forward_env(key: &str, value: &str) -> bool {
 /// caller-only vars that would be incorrect in the node's working directory,
 /// and vars whose name or value a node could not receive intact (see
 /// [`should_forward_env`]).
+///
+/// What is collected here reaches the daemon this process talks to and no
+/// further: these values describe this machine, so a launch that places an
+/// instance on a peer daemon dispatches its goals without them.
 pub fn caller_env_overrides() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(key, value)| should_forward_env(key, value))
