@@ -186,13 +186,13 @@ async fn reserve_participants(
     .await;
 
     let mut slices: Vec<ParticipantSlice> = Vec::new();
-    let mut reserved: Vec<String> = Vec::new();
+    let mut to_release: Vec<String> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
 
     for (core_node, outcome) in acks {
         match outcome {
             Ok(response) if response.accepted => {
-                reserved.push(core_node.clone());
+                to_release.push(core_node.clone());
                 // The reservation is already recorded above, so a version
                 // refusal here still releases it.
                 match check_version(&core_node, &response, own_version) {
@@ -203,13 +203,22 @@ async fn reserve_participants(
                     Err(reason) => refusals.push(reason),
                 }
             }
+            // An answered refusal reserved nothing, so the peer owes no
+            // release.
             Ok(response) => refusals.push(format!(
                 "`{core_node}` refused: {}",
                 response
                     .rejection_reason
                     .unwrap_or_else(|| "no reason given".to_owned())
             )),
-            Err(reason) => refusals.push(reason),
+            // An unanswered reservation is not a refusal: the request may have
+            // landed and reserved the peer with only the ack lost, so it is
+            // released with the ones that acked. Releasing a peer that never
+            // reserved succeeds as a no-op.
+            Err(reason) => {
+                to_release.push(core_node.clone());
+                refusals.push(reason);
+            }
         }
     }
 
@@ -225,7 +234,7 @@ async fn reserve_participants(
         coordinator,
         caller_instance_id,
         launch_id,
-        &reserved,
+        &to_release,
     )
     .await;
 
@@ -288,7 +297,8 @@ pub(crate) async fn release_participants(
             ),
             Err(e) => tracing::warn!(
                 "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
-                 reservation drops on its own when this coordinator leaves the federation"
+                 reservation drops on its own when this coordinator reserves it for its \
+                 next launch or leaves the federation"
             ),
         }
     }))
