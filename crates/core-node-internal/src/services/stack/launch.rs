@@ -531,11 +531,10 @@ async fn add_and_build_remotely(
 
 /// Step 7: Prepare the host paths that containers on THIS machine will bind.
 ///
-/// Scoped to the coordinator's own instances. A peer's bind sources live on the
-/// peer's filesystem, so creating them here would make directories on the wrong
-/// machine and still leave the peer's missing. See the Federation guide's
-/// Limits section: a container node placed on a peer needs its bind sources to
-/// already exist there.
+/// Scoped to the coordinator's own instances. A peer's bind sources name paths
+/// on the peer's filesystem, so creating them here would make directories on
+/// the wrong machine; the peer prepares them itself when it starts the
+/// instance, which is where every machine prepares the sources it binds.
 ///
 /// Its CLEANUP is not so scoped. This step runs after step 6, by which point
 /// every participant has had its stack replaced and its nodes added and built,

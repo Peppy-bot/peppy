@@ -824,14 +824,17 @@ const CALLER_ENV_PROBE_LAUNCHER: &str = r#"{
 }
 "#;
 
+/// The host path `uvc_camera_video_reconstruction_python:v1` bind-mounts, taken
+/// verbatim from its node definition in `nodes-hub`.
+const PEER_BIND_SOURCE: &str = "/tmp/video_reconstruction";
+
 /// A launch that gets as far as the peer's RUN and fails there.
 ///
-/// `uvc_camera_video_reconstruction_python` is a container node whose node
-/// definition binds `/tmp/video_reconstruction`, and that directory exists on
-/// neither daemon: the coordinator creates missing bind sources only for the
-/// instances it runs itself, and a peer creates none at all. So the peer adds
-/// the node, builds it, accepts the run goal, opens its log file, and fails
-/// starting the container. The camera stays on the coordinator, which is what
+/// `uvc_camera_video_reconstruction_python` is a container node that binds
+/// [`PEER_BIND_SOURCE`], and the test makes that source unusable on the peer
+/// alone (see `a_peer_phase_that_fails_still_names_the_peers_log_file`). So the
+/// peer adds the node, builds it, accepts the run goal, opens its log file, and
+/// fails preparing the bind. The camera stays on the coordinator, which is what
 /// makes the marked entry evidence of attribution rather than of every entry
 /// belonging to one machine.
 const UNBINDABLE_PEER_LAUNCHER: &str = r#"{
@@ -1462,6 +1465,21 @@ async fn an_unreachable_peer_fails_the_launch_and_is_named() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
     let federation = start_federation("peppy-fed-peer-fail").await;
+
+    // Make the peer's bind source unusable. A daemon creates a missing bind
+    // source itself right before it starts the container, on whichever machine
+    // runs the instance, so a merely absent path would be created and the run
+    // would succeed. A dangling symlink is the shape that cannot be: it does
+    // not exist, so the daemon tries to create it, and `mkdir` refuses because
+    // the symlink already occupies the name. Planted on the peer only, so the
+    // coordinator's own instance still gets through every phase.
+    require_success(
+        federation
+            .cloud
+            .exec(vec!["ln", "-s", "/no_such_bind_target", PEER_BIND_SOURCE])
+            .await,
+        &format!("planting an uncreatable {PEER_BIND_SOURCE} on the peer"),
+    );
 
     let launch = federation
         .robot

@@ -136,9 +136,8 @@ thing that changes is what `self` binds to: from the robot that is
 a planning role, not a privileged one, so the topology does not depend on where
 the command was typed.
 
-Two things do follow the coordinator, and both argue for the robot here: an
-instance that omits `core_node` runs there, and container bind sources are
-created only for the instances that machine runs itself (see [Limits](#limits)).
+One thing does follow the coordinator, and it argues for the robot here: an
+instance that omits `core_node` runs on the coordinating daemon.
 
 ```bash
 peppy stack launch --place robot_onboard@self \
@@ -364,7 +363,3 @@ participants keep running.
   file.
 - **No re-placement of a running instance.** Moving an instance to another
   machine means launching again.
-- **A peer prepares no container bind mounts.** The coordinator creates missing
-  bind sources for the instances it runs itself, but a path on another machine
-  is that machine's to provide. A container node placed on a peer needs its bind
-  sources to already exist there.
