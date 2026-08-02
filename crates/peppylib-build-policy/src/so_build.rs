@@ -45,11 +45,10 @@ pub fn should_build_host(present: bool, current: bool, force: bool) -> bool {
     force || !present || !current
 }
 
-/// Whether the caller requested a cross-platform build by setting
-/// `PEPPY_CROSS_BUILD` (scripts/build_release.sh and the CI workflow do). Only a
-/// cross build produces the Linux container bindings; a plain `cargo build`
-/// builds only the host dynamic lib and skips the slow zig cross-compile, so
-/// local dev builds stay fast.
+/// Whether the caller explicitly requested a cross-platform build by setting
+/// `PEPPY_CROSS_BUILD` (the CI test workflows do, and a developer iterating on
+/// container bindings can). Release builds need no request: they always run
+/// the cross build (see [`cross_build_enabled`]).
 ///
 /// Any non-empty value other than "0" counts as set, matching the
 /// `PEPPYLIB_REBUILD` convention.
@@ -57,18 +56,31 @@ pub fn cross_build_requested() -> bool {
     std::env::var("PEPPY_CROSS_BUILD").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
+/// Whether this build produces the Linux container bindings.
+///
+/// Every release build does: a release binary is a deployment artifact, and a
+/// daemon without the Linux bindings embedded fails every container Python
+/// node build on its machine, so `cargo build --release` must never ship
+/// without them. A debug build skips the slow zig cross-compile to keep local
+/// iteration fast, unless the caller opts in via `PEPPY_CROSS_BUILD`
+/// ([`cross_build_requested`]).
+pub fn cross_build_enabled(profile: BuildProfile, requested: bool) -> bool {
+    profile == BuildProfile::Release || requested
+}
+
 /// Whether a Linux `.so` cross-compile must run for a target.
 ///
 /// The build host is macOS, so every Linux target is a cross-compile, and all of
-/// them are release-only. A regular `cargo build` therefore produces only the
-/// host dynamic lib, exactly like a Linux build (which likewise builds only its
-/// own native host `.so`); this keeps the two platforms consistent and a plain
-/// build fast. The Linux bindings are built solely in a cross build
-/// (`cross_build`, from [`cross_build_requested`], set by
-/// `scripts/build_release.sh` and CI), where a target is (re)built when a rebuild
-/// is forced, the `.so` is missing, or its recorded state is stale. `force`
+/// them are built in release mode regardless of the cargo profile. A plain debug
+/// `cargo build` therefore produces only the host dynamic lib, exactly like a
+/// Linux build (which likewise builds only its own native host `.so`); this
+/// keeps the two platforms consistent and a plain build fast. The Linux bindings
+/// are built solely when the cross build is enabled (`cross_build`, from
+/// [`cross_build_enabled`]: every release build, plus debug builds that opt in
+/// via `PEPPY_CROSS_BUILD`), where a target is (re)built when a rebuild is
+/// forced, the `.so` is missing, or its recorded state is stale. `force`
 /// (`PEPPYLIB_REBUILD`) alone never triggers a Linux build: it refreshes the host
-/// artifact, while the Linux bindings stay gated on the cross-build flag.
+/// artifact, while the Linux bindings stay gated on the cross-build decision.
 pub fn should_cross_compile(cross_build: bool, present: bool, stale: bool, force: bool) -> bool {
     cross_build && (force || !present || stale)
 }
@@ -78,9 +90,10 @@ pub fn should_cross_compile(cross_build: bool, present: bool, stale: bool, force
 /// Only a binding whose recorded source hash matches the sources of the build
 /// that embeds it may ship: the daemon serializes node configs with the model
 /// it was compiled against, and a binding compiled from a different revision
-/// of the shared crates deserializes them with a different model. A plain
-/// `cargo build` never rebuilds the Linux container bindings (see
-/// [`should_cross_compile`]), so after a shared-crate change the cache can
+/// of the shared crates deserializes them with a different model. A debug
+/// build without `PEPPY_CROSS_BUILD` never rebuilds the Linux container
+/// bindings (see [`should_cross_compile`]), so after a shared-crate change
+/// the cache can
 /// hold Linux `.so` from older sources — embedding one puts the schema
 /// mismatch inside the container image, where it only surfaces as a baffling
 /// parse error when the node starts (e.g. `unknown field \`implements\``).
@@ -118,9 +131,21 @@ mod tests {
     }
 
     #[test]
-    fn linux_so_is_release_only() {
-        // Without a cross build a Linux .so is never produced, regardless of
-        // whether it is missing or stale, and not even under `force` (which
+    fn release_builds_always_enable_the_cross_build() {
+        assert!(cross_build_enabled(BuildProfile::Release, false));
+        assert!(cross_build_enabled(BuildProfile::Release, true));
+    }
+
+    #[test]
+    fn debug_builds_enable_the_cross_build_only_on_request() {
+        assert!(!cross_build_enabled(BuildProfile::Debug, false));
+        assert!(cross_build_enabled(BuildProfile::Debug, true));
+    }
+
+    #[test]
+    fn linux_so_requires_an_enabled_cross_build() {
+        // With the cross build disabled a Linux .so is never produced, regardless
+        // of whether it is missing or stale, and not even under `force` (which
         // refreshes the host build, not a Linux cross-compile). This matches a
         // Linux `cargo build`, which likewise builds only its own host .so.
         for present in [false, true] {

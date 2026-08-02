@@ -641,9 +641,10 @@ mod peppylib_build {
     /// `current_hash` (per the recorded build state; no state = unknown
     /// provenance) and therefore must not be embedded — see
     /// [`peppylib_build_policy::should_embed_so`]. In practice these are the
-    /// Linux container bindings after a shared-crate change: a plain build
-    /// rebuilds only the host `.so` and skips the cross-compile, so the cache
-    /// keeps Linux bindings from older sources. The files are left in place
+    /// Linux container bindings after a shared-crate change: a debug build
+    /// without PEPPY_CROSS_BUILD rebuilds only the host `.so` and skips the
+    /// cross-compile, so the cache keeps Linux bindings from older sources.
+    /// The files are left in place
     /// (another checkout at their revision may still embed them; the next
     /// cross build overwrites them) — they are only excluded from this build's
     /// embed.
@@ -840,6 +841,21 @@ mod peppylib_build {
 
         let current_hash = compute_source_hash(&peppylib_py_dir);
 
+        let profile = peppylib_build_policy::BuildProfile::from_env();
+        // The single cross-build decision for this compilation: every release
+        // build produces the Linux container bindings, a debug build only under
+        // PEPPY_CROSS_BUILD. Emitted as PEPPYLIB_CROSS_BUILD so the scaffold
+        // test gates on the decision this script actually took and the two can
+        // never drift.
+        let cross_build = peppylib_build_policy::cross_build_enabled(
+            profile,
+            peppylib_build_policy::cross_build_requested(),
+        );
+        println!(
+            "cargo:rustc-env=PEPPYLIB_CROSS_BUILD={}",
+            u8::from(cross_build)
+        );
+
         // Release cross-builds run inside the Lima VM, which has no pixi and must
         // not touch the cargo checkout. They consume the host-built `.so` from an
         // explicit directory (mounted from the host) instead of building.
@@ -861,7 +877,6 @@ mod peppylib_build {
         std::fs::create_dir_all(&so_dir)
             .unwrap_or_else(|e| panic!("failed to create peppylib .so dir {so_dir:?}: {e}"));
 
-        let profile = peppylib_build_policy::BuildProfile::from_env();
         let host = host_platform_suffix();
 
         // Every platform this machine produces: the host always, plus the Linux
@@ -967,15 +982,15 @@ mod peppylib_build {
         }
 
         // Linux container bindings (macOS only). The build host is macOS, so
-        // every Linux `.so` is a cross-compile, and all are release-only: like a
-        // Linux `cargo build` (which builds only its own native host `.so`), a
-        // regular build here produces only the host dynamic lib. The Linux
-        // bindings are built solely under PEPPY_CROSS_BUILD (set by
-        // scripts/build_release.sh and CI), so a plain `cargo build` never pays
-        // the slow zig cross-compile and the two platforms stay consistent.
+        // every Linux `.so` is a cross-compile, and all are built in release
+        // mode: like a Linux `cargo build` (which builds only its own native
+        // host `.so`), a plain debug build here produces only the host dynamic
+        // lib. The Linux bindings are built solely when the cross build is
+        // enabled (every release build, plus debug builds that opt in via
+        // PEPPY_CROSS_BUILD), so a plain debug `cargo build` never pays the
+        // slow zig cross-compile and the two platforms stay consistent.
         #[cfg(target_os = "macos")]
         {
-            let cross_build = peppylib_build_policy::cross_build_requested();
             for target in LINUX_CROSS_TARGETS {
                 let suffix = target.platform_suffix;
                 let target_so = so_dir.join(format!("_peppylib.abi3.{suffix}.so"));
@@ -1003,7 +1018,7 @@ mod peppylib_build {
         }
 
         // Cached bindings this build chose not to rebuild (the Linux
-        // cross-compiles, without PEPPY_CROSS_BUILD) may date from other
+        // cross-compiles, when the cross build is disabled) may date from other
         // sources; embedding one ships a model mismatch inside container
         // images that only surfaces when the node crashes at startup. Exclude
         // them so container builds for those platforms fail up front with the
@@ -1014,7 +1029,7 @@ mod peppylib_build {
                 "cargo:warning=Excluding {name} from the embedded peppylib set: it was \
                  built from different sources. Container Python nodes for that platform \
                  will fail to build until a cross build refreshes it \
-                 (PEPPY_CROSS_BUILD=1 cargo build, or scripts/build_release.sh)."
+                 (cargo build --release, or PEPPY_CROSS_BUILD=1 for a debug build)."
             );
         }
         generate_embedded_peppylib_so(&so_dir, &stale);
