@@ -493,21 +493,20 @@ async fn add_and_build_remotely(
     .with_pins(crate::services::node::pins::encode_pins(
         &item.closure_pins,
     )?);
-    let added = match federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add)
-        .await
-    {
-        Ok(run) => {
-            outcome.add_logs.push(NodeAddLogEntry {
-                node_label: key.label(),
-                log_path: run.log_path,
-                failed: run.outcome.is_err(),
-                core_node: core_node.to_owned(),
-            });
-            run.outcome
+    let added =
+        match federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add).await {
+            Ok(run) => {
+                outcome.add_logs.push(NodeAddLogEntry {
+                    node_label: key.label(),
+                    log_path: run.log_path,
+                    failed: run.outcome.is_err(),
+                    core_node: core_node.to_owned(),
+                });
+                run.outcome
+            }
+            Err(reason) => Err(reason),
         }
-        Err(reason) => Err(reason),
-    }
-    .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
+        .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
 
     let build_goal = NodeBuildGoal::new(
         added.node_name.unwrap_or_else(|| item.node_name.clone()),

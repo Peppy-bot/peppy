@@ -69,7 +69,10 @@ fn display_node_log_files(
         return;
     }
     let line = |node_label: &str, core_node: &str, failed: bool, log_path: &Path| {
-        (node_log_line(node_label, core_node, failed, log_path), failed)
+        (
+            node_log_line(node_label, core_node, failed, log_path),
+            failed,
+        )
     };
     let sections = [
         (
