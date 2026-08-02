@@ -32,6 +32,15 @@
 //! the reservation, and [`SliceOwnership::release_because_coordinator_gone`]
 //! drops it the moment that token disappears.
 //!
+//! The lease covers a coordinator that LEFT; a lost release from one that
+//! stayed is covered by takeover. The release at the end of a launch is
+//! best-effort, so a coordinator whose messaging failed mid-launch ends its
+//! launch still holding this daemon while remaining present on the
+//! federation. A coordinator drives one launch at a time, which makes the
+//! recovery safe: reserving for a NEW launch id from the coordinator already
+//! holding this daemon proves the held launch is over, and
+//! [`SliceOwnership::try_reserve`] hands the reservation to the new launch.
+//!
 //! The registry here is deliberately pure: it owns the state machine and
 //! nothing else, so every transition (including the coordinator-gone one) is
 //! unit-testable without a messenger, a timer, or a sleep. Wiring the presence
@@ -78,6 +87,15 @@ pub enum ReserveOutcome {
     /// coordinator-presence watch either, since the one the first attempt
     /// spawned is still supervising this same reservation.
     AlreadyHeld,
+    /// The requesting coordinator already held this daemon, but for a launch
+    /// it is no longer driving, so the reservation now belongs to the
+    /// requesting launch. A coordinator drives one launch at a time, which is
+    /// what makes the handover safe: a new launch id from the holding
+    /// coordinator proves the held launch ended and its release never landed.
+    /// Like [`Self::AlreadyHeld`], no new presence watch is owed: the watch is
+    /// scoped to the coordinator, and the one supervising the stale
+    /// reservation supervises this one.
+    TookOverFromSameCoordinator { stale_launch_id: String },
     /// Another launch holds it. The coordinator that receives this releases
     /// every reservation it did obtain and fails the launch, so no machine is
     /// left half-replaced.
@@ -105,10 +123,28 @@ impl SliceOwnership {
     /// [`ReserveOutcome::AlreadyHeld`]): the exchange is a network round trip,
     /// so a coordinator whose reply was lost must be able to retry without
     /// deadlocking against its own reservation.
+    ///
+    /// Reserving for a NEW launch from the coordinator already holding this
+    /// daemon also succeeds (as
+    /// [`ReserveOutcome::TookOverFromSameCoordinator`]). The release at the
+    /// end of a launch is best-effort, and the presence lease only clears a
+    /// reservation whose coordinator LEFT the federation: a coordinator whose
+    /// messaging failed mid-launch stays present, so a lost release would
+    /// otherwise hold this daemon against every retry until a `stack reset`.
+    /// A coordinator drives one launch at a time, so a new launch id from the
+    /// holding coordinator proves the held launch is over.
     pub fn try_reserve(&self, launch_id: &str, coordinator: &str) -> ReserveOutcome {
         let mut state = self.state.lock();
         match &state.reservation {
             Some(held) if held.launch_id == launch_id => ReserveOutcome::AlreadyHeld,
+            Some(held) if held.coordinator_core_node == coordinator => {
+                let stale_launch_id = held.launch_id.clone();
+                state.reservation = Some(HeldReservation {
+                    launch_id: launch_id.to_owned(),
+                    coordinator_core_node: coordinator.to_owned(),
+                });
+                ReserveOutcome::TookOverFromSameCoordinator { stale_launch_id }
+            }
             Some(held) => ReserveOutcome::HeldByAnotherLaunch {
                 launch_id: held.launch_id.clone(),
                 coordinator_core_node: held.coordinator_core_node.clone(),
@@ -301,6 +337,46 @@ mod tests {
             ownership.try_reserve("launch-a", "cn-robot-7"),
             ReserveOutcome::AlreadyHeld
         );
+    }
+
+    /// The lost-release wedge: a launch whose release never landed (the
+    /// coordinator's messaging failed mid-launch while the coordinator stayed
+    /// present, so the lease never fired) must not hold this daemon against
+    /// every retry until a `stack reset`. A coordinator drives one launch at
+    /// a time, so a new launch id from the holding coordinator proves the
+    /// held launch is over, and the reservation moves to it.
+    #[test]
+    fn the_same_coordinators_next_launch_takes_over_a_stale_reservation() {
+        let ownership = SliceOwnership::new();
+        ownership.try_reserve("launch-a", "cn-robot-7");
+
+        assert_eq!(
+            ownership.try_reserve("launch-b", "cn-robot-7"),
+            ReserveOutcome::TookOverFromSameCoordinator {
+                stale_launch_id: "launch-a".to_owned(),
+            }
+        );
+        assert_eq!(
+            ownership.held_reservation(),
+            Some(("launch-b".to_owned(), "cn-robot-7".to_owned())),
+            "the reservation must now belong to the launch the coordinator is driving"
+        );
+    }
+
+    /// The takeover keeps the lease intact: the presence watch is scoped to
+    /// the coordinator, not the launch, so the coordinator vanishing still
+    /// frees the machine after its reservation changed hands.
+    #[test]
+    fn a_taken_over_reservation_still_releases_when_the_coordinator_vanishes() {
+        let ownership = SliceOwnership::new();
+        ownership.try_reserve("launch-a", "cn-robot-7");
+        ownership.try_reserve("launch-b", "cn-robot-7");
+
+        assert_eq!(
+            ownership.release_because_coordinator_gone("cn-robot-7"),
+            Some("launch-b".to_owned())
+        );
+        assert_eq!(ownership.held_reservation(), None);
     }
 
     #[test]

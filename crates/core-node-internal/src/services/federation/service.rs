@@ -168,9 +168,19 @@ async fn reserve_inner(
         // Only a FRESH reservation needs a watch. A coordinator retrying a
         // dropped reply re-reserves what it already holds, and the watch its
         // first attempt spawned is still supervising that same reservation, so
-        // watching again would leave a presence subscription per retry.
+        // watching again would leave a presence subscription per retry. The
+        // takeover keeps the same coordinator, and the watch is scoped to the
+        // coordinator, so the stale reservation's watch supervises the new one.
         ReserveOutcome::Reserved => {
             watch_coordinator_presence(context, &decoded.coordinator_core_node)
+        }
+        ReserveOutcome::TookOverFromSameCoordinator { stale_launch_id } => {
+            warn!(
+                "launch `{stale_launch_id}` still held this daemon's reservation when its \
+                 coordinator `{}` reserved for launch `{}`; that launch is over and its \
+                 release never landed, so the reservation moves to the new launch",
+                decoded.coordinator_core_node, decoded.launch_id
+            );
         }
         ReserveOutcome::AlreadyHeld => {}
     }
