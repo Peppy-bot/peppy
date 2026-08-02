@@ -280,25 +280,39 @@ struct Daemon {
 impl Daemon {
     /// Runs `peppy` inside this container and returns its combined output.
     async fn peppy(&self, args: &[&str]) -> ExecOutput {
-        let mut cmd = vec![CONTAINER_PEPPY_BINARY];
+        self.peppy_with_env(&[], args).await
+    }
+
+    /// Runs `peppy` with `KEY=value` entries layered over the container's own
+    /// environment via `env(1)`: what an operator's shell does to the CLI's
+    /// environment, done to this exec.
+    async fn peppy_with_env(&self, env: &[&str], args: &[&str]) -> ExecOutput {
+        let mut cmd = vec!["/usr/bin/env"];
+        cmd.extend_from_slice(env);
+        cmd.push(CONTAINER_PEPPY_BINARY);
         cmd.extend_from_slice(args);
+        self.exec(cmd).await
+    }
+
+    /// Runs one command inside this container and returns its combined output.
+    async fn exec(&self, cmd: Vec<&str>) -> ExecOutput {
         let mut result = self
             .container
             .exec(ExecCommand::new(cmd).with_cmd_ready_condition(CmdWaitFor::exit()))
             .await
-            .unwrap_or_else(|error| panic!("failed to exec peppy in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("failed to exec in {}: {error}", self.name));
         let exit_code = result
             .exit_code()
             .await
-            .unwrap_or_else(|error| panic!("peppy exit code in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("exec exit code in {}: {error}", self.name));
         let stdout = result
             .stdout_to_vec()
             .await
-            .unwrap_or_else(|error| panic!("peppy stdout in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("exec stdout in {}: {error}", self.name));
         let stderr = result
             .stderr_to_vec()
             .await
-            .unwrap_or_else(|error| panic!("peppy stderr in {}: {error}", self.name));
+            .unwrap_or_else(|error| panic!("exec stderr in {}: {error}", self.name));
         ExecOutput {
             exit_code,
             text: format!(
@@ -767,6 +781,7 @@ const SPLIT_COMPUTE_LAUNCHER: &str =
 const CONTAINER_LAUNCHER_DIR: &str = "/etc/peppy/launchers";
 const SPLIT_COMPUTE_LAUNCHER_FILE: &str = "split_compute_manipulation.json5";
 const HUB_NODE_PROBE_LAUNCHER_FILE: &str = "hub_node_probe.json5";
+const CALLER_ENV_PROBE_LAUNCHER_FILE: &str = "caller_env_probe.json5";
 
 fn container_launcher(file_name: &str) -> String {
     format!("{CONTAINER_LAUNCHER_DIR}/{file_name}")
@@ -787,6 +802,22 @@ const HUB_NODE_PROBE_LAUNCHER: &str = r#"{
     {
       source: { name: "my_python_robot_arm", tag: "v1" },
       instances: [{ instance_id: "probe_arm_inst" }],
+    },
+  ],
+}
+"#;
+
+/// One native Python node placed wholly on the peer. The launcher driven when
+/// what matters is WHERE a build resolves its tools, not the topology: the
+/// peer must build `my_python_robot_arm` with its own environment, whatever
+/// the caller's looks like.
+const CALLER_ENV_PROBE_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  core_nodes: ["remote_worker"],
+  deployments: [
+    {
+      source: { name: "my_python_robot_arm", tag: "v1" },
+      instances: [{ instance_id: "env_probe_arm_inst", core_node: "remote_worker" }],
     },
   ],
 }
@@ -962,6 +993,11 @@ async fn start_federation(prefix: &str) -> Federation {
         HUB_NODE_PROBE_LAUNCHER,
     )
     .expect("writing the probe launcher into the launcher mount");
+    std::fs::write(
+        launcher_dir.path().join(CALLER_ENV_PROBE_LAUNCHER_FILE),
+        CALLER_ENV_PROBE_LAUNCHER,
+    )
+    .expect("writing the caller-env probe launcher into the launcher mount");
 
     let robot = start_daemon(
         &launch,
@@ -1058,6 +1094,64 @@ async fn hub_nodes_build_and_run_inside_a_daemon_container() {
         .robot
         .wait_for_node_log("probe_arm_inst", "[arm] published joint_states")
         .await;
+}
+
+/// The caller's environment stays on the caller's machine.
+///
+/// The scenario is a field failure: an operator launches from a machine whose
+/// `PATH` does not name the directory the peer keeps its tools in, and the
+/// peer's `uv sync` dies with `No such file or directory` on a host that has
+/// `uv` installed, because the build resolves programs through the caller's
+/// forwarded `PATH` instead of the peer's own. So this launch runs under a
+/// `PATH` of directories that exist on every machine here but hold no `uv`,
+/// and the peer must still build and start the node. The canary closes the
+/// other half: no variable from the operator's shell appears in any process
+/// on the peer, so what a node sees is decided by its launcher file and the
+/// machine it runs on, not by whoever typed the launch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_builds_with_its_own_environment_not_the_callers() {
+    let federation = start_federation("peppy-caller-env").await;
+
+    let launch = federation
+        .robot
+        .peppy_with_env(
+            &[
+                "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+                "CALLER_CANARY=from_the_operators_shell",
+            ],
+            &[
+                "stack",
+                "launch",
+                "--place",
+                &format!("remote_worker@{}", federation.cloud_core_node),
+                &container_launcher(CALLER_ENV_PROBE_LAUNCHER_FILE),
+            ],
+        )
+        .await;
+    assert!(
+        launch.success(),
+        "a peer must resolve build tools on its own machine, not through the caller's PATH:\n{}",
+        launch.text
+    );
+
+    federation
+        .cloud
+        .wait_for_node_log("env_probe_arm_inst", "[arm] published joint_states")
+        .await;
+
+    let leaked = federation
+        .cloud
+        .exec(vec![
+            "/bin/sh",
+            "-c",
+            "cat /proc/[0-9]*/environ 2>/dev/null | tr '\\0' '\\n' | grep ^CALLER_CANARY= || true",
+        ])
+        .await;
+    assert!(
+        !leaked.text.contains("CALLER_CANARY"),
+        "the caller's environment must not reach any process on the peer:\n{}",
+        leaked.text
+    );
 }
 
 /// The whole thing, end to end: one command on the robot, two machines running
