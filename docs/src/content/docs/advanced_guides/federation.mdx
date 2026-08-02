@@ -63,6 +63,16 @@ login`](/advanced_guides/platform/).
 liveness is checked against the live federation at launch time, because what
 matters is whether the coordinator can *talk to* a machine right now.
 
+Every daemon in a federation runs the same Peppy version. A mixed-version
+federation is refused during preflight, with a message naming both versions and
+the machine to upgrade; versions are never negotiated.
+
+Only the coordinator's repositories matter to a launch. The daemon you submit
+to resolves every deployment from its own caches and ships the result to the
+others as pinned content, so `peppy repo refresh` is the submitting machine's
+business and the other machines' caches can be stale, differently prioritized,
+or empty.
+
 ## Core node links
 
 A launcher does not name machines. It declares **core node links**, which are
@@ -140,11 +150,11 @@ peppy stack launch --place robot_onboard@self \
 This launch will REPLACE the node stack on 1 remote daemon(s): cn-atlas-h100
 Parsing launcher configuration
 Resolving 5 deployment(s)
-Using the manifest cn-atlas-h100 resolved for repo:deliberative_planner:v1
+Retrieving node config for repo:deliberative_planner:v1
 Validating dependencies
 Adding uvc_camera_python_mock:v1 on `cn-robot-7`
 Adding deliberative_planner:v1 on `cn-atlas-h100`
-[cn-atlas-h100] Fetching deliberative_planner:v1
+[cn-atlas-h100] Materializing 1 pinned node(s) for node `deliberative_planner:v1`
 ...
 Starting uvc_camera_python_mock:v1 instance wrist_cam_inst on `cn-robot-7`
 Starting my_python_robot_arm:v1 instance arm_inst on `cn-robot-7`
@@ -246,9 +256,22 @@ its own. The launch works out which machines are watching each instance and
 tells that instance's daemon, which is what makes a source restart drop and
 redeclare a remote observer's subscription exactly as it does a local one.
 
+**The bytes themselves.** The coordinator resolves every node in the launch,
+the ones placed elsewhere included: the named node, every transitive
+dependency, and every contract and pairing document any of their manifests
+reference. What crosses the boundary is that decision, pinned: the exact
+content it read, identified by fingerprint, plus the repository, commit, and
+published path it came from. A machine holding content with the same
+fingerprint reuses its own copy, whichever repository it arrived from; one
+that does not fetches the pinned commit. No machine but the coordinator
+resolves a name, so a peer's cache freshness, repository priorities, and
+exclusions never decide what a launch runs. Here `cn-atlas-h100` runs the
+planner the robot's caches describe, even if its own were refreshed a week
+apart.
+
 The thing to notice is that none of this looks different from the
 single-machine case. Federation changes where instances run, not how they are
-wired.
+wired, and every machine runs the same bytes the submitting machine resolved.
 
 ## Ordering, degradation, and failure
 
@@ -273,6 +296,15 @@ freshness therefore owns a staleness watchdog. In the example that is
 `subgoal_ttl_ms`: a subgoal is authoritative for two seconds after the policy
 adopts it, and then the policy falls back to its own local behavior. The uplink
 is an *enhancement path*, not a dependency.
+
+**A pin that cannot be honored is a refusal, never a fallback.** A peer that
+does not hold a pinned content and cannot reach the pinned repository refuses
+its part of the launch and names the location it could not reach. One that
+fetches the pinned commit and reads different bytes than the pin's fingerprint
+refuses naming both fingerprints, because that means the remote moved under
+the pin or the location resolved to something else. In neither case does the
+peer fall back to resolving the name against its own cache: that would
+reintroduce per-machine resolution at exactly the moment nobody is watching.
 
 **On failure, the launch stops and clears every slice it started.** There is no
 rollback, because a launch REPLACES the previous stack: by the time anything can
@@ -305,8 +337,17 @@ participants keep running.
   refused during preflight, before any stack is touched.
 - **`local:` sources cannot cross machines.** The path names a tree on the
   coordinator's filesystem. A `local:` deployment must keep all of its instances
-  on one core node; publish the node to a repo or url source to split it. That
-  is why the proprietary planner in the example is a registry source.
+  on one core node; publish the node to a repo or git-backed source to split it.
+  That is why the proprietary planner in the example is a registry source.
+- **A filesystem repository cannot back a deployment placed on another
+  machine.** A `repo:` deployment is pinned to wherever the coordinator's cache
+  resolved it, and a filesystem repository entry is a path only the coordinator
+  can read, the same rule as `local:` one level down. Two things still work:
+  keep that deployment's instances on one core node, or serve the node from a
+  git repository, which every machine can fetch.
+- **The unit of byte coherence is one launch.** Two launches submitted while a
+  repository moves between them may run different revisions of it; each launch
+  is internally coherent, and nothing synchronizes one launch with the next.
 - **A launcher file path cannot target a remote daemon.** `peppy stack launch
   ./my_launcher.json5 --core-node cn-atlas-h100` is refused for the same reason.
   Use a repository launcher, or run the command from the machine holding the

@@ -24,6 +24,17 @@
 //! own single-threaded plan. Daemons never run distributed transactions among
 //! themselves; daemon-to-daemon runtime traffic is best-effort idempotent
 //! notification only.
+//!
+//! # One launch, one set of bytes
+//!
+//! The reservation carries the launch's pins: the coordinator resolved every
+//! deployment, its transitive dependencies, and its contract and pairing
+//! documents before this preflight ran, and each participant receives that
+//! decision rather than a name to look up. A participant validates the pins
+//! while the reservation is still non-destructive, and materializes them at
+//! add time, reusing its own content on a fingerprint match and fetching the
+//! pinned commit otherwise. Its own cache freshness, repository priorities
+//! and exclusions never influence what this launch runs.
 
 mod dispatch;
 
@@ -34,34 +45,22 @@ use std::time::Duration;
 
 use core_node_api::encoding::{
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
-    ResolvedManifest,
 };
 use daemon_config::format_quoted_list;
-use daemon_config::launcher::{Deployment, DeploymentSource, Placements};
+use daemon_config::launcher::{Deployment, Placements};
+use daemon_config::repository::{DeploymentPins, PinnedItem};
 use futures::future::join_all;
 use peppylib::core_node::transport::poll;
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 
-/// Bound on one daemon-to-daemon preflight call. The peer answers from its own
-/// caches, so a healthy one answers well inside this; the budget exists so an
-/// unreachable peer fails the launch instead of hanging it.
+/// Bound on one daemon-to-daemon preflight call. The peer validates decoded
+/// pins in memory, so a healthy one answers well inside this; the budget
+/// exists so an unreachable peer fails the launch instead of hanging it.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Bound on a release. Shorter than a reserve because it does no resolution
+/// Bound on a release. Shorter than a reserve because it does no validation
 /// work, and it runs on the unwind path where waiting helps nobody.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// One deployment as placed on one core node: only that machine's share of the
-/// instances, plus where it sat in the coordinator's full deployment list.
-///
-/// The index is what lets a participant's answers be aligned back with the
-/// plan. Without it a straddling deployment (instances on two machines) would
-/// have no way to say "this manifest is for THAT entry".
-#[derive(Debug, Clone)]
-struct PlacedDeployment {
-    index: usize,
-    deployment: Deployment,
-}
 
 /// What a coordinator learned from one participant during preflight.
 #[derive(Debug, Clone)]
@@ -70,65 +69,50 @@ struct ParticipantSlice {
     /// This participant's root-entity instance id, folded into the
     /// coordinator's stack-wide instance-id uniqueness check.
     root_instance_id: String,
-    /// What this participant resolved, keyed by the deployment's index in the
-    /// coordinator's plan. Keying on the index rather than pairing two
-    /// position-aligned lists is what lets a straddling deployment say "this
-    /// manifest is for THAT entry" without an alignment invariant to keep.
-    manifests: BTreeMap<usize, ResolvedManifest>,
 }
 
-/// A manifest the coordinator did not resolve itself, and the participant that
-/// did.
+/// The pins each peer participant receives with its reservation, one
+/// serialized [`DeploymentPins`] per pinned deployment with at least one
+/// instance on it.
 ///
-/// The coordinator VALIDATES against this. That is the point of delegating:
-/// what it checks is provably what the participant will spawn, because the
-/// participant read it from the same cache it will spawn from, rather than the
-/// coordinator guessing from its own.
-#[derive(Debug, Clone)]
-pub(super) struct DelegatedManifest {
-    pub(super) core_node: String,
-    pub(super) config_json5: String,
-}
-
-/// Which deployments each participant hosts.
-///
-/// A deployment goes to every core node hosting at least one of its instances,
-/// because that daemon must add and build the node before starting its share.
-/// One node split across daemons is therefore added on both, which is exactly
-/// what "several placed instances under one deployment" means operationally.
-fn partition_deployments(
-    deployments: &[Deployment],
+/// Every off-coordinator host of any instance appears as a key, because
+/// every one of them must be reserved; a host whose share is only
+/// content-addressed sources (`url:`) is reserved with no pins to validate.
+/// The coordinator itself never appears: it holds no reservation on itself.
+fn partition_reservations<'a>(
+    items: impl Iterator<Item = (&'a Deployment, Option<&'a PinnedItem>, &'a [PinnedItem])>,
     placements: &Placements,
-    coordinator: &str,
-) -> BTreeMap<String, Vec<PlacedDeployment>> {
-    let mut by_core_node: BTreeMap<String, Vec<PlacedDeployment>> = BTreeMap::new();
-    for (index, deployment) in deployments.iter().enumerate() {
-        let mut hosts: BTreeMap<String, Vec<_>> = BTreeMap::new();
-        for instance in &deployment.instances {
-            hosts
-                .entry(placements.of(instance.instance_id.as_str()).to_owned())
-                .or_default()
-                .push(instance.clone());
-        }
-        // A deployment with no instances at all still belongs somewhere; put it
-        // on the coordinator so it is added rather than silently dropped.
-        if hosts.is_empty() {
-            hosts.insert(coordinator.to_owned(), Vec::new());
-        }
-        for (core_node, instances) in hosts {
-            by_core_node
-                .entry(core_node)
-                .or_default()
-                .push(PlacedDeployment {
-                    index,
-                    deployment: Deployment {
-                        source: deployment.source.clone(),
-                        instances,
-                    },
-                });
+) -> std::result::Result<BTreeMap<String, Vec<String>>, String> {
+    let coordinator = placements.coordinator();
+    let mut by_core_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (deployment, root_pin, closure_pins) in items {
+        let hosts: BTreeSet<&str> = deployment
+            .instances
+            .iter()
+            .map(|instance| placements.of(instance.instance_id.as_str()))
+            .filter(|host| *host != coordinator)
+            .collect();
+        // Built and serialized ONCE per deployment, not once per host: every
+        // host of a deployment receives the same closure, and a closure holds
+        // every dependency node plus every contract and pairing document.
+        let encoded = match root_pin.filter(|_| !hosts.is_empty()) {
+            Some(root) => {
+                let pins = DeploymentPins::new(root.clone(), closure_pins.to_vec())?;
+                Some(
+                    serde_json5::to_string(&pins)
+                        .map_err(|e| format!("could not encode a deployment's pins: {e}"))?,
+                )
+            }
+            None => None,
+        };
+        for host in hosts {
+            let entry = by_core_node.entry(host.to_owned()).or_default();
+            if let Some(encoded) = &encoded {
+                entry.push(encoded.clone());
+            }
         }
     }
-    by_core_node
+    Ok(by_core_node)
 }
 
 /// Refuses any wired core node that is not live on the federation.
@@ -168,7 +152,8 @@ async fn reject_unreachable_core_nodes(
     ))
 }
 
-/// Reserves every peer participant and collects what only they can report.
+/// Reserves every peer participant, hands each its pins, and collects what
+/// only they can report.
 ///
 /// All-or-nothing: on any refusal the reservations already obtained are
 /// released before the error returns, so a failed preflight leaves no machine
@@ -178,26 +163,24 @@ async fn reserve_participants(
     coordinator: &str,
     caller_instance_id: &str,
     launch_id: &str,
-    peers: BTreeMap<String, Vec<PlacedDeployment>>,
+    peers: BTreeMap<String, Vec<String>>,
     own_version: &str,
 ) -> std::result::Result<Vec<ParticipantSlice>, String> {
-    let acks = join_all(peers.into_iter().map(|(core_node, deployments)| {
-        let request = build_reserve_request(launch_id, coordinator, &deployments);
+    let acks = join_all(peers.into_iter().map(|(core_node, pins)| {
+        let request =
+            ParticipantReserveRequest::new(launch_id, coordinator).with_deployment_pins(pins);
         async move {
-            let outcome = match request {
-                Ok(request) => poll(
-                    &request,
-                    messenger,
-                    coordinator,
-                    caller_instance_id,
-                    &core_node,
-                    PREFLIGHT_TIMEOUT,
-                )
-                .await
-                .map_err(|e| format!("`{core_node}` did not answer the reservation: {e}")),
-                Err(reason) => Err(format!("`{core_node}`: {reason}")),
-            };
-            (core_node, deployments, outcome)
+            let outcome = poll(
+                &request,
+                messenger,
+                coordinator,
+                caller_instance_id,
+                &core_node,
+                PREFLIGHT_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("`{core_node}` did not answer the reservation: {e}"));
+            (core_node, outcome)
         }
     }))
     .await;
@@ -206,36 +189,16 @@ async fn reserve_participants(
     let mut reserved: Vec<String> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
 
-    for (core_node, deployments, outcome) in acks {
+    for (core_node, outcome) in acks {
         match outcome {
             Ok(response) if response.accepted => {
                 reserved.push(core_node.clone());
-                // The positional mapping below is the ONLY thing tying a
-                // manifest to the deployment it describes, so a count mismatch
-                // is not a partial answer to salvage: zipping would silently
-                // pair manifests with the wrong deployments, or drop the tail
-                // and let this daemon resolve those sources itself against a
-                // plan the peer validated differently. The reservation is
-                // already recorded above, so failing here still releases it.
-                let counts_agree = deployments.len() == response.manifests.len();
+                // The reservation is already recorded above, so a version
+                // refusal here still releases it.
                 match check_version(&core_node, &response, own_version) {
-                    Ok(()) if !counts_agree => refusals.push(format!(
-                        "`{core_node}` was asked about {} deployment(s) but answered with {} \
-                         manifest(s); the reply cannot be matched to what was asked",
-                        deployments.len(),
-                        response.manifests.len()
-                    )),
-                    // The peer answers in the order it was asked, so zipping the
-                    // requested deployments back onto the manifests is what
-                    // recovers each one's index in the coordinator's plan.
                     Ok(()) => slices.push(ParticipantSlice {
                         core_node,
                         root_instance_id: response.root_instance_id,
-                        manifests: deployments
-                            .into_iter()
-                            .map(|placed| placed.index)
-                            .zip(response.manifests)
-                            .collect(),
                     }),
                     Err(reason) => refusals.push(reason),
                 }
@@ -291,25 +254,6 @@ fn check_version(
     ))
 }
 
-fn build_reserve_request(
-    launch_id: &str,
-    coordinator: &str,
-    deployments: &[PlacedDeployment],
-) -> std::result::Result<ParticipantReserveRequest, String> {
-    let mut sources = Vec::with_capacity(deployments.len());
-    for placed in deployments {
-        let deployment = &placed.deployment;
-        if let DeploymentSource::Local(spec) = &deployment.source {
-            return Err(super::resolve::local_source_refusal(spec));
-        }
-        sources.push(
-            serde_json5::to_string(&deployment.source)
-                .map_err(|e| format!("could not encode a deployment source: {e}"))?,
-        );
-    }
-    Ok(ParticipantReserveRequest::new(launch_id, coordinator).with_deployment_sources(sources))
-}
-
 /// Best-effort release of every named participant. Failures are logged, not
 /// returned: this runs on paths that are already failing or already finished,
 /// and a release that does not land is covered by the presence lease.
@@ -356,60 +300,52 @@ pub(crate) async fn release_participants(
 pub(super) struct FederatedLaunch {
     /// Empty for a single-machine launch.
     participants: Vec<ParticipantSlice>,
-    /// Plan indices of the deployments the coordinator hosts at least one
-    /// instance of. Needed to tell a wholly-remote deployment (whose manifest is
-    /// delegated) from a straddling one (which the coordinator must resolve for
-    /// itself anyway).
-    coordinator_indices: BTreeSet<usize>,
 }
 
 /// The whole preflight, in the order the plan requires.
 ///
-/// Runs BEFORE the teardown that a launch performs, so every refusal here
-/// leaves the coordinator's existing stack, and every participant's, exactly as
-/// it was. That ordering is the feature: a launch that cannot succeed must not
-/// cost you the stack you already had.
+/// Runs AFTER this daemon resolved every deployment (so the reservations can
+/// carry the pins) and BEFORE the teardown that a launch performs, so every
+/// refusal here leaves the coordinator's existing stack, and every
+/// participant's, exactly as it was. That ordering is the feature: a launch
+/// that cannot succeed must not cost you the stack you already had.
 pub(super) async fn preflight(
     ctx: &super::ProcessLaunchContext,
     launch_id: &str,
-    deployments: &[Deployment],
+    planned: &[super::PlannedDeployment],
     placements: &Placements,
 ) -> std::result::Result<FederatedLaunch, String> {
     if !placements.is_federated() {
         return Ok(FederatedLaunch::default());
     }
 
-    let mut slices = partition_deployments(deployments, placements, ctx.bound_core_node.as_str());
-
-    // Splitting the coordinator's own share out first leaves `slices` holding
-    // exactly the peers, so each one's deployments can be moved into its
-    // reservation rather than cloned.
-    let coordinator_indices: BTreeSet<usize> = slices
-        .remove(ctx.bound_core_node.as_str())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|placed| placed.index)
-        .collect();
+    let peers = partition_reservations(
+        planned.iter().map(|item| {
+            (
+                &item.deployment,
+                item.root_pin.as_ref(),
+                item.closure_pins.as_slice(),
+            )
+        }),
+        placements,
+    )?;
 
     // A wired core node is validated by live zenoh presence, not the platform
     // HTTP roster: what a launch needs is to be able to talk to the machine
     // right now, which the roster does not attest.
-    reject_unreachable_core_nodes(&ctx.messenger, &slices.keys().cloned().collect()).await?;
+    reject_unreachable_core_nodes(&ctx.messenger, &peers.keys().cloned().collect()).await?;
 
     let participants = reserve_participants(
         &ctx.messenger,
         ctx.bound_core_node.as_str(),
         ctx.core_instance_id.as_str(),
         launch_id,
-        slices,
+        peers,
         &ctx.peppy_version,
     )
     .await?;
 
-    Ok(FederatedLaunch {
-        participants,
-        coordinator_indices,
-    })
+    Ok(FederatedLaunch { participants })
 }
 
 impl FederatedLaunch {
@@ -420,32 +356,6 @@ impl FederatedLaunch {
             .iter()
             .map(|slice| slice.core_node.clone())
             .collect()
-    }
-
-    /// The manifests the coordinator will validate against instead of
-    /// resolving them itself, keyed by deployment index.
-    ///
-    /// A deployment that straddles the coordinator and a peer is deliberately
-    /// NOT delegated: the coordinator has to resolve it anyway to add it
-    /// locally, so it resolves it and [`Self::disagreeing_manifests`] then
-    /// checks that both machines read the same thing.
-    pub(super) fn delegated_manifests(&self) -> BTreeMap<usize, DelegatedManifest> {
-        let mut delegated = BTreeMap::new();
-        for slice in &self.participants {
-            for (index, manifest) in &slice.manifests {
-                if self.coordinator_indices.contains(index) {
-                    continue;
-                }
-                delegated.insert(
-                    *index,
-                    DelegatedManifest {
-                        core_node: slice.core_node.clone(),
-                        config_json5: manifest.config_json5.clone(),
-                    },
-                );
-            }
-        }
-        delegated
     }
 
     /// Instance ids in the plan that collide with a participant's own root
@@ -473,54 +383,15 @@ impl FederatedLaunch {
             })
             .collect()
     }
-
-    /// The manifest hash a participant reported for the deployment at `index`,
-    /// echoed onto every instance the coordinator dispatches to it.
-    pub(super) fn manifest_sha256(&self, core_node: &str, index: usize) -> Option<&str> {
-        self.participants
-            .iter()
-            .find(|slice| slice.core_node == core_node)?
-            .manifests
-            .get(&index)
-            .map(|manifest| manifest.config_sha256.as_str())
-    }
-
-    /// Straddling deployments whose two machines resolved DIFFERENT manifests.
-    ///
-    /// One node running on two machines under one launcher entry must be the
-    /// same node on both, or the graph the coordinator validated describes
-    /// neither. Two caches that have drifted is exactly how that happens, and
-    /// it is silent unless something compares them.
-    pub(super) fn disagreeing_manifests(
-        &self,
-        coordinator: &str,
-        own_fingerprints: &BTreeMap<usize, String>,
-    ) -> Vec<String> {
-        let mut disagreements = Vec::new();
-        for slice in &self.participants {
-            for (index, manifest) in &slice.manifests {
-                let Some(own) = own_fingerprints.get(index) else {
-                    continue;
-                };
-                if own == &manifest.config_sha256 {
-                    continue;
-                }
-                disagreements.push(format!(
-                    "one deployment places instances on both `{coordinator}` and `{}`, but the \
-                     two resolve different manifests for it ({own} here, {} there). Refresh both \
-                     machines' caches so they agree, or split the deployment.",
-                    slice.core_node, manifest.config_sha256
-                ));
-            }
-        }
-        disagreements
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use daemon_config::launcher::DeploymentInstance;
+    use daemon_config::repository::{
+        EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, RepoRelativePath,
+    };
 
     fn instance(id: &str) -> DeploymentInstance {
         DeploymentInstance::empty(config::runtime::Name::new(id).expect("valid name"))
@@ -534,8 +405,19 @@ mod tests {
         }
     }
 
-    fn placed(index: usize, deployment: Deployment) -> PlacedDeployment {
-        PlacedDeployment { index, deployment }
+    fn pin(name: &str) -> PinnedItem {
+        PinnedItem {
+            kind: PinKind::Node,
+            name: ItemName::parse(name).expect("valid name"),
+            tag: ItemTag::parse("v1").expect("valid tag"),
+            sha256: ManifestFingerprint::parse(&"a".repeat(64)).expect("valid sha"),
+            origin: EntryOrigin::Git {
+                repo_url: "https://example.com/hub".to_owned(),
+                repo_ref: Some("main".to_owned()),
+                commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
+                path: RepoRelativePath::parse(&format!("{name}/peppy.json5")).expect("valid path"),
+            },
+        }
     }
 
     fn core_node(name: &str) -> daemon_config::core_node_name::CoreNodeName {
@@ -552,128 +434,106 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_single_machine_launch_partitions_onto_the_coordinator() {
-        let deployments = vec![deployment("uvc_camera", vec![instance("cam_1")])];
-        let partitioned = partition_deployments(
-            &deployments,
-            &Placements::all_on(core_node("cn-robot")),
-            "cn-robot",
-        );
-        assert_eq!(partitioned.len(), 1);
-        assert_eq!(partitioned["cn-robot"].len(), 1);
-        assert_eq!(partitioned["cn-robot"][0].index, 0);
+    fn partition(
+        items: &[(Deployment, Option<PinnedItem>, Vec<PinnedItem>)],
+        placements: &Placements,
+    ) -> BTreeMap<String, Vec<String>> {
+        partition_reservations(
+            items
+                .iter()
+                .map(|(deployment, root, closure)| (deployment, root.as_ref(), closure.as_slice())),
+            placements,
+        )
+        .expect("partitions")
     }
 
+    /// A single-machine launch reserves nobody: the coordinator holds no
+    /// reservation on itself, so none of the federation machinery costs
+    /// anything when nothing is placed elsewhere.
     #[test]
-    fn instances_are_partitioned_by_their_placement() {
-        let deployments = vec![
+    fn a_single_machine_launch_reserves_no_peers() {
+        let items = vec![(
             deployment("uvc_camera", vec![instance("cam_1")]),
-            deployment("planner", vec![instance("planner_1")]),
+            Some(pin("uvc_camera")),
+            Vec::new(),
+        )];
+        let partitioned = partition(&items, &Placements::all_on(core_node("cn-robot")));
+        assert!(partitioned.is_empty());
+    }
+
+    /// A peer receives the pins of exactly the deployments it hosts: the
+    /// whole closure of each, and nothing about deployments elsewhere.
+    #[test]
+    fn a_peer_is_reserved_with_the_pins_of_its_own_deployments() {
+        let items = vec![
+            (
+                deployment("uvc_camera", vec![instance("cam_1")]),
+                Some(pin("uvc_camera")),
+                Vec::new(),
+            ),
+            (
+                deployment("planner", vec![instance("planner_1")]),
+                Some(pin("planner")),
+                vec![pin("planner_dep")],
+            ),
         ];
-        let partitioned = partition_deployments(
-            &deployments,
-            &placements(&[("planner_1", "cn-atlas")]),
-            "cn-robot",
-        );
+        let partitioned = partition(&items, &placements(&[("planner_1", "cn-atlas")]));
         assert_eq!(
             partitioned.keys().cloned().collect::<Vec<_>>(),
-            ["cn-atlas", "cn-robot"]
+            ["cn-atlas"]
         );
-        assert_eq!(
-            partitioned["cn-robot"][0].deployment.instances[0]
-                .instance_id
-                .as_str(),
-            "cam_1"
-        );
-        // The index is what lets a participant's answers be matched back to
-        // the coordinator's plan, so it must survive partitioning.
-        assert_eq!(partitioned["cn-robot"][0].index, 0);
-        assert_eq!(
-            partitioned["cn-atlas"][0].deployment.instances[0]
-                .instance_id
-                .as_str(),
-            "planner_1"
-        );
-        assert_eq!(partitioned["cn-atlas"][0].index, 1);
-    }
-
-    /// One node whose instances straddle two participants is added on both,
-    /// each with only its own share of the instances. That is what makes "a
-    /// node split across daemons is several placed instances under one
-    /// deployment" work: both daemons need the node present to start theirs.
-    #[test]
-    fn a_deployment_straddling_two_daemons_lands_on_both_with_its_own_instances() {
-        let deployments = vec![deployment(
-            "uvc_camera",
-            vec![instance("cam_robot"), instance("cam_cloud")],
-        )];
-        let partitioned = partition_deployments(
-            &deployments,
-            &placements(&[("cam_cloud", "cn-atlas")]),
-            "cn-robot",
-        );
-
-        assert_eq!(partitioned["cn-robot"].len(), 1);
-        assert_eq!(partitioned["cn-robot"][0].deployment.instances.len(), 1);
-        assert_eq!(
-            partitioned["cn-robot"][0].deployment.instances[0]
-                .instance_id
-                .as_str(),
-            "cam_robot"
-        );
-
         assert_eq!(partitioned["cn-atlas"].len(), 1);
-        assert_eq!(partitioned["cn-atlas"][0].deployment.instances.len(), 1);
+        let sent = &partitioned["cn-atlas"][0];
+        assert!(sent.contains("planner"), "got: {sent}");
+        assert!(sent.contains("planner_dep"), "got: {sent}");
+        assert!(!sent.contains("uvc_camera"), "got: {sent}");
+        // What crosses the wire decodes as the same pins that were sent.
+        let decoded: DeploymentPins = serde_json5::from_str(sent).expect("round trips");
+        assert_eq!(decoded.root.name, "planner");
+        assert_eq!(decoded.closure.len(), 1);
+    }
+
+    /// A deployment whose instances straddle the coordinator and a peer
+    /// sends the peer its pins too: both machines add from one decision.
+    #[test]
+    fn a_straddling_deployment_sends_its_pins_to_the_peer_half() {
+        let items = vec![(
+            deployment(
+                "uvc_camera",
+                vec![instance("cam_robot"), instance("cam_cloud")],
+            ),
+            Some(pin("uvc_camera")),
+            Vec::new(),
+        )];
+        let partitioned = partition(&items, &placements(&[("cam_cloud", "cn-atlas")]));
         assert_eq!(
-            partitioned["cn-atlas"][0].deployment.instances[0]
-                .instance_id
-                .as_str(),
-            "cam_cloud"
+            partitioned.keys().cloned().collect::<Vec<_>>(),
+            ["cn-atlas"]
         );
-        // Both halves point at the SAME entry in the coordinator's plan, which
-        // is what makes the straddle detectable at all.
-        assert_eq!(partitioned["cn-robot"][0].index, 0);
-        assert_eq!(partitioned["cn-atlas"][0].index, 0);
+        assert_eq!(partitioned["cn-atlas"].len(), 1);
+        assert!(partitioned["cn-atlas"][0].contains("uvc_camera"));
     }
 
+    /// A host whose share is only content-addressed sources is still
+    /// reserved: the reservation guards the machine, not the pins.
     #[test]
-    fn a_local_source_placed_off_coordinator_is_refused_before_dispatch() {
-        let local = Deployment {
-            source: serde_json5::from_str(r#"{ local: "./nodes/planner" }"#)
-                .expect("valid local source"),
-            instances: vec![instance("planner_1")],
-        };
-        let error = build_reserve_request("launch-a", "cn-robot", &[placed(0, local)])
-            .expect_err("a local source cannot cross machines");
-        assert!(error.contains("names a tree on"), "got: {error}");
-        assert!(error.contains("repo or url source"), "got: {error}");
-    }
-
-    #[test]
-    fn a_host_independent_source_is_sent_verbatim_for_the_peer_to_resolve() {
-        let request = build_reserve_request(
-            "launch-a",
-            "cn-robot",
-            &[placed(
-                0,
-                deployment("deliberative_planner", vec![instance("planner_1")]),
-            )],
-        )
-        .expect("a repo source crosses machines");
-        assert_eq!(request.launch_id, "launch-a");
-        assert_eq!(request.coordinator_core_node, "cn-robot");
-        assert_eq!(request.deployment_sources_json5.len(), 1);
-        assert!(
-            request.deployment_sources_json5[0].contains("deliberative_planner"),
-            "got: {:?}",
-            request.deployment_sources_json5
+    fn a_peer_hosting_only_unpinned_deployments_is_still_reserved() {
+        let items = vec![(
+            deployment("recorder", vec![instance("rec_1")]),
+            None,
+            Vec::new(),
+        )];
+        let partitioned = partition(&items, &placements(&[("rec_1", "cn-atlas")]));
+        assert_eq!(
+            partitioned.keys().cloned().collect::<Vec<_>>(),
+            ["cn-atlas"]
         );
+        assert!(partitioned["cn-atlas"].is_empty());
     }
 
     #[test]
     fn a_version_mismatch_is_refused_and_names_both_versions() {
-        let response = ParticipantReserveResponse::accepted("v0.19.0", "gen_1", Vec::new());
+        let response = ParticipantReserveResponse::accepted("v0.19.0", "gen_1");
         let error =
             check_version("cn-atlas", &response, "v0.20.0").expect_err("skew must be refused");
         assert!(error.contains("v0.19.0"), "got: {error}");
@@ -683,132 +543,15 @@ mod tests {
 
     #[test]
     fn a_matching_version_passes() {
-        let response = ParticipantReserveResponse::accepted("v0.20.0", "gen_1", Vec::new());
+        let response = ParticipantReserveResponse::accepted("v0.20.0", "gen_1");
         assert!(check_version("cn-atlas", &response, "v0.20.0").is_ok());
     }
 
-    // --- What the coordinator does with what preflight learned ---
-
-    fn slice(core_node: &str, entries: &[(usize, &str, &str)]) -> ParticipantSlice {
+    fn slice(core_node: &str) -> ParticipantSlice {
         ParticipantSlice {
             core_node: core_node.to_owned(),
             root_instance_id: format!("{core_node}_root"),
-            manifests: entries
-                .iter()
-                .map(|(index, config, sha)| (*index, ResolvedManifest::new(*config, *sha)))
-                .collect(),
         }
-    }
-
-    /// A deployment nothing local hosts is validated against the manifest the
-    /// participant read, not one this daemon went and fetched. That is what
-    /// makes the coordinator independent of sources it does not use.
-    #[test]
-    fn a_wholly_remote_deployment_takes_its_peers_manifest() {
-        let federated = FederatedLaunch {
-            participants: vec![slice("cn-atlas", &[(1, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_indices: BTreeSet::from([0]),
-        };
-
-        let delegated = federated.delegated_manifests();
-        assert_eq!(
-            delegated.len(),
-            1,
-            "only the remote deployment is delegated"
-        );
-        assert_eq!(delegated[&1].core_node, "cn-atlas");
-        assert_eq!(delegated[&1].config_json5, "{ manifest: {} }");
-        assert!(
-            !delegated.contains_key(&0),
-            "a deployment this daemon hosts must be resolved here, not taken on trust"
-        );
-    }
-
-    /// A straddling deployment is NOT delegated: the coordinator has to resolve
-    /// it anyway to add it locally, so it resolves it and the answers are then
-    /// compared.
-    #[test]
-    fn a_straddling_deployment_is_resolved_locally_rather_than_delegated() {
-        let federated = FederatedLaunch {
-            participants: vec![slice("cn-atlas", &[(0, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_indices: BTreeSet::from([0]),
-        };
-        assert!(
-            federated.delegated_manifests().is_empty(),
-            "a deployment with a local half must be read locally"
-        );
-    }
-
-    /// The silent failure this check exists to stop: one launcher entry, two
-    /// machines, two caches that have drifted, and a validated graph that
-    /// describes neither of the nodes actually running.
-    #[test]
-    fn two_machines_resolving_one_node_differently_is_refused() {
-        let federated = FederatedLaunch {
-            participants: vec![slice("cn-atlas", &[(0, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_indices: BTreeSet::from([0]),
-        };
-
-        let own = BTreeMap::from([(0, "sha-robot".to_owned())]);
-        let disagreements = federated.disagreeing_manifests("cn-robot", &own);
-        assert_eq!(disagreements.len(), 1);
-        assert!(
-            disagreements[0].contains("sha-robot"),
-            "got: {disagreements:?}"
-        );
-        assert!(
-            disagreements[0].contains("sha-cloud"),
-            "got: {disagreements:?}"
-        );
-        assert!(
-            disagreements[0].contains("cn-atlas"),
-            "got: {disagreements:?}"
-        );
-    }
-
-    #[test]
-    fn two_machines_resolving_one_node_identically_is_accepted() {
-        let federated = FederatedLaunch {
-            participants: vec![slice("cn-atlas", &[(0, "{ manifest: {} }", "sha-same")])],
-            coordinator_indices: BTreeSet::from([0]),
-        };
-        let own = BTreeMap::from([(0, "sha-same".to_owned())]);
-        assert!(federated.disagreeing_manifests("cn-robot", &own).is_empty());
-    }
-
-    /// A delegated deployment contributes no local fingerprint, so it must not
-    /// be compared: comparing a peer's answer against itself would pass
-    /// vacuously and make the straddle check look like it was working.
-    #[test]
-    fn a_delegated_deployment_is_not_compared_against_itself() {
-        let federated = FederatedLaunch {
-            participants: vec![slice("cn-atlas", &[(1, "{ manifest: {} }", "sha-cloud")])],
-            coordinator_indices: BTreeSet::from([0]),
-        };
-        // Index 1 is absent from the local fingerprints: this daemon never read it.
-        let own = BTreeMap::from([(0, "sha-robot".to_owned())]);
-        assert!(federated.disagreeing_manifests("cn-robot", &own).is_empty());
-    }
-
-    /// The hash echoed onto a dispatched start, which the peer re-checks
-    /// against its own cache before spawning.
-    #[test]
-    fn the_dispatched_start_pins_the_hash_its_participant_reported() {
-        let federated = FederatedLaunch {
-            participants: vec![slice(
-                "cn-atlas",
-                &[(1, "{ a: 1 }", "sha-a"), (2, "{ b: 2 }", "sha-b")],
-            )],
-            coordinator_indices: BTreeSet::new(),
-        };
-        assert_eq!(federated.manifest_sha256("cn-atlas", 2), Some("sha-b"));
-        assert_eq!(federated.manifest_sha256("cn-atlas", 1), Some("sha-a"));
-        assert_eq!(
-            federated.manifest_sha256("cn-atlas", 9),
-            None,
-            "a deployment that participant does not host pins nothing"
-        );
-        assert_eq!(federated.manifest_sha256("cn-elsewhere", 1), None);
     }
 
     /// A peer's root entity holds its instance id across launches, so it is
@@ -817,8 +560,7 @@ mod tests {
     #[test]
     fn an_instance_id_colliding_with_a_peers_root_entity_is_refused() {
         let federated = FederatedLaunch {
-            participants: vec![slice("cn-atlas", &[])],
-            coordinator_indices: BTreeSet::new(),
+            participants: vec![slice("cn-atlas")],
         };
 
         let collisions =
@@ -837,18 +579,12 @@ mod tests {
         );
     }
 
-    /// A single-machine launch has no participants, so none of this applies and
-    /// none of it costs anything.
+    /// A single-machine launch has no participants, so none of this applies
+    /// and none of it costs anything.
     #[test]
-    fn a_single_machine_launch_delegates_nothing_and_refuses_nothing() {
+    fn a_single_machine_launch_refuses_nothing() {
         let federated = FederatedLaunch::default();
         assert!(federated.core_nodes().is_empty());
-        assert!(federated.delegated_manifests().is_empty());
-        assert!(
-            federated
-                .disagreeing_manifests("cn-robot", &BTreeMap::from([(0, "sha".to_owned())]))
-                .is_empty()
-        );
         assert!(
             federated
                 .root_instance_collisions(&BTreeSet::from(["anything"]))

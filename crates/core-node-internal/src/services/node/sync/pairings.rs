@@ -24,31 +24,38 @@ fn resolve_pairing_doc(
 ) -> std::result::Result<PeppyPairing, String> {
     let cache = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
-    resolve_pairing_doc_cached(&cache, peppy_dirs, name, tag, sha256_pin, on_feedback)
+    resolve_pairing_doc_cached(&cache, peppy_dirs, name, tag, sha256_pin, None, on_feedback)
 }
 
 /// Resolves one pairing document against an already-loaded cache, so
 /// multi-slot validation doesn't re-read `pairings.json5` per entry.
+///
+/// A launch pin fixes the bytes: this machine reuses its own copy on a
+/// content match and fetches the pin's origin otherwise, but its own
+/// priority rules never pick the document. Without one, the local rules
+/// apply, with the manifest's own optional sha pin.
 fn resolve_pairing_doc_cached(
     cache: &[repo_cache::PairingCacheEntry],
     peppy_dirs: &PeppyDirs,
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PeppyPairing, String> {
-    repo_cache::resolve_cached_doc(
-        peppy_dirs,
-        cache,
-        name,
-        tag,
-        sha256_pin,
-        |content| {
-            daemon_config::pairing::PeppyPairingParser::from_content(content)
-                .map_err(|e| e.to_string())
-        },
-        on_feedback,
-    )
+    let parse = |content: &str| {
+        daemon_config::pairing::PeppyPairingParser::from_content(content).map_err(|e| e.to_string())
+    };
+    if let Some(pins) = doc_pins {
+        let pin = pins.require(
+            daemon_config::repository::PinKind::Pairing,
+            name,
+            tag,
+            sha256_pin,
+        )?;
+        return repo_cache::resolve_pinned_doc(peppy_dirs, cache, pin, parse, on_feedback);
+    }
+    repo_cache::resolve_cached_doc(peppy_dirs, cache, name, tag, sha256_pin, parse, on_feedback)
 }
 
 /// Validates every pairing slot of a manifest, participant and observer alike,
@@ -67,6 +74,7 @@ fn resolve_pairing_doc_cached(
 pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<HashMap<String, PeppyPairing>, String> {
     let slots = pairing_slots(manifest);
@@ -90,6 +98,7 @@ pub(crate) fn validate_pairing_specs(
                 slot.name,
                 slot.tag,
                 slot.sha256,
+                doc_pins,
                 on_feedback,
             )?),
         };
@@ -208,6 +217,7 @@ pub fn collect_pairing_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
     let Some(depends_on) = manifest.depends_on.as_ref() else {
@@ -216,7 +226,7 @@ pub fn collect_pairing_interfaces(
     if depends_on.pairings.is_empty() && depends_on.pairing_observers.is_empty() {
         return Ok(Vec::new());
     }
-    let docs = validate_pairing_specs(manifest, peppy_dirs, on_feedback)?;
+    let docs = validate_pairing_specs(manifest, peppy_dirs, doc_pins, on_feedback)?;
     let doc_of = |link_id: &str| {
         docs.get(link_id)
             .expect("validate_pairing_specs returns a doc per declared slot")
@@ -575,7 +585,7 @@ mod tests {
         interfaces_cfg: &config::node::Interfaces,
         dirs: &PeppyDirs,
     ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
-        collect_pairing_interfaces(manifest, interfaces_cfg, dirs, &|_| {})
+        collect_pairing_interfaces(manifest, interfaces_cfg, dirs, None, &|_| {})
     }
 
     /// The `(module_path, is_emitted)` of each produced interface, so tests
@@ -917,7 +927,7 @@ mod tests {
                 }
             }"#,
         );
-        let docs = validate_pairing_specs(&m, &dirs, &|_| {}).expect("valid role resolves");
+        let docs = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect("valid role resolves");
         let doc = docs.get("controller").expect("doc keyed by link_id");
         assert_eq!(doc.manifest.name.as_str(), "arm_link");
         assert!(doc.has_role("arm") && doc.has_role("controller"));
@@ -937,7 +947,7 @@ mod tests {
                 }
             }"#,
         );
-        let err = validate_pairing_specs(&m, &dirs, &|_| {}).expect_err("bad role rejected");
+        let err = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect_err("bad role rejected");
         assert!(
             err.contains("gripper") && err.contains("controller") && err.contains("arm"),
             "error should name the bad role and the declared roles: {err}"
@@ -955,7 +965,7 @@ mod tests {
                 }
             }"#,
         );
-        let err = validate_pairing_specs(&m, &dirs, &|_| {}).expect_err("miss must error");
+        let err = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect_err("miss must error");
         assert!(
             err.contains("arm_link:v1") && err.contains("peppy repo refresh"),
             "error should name the entry and suggest refresh: {err}"

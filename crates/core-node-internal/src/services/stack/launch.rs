@@ -4,8 +4,6 @@ mod orchestrate;
 mod phases;
 mod resolve;
 
-pub(crate) use resolve::portable_node_source;
-
 use self::feedback::{publish_stderr, publish_stdout};
 use self::orchestrate::{
     add_node_directly, build_node_directly, fail_and_clear_stack, start_node_directly,
@@ -235,15 +233,21 @@ struct PlannedDeployment {
     node_name: String,
     node_tag: String,
     config: config::node::NodeConfig,
-    /// Where this deployment sat in the launcher's list. Carried so a
-    /// participant's per-deployment answers (its manifest, its hash) can be
-    /// matched back to the entry they belong to.
-    deployment_index: usize,
-    /// This daemon's own fingerprint of the manifest, when this daemon read it.
-    /// `None` for a deployment whose manifest a participant resolved instead,
-    /// which is what keeps the straddle cross-check from comparing a peer's
-    /// answer against itself.
-    manifest_sha256: Option<String>,
+    /// This daemon's fingerprint of the resolved manifest, echoed onto every
+    /// instance dispatched to a peer so a peer whose entity moved between
+    /// dispatch and start refuses rather than running a config the plan was
+    /// never checked against.
+    config_sha256: String,
+    /// The root pin for a pinned source (`repo:` and `git:`); `None` for a
+    /// `local:` tree or a content-addressed `url:` archive.
+    root_pin: Option<daemon_config::repository::PinnedItem>,
+    /// The rest of the closure: dependency-node pins plus, once
+    /// `mint_doc_pins` has run, the contract and pairing document pins every
+    /// add of this deployment carries.
+    closure_pins: Vec<daemon_config::repository::PinnedItem>,
+    /// Every manifest in the deployment's closure, root first. What the
+    /// doc-pin minting walks after the graph validation has had first say.
+    pin_manifests: Vec<config::node::Manifest>,
 }
 
 /// Marker git_hash used for stack-launch operations.
@@ -371,9 +375,20 @@ async fn add_and_build_group(
             continue;
         }
 
-        let node_add_goal =
-            NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
-                .with_env_vars(ctx.env_vars.clone());
+        // The identical source and pins a peer would receive: a launch adds
+        // one set of bytes wherever a deployment lands, so the local arm
+        // must not get to differ from the dispatched one.
+        let node_add_goal = match crate::services::node::pins::encode_pins(&item.closure_pins) {
+            Ok(pins) => {
+                NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
+                    .with_env_vars(ctx.env_vars.clone())
+                    .with_pins(pins)
+            }
+            Err(reason) => {
+                outcome.failure = Some(reason);
+                return outcome;
+            }
+        };
 
         let (result, log_path) = add_node_directly(ctx, node_add_goal).await;
 
@@ -434,6 +449,11 @@ async fn add_and_build_group(
 
 /// Adds and builds one node on a peer, over the wire.
 ///
+/// The goal carries the same pinned source and closure pins the local arm
+/// uses: the peer materializes the coordinator's decision, reusing its own
+/// content on a fingerprint match and fetching the pinned commit otherwise,
+/// and never resolves a name against its own cache.
+///
 /// The peer's own log paths are not folded into this launch's log lists: they
 /// name files on that machine, and a path the operator cannot open is worse
 /// than no path. What the operator gets instead is the peer's output, relayed
@@ -444,17 +464,19 @@ async fn add_and_build_remotely(
     core_node: &str,
     item: &PlannedDeployment,
 ) -> std::result::Result<(), String> {
-    let source = crate::services::stack::portable_node_source(&item.deployment.source)?;
     // A real budget, unlike the in-process path's zero: this goal passes
     // through the peer's own concurrency gate, which reports the remaining time
     // when it refuses a second caller.
     let add_goal = NodeAddGoal::from_source(
-        source,
+        item.source.clone(),
         STACK_LAUNCH_GIT_HASH,
         ctx.idle_timeouts.add.as_secs(),
     )
     .with_env_vars(ctx.env_vars.clone())
-    .with_launch_id(&goal.launch_id);
+    .with_launch_id(&goal.launch_id)
+    .with_pins(crate::services::node::pins::encode_pins(
+        &item.closure_pins,
+    )?);
     let added = federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add)
         .await
         .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
@@ -963,14 +985,7 @@ async fn start_node_instances(
             let outcome = if local {
                 start_locally(ctx, key, instance_id, node_run_goal, run_log_paths).await
             } else {
-                start_remotely(
-                    ctx,
-                    goal,
-                    &core_node,
-                    node_run_goal,
-                    federated.manifest_sha256(&core_node, item.deployment_index),
-                )
-                .await
+                start_remotely(ctx, goal, &core_node, node_run_goal, &item.config_sha256).await
             };
 
             if let Err(reason) = outcome {
@@ -1019,25 +1034,25 @@ async fn start_locally(
     }
 }
 
-/// Starts one instance on a peer, pinning the manifest that peer reported
-/// during preflight.
+/// Starts one instance on a peer, pinning the manifest this coordinator
+/// resolved for its deployment.
 ///
-/// The hash is the whole point of pinning: the peer re-resolves the manifest
-/// from its own cache when the goal lands, and refuses if it no longer hashes
-/// the same. That closes the window between preflight and dispatch in which a
-/// `repo refresh` on the peer could have moved the node out from under a plan
-/// that was validated against the old one.
+/// The hash closes the window between add and start: the peer compares it
+/// against the entity now in its stack and refuses if the two no longer
+/// hash the same, so an entity replaced out from under the plan fails
+/// loudly instead of starting a node the plan was never checked against.
+/// Every remote instance carries it, straddling deployments included,
+/// because the coordinator resolved every deployment itself.
 async fn start_remotely(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
     core_node: &str,
     node_run_goal: NodeRunGoal,
-    manifest_sha256: Option<&str>,
+    config_sha256: &str,
 ) -> std::result::Result<(), String> {
-    let mut node_run_goal = node_run_goal.with_launch_id(&goal.launch_id);
-    if let Some(sha) = manifest_sha256 {
-        node_run_goal = node_run_goal.with_manifest_sha256(sha);
-    }
+    let node_run_goal = node_run_goal
+        .with_launch_id(&goal.launch_id)
+        .with_manifest_sha256(config_sha256);
     federated::run_remote_goal(ctx, core_node, &node_run_goal, ctx.idle_timeouts.run).await
 }
 
@@ -1201,12 +1216,13 @@ async fn handle_goal_request(
 ///
 /// This function orchestrates the complete launch sequence:
 /// 1. Parse launcher configuration
-/// 2. Resolve deployments
-/// 3. Validate dependencies and compute order
-/// 4. Snapshot and clear stack
-/// 5. Add nodes in dependency order
-/// 6. Prepare stack-wide container host mounts
-/// 7. Start instances in dependency order
+/// 2. Resolve deployments and mint their node pins
+/// 3. Validate dependencies and compute order, then mint the doc pins
+/// 4. Federated preflight, carrying the pins
+/// 5. Snapshot and clear stack
+/// 6. Add nodes in dependency order
+/// 7. Prepare stack-wide container host mounts
+/// 8. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse the launcher and bind its core node links to machines.
     let (deployments, nodes_directory, placements) = match parse_launcher_config(&ctx, &goal).await
@@ -1215,59 +1231,57 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         Err(launch_result) => return launch_result,
     };
 
-    // Step 2: Federated preflight. Reachability, reservations, and each
-    // participant's own manifests, all BEFORE anything is resolved or torn
-    // down. Reserving first is what makes every later refusal free: no machine,
-    // including this one, has been touched yet.
-    let federated =
-        match federated::preflight(&ctx, &goal.launch_id, &deployments, &placements).await {
-            Ok(federated) => federated,
-            Err(reason) => {
-                publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-                return LaunchResult::failure(&ctx.log_path, reason);
-            }
+    // Step 2: Resolve every deployment, once, on this daemon, minting the
+    // node pins the whole launch runs. Resolution touches no other machine
+    // and tears nothing down, so refusing here is free, and the
+    // reservations below need the pins to carry.
+    let mut planned =
+        match resolve_deployments(&ctx, deployments, &nodes_directory, &placements).await {
+            Ok(result) => result,
+            Err(launch_result) => return launch_result,
         };
-    let participants = federated.core_nodes();
 
-    // Step 3: Resolve deployments. Anything placed wholly on a peer takes the
-    // manifest that peer resolved; the rest this daemon resolves itself.
-    let planned = match resolve_deployments(
-        &ctx,
-        deployments,
-        &nodes_directory,
-        &federated.delegated_manifests(),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(launch_result) => {
-            return release_and_fail(&ctx, &goal, &participants, launch_result).await;
+    // Step 3: Validate dependencies and compute one global topological order,
+    // across every machine. There is exactly one planner. Runs before the
+    // doc pins are minted so a graph refusal, which points at the launcher
+    // and the manifests, has first say over a document missing from this
+    // machine's caches.
+    let root_config = ctx.node_stack.root().read().config().clone();
+    let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
+        match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements).await {
+            Ok(result) => result,
+            Err(launch_result) => return launch_result,
+        };
+
+    // Step 3b: Pin the contract and pairing documents every manifest in the
+    // launch names. Still before any reservation, so a document this
+    // machine cannot pin refuses the launch while it has cost nothing.
+    if let Err(launch_result) = resolve::mint_doc_pins(&ctx, &mut planned, &placements).await {
+        return launch_result;
+    }
+
+    // Step 4: Federated preflight. Reachability and reservations, each
+    // carrying its participant's pins, all BEFORE anything is torn down: a
+    // refusal at this point has cost no machine, including this one, its
+    // stack.
+    let federated = match federated::preflight(&ctx, &goal.launch_id, &planned, &placements).await {
+        Ok(federated) => federated,
+        Err(reason) => {
+            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return LaunchResult::failure(&ctx.log_path, reason);
         }
     };
+    let participants = federated.core_nodes();
 
-    // Step 3b: A node whose instances straddle two machines must be the same
-    // node on both, or the graph validated below describes neither. A planned
-    // instance id must also not collide with a participant's own root entity,
-    // which occupies that machine's namespace before this launch touches it.
-    let mut refusals = federated.root_instance_collisions(
+    // Step 4b: A planned instance id must not collide with a participant's
+    // own root entity, which occupies that machine's namespace before this
+    // launch touches it.
+    let refusals = federated.root_instance_collisions(
         &planned
             .iter()
             .flat_map(|item| &item.deployment.instances)
             .map(|instance| instance.instance_id.as_str())
             .collect(),
-    );
-    refusals.extend(
-        federated.disagreeing_manifests(
-            ctx.bound_core_node.as_str(),
-            &planned
-                .iter()
-                .filter_map(|item| {
-                    item.manifest_sha256
-                        .as_ref()
-                        .map(|sha| (item.deployment_index, sha.clone()))
-                })
-                .collect(),
-        ),
     );
     if !refusals.is_empty() {
         let msg = daemon_config::format_bulleted(&refusals);
@@ -1280,17 +1294,6 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         )
         .await;
     }
-
-    // Step 4: Validate dependencies and compute one global topological order,
-    // across every machine. There is exactly one planner.
-    let root_config = ctx.node_stack.root().read().config().clone();
-    let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
-        match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements).await {
-            Ok(result) => result,
-            Err(launch_result) => {
-                return release_and_fail(&ctx, &goal, &participants, launch_result).await;
-            }
-        };
 
     // Step 5: The commit point. Every participant is reserved and the whole
     // plan is validated, so now, and only now, do stacks get replaced. Peers

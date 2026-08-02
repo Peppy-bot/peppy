@@ -2,7 +2,6 @@ use super::{
     checkout_repo_ref, is_supported_fs_archive, resolve_local_archive_source, sanitize_repo_path,
 };
 use crate::Result;
-use crate::services::repo::cache as repo_cache;
 use config::consts::NODE_CONFIG_FILE;
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::ServiceId;
@@ -246,17 +245,11 @@ async fn resolve_node_config_with_source_path(
         NodeSource::Http { url, sha256 } => {
             parse_node_config_from_http_with_path(url, sha256, peppy_dirs).await
         }
-        NodeSource::RepoNode { name, tag } => {
-            let entry = repo_cache::resolve_repo_node_entry(&name, &tag, peppy_dirs)?;
-            let (source_dir, config) = crate::services::node::cache::materialize_entry(
-                &entry,
-                peppy_dirs,
-                crate::services::node::cache::silent_feedback(),
-            )
-            .await?;
-            // The checkout cache owns the directory and keys it by commit, so
-            // nothing here is a temporary the caller has to keep alive.
-            Ok((config, source_dir, None))
+        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
+            // Pinned sources resolve through `node::pins`, whose executor
+            // owns the content-match-or-fetch rules; nothing routes them
+            // through this single-source resolver.
+            Err("internal error: a pinned source reached the single-source resolver".to_owned())
         }
     }
 }

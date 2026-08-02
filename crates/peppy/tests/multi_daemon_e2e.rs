@@ -982,14 +982,14 @@ async fn start_federation(prefix: &str) -> Federation {
     )
     .await;
 
-    // Each daemon resolves the deployments placed on it against its OWN cache,
-    // so both halves need one. A coordinator-only refresh leaves the peer
-    // refusing the launch in preflight, which is exactly the failure this
-    // fixture used to produce.
-    for daemon in [&robot, &cloud] {
-        daemon.wait_until_serving().await;
-        daemon.refresh_repos().await;
-    }
+    // Only the coordinator's cache decides what a launch runs: it resolves
+    // every deployment once and ships pinned content to the peer, which
+    // fetches whatever it does not already hold. The robot submits every
+    // launch in this suite, so the cloud daemon deliberately gets NO
+    // refresh: its empty cache is what proves the pins carry the launch.
+    robot.wait_until_serving().await;
+    robot.refresh_repos().await;
+    cloud.wait_until_serving().await;
 
     Federation {
         robot,

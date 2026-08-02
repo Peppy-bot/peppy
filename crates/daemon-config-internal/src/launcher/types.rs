@@ -1161,6 +1161,12 @@ impl Placements {
             .as_str()
     }
 
+    /// The daemon the launch was sent to, which is where an instance that
+    /// declared no `core_node` runs.
+    pub fn coordinator(&self) -> &str {
+        self.coordinator.as_str()
+    }
+
     /// Whether any instance is placed off the coordinator, i.e. whether this
     /// launch actually spans machines.
     pub fn is_federated(&self) -> bool {
