@@ -23,6 +23,7 @@
 //! command, so they get one stream; the prefix is what keeps it readable when
 //! two machines are building at once.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -242,24 +243,36 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
     Ok(RemoteGoalRun { log_path, outcome })
 }
 
-/// Tells every participant to replace its stack slice, in parallel.
+/// Tells every participant to replace its stack slice, in parallel, handing
+/// each the bind sources its slice needs.
 ///
 /// This is the first destructive step of a federated launch on any machine, and
 /// it happens only once every participant is reserved. A refusal here is
 /// returned rather than retried: the reservation makes it nearly impossible
 /// (this coordinator holds each machine), so a refusal means the peer's lease
 /// lapsed or the network dropped, and continuing would build half a topology.
+///
+/// A participant that had to create one of those sources says so, and the line
+/// is relayed here attributed to its machine: an auto-created bind source is
+/// how a misspelled file bind looks, and the operator watching this launch is
+/// the one who can tell the two apart.
 pub(in crate::services::stack) async fn begin_participant_slices(
     ctx: &ProcessLaunchContext,
     launch_id: &str,
     participants: &[String],
+    mount_sources_by_machine: &HashMap<String, Vec<String>>,
 ) -> std::result::Result<(), String> {
-    let request = ParticipantSliceBeginRequest::new(launch_id);
     let outcomes = futures::future::join_all(participants.iter().map(|core_node| {
-        let request = &request;
+        let request = ParticipantSliceBeginRequest::new(
+            launch_id,
+            mount_sources_by_machine
+                .get(core_node)
+                .cloned()
+                .unwrap_or_default(),
+        );
         async move {
             let outcome = poll(
-                request,
+                &request,
                 &ctx.messenger,
                 ctx.bound_core_node.as_str(),
                 ctx.core_instance_id.as_str(),
@@ -275,7 +288,16 @@ pub(in crate::services::stack) async fn begin_participant_slices(
     let mut refusals = Vec::new();
     for (core_node, outcome) in outcomes {
         match outcome {
-            Ok(response) if response.ok => {}
+            Ok(response) if response.ok => {
+                for src in response.auto_created_mount_sources {
+                    publish_stderr(
+                        ctx,
+                        format!("[{core_node}] {}", containers::auto_created_warning(&src)),
+                        LaunchFeedbackStep::LauncherStep,
+                    )
+                    .await;
+                }
+            }
             Ok(response) => refusals.push(format!(
                 "`{core_node}` refused: {}",
                 response

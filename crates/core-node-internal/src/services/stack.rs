@@ -1,9 +1,11 @@
 mod benchmark;
+mod container_mounts;
 mod launch;
 mod list;
 mod reset;
 
 pub use benchmark::listen_for_stack_benchmark;
+pub(crate) use container_mounts::prepare_container_mounts;
 pub use launch::STACK_LAUNCH_GIT_HASH;
 pub use launch::listen_for_stack_launch;
 pub use launch::{StackLaunchDefaults, StackLaunchTimeouts};

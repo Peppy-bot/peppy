@@ -304,6 +304,8 @@ Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`
 
 :::note
 On macOS, Peppy automatically configures the Lima VM to make mounted paths accessible inside the guest. No extra setup is needed; paths outside your home directory are handled transparently.
+
+Registering a new path with the VM restarts it, which stops every container node running on that machine. `peppy stack launch` prepares a machine's mount paths before it starts anything, so a launch never pays that cost. A `peppy node run` that would introduce a new path while container nodes are already running is refused instead, naming the instances it would have stopped: stop them first, or launch them together.
 :::
 
 ### Using parameters in mount paths

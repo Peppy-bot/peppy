@@ -782,7 +782,7 @@ const CONTAINER_LAUNCHER_DIR: &str = "/etc/peppy/launchers";
 const SPLIT_COMPUTE_LAUNCHER_FILE: &str = "split_compute_manipulation.json5";
 const HUB_NODE_PROBE_LAUNCHER_FILE: &str = "hub_node_probe.json5";
 const CALLER_ENV_PROBE_LAUNCHER_FILE: &str = "caller_env_probe.json5";
-const UNBINDABLE_PEER_LAUNCHER_FILE: &str = "unbindable_peer.json5";
+const PEER_RUN_FAILURE_LAUNCHER_FILE: &str = "peer_run_failure.json5";
 
 fn container_launcher(file_name: &str) -> String {
     format!("{CONTAINER_LAUNCHER_DIR}/{file_name}")
@@ -824,35 +824,34 @@ const CALLER_ENV_PROBE_LAUNCHER: &str = r#"{
 }
 "#;
 
-/// The host path `uvc_camera_video_reconstruction_python:v1` bind-mounts, taken
-/// verbatim from its node definition in `nodes-hub`.
-const PEER_BIND_SOURCE: &str = "/tmp/video_reconstruction";
+/// The instance the launcher places on the peer, and whose working directory
+/// the test makes unusable there.
+const PEER_RUN_FAILURE_INSTANCE: &str = "peer_fail_recon_inst";
 
 /// A launch that gets as far as the peer's RUN and fails there.
 ///
-/// `uvc_camera_video_reconstruction_python` is a container node that binds
-/// [`PEER_BIND_SOURCE`], and the test makes that source unusable on the peer
-/// alone (see `a_peer_phase_that_fails_still_names_the_peers_log_file`). So the
-/// peer adds the node, builds it, accepts the run goal, opens its log file, and
-/// fails preparing the bind. The camera stays on the coordinator, which is what
-/// makes the marked entry evidence of attribution rather than of every entry
-/// belonging to one machine.
-const UNBINDABLE_PEER_LAUNCHER: &str = r#"{
+/// The peer adds its node, builds it, accepts the run goal, opens its log file,
+/// and then cannot materialize [`PEER_RUN_FAILURE_INSTANCE`]'s working
+/// directory, which the test has made uncreatable on the peer alone (see
+/// `a_peer_phase_that_fails_still_names_the_peers_log_file`). The camera stays
+/// on the coordinator, which is what makes the marked entry evidence of
+/// attribution rather than of every entry belonging to one machine.
+const PEER_RUN_FAILURE_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
   core_nodes: ["remote_worker"],
   deployments: [
     {
       source: { name: "uvc_camera_python_mock", tag: "v1" },
-      instances: [{ instance_id: "unbindable_cam_inst" }],
+      instances: [{ instance_id: "peer_fail_cam_inst" }],
     },
     {
       source: { name: "uvc_camera_video_reconstruction_python", tag: "v1" },
       instances: [
         {
-          instance_id: "unbindable_recon_inst",
+          instance_id: "peer_fail_recon_inst",
           core_node: "remote_worker",
           arguments: { video_duration_seconds: 5 },
-          links: { camera: "unbindable_cam_inst" },
+          links: { camera: "peer_fail_cam_inst" },
         },
       ],
     },
@@ -1036,10 +1035,10 @@ async fn start_federation(prefix: &str) -> Federation {
     )
     .expect("writing the caller-env probe launcher into the launcher mount");
     std::fs::write(
-        launcher_dir.path().join(UNBINDABLE_PEER_LAUNCHER_FILE),
-        UNBINDABLE_PEER_LAUNCHER,
+        launcher_dir.path().join(PEER_RUN_FAILURE_LAUNCHER_FILE),
+        PEER_RUN_FAILURE_LAUNCHER,
     )
-    .expect("writing the unbindable-peer launcher into the launcher mount");
+    .expect("writing the peer-run-failure launcher into the launcher mount");
 
     let robot = start_daemon(
         &launch,
@@ -1466,19 +1465,29 @@ async fn an_unreachable_peer_fails_the_launch_and_is_named() {
 async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
     let federation = start_federation("peppy-fed-peer-fail").await;
 
-    // Make the peer's bind source unusable. A daemon creates a missing bind
-    // source itself right before it starts the container, on whichever machine
-    // runs the instance, so a merely absent path would be created and the run
-    // would succeed. A dangling symlink is the shape that cannot be: it does
-    // not exist, so the daemon tries to create it, and `mkdir` refuses because
-    // the symlink already occupies the name. Planted on the peer only, so the
-    // coordinator's own instance still gets through every phase.
+    // Make the peer unable to materialize the instance it will be asked to run.
+    // A dangling symlink is the shape that cannot be created: it does not
+    // exist, so the daemon goes to create the working directory, and `mkdir`
+    // refuses because the symlink already occupies the name. It is planted on
+    // the working directory rather than on a bind source because bind sources
+    // are prepared when the peer takes over its slice, before the phases this
+    // test is about; nothing prepares this one ahead of the start. Planted on
+    // the peer only, so the coordinator's own instance gets through every
+    // phase.
+    let instance_dir = format!("{CONTAINER_PEPPY_HOME}/instances/{PEER_RUN_FAILURE_INSTANCE}");
     require_success(
         federation
             .cloud
-            .exec(vec!["ln", "-s", "/no_such_bind_target", PEER_BIND_SOURCE])
+            .exec(vec![
+                "sh",
+                "-c",
+                &format!(
+                    "mkdir -p {CONTAINER_PEPPY_HOME}/instances \
+                     && ln -s /no_such_instance_dir_target {instance_dir}"
+                ),
+            ])
             .await,
-        &format!("planting an uncreatable {PEER_BIND_SOURCE} on the peer"),
+        &format!("planting an uncreatable {instance_dir} on the peer"),
     );
 
     let launch = federation
@@ -1488,7 +1497,7 @@ async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
             "launch",
             "--place",
             &format!("remote_worker@{}", federation.cloud_core_node),
-            &container_launcher(UNBINDABLE_PEER_LAUNCHER_FILE),
+            &container_launcher(PEER_RUN_FAILURE_LAUNCHER_FILE),
         ])
         .await;
     assert!(

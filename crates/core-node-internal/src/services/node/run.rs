@@ -729,6 +729,63 @@ fn refuse_stale_manifest(
     ))
 }
 
+/// Refuses a container start whose host mounts cannot be registered without
+/// restarting the execution environment underneath containers already running
+/// in it.
+///
+/// The instance being started is not in the stack yet, so it cannot be in
+/// `running`; every id there belongs to a node this start would kill.
+fn refuse_restart_over_running_containers(
+    apptainer: &containers::Apptainer,
+    resolved_mount_paths: &[String],
+    peppy_dirs: &PeppyDirs,
+    node_stack: &NodeStack,
+    instance_id: &str,
+) -> std::result::Result<(), String> {
+    // The same set the start is about to register: what the node binds, plus
+    // the peppy root that holds its image, working dir and runtime config.
+    let root = peppy_dirs
+        .root()
+        .to_str()
+        .ok_or_else(|| "peppy root path is not valid UTF-8".to_string())?;
+    let mut sources: Vec<&str> = resolved_mount_paths
+        .iter()
+        .map(|mount| containers::mount_spec_source(mount))
+        .collect();
+    sources.push(root);
+
+    let needs_restart = apptainer
+        .host_mounts_need_restart(&sources)
+        .map_err(|e| format!("Failed to check the container host mounts: {e}"))?;
+    if !needs_restart {
+        return Ok(());
+    }
+
+    match restart_refusal(instance_id, &node_stack.live_container_instance_ids()) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
+}
+
+/// What to tell an operator whose start would cost them running containers,
+/// and nothing when it costs them nothing.
+///
+/// Separated from the runtime query so the wording and the "only when something
+/// would die" rule are checkable on any platform, including the Linux hosts
+/// where no execution environment can restart in the first place.
+fn restart_refusal(instance_id: &str, running: &[String]) -> Option<String> {
+    if running.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "cannot start `{instance_id}`: its bind mounts are not visible to the container \
+         execution environment yet, and making them visible restarts it, which would stop the \
+         container node(s) already running here ({}). Stop them first, or start everything in \
+         one `peppy stack launch`, which prepares a machine's mounts before it runs anything.",
+        running.join(", ")
+    ))
+}
+
 async fn process_node_run(
     goal: NodeRunGoal,
     mut runtime_config: RuntimeConfig,
@@ -963,6 +1020,25 @@ async fn process_node_run(
                 return NodeRunResult::failure(msg);
             }
         };
+
+        // Starting this container may have to make a host path visible to the
+        // execution environment, and on a VM backend that means restarting it,
+        // which kills every container already in it. A stack launch prepares a
+        // machine's mounts while its slice is empty precisely so this never
+        // bites; anything else reaching here (a `peppy node run` against a live
+        // stack, say) is refused rather than paid for by the nodes already
+        // running.
+        if let Err(msg) = refuse_restart_over_running_containers(
+            &apptainer,
+            &resolved_mount_paths,
+            &ctx.action.peppy_dirs,
+            &ctx.action.node_stack,
+            instance_id_str,
+        ) {
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+
         apptainer.host_gateway()
     } else {
         None
@@ -1995,6 +2071,32 @@ mod tests {
             "the operator needs both fingerprints to see what moved; got: {refusal}"
         );
         assert!(refusal.contains("Re-run the launch"), "got: {refusal}");
+    }
+
+    /// A restart with nothing in the execution environment costs nothing, so
+    /// the start goes ahead. This is the ordinary case: the first container of
+    /// a stack, or any container on a machine whose slice was just cleared.
+    #[test]
+    fn a_restart_that_would_stop_nothing_is_not_refused() {
+        assert!(restart_refusal("recon_inst", &[]).is_none());
+    }
+
+    /// The refusal has to name what would be lost and what to do instead:
+    /// its whole job is to turn a silent kill of the running stack into a
+    /// decision the operator gets to make.
+    #[test]
+    fn a_restart_that_would_stop_running_containers_is_refused_and_names_them() {
+        let refusal = restart_refusal(
+            "recon_inst",
+            &["cam_inst".to_owned(), "arm_inst".to_owned()],
+        )
+        .expect("running containers must stop the start");
+        assert!(refusal.contains("recon_inst"), "got: {refusal}");
+        assert!(
+            refusal.contains("cam_inst") && refusal.contains("arm_inst"),
+            "every instance that would be stopped must be named; got: {refusal}"
+        );
+        assert!(refusal.contains("peppy stack launch"), "got: {refusal}");
     }
 
     #[test]
