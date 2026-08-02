@@ -129,9 +129,10 @@ pub fn add_peppylib_dependencies(
                              '{target_suffix}' (expected '{expected_so_name}'). \
                              Linux container bindings are only produced (or, \
                              after a shared-crate change, refreshed) by a cross \
-                             build: rebuild peppy with PEPPY_CROSS_BUILD=1 \
-                             (scripts/build_release.sh does this) and restart \
-                             the daemon."
+                             build: every release build runs one, a debug build \
+                             only with PEPPY_CROSS_BUILD=1. Rebuild peppy \
+                             (`cargo build --release`, or PEPPY_CROSS_BUILD=1 \
+                             `cargo build`) and restart the daemon."
                         ),
                     )
                 })?;
@@ -396,15 +397,16 @@ mod tests {
     /// all release builds (including cross-compilation) originate.
     ///
     /// The Linux container bindings (linux-aarch64 and linux-x86_64) are produced
-    /// only in a cross build (PEPPY_CROSS_BUILD, set by scripts/build_release.sh
-    /// and the CI workflow); a regular build produces only the host dynamic lib,
-    /// so the embedded set lacks every Linux platform and this test has nothing to
-    /// assert and skips. The gate uses the same predicate the build script does,
-    /// so the two never disagree.
+    /// only when the cross build is enabled: every release build, plus debug
+    /// builds that opt in via PEPPY_CROSS_BUILD (the CI workflows do). Otherwise
+    /// the embedded set lacks every Linux platform and this test has nothing to
+    /// assert and skips. The gate reads PEPPYLIB_CROSS_BUILD, the decision the
+    /// build script actually took for this compilation, so the two can never
+    /// disagree.
     #[test]
     #[cfg(target_os = "macos")]
     fn embedded_peppylib_contains_all_release_platform_dynamic_lib() {
-        if !peppylib_build_policy::cross_build_requested() {
+        if env!("PEPPYLIB_CROSS_BUILD") != "1" {
             return;
         }
 
