@@ -23,6 +23,7 @@
 //! command, so they get one stream; the prefix is what keeps it readable when
 //! two machines are building at once.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use core_node_api::ActionGoal;
@@ -59,7 +60,10 @@ pub(in crate::services::stack) trait RemoteGoal: ActionGoal {
     type Outcome;
 
     fn label() -> &'static str;
-    fn decode_acceptance(payload: &[u8]) -> std::result::Result<(), String>;
+    /// Decodes the peer's goal response: the log file the peer created for
+    /// this goal, on its own filesystem, when it accepted, and the rejection
+    /// reason when it refused.
+    fn decode_acceptance(payload: &[u8]) -> std::result::Result<PathBuf, String>;
     fn decode_feedback_line(payload: &[u8]) -> Option<String>;
     fn decode_outcome(payload: &[u8]) -> std::result::Result<Self::Outcome, String>;
 }
@@ -74,11 +78,11 @@ macro_rules! impl_remote_goal {
                 $label
             }
 
-            fn decode_acceptance(payload: &[u8]) -> std::result::Result<(), String> {
+            fn decode_acceptance(payload: &[u8]) -> std::result::Result<PathBuf, String> {
                 let response = <$response>::decode(payload)
                     .map_err(|e| format!("undecodable {} goal response: {e}", $label))?;
                 if response.accepted {
-                    return Ok(());
+                    return Ok(response.log_path);
                 }
                 Err(response
                     .rejection_reason
@@ -134,8 +138,22 @@ impl_remote_goal!(
     drop
 );
 
+/// What one accepted goal produced, as the coordinator records it.
+///
+/// `log_path` names the log file the peer created for the goal, on its own
+/// filesystem, known from the moment the peer accepted. It is carried
+/// separately from `outcome` so a failed phase still names the file that
+/// explains it.
+pub(in crate::services::stack) struct RemoteGoalRun<T> {
+    pub(in crate::services::stack) log_path: PathBuf,
+    pub(in crate::services::stack) outcome: std::result::Result<T, String>,
+}
+
 /// Sends one goal to `core_node` and drives it to completion, relaying its
 /// feedback into this launch's stream.
+///
+/// Returns `Err` only when the peer never accepted the goal (the send failed
+/// or the peer refused), which is the one case with no log file to name.
 ///
 /// `idle_timeout` is the same per-phase budget the in-process path uses, but
 /// measured against RELAYED feedback rather than local subprocess output: a
@@ -148,7 +166,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
     core_node: &str,
     goal: &G,
     idle_timeout: Duration,
-) -> std::result::Result<G::Outcome, String> {
+) -> std::result::Result<RemoteGoalRun<G::Outcome>, String> {
     let mut handle = send_goal(
         goal,
         &ctx.messenger,
@@ -160,63 +178,68 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
     .await
     .map_err(|e| format!("`{core_node}` did not accept the {} goal: {e}", G::label()))?;
 
-    G::decode_acceptance(handle.goal_reply().body.as_ref())
+    let log_path = G::decode_acceptance(handle.goal_reply().body.as_ref())
         .map_err(|reason| format!("`{core_node}` refused the {}: {reason}", G::label()))?;
 
-    let mut last_activity = tokio::time::Instant::now();
-    loop {
-        let now = tokio::time::Instant::now();
-        if ctx.launch_deadline.is_some_and(|deadline| now >= deadline) {
-            return Err(format!(
-                "max launch timeout exceeded while `{core_node}` was running {}",
-                G::label()
-            ));
-        }
-        if now.duration_since(last_activity) >= idle_timeout {
-            return Err(format!(
-                "`{core_node}` produced no {} output for {}s",
-                G::label(),
-                idle_timeout.as_secs()
-            ));
-        }
-
-        // Wait exactly until the nearer of the two budgets would be blown,
-        // rather than ticking. A remote build can be silent for minutes, and
-        // both budgets are re-checked at the top of the loop anyway, so waking
-        // any earlier than the deadline that would end the wait is pure spin —
-        // multiplied by every peer running a goal concurrently.
-        let idle_expiry = last_activity + idle_timeout;
-        let wake_at = match ctx.launch_deadline {
-            Some(deadline) => idle_expiry.min(deadline),
-            None => idle_expiry,
-        };
-        match tokio::time::timeout_at(wake_at, handle.on_next_feedback()).await {
-            Ok(Ok(message)) => {
-                last_activity = tokio::time::Instant::now();
-                if let Some(line) = G::decode_feedback_line(message.payload().as_ref()) {
-                    publish_stdout(ctx, format!("[{core_node}] {line}"), G::STEP).await;
-                }
+    let outcome = async {
+        let mut last_activity = tokio::time::Instant::now();
+        loop {
+            let now = tokio::time::Instant::now();
+            if ctx.launch_deadline.is_some_and(|deadline| now >= deadline) {
+                return Err(format!(
+                    "max launch timeout exceeded while `{core_node}` was running {}",
+                    G::label()
+                ));
             }
-            // End of stream: the peer completed the goal.
-            Ok(Err(_)) => break,
-            // A budget elapsed with nothing to read; the checks above name it.
-            Err(_) => {}
+            if now.duration_since(last_activity) >= idle_timeout {
+                return Err(format!(
+                    "`{core_node}` produced no {} output for {}s",
+                    G::label(),
+                    idle_timeout.as_secs()
+                ));
+            }
+
+            // Wait exactly until the nearer of the two budgets would be blown,
+            // rather than ticking. A remote build can be silent for minutes, and
+            // both budgets are re-checked at the top of the loop anyway, so waking
+            // any earlier than the deadline that would end the wait is pure spin,
+            // multiplied by every peer running a goal concurrently.
+            let idle_expiry = last_activity + idle_timeout;
+            let wake_at = match ctx.launch_deadline {
+                Some(deadline) => idle_expiry.min(deadline),
+                None => idle_expiry,
+            };
+            match tokio::time::timeout_at(wake_at, handle.on_next_feedback()).await {
+                Ok(Ok(message)) => {
+                    last_activity = tokio::time::Instant::now();
+                    if let Some(line) = G::decode_feedback_line(message.payload().as_ref()) {
+                        publish_stdout(ctx, format!("[{core_node}] {line}"), G::STEP).await;
+                    }
+                }
+                // End of stream: the peer completed the goal.
+                Ok(Err(_)) => break,
+                // A budget elapsed with nothing to read; the checks above name it.
+                Err(_) => {}
+            }
         }
+
+        let result_timeout = ctx
+            .launch_deadline
+            .map(|deadline| {
+                deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .max(Duration::from_secs(1))
+            })
+            .unwrap_or(GOAL_ACCEPT_TIMEOUT);
+        let payload = ActionMessenger::request_result_body(&ctx.messenger, &handle, result_timeout)
+            .await
+            .map_err(|reason| format!("`{core_node}` {}: {reason}", G::label()))?;
+
+        G::decode_outcome(payload.as_ref()).map_err(|reason| format!("`{core_node}`: {reason}"))
     }
+    .await;
 
-    let result_timeout = ctx
-        .launch_deadline
-        .map(|deadline| {
-            deadline
-                .saturating_duration_since(tokio::time::Instant::now())
-                .max(Duration::from_secs(1))
-        })
-        .unwrap_or(GOAL_ACCEPT_TIMEOUT);
-    let payload = ActionMessenger::request_result_body(&ctx.messenger, &handle, result_timeout)
-        .await
-        .map_err(|reason| format!("`{core_node}` {}: {reason}", G::label()))?;
-
-    G::decode_outcome(payload.as_ref()).map_err(|reason| format!("`{core_node}`: {reason}"))
+    Ok(RemoteGoalRun { log_path, outcome })
 }
 
 /// Tells every participant to replace its stack slice, in parallel.

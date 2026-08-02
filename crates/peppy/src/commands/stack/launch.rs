@@ -51,6 +51,15 @@ fn compute_cli_max_timeout(max_timeout_secs: Option<u64>) -> Option<Duration> {
     })
 }
 
+/// One line of the "Node log files" listing:
+/// `node_name:tag@core-node: /path/to/log`, with a ` [FAILED]` marker before
+/// the colon when the phase failed. The core node names the machine whose
+/// filesystem holds the log file.
+fn node_log_line(node_label: &str, core_node: &str, failed: bool, log_path: &Path) -> String {
+    let marker = if failed { " [FAILED]" } else { "" };
+    format!("{node_label}@{core_node}{marker}: {}", log_path.display())
+}
+
 fn display_node_log_files(
     add_logs: &[NodeAddLogEntry],
     build_logs: &[NodeBuildLogEntry],
@@ -59,43 +68,43 @@ fn display_node_log_files(
     if add_logs.is_empty() && build_logs.is_empty() && run_logs.is_empty() {
         return;
     }
+    let line = |node_label: &str, core_node: &str, failed: bool, log_path: &Path| {
+        (node_log_line(node_label, core_node, failed, log_path), failed)
+    };
+    let sections = [
+        (
+            "Add",
+            add_logs
+                .iter()
+                .map(|e| line(&e.node_label, &e.core_node, e.failed, &e.log_path))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "Build",
+            build_logs
+                .iter()
+                .map(|e| line(&e.node_label, &e.core_node, e.failed, &e.log_path))
+                .collect(),
+        ),
+        (
+            "Run",
+            run_logs
+                .iter()
+                .map(|e| line(&e.node_label, &e.core_node, e.failed, &e.log_path))
+                .collect(),
+        ),
+    ];
     info!("Node log files:");
-    if !add_logs.is_empty() {
-        info!("  Add:");
-        for e in add_logs {
-            info!("    `{}`: {}", e.node_label, e.log_path.display());
+    for (title, lines) in sections {
+        if lines.is_empty() {
+            continue;
         }
-    }
-    if !build_logs.is_empty() {
-        info!("  Build:");
-        for e in build_logs {
-            let marker = if e.failed { " [FAILED]" } else { "" };
-            if e.failed {
-                tracing::error!("    `{}`{}: {}", e.node_label, marker, e.log_path.display());
+        info!("  {title}:");
+        for (text, failed) in lines {
+            if failed {
+                tracing::error!("    {text}");
             } else {
-                info!("    `{}`: {}", e.node_label, e.log_path.display());
-            }
-        }
-    }
-    if !run_logs.is_empty() {
-        info!("  Run:");
-        for e in run_logs {
-            let marker = if e.failed { " [FAILED]" } else { "" };
-            if e.failed {
-                tracing::error!(
-                    "    {} (`{}`){}: {}",
-                    e.instance_id,
-                    e.node_label,
-                    marker,
-                    e.log_path.display()
-                );
-            } else {
-                info!(
-                    "    {} (`{}`): {}",
-                    e.instance_id,
-                    e.node_label,
-                    e.log_path.display()
-                );
+                info!("    {text}");
             }
         }
     }
@@ -772,5 +781,34 @@ mod tests {
     fn launch_ids_are_distinct_per_launch() {
         assert_ne!(new_launch_id(), new_launch_id());
         assert!(new_launch_id().starts_with("launch-"));
+    }
+
+    #[test]
+    fn node_log_line_names_the_core_node_holding_the_file() {
+        let line = node_log_line(
+            "deliberative_planner:v1",
+            "cn-vibrant-chaplygin",
+            false,
+            Path::new("/tmp/.peppy/logs/add/deliberative_planner_v1.log"),
+        );
+        assert_eq!(
+            line,
+            "deliberative_planner:v1@cn-vibrant-chaplygin: \
+             /tmp/.peppy/logs/add/deliberative_planner_v1.log"
+        );
+    }
+
+    #[test]
+    fn node_log_line_marks_a_failed_phase_before_the_colon() {
+        let line = node_log_line(
+            "reactive_policy:v1",
+            "cn-robot-7",
+            true,
+            Path::new("/tmp/.peppy/logs/build/reactive_policy_v1.log"),
+        );
+        assert_eq!(
+            line,
+            "reactive_policy:v1@cn-robot-7 [FAILED]: /tmp/.peppy/logs/build/reactive_policy_v1.log"
+        );
     }
 }

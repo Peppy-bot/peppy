@@ -1193,6 +1193,26 @@ async fn a_federated_launch_places_each_instance_on_its_wired_core_node() {
         launch.text
     );
 
+    // The final log listing names every machine's files, each entry stamped
+    // with the core node whose filesystem holds the path. The planner lives
+    // only on the peer, so its label@core-node prefix appears exactly three
+    // times: once each under Add, Build and Run.
+    assert!(
+        launch.text.contains(&format!(
+            "uvc_camera_python_mock:v1@{}: ",
+            federation.robot_core_node
+        )),
+        "the log listing must name the coordinator's own entries:\n{}",
+        launch.text
+    );
+    let planner_entry = format!("deliberative_planner:v1@{}: ", federation.cloud_core_node);
+    assert_eq!(
+        launch.text.matches(&planner_entry).count(),
+        3,
+        "Add, Build and Run must each list the peer-held planner log:\n{}",
+        launch.text
+    );
+
     // An untargeted `stack list` fans out over the whole federation and prints
     // every machine's section, so proving an instance is NOT on a daemon takes
     // that daemon's own slice. Wait for the fan-out to settle, then ask each

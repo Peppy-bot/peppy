@@ -371,7 +371,9 @@ async fn add_and_build_group(
         .await;
 
         if core_node != local {
-            if let Err(reason) = add_and_build_remotely(ctx, goal, core_node, item).await {
+            if let Err(reason) =
+                add_and_build_remotely(ctx, goal, core_node, key, item, &mut outcome).await
+            {
                 outcome.failure = Some(reason);
                 return outcome;
             }
@@ -403,6 +405,7 @@ async fn add_and_build_group(
                 node_label: key.label(),
                 log_path: path,
                 failed,
+                core_node: local.to_owned(),
             });
         }
 
@@ -440,6 +443,7 @@ async fn add_and_build_group(
                 node_label: key.label(),
                 log_path: path,
                 failed: build_failed,
+                core_node: local.to_owned(),
             });
         }
 
@@ -459,10 +463,10 @@ async fn add_and_build_group(
 /// content on a fingerprint match and fetching the pinned commit otherwise,
 /// and never resolves a name against its own cache.
 ///
-/// The peer's own log paths are not folded into this launch's log lists: they
-/// name files on that machine, and a path the operator cannot open is worse
-/// than no path. What the operator gets instead is the peer's output, relayed
-/// live into this launch's feedback stream and attributed to its core node.
+/// Each accepted goal's log entry lands in this launch's log lists exactly as
+/// a local one does, stamped with the peer's core node because the path names
+/// a file on that machine's filesystem. The peer's output is also relayed
+/// live into this launch's feedback stream, attributed to its core node.
 ///
 /// Neither goal carries the caller's forwarded environment. Those values
 /// (PATH first among them) describe the coordinator's machine, and a build
@@ -473,7 +477,9 @@ async fn add_and_build_remotely(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
     core_node: &str,
+    key: &NodeKey,
     item: &PlannedDeployment,
+    outcome: &mut GroupOutcome,
 ) -> std::result::Result<(), String> {
     // A real budget, unlike the in-process path's zero: this goal passes
     // through the peer's own concurrency gate, which reports the remaining time
@@ -487,9 +493,21 @@ async fn add_and_build_remotely(
     .with_pins(crate::services::node::pins::encode_pins(
         &item.closure_pins,
     )?);
-    let added = federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add)
+    let added = match federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add)
         .await
-        .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
+    {
+        Ok(run) => {
+            outcome.add_logs.push(NodeAddLogEntry {
+                node_label: key.label(),
+                log_path: run.log_path,
+                failed: run.outcome.is_err(),
+                core_node: core_node.to_owned(),
+            });
+            run.outcome
+        }
+        Err(reason) => Err(reason),
+    }
+    .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
 
     let build_goal = NodeBuildGoal::new(
         added.node_name.unwrap_or_else(|| item.node_name.clone()),
@@ -497,9 +515,19 @@ async fn add_and_build_remotely(
         ctx.idle_timeouts.build.as_secs(),
     )
     .with_launch_id(&goal.launch_id);
-    federated::run_remote_goal(ctx, core_node, &build_goal, ctx.idle_timeouts.build)
-        .await
-        .map_err(|reason| format!("failed to build node {}: {reason}", item.node_name))
+    match federated::run_remote_goal(ctx, core_node, &build_goal, ctx.idle_timeouts.build).await {
+        Ok(run) => {
+            outcome.build_logs.push(NodeBuildLogEntry {
+                node_label: key.label(),
+                log_path: run.log_path,
+                failed: run.outcome.is_err(),
+                core_node: core_node.to_owned(),
+            });
+            run.outcome
+        }
+        Err(reason) => Err(reason),
+    }
+    .map_err(|reason| format!("failed to build node {}: {reason}", item.node_name))
 }
 
 /// Step 7: Prepare the host paths that containers on THIS machine will bind.
@@ -1001,7 +1029,17 @@ async fn start_node_instances(
             let outcome = if local {
                 start_locally(ctx, key, instance_id, node_run_goal, run_log_paths).await
             } else {
-                start_remotely(ctx, goal, &core_node, node_run_goal, &item.config_sha256).await
+                start_remotely(
+                    ctx,
+                    goal,
+                    &core_node,
+                    key,
+                    instance_id,
+                    node_run_goal,
+                    &item.config_sha256,
+                    run_log_paths,
+                )
+                .await
             };
 
             if let Err(reason) = outcome {
@@ -1038,6 +1076,7 @@ async fn start_locally(
             node_label: key.label(),
             log_path: path,
             failed,
+            core_node: ctx.bound_core_node.clone(),
         });
     }
 
@@ -1051,7 +1090,8 @@ async fn start_locally(
 }
 
 /// Starts one instance on a peer, pinning the manifest this coordinator
-/// resolved for its deployment.
+/// resolved for its deployment, and recording its log entry stamped with the
+/// peer's core node.
 ///
 /// The hash closes the window between add and start: the peer compares it
 /// against the entity now in its stack and refuses if the two no longer
@@ -1059,17 +1099,33 @@ async fn start_locally(
 /// loudly instead of starting a node the plan was never checked against.
 /// Every remote instance carries it, straddling deployments included,
 /// because the coordinator resolved every deployment itself.
+#[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 async fn start_remotely(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
     core_node: &str,
+    key: &NodeKey,
+    instance_id: &str,
     node_run_goal: NodeRunGoal,
     config_sha256: &str,
+    run_log_paths: &mut Vec<NodeRunLogEntry>,
 ) -> std::result::Result<(), String> {
     let node_run_goal = node_run_goal
         .with_launch_id(&goal.launch_id)
         .with_manifest_sha256(config_sha256);
-    federated::run_remote_goal(ctx, core_node, &node_run_goal, ctx.idle_timeouts.run).await
+    match federated::run_remote_goal(ctx, core_node, &node_run_goal, ctx.idle_timeouts.run).await {
+        Ok(run) => {
+            run_log_paths.push(NodeRunLogEntry {
+                instance_id: instance_id.to_string(),
+                node_label: key.label(),
+                log_path: run.log_path,
+                failed: run.outcome.is_err(),
+                core_node: core_node.to_owned(),
+            });
+            run.outcome
+        }
+        Err(reason) => Err(reason),
+    }
 }
 
 async fn handle_goal_request(
