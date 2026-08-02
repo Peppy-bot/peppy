@@ -101,8 +101,10 @@ impl AppContext {
         messaging_port: u16,
         namespace: config::namespace::Namespace,
     ) -> crate::error::Result<()> {
-        // Open the control session under the typed namespace recorded by the
-        // daemon generation so the CLI reaches its daemon and node services.
+        // Open the control session as a pure Zenoh client under the typed
+        // namespace recorded by the daemon generation: no loopback listener,
+        // no gossip discovery, every request relayed through the daemon's
+        // router.
         self.messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::connect(messaging_host, messaging_port)
