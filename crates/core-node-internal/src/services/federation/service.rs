@@ -154,11 +154,15 @@ async fn reserve_inner(
             // Refuse before resolving anything. The coordinator releases
             // whatever it did obtain and fails the launch, so no machine is
             // left with a half-replaced stack by a launch that never had a
-            // chance.
+            // chance. The remedy names THIS machine: a bare `stack reset`
+            // targets whichever daemon the operator's CLI connects to, which
+            // is not the one holding the reservation.
             return ParticipantReserveResponse::rejected(
                 format!(
                     "already reserved for launch `{launch_id}` driven by core node \
-                     `{coordinator_core_node}`"
+                     `{coordinator_core_node}`. If that launch is no longer running, clear \
+                     this machine with `peppy stack reset --core-node {}`",
+                    context.core_node_name
                 ),
                 &context.peppy_version,
             )

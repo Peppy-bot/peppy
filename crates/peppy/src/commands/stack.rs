@@ -56,11 +56,16 @@ pub enum StackCommands {
     List,
     /// Tear the node stack down to an empty state.
     ///
-    /// On a coordinator this also tears down the remote slices of its launch:
-    /// the participants are REDISCOVERED by query rather than remembered, so
-    /// this works after a daemon restart too. On a participant it clears that
-    /// machine's slice only, and says which launch the rest of the system is
-    /// still running.
+    /// Clears the targeted daemon alone: its stack slice, and any federated
+    /// reservation holding the machine (`--core-node` picks a remote daemon;
+    /// the default is the local one). When the target holds one slice of a
+    /// launch the rest of the system is still running, says so.
+    ///
+    /// With `--federated`, also tears down every other machine that launch
+    /// holds. Participants are REDISCOVERED by query rather than remembered:
+    /// keyed on the launch the target's slice names, or on the target's own
+    /// coordinator name when its slice is gone, so it works after a daemon
+    /// restart and finds machines held by a reservation alone.
     Reset {
         /// Tear down every slice of the launch, from whichever machine this is
         /// run on, rather than just this daemon's.

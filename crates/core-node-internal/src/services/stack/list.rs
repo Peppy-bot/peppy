@@ -87,10 +87,20 @@ fn handle_node_list_request_inner(
     // The slice names the launch it belongs to. That is what makes it
     // self-describing, and therefore what lets a coordinator rediscover its
     // participants with this very fan-out instead of remembering them in RAM.
+    // The reservation names the launch holding this machine RIGHT NOW, which
+    // is what makes a held machine visible to `stack list` and discoverable
+    // by `stack reset --federated` even when its launch never populated a
+    // slice.
     let mut response =
         StackListResponse::new(graph_json, core_node, instance_id, current_host_name());
     if let Some(launch) = ownership.slice() {
         response = response.with_launch(launch);
+    }
+    if let Some((launch_id, coordinator_core_node)) = ownership.held_reservation() {
+        response = response.with_reservation(core_node_api::encoding::LaunchIdentity::new(
+            launch_id,
+            coordinator_core_node,
+        ));
     }
     response.encode().map_err(Into::into)
 }
