@@ -1,0 +1,41 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "deliberative_planner",
+    tag: "v1",
+    depends_on: {
+      // The same camera contract the policy consumes. Nothing here records
+      // which machine the camera runs on: placement is declared once, on the
+      // instance, and never repeated at the point of use.
+      contracts: [
+        { name: "rgb_camera", tag: "v1", link_id: "scene" }
+      ],
+      pairings: [
+        { name: "deliberation", tag: "v1", role: "planner", link_id: "deliberation" }
+      ]
+    },
+    labels: ["planner"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "deliberative_planner"],
+    parameters: {
+      plan_rate_hz: { $type: "u16", $default: 1 },
+      // How far ahead each subgoal is planned, published alongside it so the
+      // executor can weigh it against its own staleness bound.
+      horizon_s: { $type: "f64", $default: 30.0 }
+    }
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        { link_id: "deliberation", name: "subgoal" }
+      ],
+      consumes: [
+        { link_id: "scene", name: "video_stream" },
+        { link_id: "deliberation", name: "situation" }
+      ]
+    }
+  }
+}

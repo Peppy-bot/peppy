@@ -30,11 +30,10 @@ const CONTAINER_PEPPY_HOME: &str = "/data";
 const E2E_IMAGE_NAME: &str = "peppy-multi-daemon-e2e";
 
 /// Pinned `uv` release copied into the image. A moving `latest` would make a
-/// green run depend on what Astral published that morning. Must stay new
-/// enough to read the hub nodes' lockfiles (`revision = 3`).
+/// green run depend on what Astral published that morning.
 const UV_VERSION: &str = "0.11.33";
 
-/// The interpreter the hub's Python nodes ask for (`requires-python
+/// The interpreter the fixture repository's nodes ask for (`requires-python
 /// ">=3.13,<3.14"`). Baked into the image so no node build has to fetch one.
 const NODE_PYTHON_VERSION: &str = "3.13";
 
@@ -188,12 +187,19 @@ fn host_ubuntu_release() -> String {
 ///   node (`uvc_camera_python_mock`) cannot be built without it.
 /// - `uv` builds every native Python node (`my_python_robot_arm` and friends
 ///   run `uv sync`). Peppy vendors `ruff`, not `uv`, so the image provides it.
-/// - `ca-certificates` covers both `peppy repo refresh` cloning the hub
-///   repositories and apptainer pulling a node's Docker base image.
+/// - `ca-certificates` covers apptainer pulling a node's Docker base image and
+///   `uv` resolving a node's dependencies from PyPI. `peppy repo refresh` needs
+///   none of it: it reads the fixture repository over `file://`.
 /// - `tzdata` exists for `/etc/localtime` alone. Apptainer binds it into every
 ///   container it starts, and a bare Ubuntu image does not have it, so the
 ///   node's own container fails to be created with a `mount source
 ///   /etc/localtime doesn't exist` that says nothing about time zones.
+/// - The `safe.directory` entry covers the fixture repository. It is bind
+///   mounted from the host, so it belongs to the user running the tests while
+///   the daemon reads it as root, and libgit2 refuses to open a repository the
+///   current user does not own with `is not owned by current user`. Named
+///   explicitly rather than as a wildcard: this is the one repository in the
+///   image that anybody else owns.
 fn e2e_dockerfile(ubuntu_release: &str) -> String {
     format!(
         "FROM ubuntu:{ubuntu_release}\n\
@@ -202,6 +208,7 @@ fn e2e_dockerfile(ubuntu_release: &str) -> String {
          \x20     ca-certificates squashfs-tools tzdata \\\n\
          \x20&& ln -sf /usr/share/zoneinfo/UTC /etc/localtime \\\n\
          \x20&& rm -rf /var/lib/apt/lists/*\n\
+         RUN printf '[safe]\\n\\tdirectory = {CONTAINER_FIXTURE_REPO}\\n' > /etc/gitconfig\n\
          COPY --from=ghcr.io/astral-sh/uv:{UV_VERSION} /uv /uvx /usr/local/bin/\n\
          ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python\n\
          RUN uv python install {NODE_PYTHON_VERSION}\n"
@@ -250,12 +257,133 @@ fn split_image_reference(reference: &str) -> (String, String) {
     }
 }
 
+/// Where every daemon container reads the fixture repository, and so the
+/// `file://` URL its `repositories.json5` names.
+///
+/// The same path in every container deliberately. A peer materializes a pinned
+/// item by cloning the pin's own `repo_url`, so a path that existed only on the
+/// coordinator would fail the moment a launch placed anything off it.
+const CONTAINER_FIXTURE_REPO: &str = "/etc/peppy/fixture-hub";
+
+/// The fixture tree this crate commits, relative to its manifest directory.
+const FIXTURE_REPO_SOURCE: &str = "tests/fixtures/hub";
+
+/// The one repository every daemon in this suite resolves deployments from.
+///
+/// A git repository rather than an `fs` one because a deployment resolved from
+/// an `fs` entry may not be placed on another core node, and placing one there
+/// is what most of these tests do. Built per test, so nothing carries between
+/// them; both of a test's containers mount the same directory, because the
+/// commit the coordinator pins is the one the peer has to fetch.
+struct FixtureRepository {
+    /// The git repository, mounted at [`CONTAINER_FIXTURE_REPO`].
+    repo: tempfile::TempDir,
+    /// Holds the single-entry `repositories.json5` mounted over the daemon's
+    /// own, so the bundled defaults are never written and no daemon here has a
+    /// network repository to read.
+    conf: tempfile::TempDir,
+}
+
+impl FixtureRepository {
+    fn create() -> Self {
+        let repo = tempfile::tempdir().expect("create the fixture repository directory");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_REPO_SOURCE);
+        copy_tree(&source, repo.path());
+        commit_worktree(repo.path());
+
+        let conf = tempfile::tempdir().expect("create the fixture conf directory");
+        std::fs::write(
+            conf.path().join("repositories.json5"),
+            // An explicit id, so reading this file never rewrites it: peppy
+            // assigns missing ids and writes the result back, which a read-only
+            // mount would refuse.
+            format!("[{{ id: 1000, type: \"git\", url: \"file://{CONTAINER_FIXTURE_REPO}\" }}]\n"),
+        )
+        .expect("write the fixture repositories.json5");
+
+        Self { repo, conf }
+    }
+
+    fn repositories_config(&self) -> PathBuf {
+        self.conf.path().join("repositories.json5")
+    }
+}
+
+/// Copies the contents of `from` into `to`, which must already exist.
+fn copy_tree(from: &Path, to: &Path) {
+    let entries = std::fs::read_dir(from)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", from.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| panic!("reading {}: {error}", from.display()));
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .unwrap_or_else(|error| panic!("stat {}: {error}", source.display()));
+        if file_type.is_dir() {
+            std::fs::create_dir(&target)
+                .unwrap_or_else(|error| panic!("creating {}: {error}", target.display()));
+            copy_tree(&source, &target);
+        } else {
+            std::fs::copy(&source, &target).unwrap_or_else(|error| {
+                panic!(
+                    "copying {} to {}: {error}",
+                    source.display(),
+                    target.display()
+                )
+            });
+        }
+    }
+}
+
+/// Commits everything under `dir` as a fresh git repository.
+///
+/// The identity and the timestamp are fixed here rather than read from the
+/// host's git configuration, so a machine with no `user.email` configured, or
+/// with commit signing turned on, produces the same repository as any other.
+fn commit_worktree(dir: &Path) {
+    let repository = git2::Repository::init(dir)
+        .unwrap_or_else(|error| panic!("git init in {}: {error}", dir.display()));
+    let mut index = repository
+        .index()
+        .unwrap_or_else(|error| panic!("opening the index in {}: {error}", dir.display()));
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+        .unwrap_or_else(|error| panic!("staging {}: {error}", dir.display()));
+    index
+        .write()
+        .unwrap_or_else(|error| panic!("writing the index in {}: {error}", dir.display()));
+    let tree_id = index
+        .write_tree()
+        .unwrap_or_else(|error| panic!("writing the tree in {}: {error}", dir.display()));
+    let tree = repository
+        .find_tree(tree_id)
+        .unwrap_or_else(|error| panic!("reading back the tree in {}: {error}", dir.display()));
+    let author = git2::Signature::new(
+        "peppy multi-daemon e2e",
+        "e2e@peppy.invalid",
+        &git2::Time::new(0, 0),
+    )
+    .expect("the fixture commit signature should be valid");
+    repository
+        .commit(
+            Some("HEAD"),
+            &author,
+            &author,
+            "Fixture repository",
+            &tree,
+            &[],
+        )
+        .unwrap_or_else(|error| panic!("committing {}: {error}", dir.display()));
+}
+
 struct DaemonLaunch<'a> {
     image_name: &'a str,
     image_tag: &'a str,
     peppy_binary: &'a Path,
     apptainer_dir: &'a Path,
     newuidmap: &'a Path,
+    fixture: &'a FixtureRepository,
 }
 
 #[derive(Clone, Copy)]
@@ -404,12 +532,11 @@ impl Daemon {
             .unwrap_or_else(|error| panic!("stopping {}: {error}", self.name));
     }
 
-    /// Populates this daemon's node cache from its configured repositories.
+    /// Populates this daemon's node cache from the fixture repository.
     ///
-    /// A fresh container has `repositories.json5` (the daemon writes the
-    /// bundled defaults at startup) but no cache, and the cache is the only
-    /// thing a launcher's `name:tag` sources resolve against. Skipping this fails
-    /// a launch in preflight with "not found in
+    /// A fresh container has `repositories.json5` mounted in but no cache, and
+    /// the cache is the only thing a launcher's `name:tag` sources resolve
+    /// against. Skipping this fails a launch in preflight with "not found in
     /// `$PEPPY_HOME/cache/nodes.json5`" before any stack is touched.
     async fn refresh_repos(&self) {
         require_success(
@@ -453,6 +580,7 @@ async fn start_daemon(
     // documented launcher openable inside the coordinator.
     extra_mount: Option<(&Path, &str)>,
 ) -> Daemon {
+    let repositories_config = launch.fixture.repositories_config();
     let mut request = GenericImage::new(launch.image_name, launch.image_tag)
         .with_container_name(name)
         .with_hostname(hostname)
@@ -470,6 +598,17 @@ async fn start_daemon(
         .with_mount(read_only_bind(launch.peppy_binary, CONTAINER_PEPPY_BINARY))
         .with_mount(read_only_bind(launch.apptainer_dir, "/opt/peppy-apptainer"))
         .with_mount(read_only_bind(launch.newuidmap, "/usr/local/bin/newuidmap"))
+        // Every daemon, not only the ones that refresh: mounting the config in
+        // ahead of startup is what keeps the bundled defaults from ever being
+        // written, so no daemon in this suite has a network repository to read.
+        .with_mount(read_only_bind(
+            launch.fixture.repo.path(),
+            CONTAINER_FIXTURE_REPO,
+        ))
+        .with_mount(read_only_bind(
+            &repositories_config,
+            &format!("{CONTAINER_PEPPY_HOME}/conf/repositories.json5"),
+        ))
         .with_env_var(PEPPY_HOME_ENV, CONTAINER_PEPPY_HOME)
         .with_env_var("PEPPY_APPTAINER_DIR", "/opt/peppy-apptainer")
         .with_env_var(PEPPY_CONFIG_ENV, config)
@@ -518,12 +657,14 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
         .expect("the test-built daemon should have a host Apptainer installation");
     let newuidmap = executable_on_path("newuidmap");
+    let fixture = FixtureRepository::create();
     let launch = DaemonLaunch {
         image_name: &image_name,
         image_tag: &image_tag,
         peppy_binary,
         apptainer_dir: &apptainer_dir,
         newuidmap: &newuidmap,
+        fixture: &fixture,
     };
     let suffix = format!(
         "{}-{}",
@@ -636,12 +777,14 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
         .expect("the test-built daemon should have a host Apptainer installation");
     let newuidmap = executable_on_path("newuidmap");
+    let fixture = FixtureRepository::create();
     let launch = DaemonLaunch {
         image_name: &image_name,
         image_tag: &image_tag,
         peppy_binary,
         apptainer_dir: &apptainer_dir,
         newuidmap: &newuidmap,
+        fixture: &fixture,
     };
     let suffix = format!(
         "{}-{}",
@@ -768,10 +911,11 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
 // containers do not share a clock, and a test that leaned on that would be
 // exactly as flaky as the host it ran on.
 
-/// The launcher the `Federation` guide documents, driven from the peppy repo
-/// rather than from `launchers-hub` over the network. Testing the guide's own
-/// file is the point: a launcher that only this test can run would prove
-/// nothing about the documented one.
+/// The launcher the `Federation` guide documents, driven straight from the docs
+/// tree. Testing the guide's own file is the point: a launcher that only this
+/// test can run would prove nothing about the documented one. Every node it
+/// deploys is published by the fixture repository under the name and tag the
+/// file states, which is what keeps it runnable unmodified.
 const SPLIT_COMPUTE_LAUNCHER: &str =
     "docs/src/content/docs/guides/snippets/launchers/split_compute_manipulation.json5";
 
@@ -780,7 +924,7 @@ const SPLIT_COMPUTE_LAUNCHER: &str =
 /// drives without changing what any daemon mounts.
 const CONTAINER_LAUNCHER_DIR: &str = "/etc/peppy/launchers";
 const SPLIT_COMPUTE_LAUNCHER_FILE: &str = "split_compute_manipulation.json5";
-const HUB_NODE_PROBE_LAUNCHER_FILE: &str = "hub_node_probe.json5";
+const NODE_PROBE_LAUNCHER_FILE: &str = "node_probe.json5";
 const CALLER_ENV_PROBE_LAUNCHER_FILE: &str = "caller_env_probe.json5";
 const PEER_RUN_FAILURE_LAUNCHER_FILE: &str = "peer_run_failure.json5";
 
@@ -788,12 +932,12 @@ fn container_launcher(file_name: &str) -> String {
     format!("{CONTAINER_LAUNCHER_DIR}/{file_name}")
 }
 
-/// Two nodes that already exist in `nodes-hub`, one per execution path the
-/// documented launcher needs: `uvc_camera_python_mock` is a container node
-/// (apptainer builds a SIF) and `my_python_robot_arm` is a native one (`uv`
-/// builds a venv). Written here rather than kept in the docs snippets because
-/// it documents nothing; it only proves the machine works.
-const HUB_NODE_PROBE_LAUNCHER: &str = r#"{
+/// One node per execution path the documented launcher needs:
+/// `uvc_camera_python_mock` is a container node (apptainer builds a SIF) and
+/// `my_python_robot_arm` is a native one (`uv` builds a venv). Written here
+/// rather than kept in the docs snippets because it documents nothing; it only
+/// proves the machine works.
+const NODE_PROBE_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
   deployments: [
     {
@@ -971,6 +1115,9 @@ struct Federation {
     cloud_core_node: String,
     _router: pmi::ZenohdInstance,
     _launcher_dir: tempfile::TempDir,
+    /// Held for the federation's lifetime: both containers read this
+    /// repository off the host while they run.
+    _fixture: FixtureRepository,
 }
 
 async fn start_federation(prefix: &str) -> Federation {
@@ -992,12 +1139,14 @@ async fn start_federation(prefix: &str) -> Federation {
     let apptainer_dir = containers::Apptainer::resolve_apptainer_dir()
         .expect("the test-built daemon should have a host Apptainer installation");
     let newuidmap = executable_on_path("newuidmap");
+    let fixture = FixtureRepository::create();
     let launch = DaemonLaunch {
         image_name: &image_name,
         image_tag: &image_tag,
         peppy_binary,
         apptainer_dir: &apptainer_dir,
         newuidmap: &newuidmap,
+        fixture: &fixture,
     };
     let suffix = format!(
         "{}-{}",
@@ -1025,8 +1174,8 @@ async fn start_federation(prefix: &str) -> Federation {
         )
     });
     std::fs::write(
-        launcher_dir.path().join(HUB_NODE_PROBE_LAUNCHER_FILE),
-        HUB_NODE_PROBE_LAUNCHER,
+        launcher_dir.path().join(NODE_PROBE_LAUNCHER_FILE),
+        NODE_PROBE_LAUNCHER,
     )
     .expect("writing the probe launcher into the launcher mount");
     std::fs::write(
@@ -1075,6 +1224,7 @@ async fn start_federation(prefix: &str) -> Federation {
         cloud_core_node: "cn-cloud".to_owned(),
         _router: router,
         _launcher_dir: launcher_dir,
+        _fixture: fixture,
     }
 }
 
@@ -1099,18 +1249,17 @@ impl Federation {
 /// The substrate every federated test stands on: a node built and started
 /// INSIDE a daemon container.
 ///
-/// Deliberately narrow, and deliberately using nodes that already exist. It
-/// covers the two execution paths the documented launcher needs and nothing
-/// else: `uvc_camera_python_mock` is a container node, so apptainer has to
-/// build a SIF under Docker, and `my_python_robot_arm` is a native one, so
-/// `uv` has to build a venv from the image's toolchain.
+/// Deliberately narrow. It covers the two execution paths the documented
+/// launcher needs and nothing else: `uvc_camera_python_mock` is a container
+/// node, so apptainer has to build a SIF under Docker, and `my_python_robot_arm`
+/// is a native one, so `uv` has to build a venv from the image's toolchain.
 ///
 /// Both assertions read the node's own run log rather than its status, because
 /// an instance can reach Running and still be silent. When a federated launch
 /// test fails, this test is what says whether the cause is the federation or
 /// the machine underneath it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn hub_nodes_build_and_run_inside_a_daemon_container() {
+async fn fixture_nodes_build_and_run_inside_a_daemon_container() {
     let federation = start_federation("peppy-probe").await;
 
     let launch = federation
@@ -1118,12 +1267,12 @@ async fn hub_nodes_build_and_run_inside_a_daemon_container() {
         .peppy(&[
             "stack",
             "launch",
-            &container_launcher(HUB_NODE_PROBE_LAUNCHER_FILE),
+            &container_launcher(NODE_PROBE_LAUNCHER_FILE),
         ])
         .await;
     assert!(
         launch.success(),
-        "a hub node must build and start inside the daemon container:\n{}",
+        "a fixture node must build and start inside the daemon container:\n{}",
         launch.text
     );
 

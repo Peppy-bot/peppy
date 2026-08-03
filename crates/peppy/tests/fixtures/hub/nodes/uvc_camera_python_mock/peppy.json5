@@ -1,0 +1,62 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "uvc_camera_python_mock",
+    tag: "v1",
+    implements: [
+      { name: "rgb_camera", tag: "v1", link_id: "camera" },
+    ],
+    labels: ["camera"]
+  },
+  execution: {
+    language: "python",
+    // A container node, so building it exercises the apptainer SIF path.
+    container: {
+      def_file: "apptainer.def"
+    },
+    // The parameters the documented split-compute launcher sets. `device_path`
+    // is accepted and reported; nothing here opens a device.
+    parameters: {
+      device_path: {
+        $type: "string",
+        $default: "/dev/video0"
+      },
+      video: {
+        frame_rate: {
+          $type: "u16",
+          $default: 30
+        },
+        resolution: {
+          width: {
+            $type: "u16",
+            $default: 320
+          },
+          height: {
+            $type: "u16",
+            $default: 240
+          },
+        },
+        camera_encoding: {
+          $type: "string",
+          $default: "mjpeg"
+        },
+        topic_encoding: {
+          $type: "string",
+          $default: "rgb8"
+        },
+      },
+    },
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        { link_id: "camera", name: "video_stream" },
+      ],
+    },
+    services: {
+      exposes: [
+        { link_id: "camera", name: "video_stream_info" },
+      ],
+    },
+  }
+}

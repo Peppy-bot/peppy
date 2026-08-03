@@ -1,0 +1,52 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "reactive_policy",
+    tag: "v1",
+    depends_on: {
+      // The camera by CONTRACT, not by node: any `rgb_camera:v1` implementation
+      // can drive this policy, and the launcher picks which one.
+      contracts: [
+        { name: "rgb_camera", tag: "v1", link_id: "camera" }
+      ],
+      // The arm by node, because this policy reads one specific arm's joints
+      // rather than an interchangeable role.
+      nodes: [
+        { name: "my_python_robot_arm", tag: "v1", link_id: "arm" }
+      ],
+      // The escalation path to the planner. Invisible to the dependency graph
+      // above by design: the planner also talks back, and a mutual edge there
+      // would be a cycle.
+      pairings: [
+        { name: "deliberation", tag: "v1", role: "executor", link_id: "deliberation" }
+      ]
+    },
+    labels: ["policy"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "reactive_policy"],
+    parameters: {
+      // Reported at startup and otherwise unused: this node closes no servo
+      // loop, so the rate it would run one at has nothing to drive.
+      control_rate_hz: { $type: "u16", $default: 200 },
+      // How long an adopted subgoal stays authoritative. This one is load
+      // bearing: it decides what `situation.active_subgoal_id` reports, which
+      // is what the planner and any observer read.
+      subgoal_ttl_ms: { $type: "u32", $default: 2000 }
+    }
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        { link_id: "deliberation", name: "situation" }
+      ],
+      consumes: [
+        { link_id: "camera", name: "video_stream" },
+        { link_id: "arm", name: "joint_states" },
+        { link_id: "deliberation", name: "subgoal" }
+      ]
+    }
+  }
+}

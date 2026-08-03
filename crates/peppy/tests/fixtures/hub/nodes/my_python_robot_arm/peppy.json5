@@ -1,0 +1,41 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "my_python_robot_arm",
+    tag: "v1",
+    labels: ["arm"]
+  },
+  execution: {
+    language: "python",
+    // A native node, so building it exercises the `uv` venv path rather than
+    // the apptainer one the camera covers.
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "my_python_robot_arm"],
+    parameters: {
+      publish_rate_hz: { $type: "u16", $default: 2 }
+    }
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "joint_states",
+          qos_profile: "sensor_data",
+          message_format: {
+            positions: {
+              $type: "array",
+              $items: "f64",
+              $length: 3
+            },
+            velocities: {
+              $type: "array",
+              $items: "f64",
+              $length: 3
+            },
+            timestamp: "time"
+          }
+        }
+      ],
+    },
+  }
+}
