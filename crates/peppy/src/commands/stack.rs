@@ -7,7 +7,6 @@ mod table;
 
 pub use list::{StackListReport, list_nodes_collecting};
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Subcommand;
@@ -21,8 +20,8 @@ use crate::{context::AppContext, error::Error as CommandError};
 pub enum StackCommands {
     /// Launches a deployment, replacing the current node Stack
     Launch {
-        /// Path to the peppy launcher configuration file
-        launcher_config_path: PathBuf,
+        /// Name of the launcher in the repository index (see `peppy repo refresh`)
+        launcher_name: String,
         /// Wire one of the launcher's declared `core_nodes` placeholders to a
         /// real federated core node: `<core-node-link>@<core-node>`. Repeatable,
         /// once per declared link. `@self` targets the daemon this command is
@@ -109,7 +108,7 @@ impl Command for StackCommand {
             StackCommands::List => list::list_nodes(ctx),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
             StackCommands::Launch {
-                launcher_config_path,
+                launcher_name,
                 place,
                 local,
                 node_add_idle_timeout_secs,
@@ -120,7 +119,7 @@ impl Command for StackCommand {
                 info!("Launching stack...");
                 launch::launch(
                     ctx,
-                    launcher_config_path,
+                    launcher_name,
                     launch::PlacementArgs {
                         places: place,
                         local,

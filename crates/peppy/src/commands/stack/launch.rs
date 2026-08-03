@@ -1,14 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
+    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
 };
 use daemon_config::core_node_name::CoreNodeName;
-use daemon_config::launcher::PeppyLauncherParser;
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
@@ -151,63 +150,6 @@ fn handle_feedback(
     }
 }
 
-/// True when `input` syntactically looks like a filesystem path: it carries a path separator
-/// or a `.json5` extension. Such inputs never fall back to repository lookup so a typoed file
-/// path surfaces a precise file-not-found error instead of a confusing "launcher not in cache".
-fn looks_like_fs_path(input: &Path) -> bool {
-    let s = input.as_os_str().to_string_lossy();
-    if s.contains('/') || s.contains('\\') {
-        return true;
-    }
-    input.extension().is_some_and(|ext| ext == "json5")
-}
-
-/// Resolves a user-supplied launcher path, treating a bare name as shorthand for the `.json5`
-/// file. If the path does not have a `.json5` extension and a sibling `<path>.json5` exists as
-/// a file, that is returned; otherwise the original path is returned unchanged so the caller's
-/// existing not-found error path fires.
-///
-/// Lives in the CLI (the sole caller) rather than `core-node-api`: it touches the filesystem
-/// (`is_file`), which a pure wire-codec crate should not do.
-fn resolve_launcher_path(path: PathBuf) -> PathBuf {
-    if path.extension().is_some_and(|ext| ext == "json5") {
-        return path;
-    }
-    let mut with_ext = path.clone().into_os_string();
-    with_ext.push(".json5");
-    let candidate = PathBuf::from(with_ext);
-    if candidate.is_file() { candidate } else { path }
-}
-
-/// Decide whether the user wants a filesystem launcher or a repository launcher.
-///
-/// `./demo.json5`, `/abs/path`, `foo.json5` → `Fs`, with the path canonicalized so the daemon
-/// finds it regardless of its working directory. A bare name like `openarm01_sim_teleop` first
-/// tries the filesystem (sibling `.json5` shorthand from `resolve_launcher_path`) and only
-/// falls back to `Repository` when no file exists at that name.
-fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
-    if looks_like_fs_path(&input) {
-        let resolved = resolve_launcher_path(input);
-        let canonical = resolved.canonicalize().map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to resolve launcher config path '{}': {}",
-                resolved.display(),
-                e
-            ))
-        })?;
-        return Ok(LauncherOrigin::Fs(canonical));
-    }
-
-    let resolved = resolve_launcher_path(input.clone());
-    if let Ok(canonical) = resolved.canonicalize() {
-        return Ok(LauncherOrigin::Fs(canonical));
-    }
-
-    Ok(LauncherOrigin::Repository {
-        name: input.to_string_lossy().into_owned(),
-    })
-}
-
 /// The `--place` / `--local` wiring as the user typed it.
 ///
 /// `--local` is a flag rather than a launcher key because the launcher's author
@@ -272,7 +214,7 @@ impl PlacementArgs {
 
 pub fn launch(
     ctx: &Arc<AppContext>,
-    launcher_config_path: PathBuf,
+    launcher_name: String,
     placement: PlacementArgs,
     node_add_idle_timeout_secs: u64,
     node_build_idle_timeout_secs: u64,
@@ -281,7 +223,7 @@ pub fn launch(
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
-        launcher_config_path,
+        launcher_name,
         placement,
         node_add_idle_timeout_secs,
         node_build_idle_timeout_secs,
@@ -292,42 +234,14 @@ pub fn launch(
 
 async fn launch_async(
     ctx: &Arc<AppContext>,
-    launcher_config_path: PathBuf,
+    launcher_name: String,
     placement: PlacementArgs,
     node_add_idle_timeout_secs: u64,
     node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
     max_timeout_secs: Option<u64>,
 ) -> Result<()> {
-    let launcher_origin = infer_launcher_origin(launcher_config_path)?;
-
-    // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
-    // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
-    // skip the local check rather than duplicate the lookup here. Only the parse verdict is
-    // used: placement is resolved against the document the COORDINATOR read, so that a
-    // repository launcher and a file one place identically.
-    if let LauncherOrigin::Fs(path) = &launcher_origin {
-        PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
-    }
-
     let conn = ctx.connect_to_daemon().await?;
-
-    // An `Fs` origin names a path on THIS machine's filesystem, so a peer
-    // daemon would open a different tree or nothing at all. Same guard the
-    // other daemon-scoped commands already apply.
-    if matches!(launcher_origin, LauncherOrigin::Fs(_)) {
-        crate::commands::reject_remote_target_for_local_path(&conn, "peppy stack launch").map_err(
-            |_| {
-                Error::ExecutionFailed(format!(
-                    "`peppy stack launch` with a launcher file path cannot target the remote \
-                     daemon `{}`: the path names a tree on this machine. Use a repository \
-                     launcher (`peppy stack launch <name>`), or run the command from the \
-                     machine that holds the file.",
-                    conn.target_core_node
-                ))
-            },
-        )?;
-    }
 
     let placement = placement.resolve(&conn.target_core_node)?;
 
@@ -352,20 +266,13 @@ async fn launch_async(
         );
     }
 
-    match &launcher_origin {
-        LauncherOrigin::Fs(path) => info!(
-            "Calling launcher on daemon '{}' with config={}",
-            conn.target_core_node,
-            path.display()
-        ),
-        LauncherOrigin::Repository { name } => info!(
-            "Calling launcher on daemon '{}' with repository launcher `{}`",
-            conn.target_core_node, name
-        ),
-    }
+    info!(
+        "Calling launcher on daemon '{}' with launcher `{}`",
+        conn.target_core_node, launcher_name
+    );
 
     let goal = LaunchGoal::new(
-        launcher_origin,
+        launcher_name,
         // The launch id is minted here, by the process that starts the launch,
         // and recorded by every participant alongside its slice. That is what
         // makes the global stack reconstructible by query afterwards.
@@ -568,104 +475,6 @@ mod tests {
     fn saturating_add_does_not_panic_at_u64_max() {
         let got = compute_cli_max_timeout(Some(u64::MAX)).expect("some");
         assert_eq!(got, Duration::MAX);
-    }
-
-    #[test]
-    fn resolve_launcher_path_appends_json5_when_sibling_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("openarm01_sim_teleop");
-        let with_ext = tmp.path().join("openarm01_sim_teleop.json5");
-        std::fs::write(&with_ext, "{}").unwrap();
-
-        assert_eq!(resolve_launcher_path(bare), with_ext);
-    }
-
-    #[test]
-    fn resolve_launcher_path_keeps_explicit_json5_extension() {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().join("foo.json5");
-        std::fs::write(&p, "{}").unwrap();
-
-        assert_eq!(resolve_launcher_path(p.clone()), p);
-    }
-
-    #[test]
-    fn resolve_launcher_path_returns_original_when_no_sibling_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("does_not_exist");
-
-        assert_eq!(resolve_launcher_path(bare.clone()), bare);
-    }
-
-    #[test]
-    fn resolve_launcher_path_ignores_directory_at_sibling_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("name");
-        std::fs::create_dir(tmp.path().join("name.json5")).unwrap();
-
-        assert_eq!(resolve_launcher_path(bare.clone()), bare);
-    }
-
-    #[test]
-    fn looks_like_fs_path_detects_separators() {
-        assert!(looks_like_fs_path(Path::new("./foo")));
-        assert!(looks_like_fs_path(Path::new("../foo")));
-        assert!(looks_like_fs_path(Path::new("/abs/foo")));
-        assert!(looks_like_fs_path(Path::new("dir/foo")));
-    }
-
-    #[test]
-    fn looks_like_fs_path_detects_json5_extension() {
-        assert!(looks_like_fs_path(Path::new("foo.json5")));
-    }
-
-    #[test]
-    fn looks_like_fs_path_treats_bare_name_as_non_path() {
-        assert!(!looks_like_fs_path(Path::new("openarm01_sim_teleop")));
-        assert!(!looks_like_fs_path(Path::new("foo_bar")));
-    }
-
-    #[test]
-    fn infer_launcher_origin_canonicalizes_existing_fs_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = tmp.path().join("launcher.json5");
-        std::fs::write(&p, "{}").unwrap();
-
-        let origin = infer_launcher_origin(p.clone()).expect("should resolve fs path");
-        match origin {
-            LauncherOrigin::Fs(resolved) => {
-                assert_eq!(resolved, p.canonicalize().unwrap());
-            }
-            other => panic!("expected Fs, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn infer_launcher_origin_errors_when_fs_looking_path_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let missing = tmp.path().join("missing.json5");
-
-        let err = infer_launcher_origin(missing).expect_err("should fail on missing file");
-        match err {
-            Error::ExecutionFailed(msg) => assert!(
-                msg.contains("Failed to resolve launcher config path"),
-                "unexpected error: {msg}"
-            ),
-            other => panic!("expected ExecutionFailed, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn infer_launcher_origin_falls_back_to_repository_for_bare_name() {
-        // Use a name that is unlikely to collide with any sibling .json5 in the test cwd.
-        let bare = PathBuf::from("definitely_not_a_real_launcher_xyz123");
-        let origin = infer_launcher_origin(bare.clone()).expect("bare name should not error");
-        match origin {
-            LauncherOrigin::Repository { name } => {
-                assert_eq!(name, "definitely_not_a_real_launcher_xyz123");
-            }
-            other => panic!("expected Repository, got {other:?}"),
-        }
     }
 
     fn places(pairs: &[(&str, &str)]) -> PlacementArgs {

@@ -3,7 +3,7 @@
   deployments: [
     {
       source: {
-        local: "./fake_robot_brain"
+        name: "fake_robot_brain:v1"
       },
       instances: [
         {
@@ -18,7 +18,7 @@
     },
     {
       source: {
-        local: "./fake_openarm01_controller",
+        name: "fake_openarm01_controller:v1",
       },
       instances: [
         {
@@ -29,7 +29,7 @@
     },
     {
       source: {
-        local: "./fake_uvc_camera",
+        name: "fake_uvc_camera:v1",
       },
       instances: [
         {

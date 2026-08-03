@@ -344,22 +344,14 @@ participants keep running.
 
 - **Same Peppy version on every participant.** A mixed-version federation is
   refused during preflight, before any stack is touched.
-- **`local:` sources cannot cross machines.** The path names a tree on the
-  coordinator's filesystem. A `local:` deployment must keep all of its instances
-  on one core node; publish the node to a repo or git-backed source to split it.
-  That is why the proprietary planner in the example is a registry source.
 - **A filesystem repository cannot back a deployment placed on another
-  machine.** A `repo:` deployment is pinned to wherever the coordinator's cache
+  machine.** A deployment is pinned to wherever the coordinator's cache
   resolved it, and a filesystem repository entry is a path only the coordinator
-  can read, the same rule as `local:` one level down. Two things still work:
-  keep that deployment's instances on one core node, or serve the node from a
-  git repository, which every machine can fetch.
+  can read. Two things still work: keep that deployment's instances on one
+  core node, or serve the node from a git repository, which every machine can
+  fetch.
 - **The unit of byte coherence is one launch.** Two launches submitted while a
   repository moves between them may run different revisions of it; each launch
   is internally coherent, and nothing synchronizes one launch with the next.
-- **A launcher file path cannot target a remote daemon.** `peppy stack launch
-  ./my_launcher.json5 --core-node cn-atlas-h100` is refused for the same reason.
-  Use a repository launcher, or run the command from the machine holding the
-  file.
 - **No re-placement of a running instance.** Moving an instance to another
   machine means launching again.

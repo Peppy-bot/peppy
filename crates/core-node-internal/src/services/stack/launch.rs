@@ -1295,8 +1295,7 @@ async fn handle_goal_request(
 /// 8. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse the launcher and bind its core node links to machines.
-    let (deployments, nodes_directory, placements) = match parse_launcher_config(&ctx, &goal).await
-    {
+    let (deployments, placements) = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };
@@ -1305,11 +1304,10 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     // node pins the whole launch runs. Resolution touches no other machine
     // and tears nothing down, so refusing here is free, and the
     // reservations below need the pins to carry.
-    let mut planned =
-        match resolve_deployments(&ctx, deployments, &nodes_directory, &placements).await {
-            Ok(result) => result,
-            Err(launch_result) => return launch_result,
-        };
+    let mut planned = match resolve_deployments(&ctx, deployments, &placements).await {
+        Ok(result) => result,
+        Err(launch_result) => return launch_result,
+    };
 
     // Step 3: Validate dependencies and compute one global topological order,
     // across every machine. There is exactly one planner. Runs before the
