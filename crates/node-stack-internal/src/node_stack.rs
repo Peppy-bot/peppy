@@ -616,17 +616,24 @@ impl NodeStackInner {
     }
 
     /// Live pairs, liveness-filtered without mutating the registry (for
-    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]).
+    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]). Same
+    /// rule as [`PairingRegistry::prune_dead`]: only LOCAL endpoints are
+    /// judged, because this daemon cannot see whether an instance on
+    /// another machine is alive, and "cannot see" must not read as "dead".
     fn live_pairs_filtered(&self) -> Vec<Pairing> {
         if self.pairing_registry.pairs().is_empty() {
             return Vec::new();
         }
         let live = self.live_instance_ids_for_pairing();
+        let local_core_node = self.root_core_node_name();
         self.pairing_registry
             .pairs()
             .iter()
             .filter(|p| {
-                live.contains(&p.a.slot.instance_id) && live.contains(&p.b.slot.instance_id)
+                [&p.a, &p.b].into_iter().all(|endpoint| {
+                    !endpoint.slot.is_on(&local_core_node)
+                        || live.contains(&endpoint.slot.instance_id)
+                })
             })
             .cloned()
             .collect()
@@ -882,9 +889,9 @@ impl NodeStackInner {
         // Paired (`to_serialized_graph` holds a read lock, so filtering
         // replaces the write-path pruning here).
         let live_pairs = self.live_pairs_filtered();
-        // Stack-scoped v1: every pair lives under this daemon, so the peer's
-        // core_node is the daemon's own (the root entity's manifest name —
-        // the core node binds to itself).
+        // `core_node` (the root entity's manifest name) addresses this
+        // daemon's own slots in the view; the peer half of each binding
+        // carries its own address, which may name another daemon.
         for (node, config) in nodes.iter_mut().zip(&configs) {
             let Some(deps) = config.manifest.depends_on.as_ref() else {
                 continue;
@@ -1490,8 +1497,9 @@ pub struct PairingNodeSnapshot {
 /// `depends_on.pairings` slot joined with its live binding from
 /// `live_pairs`. Shared by the stack-list graph overlay and the daemon's
 /// `node_info` handler so the join rule stays in one place. `core_node`
-/// stamps the peer's `ProducerRef` (stack-scoped v1: every pair lives
-/// under this daemon, so the peer's core_node is the daemon's own).
+/// addresses the LOCAL slot being viewed; the peer's `ProducerRef` is
+/// stamped from the pair's recorded endpoint address, which names another
+/// daemon when the pair crosses machines.
 pub fn pairing_slot_view(
     core_node: &str,
     instance_id: &str,
@@ -1505,7 +1513,10 @@ pub fn pairing_slot_view(
             .iter()
             .find_map(|pair| pair.peer_of(&slot))
             .map(|peer| config::runtime::PairingSlotBinding::Paired {
-                peer: config::runtime::ProducerRef::new(core_node, peer.slot.instance_id.as_str()),
+                peer: config::runtime::ProducerRef::new(
+                    peer.slot.core_node.as_str(),
+                    peer.slot.instance_id.as_str(),
+                ),
                 peer_link_id: peer.slot.link_id.clone(),
             })
             .unwrap_or(config::runtime::PairingSlotBinding::Unpaired);

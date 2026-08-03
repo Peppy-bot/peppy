@@ -390,9 +390,47 @@ async fn serialized_graph_overlays_pairing_slots() {
     assert_eq!(peer.instance_id, "arm_1");
     assert_eq!(
         peer.core_node, "core",
-        "stamped with the daemon's own core node"
+        "a local peer's address names this daemon, where it lives"
     );
     assert_eq!(peer_link_id, "controller");
+}
+
+/// A pair whose peer lives on ANOTHER daemon must surface with the peer's
+/// own core node, not this daemon's: labelling `ctrl_remote` as local would
+/// send the operator to the wrong machine.
+#[tokio::test]
+async fn serialized_graph_stamps_a_remote_peer_with_its_own_core_node() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let harness = real_lifecycle::lifecycle_harness();
+    let _arm =
+        fixtures::push_started(&stack, &harness, robot_arm_config(), Some(&name("arm_1"))).await;
+
+    let arm_slot = SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller");
+    let remote_slot = SlotAddr::new("core_b", "ctrl_remote", "arm");
+    let remote_meta = RemoteSlotMeta {
+        pairing_name: "arm_link".to_string(),
+        pairing_tag: "v1".to_string(),
+        role: "controller".to_string(),
+    };
+    stack
+        .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
+        .expect("the coordinator's verdict authorizes the far half");
+
+    let graph = stack.to_serialized_graph();
+    let arm_node = graph.find_node("robot_arm", "v1").expect("arm in graph");
+    let slot = arm_node.instances[0]
+        .pairing_slots
+        .get("controller")
+        .expect("declared slot surfaces");
+    let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding else {
+        panic!("expected Paired, got {:?}", slot.binding);
+    };
+    assert_eq!(peer.instance_id, "ctrl_remote");
+    assert_eq!(
+        peer.core_node, "core_b",
+        "the peer's address must name the daemon that hosts it"
+    );
+    assert_eq!(peer_link_id, "arm");
 }
 
 /// `depends_on.pairings` contributes no DAG edges: two nodes joined only by
