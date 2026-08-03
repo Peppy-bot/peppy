@@ -79,7 +79,7 @@ Each node is only aware of the interfaces it exposes and the ones it consumes, a
   </TabItem>
 </Tabs>
 
-Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `consumes` lists, while services and actions use `exposes` and `consumes` lists. These interfaces define the dependencies between nodes.
+Here we have `interfaces` organized by kind (`topics`, `services`, `actions`). Topics use `emits` and `consumes` lists, while services and actions use `exposes` and `consumes` lists. `interfaces` declares what a node produces and consumes; the `manifest.depends_on` block declares the dependency slots those `consumes` entries bind to through their `link_id`.
 
 ## Topics, services, and actions
 
@@ -172,7 +172,7 @@ Make sure `hello_world_param` is already in the node stack, otherwise you might 
 Error: `hello_receiver:v1` depends on `hello_world_param:v1`, but it does not exist in the stack
 ```
 The `node add` and `node sync` commands both require the consumed nodes to be present in the node stack to 
-generate the proper interfaces for the programming language they are written in.
+generate the proper interfaces for the programming language they are written in. (`peppy node sync -r` can instead resolve missing dependencies from your configured repositories; see [Syncing against repositories](/advanced_guides/repositories/#syncing-against-repositories).)
 :::
 
 ## Starting the nodes
@@ -207,13 +207,13 @@ $ peppy stack list
 ```
 
 We need to make sure that at least one instance is started for `hello_receiver:v1` and another one for `hello_world_param:v1`.
-The order in which the nodes are started does not affect the node communication.
+Starting order does not affect message delivery: a subscriber started later still receives everything published after it binds. It does constrain `--link`, though: the producer instance must already exist to be named in the flag, so the producer starts first.
 Let's start a `hello_world_param:v1` instance:
 ```
 $ peppy node run hello_world_param:v1 name=planet
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'gifted-moser-9365' and 1 argument(s)...
-Calling node_start for hello_world_param:v1 (instance_id=gifted-moser-9365)...
+Calling node_run for hello_world_param:v1 (instance_id=gifted-moser-9365)...
 Log file: /home/ubuntu/.peppy/logs/run/gifted-moser-9365.log
 Started node instance 'gifted-moser-9365' (pid: 76981)
 ```
@@ -224,12 +224,12 @@ Now let's start the `hello_receiver` node, binding its `hello_world_param` slot 
 $ peppy node run hello_receiver:v1 --link hello_world_param@gifted-moser-9365
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
-Calling node_start for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
+Calling node_run for hello_receiver:v1 (instance_id=vigorous-buck-8117)...
 Log file: /home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-A slot left without a `--link` is an error: every declared slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns.
+A producer slot left without a `--link` is an error: every declared producer slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns. (Pairing slots differ: an `optional` one needs no link, and a required pairing or observer slot can be started unresolved with `--defer-link`.)
 
 When you start the node, you can see a path to the logs. In my case: `/home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:
@@ -250,7 +250,7 @@ Now let's push things a little further. Imagine we need a second instance with d
 $ peppy node run hello_world_param:v1 name=you
 Running node hello_world_param:v1...
 Starting node hello_world_param:v1 with instance_id 'admiring-black-0614' and 1 argument(s)...
-Calling node_start for hello_world_param:v1 (instance_id=admiring-black-0614)...
+Calling node_run for hello_world_param:v1 (instance_id=admiring-black-0614)...
 Log file: /home/ubuntu/.peppy/logs/run/admiring-black-0614.log
 Started node instance 'admiring-black-0614' (pid: 78063)
 ```
@@ -258,7 +258,7 @@ Started node instance 'admiring-black-0614' (pid: 78063)
 The running receiver is still bound to `gifted-moser-9365` only, so it will not see the new producer: this slot has the default cardinality `one`, so it binds exactly one producer, and only the bound producer reaches it. To read the new instance instead, restart the receiver bound to it:
 ```
 $ peppy node stop vigorous-buck-8117
-$ peppy node run hello_receiver:v1 \
+$ peppy node run hello_receiver:v1 -i vigorous-buck-8117 \
     --link hello_world_param@admiring-black-0614
 Running node hello_receiver:v1...
 Starting node hello_receiver:v1 with instance_id 'vigorous-buck-8117' and 0 argument(s)...
@@ -271,7 +271,7 @@ $ tail /home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log
 [2026-01-24T10:04:53.086] [stdout] Received from admiring-black-0614: hello you count 3
 [2026-01-24T10:04:56.085] [stdout] Received from admiring-black-0614: hello you count 4
 ```
-The receiver now follows `admiring-black-0614`, and only it. `gifted-moser-9365` keeps publishing, but no binding names it anymore, so its messages reach no slot. (To consume both producers at once, a consumer declares two slots, one `link_id` per producer; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).)
+The receiver now follows `admiring-black-0614`, and only it. `gifted-moser-9365` keeps publishing, but no binding names it anymore, so its messages reach no slot. (To consume both producers at once, declare the slot with `one_or_more` cardinality and repeat `--link` with one producer per flag, or declare two `one` slots with one `link_id` per producer; see [Bindings and routing](/advanced_guides/topics/#bindings-and-routing).)
 
 ```
 $ peppy stack list
@@ -296,8 +296,8 @@ $ peppy stack list
 │ │ cn-sweet-germain:v0.10.0             │ cn-sweet-germain             │ running │ healthy │ (none)                    │ │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤ │
 │ │ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param →       │ │
-│ │                                      │                              │         │         │ admiring-black-0614@core- │ │
-│ │                                      │                              │         │         │ node-sweet-germain-4388   │ │
+│ │                                      │                              │         │         │ admiring-black-0614@cn-sw │ │
+│ │                                      │                              │         │         │ eet-germain               │ │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤ │
 │ │ hello_world_param:v1                 │ gifted-moser-9365            │ running │ healthy │ (none)                    │ │
 │ │                                      │ admiring-black-0614          │ running │ healthy │ (none)                    │ │

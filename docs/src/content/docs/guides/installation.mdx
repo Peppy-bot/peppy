@@ -13,19 +13,42 @@ To install `peppy`, run the following command in your terminal:
 curl -fsSL https://peppy.bot/install.sh | sh
 ```
 
-This installer also sets up the `peppy` background service. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`.
+This installer also sets up the `peppy` background service and populates the repository index that name-based launches resolve from. To skip that step, set `PEPPY_NO_SERVICE_INSTALL=1`. The flag skips the repository setup along with the service, so a launch by name then fails with `nodes.json5 not found or empty` until you run `peppy repo init` and `peppy repo update` yourself.
 
 :::note
 To install a specific version, set the `PEPPY_VERSION` environment variable:
 
 ```sh
-curl -fsSL https://peppy.bot/install.sh | PEPPY_VERSION="v0.10.0" sh
+curl -fsSL https://peppy.bot/install.sh | PEPPY_VERSION="v0.20.0" sh
 ```
 :::
 
+The installer can also unpack a release archive you already have, instead of downloading one:
+
+```sh
+curl -fsSL https://peppy.bot/install.sh | sh -s -- ./peppy-x86_64-unknown-linux-gnu.tgz
+```
+
+If a daemon is already running, the installer asks for confirmation before replacing it; set `PEPPY_FORCE_REINSTALL=1` for non-interactive installs.
+
+### Installer environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `PEPPY_VERSION` | Version to install (default: latest) |
+| `PEPPY_HOME` | Install prefix (default: `~/.peppy`) |
+| `PEPPY_BIN_DIR` | Binary install directory (default: `$PEPPY_HOME/bin`) |
+| `PEPPY_REPOURL` | Base URL for downloads (default: `https://peppy.bot`) |
+| `PEPPY_DOWNLOAD_URL` | Override the full download URL |
+| `PEPPY_NO_PATH_UPDATE` | If set, do not update the shell PATH config |
+| `PEPPY_FORCE_REINSTALL` | If set, skip the confirmation prompt when a daemon is running |
+| `PEPPY_NO_ROOT_INSTALL` | If set, never use sudo; missing dependencies become hard errors and Apptainer setup is deferred to `peppy container setup` |
+| `PEPPY_NO_SERVICE_INSTALL` | If set, skip the service install and the repository init/refresh |
+| `PEPPY_NO_CONTAINER_SETUP` | If set, skip the Apptainer container setup (useful inside Docker/Podman) |
+
 ## Verifying the installation
 
-You can verify the service is running with:
+The service installs at user level by default; run `peppy service install` with sudo for a system-wide install. The snippets below assume the default user-level install. You can verify the service is running with:
 
 <Tabs>
   <TabItem label="Linux">
@@ -42,6 +65,16 @@ You can verify the service is running with:
 
 <details>
 <summary>**Managing the service (optional)**</summary>
+
+`peppy` ships its own platform-independent service commands, which are what the installer itself runs:
+
+```sh
+peppy service install     # install the background service
+peppy service stop        # stop it
+peppy service uninstall   # remove it
+```
+
+To drive the service through the platform's own service manager instead:
 
 <Tabs>
   <TabItem label="Linux">

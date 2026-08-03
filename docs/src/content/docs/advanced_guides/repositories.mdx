@@ -7,17 +7,19 @@ sidebar:
 
 Repositories tell Peppy where to look for nodes, launchers, contracts, and pairings. Each repository states what it publishes through a committed [`peppy_repository.json5`](#the-repository-index) at its root; `peppy repo refresh` reads that index from every configured repository and caches the result. The index itself is written by [`peppy repo index`](#index-a-repository), which walks the tree and records:
 
-- **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
+- **Nodes**, identified by content: every `.json5` file whose body declares `peppy_schema: "node/v1"` is treated as a node config, regardless of its filename, keyed by the `name:tag` declared in its manifest.
 - **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
 - **Contracts**, identified by content: every `.json5` file whose body declares `peppy_schema: "contract/v1"` is treated as a contract, regardless of its filename. A contract is a reusable declaration of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes claim contracts by `name:tag` in `manifest.implements`.
 - **Pairings**, identified by content: every `.json5` file whose body declares `peppy_schema: "pairing/v1"` is treated as a pairing, regardless of its filename. A pairing is a two-role, topics-only contract that two node instances pair 1:1 over, keyed by the `name:tag` declared in its manifest; see [Pairing](/advanced_guides/pairing/).
 
 Out of the box, four repositories are configured:
 
-- **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, tracked on `main`): a curated collection of ready-to-use nodes.
-- **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, tracked on `main`): community launch files that compose nodes from the hubs.
-- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
-- **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`): nodes specific to the OpenArm01 robot.
+- **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, tracked on `main`, id `1000`): a curated collection of ready-to-use nodes.
+- **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, tracked on `main`, id `1001`): community launch files that compose nodes from the hubs.
+- **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`, id `1002`): nodes specific to the OpenArm01 robot.
+- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`, id `1003`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
+
+The `id` is the priority key when several repositories provide the same `name:tag`, so the defaults resolve in this order.
 
 Add your own local directory with `peppy repo add /path/to/my/nodes`, then `peppy repo index /path/to/my/nodes` and `peppy repo refresh`, so Peppy can discover nodes you create locally. A repository publishes through its committed index, so all three steps are needed before a local node resolves.
 
@@ -42,7 +44,6 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 [
   { id: 1, type: "fs",  path: "/home/user" },
   { id: 2, type: "git", url: "https://github.com/Peppy-bot/nodes-hub.git", ref: "main" },
-  { id: 3, type: "url", url: "https://example.com/packages" },
 ]
 ```
 
@@ -52,7 +53,8 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 |------|--------|-------------|
 | `fs` | `path` | A local directory, read through its committed [`peppy_repository.json5`](#the-repository-index). |
 | `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and reads the same committed index. Use `ref` to pin a branch, tag, or commit. |
-| `url` | `url` | An HTTP endpoint (not yet implemented). |
+
+These are the only two source types. An entry with any other `type` fails its read as `unreachable` with an "unrecognized repository entry" detail.
 
 An `fs` repository is a path only this machine can read, so a deployment resolved from one must keep
 all of its instances on this daemon in a federated launch; serve the nodes from a `git` repository
@@ -66,7 +68,7 @@ to place them on other machines (see [Federation limits](/advanced_guides/federa
 peppy repo init
 ```
 
-Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading Peppy to pick up new defaults (for example when `launchers-hub` was added) without having to restart the daemon. The command operates directly on the local config file; no daemon connection is required.
+Syncs `repositories.json5` with the bundled default template. If the file does not yet exist it is created verbatim; otherwise any missing default entries are appended without touching your existing entries. Use this after upgrading Peppy to pick up new defaults without having to restart the daemon. The command operates directly on the local config file; no daemon connection is required.
 
 ### List repositories
 
@@ -76,12 +78,9 @@ peppy repo list
 
 Shows the indexed nodes grouped by the repository that provides them. Each group is headed by the repository's display label (path for `fs`, `url (ref: r)` for `git`) followed by the node count and source kind, then lists each node's name, tag, and path.
 
-The list reflects the index, not the filesystem, so it shows what will actually resolve at launch. A node added to a local repository since the last refresh does not appear until you run `peppy repo refresh` — which is also when it becomes launchable.
+The list reflects the index, not the filesystem, so it shows what will actually resolve at launch. A node added to a local repository does not appear until you run `peppy repo index <path>` and then `peppy repo refresh`, which is also when it becomes launchable.
 
-Two different situations are flagged, and they mean opposite things:
-
-- `(shadowed by <repository>)` — another repository with a lower `id` provides the same `name:tag`. This resolves deterministically to the named repository; the shadowed entry is recorded and inspectable but not used. A supported arrangement, not a problem.
-- `(conflict: claimed twice here)` — **one** repository claims this `name:tag` more than once. There is no priority rule that can settle this, so the identity does not resolve at all. `peppy repo refresh` refuses a repository in this state, so seeing it here means the index predates that check; re-running `peppy repo refresh` will report the offending files.
+One situation is flagged: `(shadowed by <repository>)` means another repository with a lower `id` provides the same `name:tag`. This resolves deterministically to the named repository; the shadowed entry is recorded and inspectable but not used. A supported arrangement, not a problem.
 
 A repository whose last refresh failed is marked `[retained, last read <date>]`, with the reason on the following line. Its entries are the ones it last published successfully, so anything referencing them keeps working; the date tells you how old they are.
 
@@ -116,23 +115,23 @@ The run itself still fails, and names every repository that failed in one messag
 
 ```text
 2 of the configured repositories could not be updated. Every other repository was updated normally.
-  - repository 1000 (https://github.com/Peppy-bot/nodes-hub.git (ref: main)) contradicts itself [conflict]: 2 node manifests claim `uvc_camera_video_reconstruction:v1`: uvc_camera_video_reconstruction/python/peppy.json5, uvc_camera_video_reconstruction/rust/peppy.json5. Kept 18 entries from its last successful read
-  - repository 1002 (https://github.com/Peppy-bot/contracts-hub.git (ref: main)) could not be read [unreachable]: failed to connect to github.com. Kept 8 entries from its last successful read
+  - repository 1000 (https://github.com/Peppy-bot/nodes-hub.git (ref: main)) contradicts itself [conflict]: duplicate key `v1`: already declared at uvc_camera_video_reconstruction/python/peppy.json5, declared again at uvc_camera_video_reconstruction/rust/peppy.json5. Kept 18 entries from its last successful read
+  - repository 1003 (https://github.com/Peppy-bot/contracts-hub.git (ref: main)) could not be read [unreachable]: failed to connect to github.com. Kept 8 entries from its last successful read
 ```
 
 Two kinds of failure are reported, and the distinction matters because they send you to different places:
 
 | Kind | Meaning | Typical cause |
 | --- | --- | --- |
-| `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a local path that is not mounted, an unrecognized entry in `repositories.json5`. |
-| `conflict` | The repository was read fine, but its contents contradict themselves: one identity is claimed by more than one manifest. | Two `peppy.json5` files declaring the same `name:tag`, or two launcher files with the same filename. |
+| `unreachable` | The repository could not be read at all. | Network outage, a bad git ref, a local path that is not mounted, a root with no committed `peppy_repository.json5`, an unrecognized entry in `repositories.json5`. |
+| `conflict` | The repository was read fine, but its committed index contradicts itself or the tree. | An index that fails to parse (a duplicate key, an unknown field, an illegal path), or a listed path that is missing, is of another kind, or declares another identity. |
 
 An `unreachable` repository is an outage, so the fix is usually to wait or fix connectivity. A `conflict` is a content bug in the repository, and the message names the exact files, so the fix is a change to that repository.
 
 The report is ordered by repository `id` and never inherits the filesystem's directory order, so two machines seeing the same problem report it identically.
 
 :::caution
-A machine that has **never** read a repository successfully has nothing to fall back to. Containment gets it every other repository, but a broken repository gives it nothing, and excluding a repository is the only local lever — it removes every identity that repository provides, not just the offending one. The real fix for a broken shared repository is to stop it being published broken.
+A machine that has **never** read a repository successfully has nothing to fall back to. Containment gets it every other repository, but a broken repository gives it nothing, and excluding a repository is the only local lever: it removes every identity that repository provides, not just the offending one. The real fix for a broken shared repository is to stop it being published broken.
 :::
 
 ### Add a repository
@@ -152,9 +151,6 @@ peppy repo add https://github.com/org/repo.git
 
 # Git repository pinned to a branch or tag
 peppy repo add https://github.com/org/repo.git --ref v2.0
-
-# Plain URL
-peppy repo add https://example.com/packages
 
 # Give the new repo top priority (lower `id` than every existing entry)
 peppy repo add /path/to/my/nodes --top
@@ -176,7 +172,7 @@ Removes a repository by its numeric ID (shown by `peppy repo list`). The reposit
 peppy repo exclude <source> [--ref <tag-or-branch>]
 ```
 
-Adds a source to `excluded_repositories.json5`. Excluded repositories are skipped during `peppy repo refresh`. You can exclude an entire repository or a specific subdirectory within a local repository:
+Adds a source to `excluded_repositories.json5`. Excluded repositories are skipped during `peppy repo refresh`, and the repository index is automatically refreshed after the exclusion. You can exclude an entire repository or a specific subdirectory within a local repository:
 
 ```sh
 # Exclude a whole git repository
@@ -249,17 +245,17 @@ Writing walks the repository and records what it finds. If one identity is claim
 refuses and names both files:
 
 ```
-two manifests claim `uvc_camera_video_reconstruction:v1`:
-  uvc_camera_video_reconstruction/python/peppy.json5,
-  uvc_camera_video_reconstruction/rust/peppy.json5
+2 node manifests claim `uvc_camera_video_reconstruction:v1`: uvc_camera_video_reconstruction/python/peppy.json5, uvc_camera_video_reconstruction/rust/peppy.json5
 ```
 
-`--check` verifies three things against the repository, and reports everything it finds at once:
+`--check` verifies four things against the repository, and reports everything it finds at once:
 
 - every item in the tree is listed (the mistake people actually make is adding an item and
   forgetting the index, which would otherwise leave it silently invisible);
 - every listed path is a real file inside the repository;
-- every listed path declares exactly the kind and identity it is filed under.
+- every listed path declares exactly the kind and identity it is filed under;
+- every listed path is where the identity is actually declared: an item whose declaring file moved
+  is reported as moved, not as missing.
 
 Run it on every pull request to a repository others consume. Catching a contested identity on the
 branch of the person who caused it is the entire point: the alternative is every machine in the
@@ -281,7 +277,7 @@ Resolving a `name:tag` has three outcomes, not two:
 
 - **Resolved.** Exactly one repository wins, either because it is the only one providing the identity or because it has the lowest `id`.
 - **Not found.** No repository provides it. The error names the cache file it looked in, and if you have excluded any repositories it says so, since an excluded repository is never indexed and may well have been the one that provided it.
-- **Ambiguous.** The winning repository claims the identity more than once. This is a distinct error naming both files, never a "not found" — reporting it as missing would send you to add a node that is already there twice:
+- **Ambiguous.** The cache states that the winning repository claims the identity more than once. A generated index cannot express this (each identity is a key that exists once), so hitting it means the cache file was edited by hand. It is a distinct error naming both files, never a "not found", since reporting it as missing would send you to add a node that is already there twice:
 
   ```text
   2 node entries in repository 1000 claim `uvc_camera_video_reconstruction:v1`:
@@ -296,6 +292,8 @@ One constraint applies to this source shape:
 
 If the node you want to add lives in a repository that is **not** in `repositories.json5`, keep using the full git URL or HTTP archive form shown in [Sharing nodes](/guides/sharing_nodes/).
 
+A manifest can also pin the exact content of a contract or pairing document it references with a `sha256` fingerprint, independent of which repository provides it; see [Content pins](/advanced_guides/lockfiles/).
+
 ## Syncing against repositories
 
 `peppy node sync` regenerates a node's interface code (peppygen) from its `peppy.json5`. By default, every dependency the node declares must already be in the [node stack](/guides/node_stack/), otherwise the sync fails with an "X does not exist in the stack" error.
@@ -309,7 +307,7 @@ peppy node sync -r
 The lookup order is:
 
 1. **Node stack**: wins whenever the dependency is already in the stack. Stack-resolved deps are listed under `Synchronized from node stack:` in the command output.
-2. **Repository cache** (`~/.peppy/cache/nodes.json5`): consulted only when the stack does not have the dependency. Repo-resolved deps are listed under `Synchronized from repositories:`, each tagged with its source kind (`fs`, `git`, or `http`).
+2. **Repository cache** (`~/.peppy/cache/nodes.json5`): consulted only when the stack does not have the dependency. Repo-resolved deps are listed under `Synchronized from repositories:`, each tagged with its source kind (`fs` or `git`).
 
 Repository-resolved git dependencies reuse the same persistent checkout cache as `peppy node add`, so the same repository is never cloned more than once during a single sync run.
 
@@ -350,8 +348,8 @@ Particularly useful during the early phase of a multi-node project, when the dep
 
 ## Directory pruning
 
-When scanning a repository, whether to refresh its cache or to write its index with
-`peppy repo index`, Peppy skips the following directories:
+When `peppy repo index` walks a repository to write its index, it skips hidden files and directories
+(any name with a leading `.`) plus the following directories:
 
 - `.git`
 - `.peppy`
@@ -360,6 +358,6 @@ When scanning a repository, whether to refresh its cache or to write its index w
 - `.venv`
 - `__pycache__`
 
-A repository's own `.gitignore` and `.ignore` files are honoured too. Machine-local git settings are
-not: a global gitignore or a clone's `.git/info/exclude` would otherwise let one contributor's setup
-change the index they generate and commit.
+A repository's own `.gitignore` and `.ignore` files are honoured too, while a contributor's global
+gitignore and the clone's `.git/info/exclude` are not read. `peppy repo refresh` does not walk the
+tree at all: it resolves exactly the paths the committed index names.

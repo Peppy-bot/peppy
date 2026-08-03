@@ -27,7 +27,7 @@ it.
 A **small reactive policy** closes a 200 Hz loop against hardware it must reach
 in microseconds. A link outage has to degrade it, not stop it.
 
-Those two want opposite machines. Before federation you had to pick one and
+Those two want opposite machines. Without federation, you pick one and
 compromise, or hand-roll a bridge between two independent stacks and give up
 Peppy's wiring, ordering, and lifecycle guarantees at the seam.
 
@@ -48,9 +48,11 @@ peppy platform list
 ```
 
 ```
-CORE NODE           HOST         NETWORK   APPLICATION
-cn-robot-7          robot-7      linked    online
-cn-atlas-h100       atlas        linked    online
+Workspace 4f1b2e2c-9a71-4d0e-b3c8-0d2b9f6a11c4 (backend https://api.peppy.bot)
+
+CORE NODE      NETWORK   APPLICATION   REGISTERED
+cn-robot-7     linked    online        2026-06-02   (this machine)
+cn-atlas-h100  linked    online        2026-07-14
 ```
 
 Both rows must read `linked` and `online`. `linked` means the machine's router
@@ -160,8 +162,13 @@ Starting my_python_robot_arm:v1 instance arm_inst on `cn-robot-7`
 Starting reactive_policy:v1 instance reflex_inst on `cn-robot-7`
 Starting deliberative_planner:v1 instance planner_inst on `cn-atlas-h100`
 Starting episode_recorder:v1 instance recorder_inst on `cn-atlas-h100`
-Launch completed successfully
+Node log files:
+...
+Launch configuration applied successfully
 ```
+
+(The `Node log files:` listing, elided here, names every machine's per-node add,
+build, and run logs, one `node:tag@core-node: path` line each.)
 
 Two things in that output are worth pointing at. The first line: a launch is
 destructive on every machine it touches, and you typed one command, so Peppy
@@ -194,9 +201,9 @@ daemon serving it:
 │ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
 │ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
 │ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
-│ │ uvc_camera_python_mock:v1  │ wrist_cam_inst   │ Running │ Healthy │        │
-│ │ my_python_robot_arm:v1     │ arm_inst         │ Running │ Healthy │        │
-│ │ reactive_policy:v1         │ reflex_inst      │ Running │ Healthy │        │
+│ │ uvc_camera_python_mock:v1  │ wrist_cam_inst   │ running │ healthy │        │
+│ │ my_python_robot_arm:v1     │ arm_inst         │ running │ healthy │        │
+│ │ reactive_policy:v1         │ reflex_inst      │ running │ healthy │        │
 │ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -207,14 +214,16 @@ daemon serving it:
 │ ┌────────────────────────────┬──────────────────┬─────────┬─────────┐        │
 │ │ NODE                       │ INSTANCE         │ STATUS  │ HEALTH  │        │
 │ ├────────────────────────────┼──────────────────┼─────────┼─────────┤        │
-│ │ deliberative_planner:v1    │ planner_inst     │ Running │ Healthy │        │
-│ │ episode_recorder:v1        │ recorder_inst    │ Running │ Healthy │        │
+│ │ deliberative_planner:v1    │ planner_inst     │ running │ healthy │        │
+│ │ episode_recorder:v1        │ recorder_inst    │ running │ healthy │        │
 │ └────────────────────────────┴──────────────────┴─────────┴─────────┘        │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-(Abridged: the real output also carries a `Node stack` table per section and a
-`BINDINGS` column, both trimmed here to keep the placement visible.)
+(Abridged: the real output opens each section with a `Slice of launch ...`
+ownership line, and also carries a `Node stack` table, `Instance pairings` and
+`Dependencies` sections, and a `BINDINGS` column, all trimmed here to keep the
+placement visible.)
 
 Both slices report the same launch id and the same coordinator. That is what
 ties them together, and it is recorded on each slice rather than in the
@@ -290,8 +299,8 @@ directory and makes it visible to that machine's container runtime; a missing
 `/dev`, `/proc`, `/run`, or `/sys` path is the host's to provide and is left
 alone. A path a machine had to create is reported back and shown in the launch
 output against that machine, the same warning you would get had the instance
-run on your own — and the same reason it is worth reading, since a bind meant
-to name a file looks exactly like this when the name is misspelled.
+run on your own machine, and it is worth reading for the same reason, since a
+bind meant to name a file looks exactly like this when the name is misspelled.
 
 The thing to notice is that none of this looks different from the
 single-machine case. Federation changes where instances run, not how they are
@@ -321,6 +330,19 @@ freshness therefore owns a staleness watchdog. In the example that is
 adopts it, and then the policy falls back to its own local behavior. The uplink
 is an *enhancement path*, not a dependency.
 
+**A launch reserves every participant before it touches anything.** Preflight
+reserves each machine in the launch, all or nothing: if any machine refuses,
+every reservation just taken is released and no stack anywhere is torn down. A
+reservation is machine-wide while it lasts. A reserved daemon refuses local
+`peppy node add` and `peppy node run` too, naming the launch and coordinator
+holding it, and `peppy stack list` shows a `Reserved for launch ...` line
+naming the exact reset command that clears it.
+
+A reservation is a lease on the coordinator's presence in the federation: a
+coordinator that disappears frees the machines it held rather than leaving them
+wedged. A coordinator's own next launch also takes over its own stale
+reservation, so a lost release never blocks the machine that made it.
+
 **A pin that cannot be honored is a refusal, never a fallback.** A peer that
 does not hold a pinned content and cannot reach the pinned repository refuses
 its part of the launch and names the location it could not reach. One that
@@ -334,17 +356,27 @@ reintroduce per-machine resolution at exactly the moment nobody is watching.
 rollback, because a launch REPLACES the previous stack: by the time anything can
 fail there is nothing to roll back to. What Peppy does instead is leave an empty
 slice on every machine it touched and name each one. If a machine cannot be
-reached to be cleared, that machine is named too, so you know exactly where to
-run:
+reached to be cleared, that machine is named too, with the remedy: clear it
+with `peppy stack reset` from that machine, or target it remotely with
+`peppy stack reset --core-node <name>`.
 
 ```bash
 peppy stack reset --federated
 ```
 
-which tears down every slice of the launch. It works from any machine in the
-federation, and after a coordinator restart, because it *rediscovers* the
-participants by asking the federation who holds a slice of that launch id rather
-than reading a remembered list.
+tears down every slice and reservation of the launch. It works from any machine
+in the federation, and after a coordinator restart, because it *rediscovers* the
+targets by asking the federation rather than reading a remembered list: any
+machine holding a slice **or a reservation** is swept, matched by the launch id
+when the daemon you point the command at holds a slice, and by that daemon's own
+coordinator name otherwise. A wedged participant that holds only a reservation,
+because its launch died before populating a slice, is therefore still reachable,
+and a daemon whose own earlier launch went stale sweeps by both keys.
+
+Both forms take the global `--core-node <name>` flag to target a specific
+daemon: `peppy stack reset --core-node <name>` clears that one machine (the
+escape hatch the reservation refusals name), and adding `--federated` sweeps the
+launch that daemon belongs to.
 
 Without `--federated`, `peppy stack reset` clears one daemon's slice and tells
 you what it left running:
@@ -352,7 +384,8 @@ you what it left running:
 ```
 Note: `cn-atlas-h100` holds one slice of launch `launch-brave-otter`,
 coordinated by `cn-robot-7`. This clears only this daemon's slice; the other
-participants keep running.
+participants keep running. Use `peppy stack reset --federated` to tear down
+the whole launch.
 ```
 
 ## Limits

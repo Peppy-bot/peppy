@@ -428,7 +428,7 @@ fn main() -> Result<()> {
   </TabItem>
 </Tabs>
 
-The `target` must be a member of the slot's own bound set, the one its bound-producer accessor returns; a target outside the set (including a producer bound to a different slot of the same consumer) fails with a runtime error before anything reaches the wire. A `ProducerRef` yielded by the slot's own topic subscription is a member by construction, so the natural receive-a-frame-then-call-that-camera flow needs no defensive code.
+The `target` must be a member of the slot's own bound set, the one its bound-producer accessor returns; a target outside the set (including a producer bound to a different slot of the same consumer) fails with `TargetNotBound` (`ValueError` in Python) before anything reaches the wire. A `ProducerRef` yielded by the slot's own topic subscription is a member by construction, so the natural receive-a-frame-then-call-that-camera flow needs no defensive code.
 
 The response contains:
 - `instance_id`: the producer instance that handled the request, read from the response context.
@@ -540,7 +540,7 @@ In a launcher / stack config:
 or, when launching a single node during development:
 
 ```sh
-peppy node run --link uvc_camera@my-camera-instance .
+peppy node run --link uvc_camera@my-camera-instance consumer:v1
 ```
 
 ### Worked example: `openarm01_backbone`
@@ -602,11 +602,12 @@ The launcher validator runs these checks before the stack starts:
 2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi slot and are a hard error on a `one` slot.
 3. **Every target must satisfy the slot, checked per bound instance.** A target `instance_id` that deploys a different node than the slot expects (or one that does not implement the requested contract) is rejected.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
-5. **Bindings are stamped with the daemon's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps the launching daemon's `core_node` into every resolved binding, preserving application declaration order, so generated calls address exactly the selected producer and never match on `instance_id` alone.
+5. **Bindings are stamped with the producer's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps each target producer instance's resolved `core_node` into the binding (equal to the launching daemon's only in the single-machine case), preserving application declaration order, so generated calls address exactly the selected producer and never match on `instance_id` alone.
 
 ## Error handling
 
-Service calls can fail with three error types:
+Service calls can fail with four error types:
+- **TargetNotBound** (`ValueError` in Python): the selected target is not a member of the slot's bound set; raised before anything reaches the wire.
 - **ServiceUnreachable** (`ConnectionError` in Python): no instance is listening for that service.
 - **ServiceTimeout** (`TimeoutError` in Python): no response was received within the timeout.
 - **ServiceError** (`RuntimeError` in Python): the handler returned an error, which is propagated back to the caller.

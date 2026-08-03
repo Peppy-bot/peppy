@@ -228,7 +228,7 @@ async fn handle_node_sync_request_inner(
                     }
 
                     return NodeSyncResponse::failure(format!(
-                        "`{}:{} {}",
+                        "`{}:{}` {}",
                         node_config.manifest.name.as_str(),
                         node_config.manifest.tag,
                         errors.join("; ")
