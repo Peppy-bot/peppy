@@ -1,0 +1,44 @@
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "rgb_camera",
+    tag: "v1"
+  },
+  // The camera role the reactive policy and the deliberative planner consume.
+  // Both name this contract rather than a node, which is what lets one camera
+  // instance feed two consumers placed on different machines.
+  interfaces: {
+    topics: [
+      {
+        name: "video_stream",
+        qos_profile: "sensor_data",
+        message_format: {
+          header: {
+            $type: "object",
+            stamp: "time",
+            // Capture counter, not a coordinate frame.
+            frame_id: "u32",
+          },
+          encoding: "string",
+          width: "u32",
+          height: "u32",
+          frame: {
+            $type: "array",
+            $items: "u8",
+          },
+        },
+      }
+    ],
+    services: [
+      {
+        name: "video_stream_info",
+        response_message_format: {
+          width: "u32",
+          height: "u32",
+          frames_per_second: "u8",
+          encoding: "string",
+        }
+      }
+    ]
+  }
+}

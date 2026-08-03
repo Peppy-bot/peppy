@@ -1,0 +1,49 @@
+{
+  peppy_schema: "repository/v1",
+  nodes: {
+    deliberative_planner: {
+      v1: {
+        path: "nodes/deliberative_planner/peppy.json5"
+      }
+    },
+    episode_recorder: {
+      v1: {
+        path: "nodes/episode_recorder/peppy.json5"
+      }
+    },
+    my_python_robot_arm: {
+      v1: {
+        path: "nodes/my_python_robot_arm/peppy.json5"
+      }
+    },
+    reactive_policy: {
+      v1: {
+        path: "nodes/reactive_policy/peppy.json5"
+      }
+    },
+    uvc_camera_python_mock: {
+      v1: {
+        path: "nodes/uvc_camera_python_mock/peppy.json5"
+      }
+    },
+    uvc_camera_video_reconstruction_python: {
+      v1: {
+        path: "nodes/uvc_camera_video_reconstruction_python/peppy.json5"
+      }
+    }
+  },
+  contracts: {
+    rgb_camera: {
+      v1: {
+        path: "contracts/rgb_camera.json5"
+      }
+    }
+  },
+  pairings: {
+    deliberation: {
+      v1: {
+        path: "pairings/deliberation.json5"
+      }
+    }
+  }
+}
