@@ -350,6 +350,7 @@ impl CoreNode {
         let node_stack = NodeStack::new(node_config.clone(), None, root_dir).with_shutdown_grace(
             Duration::from_secs(peppy_config.lifecycle.shutdown_grace_secs),
         );
+        let slice_ownership = federation::SliceOwnership::new(node_config.manifest.name.as_str());
 
         Self {
             node_stack: Arc::new(node_stack),
@@ -370,7 +371,7 @@ impl CoreNode {
             namespace,
             shutdown_token,
             presence_token: std::sync::Mutex::new(None),
-            slice_ownership: federation::SliceOwnership::new(),
+            slice_ownership,
             started: AtomicBool::new(false),
         }
     }
