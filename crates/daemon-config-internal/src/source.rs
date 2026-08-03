@@ -22,10 +22,7 @@ where
     de::Error::custom(err.json5_message())
 }
 
-fn split_repo_name_and_tag<E>(
-    raw_name: String,
-    raw_tag: Option<&str>,
-) -> Result<(String, String), E>
+fn split_name_and_tag<E>(raw_name: String, raw_tag: Option<&str>) -> Result<(String, String), E>
 where
     E: de::Error,
 {
@@ -71,6 +68,12 @@ impl<'de> Deserialize<'de> for DeploymentSource {
     where
         D: Deserializer<'de>,
     {
+        // The retired source keys are still RECOGNIZED, not merely unknown.
+        // A launcher written against the old forms is the most likely thing
+        // to arrive here, and `unknown field `local`` says only that the key
+        // is wrong — not that the form was removed, nor what replaces it. The
+        // migration flow is stated here, where the author hits the wall,
+        // rather than only in the docs they would have to go find.
         #[derive(Debug, Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RawDeploymentSource {
@@ -78,15 +81,40 @@ impl<'de> Deserialize<'de> for DeploymentSource {
             name: Option<String>,
             #[serde(default)]
             tag: Option<String>,
+            #[serde(default)]
+            local: Option<serde::de::IgnoredAny>,
+            #[serde(default)]
+            git: Option<serde::de::IgnoredAny>,
+            #[serde(default)]
+            url: Option<serde::de::IgnoredAny>,
+            #[serde(default)]
+            repo: Option<serde::de::IgnoredAny>,
         }
 
         let raw = RawDeploymentSource::deserialize(deserializer)?;
+        if let Some(retired) = [
+            ("local", raw.local.is_some()),
+            ("git", raw.git.is_some()),
+            ("url", raw.url.is_some()),
+            ("repo", raw.repo.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(key, present)| present.then_some(key))
+        {
+            return Err(invalid_deployment_source::<D::Error>(format!(
+                "deployment source `{retired}` was removed: a launcher references every node \
+                 through the repository index. Register the node's location with \
+                 `peppy repo add <path-or-url>`, write its index with `peppy repo index <path>`, \
+                 run `peppy repo refresh`, then name it as `{{ name: \"<name>:<tag>\" }}`."
+            )));
+        }
+
         let name_raw = raw.name.ok_or_else(|| {
             invalid_deployment_source::<D::Error>(
                 "deployment source requires `name` (`{ name, tag }` or `{ name: \"<name>:<tag>\" }`)",
             )
         })?;
-        let (name, tag) = split_repo_name_and_tag::<D::Error>(name_raw, raw.tag.as_deref())?;
+        let (name, tag) = split_name_and_tag::<D::Error>(name_raw, raw.tag.as_deref())?;
         Ok(DeploymentSource { name, tag })
     }
 }
@@ -205,15 +233,28 @@ mod tests {
     }
 
     /// A path is not a node reference: the only source shape is
-    /// `{ name, tag }`, so a `local` key fails the strict field check.
+    /// `{ name, tag }`. Each retired key is refused by name and the refusal
+    /// carries the migration flow, so an author porting an old launcher is
+    /// told what replaces it rather than just that the key is wrong.
     #[test]
-    fn deployment_source_rejects_path_key() {
-        let err = serde_json5::from_str::<DeploymentSource>("{ local: \"./uvc_camera\" }")
-            .expect_err("path-shaped source must be rejected");
-        assert!(
-            err.to_string().contains("local"),
-            "error should name the offending key: {err}"
-        );
+    fn deployment_source_rejects_retired_source_keys() {
+        for (key, body) in [
+            ("local", "{ local: \"./uvc_camera\" }"),
+            ("git", "{ git: { url: \"https://example.com/hub.git\" } }"),
+            ("url", "{ url: \"https://example.com/node.tar.zst\" }"),
+            ("repo", "{ repo: \"uvc_camera:v1\" }"),
+        ] {
+            let err: serde_json5::Error = serde_json5::from_str::<DeploymentSource>(body)
+                .expect_err("a retired source key must be rejected");
+            let ParsingError::InvalidDeploymentSource(msg) = err.into() else {
+                panic!("expected InvalidDeploymentSource for `{key}`");
+            };
+            assert!(msg.contains(key), "error should name `{key}`: {msg}");
+            assert!(
+                msg.contains("peppy repo add") && msg.contains("peppy repo refresh"),
+                "error should state the migration flow: {msg}"
+            );
+        }
     }
 
     #[test]
@@ -223,6 +264,9 @@ mod tests {
             tag: "v1".to_owned(),
         };
         let json = serde_json::to_value(&src).unwrap();
-        assert_eq!(json, serde_json::json!({ "name": "robot_brain", "tag": "v1" }));
+        assert_eq!(
+            json,
+            serde_json::json!({ "name": "robot_brain", "tag": "v1" })
+        );
     }
 }

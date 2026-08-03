@@ -505,8 +505,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         &launch_file_path,
     )
     .expect("failed to copy launcher file");
-    cache
-        .write(&peppy_dirs);
+    cache.write(&peppy_dirs);
 
     // Set up ready/health responders for all instances in the launcher config.
     let _ready_camera_front = AbortOnDrop(
@@ -1086,9 +1085,9 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
 
     let bad_launcher_json5 = r#"{ peppy_schema: "launcher/v1", deployments: [ }"#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
+    // No cache fixture: the launcher fails to parse, so no deployment is ever
+    // resolved and nothing reads `nodes.json5`.
     fs::write(&launch_file_path, bad_launcher_json5).expect("failed to write launch file");
-    TestPackagesCache::new()
-        .write(&started_core_node.peppy_dirs);
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,

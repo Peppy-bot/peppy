@@ -19,7 +19,7 @@ Out of the box, four repositories are configured:
 - **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
 - **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`): nodes specific to the OpenArm01 robot.
 
-Add your own local directory with `peppy repo add /path/to/my/nodes` so Peppy can discover nodes you create locally.
+Add your own local directory with `peppy repo add /path/to/my/nodes`, then `peppy repo index /path/to/my/nodes` and `peppy repo refresh`, so Peppy can discover nodes you create locally. A repository publishes through its committed index, so all three steps are needed before a local node resolves.
 
 ## Configuration files
 

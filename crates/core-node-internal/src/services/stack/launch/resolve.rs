@@ -3,7 +3,7 @@ use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::pins;
 use crate::services::repo::cache as repo_cache;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, NodeSource, PlacementSpec,
+    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, PlacementSpec,
 };
 use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::format_quoted_list;
@@ -317,7 +317,6 @@ pub(super) async fn resolve_deployments(
             publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
         }
         let ResolvedDeployment {
-            source,
             config,
             root_pin,
             closure_pins,
@@ -340,31 +339,24 @@ pub(super) async fn resolve_deployments(
         let node_name = config.manifest.name.as_str().to_owned();
         let node_tag = config.manifest.tag.clone();
 
+        // The resolved identity is the source's own: the cache matches
+        // `name:tag` exactly and `materialize_pinned_node` refuses bytes
+        // declaring anything else, so there is one identity to name here.
         let key = NodeKey::new(&node_name, &node_tag);
         if !planned_keys.insert(key.clone()) {
-            planning_errors.push(format!(
-                "duplicate deployment for node {} (resolved from {})",
-                key.label(),
-                deployment_label(&deployment)
-            ));
+            planning_errors.push(format!("duplicate deployment for node {}", key.label()));
             continue;
         }
 
         publish_stdout(
             ctx,
-            format!(
-                "Deployment {} resolved to {}:{}",
-                deployment_label(&deployment),
-                node_name,
-                node_tag
-            ),
+            format!("Deployment {} resolved", key.label()),
             LaunchFeedbackStep::LauncherStep,
         )
         .await;
 
         planned.push(PlannedDeployment {
             deployment,
-            source,
             node_name,
             node_tag,
             config,
@@ -389,8 +381,6 @@ pub(super) async fn resolve_deployments(
 /// `PlannedDeployment` copies it field by field, so a pin slot that swapped
 /// with another would otherwise do so silently.
 struct ResolvedDeployment {
-    /// The source its adds dispatch with.
-    source: NodeSource,
     config: config::node::NodeConfig,
     /// The root pin of the resolved closure.
     root_pin: PinnedItem,
@@ -439,7 +429,7 @@ async fn resolve_one(
     )
     .await;
     let remote = has_remote_instances(deployment, placements);
-    let shared_feedback = || -> crate::services::node::cache::MaterializeFeedback {
+    let feedback: crate::services::node::cache::MaterializeFeedback = {
         let sink = Arc::clone(collected);
         Arc::new(move |line: &str| sink.lock().push(line.to_owned()))
     };
@@ -449,7 +439,7 @@ async fn resolve_one(
         node_entries,
         &deployment.source.name,
         &deployment.source.tag,
-        shared_feedback(),
+        feedback,
     )
     .await
     .map_err(|e| format!("deployment {label}: {e}"))?;
@@ -462,23 +452,11 @@ async fn resolve_one(
     // config and pin are the two largest things in it.
     let mut nodes = closure.nodes;
     let root = nodes.remove(0);
-    let source = pinned_source(&label, &root.pin)?;
     Ok(ResolvedDeployment {
-        source,
         config: root.config,
         root_pin: root.pin,
         closure_pins: dep_pins,
         pin_manifests: manifests,
-    })
-}
-
-/// The add source every deployment dispatches with: the root pin, encoded
-/// once, so resolution and the machine that materializes it cannot disagree
-/// on how the pin travels.
-fn pinned_source(label: &str, pin: &PinnedItem) -> std::result::Result<NodeSource, String> {
-    Ok(NodeSource::Pinned {
-        pin_json5: serde_json5::to_string(pin)
-            .map_err(|e| format!("deployment {label}: could not encode its pin: {e}"))?,
     })
 }
 
@@ -630,18 +608,6 @@ mod tests {
             path: RepoRelativePath::parse("planner/peppy.json5").expect("valid path"),
         });
         assert!(refuse_unportable_pins("planner:v1", std::iter::once(&git_pin)).is_ok());
-    }
-
-    /// A launcher can only name nodes through the repository index: a
-    /// path-shaped source fails the strict field check at parse time.
-    #[test]
-    fn a_path_shaped_source_is_rejected_at_parse_time() {
-        let err = serde_json5::from_str::<DeploymentSource>(r#"{ local: "./nodes/planner" }"#)
-            .expect_err("a path-shaped source must be rejected");
-        assert!(
-            err.to_string().contains("local"),
-            "error should name the offending key: {err}"
-        );
     }
 
     // --- Placement: binding a launcher's declared links to real machines ---

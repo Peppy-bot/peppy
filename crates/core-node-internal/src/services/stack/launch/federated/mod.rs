@@ -393,10 +393,10 @@ impl FederatedLaunch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The one spelling of a git-backed node pin, defined in the parent
+    // module's tests so this module and `launch.rs` cannot drift apart.
+    use super::super::tests::test_root_pin as pin;
     use daemon_config::launcher::DeploymentInstance;
-    use daemon_config::repository::{
-        EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, RepoRelativePath,
-    };
 
     fn instance(id: &str) -> DeploymentInstance {
         DeploymentInstance::empty(config::runtime::Name::new(id).expect("valid name"))
@@ -407,21 +407,6 @@ mod tests {
             source: serde_json5::from_str(&format!(r#"{{ name: "{name}", tag: "v1" }}"#))
                 .expect("valid repo source"),
             instances,
-        }
-    }
-
-    fn pin(name: &str) -> PinnedItem {
-        PinnedItem {
-            kind: PinKind::Node,
-            name: ItemName::parse(name).expect("valid name"),
-            tag: ItemTag::parse("v1").expect("valid tag"),
-            sha256: ManifestFingerprint::parse(&"a".repeat(64)).expect("valid sha"),
-            origin: EntryOrigin::Git {
-                repo_url: "https://example.com/hub".to_owned(),
-                repo_ref: Some("main".to_owned()),
-                commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
-                path: RepoRelativePath::parse(&format!("{name}/peppy.json5")).expect("valid path"),
-            },
         }
     }
 

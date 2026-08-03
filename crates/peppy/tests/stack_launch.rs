@@ -78,8 +78,7 @@ fn write_node_config(
 /// `repo refresh` in the test, which rewrites the cache file.
 fn register_repo_caches(peppy_root: impl AsRef<Path>, nodes: &[(&str, &str, &Path)]) {
     let peppy_dirs = daemon_config::consts::PeppyDirs::new(peppy_root.as_ref());
-    let cache_dir = peppy_dirs.cache_dir();
-    fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
+    fs::create_dir_all(peppy_dirs.cache_dir()).expect("failed to create cache dir");
 
     let node_entries: Vec<serde_json::Value> = nodes
         .iter()
@@ -90,12 +89,14 @@ fn register_repo_caches(peppy_root: impl AsRef<Path>, nodes: &[(&str, &str, &Pat
                 "node_name": name,
                 "node_tag": tag,
                 "sha256": config::fingerprint::fingerprint_for_bytes(&bytes),
-                "origin": { "source_type": "fs", "path": manifest_path.to_string_lossy() },
+                // The origin is serialized from the type `repo refresh`
+                // writes, so a change to its shape reaches this fixture.
+                "origin": daemon_config::repository::EntryOrigin::Fs { path: manifest_path },
             })
         })
         .collect();
     fs::write(
-        cache_dir.join("nodes.json5"),
+        core_node::nodes_repo_cache_path(&peppy_dirs),
         serde_json::to_string_pretty(&node_entries).expect("serialize nodes cache"),
     )
     .expect("failed to write nodes.json5");
@@ -267,10 +268,7 @@ async fn node_launch_command_succeed() {
         }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    register_repo_caches(
-        serve.temp_dir(),
-        &[(node_b_name, node_tag, &node_b_path)],
-    );
+    register_repo_caches(serve.temp_dir(), &[(node_b_name, node_tag, &node_b_path)]);
 
     StackCommand {
         command: StackCommands::Launch {
@@ -471,10 +469,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    register_repo_caches(
-        serve.temp_dir(),
-        &[(node_b_name, node_tag, &node_b_path)],
-    );
+    register_repo_caches(serve.temp_dir(), &[(node_b_name, node_tag, &node_b_path)]);
 
     let launch_result = StackCommand {
         command: StackCommands::Launch {
@@ -2953,10 +2948,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
             ]
         }"#;
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
-    register_repo_caches(
-        serve.temp_dir(),
-        &[("robot_arm", "v1", &arm_path)],
-    );
+    register_repo_caches(serve.temp_dir(), &[("robot_arm", "v1", &arm_path)]);
 
     let err = StackCommand {
         command: StackCommands::Launch {
