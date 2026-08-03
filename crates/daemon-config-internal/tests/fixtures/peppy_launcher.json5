@@ -1,13 +1,16 @@
 // Peppy Configuration
 // This is the main configuration file that defines the deployments on the current machine.
+// Every deployment references a node from the repository index by `name:tag`
+// (see `peppy repo list`); local nodes become resolvable by registering their
+// directory with `peppy repo add <path>`.
 {
   peppy_schema: "launcher/v1",
   deployments: [
     {
-      // Example of a node being pulled from an url
+      // the source property is mandatory
       source: {
-        url: "https://example.com/fake_robot_brain.tar.zst",
-        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
+        name: "fake_robot_brain",
+        tag: "v1",
       },
       instances: [
         {
@@ -17,11 +20,9 @@
       ],
     },
     {
-      // the source property is mandatory
+      // `name: "<name>:<tag>"` is the combined shorthand for { name, tag }
       source: {
-        repo: "https://github.com/Peppy-bot/nodes-hub.git",
-        path: "rust/fake_openarm01_controller",
-        ref: "main",
+        name: "fake_openarm01_controller:v1",
       },
       instances: [
         {
@@ -32,7 +33,7 @@
     },
     {
       source: {
-        local: "./uvc_camera"
+        name: "uvc_camera:v1"
       },
       instances: [
         {
@@ -75,7 +76,7 @@
     },
     {
       source: {
-        local: "./video_reconstruction"
+        name: "video_reconstruction:v1"
       },
       instances: [
         {
@@ -88,7 +89,7 @@
     },
     {
       source: {
-        local: "./esp32_board"
+        name: "esp32_board:v1"
       },
       instances: [
         {

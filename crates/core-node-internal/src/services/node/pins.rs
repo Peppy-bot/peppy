@@ -229,8 +229,8 @@ pub(crate) async fn materialize_pin_set(
 /// machine's caches, minting a pin per resolved item.
 ///
 /// The ONE place a name becomes bytes. A launch coordinator runs it for
-/// every `repo:` deployment, and `peppy node add <name>:<tag>` runs it on
-/// the daemon that receives the goal; everything downstream consumes the
+/// every deployment, and `peppy node add <name>:<tag>` runs it on the
+/// daemon that receives the goal; everything downstream consumes the
 /// pins it mints. Every missing or ambiguous identity in the closure is
 /// aggregated into one report, so a user with several problems fixes them
 /// all after one run.
@@ -566,126 +566,6 @@ pub(crate) async fn doc_pins_for_manifest_sets_async(
     })
     .await
     .map_err(|e| format!("doc pin minting task failed: {e}"))?
-}
-
-/// Resolves a launcher's `git:` deployment to a pinned root: clones the
-/// repository at the requested ref, records the commit that ref resolved to,
-/// donates the clone to the commit-keyed checkout cache, and mints the pin
-/// from the manifest bytes it read.
-///
-/// A `git:` ref is usually a branch, which is a moving name; capturing the
-/// commit here is what makes every machine in the launch read the tree this
-/// machine read, rather than whatever the branch points at when each of
-/// them clones.
-pub(crate) async fn resolve_git_deployment(
-    peppy_dirs: &PeppyDirs,
-    repo_url: &str,
-    repo_path: &str,
-    repo_ref: Option<&str>,
-    on_feedback: node_cache::MaterializeFeedback,
-) -> std::result::Result<MaterializedPin, String> {
-    let dirs = peppy_dirs.clone();
-    let url = repo_url.to_owned();
-    let path_spec = repo_path.to_owned();
-    let git_ref = repo_ref.map(str::to_owned);
-
-    tokio::task::spawn_blocking(move || {
-        let sanitized = super::git_utils::sanitize_repo_path(&path_spec)?;
-
-        on_feedback(&format!("Cloning repository {url}..."));
-        let temp_dir = tempfile::Builder::new()
-            .prefix("peppy-git-deploy-")
-            .tempdir()
-            .map_err(|e| format!("Failed to create temporary directory: {e}"))?;
-        let repo = super::git_utils::clone_repo_with_deadline(&url, temp_dir.path(), None)?;
-        if let Some(reference) = git_ref.as_deref() {
-            super::git_utils::checkout_repo_ref(&repo, reference)
-                .map_err(|e| format!("Failed to checkout git ref '{reference}': {e}"))?;
-        }
-        let commit = super::git_utils::head_commit(&repo)?;
-        drop(repo);
-
-        // Donate the clone, then resolve the checkout back through the same
-        // cache the pinned adds use: the donation makes this the one clone
-        // any machine-local consumer of the pin ever pays for.
-        node_cache::git::adopt_checkout(&dirs, &url, &commit, temp_dir.keep());
-        let checkout = node_cache::git::ensure_checkout_at_commit(
-            &dirs,
-            &url,
-            git_ref.as_deref(),
-            &commit,
-            &|line| on_feedback(line),
-        )?;
-
-        // The pin names the file that declares the node, so a directory
-        // deployment path gains the manifest filename.
-        let manifest_rel = if sanitized
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("json5"))
-        {
-            sanitized
-        } else {
-            sanitized.join(config::consts::NODE_CONFIG_FILE)
-        };
-        let manifest_rel =
-            daemon_config::repository::RepoRelativePath::parse(manifest_rel.to_str().ok_or_else(
-                || format!("deployment path {} is not UTF-8", manifest_rel.display()),
-            )?)
-            .map_err(|e| format!("deployment path does not stay inside the repository: {e}"))?;
-
-        let manifest_path = checkout.join(manifest_rel.as_path());
-        let bytes = std::fs::read(&manifest_path).map_err(|e| {
-            format!(
-                "no node manifest at `{}` in {url} at {commit}: {e}",
-                manifest_rel.as_str()
-            )
-        })?;
-        let content = std::str::from_utf8(&bytes)
-            .map_err(|e| format!("manifest at `{}` is not UTF-8: {e}", manifest_rel.as_str()))?;
-        let config = NodeConfigParser::from_content(content).map_err(|e| {
-            format!(
-                "Failed to parse node config at {}: {e}",
-                manifest_path.display()
-            )
-        })?;
-
-        let pin = PinnedItem {
-            kind: PinKind::Node,
-            name: ItemName::parse(config.manifest.name.as_str()).map_err(|e| {
-                format!(
-                    "node `{}` cannot be pinned: {e}",
-                    config.manifest.name.as_str()
-                )
-            })?,
-            tag: ItemTag::parse(&config.manifest.tag)
-                .map_err(|e| format!("tag `{}` cannot be pinned: {e}", config.manifest.tag))?,
-            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(&bytes),
-            origin: EntryOrigin::Git {
-                repo_url: url,
-                repo_ref: git_ref,
-                commit,
-                path: manifest_rel,
-            },
-        };
-        let root_dir = manifest_path
-            .parent()
-            .ok_or_else(|| {
-                format!(
-                    "manifest at {} has no parent directory",
-                    manifest_path.display()
-                )
-            })?
-            .to_path_buf();
-        Ok(MaterializedPin {
-            pin,
-            root_dir,
-            config,
-            is_root: true,
-        })
-    })
-    .await
-    .map_err(|e| format!("git deployment resolution task failed: {e}"))?
 }
 
 /// Decodes the JSON5 pins of a goal, refusing the batch on the first pin

@@ -231,7 +231,6 @@ impl NodeKey {
 #[derive(Clone)]
 struct PlannedDeployment {
     deployment: Deployment,
-    source: NodeSource,
     node_name: String,
     node_tag: String,
     config: config::node::NodeConfig,
@@ -240,9 +239,8 @@ struct PlannedDeployment {
     /// dispatch and start refuses rather than running a config the plan was
     /// never checked against.
     config_sha256: String,
-    /// The root pin for a pinned source (`repo:` and `git:`); `None` for a
-    /// `local:` tree or a content-addressed `url:` archive.
-    root_pin: Option<daemon_config::repository::PinnedItem>,
+    /// The root pin of the deployment's resolved closure.
+    root_pin: daemon_config::repository::PinnedItem,
     /// The rest of the closure: dependency-node pins plus, once
     /// `mint_doc_pins` has run, the contract and pairing document pins every
     /// add of this deployment carries.
@@ -252,10 +250,24 @@ struct PlannedDeployment {
     pin_manifests: Vec<config::node::Manifest>,
 }
 
-/// Marker git_hash used for stack-launch operations.
-/// When this marker is used, the node_add service skips git hash verification
-/// and generates fresh peppygen files. This allows stack_launch to work with
-/// local filesystem sources without requiring `peppy node sync` beforehand.
+/// The add source a deployment dispatches with: its root pin, encoded at the
+/// point of dispatch beside the closure pins, so the local arm and the goal a
+/// peer receives cannot disagree on how the pin travels.
+fn pinned_source(
+    key: &NodeKey,
+    item: &PlannedDeployment,
+) -> std::result::Result<NodeSource, String> {
+    serde_json5::to_string(&item.root_pin)
+        .map(|pin_json5| NodeSource::Pinned { pin_json5 })
+        .map_err(|e| format!("deployment {}: could not encode its pin: {e}", key.label()))
+}
+
+/// Marker git_hash for an add whose bytes a pin already vouched for: the ones
+/// stack launch issues, and the per-node sub-goals `add_batch` issues for any
+/// pinned add (`peppy node add <name>:<tag>` included). The node_add service
+/// skips git hash and codegen-fingerprint verification for it and generates
+/// fresh peppygen files: those checks belong to `peppy node sync` workflows,
+/// and these adds operate on a tree materialized from an already-verified pin.
 pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 
 /// Which core nodes host at least one instance of `key`, in a stable order.
@@ -384,9 +396,12 @@ async fn add_and_build_group(
         // must not get to differ from the dispatched one. The environment is
         // the one deliberate difference: the caller's env vars describe this
         // machine, so they apply here and stay off the goals a peer receives.
-        let node_add_goal = match crate::services::node::pins::encode_pins(&item.closure_pins) {
-            Ok(pins) => {
-                NodeAddGoal::for_internal_execution(item.source.clone(), STACK_LAUNCH_GIT_HASH)
+        let encoded = pinned_source(key, item).and_then(|source| {
+            crate::services::node::pins::encode_pins(&item.closure_pins).map(|pins| (source, pins))
+        });
+        let node_add_goal = match encoded {
+            Ok((source, pins)) => {
+                NodeAddGoal::for_internal_execution(source, STACK_LAUNCH_GIT_HASH)
                     .with_env_vars(ctx.env_vars.clone())
                     .with_pins(pins)
             }
@@ -484,7 +499,7 @@ async fn add_and_build_remotely(
     // through the peer's own concurrency gate, which reports the remaining time
     // when it refuses a second caller.
     let add_goal = NodeAddGoal::from_source(
-        item.source.clone(),
+        pinned_source(key, item)?,
         STACK_LAUNCH_GIT_HASH,
         ctx.idle_timeouts.add.as_secs(),
     )
@@ -1211,8 +1226,7 @@ async fn handle_goal_request(
 /// 8. Start instances in dependency order
 async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchResult {
     // Step 1: Parse the launcher and bind its core node links to machines.
-    let (deployments, nodes_directory, placements) = match parse_launcher_config(&ctx, &goal).await
-    {
+    let (deployments, placements) = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
         Err(launch_result) => return launch_result,
     };
@@ -1221,11 +1235,10 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
     // node pins the whole launch runs. Resolution touches no other machine
     // and tears nothing down, so refusing here is free, and the
     // reservations below need the pins to carry.
-    let mut planned =
-        match resolve_deployments(&ctx, deployments, &nodes_directory, &placements).await {
-            Ok(result) => result,
-            Err(launch_result) => return launch_result,
-        };
+    let mut planned = match resolve_deployments(&ctx, deployments, &placements).await {
+        Ok(result) => result,
+        Err(launch_result) => return launch_result,
+    };
 
     // Step 3: Validate dependencies and compute one global topological order,
     // across every machine. There is exactly one planner. Runs before the
@@ -1601,12 +1614,10 @@ mod tests {
 
         PlannedDeployment {
             deployment: Deployment {
-                source: daemon_config::launcher::DeploymentSource::Repo(
-                    daemon_config::launcher::DeploymentRepoSource {
-                        name: node_name.to_owned(),
-                        tag: "v1".to_owned(),
-                    },
-                ),
+                source: daemon_config::launcher::DeploymentSource {
+                    name: node_name.to_owned(),
+                    tag: "v1".to_owned(),
+                },
                 instances: instances
                     .iter()
                     .map(|(instance_id, core_node, arguments)| {
@@ -1619,14 +1630,35 @@ mod tests {
                     })
                     .collect(),
             },
-            source: NodeSource::resolve_ref(node_name, "v1").expect("valid node ref"),
             node_name: node_name.to_owned(),
             node_tag: "v1".to_owned(),
             config,
             config_sha256: String::new(),
-            root_pin: None,
+            root_pin: test_root_pin(node_name),
             closure_pins: Vec::new(),
             pin_manifests: Vec::new(),
+        }
+    }
+
+    /// A git-backed node pin, the portable shape. Shared with the `federated`
+    /// child module so both sides of a dispatch test pin the same bytes.
+    pub(super) fn test_root_pin(node_name: &str) -> daemon_config::repository::PinnedItem {
+        use daemon_config::repository::{
+            EntryOrigin, GitCommit, ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem,
+            RepoRelativePath,
+        };
+        PinnedItem {
+            kind: PinKind::Node,
+            name: ItemName::parse(node_name).expect("valid pin name"),
+            tag: ItemTag::parse("v1").expect("valid pin tag"),
+            sha256: ManifestFingerprint::parse(&"a".repeat(64)).expect("valid sha"),
+            origin: EntryOrigin::Git {
+                repo_url: "https://example.com/hub".to_owned(),
+                repo_ref: Some("main".to_owned()),
+                commit: GitCommit::parse(&"b".repeat(40)).expect("valid commit"),
+                path: RepoRelativePath::parse(&format!("{node_name}/peppy.json5"))
+                    .expect("valid path"),
+            },
         }
     }
 

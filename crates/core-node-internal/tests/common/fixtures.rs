@@ -76,13 +76,15 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
-/// Builder for `nodes.json5` and `contracts.json5` cache fixtures. Tests call
-/// [`TestPackagesCache::fs_entry`] / `git_entry` / `contract_git_entry` to
-/// declare discovered items, then [`TestPackagesCache::write`] to serialize
-/// the files under `peppy_dirs.cache_dir()`.
+/// Builder for `nodes.json5`, `launchers.json5`, and `contracts.json5` cache
+/// fixtures. Tests call [`TestPackagesCache::fs_entry`] / `git_entry` /
+/// `launcher_fs_entry` / `contract_git_entry` to declare discovered items,
+/// then [`TestPackagesCache::write`] to serialize the files under
+/// `peppy_dirs.cache_dir()`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
+    launchers: Vec<serde_json::Value>,
     contracts: Vec<serde_json::Value>,
 }
 
@@ -95,6 +97,17 @@ pub fn seeded_sha(seed: &str) -> String {
 /// A distinct, valid commit per `seed`.
 fn seeded_commit(seed: &str) -> String {
     seeded_sha(seed)[..40].to_owned()
+}
+
+/// The fingerprint of the bytes at `path`, or a seeded one when the file is
+/// not readable. A pinned add verifies materialized bytes against the entry's
+/// fingerprint, so a fixture whose file already exists records the real one; a
+/// fixture whose file is written later (or never, for a lookup-only test)
+/// falls back to `seed`.
+fn fingerprint_or_seeded(path: &Path, seed: &str) -> String {
+    std::fs::read(path)
+        .map(|bytes| config::fingerprint::fingerprint_for_bytes(&bytes))
+        .unwrap_or_else(|_| seeded_sha(seed))
 }
 
 /// The `origin` object of a cache entry for an item on this machine, in the
@@ -149,15 +162,11 @@ impl TestPackagesCache {
     /// cache stores the manifest file path (path-points-at-file
     /// convention), so we join `NODE_CONFIG_FILE` here.
     ///
-    /// The fingerprint is computed from the file when it exists, because a
-    /// pinned add verifies the bytes it materializes against the entry's
-    /// fingerprint; a fixture whose file is written later (or never, for a
-    /// lookup-only test) records a seeded one instead.
+    /// The fingerprint follows [`fingerprint_or_seeded`]: the file's bytes
+    /// when it exists, a seeded value otherwise.
     pub fn fs_entry(mut self, name: &str, tag: &str, absolute_path: impl AsRef<Path>) -> Self {
         let manifest_path = absolute_path.as_ref().join(NODE_CONFIG_FILE);
-        let sha256 = std::fs::read(&manifest_path)
-            .map(|bytes| config::fingerprint::fingerprint_for_bytes(&bytes))
-            .unwrap_or_else(|_| seeded_sha(&format!("{name}:{tag}")));
+        let sha256 = fingerprint_or_seeded(&manifest_path, &format!("{name}:{tag}"));
         self.entries.push(serde_json::json!({
             "node_name": name,
             "node_tag": tag,
@@ -170,6 +179,10 @@ impl TestPackagesCache {
     /// `path_in_repo` is the directory containing `peppy.json5` within
     /// the checked-out repo. We join `NODE_CONFIG_FILE` so the cache
     /// records the manifest file path.
+    ///
+    /// The fingerprint follows [`fingerprint_or_seeded`], read from the
+    /// repository's worktree copy of the manifest when `repo_url` is a path on
+    /// this machine; a remote or lookup-only fixture gets a seeded value.
     pub fn git_entry(
         mut self,
         name: &str,
@@ -179,16 +192,37 @@ impl TestPackagesCache {
         path_in_repo: &str,
     ) -> Self {
         let manifest_path = Path::new(path_in_repo).join(NODE_CONFIG_FILE);
+        let local_repo = repo_url.strip_prefix("file://").unwrap_or(repo_url);
+        let sha256 = fingerprint_or_seeded(
+            &Path::new(local_repo).join(&manifest_path),
+            &format!("{name}:{tag}"),
+        );
         self.entries.push(serde_json::json!({
             "node_name": name,
             "node_tag": tag,
-            "sha256": seeded_sha(&format!("{name}:{tag}")),
+            "sha256": sha256,
             "origin": git_origin(
                 repo_url,
                 resolved_ref,
                 &manifest_path.to_string_lossy(),
                 &format!("{name}:{tag}"),
             ),
+        }));
+        self
+    }
+
+    /// Adds a `launchers.json5` entry for a filesystem-sourced launcher.
+    /// `absolute_path` points at the launcher `.json5` file itself. The
+    /// fingerprint follows [`fingerprint_or_seeded`]; launcher resolution
+    /// materializes the origin's path without a drift check, so a seeded
+    /// value is harmless for a file written later.
+    pub fn launcher_fs_entry(mut self, name: &str, absolute_path: impl AsRef<Path>) -> Self {
+        let path = absolute_path.as_ref();
+        let sha256 = fingerprint_or_seeded(path, name);
+        self.launchers.push(serde_json::json!({
+            "launcher_name": name,
+            "sha256": sha256,
+            "origin": fs_origin(path),
         }));
         self
     }
@@ -242,20 +276,36 @@ impl TestPackagesCache {
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
         std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
             .expect("failed to write nodes.json5 fixture");
-        let contracts_path = core_node::contracts_repo_cache_path(peppy_dirs);
-        if self.contracts.is_empty() {
-            match std::fs::remove_file(&contracts_path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => panic!("failed to remove stale contracts.json5 fixture: {e}"),
-            }
-        } else {
-            let contracts_content = serde_json::to_string_pretty(&self.contracts)
-                .expect("failed to serialize contract cache entries");
-            std::fs::write(contracts_path, contracts_content)
-                .expect("failed to write contracts.json5 fixture");
-        }
+        write_or_clear(
+            &core_node::launchers_repo_cache_path(peppy_dirs),
+            &self.launchers,
+            "launchers.json5",
+        );
+        write_or_clear(
+            &core_node::contracts_repo_cache_path(peppy_dirs),
+            &self.contracts,
+            "contracts.json5",
+        );
     }
+}
+
+/// Writes `entries` to `path`, or removes any stale file left by an earlier
+/// fixture when the set is empty. An absent cache file and an empty one are
+/// not the same thing to the readers under test, so the empty case clears
+/// rather than writing `[]`.
+fn write_or_clear(path: &Path, entries: &[serde_json::Value], label: &str) {
+    if entries.is_empty() {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("failed to remove stale {label} fixture: {e}"),
+        }
+        return;
+    }
+    let content = serde_json::to_string_pretty(entries)
+        .unwrap_or_else(|e| panic!("failed to serialize {label} cache entries: {e}"));
+    std::fs::write(path, content)
+        .unwrap_or_else(|e| panic!("failed to write {label} fixture: {e}"));
 }
 
 /// Convenience helper: writes `peppy.json5` under `dir` but skips the

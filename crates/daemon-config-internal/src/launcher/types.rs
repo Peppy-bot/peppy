@@ -8,10 +8,7 @@ use serde::{
 };
 use std::collections::{BTreeMap, HashSet};
 
-pub use crate::source::{
-    DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-    DeploymentUrlSource,
-};
+pub use crate::source::DeploymentSource;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PeppyLauncher {
@@ -613,7 +610,7 @@ mod tests {
     #[test]
     fn duplicate_instance_ids_are_rejected() {
         let duplicate_instances = r#"{
-            source: { local: "./uvc_camera" },
+            source: { name: "uvc_camera:v1" },
             instances: [
                 { instance_id: "camera_front" },
                 { instance_id: "camera_front" }
@@ -712,19 +709,19 @@ mod tests {
             peppy_schema: "launcher/v1",
             deployments: [
                 {
-                    source: { local: "./left" },
+                    source: { name: "left_camera:v1" },
                     instances: [{ instance_id: "cam_wrist_left", arguments: {} }]
                 },
                 {
-                    source: { local: "./right" },
+                    source: { name: "right_camera:v1" },
                     instances: [{ instance_id: "cam_wrist_right", arguments: {} }]
                 },
                 {
-                    source: { local: "./torso" },
+                    source: { name: "torso_camera:v1" },
                     instances: [{ instance_id: "cam_torso", arguments: {} }]
                 },
                 {
-                    source: { local: "./backbone" },
+                    source: { name: "backbone:v1" },
                     instances: [{
                         instance_id: "backbone",
                         links: {
@@ -825,7 +822,7 @@ mod tests {
             peppy_schema: "launcher/v1",
             deployments: [
                 {
-                    source: { local: "./backbone" },
+                    source: { name: "backbone:v1" },
                     instances: [{
                         instance_id: "backbone",
                         links: {
@@ -922,7 +919,7 @@ mod tests {
             peppy_schema: "launcher/v1",
             deployments: [
                 {
-                    source: { local: "./backbone" },
+                    source: { name: "backbone:v1" },
                     instances: [{
                         instance_id: "backbone",
                         links: { "_": "backbone" }

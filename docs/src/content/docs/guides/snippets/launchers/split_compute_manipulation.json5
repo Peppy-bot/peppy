@@ -77,9 +77,9 @@
     // ---- In the cloud: the parts that want a datacenter GPU ----
     {
       // The large vision-language-action / world model. Proprietary weights,
-      // multi-second horizon, ~1 Hz. Never a `local:` source: the path would
-      // name a tree on the robot's filesystem, and the plan rejects that for
-      // any deployment placed off-coordinator.
+      // multi-second horizon, ~1 Hz. Resolved by `name:tag` through the
+      // repository index like every deployment, which is what lets the plan
+      // place it off-coordinator.
       source: { name: "deliberative_planner", tag: "v1" },
       instances: [
         {

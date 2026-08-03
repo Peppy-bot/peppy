@@ -89,9 +89,8 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentGitSource,
-        DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource, DuplicateLinkTarget, FrameworkOverrides, LinkTargets, LinkValue,
+        AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentInstance,
+        DeploymentSource, DuplicateLinkTarget, FrameworkOverrides, LinkTargets, LinkValue,
         PairingValidationItem, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
         PlannedPairEndpoint, PlannedPairing, ValidatedBindings, ValidatedLinkPlan,
         ValidatedObservations, ValidatedPairings, split_link_target, validate_bindings,
@@ -121,8 +120,5 @@ pub mod repository {
 
 // -- source --
 pub mod source {
-    pub use crate::internal::source::{
-        DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource,
-    };
+    pub use crate::internal::source::DeploymentSource;
 }

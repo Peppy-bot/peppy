@@ -717,7 +717,7 @@ In a launcher / stack config:
 
 ```json5
 {
-  source: { local: "./consumer" },
+  source: { name: "consumer:v1" },
   instances: [{
     instance_id: "my_consumer",
     links: { brain: "left-arm-1" },

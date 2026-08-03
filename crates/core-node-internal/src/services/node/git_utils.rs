@@ -6,8 +6,6 @@ use daemon_config::repository::GitCommit;
 use git2::Repository;
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Throttle window between consecutive `transfer_progress` reports surfaced
@@ -201,40 +199,4 @@ fn progress_callbacks<'cb>(
         true
     });
     callbacks
-}
-
-/// Clones a git repository, aborting the network transfer if `deadline` is
-/// exceeded.  When `deadline` is `None` the clone runs without any time limit.
-pub(crate) fn clone_repo_with_deadline(
-    repo_url: &str,
-    dest: &Path,
-    deadline: Option<Instant>,
-) -> std::result::Result<Repository, String> {
-    let deadline_triggered = Arc::new(AtomicBool::new(false));
-
-    let mut callbacks = git2::RemoteCallbacks::new();
-    if let Some(deadline) = deadline {
-        let flag = Arc::clone(&deadline_triggered);
-        callbacks.transfer_progress(move |_progress| {
-            if Instant::now() >= deadline {
-                flag.store(true, Ordering::SeqCst);
-                return false;
-            }
-            true
-        });
-    }
-
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
-
-    RepoBuilder::new()
-        .fetch_options(fetch_opts)
-        .clone(repo_url, dest)
-        .map_err(|e| {
-            if deadline_triggered.load(Ordering::SeqCst) {
-                format!("Git clone timed out for {}", repo_url)
-            } else {
-                format!("Failed to clone repository: {}", e)
-            }
-        })
 }

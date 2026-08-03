@@ -69,6 +69,39 @@ fn write_node_config(
     node_dir
 }
 
+/// Registers node directories in the daemon's node cache (`cache/nodes.json5`)
+/// so a launcher's `name:tag` deployment sources resolve without a full
+/// `repo refresh`.
+/// `peppy_root` is the serve emulation's peppy dir root (`serve.temp_dir()`).
+/// Call this AFTER the node configs' final bytes are on disk (a pinned add
+/// verifies the manifest bytes against the entry's fingerprint) and after any
+/// `repo refresh` in the test, which rewrites the cache file.
+fn register_repo_caches(peppy_root: impl AsRef<Path>, nodes: &[(&str, &str, &Path)]) {
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(peppy_root.as_ref());
+    fs::create_dir_all(peppy_dirs.cache_dir()).expect("failed to create cache dir");
+
+    let node_entries: Vec<serde_json::Value> = nodes
+        .iter()
+        .map(|(name, tag, dir)| {
+            let manifest_path = dir.join(NODE_CONFIG_FILE);
+            let bytes = fs::read(&manifest_path).expect("node manifest should exist");
+            serde_json::json!({
+                "node_name": name,
+                "node_tag": tag,
+                "sha256": config::fingerprint::fingerprint_for_bytes(&bytes),
+                // The origin is serialized from the type `repo refresh`
+                // writes, so a change to its shape reaches this fixture.
+                "origin": daemon_config::repository::EntryOrigin::Fs { path: manifest_path },
+            })
+        })
+        .collect();
+    fs::write(
+        core_node::nodes_repo_cache_path(&peppy_dirs),
+        serde_json::to_string_pretty(&node_entries).expect("serialize nodes cache"),
+    )
+    .expect("failed to write nodes.json5");
+}
+
 fn read_daemon_git_hash(daemon_state_path: &Path) -> String {
     let contents =
         fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
@@ -228,14 +261,14 @@ async fn node_launch_command_succeed() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{}" }},
+                    source: {{ name: "{node_b_name}:{node_tag}" }},
                     instances: [{{ instance_id: "{instance_id}" }}]
                 }}
             ]
-        }}"#,
-        node_b_path.display()
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(serve.temp_dir(), &[(node_b_name, node_tag, &node_b_path)]);
 
     StackCommand {
         command: StackCommands::Launch {
@@ -429,14 +462,14 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{}" }},
+                    source: {{ name: "{node_b_name}:{node_tag}" }},
                     instances: [{{ instance_id: "node_b_instance" }}]
                 }}
             ]
-        }}"#,
-        node_b_path.display()
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(serve.temp_dir(), &[(node_b_name, node_tag, &node_b_path)]);
 
     let launch_result = StackCommand {
         command: StackCommands::Launch {
@@ -507,6 +540,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
 /// `StackCommand::execute`, so we don't need a `LogCapture` here.
 struct TimeoutTestHarness {
     ctx: Arc<AppContext>,
+    node_b_name: &'static str,
+    node_b_path: PathBuf,
     launcher_path: PathBuf,
     node_b_peppy_json5: PathBuf,
     _serve: ServeCommandEmulation,
@@ -551,21 +586,34 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{}" }},
+                    source: {{ name: "{node_b_name}:v1" }},
                     instances: [{{ instance_id: "node_b_instance" }}]
                 }}
             ]
-        }}"#,
-        node_b_path.display()
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
 
     TimeoutTestHarness {
         ctx,
+        node_b_name,
+        node_b_path,
         launcher_path,
         node_b_peppy_json5,
         _serve: serve,
         _nodes_dir: nodes_dir,
+    }
+}
+
+impl TimeoutTestHarness {
+    /// Registers node_b in the daemon's node cache. Called by each test
+    /// after its `override_*` edit so the recorded fingerprint matches the
+    /// bytes the launch materializes.
+    fn register_caches(&self) {
+        register_repo_caches(
+            self._serve.temp_dir(),
+            &[(self.node_b_name, "v1", &self.node_b_path)],
+        );
     }
 }
 
@@ -577,6 +625,7 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
         &harness.node_b_peppy_json5,
         vec!["sh".to_string(), "-c".to_string(), "sleep 30".to_string()],
     );
+    harness.register_caches();
 
     let started = Instant::now();
     let result = StackCommand {
@@ -616,6 +665,7 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
 
     // Silent run command that never produces output and never becomes ready.
     override_run_cmd_silent(&harness.node_b_peppy_json5);
+    harness.register_caches();
 
     let started = Instant::now();
     let result = StackCommand {
@@ -663,6 +713,7 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
             "i=0; while [ $i -lt 50 ]; do echo step-$i; i=$((i+1)); sleep 0.2; done".to_string(),
         ],
     );
+    harness.register_caches();
 
     let started = Instant::now();
     let result = StackCommand {
@@ -902,22 +953,27 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{producer_path}" }},
+                    source: {{ name: "{producer_name}:{node_tag}" }},
                     instances: [{{ instance_id: "{producer_instance_id}" }}]
                 }},
                 {{
-                    source: {{ local: "{consumer_path}" }},
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
                         links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
-        }}"#,
-        producer_path = producer_path.display(),
-        consumer_path = consumer_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
 
     StackCommand {
         command: StackCommands::Launch {
@@ -1121,25 +1177,30 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{producer_path}" }},
+                    source: {{ name: "{producer_name}:{node_tag}" }},
                     instances: [
                         {{ instance_id: "{front_instance_id}" }},
                         {{ instance_id: "{rear_instance_id}" }}
                     ]
                 }},
                 {{
-                    source: {{ local: "{consumer_path}" }},
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
                         links: {{ {link_id}: ["{rear_instance_id}", "{front_instance_id}"] }}
                     }}]
                 }}
             ]
-        }}"#,
-        producer_path = producer_path.display(),
-        consumer_path = consumer_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
 
     StackCommand {
         command: StackCommands::Launch {
@@ -1260,22 +1321,27 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{producer_path}" }},
+                    source: {{ name: "{producer_name}:{node_tag}" }},
                     instances: [{{ instance_id: "solo_prod" }}]
                 }},
                 {{
-                    source: {{ local: "{consumer_path}" }},
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "solo_cons",
                         links: {{ main: ["solo_prod"] }}
                     }}]
                 }}
             ]
-        }}"#,
-        producer_path = producer_path.display(),
-        consumer_path = consumer_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
 
     let err = StackCommand {
         command: StackCommands::Launch {
@@ -1355,19 +1421,24 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{camera}" }},
+                    source: {{ name: "{camera_name}:{node_tag}" }},
                     instances: [{{ instance_id: "shared_inst" }}]
                 }},
                 {{
-                    source: {{ local: "{lidar}" }},
+                    source: {{ name: "{lidar_name}:{node_tag}" }},
                     instances: [{{ instance_id: "shared_inst" }}]
                 }}
             ]
-        }}"#,
-        camera = camera_path.display(),
-        lidar = lidar_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (camera_name, node_tag, &camera_path),
+            (lidar_name, node_tag, &lidar_path),
+        ],
+    );
 
     let result = StackCommand {
         command: StackCommands::Launch {
@@ -1643,22 +1714,29 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{producer_path}" }},
+                    source: {{ name: "{producer_name}:{node_tag}" }},
                     instances: [{{ instance_id: "{producer_instance_id}" }}]
                 }},
                 {{
-                    source: {{ local: "{consumer_path}" }},
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
                         links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
-        }}"#,
-        producer_path = producer_path.display(),
-        consumer_path = consumer_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    // After any refresh in this test: refresh rewrites nodes.json5, so
+    // registration must come later to survive.
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
 
     StackCommand {
         command: StackCommands::Launch {
@@ -1788,22 +1866,29 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{producer_path}" }},
+                    source: {{ name: "{producer_name}:{node_tag}" }},
                     instances: [{{ instance_id: "{producer_instance_id}" }}]
                 }},
                 {{
-                    source: {{ local: "{consumer_path}" }},
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
                         links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
-        }}"#,
-        producer_path = producer_path.display(),
-        consumer_path = consumer_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    // After any refresh in this test: refresh rewrites nodes.json5, so
+    // registration must come later to survive.
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
 
     let result = StackCommand {
         command: StackCommands::Launch {
@@ -1924,22 +2009,29 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{producer_path}" }},
+                    source: {{ name: "{producer_name}:{node_tag}" }},
                     instances: [{{ instance_id: "{producer_instance_id}" }}]
                 }},
                 {{
-                    source: {{ local: "{consumer_path}" }},
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "{consumer_instance_id}",
                         links: {{ {link_id}: "{producer_instance_id}" }}
                     }}]
                 }}
             ]
-        }}"#,
-        producer_path = producer_path.display(),
-        consumer_path = consumer_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    // After any refresh in this test: refresh rewrites nodes.json5, so
+    // registration must come later to survive.
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
 
     let result = StackCommand {
         command: StackCommands::Launch {
@@ -2191,25 +2283,32 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{controller_path}" }},
+                    source: {{ name: "{controller_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "{controller_instance_id}",
                         links: {{ {controller_link_id}: "{arm_instance_id}" }}
                     }}]
                 }},
                 {{
-                    source: {{ local: "{arm_path}" }},
+                    source: {{ name: "{arm_name}:{node_tag}" }},
                     instances: [{{
                         instance_id: "{arm_instance_id}",
                         links: {{ {arm_link_id}: "{controller_instance_id}" }}
                     }}]
                 }}
             ]
-        }}"#,
-        controller_path = controller_path.display(),
-        arm_path = arm_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    // After the refresh above: refresh rewrites nodes.json5, so these
+    // registrations must come later to survive.
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (controller_name, node_tag, &controller_path),
+            (arm_name, node_tag, &arm_path),
+        ],
+    );
 
     StackCommand {
         command: StackCommands::Launch {
@@ -2351,19 +2450,24 @@ async fn stack_launch_rejects_unbound_slot() {
             peppy_schema: "launcher/v1",
             deployments: [
                 {{
-                    source: {{ local: "{producer}" }},
+                    source: {{ name: "{producer_name}:{node_tag}" }},
                     instances: [{{ instance_id: "cam_1" }}]
                 }},
                 {{
-                    source: {{ local: "{consumer}" }},
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
                     instances: [{{ instance_id: "cons_1" }}]
                 }}
             ]
-        }}"#,
-        producer = producer_path.display(),
-        consumer = consumer_path.display(),
+        }}"#
     );
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
 
     let result = StackCommand {
         command: StackCommands::Launch {
@@ -2533,27 +2637,32 @@ async fn stack_launch_establishes_launcher_pairings() {
     // The pair is declared once, on the controller instance; the launcher
     // works out the establishment order.
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
-    let launcher_json5 = format!(
-        r#"{{
+    let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
             deployments: [
-                {{
-                    source: {{ local: "{arm_path}" }},
-                    instances: [{{ instance_id: "arm_1" }}]
-                }},
-                {{
-                    source: {{ local: "{ctrl_path}" }},
-                    instances: [{{
+                {
+                    source: { name: "robot_arm:v1" },
+                    instances: [{ instance_id: "arm_1" }]
+                },
+                {
+                    source: { name: "arm_controller:v1" },
+                    instances: [{
                         instance_id: "ctrl_1",
-                        links: {{ arm: "arm_1" }}
-                    }}]
-                }}
+                        links: { arm: "arm_1" }
+                    }]
+                }
             ]
-        }}"#,
-        arm_path = arm_path.display(),
-        ctrl_path = ctrl_path.display(),
-    );
+        }"#;
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    // After `seed_pairing_repo`'s refresh: refresh rewrites the node and
+    // launcher caches, so these registrations must come later to survive.
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            ("robot_arm", "v1", &arm_path),
+            ("arm_controller", "v1", &ctrl_path),
+        ],
+    );
 
     StackCommand {
         command: StackCommands::Launch {
@@ -2726,27 +2835,30 @@ async fn stack_launch_delivers_observer_source_pin() {
     .expect("observation_update service should start");
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
-    let launcher_json5 = format!(
-        r#"{{
+    let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
             deployments: [
-                {{
-                    source: {{ local: "{arm_path}" }},
-                    instances: [{{ instance_id: "arm_1", defer_links: ["controller"] }}]
-                }},
-                {{
-                    source: {{ local: "{recorder_path}" }},
-                    instances: [{{
+                {
+                    source: { name: "robot_arm:v1" },
+                    instances: [{ instance_id: "arm_1", defer_links: ["controller"] }]
+                },
+                {
+                    source: { name: "recorder:v1" },
+                    instances: [{
                         instance_id: "rec_1",
-                        links: {{ watch: "arm_1" }}
-                    }}]
-                }}
+                        links: { watch: "arm_1" }
+                    }]
+                }
             ]
-        }}"#,
-        arm_path = arm_path.display(),
-        recorder_path = recorder_path.display(),
-    );
+        }"#;
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            ("robot_arm", "v1", &arm_path),
+            ("recorder", "v1", &recorder_path),
+        ],
+    );
 
     StackCommand {
         command: StackCommands::Launch {
@@ -2826,19 +2938,17 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     );
 
     let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
-    let launcher_json5 = format!(
-        r#"{{
+    let launcher_json5 = r#"{
             peppy_schema: "launcher/v1",
             deployments: [
-                {{
-                    source: {{ local: "{arm_path}" }},
-                    instances: [{{ instance_id: "arm_1" }}]
-                }}
+                {
+                    source: { name: "robot_arm:v1" },
+                    instances: [{ instance_id: "arm_1" }]
+                }
             ]
-        }}"#,
-        arm_path = arm_path.display(),
-    );
+        }"#;
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(serve.temp_dir(), &[("robot_arm", "v1", &arm_path)]);
 
     let err = StackCommand {
         command: StackCommands::Launch {
@@ -2857,5 +2967,54 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     assert!(
         msg.contains("controller") && (msg.contains("--link") || msg.contains("defer_links")),
         "the failure should name the uncovered slot and the launcher keys: {msg}"
+    );
+}
+
+/// A launcher file may only reference nodes by `name:tag`: a path-shaped
+/// `local:` source fails the launch with an error naming the offending key.
+/// Local nodes become resolvable by registering their directory with
+/// `peppy repo add <path>` instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rejects_a_path_shaped_deployment_source() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = r#"{
+        peppy_schema: "launcher/v1",
+        deployments: [
+            {
+                source: { local: "./uvc_camera" },
+                instances: [{ instance_id: "camera_front" }]
+            }
+        ]
+    }"#;
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    let err = StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(60),
+        },
+    }
+    .execute(&ctx)
+    .expect_err("a path-shaped deployment source must fail the launch");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("local"),
+        "the error should name the offending key: {msg}"
     );
 }
