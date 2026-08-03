@@ -1,0 +1,37 @@
+Bootstrap: docker
+# Pinned by digest, not by a tag. This fixture exists so a test run depends on
+# nothing that can change outside the repository, and `:latest` on a registry is
+# exactly such a thing: a new push would change what these tests build without a
+# single commit here. The digest names a multi-architecture index, so the arm64
+# and amd64 runners each still resolve their own image.
+From: tuatini/peppy-python-uv-base@sha256:04fc17ea01ba908f0082bdb19b692b1c576bcaeaf580567ffe7af580e2fe9071
+
+%labels
+    Name uvc_camera_python_mock
+    Version 0.1.0
+
+%environment
+    export PATH="/opt/uvc_camera_python_mock/.venv/bin:$PATH"
+
+%files
+    . /opt/uvc_camera_python_mock
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Keep the interpreter out of the container user's home directory. uv
+    # installs managed Pythons under $HOME, so this one would land in /root
+    # inside the image, and at run time apptainer mounts the home of the user
+    # running the daemon over the image's own. That leaves a venv whose `python`
+    # points into a buried path, and the node dies at exec with
+    # `./.venv/bin/python: not found`.
+    export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+
+    cd /opt/uvc_camera_python_mock
+    uv python install
+    uv sync --no-editable
+
+%runscript
+    cd /opt/uvc_camera_python_mock
+    exec ./.venv/bin/python -m uvc_camera_python_mock

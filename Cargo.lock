@@ -3339,6 +3339,7 @@ dependencies = [
  "derive_more",
  "dirs 6.0.0",
  "futures",
+ "git2",
  "gix-url",
  "httpmock",
  "indicatif",

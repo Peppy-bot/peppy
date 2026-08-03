@@ -80,6 +80,10 @@ serde_json5 = "0.2"
 # In-process HTTP mock server for the auth integration tests (cli/config, OIDC
 # discovery, device/token endpoints, /me, /logout); blocking API, fits ureq.
 httpmock = "0.8"
+# Commits the multi-daemon e2e fixture repository. In-process rather than
+# shelling out to `git`, so the commit owes nothing to the host's git
+# configuration (identity, hooks, commit signing).
+git2 = "0.21"
 # Self-reference so `cargo test` builds this crate with the test-only helpers
 # enabled, without making `test-support` a default feature of the shipped CLI.
 peppy = { path = ".", features = ["test-support"] }

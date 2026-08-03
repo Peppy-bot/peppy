@@ -1,0 +1,33 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "uvc_camera_video_reconstruction_python",
+    tag: "v1",
+    depends_on: {
+      contracts: [
+        { name: "rgb_camera", tag: "v1", link_id: "camera" }
+      ]
+    },
+    labels: ["camera"]
+  },
+  execution: {
+    language: "python",
+    // A container node, and the second one in this repository. That matters for
+    // `a_peer_phase_that_fails_still_names_the_peers_log_file`, which places
+    // this node on the peer and needs its Add and Build to succeed there before
+    // the Run it makes fail.
+    container: {
+      def_file: "apptainer.def"
+    },
+    parameters: {
+      video_duration_seconds: "u32"
+    }
+  },
+  interfaces: {
+    topics: {
+      consumes: [
+        { link_id: "camera", name: "video_stream" },
+      ],
+    },
+  }
+}
