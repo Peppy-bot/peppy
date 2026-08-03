@@ -1466,14 +1466,15 @@ async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
     let federation = start_federation("peppy-fed-peer-fail").await;
 
     // Make the peer unable to materialize the instance it will be asked to run.
-    // A dangling symlink is the shape that cannot be created: it does not
-    // exist, so the daemon goes to create the working directory, and `mkdir`
-    // refuses because the symlink already occupies the name. It is planted on
-    // the working directory rather than on a bind source because bind sources
-    // are prepared when the peer takes over its slice, before the phases this
-    // test is about; nothing prepares this one ahead of the start. Planted on
-    // the peer only, so the coordinator's own instance gets through every
-    // phase.
+    // A plain file is the shape that survives the daemon's own cleanup: the
+    // start first clears any leftover working directory of that name, and that
+    // clear refuses on a non-directory, so the name stays occupied and the
+    // directory can never be created. A symlink would not do — clearing a
+    // leftover unlinks it, and the start would sail on. It is planted on the
+    // working directory rather than on a bind source because bind sources are
+    // prepared when the peer takes over its slice, before the phases this test
+    // is about; nothing prepares this one ahead of the start. Planted on the
+    // peer only, so the coordinator's own instance gets through every phase.
     let instance_dir = format!("{CONTAINER_PEPPY_HOME}/instances/{PEER_RUN_FAILURE_INSTANCE}");
     require_success(
         federation
@@ -1483,7 +1484,7 @@ async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
                 "-c",
                 &format!(
                     "mkdir -p {CONTAINER_PEPPY_HOME}/instances \
-                     && ln -s /no_such_instance_dir_target {instance_dir}"
+                     && printf '' > {instance_dir}"
                 ),
             ])
             .await,
