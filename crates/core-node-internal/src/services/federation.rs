@@ -149,14 +149,22 @@ pub enum ReserveOutcome {
 
 /// Which launch this daemon is committed to, and which launch its current
 /// stack slice came from. See the module docs for why both live here.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SliceOwnership {
+    /// This daemon's own core-node name, so a refusal can spell the exact
+    /// command that clears THIS machine: a bare `peppy stack reset` targets
+    /// whichever daemon the operator's CLI connects to, which is usually not
+    /// the one holding the reservation.
+    core_node_name: String,
     state: Mutex<OwnershipState>,
 }
 
 impl SliceOwnership {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub fn new(core_node_name: &str) -> Arc<Self> {
+        Arc::new(Self {
+            core_node_name: core_node_name.to_owned(),
+            state: Mutex::default(),
+        })
     }
 
     /// Reserves this daemon for `launch_id`, driven by `coordinator`.
@@ -278,8 +286,8 @@ impl SliceOwnership {
         Err(format!(
             "this daemon is reserved for federated launch `{}`, driven by `{}`, \
              which is replacing its whole stack. Wait for that launch to finish, or clear the \
-             reservation with `peppy stack reset`.",
-            held.launch_id, held.coordinator_core_node
+             reservation with `peppy stack reset --core-node {}`.",
+            held.launch_id, held.coordinator_core_node, self.core_node_name
         ))
     }
 
@@ -361,7 +369,7 @@ mod tests {
 
     #[test]
     fn a_free_daemon_accepts_a_reservation() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
         assert_eq!(
             ownership.held_reservation(),
@@ -373,7 +381,7 @@ mod tests {
     /// refused BEFORE it has torn anything down.
     #[test]
     fn a_second_coordinator_is_refused_and_told_who_holds_it() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
 
         let ReserveOutcome::HeldByAnotherLaunch {
@@ -401,7 +409,7 @@ mod tests {
     /// second presence watch over the one reservation.
     #[test]
     fn re_reserving_the_same_launch_reports_the_reservation_as_already_held() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
         assert!(
             matches!(
@@ -420,7 +428,7 @@ mod tests {
     /// held launch is over, and the reservation moves to it.
     #[test]
     fn the_same_coordinators_next_launch_takes_over_a_stale_reservation() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
 
         let ReserveOutcome::TookOverFromSameCoordinator { stale_launch_id } =
@@ -441,7 +449,7 @@ mod tests {
     /// vanishing still frees the machine after the handover.
     #[test]
     fn a_taken_over_reservation_still_releases_when_the_coordinator_vanishes() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         let lease = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
         ownership.try_reserve("launch-b", "cn-robot-7");
 
@@ -458,7 +466,7 @@ mod tests {
 
     #[test]
     fn releasing_frees_the_daemon_for_the_next_launch() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
         assert!(ownership.release("launch-a"));
         assert_eq!(ownership.held_reservation(), None);
@@ -471,7 +479,7 @@ mod tests {
     /// a reservation that is long gone.
     #[test]
     fn every_way_out_of_a_reservation_ends_its_lease() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
 
         let released = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
         ownership.release("launch-a");
@@ -493,7 +501,7 @@ mod tests {
     /// supervised: the refusal changes nothing, so the watch must keep running.
     #[test]
     fn a_refused_reservation_leaves_the_holders_lease_alone() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         let lease = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
 
         ownership.try_reserve("launch-b", "cn-robot-9");
@@ -509,13 +517,13 @@ mod tests {
     /// participants actually acked, so releasing nothing must succeed.
     #[test]
     fn releasing_an_unheld_reservation_succeeds() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         assert!(ownership.release("launch-a"));
     }
 
     #[test]
     fn releasing_another_launchs_reservation_is_refused() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
         assert!(!ownership.release("launch-b"));
         assert_eq!(
@@ -528,7 +536,7 @@ mod tests {
     /// every machine it had reserved until each daemon restarted.
     #[test]
     fn a_vanished_coordinator_releases_its_reservation() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         let lease = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
 
         assert_eq!(
@@ -543,7 +551,7 @@ mod tests {
     /// reservation a different coordinator has since taken.
     #[test]
     fn a_stale_coordinator_watch_does_not_release_someone_elses_reservation() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         let stale = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
         ownership.release("launch-a");
         ownership.try_reserve("launch-b", "cn-robot-9");
@@ -564,7 +572,7 @@ mod tests {
     /// the one that watch was supervising.
     #[test]
     fn a_stale_watch_does_not_release_the_same_coordinators_next_reservation() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         let stale = reserve_expecting_a_fresh_lease(&ownership, "launch-a", "cn-robot-7");
         ownership.release("launch-a");
         let live = reserve_expecting_a_fresh_lease(&ownership, "launch-b", "cn-robot-7");
@@ -590,7 +598,7 @@ mod tests {
     /// has no way to tell a stuck reservation from a busy one.
     #[test]
     fn local_work_is_excluded_while_another_launch_holds_the_daemon() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         assert!(ownership.refuse_if_reserved_elsewhere(&LOCAL).is_ok());
 
         ownership.try_reserve("launch-a", "cn-robot-7");
@@ -604,8 +612,9 @@ mod tests {
             "the refusal must name the coordinator to wait on; got: {refusal}"
         );
         assert!(
-            refusal.contains("stack reset"),
-            "the refusal must name the escape hatch; got: {refusal}"
+            refusal.contains("stack reset --core-node cn-held"),
+            "the refusal must name the escape hatch aimed at THIS daemon, not whichever \
+             one the operator's CLI happens to target; got: {refusal}"
         );
 
         assert!(
@@ -626,7 +635,7 @@ mod tests {
     /// latter long after the former is gone.
     #[test]
     fn the_slice_record_outlives_the_reservation() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
         ownership.release("launch-a");
@@ -641,12 +650,12 @@ mod tests {
 
     #[test]
     fn a_daemon_with_no_federated_launch_reports_no_slice() {
-        assert_eq!(SliceOwnership::new().slice(), None);
+        assert_eq!(SliceOwnership::new("cn-held").slice(), None);
     }
 
     #[test]
     fn clearing_drops_both_the_reservation_and_the_slice() {
-        let ownership = SliceOwnership::new();
+        let ownership = SliceOwnership::new("cn-held");
         ownership.try_reserve("launch-a", "cn-robot-7");
         ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
 
