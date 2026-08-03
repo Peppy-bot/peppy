@@ -24,9 +24,9 @@ rstest = "0.26"
 
 # Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
 # `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
-# path references outside its own tree. Every crate names the same branch, the
-# one carrying the parse-time message-format rejections; the resolved revision
-# is recorded in Cargo.lock and moved forward with `cargo update`. `config` and
+# path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
+# crate follows the repo's default branch (`main`); the resolved revision is
+# recorded in Cargo.lock and moved forward with `cargo update`. `config` and
 # `peppylib` are renamed via `package` (their crate names are `peppy-config-model`
 # and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
 # directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
