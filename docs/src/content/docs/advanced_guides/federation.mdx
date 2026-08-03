@@ -149,7 +149,7 @@ peppy stack launch --place robot_onboard@self \
 This launch will REPLACE the node stack on 1 remote daemon(s): cn-atlas-h100
 Parsing launcher configuration
 Resolving 5 deployment(s)
-Retrieving node config for repo:deliberative_planner:v1
+Retrieving node config for deliberative_planner:v1
 Validating dependencies
 Adding uvc_camera_python_mock:v1 on `cn-robot-7`
 Adding deliberative_planner:v1 on `cn-atlas-h100`
@@ -359,16 +359,12 @@ participants keep running.
 
 - **Same Peppy version on every participant.** A mixed-version federation is
   refused during preflight, before any stack is touched.
-- **`local:` sources cannot cross machines.** The path names a tree on the
-  coordinator's filesystem. A `local:` deployment must keep all of its instances
-  on one core node; publish the node to a repo or git-backed source to split it.
-  That is why the proprietary planner in the example is a registry source.
 - **A filesystem repository cannot back a deployment placed on another
-  machine.** A `repo:` deployment is pinned to wherever the coordinator's cache
-  resolved it, and a filesystem repository entry is a path only the coordinator
-  can read, the same rule as `local:` one level down. Two things still work:
-  keep that deployment's instances on one core node, or serve the node from a
-  git repository, which every machine can fetch.
+  machine.** A deployment is pinned to wherever the coordinator's cache
+  resolved it, and a filesystem repository entry (a directory registered with
+  `peppy repo add <path>`) is a path only the coordinator can read. Two things
+  still work: keep that deployment's instances on one core node, or serve the
+  node from a git repository, which every machine can fetch.
 - **The unit of byte coherence is one launch.** Two launches submitted while a
   repository moves between them may run different revisions of it; each launch
   is internally coherent, and nothing synchronizes one launch with the next.

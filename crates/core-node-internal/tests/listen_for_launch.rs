@@ -97,9 +97,7 @@ const LAUNCHER_EXAMPLE1: &str = r#"
   deployments: [
     {
       source: {
-        repo: "${UVC_CAMERA_REPO}",
-        path: "uvc_camera",
-        ref: "v1"
+        name: "uvc_camera:v1"
       },
       instances: [
         {
@@ -141,7 +139,7 @@ const LAUNCHER_EXAMPLE1: &str = r#"
       ]
     },
     {
-      source: { local: "./robot_brain" },
+      source: { name: "robot_brain:v1" },
       instances: [
         {
           instance_id: "main_robot_brain",
@@ -483,6 +481,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
+    let peppy_dirs = started_core_node.peppy_dirs.clone();
     let node_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
@@ -490,6 +489,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
     // peppygen files (including git.hash) automatically using the "stack-launch" marker.
     let temp_dir = tempdir().expect("failed to create temp directory");
     let source_assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/launch_assets");
+    let mut cache = TestPackagesCache::new();
     for node_name in [FAKE_UVC_CAMERA, FAKE_ROBOT_BRAIN, FAKE_OPENARM01_CONTROLLER] {
         let source_node_dir = source_assets_dir.join(node_name);
         let dest_node_dir = temp_dir.path().join(node_name);
@@ -497,6 +497,7 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         let dest_config_path = dest_node_dir.join(NODE_CONFIG_FILE);
         fs::copy(source_node_dir.join(NODE_CONFIG_FILE), &dest_config_path)
             .expect("failed to copy node config");
+        cache = cache.fs_entry(node_name, NODE_TAG, &dest_node_dir);
     }
     let launch_file_path = temp_dir.path().join("peppy_launcher.json5");
     fs::copy(
@@ -504,6 +505,8 @@ async fn listen_for_launch_configuration_succeed_with_complex_dependencies() {
         &launch_file_path,
     )
     .expect("failed to copy launcher file");
+    cache
+        .write(&peppy_dirs);
 
     // Set up ready/health responders for all instances in the launcher config.
     let _ready_camera_front = AbortOnDrop(
@@ -647,10 +650,11 @@ async fn listen_for_launch_configuration_succeed() {
 
     let started_core_node = start_core_node_with_mock_messenger().await;
     let node_stack = started_core_node.node_stack.clone();
+    let peppy_dirs = started_core_node.peppy_dirs.clone();
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
     let uvc_repo_path = create_uvc_camera_repo(nodes_dir.path(), NODE_TAG);
-    let _robot_brain_path = write_node_config(
+    let robot_brain_path = write_node_config(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
@@ -727,10 +731,21 @@ async fn listen_for_launch_configuration_succeed() {
     // Allow listeners to establish.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let launcher_json5 =
-        LAUNCHER_EXAMPLE1.replace("${UVC_CAMERA_REPO}", &uvc_repo_path.display().to_string());
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
-    fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
+    fs::write(&launch_file_path, LAUNCHER_EXAMPLE1).expect("failed to write launch file");
+
+    // uvc_camera resolves through a git-backed cache entry (exercising the
+    // clone-at-launch path), robot_brain through a plain fs entry.
+    TestPackagesCache::new()
+        .git_entry(
+            UVC_NODE_NAME,
+            NODE_TAG,
+            &uvc_repo_path.display().to_string(),
+            NODE_TAG,
+            "uvc_camera",
+        )
+        .fs_entry(ROBOT_NODE_NAME, NODE_TAG, &robot_brain_path)
+        .write(&peppy_dirs);
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
@@ -936,6 +951,7 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
 
     // Map both nodes into the user-repo cache. This is what the
     // `{ name, tag }` launcher shape resolves against.
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     TestPackagesCache::new()
         .fs_entry(BRAIN_NODE, NODE_TAG, &brain_dir)
         .fs_entry(ARM_NODE, NODE_TAG, &arm_dir)
@@ -1004,7 +1020,6 @@ async fn listen_for_launch_configuration_succeeds_with_repo_sources() {
   ]
 }}"#
     );
-    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
 
     let (_goal_response, result) = send_node_launch_and_wait(
@@ -1072,6 +1087,8 @@ async fn listen_for_launch_configuration_launch_config_invalid_json5_returns_err
     let bad_launcher_json5 = r#"{ peppy_schema: "launcher/v1", deployments: [ }"#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, bad_launcher_json5).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .write(&started_core_node.peppy_dirs);
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
@@ -1114,10 +1131,10 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
 
-    // Create a file (not a directory) to use as the "launch file"
+    // A launch path that names a directory, not a file.
     let bad_launch_file = nodes_dir.path().join("not_a_file_dir");
     fs::create_dir_all(&bad_launch_file).expect("failed to create directory");
-    // Point to a path that is a directory, not a file
+
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1130,11 +1147,11 @@ async fn listen_for_launch_configuration_launch_file_path_must_be_a_file() {
 
     assert!(
         !result.success,
-        "launch should fail when launch file path is a directory"
+        "launch should fail when the launch path points at a directory"
     );
     assert!(
         node_stack.contains(EXISTING_NODE, NODE_TAG),
-        "stack should not be mutated on invalid launch file path"
+        "stack should not be mutated on an invalid launcher path"
     );
 }
 
@@ -1162,18 +1179,21 @@ async fn listen_for_launch_config_missing_required_deployment_does_not_apply_par
         .push_config(existing_config, false, &existing_path)
         .expect("should seed stack");
 
-    // One deployment exists, the other is missing and required.
+    // One deployment resolves through the cache, the other is missing from it.
     let launcher_json5 = r#"
     {
       peppy_schema: "launcher/v1",
       deployments: [
-        { source: { local: "./existing_node" }, instances: [ { instance_id: "ok" } ] },
-        { source: { local: "./missing_node" }, instances: [ { instance_id: "nope" } ] }
+        { source: { name: "existing_node:v1" }, instances: [ { instance_id: "ok" } ] },
+        { source: { name: "missing_node:v1" }, instances: [ { instance_id: "nope" } ] }
       ]
     }
     "#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry(EXISTING_NODE, NODE_TAG, &existing_path)
+        .write(&started_core_node.peppy_dirs);
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
@@ -1205,7 +1225,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     let node_stack = started_core_node.node_stack.clone();
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let _uvc_path = write_node_config(
+    let uvc_path = write_node_config(
         nodes_dir.path(),
         UVC_NODE_NAME,
         NODE_TAG,
@@ -1215,7 +1235,7 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
         // Intentionally do NOT emit camera_stream so dependency validation fails.
         false,
     );
-    let _brain_path = write_node_config(
+    let brain_path = write_node_config(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
@@ -1245,13 +1265,17 @@ async fn listen_for_launch_configuration_launch_config_dependency_errors_are_rej
     {
       peppy_schema: "launcher/v1",
       deployments: [
-        { source: { local: "./uvc_camera" }, instances: [ { instance_id: "camera_front" } ] },
-        { source: { local: "./robot_brain" }, instances: [ { instance_id: "main_robot_brain" } ] }
+        { source: { name: "uvc_camera:v1" }, instances: [ { instance_id: "camera_front" } ] },
+        { source: { name: "robot_brain:v1" }, instances: [ { instance_id: "main_robot_brain" } ] }
       ]
     }
     "#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry(UVC_NODE_NAME, NODE_TAG, &uvc_path)
+        .fs_entry(ROBOT_NODE_NAME, NODE_TAG, &brain_path)
+        .write(&started_core_node.peppy_dirs);
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
@@ -1281,7 +1305,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     let node_stack = started_core_node.node_stack.clone();
     let nodes_dir = tempdir().expect("failed to create nodes dir");
 
-    let _node_a_path = write_node_config(
+    let node_a_path = write_node_config(
         nodes_dir.path(),
         "node_a",
         NODE_TAG,
@@ -1290,7 +1314,7 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         false,
         false,
     );
-    let _node_b_path = write_node_config(
+    let node_b_path = write_node_config(
         nodes_dir.path(),
         "node_b",
         NODE_TAG,
@@ -1345,10 +1369,20 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let launch_a = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { local: "./node_a" }, instances: [ { instance_id: "a1" } ] } ] }
+    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_a:v1" }, instances: [ { instance_id: "a1" } ] } ] }
     "#;
-    let launch_file_path_a = nodes_dir.path().join("peppy_launcher.json5");
+    let launch_file_path_a = nodes_dir.path().join("launch_a.json5");
     fs::write(&launch_file_path_a, launch_a).expect("failed to write launch file");
+    let launch_b = r#"
+    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
+    "#;
+    let launch_file_path_b = nodes_dir.path().join("launch_b.json5");
+    fs::write(&launch_file_path_b, launch_b).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry("node_a", NODE_TAG, &node_a_path)
+        .fs_entry("node_b", NODE_TAG, &node_b_path)
+        .write(&started_core_node.peppy_dirs);
+
     let (_goal_a, result_a) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1377,11 +1411,6 @@ async fn listen_for_launch_configuration_launch_config_second_request_replaces_e
         "node_a process {pid_a} should be running after the first launch"
     );
 
-    let launch_b = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
-    "#;
-    let launch_file_path_b = nodes_dir.path().join("peppy_launcher.json5");
-    fs::write(&launch_file_path_b, launch_b).expect("failed to write launch file");
     let (_goal_b, result_b) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
@@ -1435,7 +1464,7 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     .await;
 
     // Node to be launched: starts a real process but never reports healthy.
-    let _node_b_path = write_node_config(
+    let node_b_path = write_node_config(
         nodes_dir.path(),
         "node_b",
         NODE_TAG,
@@ -1460,22 +1489,24 @@ async fn listen_for_launch_configuration_fails_when_one_node_never_becomes_healt
     );
 
     let launch_b = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { local: "./node_b" }, instances: [ { instance_id: "b1" } ] } ] }
+    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "node_b:v1" }, instances: [ { instance_id: "b1" } ] } ] }
     "#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launch_b).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry("node_b", NODE_TAG, &node_b_path)
+        .write(&started_core_node.peppy_dirs);
 
     // Drive the launch concurrently so we can capture node_b's started pid
     // before the health-timeout failure tears the stack down. Without the fix,
     // that partially-started instance would be orphaned by the failure path.
     let caller = started_core_node.caller_handle.clone();
     let core_name = started_core_node.core_node_name.clone();
-    let path = launch_file_path.clone();
     let launch_task = tokio::spawn(async move {
         send_node_launch_and_wait(
             &caller,
             &core_name,
-            &path,
+            &launch_file_path,
             GOAL_TIMEOUT,
             Duration::from_secs(30),
         )
@@ -1558,7 +1589,7 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
     .await;
 
     // Node with a failing build_cmd.
-    let _failing_node_path = write_node_config_with_options(
+    let failing_node_path = write_node_config_with_options(
         nodes_dir.path(),
         "failing_node",
         NODE_TAG,
@@ -1571,10 +1602,13 @@ async fn listen_for_launch_configuration_fails_when_build_cmd_fails_and_clears_s
     );
 
     let launcher_json5 = r#"
-    { peppy_schema: "launcher/v1", deployments: [ { source: { local: "./failing_node" }, instances: [ { instance_id: "f1" } ] } ] }
+    { peppy_schema: "launcher/v1", deployments: [ { source: { name: "failing_node:v1" }, instances: [ { instance_id: "f1" } ] } ] }
     "#;
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry("failing_node", NODE_TAG, &failing_node_path)
+        .write(&started_core_node.peppy_dirs);
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
@@ -1646,7 +1680,7 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     .await;
 
     // Node whose run_cmd exits immediately with a non-zero status.
-    let _failing_node_path = write_node_config_with_options(
+    let failing_node_path = write_node_config_with_options(
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
@@ -1659,10 +1693,13 @@ async fn listen_for_launch_configuration_fails_when_run_cmd_exits_with_error() {
     );
 
     let launcher_json5 = format!(
-        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ local: "./{NODE_NAME}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
+        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
     );
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry(NODE_NAME, NODE_TAG, &failing_node_path)
+        .write(&started_core_node.peppy_dirs);
 
     let (_goal_response, result) = send_node_launch_and_wait(
         &started_core_node.caller_handle,
@@ -1783,7 +1820,7 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
     let started_core_node = start_core_node_with_mock_messenger().await;
 
     let nodes_dir = tempdir().expect("failed to create nodes dir");
-    let _node_path = write_node_config(
+    let node_path = write_node_config(
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
@@ -1793,10 +1830,13 @@ async fn listen_for_node_launch_uses_env_overrides_for_path() {
         false,
     );
     let launch_json5 = format!(
-        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ local: "./{NODE_NAME}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
+        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}" }} ] }} ] }}"#
     );
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launch_json5).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry(NODE_NAME, NODE_TAG, &node_path)
+        .write(&started_core_node.peppy_dirs);
 
     // `printout` does not exist in the system when this is run
     let (_, launch_result) = send_node_launch_and_wait(
@@ -1912,7 +1952,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
         "printf '%s' \"$ESP32_DEVICE\" > {}; exec sleep 60",
         probe_path.display()
     );
-    let _node_path = write_node_config(
+    let node_path = write_node_config(
         nodes_dir.path(),
         NODE_NAME,
         NODE_TAG,
@@ -1923,10 +1963,13 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
     );
 
     let launcher_json5 = format!(
-        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ local: "./{NODE_NAME}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}", env_vars: {{ ESP32_DEVICE: "{INSTANCE_DEVICE}" }} }} ] }} ] }}"#
+        r#"{{ peppy_schema: "launcher/v1", deployments: [ {{ source: {{ name: "{NODE_NAME}:{NODE_TAG}" }}, instances: [ {{ instance_id: "{INSTANCE_ID}", env_vars: {{ ESP32_DEVICE: "{INSTANCE_DEVICE}" }} }} ] }} ] }}"#
     );
     let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
     fs::write(&launch_file_path, &launcher_json5).expect("failed to write launch file");
+    TestPackagesCache::new()
+        .fs_entry(NODE_NAME, NODE_TAG, &node_path)
+        .write(&started_core_node.peppy_dirs);
 
     let node_messenger =
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
@@ -1988,7 +2031,7 @@ async fn listen_for_launch_applies_per_instance_env_vars() {
 
 /// `LauncherOrigin::Repository` resolves the launcher name through `launchers.json5`
 /// (the launcher repo cache) and uses the on-disk path it points at. The deployment
-/// itself uses a local source so we don't need to spin up a fake git repo.
+/// resolves through an fs entry in the nodes cache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     const ROBOT_NODE_NAME: &str = "robot_brain_repo";
@@ -2002,7 +2045,7 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
         MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
 
     let nodes_dir = tempdir().expect("failed to create temp nodes directory");
-    let _brain_path = write_node_config(
+    let brain_path = write_node_config(
         nodes_dir.path(),
         ROBOT_NODE_NAME,
         NODE_TAG,
@@ -2034,14 +2077,13 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Launcher file references the node by its directory name (`local: "./robot_brain_repo"`),
-    // resolved relative to the launcher file's parent dir.
+    // Launcher file references the node by its `name:tag` in the nodes cache.
     let launcher_json5 = format!(
         r#"{{
   peppy_schema: "launcher/v1",
   deployments: [
     {{
-      source: {{ local: "./{ROBOT_NODE_NAME}" }},
+      source: {{ name: "{ROBOT_NODE_NAME}:{NODE_TAG}" }},
       instances: [
         {{ instance_id: "main_robot_brain" }}
       ]
@@ -2052,21 +2094,10 @@ async fn listen_for_launch_resolves_launcher_from_repository_cache() {
     let launcher_file_path = nodes_dir.path().join(format!("{LAUNCHER_NAME}.json5"));
     fs::write(&launcher_file_path, &launcher_json5).expect("failed to write launcher file");
 
-    // Hand-write the launcher cache so the daemon can map the bare name back to the file.
-    let cache_entries = serde_json::json!([
-        {
-            "launcher_name": LAUNCHER_NAME,
-            "sha256": config::fingerprint::fingerprint_for_bytes(launcher_json5.as_bytes()),
-            "origin": common::fs_origin(&launcher_file_path),
-        }
-    ]);
-    let cache_dir = peppy_dirs.cache_dir();
-    fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
-    fs::write(
-        cache_dir.join("launchers.json5"),
-        serde_json::to_string_pretty(&cache_entries).expect("serialize cache"),
-    )
-    .expect("failed to write launchers.json5");
+    TestPackagesCache::new()
+        .fs_entry(ROBOT_NODE_NAME, NODE_TAG, &brain_path)
+        .launcher_fs_entry(LAUNCHER_NAME, &launcher_file_path)
+        .write(&peppy_dirs);
 
     let (_goal_response, result) = send_launch_origin_and_wait(
         &started_core_node.caller_handle,
@@ -2131,5 +2162,47 @@ async fn listen_for_launch_repository_miss_returns_explicit_error() {
     assert!(
         err.contains("launchers.json5"),
         "error should reference the launcher cache path, got: {err}"
+    );
+}
+
+/// The launcher schema knows exactly one source shape, `{ name, tag }`: a
+/// path-shaped `local:` source fails at parse time with an error naming the
+/// offending key, and the stack is untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_launch_rejects_a_path_shaped_deployment_source() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let nodes_dir = tempdir().expect("failed to create nodes dir");
+    let launcher_json5 = r#"
+    {
+      peppy_schema: "launcher/v1",
+      deployments: [
+        { source: { local: "./uvc_camera" }, instances: [ { instance_id: "camera_front" } ] }
+      ]
+    }
+    "#;
+    let launch_file_path = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(&launch_file_path, launcher_json5).expect("failed to write launch file");
+
+    let (_goal_response, result) = send_node_launch_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        &launch_file_path,
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .expect("launch should return a result");
+
+    assert!(!result.success, "a path-shaped source must be rejected");
+    let err = result.error_message.unwrap_or_default();
+    assert!(
+        err.contains("local"),
+        "the error should name the offending key, got: {err}"
+    );
+    assert!(
+        !node_stack.contains("uvc_camera", "v1"),
+        "the rejected deployment must not reach the stack"
     );
 }

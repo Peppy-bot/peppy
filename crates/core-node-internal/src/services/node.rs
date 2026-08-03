@@ -21,8 +21,6 @@ mod stop;
 mod sync;
 
 use config::node::NodeConfig;
-use core_node_api::encoding::NodeSource;
-use daemon_config::consts::PeppyDirs;
 use std::sync::Arc;
 
 // Crate-external re-exports (paths that other crates / other `services::`
@@ -63,7 +61,7 @@ use archive::{
 use common::{encode_response_or_err, generate_random_id, panic_message};
 use env::{inject_node_runtime_env, inject_rust_build_env, validate_goal_env_vars};
 use feedback::spawn_feedback_forwarder;
-use git_utils::{clone_repo_with_deadline, sanitize_repo_path};
+use git_utils::sanitize_repo_path;
 use logging::append_stack_log;
 
 // Test-only re-imports (referenced exclusively from the `tests` module below).
@@ -78,13 +76,6 @@ use env::{
 };
 #[cfg(test)]
 use std::path::{Path, PathBuf};
-
-pub(crate) async fn resolve_node_config(
-    source: NodeSource,
-    peppy_dirs: &PeppyDirs,
-) -> std::result::Result<NodeConfig, String> {
-    info::resolve_node_config(source, peppy_dirs).await
-}
 
 /// SHA256 of a resolved node manifest, over its canonical pretty-printed
 /// serialization so two daemons that resolved the same manifest agree

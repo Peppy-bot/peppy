@@ -76,11 +76,10 @@ struct ParticipantSlice {
 /// instance on it.
 ///
 /// Every off-coordinator host of any instance appears as a key, because
-/// every one of them must be reserved; a host whose share is only
-/// content-addressed sources (`url:`) is reserved with no pins to validate.
-/// The coordinator itself never appears: it holds no reservation on itself.
+/// every one of them must be reserved. The coordinator itself never
+/// appears: it holds no reservation on itself.
 fn partition_reservations<'a>(
-    items: impl Iterator<Item = (&'a Deployment, Option<&'a PinnedItem>, &'a [PinnedItem])>,
+    items: impl Iterator<Item = (&'a Deployment, &'a PinnedItem, &'a [PinnedItem])>,
     placements: &Placements,
 ) -> std::result::Result<BTreeMap<String, Vec<String>>, String> {
     let coordinator = placements.coordinator();
@@ -92,24 +91,20 @@ fn partition_reservations<'a>(
             .map(|instance| placements.of(instance.instance_id.as_str()))
             .filter(|host| *host != coordinator)
             .collect();
+        if hosts.is_empty() {
+            continue;
+        }
         // Built and serialized ONCE per deployment, not once per host: every
         // host of a deployment receives the same closure, and a closure holds
         // every dependency node plus every contract and pairing document.
-        let encoded = match root_pin.filter(|_| !hosts.is_empty()) {
-            Some(root) => {
-                let pins = DeploymentPins::new(root.clone(), closure_pins.to_vec())?;
-                Some(
-                    serde_json5::to_string(&pins)
-                        .map_err(|e| format!("could not encode a deployment's pins: {e}"))?,
-                )
-            }
-            None => None,
-        };
+        let pins = DeploymentPins::new(root_pin.clone(), closure_pins.to_vec())?;
+        let encoded = serde_json5::to_string(&pins)
+            .map_err(|e| format!("could not encode a deployment's pins: {e}"))?;
         for host in hosts {
-            let entry = by_core_node.entry(host.to_owned()).or_default();
-            if let Some(encoded) = &encoded {
-                entry.push(encoded.clone());
-            }
+            by_core_node
+                .entry(host.to_owned())
+                .or_default()
+                .push(encoded.clone());
         }
     }
     Ok(by_core_node)
@@ -333,7 +328,7 @@ pub(super) async fn preflight(
         planned.iter().map(|item| {
             (
                 &item.deployment,
-                item.root_pin.as_ref(),
+                &item.root_pin,
                 item.closure_pins.as_slice(),
             )
         }),
@@ -445,13 +440,13 @@ mod tests {
     }
 
     fn partition(
-        items: &[(Deployment, Option<PinnedItem>, Vec<PinnedItem>)],
+        items: &[(Deployment, PinnedItem, Vec<PinnedItem>)],
         placements: &Placements,
     ) -> BTreeMap<String, Vec<String>> {
         partition_reservations(
             items
                 .iter()
-                .map(|(deployment, root, closure)| (deployment, root.as_ref(), closure.as_slice())),
+                .map(|(deployment, root, closure)| (deployment, root, closure.as_slice())),
             placements,
         )
         .expect("partitions")
@@ -464,7 +459,7 @@ mod tests {
     fn a_single_machine_launch_reserves_no_peers() {
         let items = vec![(
             deployment("uvc_camera", vec![instance("cam_1")]),
-            Some(pin("uvc_camera")),
+            pin("uvc_camera"),
             Vec::new(),
         )];
         let partitioned = partition(&items, &Placements::all_on(core_node("cn-robot")));
@@ -478,12 +473,12 @@ mod tests {
         let items = vec![
             (
                 deployment("uvc_camera", vec![instance("cam_1")]),
-                Some(pin("uvc_camera")),
+                pin("uvc_camera"),
                 Vec::new(),
             ),
             (
                 deployment("planner", vec![instance("planner_1")]),
-                Some(pin("planner")),
+                pin("planner"),
                 vec![pin("planner_dep")],
             ),
         ];
@@ -512,7 +507,7 @@ mod tests {
                 "uvc_camera",
                 vec![instance("cam_robot"), instance("cam_cloud")],
             ),
-            Some(pin("uvc_camera")),
+            pin("uvc_camera"),
             Vec::new(),
         )];
         let partitioned = partition(&items, &placements(&[("cam_cloud", "cn-atlas")]));
@@ -522,23 +517,6 @@ mod tests {
         );
         assert_eq!(partitioned["cn-atlas"].len(), 1);
         assert!(partitioned["cn-atlas"][0].contains("uvc_camera"));
-    }
-
-    /// A host whose share is only content-addressed sources is still
-    /// reserved: the reservation guards the machine, not the pins.
-    #[test]
-    fn a_peer_hosting_only_unpinned_deployments_is_still_reserved() {
-        let items = vec![(
-            deployment("recorder", vec![instance("rec_1")]),
-            None,
-            Vec::new(),
-        )];
-        let partitioned = partition(&items, &placements(&[("rec_1", "cn-atlas")]));
-        assert_eq!(
-            partitioned.keys().cloned().collect::<Vec<_>>(),
-            ["cn-atlas"]
-        );
-        assert!(partitioned["cn-atlas"].is_empty());
     }
 
     #[test]

@@ -408,7 +408,7 @@ impl Daemon {
     ///
     /// A fresh container has `repositories.json5` (the daemon writes the
     /// bundled defaults at startup) but no cache, and the cache is the only
-    /// thing a launcher's `repo:` sources resolve against. Skipping this fails
+    /// thing a launcher's `name:tag` sources resolve against. Skipping this fails
     /// a launch in preflight with "not found in
     /// `$PEPPY_HOME/cache/nodes.json5`" before any stack is touched.
     async fn refresh_repos(&self) {

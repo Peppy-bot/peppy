@@ -41,10 +41,7 @@ mod tests {
             peppy_schema: "launcher/v1",
             deployments: [
                 {
-                    source: {
-                        url: "https://example.com/fake_robot_brain.tar.zst",
-                        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
-                    },
+                    source: { name: "fake_robot_brain", tag: "v1" },
                     instances: [
                         {
                             instance_id: "the_brain",
@@ -53,11 +50,7 @@ mod tests {
                     ]
                 },
                 {
-                    source: {
-                        repo: "https://github.com/Peppy-bot/nodes-hub.git",
-                        path: "fake_openarm01_controller",
-                        ref: "0.1.0"
-                    },
+                    source: { name: "fake_openarm01_controller:v1" },
                     instances: [
                         {
                             instance_id: "the_nervous_system",
@@ -66,7 +59,7 @@ mod tests {
                     ]
                 },
                 {
-                    source: { local: "./esp32_board" },
+                    source: { name: "esp32_board:v1" },
                     instances: [
                         {
                             instance_id: "esp32_1",
@@ -83,19 +76,17 @@ mod tests {
         let deployments = cfg.deployments;
         assert_eq!(deployments.len(), 3);
 
-        // Check first deployment
-        let DeploymentSource::Url(url) = &deployments[0].source else {
-            panic!("expected url source");
-        };
-        assert_eq!(url.url, "https://example.com/fake_robot_brain.tar.zst");
+        // Check first deployment (long form)
+        let DeploymentSource { name, tag } = &deployments[0].source;
+        assert_eq!(name, "fake_robot_brain");
+        assert_eq!(tag, "v1");
         assert_eq!(deployments[0].instances[0].instance_id, "the_brain");
         assert!(deployments[0].instances[0].arguments.is_empty());
 
-        // Check second deployment
-        let DeploymentSource::Git(git) = &deployments[1].source else {
-            panic!("expected git source");
-        };
-        assert_eq!(git.ref_, "0.1.0");
+        // Check second deployment (combined `name:tag` shorthand)
+        let DeploymentSource { name, tag } = &deployments[1].source;
+        assert_eq!(name, "fake_openarm01_controller");
+        assert_eq!(tag, "v1");
         assert_eq!(
             deployments[1].instances[0].instance_id,
             "the_nervous_system"
@@ -103,10 +94,7 @@ mod tests {
         assert!(deployments[1].instances[0].arguments.is_empty());
 
         // Check third deployment
-        let DeploymentSource::Local(local) = &deployments[2].source else {
-            panic!("expected local source");
-        };
-        assert_eq!(local.local, std::path::PathBuf::from("esp32_board"));
+        assert_eq!(deployments[2].source.name, "esp32_board");
         assert_eq!(deployments[2].instances.len(), 1);
         assert_eq!(deployments[2].instances[0].instance_id, "esp32_1");
         assert!(deployments[2].instances[0].arguments.is_empty());
@@ -185,7 +173,7 @@ mod tests {
             peppy_schema: "launcher/v1",
             deployments: [
                 {
-                    source: { local: "" },
+                    source: { name: "" },
                     instances: []
                 }
             ]
@@ -195,7 +183,7 @@ mod tests {
         let Error::Parsing(ParsingError::InvalidDeploymentSource(msg)) = result.unwrap_err() else {
             panic!("expected InvalidDeploymentSource error");
         };
-        assert_eq!(msg, "local path cannot be empty");
+        assert_eq!(msg, "deployment source name cannot be empty");
     }
 
     #[test]

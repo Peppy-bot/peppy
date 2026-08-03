@@ -40,14 +40,12 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
  2. All deployments are defined in the `deployments` array
  3. Each deployment requires a `source` (where the node comes from) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `links`, and `defer_links` are optional. See [Instance attributes](#instance-attributes) for what each one does
 
-The `source` attribute supports four formats:
- - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes. The download is retried automatically on transient network failures (connection errors or `5xx` responses); a mismatch against `sha256`, or a client (`4xx`) error, fails immediately
- - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
- - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the launcher file
- - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
+The `source` attribute always references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
+
+If a node you want to deploy lives outside your configured repositories, add its location first: register a local directory with `peppy repo add /path/to/my/nodes`, or a git repository with `peppy repo add https://github.com/org/repo.git`, then run `peppy repo refresh` so the node appears in the index (see [Repositories](/advanced_guides/repositories/)).
 
 :::note
-The repository source resolves nodes from the locally cached index of the machine the launch is submitted to. Run `peppy repo refresh` on that machine before launching to ensure its cache is up to date. In a federated launch it is the only machine whose cache matters: it resolves every deployment and its dependencies once and ships the result to the other machines as pinned content, so their caches need no refresh and cannot change what the launch runs.
+The source resolves nodes from the locally cached index of the machine the launch is submitted to. Run `peppy repo refresh` on that machine before launching to ensure its cache is up to date. In a federated launch it is the only machine whose cache matters: it resolves every deployment and its dependencies once and ships the result to the other machines as pinned content, so their caches need no refresh and cannot change what the launch runs.
 
 If a node or tag is missing from the cache, the launch fails with a "not found" error. If the cache instead contains the same `name:tag` **twice from one repository**, the launch fails with a distinct ambiguity error naming both manifests — never "not found", since the node is present rather than absent. The refusal happens while sources are being resolved, before anything is added, built, or run, and it covers transitive dependencies too: an ambiguity two levels down is exactly as fatal as one at the top. See [Using a repository-indexed node](/advanced_guides/repositories/#using-a-repository-indexed-node).
 :::
@@ -78,7 +76,7 @@ If a node or tag is missing from the cache, the launch fails with a "not found" 
 ```
 
 :::caution
-The git `ref` and the node `tag` declared in `peppy.json5` are independent values, and they do not share the same format: git refs can contain dots (e.g. `v0.1.0`), but node tags must start with an ASCII letter and forbid dots (e.g. `v1`, `donut`). This means you could have a git `ref` of `v0.1.0` while `peppy.json5` specifies `tag: "v1"`. Keep them coordinated so a checkout of a given git ref lines up with the tag your launcher expects.
+A git ref pinned in `repositories.json5` and the node `tag` declared in `peppy.json5` are independent values, and they do not share the same format: git refs can contain dots (e.g. `v0.1.0`), but node tags must start with an ASCII letter and forbid dots (e.g. `v1`, `donut`). This means a repository could be pinned to the git ref `v0.1.0` while `peppy.json5` specifies `tag: "v1"`. Keep them coordinated so a checkout of a given git ref lines up with the tag your launcher expects.
 :::
 
 From within the cloned repository, execute the launcher:
@@ -164,7 +162,7 @@ Every entry in an `instances` array configures one running copy of the deploymen
 
 ```json5 title="peppy_launcher.json5"
 {
-  source: { local: "./uvc_camera" },
+  source: { name: "uvc_camera:v1" },
   instances: [
     {
       instance_id: "camera_front",
@@ -202,7 +200,7 @@ Environment variables for this instance's process.
 
 ```json5
 {
-  source: { local: "./esp32_board" },
+  source: { name: "esp32_board:v1" },
   instances: [
     { instance_id: "esp32_left",  env_vars: { ESP32_DEVICE: "/dev/ttyUSB0" } },
     { instance_id: "esp32_right", env_vars: { ESP32_DEVICE: "/dev/ttyUSB1" } },

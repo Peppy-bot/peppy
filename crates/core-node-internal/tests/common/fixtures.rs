@@ -76,13 +76,15 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
-/// Builder for `nodes.json5` and `contracts.json5` cache fixtures. Tests call
-/// [`TestPackagesCache::fs_entry`] / `git_entry` / `contract_git_entry` to
-/// declare discovered items, then [`TestPackagesCache::write`] to serialize
-/// the files under `peppy_dirs.cache_dir()`.
+/// Builder for `nodes.json5`, `launchers.json5`, and `contracts.json5` cache
+/// fixtures. Tests call [`TestPackagesCache::fs_entry`] / `git_entry` /
+/// `launcher_fs_entry` / `contract_git_entry` to declare discovered items,
+/// then [`TestPackagesCache::write`] to serialize the files under
+/// `peppy_dirs.cache_dir()`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
+    launchers: Vec<serde_json::Value>,
     contracts: Vec<serde_json::Value>,
 }
 
@@ -170,6 +172,11 @@ impl TestPackagesCache {
     /// `path_in_repo` is the directory containing `peppy.json5` within
     /// the checked-out repo. We join `NODE_CONFIG_FILE` so the cache
     /// records the manifest file path.
+    ///
+    /// The fingerprint is computed from the repository's worktree copy of
+    /// the manifest when `repo_url` is a path on this machine (a pinned add
+    /// verifies the materialized bytes against it); a fixture whose repo is
+    /// remote or lookup-only records a seeded one instead.
     pub fn git_entry(
         mut self,
         name: &str,
@@ -179,16 +186,38 @@ impl TestPackagesCache {
         path_in_repo: &str,
     ) -> Self {
         let manifest_path = Path::new(path_in_repo).join(NODE_CONFIG_FILE);
+        let local_repo = repo_url.strip_prefix("file://").unwrap_or(repo_url);
+        let sha256 = std::fs::read(Path::new(local_repo).join(&manifest_path))
+            .map(|bytes| config::fingerprint::fingerprint_for_bytes(&bytes))
+            .unwrap_or_else(|_| seeded_sha(&format!("{name}:{tag}")));
         self.entries.push(serde_json::json!({
             "node_name": name,
             "node_tag": tag,
-            "sha256": seeded_sha(&format!("{name}:{tag}")),
+            "sha256": sha256,
             "origin": git_origin(
                 repo_url,
                 resolved_ref,
                 &manifest_path.to_string_lossy(),
                 &format!("{name}:{tag}"),
             ),
+        }));
+        self
+    }
+
+    /// Adds a `launchers.json5` entry for a filesystem-sourced launcher.
+    /// `absolute_path` points at the launcher `.json5` file itself. The
+    /// fingerprint is computed from the file when it exists; a fixture whose
+    /// file is written later records a seeded one instead (launcher
+    /// resolution materializes the origin's path without a drift check).
+    pub fn launcher_fs_entry(mut self, name: &str, absolute_path: impl AsRef<Path>) -> Self {
+        let path = absolute_path.as_ref();
+        let sha256 = std::fs::read(path)
+            .map(|bytes| config::fingerprint::fingerprint_for_bytes(&bytes))
+            .unwrap_or_else(|_| seeded_sha(name));
+        self.launchers.push(serde_json::json!({
+            "launcher_name": name,
+            "sha256": sha256,
+            "origin": fs_origin(path),
         }));
         self
     }
@@ -242,6 +271,19 @@ impl TestPackagesCache {
             serde_json::to_string_pretty(&self.entries).expect("failed to serialize cache entries");
         std::fs::write(nodes_repo_cache_path(peppy_dirs), content)
             .expect("failed to write nodes.json5 fixture");
+        let launchers_path = core_node::launchers_repo_cache_path(peppy_dirs);
+        if self.launchers.is_empty() {
+            match std::fs::remove_file(&launchers_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => panic!("failed to remove stale launchers.json5 fixture: {e}"),
+            }
+        } else {
+            let launchers_content = serde_json::to_string_pretty(&self.launchers)
+                .expect("failed to serialize launcher cache entries");
+            std::fs::write(launchers_path, launchers_content)
+                .expect("failed to write launchers.json5 fixture");
+        }
         let contracts_path = core_node::contracts_repo_cache_path(peppy_dirs);
         if self.contracts.is_empty() {
             match std::fs::remove_file(&contracts_path) {
