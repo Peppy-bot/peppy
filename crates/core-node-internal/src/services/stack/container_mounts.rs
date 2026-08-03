@@ -61,12 +61,17 @@ pub(crate) async fn prepare_container_mounts(
     Ok(auto_created)
 }
 
-/// The subset of `mount_sources` a Lima guest cannot already see.
+/// The subset of `mount_sources` a Lima guest cannot already see, absolute.
 ///
 /// Only macOS runs containers in a VM. Home-relative paths arrive through
 /// Lima's default `~` mount and host-provided trees are the guest's own, so
 /// neither is ours to register; what is left is the paths that need an explicit
 /// mount, which is what costs a VM restart.
+///
+/// Absolute because a registration ends up as a `location:` in the Lima config,
+/// which the VM resolves with no notion of the daemon's working directory: a
+/// relative source has to be anchored the same way the create above anchored
+/// it, or the guest would mount something else, or nothing.
 fn external_lima_mount_sources(mount_sources: &[String]) -> Vec<String> {
     if !cfg!(target_os = "macos") {
         return Vec::new();
@@ -75,14 +80,14 @@ fn external_lima_mount_sources(mount_sources: &[String]) -> Vec<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     mount_sources
         .iter()
-        .filter(|src| {
+        .filter_map(|src| {
             let src_path = absolute_mount_source(src);
-            !is_host_provided_mount_source(&src_path)
-                && home
+            let guest_already_sees = is_host_provided_mount_source(&src_path)
+                || home
                     .as_ref()
-                    .is_none_or(|home_path| !src_path.starts_with(home_path))
+                    .is_some_and(|home_path| src_path.starts_with(home_path));
+            (!guest_already_sees).then(|| src_path.to_string_lossy().into_owned())
         })
-        .cloned()
         .collect()
 }
 
@@ -197,5 +202,33 @@ mod tests {
             vec!["/opt/robot_assets".to_string()],
             "a non-home path the guest cannot otherwise see must be registered",
         );
+    }
+
+    /// A relative source is decided against its absolute form, so it must be
+    /// registered in that form too: a `location:` in the Lima config is
+    /// resolved by the VM, which has no working directory to relate it to.
+    ///
+    /// Which branch applies depends on where the test binary runs: a checkout
+    /// under `$HOME` makes the path one Lima already mounts, and dropping it is
+    /// the same anchoring decision seen from the other side.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn relative_sources_are_forwarded_to_lima_absolute() {
+        let cwd = std::env::current_dir().expect("a working directory");
+        let home = std::env::var("HOME").expect("HOME is set on a macOS test host");
+        let forwarded = external_lima_mount_sources(&["robot_assets".to_string()]);
+
+        if cwd.starts_with(&home) {
+            assert!(
+                forwarded.is_empty(),
+                "a relative source under $HOME resolves into Lima's own mount, got: {forwarded:?}"
+            );
+        } else {
+            assert_eq!(
+                forwarded,
+                vec![cwd.join("robot_assets").to_string_lossy().into_owned()],
+                "a relative source must reach Lima anchored, not verbatim",
+            );
+        }
     }
 }

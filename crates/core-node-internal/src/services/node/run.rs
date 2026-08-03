@@ -1007,10 +1007,38 @@ async fn process_node_run(
     //    so `127.0.0.1` already reaches the host router and the node follows the
     //    daemon's messaging topology exactly like a process node.
     let container_gateway = if is_container {
-        let apptainer = match tokio::task::spawn_blocking(containers::Apptainer::new).await {
-            Ok(Ok(a)) => a,
-            Ok(Err(e)) => {
-                let msg = format!("Failed to initialize Apptainer: {}", e);
+        // Both halves are blocking work — building the facade probes the host
+        // runtime, and the refusal below reads the execution environment's
+        // config off disk — so they share one trip to the blocking pool rather
+        // than doing file I/O on an async worker.
+        //
+        // The refusal is there because starting this container may have to make
+        // a host path visible to the execution environment, and on a VM backend
+        // that means restarting it, which kills every container already in it.
+        // A stack launch prepares a machine's mounts while its slice is empty
+        // precisely so this never bites; anything else reaching here (a `peppy
+        // node run` against a live stack, say) is refused rather than paid for
+        // by the nodes already running.
+        let mount_paths = resolved_mount_paths.clone();
+        let peppy_dirs = ctx.action.peppy_dirs.clone();
+        let node_stack = ctx.action.node_stack.clone();
+        let starting_instance_id = instance_id_str.to_owned();
+        let apptainer = match tokio::task::spawn_blocking(move || {
+            let apptainer = containers::Apptainer::new()
+                .map_err(|e| format!("Failed to initialize Apptainer: {}", e))?;
+            refuse_restart_over_running_containers(
+                &apptainer,
+                &mount_paths,
+                &peppy_dirs,
+                &node_stack,
+                &starting_instance_id,
+            )?;
+            Ok::<_, String>(apptainer)
+        })
+        .await
+        {
+            Ok(Ok(apptainer)) => apptainer,
+            Ok(Err(msg)) => {
                 write_error_to_log(&ctx.log_file, &msg);
                 return NodeRunResult::failure(msg);
             }
@@ -1020,24 +1048,6 @@ async fn process_node_run(
                 return NodeRunResult::failure(msg);
             }
         };
-
-        // Starting this container may have to make a host path visible to the
-        // execution environment, and on a VM backend that means restarting it,
-        // which kills every container already in it. A stack launch prepares a
-        // machine's mounts while its slice is empty precisely so this never
-        // bites; anything else reaching here (a `peppy node run` against a live
-        // stack, say) is refused rather than paid for by the nodes already
-        // running.
-        if let Err(msg) = refuse_restart_over_running_containers(
-            &apptainer,
-            &resolved_mount_paths,
-            &ctx.action.peppy_dirs,
-            &ctx.action.node_stack,
-            instance_id_str,
-        ) {
-            write_error_to_log(&ctx.log_file, &msg);
-            return NodeRunResult::failure(msg);
-        }
 
         apptainer.host_gateway()
     } else {

@@ -281,12 +281,17 @@ apart.
 **Container bind sources.** A [container node](/advanced_guides/containers/)
 declares the host paths it mounts, and a mount path may name an instance
 parameter, so what a given instance binds is known only to the coordinator that
-resolved the whole plan. Each machine is handed the paths its own instances
-bind, once, at the moment it is told to replace its slice: it creates the
-missing ones and makes them visible to its container runtime while it is
-running nothing. A path it had to create is reported back and shown in the
-launch output against that machine, the same warning you would get had the
-instance run on your own.
+resolved the whole plan. Every machine prepares the paths its own instances
+bind, and does it while running nothing: a participant is handed its share and
+prepares it the moment it is told to replace its slice, and the coordinator
+prepares its own once every machine's nodes are added and built, before the
+first instance starts anywhere. Preparing creates a missing path as a
+directory and makes it visible to that machine's container runtime; a missing
+`/dev`, `/proc`, `/run`, or `/sys` path is the host's to provide and is left
+alone. A path a machine had to create is reported back and shown in the launch
+output against that machine, the same warning you would get had the instance
+run on your own — and the same reason it is worth reading, since a bind meant
+to name a file looks exactly like this when the name is misspelled.
 
 The thing to notice is that none of this looks different from the
 single-machine case. Federation changes where instances run, not how they are
