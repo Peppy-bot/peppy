@@ -21,8 +21,6 @@ use tracing::{debug, warn};
 
 use tokio::sync::mpsc;
 
-use containers::is_host_provided_mount_source;
-
 use crate::archive::extract_tar_zst;
 use crate::build_io::{FeedbackLine, FeedbackStream, write_feedback_log_line};
 
@@ -477,46 +475,28 @@ pub(super) async fn build_container_command(
     })
 }
 
-/// Ensures every bind mount source path is usable by the container runtime.
+/// Makes every bind mount source usable by the container runtime, announcing
+/// the ones it had to create.
 ///
-/// For each entry:
-///   - existing paths are left untouched (they may be files, sockets, devices,
-///     or directories; we must not modify them);
-///   - paths the host provides ([`is_host_provided_mount_source`]) are
-///     accepted as-is, since the daemon's host may legitimately not have the
-///     device node or runtime dir;
-///   - any other missing path is auto-created with `mkdir -p`, and a warning
-///     line is emitted both to the daemon `tracing` log and to the
-///     per-instance start log via `feedback_sink`. The warning is the only
-///     line of defence against a typo'd file bind being silently turned into
-///     an empty directory, so callers MUST pass the per-instance log sink.
+/// [`containers::ensure_bind_source`] decides what to touch; this adds the
+/// reporting. An auto-create goes to the daemon `tracing` log, to the
+/// per-instance start log via `feedback_sink`, and onto `feedback_tx` as a
+/// Warning-stream line, because it is the only line of defence against a typo'd
+/// file bind being silently turned into an empty directory. Callers MUST
+/// therefore pass the per-instance log sink.
 ///
 /// Returns the underlying `io::Error` (with the offending path embedded in
-/// the message) if `create_dir_all` fails.
+/// the message) if a source is missing and cannot be created.
 pub(super) fn ensure_bind_sources(
     binds: &[ContainerBind],
     feedback_sink: &Arc<StdMutex<File>>,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::io::Result<()> {
     for bind in binds {
-        let src_path = Path::new(&bind.src);
-        if src_path.exists() || is_host_provided_mount_source(src_path) {
+        if !containers::ensure_bind_source(Path::new(&bind.src))? {
             continue;
         }
-        std::fs::create_dir_all(src_path).map_err(|e| {
-            std::io::Error::new(
-                e.kind(),
-                format!(
-                    "bind mount source does not exist: {} (auto-create failed: {})",
-                    bind.src, e
-                ),
-            )
-        })?;
-        let warning = format!(
-            "auto-created missing bind mount source: {} \
-             (if you intended to bind an existing file, this is a typo)",
-            bind.src
-        );
+        let warning = containers::auto_created_warning(&bind.src);
         warn!("{}", warning);
         write_feedback_log_line(feedback_sink, FeedbackStream::Warning, &warning);
         let _ = feedback_tx.send(FeedbackLine {
@@ -697,42 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn ensure_bind_sources_accepts_host_provided_paths_without_creating() {
-        let (sink, log_file) = make_log_sink();
-        let binds = vec![
-            ContainerBind {
-                src: "/dev/does-not-exist-xyz".to_string(),
-                dest: None,
-                opts: None,
-            },
-            ContainerBind {
-                src: "/proc/missing".to_string(),
-                dest: None,
-                opts: None,
-            },
-            ContainerBind {
-                src: "/sys/missing".to_string(),
-                dest: None,
-                opts: None,
-            },
-            // The runtime tmpfs. Sim nodes bind `/run/user` to back
-            // `XDG_RUNTIME_DIR`; on a macOS daemon there is no `/run` and `/`
-            // is read-only, so any attempt to create it fails with `EROFS`.
-            ContainerBind {
-                src: "/run/user".to_string(),
-                dest: None,
-                opts: None,
-            },
-        ];
-        let (tx, mut rx) = make_feedback_channel();
-        ensure_bind_sources(&binds, &sink, &tx).expect("host-provided paths should be accepted");
-        assert!(rx.try_recv().is_err(), "no warning should be sent");
-        assert!(!Path::new("/dev/does-not-exist-xyz").exists());
-        let log_contents = std::fs::read_to_string(log_file.path()).unwrap_or_default();
-        assert!(!log_contents.contains("auto-created"));
-    }
-
-    #[test]
     fn ensure_bind_sources_creates_missing_dir_and_warns() {
         let parent = tempfile::tempdir().expect("tempdir");
         let target = parent.path().join("scratch").join("nested");
@@ -775,27 +719,17 @@ mod tests {
         assert!(rx.try_recv().is_err(), "exactly one warning expected");
     }
 
+    /// A source that cannot be created stops the start rather than being
+    /// warned about: there is nothing to bind. What the failure says is
+    /// [`containers::ensure_bind_source`]'s to define; what matters here is
+    /// that it reaches the caller instead of being swallowed into a warning.
+    #[cfg(unix)]
     #[test]
-    fn ensure_bind_sources_propagates_create_dir_failures() {
-        // /proc/1/<x> is a kernel-managed path that mkdir cannot create. We
-        // bypass the /proc shortcut by using /proc/1 as the parent (the
-        // shortcut only applies to paths whose top-level component is
-        // /dev|/proc|/sys, and ours starts with /proc, so we use a sibling
-        // path under a non-special root that we make non-writable instead).
+    fn ensure_bind_sources_propagates_a_failed_auto_create() {
         let parent = tempfile::tempdir().expect("tempdir");
-        let ro_parent = parent.path().join("ro");
-        std::fs::create_dir(&ro_parent).expect("mkdir ro");
-        // Make the parent read-only so create_dir_all fails on the child.
-        let mut perms = std::fs::metadata(&ro_parent)
-            .expect("metadata")
-            .permissions();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            perms.set_mode(0o500);
-        }
-        std::fs::set_permissions(&ro_parent, perms).expect("set perms");
-        let target = ro_parent.join("child");
+        let target = parent.path().join("bind_source");
+        std::os::unix::fs::symlink(parent.path().join("no_such_target"), &target)
+            .expect("plant a dangling symlink");
 
         let (sink, _log) = make_log_sink();
         let binds = vec![ContainerBind {
@@ -804,29 +738,19 @@ mod tests {
             opts: None,
         }];
 
-        let (tx, _rx) = make_feedback_channel();
-        let err = ensure_bind_sources(&binds, &sink, &tx)
-            .expect_err("read-only parent should make auto-create fail");
-        let msg = err.to_string();
+        let (tx, mut rx) = make_feedback_channel();
+        let error = ensure_bind_sources(&binds, &sink, &tx)
+            .expect_err("an uncreatable source must fail the start");
         assert!(
-            msg.contains("bind mount source does not exist"),
-            "error must preserve the canonical phrase, got: {msg}"
+            error
+                .to_string()
+                .contains(target.to_string_lossy().as_ref()),
+            "error must name the offending path, got: {error}"
         );
         assert!(
-            msg.contains(target.to_string_lossy().as_ref()),
-            "error must mention the offending path, got: {msg}"
+            rx.try_recv().is_err(),
+            "a source that was never created must not be announced as one"
         );
-
-        // Restore permissions so the tempdir can be cleaned up.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&ro_parent)
-                .expect("metadata")
-                .permissions();
-            perms.set_mode(0o700);
-            std::fs::set_permissions(&ro_parent, perms).expect("restore perms");
-        }
     }
 
     #[test]

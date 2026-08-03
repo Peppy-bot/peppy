@@ -1394,6 +1394,25 @@ impl NodeStack {
         guard.live_instance_ids_for_pairing()
     }
 
+    /// The instance ids that a container-runtime restart would take with it:
+    /// the live instances of container nodes, in start order.
+    ///
+    /// Process nodes are excluded because they run on the host, outside any
+    /// runtime the daemon can restart, and so does the root entity. `Starting`
+    /// counts alongside `Running`: an instance whose container is up but whose
+    /// handshake has not landed dies just as thoroughly.
+    pub fn live_container_instance_ids(&self) -> Vec<String> {
+        let guard = self.shared.read();
+        guard
+            .entities_snapshot()
+            .iter()
+            .flat_map(|handle| {
+                let entity = handle.read();
+                live_container_instances_of(entity.config(), entity.instances())
+            })
+            .collect()
+    }
+
     /// Snapshot for plan-phase pairing validation: every non-root entity
     /// with at least one live-for-pairing (non-terminal) instance, in one
     /// read-locked pass. Nodes without pairing slots are included so a
@@ -1435,6 +1454,24 @@ impl NodeStack {
             })
             .collect()
     }
+}
+
+/// One entity's contribution to [`NodeStack::live_container_instance_ids`].
+///
+/// A process node contributes nothing however many instances it has: its
+/// children run on the host, where no container-runtime restart reaches them.
+fn live_container_instances_of(
+    config: &NodeConfig,
+    instances: &[TrackedNodeInstance],
+) -> Vec<String> {
+    if config.execution.container.is_none() {
+        return Vec::new();
+    }
+    instances
+        .iter()
+        .filter(|instance| !instance.state().is_terminal())
+        .map(|instance| instance.instance_id().as_str().to_string())
+        .collect()
 }
 
 /// One node's contribution to the plan-phase pairing snapshot: its live
@@ -1484,4 +1521,78 @@ pub fn pairing_slot_view(
         );
     }
     out
+}
+
+/// Which instances a container-runtime restart would take with it, decided per
+/// entity. The graph walk around it ([`NodeStack::live_container_instance_ids`])
+/// is a `flat_map`; the rule is here, where it can be stated on hand-built
+/// entities rather than on a stack with real children in it.
+#[cfg(test)]
+mod live_container_instances_tests {
+    use super::*;
+    use config::node::NodeConfigParser;
+
+    fn config_of(execution: &str) -> NodeConfig {
+        NodeConfigParser::from_content(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "recon", tag: "v1" }},
+                execution: {execution},
+                interfaces: {{}},
+            }}"#
+        ))
+        .expect("valid test node config")
+    }
+
+    fn container_config() -> NodeConfig {
+        config_of(r#"{ language: "python", container: { def_file: "apptainer.def" } }"#)
+    }
+
+    fn instance(id: &str, state: InstanceState) -> TrackedNodeInstance {
+        TrackedNodeInstance::new(
+            Name::new(id).expect("valid instance id"),
+            None,
+            state,
+            std::collections::BTreeMap::new(),
+        )
+    }
+
+    /// `Starting` counts alongside `Running`: its container is already up in
+    /// the runtime even though the handshake has not landed, so a restart kills
+    /// it just as thoroughly.
+    #[test]
+    fn a_container_nodes_non_terminal_instances_are_all_at_risk() {
+        let instances = [
+            instance("running_inst", InstanceState::Running),
+            instance("starting_inst", InstanceState::Starting),
+        ];
+        assert_eq!(
+            live_container_instances_of(&container_config(), &instances),
+            vec!["running_inst".to_string(), "starting_inst".to_string()]
+        );
+    }
+
+    /// An instance that has already exited cannot be stopped again, so naming
+    /// it in a refusal would be telling the operator to save something dead.
+    #[test]
+    fn a_container_nodes_finished_instances_are_not_at_risk() {
+        let instances = [
+            instance("finished_inst", InstanceState::Finished),
+            instance("failed_inst", InstanceState::Failed),
+        ];
+        assert!(
+            live_container_instances_of(&container_config(), &instances).is_empty(),
+            "a terminal instance has nothing left to lose"
+        );
+    }
+
+    /// A process node's children run on the host. Counting them would refuse
+    /// starts that cost nothing, including on the root entity, which is always
+    /// running and is never a container.
+    #[test]
+    fn a_process_nodes_instances_are_never_at_risk() {
+        let process = config_of(r#"{ language: "rust", run_cmd: ["recon"] }"#);
+        let instances = [instance("running_inst", InstanceState::Running)];
+        assert!(live_container_instances_of(&process, &instances).is_empty());
+    }
 }

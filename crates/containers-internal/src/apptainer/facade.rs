@@ -566,28 +566,7 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
-                let home = std::env::var("HOME").map_err(|_| {
-                    Error::ConfigurationError("HOME environment variable not set".into())
-                })?;
-
-                // Host runtime trees are never Lima's to carry. Registering
-                // `/run/user` here would write it into the Lima YAML — restarting
-                // the VM to mount the Mac's copy (which does not exist) over the
-                // guest's own runtime tmpfs — and would then whitelist it in
-                // `extra_mounts`, so `translate_path` would wave it through. The
-                // filter lives here rather than at the call sites because all
-                // three of them (stack preflight, node run, node build) funnel
-                // through this one method.
-                let external_paths: Vec<&str> = mount_src_paths
-                    .iter()
-                    .filter(|p| {
-                        let absolute = resolve_absolute(p);
-                        !absolute.starts_with(&home)
-                            && !crate::is_host_provided_mount_source(&absolute)
-                    })
-                    .copied()
-                    .collect();
-
+                let external_paths = paths_lima_must_mount(mount_src_paths)?;
                 if external_paths.is_empty() {
                     return Ok(());
                 }
@@ -628,6 +607,27 @@ impl Apptainer {
                 }
 
                 Ok(())
+            }
+        }
+    }
+
+    /// Whether [`Self::ensure_host_mounts`] would restart the execution
+    /// environment for these paths, asked without doing it.
+    ///
+    /// Always `false` on `Backend::Native`: there is no VM, so nothing a mount
+    /// registration does can disturb a running container. On `Backend::Lima` a
+    /// restart is what makes a new mount visible, and it takes every container
+    /// in the guest with it, so callers with something running ask first.
+    pub fn host_mounts_need_restart(&self, mount_src_paths: &[&str]) -> Result<bool> {
+        match &self.backend {
+            Backend::Native { .. } => Ok(false),
+            Backend::Lima { lima_home, .. } => {
+                let external_paths = paths_lima_must_mount(mount_src_paths)?;
+                if external_paths.is_empty() {
+                    return Ok(false);
+                }
+                let config_path = lima_home.join(lima::LIMA_INSTANCE).join("lima.yaml");
+                lima::extra_mounts_would_change(&config_path, &external_paths)
             }
         }
     }
@@ -1094,6 +1094,30 @@ fn to_absolute(path: &Path) -> std::io::Result<PathBuf> {
     } else {
         Ok(path.to_path_buf())
     }
+}
+
+/// The subset of `mount_src_paths` that has to be written into the Lima config
+/// for the guest to see it.
+///
+/// `$HOME` is already auto-mounted, so paths under it need nothing. Host
+/// runtime trees are never Lima's to carry: registering `/run/user` would write
+/// it into the Lima YAML, restarting the VM to mount the Mac's copy (which does
+/// not exist) over the guest's own runtime tmpfs, and would then whitelist it in
+/// `extra_mounts` so `translate_path` waved it through. The filter lives here
+/// rather than at the call sites because all of them (stack preflight, node
+/// run, node build) funnel through the two methods that use it, which must
+/// agree on what counts.
+fn paths_lima_must_mount<'a>(mount_src_paths: &[&'a str]) -> Result<Vec<&'a str>> {
+    let home = std::env::var("HOME")
+        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
+    Ok(mount_src_paths
+        .iter()
+        .filter(|p| {
+            let absolute = resolve_absolute(p);
+            !absolute.starts_with(&home) && !crate::is_host_provided_mount_source(&absolute)
+        })
+        .copied()
+        .collect())
 }
 
 /// Resolve a potentially relative path to an absolute one.

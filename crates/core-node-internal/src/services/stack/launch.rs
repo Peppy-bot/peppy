@@ -19,7 +19,6 @@ use crate::services::node::{
 };
 use chrono::Local;
 use config::apply_parameter_defaults;
-use containers::is_host_provided_mount_source;
 use core_node_api::ActionId;
 use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
@@ -40,7 +39,7 @@ use peppylib::{MessengerHandle, PeppyResult};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::panic::AssertUnwindSafe;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -531,10 +530,10 @@ async fn add_and_build_remotely(
 
 /// Step 7: Prepare the host paths that containers on THIS machine will bind.
 ///
-/// Scoped to the coordinator's own instances. A peer's bind sources name paths
-/// on the peer's filesystem, so creating them here would make directories on
-/// the wrong machine; the peer prepares them itself when it starts the
-/// instance, which is where every machine prepares the sources it binds.
+/// Scoped to the coordinator's own instances: every machine prepares what its
+/// own containers bind, and a participant was handed its share when it was told
+/// to replace its slice. Creating a peer's paths here would make directories on
+/// the wrong machine.
 ///
 /// Its CLEANUP is not so scoped. This step runs after step 6, by which point
 /// every participant has had its stack replaced and its nodes added and built,
@@ -544,32 +543,16 @@ async fn prepare_container_host_mounts(
     ctx: &ProcessLaunchContext,
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
-    placements: &daemon_config::launcher::Placements,
+    mut mount_sources: Vec<String>,
     participants: &[String],
 ) -> std::result::Result<(), LaunchResult> {
-    let mut mount_sources = match collect_container_mount_sources(
-        ordered,
-        planned_by_key,
-        placements,
-        ctx.bound_core_node.as_str(),
-    ) {
-        Ok(paths) => paths,
-        Err(reason) => return Err(fail_and_clear_stack(ctx, reason, participants).await),
-    };
-
-    if let Err(reason) = ensure_launch_bind_sources(ctx, &mount_sources).await {
-        return Err(fail_and_clear_stack(ctx, reason, participants).await);
-    }
-
     // The peppy data root hosts the container build working dirs (`tmp/`),
     // built images (`built_nodes/`), and instance dirs. When it sits outside
     // `$HOME` (dev roots at `$TMPDIR/.peppy`) the Lima guest cannot see it,
-    // so register it here whenever the stack has container nodes. Doing it in
-    // this step front-loads the one-time VM restart a new mount triggers,
-    // instead of paying it mid-build. Added after `ensure_launch_bind_sources`
-    // on purpose: the root always exists and must not hit the auto-create
-    // warning path. `external_lima_mount_sources` filters it out on Linux and
-    // for home-relative roots (prod).
+    // so register it here whenever the stack has container nodes. It always
+    // exists, so it never reaches the auto-create warning path, and
+    // `external_lima_mount_sources` filters it out on Linux and for
+    // home-relative roots (prod).
     if stack_has_container_nodes(ordered, planned_by_key) {
         match ctx.peppy_dirs.root().to_str() {
             Some(root) => mount_sources.push(root.to_owned()),
@@ -580,8 +563,7 @@ async fn prepare_container_host_mounts(
         }
     }
 
-    let lima_mount_sources = external_lima_mount_sources(&mount_sources);
-    if lima_mount_sources.is_empty() {
+    if mount_sources.is_empty() {
         return Ok(());
     }
 
@@ -592,26 +574,20 @@ async fn prepare_container_host_mounts(
     )
     .await;
 
-    let result = tokio::task::spawn_blocking(move || {
-        let mut apptainer = containers::Apptainer::new()
-            .map_err(|e| format!("Failed to initialize Apptainer: {e}"))?;
-        let refs = lima_mount_sources
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        apptainer
-            .ensure_host_mounts(&refs)
-            .map_err(|e| format!("Failed to prepare container host mounts: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Failed to prepare container host mounts: {e}"))
-    .and_then(|result| result);
-
-    if let Err(reason) = result {
-        return Err(fail_and_clear_stack(ctx, reason, participants).await);
+    match super::container_mounts::prepare_container_mounts(&mount_sources).await {
+        Ok(auto_created) => {
+            for src in auto_created {
+                publish_stderr(
+                    ctx,
+                    containers::auto_created_warning(&src),
+                    LaunchFeedbackStep::LauncherStep,
+                )
+                .await;
+            }
+            Ok(())
+        }
+        Err(reason) => Err(fail_and_clear_stack(ctx, reason, participants).await),
     }
-
-    Ok(())
 }
 
 fn stack_has_container_nodes(
@@ -625,19 +601,24 @@ fn stack_has_container_nodes(
     })
 }
 
-fn collect_container_mount_sources(
-    ordered: &[NodeKey],
-    planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
+/// The host paths each machine's container instances bind, keyed by core node.
+///
+/// Resolved here, on the coordinator, because only the coordinator holds the
+/// whole plan: a mount path may name an instance parameter, and a machine is
+/// handed one instance at a time. Machines with nothing to bind are absent
+/// rather than present-and-empty, so a caller iterating this map is iterating
+/// the machines that have work to do.
+///
+/// Called before the launch turns destructive, which is what makes an
+/// unresolvable mount path (a parameter with no value) cost nobody their stack.
+fn container_mount_sources_by_machine(
+    planned: &[PlannedDeployment],
     placements: &daemon_config::launcher::Placements,
-    coordinator: &str,
-) -> std::result::Result<Vec<String>, String> {
-    let mut seen = HashSet::new();
-    let mut mount_sources = Vec::new();
+) -> std::result::Result<HashMap<String, Vec<String>>, String> {
+    let mut by_machine: HashMap<String, Vec<String>> = HashMap::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
 
-    for key in ordered {
-        let Some(item) = planned_by_key.get(key) else {
-            continue;
-        };
+    for item in planned {
         let Some(container) = item.config.execution.container.as_ref() else {
             continue;
         };
@@ -645,103 +626,38 @@ fn collect_container_mount_sources(
         if raw_mount_paths.is_empty() {
             continue;
         }
+        let label = NodeKey::new(&item.node_name, &item.node_tag).label();
 
         for instance in &item.deployment.instances {
-            if placements.of(instance.instance_id.as_str()) != coordinator {
-                continue;
-            }
+            let machine = placements.of(instance.instance_id.as_str());
             let mut arguments = instance.arguments.clone();
             let missing =
                 apply_parameter_defaults(&mut arguments, &item.config.execution.parameters);
             if !missing.is_empty() {
                 return Err(format!(
-                    "failed to prepare container mounts for {} instance {}: Missing required parameters: {}",
-                    key.label(),
+                    "failed to prepare container mounts for {label} instance {}: Missing required parameters: {}",
                     instance.instance_id,
                     missing.join(", ")
                 ));
             }
 
-            let resolved_mount_paths =
-                match resolve_mount_path_parameters(raw_mount_paths, &arguments) {
-                    Ok(paths) => paths,
-                    Err(msg) => {
-                        return Err(format!(
-                            "failed to prepare container mounts for {} instance {}: {msg}",
-                            key.label(),
-                            instance.instance_id,
-                        ));
-                    }
-                };
+            let resolved_mount_paths = resolve_mount_path_parameters(raw_mount_paths, &arguments)
+                .map_err(|msg| {
+                format!(
+                    "failed to prepare container mounts for {label} instance {}: {msg}",
+                    instance.instance_id,
+                )
+            })?;
             for mount in resolved_mount_paths {
-                let src = mount_source(&mount).to_string();
-                if seen.insert(src.clone()) {
-                    mount_sources.push(src);
+                let src = containers::mount_spec_source(&mount).to_string();
+                if seen.insert((machine.to_owned(), src.clone())) {
+                    by_machine.entry(machine.to_owned()).or_default().push(src);
                 }
             }
         }
     }
 
-    Ok(mount_sources)
-}
-
-async fn ensure_launch_bind_sources(
-    ctx: &ProcessLaunchContext,
-    mount_sources: &[String],
-) -> std::result::Result<(), String> {
-    for src in mount_sources {
-        let src_path = Path::new(src);
-        if src_path.exists() || is_host_provided_mount_source(src_path) {
-            continue;
-        }
-
-        std::fs::create_dir_all(src_path)
-            .map_err(|e| format!("failed to create bind mount source {src}: {e}"))?;
-        publish_stderr(
-            ctx,
-            format!(
-                "auto-created missing bind mount source: {src} (if you intended to bind an existing file, this is a typo)"
-            ),
-            LaunchFeedbackStep::LauncherStep,
-        )
-        .await;
-    }
-
-    Ok(())
-}
-
-fn external_lima_mount_sources(mount_sources: &[String]) -> Vec<String> {
-    if !cfg!(target_os = "macos") {
-        return Vec::new();
-    }
-
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    mount_sources
-        .iter()
-        .filter(|src| {
-            let src_path = absolute_mount_source(src);
-            !is_host_provided_mount_source(&src_path)
-                && home
-                    .as_ref()
-                    .is_none_or(|home_path| !src_path.starts_with(home_path))
-        })
-        .cloned()
-        .collect()
-}
-
-fn absolute_mount_source(src: &str) -> PathBuf {
-    let path = Path::new(src);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
-    }
-}
-
-fn mount_source(mount: &str) -> &str {
-    mount.split(':').next().unwrap_or(mount)
+    Ok(by_machine)
 }
 
 /// The environment one launched instance is started with: the forwarded
@@ -1365,11 +1281,35 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         .await;
     }
 
+    // Step 4c: Work out what each machine's containers will bind, while a
+    // failure is still free. A mount path that names a parameter with no value
+    // fails here, before any stack is replaced, rather than on the machine that
+    // would have had to bind it.
+    let mount_sources_by_machine = match container_mount_sources_by_machine(&planned, &placements) {
+        Ok(by_machine) => by_machine,
+        Err(reason) => {
+            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return release_and_fail(
+                &ctx,
+                &goal,
+                &participants,
+                LaunchResult::failure(&ctx.log_path, reason),
+            )
+            .await;
+        }
+    };
+
     // Step 5: The commit point. Every participant is reserved and the whole
     // plan is validated, so now, and only now, do stacks get replaced. Peers
-    // first: if one refuses, this daemon still has its own stack.
-    if let Err(reason) =
-        federated::begin_participant_slices(&ctx, &goal.launch_id, &participants).await
+    // first: if one refuses, this daemon still has its own stack. Each one is
+    // handed the bind sources its slice needs, to prepare while it is empty.
+    if let Err(reason) = federated::begin_participant_slices(
+        &ctx,
+        &goal.launch_id,
+        &participants,
+        &mount_sources_by_machine,
+    )
+    .await
     {
         publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
         federated::clear_participant_slices(&ctx, &participants).await;
@@ -1427,8 +1367,17 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         // starts. Updating Lima's mount table can restart the VM; doing it
         // lazily during a later instance start would kill containers already
         // launched by this stack operation.
-        prepare_container_host_mounts(&ctx, &ordered, &planned_by_key, &placements, &participants)
-            .await?;
+        prepare_container_host_mounts(
+            &ctx,
+            &ordered,
+            &planned_by_key,
+            mount_sources_by_machine
+                .get(ctx.bound_core_node.as_str())
+                .cloned()
+                .unwrap_or_default(),
+            &participants,
+        )
+        .await?;
 
         // Step 8: Start instances in dependency order.
         start_node_instances(
@@ -1511,46 +1460,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Notify;
-
-    /// A host-provided source must never be handed to Lima as an extra mount.
-    /// Registering `/run/user` would mount the macOS side (which does not even
-    /// exist) over the guest's own runtime tmpfs, and would restart the VM to
-    /// do it. The guest resolves these paths itself.
-    ///
-    /// macOS-gated like its companion below: off macOS
-    /// `external_lima_mount_sources` returns empty before consulting the
-    /// filter at all, so an ungated assertion would hold with the filter
-    /// deleted and prove nothing. The predicate itself is platform-independent
-    /// and covered in `containers::mount_source`.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn host_provided_sources_are_not_forwarded_to_lima() {
-        let forwarded = external_lima_mount_sources(&[
-            "/run/user".to_string(),
-            "/dev/ttyUSB0".to_string(),
-            "/proc/self".to_string(),
-            "/sys/class".to_string(),
-        ]);
-        assert!(
-            forwarded.is_empty(),
-            "host-provided trees must stay out of the Lima mount list, got: {forwarded:?}"
-        );
-    }
-
-    /// The complement of the test above: the filter is a carve-out, not a
-    /// blanket opt-out. An ordinary path outside `$HOME` still has to reach
-    /// Lima or the guest could not see it. Only meaningful on macOS, where
-    /// `external_lima_mount_sources` does its work.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn ordinary_external_sources_are_still_forwarded_to_lima() {
-        let forwarded = external_lima_mount_sources(&["/opt/robot_assets".to_string()]);
-        assert_eq!(
-            forwarded,
-            vec!["/opt/robot_assets".to_string()],
-            "a non-home path the guest cannot otherwise see must be registered",
-        );
-    }
 
     /// Builds a phase future that signals `cleanup_ran` if it observes the
     /// cancel token, simulating `run_node_run`'s `abort_started` branch.
@@ -1655,6 +1564,217 @@ mod tests {
         );
     }
 
+    /// A parameter a mount path can reference and an instance can leave out.
+    const DEFAULTED_OUTPUT_DIR: &str =
+        r#"output_dir: { $type: "string", $default: "/var/lib/peppy_default" }"#;
+    /// The same parameter with nothing to fall back to, so an instance that
+    /// omits it cannot resolve its mount path.
+    const REQUIRED_OUTPUT_DIR: &str = r#"output_dir: "string""#;
+
+    /// A planned deployment of one container node, with the parameter schema,
+    /// mount paths and instances a test cares about and defaults everywhere
+    /// else.
+    fn planned_container_deployment(
+        node_name: &str,
+        parameters: &str,
+        mount_paths: &[&str],
+        instances: &[(&str, Option<&str>, BTreeMap<String, AnyType>)],
+    ) -> PlannedDeployment {
+        let mounts = mount_paths
+            .iter()
+            .map(|path| format!("\"{path}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let config = config::node::NodeConfigParser::from_content(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "{node_name}", tag: "v1" }},
+                execution: {{
+                    language: "python",
+                    container: {{ def_file: "apptainer.def", mount_paths: [{mounts}] }},
+                    parameters: {{ {parameters} }},
+                }},
+                interfaces: {{}},
+            }}"#
+        ))
+        .expect("parse node config");
+
+        PlannedDeployment {
+            deployment: Deployment {
+                source: daemon_config::launcher::DeploymentSource::Repo(
+                    daemon_config::launcher::DeploymentRepoSource {
+                        name: node_name.to_owned(),
+                        tag: "v1".to_owned(),
+                    },
+                ),
+                instances: instances
+                    .iter()
+                    .map(|(instance_id, core_node, arguments)| {
+                        let mut instance = daemon_config::launcher::DeploymentInstance::empty(
+                            config::runtime::Name::new(*instance_id).expect("valid instance id"),
+                        );
+                        instance.arguments = arguments.clone();
+                        instance.core_node = core_node.map(str::to_owned);
+                        instance
+                    })
+                    .collect(),
+            },
+            source: NodeSource::resolve_ref(node_name, "v1").expect("valid node ref"),
+            node_name: node_name.to_owned(),
+            node_tag: "v1".to_owned(),
+            config,
+            config_sha256: String::new(),
+            root_pin: None,
+            closure_pins: Vec::new(),
+            pin_manifests: Vec::new(),
+        }
+    }
+
+    fn placements_with(
+        coordinator: &str,
+        by_instance: &[(&str, &str)],
+    ) -> daemon_config::launcher::Placements {
+        daemon_config::launcher::Placements::new(
+            daemon_config::core_node_name::CoreNodeName::new(coordinator).expect("valid name"),
+            by_instance
+                .iter()
+                .map(|(instance, core_node)| {
+                    (
+                        (*instance).to_owned(),
+                        daemon_config::core_node_name::CoreNodeName::new(*core_node)
+                            .expect("valid name"),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Each machine gets its own instances' sources and nobody else's. This is
+    /// what a participant is handed to prepare, so a source landing on the
+    /// wrong machine would make a directory there and still leave the binding
+    /// machine without one.
+    #[test]
+    fn mount_sources_are_grouped_by_the_machine_that_binds_them() {
+        let planned = vec![planned_container_deployment(
+            "recorder",
+            DEFAULTED_OUTPUT_DIR,
+            &["/data/episodes:/episodes:rw"],
+            &[
+                ("robot_inst", None, BTreeMap::new()),
+                ("cloud_inst", Some("cn-cloud"), BTreeMap::new()),
+            ],
+        )];
+        let placements = placements_with("cn-robot", &[("cloud_inst", "cn-cloud")]);
+
+        let by_machine = container_mount_sources_by_machine(&planned, &placements)
+            .expect("every mount path resolves");
+
+        assert_eq!(
+            by_machine.get("cn-robot").map(Vec::as_slice),
+            Some(["/data/episodes".to_owned()].as_slice())
+        );
+        assert_eq!(
+            by_machine.get("cn-cloud").map(Vec::as_slice),
+            Some(["/data/episodes".to_owned()].as_slice())
+        );
+    }
+
+    /// A machine with nothing to bind is absent, not present-and-empty: the
+    /// caller iterates this map to decide who has preparation to do.
+    #[test]
+    fn a_machine_running_no_container_bind_is_absent_from_the_grouping() {
+        let planned = vec![
+            planned_container_deployment(
+                "recorder",
+                DEFAULTED_OUTPUT_DIR,
+                &["/data/episodes"],
+                &[("cloud_inst", Some("cn-cloud"), BTreeMap::new())],
+            ),
+            planned_container_deployment(
+                "camera",
+                DEFAULTED_OUTPUT_DIR,
+                &[],
+                &[("robot_inst", None, BTreeMap::new())],
+            ),
+        ];
+        let placements = placements_with("cn-robot", &[("cloud_inst", "cn-cloud")]);
+
+        let by_machine = container_mount_sources_by_machine(&planned, &placements)
+            .expect("every mount path resolves");
+
+        assert_eq!(by_machine.len(), 1);
+        assert!(by_machine.contains_key("cn-cloud"));
+    }
+
+    /// Two instances of one node on one machine binding the same path is one
+    /// source, and the same path on two machines is one source each: the map
+    /// dedupes per machine, not globally.
+    #[test]
+    fn a_repeated_source_is_listed_once_per_machine() {
+        let mut arguments = BTreeMap::new();
+        arguments.insert(
+            "output_dir".to_owned(),
+            AnyType::String("/data/shared".to_owned()),
+        );
+        let planned = vec![planned_container_deployment(
+            "recorder",
+            DEFAULTED_OUTPUT_DIR,
+            &["${parameters:output_dir}:/out:rw"],
+            &[
+                ("first_inst", None, arguments.clone()),
+                ("second_inst", None, arguments),
+            ],
+        )];
+
+        let by_machine =
+            container_mount_sources_by_machine(&planned, &placements_with("cn-robot", &[]))
+                .expect("every mount path resolves");
+
+        assert_eq!(
+            by_machine.get("cn-robot").map(Vec::as_slice),
+            Some(["/data/shared".to_owned()].as_slice())
+        );
+    }
+
+    /// A parameter the instance never supplies falls back to the node's
+    /// default, so the machine that runs it still knows what to prepare.
+    #[test]
+    fn a_defaulted_mount_parameter_resolves_to_the_nodes_default() {
+        let planned = vec![planned_container_deployment(
+            "recorder",
+            DEFAULTED_OUTPUT_DIR,
+            &["${parameters:output_dir}:/out:rw"],
+            &[("robot_inst", None, BTreeMap::new())],
+        )];
+
+        let by_machine =
+            container_mount_sources_by_machine(&planned, &placements_with("cn-robot", &[]))
+                .expect("the parameter default resolves");
+
+        assert_eq!(
+            by_machine.get("cn-robot").map(Vec::as_slice),
+            Some(["/var/lib/peppy_default".to_owned()].as_slice())
+        );
+    }
+
+    /// An unresolvable mount path names the instance it belongs to. This runs
+    /// before the launch turns destructive, so it is the operator's whole
+    /// description of what went wrong.
+    #[test]
+    fn an_unresolvable_mount_path_names_its_instance() {
+        let planned = vec![planned_container_deployment(
+            "recorder",
+            REQUIRED_OUTPUT_DIR,
+            &["${parameters:output_dir}:/out:rw"],
+            &[("robot_inst", None, BTreeMap::new())],
+        )];
+
+        let error = container_mount_sources_by_machine(&planned, &placements_with("cn-robot", &[]))
+            .expect_err("an unknown parameter cannot resolve");
+        assert!(error.contains("recorder:v1"), "got: {error}");
+        assert!(error.contains("robot_inst"), "got: {error}");
+    }
+
     fn plan_with(use_sim_time: Option<bool>) -> config::runtime::NodeInstancePlan {
         config::runtime::NodeInstancePlan {
             use_sim_time,
@@ -1702,7 +1822,10 @@ mod tests {
         .expect("parameterized mount should resolve");
 
         assert_eq!(resolved, vec!["/tmp/video_reconstruction:/frames:rw"]);
-        assert_eq!(mount_source(&resolved[0]), "/tmp/video_reconstruction");
+        assert_eq!(
+            containers::mount_spec_source(&resolved[0]),
+            "/tmp/video_reconstruction"
+        );
     }
 
     /// An instance's `env_vars` are added to the forwarded caller environment

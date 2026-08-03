@@ -21,7 +21,8 @@ use core_node_api::ServiceId;
 use core_node_api::encoding::{
     FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantReleaseRequest,
     ParticipantReserveRequest, ParticipantReserveResponse, ParticipantSliceBeginRequest,
-    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
+    ParticipantSliceBeginResponse, RelationshipEvent, RelationshipNotification,
+    RelationshipNotificationAck,
 };
 use core_node_api::names;
 use daemon_config::repository::DeploymentPins;
@@ -305,12 +306,20 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
 }
 
 /// The commit point of a federated launch on this machine: the coordinator has
-/// every participant reserved, so this daemon's slice is now replaced.
+/// every participant reserved, so this daemon's slice is now replaced and the
+/// host paths its containers will bind are prepared.
 ///
 /// Destructive, and gated on the reservation. A request naming a launch this
 /// daemon is not reserved for is refused, which is what stops a stale
 /// coordinator, or one whose lease already lapsed, from wiping a machine out
 /// from under the launch that legitimately owns it.
+///
+/// The bind sources are prepared HERE, in the window between clearing the slice
+/// and running the first node of the new one, because that is the only moment
+/// this machine has no container running: registering a host path the container
+/// VM has not seen restarts it, and a restart takes every container in it. The
+/// coordinator resolved the paths, since a mount path can name an instance
+/// parameter and this daemon is handed one instance at a time.
 async fn slice_begin_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
@@ -318,7 +327,7 @@ async fn slice_begin_inner(
     let decoded = ParticipantSliceBeginRequest::decode(request.message().payload().as_ref())?;
 
     let Some((held_launch, coordinator)) = context.ownership.held_reservation() else {
-        return FederationVerdict::refused(format!(
+        return ParticipantSliceBeginResponse::refused(format!(
             "this daemon holds no reservation, so it will not replace its stack for launch \
              `{}`. The reservation is a lease on the coordinator's presence; if the coordinator \
              dropped off the federation it was released, and the launch has to start over.",
@@ -328,7 +337,7 @@ async fn slice_begin_inner(
         .map_err(Into::into);
     };
     if held_launch != decoded.launch_id {
-        return FederationVerdict::refused(format!(
+        return ParticipantSliceBeginResponse::refused(format!(
             "this daemon is reserved for launch `{held_launch}` driven by core node \
              `{coordinator}`, not `{}`",
             decoded.launch_id
@@ -360,7 +369,18 @@ async fn slice_begin_inner(
         .ownership
         .record_slice(LaunchIdentity::new(decoded.launch_id.clone(), coordinator));
 
-    FederationVerdict::ok().encode().map_err(Into::into)
+    // Recorded first, prepared second: the slice is already this launch's, so a
+    // machine that cannot provide a bind source is a refusal the coordinator
+    // acts on, not wreckage nobody can find.
+    match crate::services::stack::prepare_container_mounts(&decoded.mount_sources).await {
+        Ok(auto_created) => ParticipantSliceBeginResponse::ok(auto_created),
+        Err(reason) => ParticipantSliceBeginResponse::refused(format!(
+            "this daemon cannot prepare the container bind sources for launch `{}`: {reason}",
+            decoded.launch_id
+        )),
+    }
+    .encode()
+    .map_err(Into::into)
 }
 
 /// Records this daemon's half of a cross-daemon pair, on behalf of the daemon
