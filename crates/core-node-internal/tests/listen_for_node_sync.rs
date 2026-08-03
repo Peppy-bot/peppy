@@ -340,7 +340,7 @@ async fn listen_for_node_sync_missing_dependency_fails() {
     assert!(!response.success, "node_sync should fail");
     assert!(
         response.error_message.contains(
-            "my_robot_brain:v1 depends on `uvc_camera:v1`, but it does not exist in the stack"
+            "`my_robot_brain:v1` depends on `uvc_camera:v1`, but it does not exist in the stack"
         ),
         "error should mention missing dependency, got: {}",
         response.error_message
