@@ -5,7 +5,7 @@ sidebar:
   order: 8
 ---
 
-Repositories tell Peppy where to look for nodes, launchers, contracts, and pairings. When you run `peppy repo refresh`, Peppy walks every configured repository and indexes:
+Repositories tell Peppy where to look for nodes, launchers, contracts, and pairings. Each repository states what it publishes through a committed [`peppy_repository.json5`](#the-repository-index) at its root; `peppy repo refresh` reads that index from every configured repository and caches the result. The index itself is written by [`peppy repo index`](#index-a-repository), which walks the tree and records:
 
 - **Nodes**, identified by filename: every `peppy.json5` file is treated as a node config.
 - **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
@@ -50,9 +50,13 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `fs` | `path` | A local directory. Peppy recursively walks it, indexing every `peppy.json5` (node) and every `.json5` file whose body declares `peppy_schema: "launcher/v1"` (launcher), `peppy_schema: "contract/v1"` (contract), or `peppy_schema: "pairing/v1"` (pairing). |
-| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and scans it the same way as an `fs` source. Use `ref` to pin a branch, tag, or commit. |
+| `fs` | `path` | A local directory, read through its committed [`peppy_repository.json5`](#the-repository-index). |
+| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and reads the same committed index. Use `ref` to pin a branch, tag, or commit. |
 | `url` | `url` | An HTTP endpoint (not yet implemented). |
+
+An `fs` repository is a path only this machine can read, so a deployment resolved from one must keep
+all of its instances on this daemon in a federated launch; serve the nodes from a `git` repository
+to place them on other machines (see [Federation limits](/advanced_guides/federation/#limits)).
 
 ## Commands
 
@@ -91,8 +95,8 @@ Re-scans all configured repositories and rebuilds the node, launcher, contract, 
 
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
-- Walks local directories and shallow-clones git repositories.
-- Records every `peppy.json5` as a node, every `.json5` file whose body declares `peppy_schema: "launcher/v1"` as a launcher (file stem becomes the launcher name), every `.json5` file whose body declares `peppy_schema: "contract/v1"` as a contract (keyed by the `name:tag` in its manifest), and every `.json5` file whose body declares `peppy_schema: "pairing/v1"` as a pairing (also keyed by its manifest `name:tag`).
+- Reads local directories in place and shallow-clones git repositories.
+- Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, launchers (one per name, no tag), and contracts and pairings (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
 - Reports each discovered node, launcher, contract, pairing, and excluded repository in real time.
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, and `~/.peppy/cache/pairings.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
 
@@ -333,14 +337,14 @@ When a node depends on another node you maintain locally, registering your works
 
 ```sh
 peppy repo add ~/code/my-nodes
+peppy repo index ~/code/my-nodes    # writes peppy_repository.json5, stating what the directory publishes
 peppy repo refresh
 peppy node sync -r       # picks up uvc_camera, lidar_sensor, ... from ~/code/my-nodes
 ```
 
-Re-run `peppy repo refresh` after adding, moving, or renaming a node in that directory: `repo list`
-and `node sync -r` both read the cache, not the filesystem. If you also publish that directory to
-others, keep its index current with `peppy repo index ~/code/my-nodes`, the same as for any
-repository others consume.
+Re-run `peppy repo index ~/code/my-nodes` and `peppy repo refresh` after adding, moving, or renaming
+a node in that directory: the refresh reads the committed index, and `repo list` and `node sync -r`
+both read the cache, not the filesystem.
 
 Particularly useful during the early phase of a multi-node project, when the dependency graph is still in flux and you don't want to re-add nodes after every interface change.
 

@@ -42,7 +42,7 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
 The `source` attribute always references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
 
-If a node you want to deploy lives outside your configured repositories, add its location first: register a local directory with `peppy repo add /path/to/my/nodes`, or a git repository with `peppy repo add https://github.com/org/repo.git`, then run `peppy repo refresh` so the node appears in the index (see [Repositories](/advanced_guides/repositories/)).
+If a node you want to deploy lives outside your configured repositories, add its location first: register a local directory with `peppy repo add /path/to/my/nodes`, or a git repository with `peppy repo add https://github.com/org/repo.git`. A repository states what it publishes through a committed `peppy_repository.json5`, so run `peppy repo index /path/to/my/nodes` once for a directory that does not carry one yet. Then `peppy repo refresh` makes the nodes resolvable (see [Repositories](/advanced_guides/repositories/)).
 
 :::note
 The source resolves nodes from the locally cached index of the machine the launch is submitted to. Run `peppy repo refresh` on that machine before launching to ensure its cache is up to date. In a federated launch it is the only machine whose cache matters: it resolves every deployment and its dependencies once and ships the result to the other machines as pinned content, so their caches need no refresh and cannot change what the launch runs.
