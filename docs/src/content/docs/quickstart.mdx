@@ -87,7 +87,7 @@ peppy node stop commander_inst
 Or tear the whole stack down at once, which stops every instance and empties the stack:
 
 ```sh
-peppy service reset
+peppy stack reset
 ```
 
 <details>
@@ -107,7 +107,7 @@ It prints the instance's state and health plus the path to its run log, which is
 
 **A build fails on Linux.** Apptainer needs unprivileged user namespaces, which the installer normally configures. Check with `peppy container status`, and repair it with `peppy container setup` (see [Containers](/advanced_guides/containers/)).
 
-**The launch fails with `repo-node ... not found` or `nodes.json5 not found or empty`.** The local index is stale or was never populated. Run `peppy repo refresh` and launch again.
+**The launch fails with `Dependencies missing from nodes cache` or `nodes.json5 not found or empty`.** The local index is stale or was never populated. Run `peppy repo refresh` and launch again.
 
 </details>
 

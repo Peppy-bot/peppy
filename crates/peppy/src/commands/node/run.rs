@@ -1,15 +1,16 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
+use config::runtime::Name;
 use config::runtime::PairingSlotBinding;
-use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
     NodeRunResult, ObservationTarget, PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
+use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, LinkTargets, LinkValue, PairingValidationItem,
-    split_link_target, validate_link_plan,
+    Placements, split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -371,7 +372,8 @@ async fn validate_links_against_stack(
         tag: String,
         instances: Vec<DeploymentInstance>,
         implements: Vec<ImplementsEntry>,
-        pairing_deps: Vec<config::node::PairingDependency>,
+        pairing_deps: Vec<config::node::PairingParticipantDependency>,
+        observer_deps: Vec<config::node::PairingObserverDependency>,
     }
 
     let stack_nodes: Vec<_> = graph
@@ -461,7 +463,14 @@ async fn validate_links_against_stack(
                 .config
                 .manifest
                 .depends_on
-                .map(|d| d.pairings)
+                .as_ref()
+                .map(|d| d.pairings.clone())
+                .unwrap_or_default(),
+            observer_deps: info
+                .config
+                .manifest
+                .depends_on
+                .map(|d| d.pairing_observers)
                 .unwrap_or_default(),
         });
     }
@@ -524,9 +533,13 @@ async fn validate_links_against_stack(
     // Build the pairing/observation view over the same snapshot. Running
     // instances are valid targets but exempt from coverage (their slots were
     // covered at their own start).
-    let target_pairing_deps: Vec<config::node::PairingDependency> = target_depends_on
+    let target_pairing_deps: Vec<config::node::PairingParticipantDependency> = target_depends_on
         .as_ref()
         .map(|d| d.pairings.clone())
+        .unwrap_or_default();
+    let target_observer_deps: Vec<config::node::PairingObserverDependency> = target_depends_on
+        .as_ref()
+        .map(|d| d.pairing_observers.clone())
         .unwrap_or_default();
     let mut pairing_items: Vec<PairingValidationItem<'_>> = snapshot
         .iter()
@@ -535,6 +548,7 @@ async fn validate_links_against_stack(
             node_tag: &s.tag,
             instances: &s.instances,
             pairing_deps: &s.pairing_deps,
+            observer_deps: &s.observer_deps,
             preexisting: true,
         })
         .collect();
@@ -543,9 +557,20 @@ async fn validate_links_against_stack(
         node_tag: target_tag,
         instances: &synthetic_instances,
         pairing_deps: &target_pairing_deps,
+        observer_deps: &target_observer_deps,
         preexisting: false,
     });
-    let mut validated = validate_link_plan(&items, &pairing_items, &already_paired, core_node_name);
+    let mut validated = validate_link_plan(
+        &items,
+        &pairing_items,
+        &already_paired,
+        // `node run` targets one daemon, so every instance it can see is on it.
+        &Placements::all_on(CoreNodeName::new(core_node_name).map_err(|reason| {
+            Error::ExecutionFailed(format!(
+                "the target daemon reports an invalid core node name `{core_node_name}`: {reason}"
+            ))
+        })?),
+    );
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
         return Err(Error::ExecutionFailed(daemon_config::format_bulleted(
@@ -559,8 +584,7 @@ async fn validate_links_against_stack(
     // `<peer_instance>[/<peer_link_id>]`. Observer links produce no goal state.
     let participant_link_ids: std::collections::BTreeSet<&str> = target_pairing_deps
         .iter()
-        .filter(|d| d.is_participant())
-        .map(|d| d.link_id())
+        .map(|d| d.link_id.as_str())
         .collect();
     let deferred_pairs = defer_links
         .iter()
@@ -577,8 +601,8 @@ async fn validate_links_against_stack(
         if let Some(target) = value.as_scalar() {
             let (peer_instance, peer_link) = split_link_target(target);
             let pair_target = match peer_link {
-                Some(link) => PairTarget::pinned(peer_instance, link),
-                None => PairTarget::new(peer_instance),
+                Some(link) => PairTarget::pinned(peer_instance, link, core_node_name),
+                None => PairTarget::new(peer_instance, core_node_name),
             };
             requested_pairs.insert(link_id.clone(), pair_target);
         }
@@ -596,7 +620,11 @@ async fn validate_links_against_stack(
         .map(|obs| {
             (
                 obs.observer_link_id.clone(),
-                ObservationTarget::new(&obs.source.instance_id, &obs.source_link_id),
+                ObservationTarget::new(
+                    &obs.source.instance_id,
+                    &obs.source_link_id,
+                    core_node_name,
+                ),
             )
         })
         .collect();
@@ -684,12 +712,10 @@ pub async fn validate_and_run_instance(
 /// this directly bypasses every binding rule and exists only as the lower
 /// half of the validate-then-spawn split.
 ///
-/// `core_node_name` plays both roles (caller identity and goal target)
-/// because this path is local-only: the `RuntimeConfig` built below embeds
-/// this session's messaging endpoint and `core_node_name` as the instance's
-/// bound core node, and the daemon rewrites neither server-side (it also
-/// rejects a `bound_core_node` that isn't its own). The command entry points
-/// enforce this via `reject_remote_target_for_local_endpoint`.
+/// `core_node_name` plays both roles (caller identity and goal target) because
+/// this path routes to the local daemon only; the entry points enforce that via
+/// `reject_remote_target_for_local_routing`. Nothing on the goal is host-local
+/// any more, so the restriction is about routing rather than about the payload.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_instance_async(
     messenger_handle: &MessengerHandle,
@@ -718,27 +744,21 @@ pub async fn run_instance_async(
         arguments.len()
     );
 
-    let (messaging_host, messaging_port) =
-        crate::commands::resolve_messaging_endpoint(messenger_handle).await;
-
-    let runtime_config = RuntimeConfig::new(
-        messaging_host.as_str(),
-        messaging_port,
-        NodeInstanceConfig {
-            arguments,
-            slot_bindings,
-            ..NodeInstanceConfig::new(
-                Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
-            )
-        },
-        node_name,
-        tag,
-        core_node_name,
-    )
-    .map_err(Error::PeppyConfig)?;
-
-    let runtime_config_json =
-        serde_json::to_string(&runtime_config).map_err(|e| Error::Sync(e.to_string()))?;
+    // A PLAN, not a config. The CLI says WHAT to start; the daemon owns the
+    // node's runtime identity and assembles the rest from its own state.
+    //
+    // This is what removes `node run`'s local-only restriction: the CLI used to
+    // bake its own session's messaging endpoint and core node into the config
+    // it shipped, so aiming the command at another daemon produced a node bound
+    // to the wrong machine. With nothing host-local on the goal there is
+    // nothing left to get wrong.
+    let instance_plan = config::runtime::NodeInstancePlan {
+        arguments,
+        slot_bindings,
+        ..config::runtime::NodeInstancePlan::new(
+            Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
+        )
+    };
 
     info!(
         "Calling node_run for {}:{} (instance_id={})...",
@@ -746,7 +766,7 @@ pub async fn run_instance_async(
     );
 
     let start_goal = NodeRunGoal::new(
-        &runtime_config_json,
+        instance_plan,
         node_name.to_string(),
         tag.to_string(),
         timeouts.max_secs,
@@ -825,10 +845,9 @@ async fn run_node_async(
 ) -> Result<()> {
     let conn = ctx.connect_to_daemon().await?;
 
-    // The spawned instance's runtime config embeds this machine's messaging
-    // endpoint (see `run_instance_async`), which only the local daemon's
-    // nodes can dial; the whole run path is therefore local-only in v1.
-    crate::commands::reject_remote_target_for_local_endpoint(&conn, "peppy node run")?;
+    // Every step below addresses `conn.core_node_name`, this machine's daemon,
+    // so an override would name a machine nothing actually runs on.
+    crate::commands::reject_remote_target_for_local_routing(&conn, "peppy node run")?;
 
     // Single end-to-end budget: every subsequent blocking stage (build, wait,
     // run) derives its `max_secs` from what's left of this budget, so the sum

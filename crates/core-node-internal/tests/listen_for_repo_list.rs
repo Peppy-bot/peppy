@@ -3,7 +3,9 @@ mod common;
 use common::{CALLER_INSTANCE_ID, StartedCoreNode, start_core_node_with_mock_messenger};
 use config::consts::NODE_CONFIG_FILE;
 use core_node::{nodes_repo_cache_path, repositories_list_path};
-use core_node_api::encoding::{RepoListRequest, RepoListResponse, RepoSourceKind};
+use core_node_api::encoding::{
+    RepoListRepoFailureKind, RepoListRequest, RepoListResponse, RepoSourceKind,
+};
 use peppylib::core_node::transport::poll;
 use std::time::Duration;
 
@@ -38,6 +40,53 @@ fn write_packages_cache(started: &StartedCoreNode, content: &str) {
     let cache_dir = started.peppy_dirs.cache_dir();
     std::fs::create_dir_all(&cache_dir).expect("create cache dir");
     std::fs::write(nodes_repo_cache_path(&started.peppy_dirs), content).expect("write cache file");
+}
+
+/// One `nodes.json5` entry for an fs-discovered node, shaped exactly as
+/// `repo refresh` records it: the origin's path points at the manifest file.
+///
+/// `repo list` reads the caches for every source kind rather than
+/// re-walking fs repositories, so an fs node has to be indexed to be
+/// listed, just like a git one.
+fn fs_cache_entry(node_dir: &std::path::Path, name: &str, tag: &str) -> serde_json::Value {
+    // Canonicalized, as refresh records it, so the entry is attributed to
+    // its repository on a tree that reaches the tempdir through a symlink.
+    let manifest = std::fs::canonicalize(node_dir)
+        .expect("canonicalize the node directory")
+        .join(NODE_CONFIG_FILE);
+    let body = std::fs::read(&manifest).expect("read the manifest the entry points at");
+    serde_json::json!({
+        "node_name": name,
+        "node_tag": tag,
+        "sha256": config::fingerprint::fingerprint_for_bytes(&body),
+        "origin": common::fs_origin(&manifest),
+    })
+}
+
+/// One `nodes.json5` entry for a git-discovered node. `path` is
+/// repo-relative and points at the manifest file.
+fn git_cache_entry(
+    name: &str,
+    tag: &str,
+    repo_url: &str,
+    repo_ref: &str,
+    path: &str,
+) -> serde_json::Value {
+    let id = format!("{name}:{tag}");
+    serde_json::json!({
+        "node_name": name,
+        "node_tag": tag,
+        "sha256": common::seeded_sha(&id),
+        "origin": common::git_origin(repo_url, repo_ref, path, &id),
+    })
+}
+
+/// Write `entries` as the nodes cache.
+fn index_nodes(started: &StartedCoreNode, entries: Vec<serde_json::Value>) {
+    write_packages_cache(
+        started,
+        &serde_json::to_string(&serde_json::Value::Array(entries)).unwrap(),
+    );
 }
 
 /// Create a directory with a valid peppy.json5 inside it.
@@ -97,8 +146,8 @@ async fn list_finds_nodes_in_fs_repo() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("test_repo");
-    create_node_dir(&repo_dir, "my_sensor", "v1");
-    create_node_dir(&repo_dir, "my_actuator", "v2");
+    let sensor_dir = create_node_dir(&repo_dir, "my_sensor", "v1");
+    let actuator_dir = create_node_dir(&repo_dir, "my_actuator", "v2");
 
     write_repositories_json5(
         &started,
@@ -106,6 +155,13 @@ async fn list_finds_nodes_in_fs_repo() {
             { "id": 1, "type": "fs", "path": repo_dir.to_string_lossy() }
         ]))
         .unwrap(),
+    );
+    index_nodes(
+        &started,
+        vec![
+            fs_cache_entry(&sensor_dir, "my_sensor", "v1"),
+            fs_cache_entry(&actuator_dir, "my_actuator", "v2"),
+        ],
     );
 
     let resp = send_repo_list(&started).await;
@@ -140,27 +196,12 @@ async fn list_reads_git_nodes_from_cache() {
     );
 
     // Write a nodes.json5 cache with nodes from that git repo
-    write_packages_cache(
+    index_nodes(
         &started,
-        &serde_json::to_string(&serde_json::json!([
-            {
-                "node_name": "git_sensor",
-                "node_tag": "v1",
-                "source_type": "git",
-                "source_uri": git_url,
-                "resolved_ref": "main",
-                "path": "nodes/git_sensor"
-            },
-            {
-                "node_name": "git_actuator",
-                "node_tag": "v2",
-                "source_type": "git",
-                "source_uri": git_url,
-                "resolved_ref": "main",
-                "path": "nodes/git_actuator"
-            }
-        ]))
-        .unwrap(),
+        vec![
+            git_cache_entry("git_sensor", "v1", git_url, "main", "nodes/git_sensor"),
+            git_cache_entry("git_actuator", "v2", git_url, "main", "nodes/git_actuator"),
+        ],
     );
 
     let resp = send_repo_list(&started).await;
@@ -200,9 +241,9 @@ async fn list_marks_cross_repo_duplicates_fs() {
 
     let repo_a = started.peppy_dirs.root().join("list_dup_a");
     let repo_b = started.peppy_dirs.root().join("list_dup_b");
-    create_node_dir(&repo_a, "shared", "v1");
-    create_node_dir(&repo_b, "shared", "v1");
-    create_node_dir(&repo_b, "unique_b", "v1");
+    let shared_a = create_node_dir(&repo_a, "shared", "v1");
+    let shared_b = create_node_dir(&repo_b, "shared", "v1");
+    let unique_b = create_node_dir(&repo_b, "unique_b", "v1");
 
     write_repositories_json5(
         &started,
@@ -211,6 +252,14 @@ async fn list_marks_cross_repo_duplicates_fs() {
             { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
         ]))
         .unwrap(),
+    );
+    index_nodes(
+        &started,
+        vec![
+            fs_cache_entry(&shared_a, "shared", "v1"),
+            fs_cache_entry(&shared_b, "shared", "v1"),
+            fs_cache_entry(&unique_b, "unique_b", "v1"),
+        ],
     );
 
     let resp = send_repo_list(&started).await;
@@ -266,7 +315,7 @@ async fn list_marks_git_duplicate_of_fs() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("fs_repo");
-    create_node_dir(&repo_dir, "overlapping", "v1");
+    let overlapping = create_node_dir(&repo_dir, "overlapping", "v1");
 
     let git_url = "https://github.com/example/nodes.git";
 
@@ -279,18 +328,13 @@ async fn list_marks_git_duplicate_of_fs() {
         .unwrap(),
     );
 
-    // Cache has the same node from git
-    write_packages_cache(
+    // Both repositories provide the same identity; the lower id wins.
+    index_nodes(
         &started,
-        &serde_json::to_string(&serde_json::json!([{
-            "node_name": "overlapping",
-            "node_tag": "v1",
-            "source_type": "git",
-            "source_uri": git_url,
-            "resolved_ref": "main",
-            "path": "nodes/overlapping"
-        }]))
-        .unwrap(),
+        vec![
+            fs_cache_entry(&overlapping, "overlapping", "v1"),
+            git_cache_entry("overlapping", "v1", git_url, "main", "nodes/overlapping"),
+        ],
     );
 
     let resp = send_repo_list(&started).await;
@@ -320,7 +364,11 @@ async fn list_marks_git_duplicate_of_fs() {
         "git entry should be marked as duplicate"
     );
     assert_eq!(git_entry.repo_id, 2);
-    assert_eq!(git_entry.repo_label, format!("{git_url} (ref: main)"));
+    // The label describes the repository as configured, which is what
+    // `repo add` and `repo exclude` print, so a user can match them up.
+    // This repository pins no ref, so the label is the bare url even
+    // though the cached entry resolved to `main`.
+    assert_eq!(git_entry.repo_label, git_url);
 }
 
 /// Write an excluded_repositories.json5 file in the conf_dir.
@@ -349,8 +397,8 @@ async fn list_excludes_fs_repo() {
 
     let repo_a = started.peppy_dirs.root().join("repo_a");
     let repo_b = started.peppy_dirs.root().join("repo_b");
-    create_node_dir(&repo_a, "node_a", "v1");
-    create_node_dir(&repo_b, "node_b", "v1");
+    let node_a = create_node_dir(&repo_a, "node_a", "v1");
+    let node_b = create_node_dir(&repo_b, "node_b", "v1");
 
     write_repositories_json5(
         &started,
@@ -359,6 +407,14 @@ async fn list_excludes_fs_repo() {
             { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
         ]))
         .unwrap(),
+    );
+    // Both are indexed; the exclusion is what keeps repo_b out of the list.
+    index_nodes(
+        &started,
+        vec![
+            fs_cache_entry(&node_a, "node_a", "v1"),
+            fs_cache_entry(&node_b, "node_b", "v1"),
+        ],
     );
     write_excluded_repositories_json5(
         &started,
@@ -374,14 +430,19 @@ async fn list_excludes_fs_repo() {
     assert_eq!(resp.nodes[0].node_name, "node_a");
 }
 
-/// An excluded subdirectory within an FS repo should be pruned from the list.
+/// `repo list` reports what will actually resolve, so a node sitting on
+/// disk but absent from the index is not listed: it cannot be launched
+/// until the next refresh, and showing it would promise otherwise.
+///
+/// Subdirectory exclusion is applied while walking, so it is covered by
+/// the refresh tests rather than here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn list_excludes_fs_subdirectory() {
+async fn list_omits_nodes_that_are_on_disk_but_not_indexed() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo = started.peppy_dirs.root().join("mixed_repo");
-    create_node_dir(&repo, "keep_node", "v1");
-    create_node_dir(&repo, "secret_node", "v1");
+    let indexed = create_node_dir(&repo, "keep_node", "v1");
+    create_node_dir(&repo, "added_since_the_last_refresh", "v1");
 
     write_repositories_json5(
         &started,
@@ -390,17 +451,15 @@ async fn list_excludes_fs_subdirectory() {
         ]))
         .unwrap(),
     );
-    write_excluded_repositories_json5(
-        &started,
-        &serde_json::to_string(&serde_json::json!([
-            { "id": 1, "type": "fs", "path": repo.join("secret_node_v1").to_string_lossy() }
-        ]))
-        .unwrap(),
-    );
+    index_nodes(&started, vec![fs_cache_entry(&indexed, "keep_node", "v1")]);
 
     let resp = send_repo_list(&started).await;
     assert!(resp.success);
-    assert_eq!(resp.nodes.len(), 1, "only keep_node should be listed");
+    assert_eq!(
+        resp.nodes.len(),
+        1,
+        "only the indexed node should be listed"
+    );
     assert_eq!(resp.nodes[0].node_name, "keep_node");
 }
 
@@ -410,7 +469,7 @@ async fn list_excludes_git_repo() {
     let started = start_core_node_with_mock_messenger().await;
 
     let repo_dir = started.peppy_dirs.root().join("fs_repo");
-    create_node_dir(&repo_dir, "fs_node", "v1");
+    let fs_node = create_node_dir(&repo_dir, "fs_node", "v1");
 
     let git_url = "https://github.com/example/excluded.git";
 
@@ -422,16 +481,12 @@ async fn list_excludes_git_repo() {
         ]))
         .unwrap(),
     );
-    write_packages_cache(
+    index_nodes(
         &started,
-        &serde_json::to_string(&serde_json::json!([{
-            "node_name": "git_node",
-            "node_tag": "v1",
-            "source_type": "git",
-            "source_uri": git_url,
-            "path": "nodes/git_node"
-        }]))
-        .unwrap(),
+        vec![
+            fs_cache_entry(&fs_node, "fs_node", "v1"),
+            git_cache_entry("git_node", "v1", git_url, "main", "nodes/git_node"),
+        ],
     );
     write_excluded_repositories_json5(
         &started,
@@ -446,4 +501,155 @@ async fn list_excludes_git_repo() {
     assert_eq!(resp.nodes.len(), 1, "only fs_node should be listed");
     assert_eq!(resp.nodes[0].node_name, "fs_node");
     assert_eq!(resp.nodes[0].source_type, RepoSourceKind::Fs);
+}
+
+/// Two repositories claiming one identity and one repository claiming it
+/// twice are different situations and must be labelled differently.
+/// Reporting a conflict as harmless shadowing is what let the original
+/// defect hide.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_distinguishes_conflict_from_cross_repo_shadowing() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo_a = started.peppy_dirs.root().join("repo_a");
+    let repo_b = started.peppy_dirs.root().join("repo_b");
+    let shadowed_a = create_node_dir(&repo_a, "shadowed", "v1");
+    let shadowed_b = create_node_dir(&repo_b, "shadowed", "v1");
+
+    write_repositories_json5(
+        &started,
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo_a.to_string_lossy() },
+            { "id": 2, "type": "fs", "path": repo_b.to_string_lossy() }
+        ]))
+        .unwrap(),
+    );
+    index_nodes(
+        &started,
+        vec![
+            fs_cache_entry(&shadowed_a, "shadowed", "v1"),
+            fs_cache_entry(&shadowed_b, "shadowed", "v1"),
+        ],
+    );
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+
+    let shadowed: Vec<_> = resp
+        .nodes
+        .iter()
+        .filter(|n| n.node_name == "shadowed")
+        .collect();
+    assert_eq!(shadowed.len(), 2);
+    assert_eq!(
+        shadowed.iter().filter(|n| n.duplicate).count(),
+        1,
+        "exactly the losing entry is marked as shadowed"
+    );
+    assert_eq!(
+        shadowed
+            .iter()
+            .find(|n| !n.duplicate)
+            .expect("one entry wins")
+            .repo_id,
+        1,
+        "the lower-id repository is the one that resolves"
+    );
+}
+
+/// A repository whose last refresh failed is reported as retained, with
+/// the timestamp of the read its entries actually came from and a reason
+/// that says whether it was an outage or a content bug.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_reports_retained_entries_and_the_failure_reason() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo = started.peppy_dirs.root().join("stale_repo");
+    let node = create_node_dir(&repo, "kept", "v1");
+
+    write_repositories_json5(
+        &started,
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
+        ]))
+        .unwrap(),
+    );
+    index_nodes(&started, vec![fs_cache_entry(&node, "kept", "v1")]);
+    std::fs::write(
+        started.peppy_dirs.cache_dir().join("repo_status.json5"),
+        serde_json::to_string(&serde_json::json!([{
+            "id": 1,
+            "identity": repo.to_string_lossy(),
+            "source_type": "fs",
+            "last_read_unix_secs": 1_753_900_000u64,
+            "last_failure": {
+                "kind": "unreachable",
+                "message": "path does not exist",
+                "unix_secs": 1_753_986_400u64
+            }
+        }]))
+        .unwrap(),
+    )
+    .expect("write repo status");
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+
+    assert_eq!(resp.repos.len(), 1);
+    let repo_status = &resp.repos[0];
+    assert_eq!(repo_status.id, 1);
+    assert!(repo_status.retained, "its last read failed");
+    assert_eq!(
+        repo_status.last_read_unix_secs,
+        Some(1_753_900_000),
+        "the entries date from the last clean read, not from now"
+    );
+    let failure = repo_status.failure.as_ref().expect("reason reported");
+    assert_eq!(
+        failure.kind,
+        RepoListRepoFailureKind::Unreachable,
+        "an outage must not read as a content bug"
+    );
+
+    // The retained entry is still listed: launchers referencing it keep working.
+    assert_eq!(resp.nodes.len(), 1);
+    assert_eq!(resp.nodes[0].node_name, "kept");
+}
+
+/// A repository that read cleanly is current, with no failure and no
+/// retained marker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_reports_a_healthy_repository_as_current() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let repo = started.peppy_dirs.root().join("healthy_repo");
+    let node = create_node_dir(&repo, "fresh", "v1");
+
+    write_repositories_json5(
+        &started,
+        &serde_json::to_string(&serde_json::json!([
+            { "id": 1, "type": "fs", "path": repo.to_string_lossy() }
+        ]))
+        .unwrap(),
+    );
+    index_nodes(&started, vec![fs_cache_entry(&node, "fresh", "v1")]);
+    std::fs::write(
+        started.peppy_dirs.cache_dir().join("repo_status.json5"),
+        serde_json::to_string(&serde_json::json!([{
+            "id": 1,
+            "identity": repo.to_string_lossy(),
+            "source_type": "fs",
+            "last_read_unix_secs": 1_753_900_000u64
+        }]))
+        .unwrap(),
+    )
+    .expect("write repo status");
+
+    let resp = send_repo_list(&started).await;
+    assert!(resp.success);
+    assert_eq!(resp.repos.len(), 1);
+    assert!(!resp.repos[0].retained);
+    assert!(resp.repos[0].failure.is_none());
+    assert_eq!(resp.nodes.len(), 1);
+    assert!(!resp.nodes[0].duplicate);
 }

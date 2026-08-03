@@ -106,26 +106,20 @@ mod container_e2e_tests {
 
         // Step 4: Start the container against a real messaging endpoint.
         // This mirrors real world usage and avoids mocked ready/health responders.
-        let (messaging_host, messaging_port) = started
+        // The daemon assembles the runtime config from its own endpoint, so the
+        // test only asserts that endpoint is up rather than passing it along.
+        started
             .caller_handle
             .messaging_endpoint()
             .await
             .expect("zenoh endpoint should be available");
 
-        let runtime_config_json5 = common::build_runtime_config_json5(
-            messaging_host.as_str(),
-            messaging_port,
-            &started.core_node_name,
-            NODE_NAME,
-            NODE_TAG,
-            INSTANCE_ID,
-            Default::default(),
-        );
+        let instance_plan = common::instance_plan(INSTANCE_ID, Default::default());
 
         let start_response = send_node_run_and_wait(
             &started.caller_handle,
             &started.core_node_name,
-            &runtime_config_json5,
+            instance_plan.clone(),
             NODE_NAME,
             NODE_TAG,
             &NodeRunTestTimeouts {
@@ -272,26 +266,20 @@ mod container_e2e_tests {
 
         // Step 4: Start the container against a real messaging endpoint.
         // This mirrors real world usage and avoids mocked ready/health responders.
-        let (messaging_host, messaging_port) = started
+        // The daemon assembles the runtime config from its own endpoint, so the
+        // test only asserts that endpoint is up rather than passing it along.
+        started
             .caller_handle
             .messaging_endpoint()
             .await
             .expect("zenoh endpoint should be available");
 
-        let runtime_config_json5 = common::build_runtime_config_json5(
-            messaging_host.as_str(),
-            messaging_port,
-            &started.core_node_name,
-            NODE_NAME,
-            NODE_TAG,
-            INSTANCE_ID,
-            Default::default(),
-        );
+        let instance_plan = common::instance_plan(INSTANCE_ID, Default::default());
 
         let start_response = send_node_run_and_wait(
             &started.caller_handle,
             &started.core_node_name,
-            &runtime_config_json5,
+            instance_plan.clone(),
             NODE_NAME,
             NODE_TAG,
             &NodeRunTestTimeouts {

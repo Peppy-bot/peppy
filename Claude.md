@@ -10,10 +10,12 @@
 - I err on the side of handling more edge cases, not fewer; thoughtfulness > speed.
 - Bias toward explicit over clever (the code must stay human readable with meaningful function names).
 - Do not leave legacy code behind or code that is meant to support previous version of the code.
+- Documentation and code comments describe the code exactly as it is today, nothing else. Never refer to a previous state of the code (what it used to do, what changed, migration notes) and never announce a future one ("a future release will", "breaking change ahead", "not yet implemented"). If a behaviour does not exist in the code you are documenting, it does not appear in the docs; when it lands, the docs are rewritten in the present tense as if it had always been that way.
 - When you write comments or documentation, stop using em-dash `—`, this is a recurring pattern that you make and immediately jumps at users as being your coding style.
 - Push back hard against design implementation that you think are fundamentally wrong and explain your reasoning
 - Never merge PRs in the remote repository without my consent
 - When tests are written, never make them time-based, they should be deterministic and should not depend on the speed of the host
+
 ---
 
 ## Workflow and interaction style

@@ -43,6 +43,7 @@ use ureq::Error as HttpError;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
 use peppylib::messaging::SenderTarget;
 
+#[allow(clippy::too_many_arguments)] // Mirrors the other listeners' identity args + shared handles.
 pub async fn listen_for_node_add(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -51,6 +52,7 @@ pub async fn listen_for_node_add(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     relationships: super::RelationshipCoordinators,
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
     let action = ConcurrentAction::expose(
         messenger,
@@ -72,6 +74,7 @@ pub async fn listen_for_node_add(
             relationships,
         },
         gate: ConcurrencyGate::new(),
+        slice_ownership,
     };
 
     let handle = tokio::spawn(async move { run_action_loop(action, handler).await });
@@ -83,11 +86,22 @@ pub async fn listen_for_node_add(
 struct NodeAddGoalHandler {
     context: NodeAddActionContext,
     gate: ConcurrencyGate,
+    /// Consulted before admission: while a federated launch holds this machine,
+    /// only that launch's own dispatch may touch the stack. Lives on the
+    /// handler rather than the action context because the in-process launch
+    /// path calls the runner directly and is the coordinator's own work.
+    slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 impl GoalHandler for NodeAddGoalHandler {
     async fn handle_goal(&self, pending: PendingGoal) {
-        handle_goal_request(pending, self.context.clone(), self.gate.clone()).await
+        handle_goal_request(
+            pending,
+            self.context.clone(),
+            self.gate.clone(),
+            &self.slice_ownership,
+        )
+        .await
     }
 }
 
@@ -655,32 +669,6 @@ fn extract_http_bundle(
     extract_tar_zst(bundle_path, destination).map_err(|e| format!("{} (source: {})", e, url))
 }
 
-pub(crate) async fn download_and_extract_http_source(
-    url: &url::Url,
-    peppy_dirs: PeppyDirs,
-    expected_sha256: Option<String>,
-) -> std::result::Result<ExtractedHttpSource, String> {
-    let url = url.clone();
-    tokio::task::spawn_blocking(move || {
-        resolve_http_source_download_and_extract(url, &peppy_dirs, expected_sha256, None)
-    })
-    .await
-    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
-}
-
-pub(crate) async fn resolve_http_source(
-    url: &url::Url,
-    peppy_dirs: PeppyDirs,
-    expected_sha256: Option<String>,
-) -> std::result::Result<ResolvedNodeAddSource, String> {
-    let url = url.clone();
-    tokio::task::spawn_blocking(move || {
-        resolve_http_source_blocking(url, &peppy_dirs, expected_sha256, None)
-    })
-    .await
-    .map_err(|e| format!("Failed to join HTTP download task: {}", e))?
-}
-
 async fn resolve_http_source_with_feedback(
     url: &url::Url,
     peppy_dirs: PeppyDirs,
@@ -800,7 +788,16 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
                 .to_string()
         }
         NodeSource::Git { .. } | NodeSource::Http { .. } => generate_random_id(),
-        NodeSource::RepoNode { name, tag, .. } => format!("{name}_{tag}"),
+        // The pin embeds the identity; decoding it here only to label a log
+        // file would fail the whole goal on a malformed pin before the
+        // executor can report it properly, so a cheap identity probe is
+        // enough and falls back to a generic label.
+        NodeSource::Pinned { pin_json5 } => {
+            serde_json5::from_str::<daemon_config::repository::PinnedItem>(pin_json5)
+                .map(|pin| format!("{}_{}", pin.name, pin.tag))
+                .unwrap_or_else(|_| generate_random_id())
+        }
+        NodeSource::ResolveRef { name, tag } => format!("{name}_{tag}"),
     }
 }
 
@@ -872,11 +869,12 @@ async fn resolve_node_add_source(
             )
             .await
         }
-        NodeSource::RepoNode { .. } => {
-            // RepoNode goals are dispatched to `add_batch::run_repo_node_add`
-            // by `handle_goal_request` and never reach `run_node_add`, so this
-            // arm should be unreachable by construction.
-            Err("internal error: RepoNode reached the single-source add path".to_owned())
+        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
+            // Pinned and resolve-ref goals are routed to
+            // `add_batch::run_pinned_add` by [`dispatch_node_add`] and never
+            // reach `run_node_add`, so this arm should be unreachable by
+            // construction.
+            Err("internal error: a pinned source reached the single-source add path".to_owned())
         }
     }
 }
@@ -889,14 +887,50 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     )
 }
 
-/// Runs the full node-add pipeline: resolves the source, renames the log file
-/// to its canonical form, calls [`process_node_add`], and catches panics.
+/// The one place a node-add goal picks its pipeline: a pinned source (or a
+/// `name:tag` reference this daemon resolves into one) is a closure of
+/// nodes and takes the batch path, every other source names one thing to
+/// add and takes the single-source path.
+///
+/// Both the action-server path ([`handle_goal_request`]) and the direct
+/// call from `stack_launch` go through here, so no caller can send a
+/// source down the wrong pipeline by forgetting to check.
+pub(crate) async fn dispatch_node_add(
+    goal: NodeAddGoal,
+    action_context: NodeAddActionContext,
+    feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
+    log_file: Arc<StdMutex<File>>,
+    log_path: PathBuf,
+    timestamp: String,
+) -> NodeAddResult {
+    if matches!(
+        goal.source,
+        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. }
+    ) {
+        super::add_batch::run_pinned_add(goal, action_context, feedback_tx, log_file, log_path)
+            .await
+    } else {
+        run_node_add(
+            goal,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+            timestamp,
+        )
+        .await
+    }
+}
+
+/// Runs the full single-source node-add pipeline: resolves the source,
+/// renames the log file to its canonical form, calls [`process_node_add`],
+/// and catches panics.
 ///
 /// The caller is responsible for creating the log file (so the action-server
 /// path can include its path in the goal response before spawning this).
 ///
-/// This is the shared implementation used by both the action-server path
-/// ([`handle_goal_request`]) and the direct-call path from `stack_launch`.
+/// Reached through [`dispatch_node_add`], and directly from `add_batch` for
+/// each node of a batch once the repository source has been expanded.
 pub(crate) async fn run_node_add(
     goal: NodeAddGoal,
     action_context: NodeAddActionContext,
@@ -1087,6 +1121,7 @@ async fn handle_goal_request(
     pending: PendingGoal,
     action_context: NodeAddActionContext,
     gate: ConcurrencyGate,
+    slice_ownership: &crate::services::federation::SliceOwnership,
 ) {
     let sender_instance_id = pending.instance_id().to_string();
 
@@ -1101,6 +1136,14 @@ async fn handle_goal_request(
             return;
         }
     };
+
+    // Before the gate, because the gate is per-action and this exclusion is
+    // per-machine: a coordinator halfway through replacing this stack must not
+    // race a locally-typed `peppy node add`.
+    if let Err(reason) = slice_ownership.refuse_if_reserved_elsewhere(&goal) {
+        reject_goal(pending, encode_rejected_goal(reason)).await;
+        return;
+    }
 
     let generation = match admit_node_add_goal(&gate, &goal) {
         Ok(generation) => generation,
@@ -1127,8 +1170,12 @@ async fn handle_goal_request(
             "Received `node_add` goal from {sender_instance_id}, source=http:{}",
             url
         ),
-        NodeSource::RepoNode { name, tag, .. } => debug!(
-            "Received `node_add` goal from {sender_instance_id}, source=repo:{}:{}",
+        NodeSource::Pinned { .. } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=pinned ({} closure pin(s))",
+            goal.pins_json5.len()
+        ),
+        NodeSource::ResolveRef { name, tag } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=resolve:{}:{}",
             name, tag
         ),
     }
@@ -1185,29 +1232,16 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
-        let is_repo_node = matches!(&goal.source, NodeSource::RepoNode { .. });
         let result = tokio::select! {
             biased;
-            result = async {
-                if is_repo_node {
-                    super::add_batch::run_repo_node_add(
-                        goal,
-                        action_context,
-                        feedback_tx,
-                        log_file,
-                        log_path_clone,
-                    ).await
-                } else {
-                    run_node_add(
-                        goal,
-                        action_context,
-                        feedback_tx,
-                        log_file,
-                        log_path_clone,
-                        timestamp,
-                    ).await
-                }
-            } => result,
+            result = dispatch_node_add(
+                goal,
+                action_context,
+                feedback_tx,
+                log_file,
+                log_path_clone,
+                timestamp,
+            ) => result,
             _ = cancel_token_clone.cancelled() => {
                 NodeAddResult::failure(
                     &log_path_for_cancel,
@@ -1412,11 +1446,22 @@ async fn process_node_add_inner(
             line: line.to_string(),
         });
     };
+    // A goal carrying pins fixes which bytes its contract and pairing
+    // documents are: the launch (or the resolve-ref lowering) decided them
+    // once, and this machine's own cache picks must not override that.
+    // A goal without pins keeps the local resolution rules.
+    let doc_pins = if goal.pins_json5.is_empty() {
+        None
+    } else {
+        let decoded = super::pins::decode_pins(&goal.pins_json5)?;
+        Some(super::pins::DocPins::from_pins(&decoded))
+    };
     let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
         stack_resolver(&ctx.action.node_stack),
         &ctx.action.peppy_dirs,
+        doc_pins.as_ref(),
         &interface_feedback,
     )?;
     generate_peppygen_for_node(

@@ -1,4 +1,5 @@
-//! Pairing-document resolution for `depends_on.pairings`: loading the
+//! Pairing-document resolution for `depends_on.pairings` and
+//! `depends_on.pairing_observers`: loading the
 //! `pairing/v1` doc from the repo cache (sha-pinned, drift-checked) and
 //! validating each manifest entry's role against the doc's two roles.
 
@@ -23,41 +24,43 @@ fn resolve_pairing_doc(
 ) -> std::result::Result<PeppyPairing, String> {
     let cache = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
-    resolve_pairing_doc_cached(&cache, peppy_dirs, name, tag, sha256_pin, on_feedback)
+    resolve_pairing_doc_cached(&cache, peppy_dirs, name, tag, sha256_pin, None, on_feedback)
 }
 
 /// Resolves one pairing document against an already-loaded cache, so
 /// multi-slot validation doesn't re-read `pairings.json5` per entry.
+///
+/// A launch pin fixes the bytes: this machine reuses its own copy on a
+/// content match and fetches the pin's origin otherwise, but its own
+/// priority rules never pick the document. Without one, the local rules
+/// apply, with the manifest's own optional sha pin.
 fn resolve_pairing_doc_cached(
     cache: &[repo_cache::PairingCacheEntry],
     peppy_dirs: &PeppyDirs,
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<PeppyPairing, String> {
-    let entry = match sha256_pin {
-        Some(sha) => repo_cache::lookup_pairing_by_sha256(cache, name, tag, sha),
-        None => repo_cache::lookup_pairing(cache, name, tag),
+    let parse = |content: &str| {
+        daemon_config::pairing::PeppyPairingParser::from_content(content).map_err(|e| e.to_string())
     };
-
-    repo_cache::resolve_cached_doc(
-        peppy_dirs,
-        "pairing",
-        &format!("{name}:{tag}"),
-        sha256_pin,
-        entry.map(Into::into),
-        |content| {
-            daemon_config::pairing::PeppyPairingParser::from_content(content)
-                .map_err(|e| e.to_string())
-        },
-        on_feedback,
-    )
+    if let Some(pins) = doc_pins {
+        let pin = pins.require(
+            daemon_config::repository::PinKind::Pairing,
+            name,
+            tag,
+            sha256_pin,
+        )?;
+        return repo_cache::resolve_pinned_doc(peppy_dirs, cache, pin, parse, on_feedback);
+    }
+    repo_cache::resolve_cached_doc(peppy_dirs, cache, name, tag, sha256_pin, parse, on_feedback)
 }
 
-/// Validates every `depends_on.pairings` entry of a manifest against its
-/// resolved pairing document and returns the resolved docs keyed by slot
-/// link_id (ready for the codegen collection step):
+/// Validates every pairing slot of a manifest, participant and observer alike,
+/// against its resolved pairing document and returns the resolved docs keyed by
+/// slot link_id (ready for the codegen collection step):
 ///
 /// - the declared `role` must be one of the doc's two roles (the error
 ///   names them).
@@ -71,16 +74,13 @@ fn resolve_pairing_doc_cached(
 pub(crate) fn validate_pairing_specs(
     manifest: &config::node::Manifest,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<HashMap<String, PeppyPairing>, String> {
-    let Some(pairing_deps) = manifest
-        .depends_on
-        .as_ref()
-        .map(|d| d.pairings.as_slice())
-        .filter(|p| !p.is_empty())
-    else {
+    let slots = pairing_slots(manifest);
+    if slots.is_empty() {
         return Ok(HashMap::new());
-    };
+    }
 
     let cache = repo_cache::load_pairing_cache(peppy_dirs)
         .map_err(|e| format!("failed to load pairing cache: {e}"))?;
@@ -89,44 +89,70 @@ pub(crate) fn validate_pairing_specs(
     // arms over the same pairing) resolve it once, not once per slot.
     let mut resolved: HashMap<(&str, &str, Option<&str>), PeppyPairing> = HashMap::new();
     let mut out = HashMap::new();
-    for dep in pairing_deps {
-        let name = dep.name().as_str();
-        let doc = match resolved.entry((name, dep.tag(), dep.sha256())) {
+    for slot in slots {
+        let doc = match resolved.entry((slot.name, slot.tag, slot.sha256)) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => v.insert(resolve_pairing_doc_cached(
                 &cache,
                 peppy_dirs,
-                name,
-                dep.tag(),
-                dep.sha256(),
+                slot.name,
+                slot.tag,
+                slot.sha256,
+                doc_pins,
                 on_feedback,
             )?),
         };
-        // A participant's `role` and an observer's `observes_role` each name
-        // one of the document's two roles; the field name only changes the
-        // error label.
-        let (role_label, role) = match dep {
-            config::node::PairingDependency::Participant(p) => ("role", p.role.as_str()),
-            config::node::PairingDependency::Observer(o) => {
-                ("observes_role", o.observes_role.as_str())
-            }
-        };
-        if !doc.has_role(role) {
+        if !doc.has_role(slot.role) {
             let declared: Vec<&str> = doc.roles.iter().map(|r| r.as_str()).collect();
             return Err(format!(
-                "pairing slot `{}`: {role_label} `{role}` is not declared by pairing `{name}:{}` \
+                "pairing slot `{}`: role `{}` is not declared by pairing `{}:{}` \
                  (declared roles: [{}])",
-                dep.link_id(),
-                dep.tag(),
+                slot.link_id,
+                slot.role,
+                slot.name,
+                slot.tag,
                 declared.join(", "),
             ));
         }
-        out.insert(dep.link_id().to_string(), doc.clone());
+        out.insert(slot.link_id.to_string(), doc.clone());
     }
     Ok(out)
 }
 
-/// A failure resolving `depends_on.pairings` against the declared interface
+/// One pairing slot flattened to the fields document resolution needs. The two
+/// slot lists differ only in what `role` refers to (played vs observed), and
+/// that distinction does not reach the document lookup or the role check.
+struct PairingSlotRef<'a> {
+    name: &'a str,
+    tag: &'a str,
+    sha256: Option<&'a str>,
+    link_id: &'a str,
+    role: &'a str,
+}
+
+/// Every pairing slot of a manifest, participants first then observers.
+fn pairing_slots(manifest: &config::node::Manifest) -> Vec<PairingSlotRef<'_>> {
+    let Some(depends_on) = manifest.depends_on.as_ref() else {
+        return Vec::new();
+    };
+    let participants = depends_on.pairings.iter().map(|p| PairingSlotRef {
+        name: p.name.as_str(),
+        tag: &p.tag,
+        sha256: p.sha256.as_deref(),
+        link_id: &p.link_id,
+        role: &p.role,
+    });
+    let observers = depends_on.pairing_observers.iter().map(|o| PairingSlotRef {
+        name: o.name.as_str(),
+        tag: &o.tag,
+        sha256: o.sha256.as_deref(),
+        link_id: &o.link_id,
+        role: &o.role,
+    });
+    participants.chain(observers).collect()
+}
+
+/// A failure resolving a manifest's pairing slots against the declared interface
 /// entries. Mirrors `ImplementsError`: coverage problems are aggregated per
 /// slot so a node with several wrong entries produces one readable report.
 #[derive(Debug)]
@@ -172,7 +198,7 @@ struct SlotCoverage {
     wrong_role_consumes: Vec<String>,
 }
 
-/// Resolves every `depends_on.pairings` slot into the generator inputs for the
+/// Resolves every pairing slot, participant and observer, into the generator inputs for the
 /// `paired_topics/<link_id>/<topic>` modules, driven by what the node declares:
 /// each pairing-backed `topics.emits` entry becomes peer-emitted and each
 /// pairing-backed `topics.consumes` entry becomes peer-consumed, with shape
@@ -191,37 +217,54 @@ pub fn collect_pairing_interfaces(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
-    let Some(pairing_deps) = manifest
-        .depends_on
-        .as_ref()
-        .map(|d| d.pairings.as_slice())
-        .filter(|p| !p.is_empty())
-    else {
+    let Some(depends_on) = manifest.depends_on.as_ref() else {
         return Ok(Vec::new());
     };
-    let docs = validate_pairing_specs(manifest, peppy_dirs, on_feedback)?;
+    if depends_on.pairings.is_empty() && depends_on.pairing_observers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let docs = validate_pairing_specs(manifest, peppy_dirs, doc_pins, on_feedback)?;
+    let doc_of = |link_id: &str| {
+        docs.get(link_id)
+            .expect("validate_pairing_specs returns a doc per declared slot")
+    };
+    let context_of = |name: &str, tag: &str, link_id: &str| generator::PeerContext {
+        link_id: link_id.to_string(),
+        pairing_name: name.to_string(),
+        pairing_tag: tag.to_string(),
+    };
 
     let mut out = Vec::new();
     let mut broken = Vec::new();
-    for dep in pairing_deps {
-        let doc = docs
-            .get(dep.link_id())
-            .expect("validate_pairing_specs returns a doc per declared slot");
-        let context = generator::PeerContext {
-            link_id: dep.link_id().to_string(),
-            pairing_name: dep.name().as_str().to_string(),
-            pairing_tag: dep.tag().to_string(),
-        };
-        let mismatch = match dep {
-            config::node::PairingDependency::Participant(participant) => {
-                collect_participant_slot(participant, doc, interfaces_cfg, &context, &mut out)
-            }
-            config::node::PairingDependency::Observer(observer) => {
-                collect_observer_slot(observer, doc, interfaces_cfg, &context, &mut out)
-            }
-        };
+    for participant in &depends_on.pairings {
+        let context = context_of(
+            participant.name.as_str(),
+            &participant.tag,
+            &participant.link_id,
+        );
+        let mismatch = collect_participant_slot(
+            participant,
+            doc_of(&participant.link_id),
+            interfaces_cfg,
+            &context,
+            &mut out,
+        );
+        if !mismatch.is_empty() {
+            broken.push(mismatch);
+        }
+    }
+    for observer in &depends_on.pairing_observers {
+        let context = context_of(observer.name.as_str(), &observer.tag, &observer.link_id);
+        let mismatch = collect_observer_slot(
+            observer,
+            doc_of(&observer.link_id),
+            interfaces_cfg,
+            &context,
+            &mut out,
+        );
         if !mismatch.is_empty() {
             broken.push(mismatch);
         }
@@ -299,7 +342,7 @@ fn collect_observer_slot(
     context: &generator::PeerContext,
     out: &mut Vec<generator::DeploymentInterface>,
 ) -> PairingCoverageMismatch {
-    let observed_role = observer.observes_role.as_str();
+    let observed_role = observer.role.as_str();
     let mut coverage = SlotCoverage::default();
 
     // An observer produces nothing; a stray emit entry naming its slot is a
@@ -439,7 +482,7 @@ fn build_observer_mismatch(
         pairing_name: dep.name.as_str().to_string(),
         pairing_tag: dep.tag.clone(),
         link_id: dep.link_id.clone(),
-        role: dep.observes_role.clone(),
+        role: dep.role.clone(),
         missing_emits: Vec::new(),
         unknown_emits: coverage.unknown_emits,
         duplicated_emits: Vec::new(),
@@ -465,7 +508,6 @@ fn duplicated_consumes(coverage: &SlotCoverage) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_node_api::encoding::RepoSourceKind;
     use std::fs;
     use tempfile::TempDir;
 
@@ -488,13 +530,10 @@ mod tests {
         let path = dir.join(format!("{name}_{tag}.json5"));
         fs::write(&path, body).expect("write pairing file");
         repo_cache::PairingCacheEntry {
-            pairing_name: name.to_string(),
-            tag: tag.to_string(),
-            sha256: config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            path: path.to_string_lossy().to_string(),
+            pairing_name: daemon_config::repository::ItemName::parse(name).unwrap(),
+            tag: daemon_config::repository::ItemTag::parse(tag).unwrap(),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
+            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
             repo_id: 0,
         }
     }
@@ -546,7 +585,7 @@ mod tests {
         interfaces_cfg: &config::node::Interfaces,
         dirs: &PeppyDirs,
     ) -> std::result::Result<Vec<generator::DeploymentInterface>, PairingError> {
-        collect_pairing_interfaces(manifest, interfaces_cfg, dirs, &|_| {})
+        collect_pairing_interfaces(manifest, interfaces_cfg, dirs, None, &|_| {})
     }
 
     /// The `(module_path, is_emitted)` of each produced interface, so tests
@@ -888,7 +927,7 @@ mod tests {
                 }
             }"#,
         );
-        let docs = validate_pairing_specs(&m, &dirs, &|_| {}).expect("valid role resolves");
+        let docs = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect("valid role resolves");
         let doc = docs.get("controller").expect("doc keyed by link_id");
         assert_eq!(doc.manifest.name.as_str(), "arm_link");
         assert!(doc.has_role("arm") && doc.has_role("controller"));
@@ -908,7 +947,7 @@ mod tests {
                 }
             }"#,
         );
-        let err = validate_pairing_specs(&m, &dirs, &|_| {}).expect_err("bad role rejected");
+        let err = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect_err("bad role rejected");
         assert!(
             err.contains("gripper") && err.contains("controller") && err.contains("arm"),
             "error should name the bad role and the declared roles: {err}"
@@ -926,7 +965,7 @@ mod tests {
                 }
             }"#,
         );
-        let err = validate_pairing_specs(&m, &dirs, &|_| {}).expect_err("miss must error");
+        let err = validate_pairing_specs(&m, &dirs, None, &|_| {}).expect_err("miss must error");
         assert!(
             err.contains("arm_link:v1") && err.contains("peppy repo refresh"),
             "error should name the entry and suggest refresh: {err}"
@@ -938,7 +977,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
         let good_sha = entry.sha256.clone();
-        let path = entry.path.clone();
+        let path = entry.origin.path_str().to_owned();
         let (_t, dirs) = make_peppy_dirs_with_cache(&[entry]);
 
         // Pin to a sha not in the cache.
@@ -952,7 +991,7 @@ mod tests {
             ARM_LINK_BODY.replace("joint_states", "joint_states_v2"),
         )
         .unwrap();
-        let err = resolve_pairing_doc(&dirs, "arm_link", "v1", Some(&good_sha), &|_| {})
+        let err = resolve_pairing_doc(&dirs, "arm_link", "v1", Some(good_sha.as_str()), &|_| {})
             .expect_err("drift rejected");
         assert!(err.contains("drifted"), "error: {err}");
     }

@@ -538,14 +538,9 @@ fn resolve_core_node_name(flag: Option<String>, config: Option<String>) -> Resul
         (None, Some(name)) => (name, "core_node_name in peppy_config.json5"),
         (None, None) => return Ok(None),
     };
-    if config::runtime::Name::new(name.as_str()).is_err()
-        || name.len() > daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN
-    {
+    if let Err(reason) = daemon_config::core_node_name::CoreNodeName::new(name.as_str()) {
         return Err(Error::ExecutionFailed(format!(
-            "invalid core node name {name:?} (from {source}): must be non-empty, at most {} \
-             characters, and use only characters from \"{}\"",
-            daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN,
-            config::consts::ALLOWED_CONFIG_CHARS
+            "invalid core node name {name:?} (from {source}): {reason}"
         )));
     }
     Ok(Some(name))

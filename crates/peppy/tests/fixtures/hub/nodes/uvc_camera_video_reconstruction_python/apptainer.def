@@ -1,0 +1,30 @@
+Bootstrap: docker
+# Pinned by digest for the same reason as the camera's definition: nothing a
+# test run depends on may change without a commit in this repository.
+From: tuatini/peppy-python-uv-base@sha256:04fc17ea01ba908f0082bdb19b692b1c576bcaeaf580567ffe7af580e2fe9071
+
+%labels
+    Name uvc_camera_video_reconstruction_python
+    Version 0.1.0
+
+%environment
+    export PATH="/opt/uvc_camera_video_reconstruction_python/.venv/bin:$PATH"
+
+%files
+    . /opt/uvc_camera_video_reconstruction_python
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Keeps the managed interpreter out of the home directory apptainer mounts
+    # over at run time; see the camera's definition for what that costs.
+    export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+
+    cd /opt/uvc_camera_video_reconstruction_python
+    uv python install
+    uv sync --no-editable
+
+%runscript
+    cd /opt/uvc_camera_video_reconstruction_python
+    exec ./.venv/bin/python -m uvc_camera_video_reconstruction_python

@@ -32,17 +32,49 @@
 //!   own (`reconnect: true`), and the backend neither probes this daemon nor
 //!   tears anything down: the router it hands back is a single shared one, not a
 //!   per-user resource with a lifetime.
-//! * **Registration cadence.** Every config pull's POST carries this daemon's
-//!   core-node name *and* its managed router's pinned transport identity
-//!   (`router_zid`), upserting both into the backend's per-principal core-node
-//!   registry. The zid is what lets the platform tell a site whose uplink is
-//!   healthy but whose daemon is dead from one that is simply unreachable: it
-//!   matches the row against the shared router's live session list. The POST fires on cache-stale pulls and on login/logout pokes —
-//!   login clears the router cache, so every login re-registers — never on a
-//!   timer. The backend's `last_seen_at` for a core node therefore means "last
-//!   federation config pull", not liveness. `peppy platform logout` removes the
-//!   row outright (`DELETE /me/core-nodes/{core_node_name}`), since a logged-out
-//!   machine stops federating and stops pulling config.
+//! * **Registration.** A separate `POST /me/core-nodes` tells the backend this
+//!   daemon runs its core node behind the router identity (`router_zid`) it
+//!   pins. The zid is what lets the platform tell a site whose uplink is healthy
+//!   but whose daemon is dead from one that is simply unreachable: it matches
+//!   the row against the shared router's live session list.
+//!
+//!   The rule is a match on the poll's own outcome, deliberately not a
+//!   cache-freshness side effect of the config pull:
+//!
+//!   * `Applied(Some(_))` registers. Every poll does, whatever the config cache
+//!     state, so a boot always re-asserts the identity its live router pins. A
+//!     re-minted identity (a lost or corrupt identity file) therefore corrects
+//!     itself on the next start rather than lingering as a row pointing at a
+//!     session that no longer exists.
+//!   * `Applied(None)` (logged out, or no upstream resolved) does not. `peppy
+//!     platform logout` removes the row outright
+//!     (`DELETE /me/core-nodes/{core_node_name}`), so registering here would
+//!     resurrect a decommissioned machine.
+//!   * `Pinned` does not. Under an operator-pinned `ZENOH_CONFIG` the router
+//!     does not run under the id we would report, so publishing it would be the
+//!     same wrong-zid bug by another route. The row stays absent, which reads as
+//!     `registered: false`.
+//!   * `Unreachable` DOES register. Registration asserts identity, not health:
+//!     the router is pinned to that zid and keeps retrying its connect, and
+//!     whether a session exists is exactly what the platform's NETWORK column
+//!     answers. Suppressing it would hide a site instead of reporting it as
+//!     `unlinked`.
+//!   * `Failed` and `Restart` cannot reach the registration: both return before
+//!     it. In particular a namespace change (every first login on a machine)
+//!     returns `Restart` from the gate, so the outgoing generation never
+//!     publishes the identity it is about to discard; the rebuilt generation
+//!     registers the one it actually mints.
+//!
+//!   The registration runs *after* the verify probe, and regardless of its
+//!   result, but a probe failure still wins the report: `Unreachable` means the
+//!   product is broken, while a failed registration means only that the
+//!   platform's view of this machine is stale ([`FederationOutcome::NotRegistered`]).
+//!
+//!   There is no retry. Polls happen at startup and on login/logout pokes, with
+//!   no timer, and adding one would give a deliberately time-free task
+//!   time-dependent behaviour for a failure mode a single `peppy platform login`
+//!   already fixes. A startup registration failure is therefore logged loudly
+//!   instead, naming the command that corrects it.
 //! * **Live (re)federation.** When the resolved upstream changes (the user logs
 //!   in, logs out, or the endpoint moves) the local router's zenohd config is
 //!   re-rendered and the router restarted, so the change takes effect without a
@@ -70,6 +102,17 @@ use tracing::{info, warn};
 /// firewalled router fails the probe within this bound and surfaces promptly as
 /// [`FederationOutcome::Unreachable`] rather than as a daemon-side ack timeout.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a poll waits for the core-node registration to reach the backend.
+///
+/// Deliberately its own small bound rather than the resolve's `connect_timeout`
+/// (30s by default), for the same reason [`PROBE_TIMEOUT`] is: this is a second
+/// network step on a verifying poke's critical path, and the daemon's ack budget
+/// ([`super::federation_control`]'s `APPLY_ACK_SLACK`) has to cover resolve +
+/// bounce + probe + this. Inheriting `connect_timeout` would blow that budget, so
+/// a working login would surface as a client-side timeout instead of a definite
+/// answer.
+pub(crate) const REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Resolves the desired upstream `(endpoint, tls)` for the local router, or
 /// `None` when there is nothing to federate to (logged out / unreachable). A
@@ -116,6 +159,35 @@ fn real_federator(messenger: Arc<Mutex<Messenger>>) -> Federator {
     })
 }
 
+/// Claims this daemon's identity on the platform: `Ok(())` if the backend
+/// recorded it, `Err(reason)` (human-readable) otherwise. A boxed closure so
+/// tests can inject a deterministic registrar (with a call counter and the
+/// arguments it saw) in place of the real, networked
+/// [`auth::router::register_core_node`].
+type Registrar = Arc<dyn Fn() -> std::result::Result<(), String> + Send + Sync>;
+
+/// The real registrar. It closes over the `router_id` **this generation pinned**
+/// rather than re-reading the identity file, so what reaches the registry is
+/// always the id the live router is actually running under: re-reading would
+/// reintroduce the very skew this call exists to remove.
+fn real_registrar(
+    peppy_dirs: PeppyDirs,
+    api_url: String,
+    core_node_name: String,
+    router_id: pmi::RouterId,
+) -> Registrar {
+    Arc::new(move || {
+        auth::router::register_core_node(
+            &peppy_dirs,
+            &api_url,
+            REGISTER_TIMEOUT,
+            &core_node_name,
+            &router_id,
+        )
+        .map_err(|error| error.to_string())
+    })
+}
+
 /// Outcome of one federation poll, reported back to a control-socket poke so the
 /// CLI can tell the user the post-apply state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +206,16 @@ pub(crate) enum FederationOutcome {
     /// federation with platform-backend is NOT actually in effect (e.g. an
     /// UnknownCA handshake loop). Only a verifying poke produces this.
     Unreachable(String),
+    /// Federation itself is in effect, but the backend did not record this
+    /// machine's identity, so the platform's roster still shows whatever it held
+    /// before (a stale zid, or nothing at all).
+    ///
+    /// Deliberately not folded into [`Self::Failed`]. That reports "the daemon
+    /// could not apply federation", which would be false here and would send the
+    /// user to debug a transport that is working. This is the one fact the whole
+    /// registration split exists to keep separate from the apply, so it stays
+    /// separate all the way out to the CLI.
+    NotRegistered(String),
     /// The credentials changed the daemon's *workspace namespace*. A session's
     /// namespace is immutable after open and the core node holds long-lived
     /// declarations, so the change cannot be applied to the live session by a
@@ -158,6 +240,23 @@ fn real_namespace_resolver(creds_path: PathBuf) -> NamespaceResolver {
     Arc::new(move || auth::router::session_namespace(&creds_path))
 }
 
+/// The injectable collaborators one federation poll needs: apply an upstream,
+/// resolve the desired one, probe the link, claim this machine's identity, and
+/// re-read the namespace.
+///
+/// Bundled rather than passed positionally because five boxed closures in a row
+/// are indistinguishable at a call site: only the field names say which is which.
+/// Grouping them (with [`StartupGates`] doing the same for the two gates) is also
+/// what lets `poll_and_apply` and `manage_federation` drop their
+/// `#[allow(clippy::too_many_arguments)]` rather than grow past it.
+pub(crate) struct FederationDeps {
+    pub(crate) federator: Federator,
+    pub(crate) resolver: Resolver,
+    pub(crate) prober: Prober,
+    pub(crate) registrar: Registrar,
+    pub(crate) namespace_resolver: NamespaceResolver,
+}
+
 /// A "refederate now" request from the control socket: run a poll immediately and
 /// reply with the resulting [`FederationOutcome`] over `ack`.
 pub(crate) struct RefederateRequest {
@@ -172,9 +271,8 @@ pub(crate) type TriggerReceiver = mpsc::Receiver<RefederateRequest>;
 /// Background task (a [`ServeAsyncCommand`]) that federates the local router to
 /// the per-user cloud router and keeps it federated. See the module docs.
 pub(crate) struct RouterFederation {
-    federator: Federator,
-    resolver: Resolver,
-    prober: Prober,
+    /// Everything one poll calls out to (see [`FederationDeps`]).
+    deps: FederationDeps,
     /// Goes `true` once the router process is up (MessagingRouter ran
     /// `start_router` + `start_session`). The task waits on this before touching
     /// the router so its initial federation cannot race the router's own startup.
@@ -188,9 +286,6 @@ pub(crate) struct RouterFederation {
     /// that re-resolves a *different* namespace from fresh creds requests a
     /// restart instead of a live re-federation.
     startup_namespace: config::namespace::Namespace,
-    /// Resolves the current namespace from the credentials (post-pull), compared
-    /// against `startup_namespace` to detect a namespace change.
-    namespace_resolver: NamespaceResolver,
     /// In-process restart signal (the serve coordinator's). The *startup*
     /// federation poll raises it when it discovers the credentials already resolve
     /// to a different namespace than this generation started under, so the live
@@ -226,28 +321,32 @@ impl RouterFederation {
         presence_gate_tx: Option<watch::Sender<bool>>,
         teardown_token: CancellationToken,
     ) -> Self {
-        // Both ambient inputs the loop re-reads on every poll derive from the
-        // generation's data root: the credentials file (namespace re-resolve)
-        // and the federation resolve (credentials + materialized dev TLS).
+        // Every ambient input the loop re-reads on a poll derives from the
+        // generation's data root: the credentials file (namespace re-resolve),
+        // the federation resolve (credentials + materialized dev TLS), and the
+        // registration (credentials again).
         let creds_path = auth::storage::credentials_path(&peppy_dirs);
+        let registrar = real_registrar(
+            peppy_dirs.clone(),
+            api_url.clone(),
+            core_node_name,
+            router_id,
+        );
         let resolver: Resolver = Arc::new(move || {
-            auth::router::resolve_federation_target(
-                &peppy_dirs,
-                &api_url,
-                connect_timeout,
-                &core_node_name,
-                &router_id,
-            )
+            auth::router::resolve_federation_target(&peppy_dirs, &api_url, connect_timeout)
         });
         Self {
-            federator: real_federator(messenger),
-            resolver,
-            prober: real_prober(),
+            deps: FederationDeps {
+                federator: real_federator(messenger),
+                resolver,
+                prober: real_prober(),
+                registrar,
+                namespace_resolver: real_namespace_resolver(creds_path),
+            },
             messaging_ready,
             trigger_rx,
             connect_timeout,
             startup_namespace,
-            namespace_resolver: real_namespace_resolver(creds_path),
             restart_tx,
             presence_gate_tx,
             teardown_token,
@@ -258,14 +357,11 @@ impl RouterFederation {
 impl ServeAsyncCommand for RouterFederation {
     fn run(self: Box<Self>) -> ServeAsyncHandle {
         let RouterFederation {
-            federator,
-            resolver,
-            prober,
+            deps,
             messaging_ready,
             trigger_rx,
             connect_timeout,
             startup_namespace,
-            namespace_resolver,
             restart_tx,
             presence_gate_tx,
             teardown_token,
@@ -282,9 +378,9 @@ impl ServeAsyncCommand for RouterFederation {
             // promptly (the loop is otherwise infinite).
             tokio::select! {
                 _ = manage_federation(
-                    federator, resolver, prober, messaging_ready, trigger_rx, ready_tx,
-                    connect_timeout, startup_namespace, namespace_resolver, restart_tx,
-                    presence_gate_tx,
+                    &deps, messaging_ready, trigger_rx,
+                    StartupGates::new(ready_tx, presence_gate_tx), connect_timeout,
+                    startup_namespace, restart_tx,
                 ) => {}
                 _ = crate::shutdown_signal::shutdown_or_token(&teardown_token) => {}
             }
@@ -294,19 +390,37 @@ impl ServeAsyncCommand for RouterFederation {
     }
 }
 
-/// Fires the startup readiness gate exactly once (idempotent: the `Option` is
-/// `take`n, so later calls or a drop are no-ops) and, in lockstep, the core
-/// node's presence gate (a `watch`, so re-sends are harmless). The two fire at
-/// the same moments so the core node's boot presence check is delayed exactly
-/// as long as `serve`'s own readiness: until the initial federation settled,
-/// bounded by `connect_timeout`, and fail-open (a dropped sender ⇒ the waiter
-/// proceeds).
-fn fire_gate(gate: &mut Option<oneshot::Sender<()>>, presence_gate: &Option<watch::Sender<bool>>) {
-    if let Some(tx) = gate.take() {
-        let _ = tx.send(());
+/// The two gates the initial federation poll opens. They are one type because
+/// they must fire at the same moments and never independently: the core node's
+/// boot presence check has to be delayed exactly as long as `serve`'s own
+/// readiness, or it runs against the always-standalone just-started router and
+/// misses a same-name daemon reachable only through the cloud router.
+pub(crate) struct StartupGates {
+    /// `serve`'s readiness gate. Fired at most once (the `Option` is `take`n),
+    /// so repeat calls and a drop are both no-ops.
+    ready: Option<oneshot::Sender<()>>,
+    /// The core node's presence gate, a `watch`, so re-sends are harmless.
+    /// `None` when no core node was built.
+    presence: Option<watch::Sender<bool>>,
+}
+
+impl StartupGates {
+    pub(crate) fn new(ready: oneshot::Sender<()>, presence: Option<watch::Sender<bool>>) -> Self {
+        Self {
+            ready: Some(ready),
+            presence,
+        }
     }
-    if let Some(tx) = presence_gate {
-        let _ = tx.send(true);
+
+    /// Opens both gates. Idempotent, and fail-open throughout: a dropped
+    /// receiver just means that waiter already proceeded.
+    fn fire(&mut self) {
+        if let Some(tx) = self.ready.take() {
+            let _ = tx.send(());
+        }
+        if let Some(tx) = &self.presence {
+            let _ = tx.send(true);
+        }
     }
 }
 
@@ -334,22 +448,15 @@ struct AppliedState {
 /// against the shutdown signal). There is no periodic keepalive: once federated,
 /// the local router holds its upstream link open on its own and the backend
 /// actively health-checks this daemon.
-#[allow(clippy::too_many_arguments)]
 async fn manage_federation(
-    federator: Federator,
-    resolver: Resolver,
-    prober: Prober,
+    deps: &FederationDeps,
     mut messaging_ready: watch::Receiver<bool>,
     mut trigger_rx: TriggerReceiver,
-    ready_tx: oneshot::Sender<()>,
+    mut gates: StartupGates,
     connect_timeout: Duration,
     startup_namespace: config::namespace::Namespace,
-    namespace_resolver: NamespaceResolver,
     restart_tx: watch::Sender<bool>,
-    presence_gate_tx: Option<watch::Sender<bool>>,
 ) {
-    let mut ready_tx = Some(ready_tx);
-
     // Phase 1: wait for the router, bounded by `connect_timeout`. Don't touch the
     // router until it is up, or the initial federation could race MessagingRouter's
     // `start_router`/`start_session`. `wait_for` checks the current value first,
@@ -364,14 +471,14 @@ async fn manage_federation(
             // `messaging_ready` closed before going true: the router task never
             // started or already exited, so there is nothing to federate. Unblock
             // startup and stop.
-            fire_gate(&mut ready_tx, &presence_gate_tx);
+            gates.fire();
             return;
         }
         Err(_elapsed) => {
             // The router isn't up within the bound: unblock startup now (the
             // daemon proceeds standalone), then keep waiting (unbounded) so the
             // local router still federates once it does come up.
-            fire_gate(&mut ready_tx, &presence_gate_tx);
+            gates.fire();
             if messaging_ready.wait_for(|r| *r).await.is_err() {
                 return;
             }
@@ -392,17 +499,28 @@ async fn manage_federation(
         pinned: false,
     };
     let initial_outcome = poll_and_apply(
-        &federator,
-        &resolver,
-        &prober,
+        deps,
         connect_timeout,
         &mut applied,
         false,
         &startup_namespace,
-        &namespace_resolver,
     )
     .await;
-    fire_gate(&mut ready_tx, &presence_gate_tx);
+    gates.fire();
+
+    // A startup registration failure is discarded like any other non-`Restart`
+    // startup outcome (there is no ack to carry it), so this warning is the only
+    // way it surfaces. There is deliberately no retry, and the daemon federates
+    // happily from cache meanwhile, so the platform's roster can sit stale until
+    // the next login or reboot: say so, and name the one command that fixes it.
+    if let FederationOutcome::NotRegistered(reason) = &initial_outcome {
+        warn!(
+            reason = %reason,
+            "router federation: federated, but this machine could not be registered with the \
+             platform, so `peppy platform list` will show a stale (or missing) entry for it \
+             until the next daemon start; run `peppy platform login` to correct it now"
+        );
+    }
 
     // The initial poll re-pulled the federation config, so the credentials now
     // reflect the current workspace. If that resolves to a *different* namespace than
@@ -435,14 +553,11 @@ async fn manage_federation(
         // A login/logout poke verifies the link (`verify = true`) so the CLI
         // learns whether federation actually validates.
         let outcome = poll_and_apply(
-            &federator,
-            &resolver,
-            &prober,
+            deps,
             connect_timeout,
             &mut applied,
             true,
             &startup_namespace,
-            &namespace_resolver,
         )
         .await;
         // The CLI may have already given up (read timeout); ignore. On a namespace
@@ -462,16 +577,19 @@ async fn manage_federation(
 /// actually validates; a failed handshake is reported as
 /// [`FederationOutcome::Unreachable`] (and logged loudly) instead of a false
 /// `Applied`.
-#[allow(clippy::too_many_arguments)]
+///
+/// Once the upstream is in effect this also claims the daemon's identity on the
+/// platform (see the module docs for which outcomes register and why). That
+/// happens after the probe but independently of it, and the reported outcome
+/// follows a fixed precedence: a failed probe (`Unreachable`, the product is
+/// broken) beats a failed registration ([`FederationOutcome::NotRegistered`],
+/// only the platform's view is stale) beats `Applied`.
 async fn poll_and_apply(
-    federator: &Federator,
-    resolver: &Resolver,
-    prober: &Prober,
+    deps: &FederationDeps,
     connect_timeout: Duration,
     applied: &mut AppliedState,
     verify: bool,
     startup_namespace: &config::namespace::Namespace,
-    namespace_resolver: &NamespaceResolver,
 ) -> FederationOutcome {
     // The resolver is blocking (HTTP + file I/O); keep it off the async worker. It
     // also re-pulls the cloud router's config when the cached copy has gone stale
@@ -479,7 +597,7 @@ async fn poll_and_apply(
     // `connect_timeout` so a hung pull can't
     // stall a poll (or the startup gate) past it; the timed-out blocking thread is
     // harmless (its own HTTP timeout ends it) and its result is simply discarded.
-    let resolver = resolver.clone();
+    let resolver = deps.resolver.clone();
     let resolved = match tokio::time::timeout(
         connect_timeout,
         tokio::task::spawn_blocking(move || resolver()),
@@ -509,7 +627,7 @@ async fn poll_and_apply(
     // Like the resolve above, the namespace re-resolve is blocking (a file-backed
     // credentials read); keep it off the async worker. No timeout bound: it is a
     // local read, not a network pull.
-    let namespace_resolver = namespace_resolver.clone();
+    let namespace_resolver = deps.namespace_resolver.clone();
     let current_namespace = match tokio::task::spawn_blocking(move || namespace_resolver()).await {
         Ok(Ok(namespace)) => namespace,
         Ok(Err(error)) => {
@@ -553,7 +671,7 @@ async fn poll_and_apply(
         // the timeout lands between the router stop and start, the watchdog
         // notices the dead router and respawns it with the already-rewritten
         // config, so the router cannot stay down.
-        match tokio::time::timeout(connect_timeout, federator(resolved.clone())).await {
+        match tokio::time::timeout(connect_timeout, (deps.federator)(resolved.clone())).await {
             Err(_elapsed) => {
                 warn!(
                     "router federation: applying the upstream change timed out, so federation \
@@ -611,7 +729,10 @@ async fn poll_and_apply(
     // actually in effect. The non-verifying initial federation never reaches here.
     // A failed handshake means the local router was federated but the link to
     // platform-backend does not validate (e.g. UnknownCA), so federation is not
-    // really in effect.
+    // really in effect. The verdict is held rather than returned, so the
+    // registration below still runs: a site whose uplink is down is exactly the
+    // one whose row must exist to read `unlinked`.
+    let mut unreachable: Option<String> = None;
     if verify
         && let (FederationOutcome::Applied(Some(ep)), Some((_, tls))) =
             (&outcome, resolved.as_ref())
@@ -623,7 +744,7 @@ async fn poll_and_apply(
                 // daemon's ack budget; otherwise a slow/unreachable router would
                 // blow the budget and surface as a generic ack timeout instead of
                 // the actionable Unreachable.
-                if let Err(reason) = prober(host, port, tls.clone(), PROBE_TIMEOUT).await {
+                if let Err(reason) = (deps.prober)(host, port, tls.clone(), PROBE_TIMEOUT).await {
                     warn!(
                         upstream = %ep, reason = %reason,
                         "router federation: the local router was (re)federated, but the TLS \
@@ -631,7 +752,7 @@ async fn poll_and_apply(
                          established; federation with platform-backend is NOT in effect \
                          (check the router certificate / dev CA); will keep retrying"
                     );
-                    return FederationOutcome::Unreachable(reason);
+                    unreachable = Some(reason);
                 }
             }
             None => {
@@ -640,14 +761,62 @@ async fn poll_and_apply(
                     "router federation: could not parse the upstream endpoint to verify the \
                      federation link to platform-backend"
                 );
-                return FederationOutcome::Unreachable(format!(
-                    "could not parse upstream endpoint `{ep}`"
-                ));
+                unreachable = Some(format!("could not parse upstream endpoint `{ep}`"));
             }
         }
     }
 
-    outcome
+    // Claim this machine's identity, unconditionally per poll rather than as a
+    // side effect of a cache-stale config pull, so the registry always names the
+    // zid the live router pins. Only an upstream that is genuinely in effect
+    // registers: see the module docs for why `Pinned` and `Applied(None)` do not,
+    // and why `Unreachable` does.
+    let registration = match &outcome {
+        FederationOutcome::Applied(Some(_)) => register(&deps.registrar).await,
+        _ => Ok(()),
+    };
+
+    // Precedence: a broken product beats a stale roster beats success. Collapsing
+    // a registration failure into `Failed` would report "the daemon could not
+    // apply federation", which is untrue and would send the user to debug a
+    // transport that is working.
+    match (unreachable, registration) {
+        (Some(reason), _) => FederationOutcome::Unreachable(reason),
+        (None, Err(reason)) => FederationOutcome::NotRegistered(reason),
+        (None, Ok(())) => outcome,
+    }
+}
+
+/// Runs the registration off the async workers and bounds it, the same discipline
+/// every other blocking step in [`poll_and_apply`] follows: it is a blocking HTTP
+/// call, and an unbounded one would hold the poll (and a login poke's ack) open
+/// for as long as the backend cared to stall.
+async fn register(registrar: &Registrar) -> std::result::Result<(), String> {
+    let registrar = registrar.clone();
+    match tokio::time::timeout(
+        REGISTER_TIMEOUT,
+        tokio::task::spawn_blocking(move || registrar()),
+    )
+    .await
+    {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(reason))) => {
+            warn!(
+                reason = %reason,
+                "router federation: federation is in effect, but registering this machine with \
+                 the platform failed, so its entry there is stale"
+            );
+            Err(reason)
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "router federation: registration task panicked");
+            Err(format!("registration task panicked: {e}"))
+        }
+        Err(_elapsed) => {
+            warn!("router federation: registering this machine with the platform timed out");
+            Err("registration timed out".to_string())
+        }
+    }
 }
 
 /// Re-renders the local router's config with the (possibly empty) upstream and,
@@ -758,6 +927,95 @@ mod tests {
         Some((ENDPOINT.to_string(), pmi::TlsConfig::default()))
     }
 
+    /// A registrar returning a fixed result and counting its calls, so a test can
+    /// assert both *whether* this generation claimed its identity and what the
+    /// poll made of the answer.
+    fn counting_registrar(
+        result: std::result::Result<(), String>,
+    ) -> (Registrar, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let registrar: Registrar = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            result.clone()
+        });
+        (registrar, calls)
+    }
+
+    /// Assembles the deps for a test, defaulting everything the test does not
+    /// care about. Lives in the test module, not in the business logic: nothing
+    /// in `serve` builds its deps this way.
+    struct TestDeps {
+        federator: Federator,
+        resolver: Resolver,
+        prober: Prober,
+        registrar: Registrar,
+        namespace_resolver: NamespaceResolver,
+    }
+
+    impl TestDeps {
+        /// The uninteresting case: a real rewrite, a resolved upstream, a passing
+        /// probe, a successful registration, and an unchanged namespace.
+        fn new() -> Self {
+            Self {
+                federator: applying_federator(),
+                resolver: counting_resolver(upstream()).0,
+                prober: counting_prober(Ok(())).0,
+                registrar: counting_registrar(Ok(())).0,
+                namespace_resolver: local_ns_resolver(),
+            }
+        }
+
+        fn federator(mut self, federator: Federator) -> Self {
+            self.federator = federator;
+            self
+        }
+
+        fn resolver(mut self, resolver: Resolver) -> Self {
+            self.resolver = resolver;
+            self
+        }
+
+        fn prober(mut self, prober: Prober) -> Self {
+            self.prober = prober;
+            self
+        }
+
+        fn registrar(mut self, registrar: Registrar) -> Self {
+            self.registrar = registrar;
+            self
+        }
+
+        fn namespaces(mut self, namespace_resolver: NamespaceResolver) -> Self {
+            self.namespace_resolver = namespace_resolver;
+            self
+        }
+
+        fn build(self) -> FederationDeps {
+            FederationDeps {
+                federator: self.federator,
+                resolver: self.resolver,
+                prober: self.prober,
+                registrar: self.registrar,
+                namespace_resolver: self.namespace_resolver,
+            }
+        }
+    }
+
+    /// Runs one verifying poll against `deps` from a clean applied state, the
+    /// shape most of the registration tests need.
+    async fn verifying_poll(deps: &FederationDeps) -> FederationOutcome {
+        let mut applied = AppliedState::default();
+        poll_and_apply(
+            deps,
+            Duration::from_secs(5),
+            &mut applied,
+            true,
+            &config::namespace::Namespace::local(),
+        )
+        .await
+    }
+
     /// A namespace resolver that always returns `local`, matching the `local`
     /// startup namespace these tests pass, so no namespace change is detected and
     /// the existing federation behavior (Applied/Pinned/...) is exercised.
@@ -804,17 +1062,21 @@ mod tests {
     async fn a_wedged_apply_times_out_and_reports_failed() {
         let (resolver, _) = counting_resolver(upstream());
         let (prober, probe_calls) = counting_prober(Ok(()));
+        let (registrar, register_calls) = counting_registrar(Ok(()));
         let mut applied = AppliedState::default();
 
+        let deps = TestDeps::new()
+            .federator(wedged_federator())
+            .resolver(resolver)
+            .prober(prober)
+            .registrar(registrar)
+            .build();
         let outcome = poll_and_apply(
-            &wedged_federator(),
-            &resolver,
-            &prober,
+            &deps,
             Duration::from_millis(50),
             &mut applied,
             true,
             &config::namespace::Namespace::local(),
-            &local_ns_resolver(),
         )
         .await;
 
@@ -832,6 +1094,11 @@ mod tests {
             0,
             "no probe after a failed apply"
         );
+        assert_eq!(
+            register_calls.load(Ordering::SeqCst),
+            0,
+            "a failed apply has no upstream in effect, so there is no identity to claim"
+        );
     }
 
     /// A login/logout poke runs a federation poll *immediately*, verifies the
@@ -847,19 +1114,23 @@ mod tests {
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            config::namespace::Namespace::local(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            None,
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(applying_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(local_ns_resolver())
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, None),
+                Duration::from_secs(5),
+                config::namespace::Namespace::local(),
+                watch::channel(false).0,
+            )
+            .await
+        });
 
         // Startup gate fires after the first (initial) poll; that poll resolved
         // once and, being a non-poke poll, did NOT probe the link.
@@ -921,20 +1192,19 @@ mod tests {
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            // A deliberately large connect_timeout: the probe must NOT inherit it.
-            Duration::from_secs(45),
-            config::namespace::Namespace::local(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            None,
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new().resolver(resolver).prober(prober).build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, None),
+                // A deliberately large connect_timeout: the probe must NOT inherit it.
+                Duration::from_secs(45),
+                config::namespace::Namespace::local(),
+                watch::channel(false).0,
+            )
+            .await
+        });
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
             .expect("startup gate fires")
@@ -972,19 +1242,23 @@ mod tests {
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            config::namespace::Namespace::local(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            None,
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(applying_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(local_ns_resolver())
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, None),
+                Duration::from_secs(5),
+                config::namespace::Namespace::local(),
+                watch::channel(false).0,
+            )
+            .await
+        });
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
@@ -1029,19 +1303,23 @@ mod tests {
         let (trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
 
-        let task = tokio::spawn(manage_federation(
-            pinned_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            config::namespace::Namespace::local(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            None,
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(pinned_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(local_ns_resolver())
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, None),
+                Duration::from_secs(5),
+                config::namespace::Namespace::local(),
+                watch::channel(false).0,
+            )
+            .await
+        });
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
@@ -1093,19 +1371,23 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
         let (presence_gate_tx, mut presence_gate_rx) = watch::channel(false);
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_millis(100),
-            config::namespace::Namespace::local(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            Some(presence_gate_tx),
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(applying_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(local_ns_resolver())
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, Some(presence_gate_tx)),
+                Duration::from_millis(100),
+                config::namespace::Namespace::local(),
+                watch::channel(false).0,
+            )
+            .await
+        });
 
         // Gate fires close to the 100ms bound, well before the 400ms resolve.
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
@@ -1136,19 +1418,23 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
         let (presence_gate_tx, mut presence_gate_rx) = watch::channel(false);
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            config::namespace::Namespace::local(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            Some(presence_gate_tx),
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(applying_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(local_ns_resolver())
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, Some(presence_gate_tx)),
+                Duration::from_secs(5),
+                config::namespace::Namespace::local(),
+                watch::channel(false).0,
+            )
+            .await
+        });
 
         tokio::time::timeout(Duration::from_secs(1), presence_gate_rx.wait_for(|g| *g))
             .await
@@ -1182,19 +1468,23 @@ mod tests {
         let (_trigger_tx, trigger_rx) = mpsc::channel(8);
         let (ready_tx, ready_rx) = oneshot::channel();
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            config::namespace::Namespace::local(),
-            local_ns_resolver(),
-            watch::channel(false).0,
-            None,
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(applying_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(local_ns_resolver())
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, None),
+                Duration::from_secs(5),
+                config::namespace::Namespace::local(),
+                watch::channel(false).0,
+            )
+            .await
+        });
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
@@ -1229,19 +1519,23 @@ mod tests {
         // The startup poll must NOT raise the restart signal in this scenario.
         let (restart_tx, restart_rx) = watch::channel(false);
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            config::namespace::Namespace::local(),
-            ns_resolver,
-            restart_tx,
-            None,
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(applying_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(ns_resolver)
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, None),
+                Duration::from_secs(5),
+                config::namespace::Namespace::local(),
+                restart_tx,
+            )
+            .await
+        });
 
         tokio::time::timeout(Duration::from_secs(1), ready_rx)
             .await
@@ -1277,6 +1571,159 @@ mod tests {
         task.abort();
     }
 
+    // ─── Claiming this machine's identity ─────────────────────────────────
+
+    /// Defect 1, stated directly. A poke that discovers a changed namespace is
+    /// the *outgoing* generation: it still holds the router id it minted under
+    /// the old namespace, and publishing that is exactly the bug (every first
+    /// login on a machine went through this path and left the registry pointing
+    /// at a zid the rebuilt generation immediately discarded).
+    #[tokio::test]
+    async fn a_namespace_change_never_registers() {
+        let (registrar, register_calls) = counting_registrar(Ok(()));
+        let deps = TestDeps::new()
+            .registrar(registrar)
+            .namespaces(counting_ns_resolver("550e8400-e29b-41d4-a716-446655440000").0)
+            .build();
+
+        let outcome = verifying_poll(&deps).await;
+
+        assert_eq!(outcome, FederationOutcome::Restart);
+        assert_eq!(
+            register_calls.load(Ordering::SeqCst),
+            0,
+            "a generation about to be torn down must not publish the identity it is discarding"
+        );
+    }
+
+    /// Defect 2, and the reason registration is unconditional per poll: a plain
+    /// restart reuses a still-fresh config cache, so nothing pulls, yet the
+    /// identity must still be re-asserted (the router may have re-minted it).
+    ///
+    /// The counter alone would not catch a regression here, since an
+    /// implementation that read the zid back off disk would call the registrar
+    /// just as often. What pins it is that the poll registers **exactly once**
+    /// and reaches the same registrar the caller wired the pinned `router_id`
+    /// into; the wiring itself is `real_registrar`'s, which closes over that id
+    /// rather than re-reading the identity file.
+    #[tokio::test]
+    async fn a_poll_registers_exactly_once_even_with_nothing_to_pull() {
+        let (registrar, register_calls) = counting_registrar(Ok(()));
+        let deps = TestDeps::new().registrar(registrar).build();
+
+        let outcome = verifying_poll(&deps).await;
+
+        assert_eq!(
+            outcome,
+            FederationOutcome::Applied(Some(ENDPOINT.to_string()))
+        );
+        assert_eq!(
+            register_calls.load(Ordering::SeqCst),
+            1,
+            "one poll claims the identity once: not zero (the config cache must not gate it) \
+             and not twice (the resolve must not have claimed it too)"
+        );
+    }
+
+    /// The logout path. `peppy platform logout` DELETEs the row and only then
+    /// pokes, so a rule mis-implemented as "register unless Failed or Pinned"
+    /// would resurrect the row and leave a decommissioned machine listed forever.
+    #[tokio::test]
+    async fn a_poll_with_no_upstream_never_registers() {
+        let (registrar, register_calls) = counting_registrar(Ok(()));
+        let deps = TestDeps::new()
+            .resolver(counting_resolver(None).0)
+            .registrar(registrar)
+            .build();
+
+        let outcome = verifying_poll(&deps).await;
+
+        assert_eq!(outcome, FederationOutcome::Applied(None));
+        assert_eq!(register_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// An operator-pinned `ZENOH_CONFIG` means the router is NOT running under
+    /// the id we would report, so reporting it would recreate the wrong-zid bug
+    /// by another route. The row stays absent, which renders as `unknown`.
+    #[tokio::test]
+    async fn a_pinned_router_never_registers() {
+        let (registrar, register_calls) = counting_registrar(Ok(()));
+        let deps = TestDeps::new()
+            .federator(pinned_federator())
+            .registrar(registrar)
+            .build();
+
+        let outcome = verifying_poll(&deps).await;
+
+        assert_eq!(outcome, FederationOutcome::Pinned);
+        assert_eq!(
+            register_calls.load(Ordering::SeqCst),
+            0,
+            "a daemon that does not control its router's identity must not claim one"
+        );
+    }
+
+    /// The asymmetry that is easy to get wrong: an unreachable upstream still
+    /// registers. Registration asserts identity, not health, and the row is what
+    /// lets the platform report this site as `unlinked` rather than omit it.
+    #[tokio::test]
+    async fn an_unreachable_upstream_still_registers() {
+        let (registrar, register_calls) = counting_registrar(Ok(()));
+        let deps = TestDeps::new()
+            .prober(counting_prober(Err("UnknownCA".to_string())).0)
+            .registrar(registrar)
+            .build();
+
+        let outcome = verifying_poll(&deps).await;
+
+        assert_eq!(
+            outcome,
+            FederationOutcome::Unreachable("UnknownCA".to_string())
+        );
+        assert_eq!(
+            register_calls.load(Ordering::SeqCst),
+            1,
+            "a site whose uplink is down is exactly the one whose row must exist"
+        );
+    }
+
+    /// A failed registration is its own outcome, never `Failed`: federation IS in
+    /// effect, and only the platform's view of this machine is stale.
+    #[tokio::test]
+    async fn a_failing_registration_reports_not_registered() {
+        let deps = TestDeps::new()
+            .registrar(counting_registrar(Err("backend unreachable".to_string())).0)
+            .build();
+
+        assert_eq!(
+            verifying_poll(&deps).await,
+            FederationOutcome::NotRegistered("backend unreachable".to_string())
+        );
+    }
+
+    /// And the precedence between the two failures: a broken product beats a
+    /// stale roster. Reporting `NotRegistered` here would send the user to look
+    /// at the platform while their federation link is the thing that is down.
+    #[tokio::test]
+    async fn a_failing_probe_outranks_a_failing_registration() {
+        let (registrar, register_calls) =
+            counting_registrar(Err("backend unreachable".to_string()));
+        let deps = TestDeps::new()
+            .prober(counting_prober(Err("UnknownCA".to_string())).0)
+            .registrar(registrar)
+            .build();
+
+        assert_eq!(
+            verifying_poll(&deps).await,
+            FederationOutcome::Unreachable("UnknownCA".to_string())
+        );
+        assert_eq!(
+            register_calls.load(Ordering::SeqCst),
+            1,
+            "the registration still runs; only the report it loses"
+        );
+    }
+
     /// The *startup* federation poll, on resolving a namespace that differs from
     /// the one this generation started under (e.g. logged in but the router cache
     /// was empty at build time so the startup namespace was `local`), must raise
@@ -1295,19 +1742,23 @@ mod tests {
         let (ready_tx, ready_rx) = oneshot::channel();
         let (restart_tx, mut restart_rx) = watch::channel(false);
 
-        let task = tokio::spawn(manage_federation(
-            applying_federator(),
-            resolver,
-            prober,
-            messaging_rx,
-            trigger_rx,
-            ready_tx,
-            Duration::from_secs(5),
-            config::namespace::Namespace::local(),
-            ns_resolver,
-            restart_tx,
-            None,
-        ));
+        let task = tokio::spawn(async move {
+            manage_federation(
+                &TestDeps::new()
+                    .federator(applying_federator())
+                    .resolver(resolver)
+                    .prober(prober)
+                    .namespaces(ns_resolver)
+                    .build(),
+                messaging_rx,
+                trigger_rx,
+                StartupGates::new(ready_tx, None),
+                Duration::from_secs(5),
+                config::namespace::Namespace::local(),
+                restart_tx,
+            )
+            .await
+        });
 
         // Startup still unblocks `serve` (the gate fires) ...
         tokio::time::timeout(Duration::from_secs(1), ready_rx)

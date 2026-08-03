@@ -151,6 +151,8 @@ parameters: {
 
 Both forms generate the same nested struct in Rust and dataclass in Python. Groups can nest arbitrarily deep, and every leaf inside is reachable by a dot-path (e.g. `video.width`).
 
+At run time, `peppy node run` accepts those dot-paths as trailing arguments and rebuilds the nested structure: `peppy node run cam:v1 video.width=1280` fills `video.width` inside the `video` group. A string-typed leaf can also be referenced from a container's `mount_paths` with `${parameters:<path>}`; see [Using parameters in mount paths](/advanced_guides/containers/#using-parameters-in-mount-paths).
+
 ---
 
 ## Arrays
@@ -169,4 +171,4 @@ parameters: {
 | `$items`   | Yes      | A primitive type or a nested schema for each element       |
 | `$length`  | No       | Fixed number of elements; omit for variable-length arrays  |
 
-Arrays cannot have `$default`. Generated code for array parameters is not yet emitted by the Rust and Python generators, so declare arrays only if your node consumes them via a custom path.
+Arrays cannot have `$default`. The schema above parses, but interface generation rejects array parameters in both Rust and Python, so `peppy node sync` and `peppy node add` fail on a node that declares one; a usable parameter schema is built from primitives and groups.

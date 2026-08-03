@@ -29,21 +29,16 @@ struct Cli {
     core_node: Option<String>,
 }
 
-/// Validates a `--core-node` value at the CLI boundary with the same `Name`
-/// rules (and length cap) `service serve` applies to `--core-node-name`, so a
-/// malformed target fails here with a clap error instead of becoming an
-/// unreachable `target_core_node` deep in a request.
+/// Validates a `--core-node` value at the CLI boundary through the same shared
+/// validator `service serve` and `peppy_config.json5` use, so a malformed
+/// target fails here with a clap error instead of becoming an unreachable
+/// `target_core_node` deep in a request. `self` is refused here too: it means
+/// "the daemon this command targets", which is what omitting the flag already
+/// says.
 fn parse_core_node_target(value: &str) -> Result<String, String> {
-    if config::runtime::Name::new(value).is_err()
-        || value.len() > daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN
-    {
-        return Err(format!(
-            "must be non-empty, at most {} characters, and use only characters from \"{}\"",
-            daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN,
-            config::consts::ALLOWED_CONFIG_CHARS
-        ));
-    }
-    Ok(value.to_string())
+    daemon_config::core_node_name::CoreNodeName::new(value)
+        .map(|name| name.into_string())
+        .map_err(|reason| reason.to_string())
 }
 
 #[derive(Subcommand)]

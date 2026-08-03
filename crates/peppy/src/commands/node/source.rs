@@ -81,7 +81,11 @@ pub fn parse_node_source(source: &str, git_ref: Option<String>) -> Result<NodeSo
         let (name, tag) = source
             .split_once(':')
             .expect("looks_like_repo_node_ref guarantees a ':'");
-        return NodeSource::repo_node(name, tag).map_err(|e| Error::ExecutionFailed(e.to_string()));
+        // The receiving daemon resolves the reference against its own repo
+        // cache and continues by pin, so `peppy node add camera:v1` against
+        // a remote target keeps resolving on that target's machine.
+        return NodeSource::resolve_ref(name, tag)
+            .map_err(|e| Error::ExecutionFailed(e.to_string()));
     }
 
     if git_ref.is_some() {
@@ -241,8 +245,8 @@ mod tests {
     #[test]
     fn parse_node_source_recognizes_name_tag() {
         let src = parse_node_source("some_node:v123", None).unwrap();
-        let NodeSource::RepoNode { name, tag } = &src else {
-            panic!("expected RepoNode, got {:?}", src);
+        let NodeSource::ResolveRef { name, tag } = &src else {
+            panic!("expected ResolveRef, got {:?}", src);
         };
         assert_eq!(name, "some_node");
         assert_eq!(tag, "v123");

@@ -19,27 +19,24 @@ pub struct ConsumedTopicSubscriptionSpec<'a> {
 }
 
 /// Specification for building an action-feedback emit-style method
-/// (publish_feedback / complete).
+/// (publish_feedback).
 pub struct EmitMethodSpec<'a> {
     pub method_name: &'a Ident,
     pub params: &'a [FunctionParam],
-    pub encoding: Option<&'a MessageEncodingSpec>,
+    pub encoding: &'a MessageEncodingSpec,
     /// Method receiver and leading params, e.g. `node_runner: &crate::NodeRunner` or `&self`.
     pub receiver: TokenStream,
-    /// The code that publishes a serialized payload (used when encoding exists).
+    /// The code that publishes a serialized payload.
     pub publish_body: TokenStream,
-    /// Expression for the error context in both success and error paths.
+    /// Expression for the error context of the serialization failure path.
     pub error_context: TokenStream,
-    /// Extra unused-suppression statements for the None (no-encoding) branch,
-    /// e.g. `let _ = node_runner;` when the receiver would otherwise be unused.
-    pub suppress_unused: Vec<TokenStream>,
 }
 
 /// Builds an emit-style async method that serializes params and publishes.
 ///
-/// Shared logic for the action `publish_feedback` / `complete` methods:
-/// filters instance_id from params, branches on encoding presence, and either
-/// serializes + publishes or returns `MessageFormatUnavailable`.
+/// The encoding is not optional: an endpoint built through this path always
+/// declares a message format, which the config parser guarantees is present
+/// and non-empty.
 pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
     let EmitMethodSpec {
         method_name,
@@ -48,7 +45,6 @@ pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
         receiver,
         publish_body,
         error_context,
-        suppress_unused,
     } = spec;
 
     let mut method_param_tokens = Vec::new();
@@ -68,39 +64,19 @@ pub fn build_emit_method(spec: EmitMethodSpec<'_>) -> TokenStream {
         quote!(#receiver, #(#method_param_tokens),*)
     };
 
-    match encoding {
-        Some(spec) => {
-            let serialize_block =
-                build_serialize_payload(&spec.builder_type, &[], &spec.assignments, &error_context);
+    let serialize_block = build_serialize_payload(
+        &encoding.builder_type,
+        &[],
+        &encoding.assignments,
+        &error_context,
+    );
 
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub async fn #method_name(#method_signature) -> crate::Result<()> {
-                    let payload = #serialize_block;
-                    #publish_body
-                    Ok(())
-                }
-            }
-        }
-        None => {
-            let ignore_params: Vec<TokenStream> = params
-                .iter()
-                .map(|param| {
-                    let ident = &param.ident;
-                    quote!(let _ = #ident;)
-                })
-                .collect();
-
-            quote! {
-                #[allow(clippy::too_many_arguments)]
-                pub async fn #method_name(#method_signature) -> crate::Result<()> {
-                    #(#suppress_unused)*
-                    #(#ignore_params)*
-                    Err(crate::Error::MessageFormatUnavailable {
-                        context: #error_context,
-                    })
-                }
-            }
+    quote! {
+        #[allow(clippy::too_many_arguments)]
+        pub async fn #method_name(#method_signature) -> crate::Result<()> {
+            let payload = #serialize_block;
+            #publish_body
+            Ok(())
         }
     }
 }

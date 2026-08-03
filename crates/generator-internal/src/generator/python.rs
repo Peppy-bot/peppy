@@ -266,7 +266,7 @@ impl LanguageGenerator for PythonGenerator {
             action
                 .feedback_topic
                 .as_ref()
-                .and_then(|feedback_topic| feedback_topic.message_format.as_ref()),
+                .map(|feedback_topic| &feedback_topic.message_format),
         )?;
 
         let code = actions::build_exposed_action(

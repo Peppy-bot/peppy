@@ -90,13 +90,15 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 
 ## `stack.list`
 
-`stack.list` returns a `StackList` with two fields:
+`stack.list` returns a `StackList` with four fields:
 
 - `graph`: the node graph, with every node's metadata and its tracked instances.
+- `core_node`: the core-node name of the daemon that served this stack snapshot.
+- `instance_id`: the serving daemon's own generation instance id.
 - `host_name`: the hostname of the daemon that served this stack snapshot.
 
 Each node entry carries its required `core_node` owner plus its `name`, `tag`, `config_path`, optional `artifact_path`, `stage` (`Added`, `Building`, `Ready`, or `Root`), and its `instances`.
-Each instance has an `instance_id` and a `state` (`starting`, `running`, or the terminal `finished` / `failed`). A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
+Each instance has an `instance_id`, a `state` (`starting`, `running`, or the terminal `finished` / `failed`), a `healthy` flag, its `slot_bindings`, and its `pairing_slots`. A router or load-balancer keeps only the `running` ones, which excludes both still-warming and already-exited instances.
 The graph's `edges` list the dependency relationships, with each edge pointing from one node entry to another. The list covers both direct `depends_on.nodes` dependencies and those resolved through [contract implementation](/advanced_guides/contract_implementation/): a contract edge carries a `via_contract` of `name:tag` (the contract it was resolved through), while a direct edge has none.
 
 Rust and Python expose the graph differently:

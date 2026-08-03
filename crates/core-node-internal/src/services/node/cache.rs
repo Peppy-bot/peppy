@@ -1,16 +1,13 @@
 //! Persistent on-disk caches shared by the batch node-add pipeline.
 //!
-//! `git` caches fully-cloned checkouts keyed by `(repo_url, ref)`;
-//! `bundle` caches extracted HTTP archives keyed by `(url, sha256)`.
-//! Both use `key` (slug + short hash) to produce deterministic directory
-//! names under [`daemon_config::consts::PeppyDirs`].
+//! `git` caches checkouts keyed by `(repo_url, commit)`, using `key`
+//! (slug + short hash) to produce deterministic directory names under
+//! [`daemon_config::consts::PeppyDirs`]. A commit names one tree, so a
+//! populated checkout is reused without touching the network.
 
-pub(super) mod bundle;
 pub(crate) mod git;
 mod key;
 mod keyed_lock;
 pub(super) mod materialize;
 
-pub(super) use bundle::ensure_bundle;
-pub(super) use git::ensure_checkout;
-pub(super) use materialize::{MaterializeFeedback, materialize_entry, silent_feedback};
+pub(crate) use materialize::{MaterializeFeedback, materialize_entry, silent_feedback};

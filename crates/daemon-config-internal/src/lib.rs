@@ -29,21 +29,41 @@ mod internal {
     pub mod atomic_write;
     pub mod consts;
     pub mod contract;
+    pub mod core_node_name;
+    pub mod env;
     pub mod launcher;
     pub mod pairing;
     pub mod peppy_config;
+    pub mod repository;
     pub mod source;
 }
 
 // -- error --
 pub use error::{
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
-    LinkUnknownSlot, ParsingError, SlotKind, format_bulleted,
+    LinkUnknownSlot, ParsingError, SlotKind, format_bulleted, format_quoted_list,
 };
+
+// -- core_node_name --
+//
+// The ONE core-node-name validator. `peppy_config`, the daemon's serve flag,
+// the CLI's `--core-node` override, `--place` targets, and launcher core node
+// link ids all go through it, so the rules (charset, length cap, and the
+// `self` reservation) are stated once instead of re-derived per call site.
+pub mod core_node_name {
+    pub use crate::internal::core_node_name::{CoreNodeName, CoreNodeNameError, SELF_CORE_NODE};
+}
 
 // -- atomic_write --
 pub mod atomic_write {
     pub use crate::internal::atomic_write::publish_atomic;
+}
+
+// -- env --
+pub mod env {
+    pub use crate::internal::env::{
+        InvalidEnvVar, check_env_var, is_forbidden_env_name, is_safe_env_value, is_valid_env_name,
+    };
 }
 
 // -- consts --
@@ -51,7 +71,8 @@ pub mod consts {
     pub use crate::internal::consts::{
         AppEnv, CREDENTIALS_FILE, DEFAULT_ALPINE_BASE_IMAGE, DEFAULT_PYTHON_BASE_IMAGE,
         DEFAULT_RUST_BASE_IMAGE, PEPPY_MESSAGING_PORT_VAR_NAME, PEPPY_OUTPUT_DIR,
-        PEPPYLIB_OUTPUT_PATH, PeppyDirs, non_empty_env_path, peppy_root_dir, set_app_env,
+        PEPPYLIB_OUTPUT_PATH, PeppyDirs, REPOSITORY_INDEX_FILE, non_empty_env_path, peppy_root_dir,
+        set_app_env,
     };
 }
 
@@ -68,10 +89,9 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentGitSource,
-        DeploymentInstance, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource, DuplicateLinkTarget, FrameworkOverrides, LinkTargets, LinkValue,
-        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, PlannedObservation,
+        AlreadyPairedSlots, BindingValidationItem, Deployment, DeploymentInstance,
+        DeploymentSource, DuplicateLinkTarget, FrameworkOverrides, LinkTargets, LinkValue,
+        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
         PlannedPairEndpoint, PlannedPairing, ValidatedBindings, ValidatedLinkPlan,
         ValidatedObservations, ValidatedPairings, split_link_target, validate_bindings,
         validate_link_plan, validate_link_slots, validate_observations, validate_pairings,
@@ -88,10 +108,17 @@ pub mod pairing {
     pub use crate::internal::pairing::{PairingTopic, PeppyPairing, PeppyPairingParser};
 }
 
+// -- repository --
+pub mod repository {
+    pub use crate::internal::repository::{
+        DeclaredItem, DeclaredPaths, DeploymentPins, EntryOrigin, GitCommit, GitCommitError,
+        IndexedItem, ItemName, ItemTag, ManifestFingerprint, ManifestFingerprintError,
+        PeppyRepositoryIndexParser, PinKind, PinnedItem, RepoItemKind, RepoPathError,
+        RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
+    };
+}
+
 // -- source --
 pub mod source {
-    pub use crate::internal::source::{
-        DeploymentGitSource, DeploymentLocalSource, DeploymentRepoSource, DeploymentSource,
-        DeploymentUrlSource,
-    };
+    pub use crate::internal::source::DeploymentSource;
 }

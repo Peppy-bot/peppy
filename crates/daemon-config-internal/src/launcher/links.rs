@@ -15,6 +15,7 @@
 //! It reuses [`BindingValidationItem`] because that item already carries the
 //! full `depends_on` (all three families), so callers build no extra item type.
 
+use super::types::Placements;
 use crate::error::{LinkUnknownSlot, ParsingError};
 use config::node::DependsOn;
 use std::collections::BTreeMap;
@@ -42,7 +43,7 @@ pub fn validate_link_plan(
     binding_items: &[BindingValidationItem<'_>],
     pairing_items: &[PairingValidationItem<'_>],
     already_paired: &AlreadyPairedSlots,
-    producer_core_node: &str,
+    placements: &Placements,
 ) -> ValidatedLinkPlan {
     let mut out = ValidatedLinkPlan {
         errors: validate_link_slots(binding_items),
@@ -52,7 +53,7 @@ pub fn validate_link_plan(
         return out;
     }
 
-    let bindings = validate_bindings(binding_items, producer_core_node);
+    let bindings = validate_bindings(binding_items, placements);
     if !bindings.errors.is_empty() {
         out.errors = bindings.errors;
         return out;
@@ -60,7 +61,7 @@ pub fn validate_link_plan(
     out.slot_bindings = bindings.slot_bindings;
 
     let pairings = validate_pairings(pairing_items, already_paired);
-    let observations = validate_observations(pairing_items, producer_core_node);
+    let observations = validate_observations(pairing_items, placements);
     out.errors.extend(pairings.errors);
     out.errors.extend(observations.errors);
     if out.errors.is_empty() {
@@ -152,12 +153,10 @@ impl<'a> From<&'a DependsOn> for DeclaredLinkSlots<'a> {
             by_id.insert(link_id, LinkSlotKind::Binding);
         }
         for dep in &depends_on.pairings {
-            let kind = if dep.is_observer() {
-                LinkSlotKind::Observer
-            } else {
-                LinkSlotKind::Participant
-            };
-            by_id.insert(dep.link_id(), kind);
+            by_id.insert(dep.link_id.as_str(), LinkSlotKind::Participant);
+        }
+        for dep in &depends_on.pairing_observers {
+            by_id.insert(dep.link_id.as_str(), LinkSlotKind::Observer);
         }
         Self { by_id }
     }
@@ -214,8 +213,10 @@ mod tests {
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );
@@ -244,8 +245,10 @@ mod tests {
             r#"{
                 nodes: [{ name: "camera", tag: "v1", link_id: "main" }],
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );
@@ -298,8 +301,10 @@ mod tests {
         let depends_on = parse_depends_on(
             r#"{
                 pairings: [
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+                ],
+                pairing_observers: [
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
                 ]
             }"#,
         );

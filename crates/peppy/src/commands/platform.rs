@@ -436,6 +436,13 @@ fn report_login(outcome: PokeOutcome) -> Result<()> {
              and that its cert is the committed one signed by the dev CA (rotate it with \
              gen_dev_certs), then run `peppy platform login` again."
         ))),
+        PokeOutcome::NotRegistered(reason) => Err(Error::Auth(format!(
+            "logged in and federation is in effect, but this machine could not be registered \
+             with the platform: {reason}. Nothing is wrong with the federation link; only the \
+             platform's record of this machine is stale, so `peppy platform list` may not show \
+             it (or may show an outdated router identity). Run `peppy platform login` again \
+             once the backend is reachable."
+        ))),
         PokeOutcome::DaemonError(msg) => Err(Error::Auth(format!(
             "logged in, but the daemon could not apply federation: {msg}. Check the \
              `peppy service serve` logs and run `peppy platform login` again."
@@ -474,6 +481,11 @@ fn report_logout(outcome: PokeOutcome) {
         PokeOutcome::Pinned => println!("{PINNED_NOTE}"),
         PokeOutcome::Unreachable(msg) | PokeOutcome::DaemonError(msg) => {
             println!("Note: the daemon could not apply federation now ({msg}); it will retry.")
+        }
+        // A logout already removed this machine's registry row before poking, so
+        // a registration failure here changes nothing the user needs to act on.
+        PokeOutcome::NotRegistered(msg) => {
+            println!("Note: the platform's record of this machine could not be updated ({msg}).")
         }
         PokeOutcome::DaemonNotRunning => {
             println!("No running daemon; nothing to de-federate.")
@@ -770,6 +782,10 @@ mod tests {
             PokeOutcome::DaemonError("boom".to_string()),
             PokeOutcome::TimedOut,
             PokeOutcome::DaemonNotRunning,
+            // Federation IS in effect here, but the platform's record of this
+            // machine is stale, which is the whole defect the registration split
+            // fixes: a login that leaves it stale has not fully succeeded.
+            PokeOutcome::NotRegistered("backend unreachable".to_string()),
         ];
         for outcome in failing {
             assert!(
@@ -777,6 +793,30 @@ mod tests {
                 "login must fail when federation is not in effect"
             );
         }
+    }
+
+    /// The `NotRegistered` message must not read as a broken transport: the
+    /// federation link is fine, and sending the user to debug TLS would be the
+    /// same conflation this whole change removes.
+    #[test]
+    fn not_registered_login_error_names_the_registry_not_the_link() {
+        let err = report_login(PokeOutcome::NotRegistered(
+            "backend unreachable".to_string(),
+        ))
+        .expect_err("a stale platform record fails the login");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("backend unreachable"),
+            "the underlying reason is surfaced: {msg}"
+        );
+        assert!(
+            msg.contains("federation is in effect"),
+            "the message must say the link is fine: {msg}"
+        );
+        assert!(
+            msg.contains("peppy platform list"),
+            "the message must name what is actually affected: {msg}"
+        );
     }
 
     #[test]
@@ -808,6 +848,7 @@ mod tests {
             PokeOutcome::DaemonError("y".to_string()),
             PokeOutcome::DaemonNotRunning,
             PokeOutcome::TimedOut,
+            PokeOutcome::NotRegistered("backend unreachable".to_string()),
         ] {
             report_logout(outcome);
         }

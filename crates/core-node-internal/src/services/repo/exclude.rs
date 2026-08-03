@@ -1,5 +1,5 @@
 use crate::Result;
-use crate::services::repo::refresh::{process_refresh, write_all_caches};
+use crate::services::repo::refresh::reindex_after_change;
 use crate::services::repo::{
     json_entry_identity, normalize_repo_entries, repo_source_to_json, source_identity,
 };
@@ -50,33 +50,19 @@ async fn handle_repo_exclude_request(
     context: ServiceRequestContext,
     peppy_dirs: PeppyDirs,
 ) -> PeppyResult<Payload> {
-    let (payload, needs_refresh) = into_service_response(
+    let (mut response, needs_refresh) = into_service_response(
         &context,
         handle_repo_exclude_request_inner(&context, &peppy_dirs),
     )?;
 
-    if needs_refresh {
-        let dirs = peppy_dirs.clone();
-        match tokio::task::spawn_blocking(move || {
-            let _guard = crate::services::repo::refresh_lock().lock();
-            match process_refresh(&dirs, &mut |_| {}) {
-                Ok(refreshed) => write_all_caches(&dirs, &refreshed),
-                Err(e) => Err(e),
-            }
-        })
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                warn!("Failed to refresh after repo exclusion: {}", e);
-            }
-            Err(e) => {
-                warn!("Refresh task panicked after repo exclusion: {}", e);
-            }
-        }
+    // The exclusion itself already landed, so `success` stays true; the
+    // report says whether the re-read that makes it take effect worked.
+    if needs_refresh && let Some(report) = reindex_after_change(&peppy_dirs).await {
+        warn!("Re-indexing after the exclusion reported problems: {report}");
+        response = RepoExcludeResponse::success_with_refresh_report(report);
     }
 
-    Ok(payload)
+    into_service_response(&context, response.encode().map_err(Into::into))
 }
 
 /// Reads excluded repositories from `conf/excluded_repositories.json5`.
@@ -106,7 +92,8 @@ pub(crate) fn read_excluded_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>> 
 pub(crate) struct ExclusionSet {
     /// Identities (path for fs, url for git/url) of excluded entries.
     pub(crate) identities: HashSet<String>,
-    /// FS paths used for subdirectory pruning inside `walk_directory`.
+    /// FS subtrees this machine does not answer for, applied to the
+    /// locations a repository's index declares before any of them is read.
     pub(crate) fs_paths: Vec<PathBuf>,
     /// Structured list of all excluded entries for feedback reporting.
     pub(crate) entries: Vec<ExcludedEntry>,
@@ -164,11 +151,13 @@ impl ExclusionSet {
     }
 }
 
-/// Returns `(payload, needs_refresh)`.
+/// Returns `(response, needs_refresh)`. The response is returned
+/// unencoded so the caller can fold the post-change re-index report into
+/// it before putting it on the wire.
 fn handle_repo_exclude_request_inner(
     context: &ServiceRequestContext,
     peppy_dirs: &PeppyDirs,
-) -> Result<(Payload, bool)> {
+) -> Result<(RepoExcludeResponse, bool)> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
 
@@ -182,7 +171,7 @@ fn handle_repo_exclude_request_inner(
     let identity = source_identity(&request.source);
     if identity.trim().is_empty() {
         return Ok((
-            RepoExcludeResponse::failure("repository path/URL must not be empty").encode()?,
+            RepoExcludeResponse::failure("repository path/URL must not be empty"),
             false,
         ));
     }
@@ -194,7 +183,7 @@ fn handle_repo_exclude_request_inner(
     let mut repos = match read_excluded_repos(peppy_dirs) {
         Ok(repos) => repos,
         Err(e) => {
-            return Ok((RepoExcludeResponse::failure(e.to_string()).encode()?, false));
+            return Ok((RepoExcludeResponse::failure(e.to_string()), false));
         }
     };
 
@@ -205,8 +194,7 @@ fn handle_repo_exclude_request_inner(
 
     if is_duplicate {
         return Ok((
-            RepoExcludeResponse::failure(format!("repository '{}' already exists", new_identity))
-                .encode()?,
+            RepoExcludeResponse::failure(format!("repository '{}' already exists", new_identity)),
             false,
         ));
     }
@@ -227,5 +215,5 @@ fn handle_repo_exclude_request_inner(
 
     drop(_guard);
 
-    Ok((RepoExcludeResponse::success().encode()?, true))
+    Ok((RepoExcludeResponse::success(), true))
 }

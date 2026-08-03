@@ -67,8 +67,11 @@ fn repo_add_fs_path_succeeds() {
     );
 }
 
+/// A repository is a git clone URL or a directory on this machine. An http
+/// URL that is neither is refused, naming both kinds, rather than being
+/// accepted as a third kind that resolves nothing.
 #[test]
-fn repo_add_url_succeeds() {
+fn repo_add_refuses_a_url_that_is_not_a_git_clone_url() {
     let (_rt, _serve, ctx, _work_dir) = setup();
 
     let result = RepoCommand {
@@ -80,10 +83,13 @@ fn repo_add_url_succeeds() {
     }
     .execute(&ctx);
 
+    let msg = result
+        .expect_err("a bare http URL is not a repository")
+        .to_string();
+    assert!(msg.contains("git URL"), "error should name git, got: {msg}");
     assert!(
-        result.is_ok(),
-        "repo add URL should succeed: {:?}",
-        result.err()
+        msg.contains("directory on this machine"),
+        "error should name fs, got: {msg}"
     );
 }
 
@@ -155,7 +161,7 @@ fn repo_add_top_assigns_id_below_current_min() {
     // First add: empty file, lands at the default floor (1000).
     RepoCommand {
         command: RepoCommands::Add {
-            source: "https://example.com/first".to_string(),
+            source: "https://example.com/first.git".to_string(),
             git_ref: None,
             top: false,
         },
@@ -166,7 +172,7 @@ fn repo_add_top_assigns_id_below_current_min() {
     // Second add with --top should land below the current min.
     RepoCommand {
         command: RepoCommands::Add {
-            source: "https://example.com/second".to_string(),
+            source: "https://example.com/second.git".to_string(),
             git_ref: None,
             top: true,
         },
@@ -180,11 +186,11 @@ fn repo_add_top_assigns_id_below_current_min() {
 
     let first = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/first")
+        .find(|e| e["url"] == "https://example.com/first.git")
         .expect("first entry missing");
     let second = repos
         .iter()
-        .find(|e| e["url"] == "https://example.com/second")
+        .find(|e| e["url"] == "https://example.com/second.git")
         .expect("second (top) entry missing");
 
     let first_id = first["id"].as_u64().expect("first id is a number");

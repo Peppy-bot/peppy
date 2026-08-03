@@ -1,4 +1,4 @@
-use peppylib::messaging::{ActionGoalHandle, ResultStatus};
+use peppylib::messaging::ActionGoalHandle;
 use peppylib::{ActionMessenger, MessengerHandle};
 use tracing::info;
 
@@ -148,36 +148,17 @@ pub(crate) async fn poll_action_to_completion<R>(
     let result_timeout = absolute_deadline
         .saturating_duration_since(tokio::time::Instant::now())
         .max(Duration::from_secs(1));
-    match ActionMessenger::request_result(messenger, action_handle, result_timeout).await {
-        Ok(reply) => match reply.status {
-            ResultStatus::Completed | ResultStatus::Cancelled => {
-                match decode_result(reply.body.as_ref()) {
-                    Ok(result) => Ok(result),
-                    Err(err) => {
-                        scrolling_output.clear();
-                        Err(Error::ExecutionFailed(err))
-                    }
-                }
-            }
-            ResultStatus::Abandoned => {
-                scrolling_output.clear();
-                Err(Error::ExecutionFailed(
-                    "the action goal was abandoned by its worker before producing a result"
-                        .to_string(),
-                ))
-            }
-            ResultStatus::Expired => {
-                scrolling_output.clear();
-                Err(Error::ExecutionFailed(
-                    "the action result expired before it could be fetched".to_string(),
-                ))
-            }
-        },
-        Err(err) => {
+    // `request_result_body` maps the terminal-but-bodiless outcomes to typed
+    // peppylib errors, so "abandoned" and "expired" reach the operator as
+    // themselves rather than as one generic "failed to get result".
+    let body = ActionMessenger::request_result_body(messenger, action_handle, result_timeout)
+        .await
+        .inspect_err(|_| scrolling_output.clear())?;
+    match decode_result(body.as_ref()) {
+        Ok(result) => Ok(result),
+        Err(reason) => {
             scrolling_output.clear();
-            Err(Error::ExecutionFailed(format!(
-                "Failed to get action result: {err}"
-            )))
+            Err(Error::ExecutionFailed(reason))
         }
     }
 }

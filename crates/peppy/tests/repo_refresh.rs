@@ -34,6 +34,7 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
         }"#,
     )
     .expect("write peppy.json5");
+    super::common::publish_repo_index(node_dir.path());
 
     // Seed the repos file in the daemon's conf dir
     let conf_dir = serve.temp_dir().join("conf");

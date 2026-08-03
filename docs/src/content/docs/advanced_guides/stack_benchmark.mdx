@@ -27,6 +27,15 @@ It covers **both** ways a node can depend on another:
   matched by a producer's `manifest.implements`), drawn with a heavy arrow `➔`.
   See [Contract implementation](/advanced_guides/contract_implementation/).
 
+Topics backed by [pairing or observer slots](/advanced_guides/pairing/)
+(`depends_on.pairings` / `depends_on.pairing_observers`) are not benchmarked:
+those edges produce no rows.
+
+The report covers one daemon's slice of the stack: the benchmark goal goes to a
+single daemon and enumerates only its own node stack. In a federated launch,
+benchmark each machine separately, targeting a participant with the global
+`--core-node <name>` flag.
+
 Use it to answer questions like "is this service round-trip as fast as I expect?",
 "how long does a frame take to reach its consumer?", or "did my last change make a
 hot path slower?" (each run is compared against the previous run on the same
@@ -50,6 +59,13 @@ peppy stack benchmark --samples 500 --warmup 50 --per-sample-timeout-ms 1000
 | `--samples` | `200` | Timed samples per interface, after warmup. |
 | `--warmup` | `20` | Warmup samples per interface, discarded before measuring. |
 | `--per-sample-timeout-ms` | `2000` | Per-sample probe/observe timeout. |
+
+The report opens with an `env:` line summarizing the host CPU, which is what
+makes `Δp50` comparisons against the previous run interpretable, plus a warning
+when turbo or shared-host load makes absolute latency swing run-to-run. With no
+interface edges in the running stack it prints
+`No interface edges found in the running stack; nothing to benchmark.`, and a
+second benchmark started while one is in flight is rejected.
 
 ## Reading the tables
 
@@ -201,8 +217,8 @@ schema (a topic has no request leg, so its request side reads `0B`):
   still sends a tiny framing header on the wire).
 
 If a row adds **`(rebuild producer for sized replies)`**, the producer node never
-returned the requested response size, because it is built against a framework
-version that predates sized probes, so its response side wasn't really measured. Rebuild
+returned the requested response size, because its framework does not honor sized
+probe replies, so its response side wasn't really measured. Rebuild
 that producer node and re-run. (The daemon and CLI versions don't matter for this;
 it's keyed off the *producer node's* framework version.)
 

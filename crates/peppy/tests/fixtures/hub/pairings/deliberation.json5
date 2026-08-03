@@ -1,0 +1,59 @@
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "deliberation",
+    tag: "v1"
+  },
+  // The bidirectional, exclusive relationship between a slow planner and the
+  // fast executor that acts on its subgoals. A pairing rather than two producer
+  // links because each side holds a pinned view of exactly one counterpart, and
+  // because a mutual producer edge would be a cycle in the dependency graph.
+  roles: ["planner", "executor"],
+  topics: [
+    {
+      emitted_by: "executor",
+      name: "situation",
+      // Sampled at the executor's own rate. A planner that misses one sample
+      // wants the next one, not a replay of the last.
+      qos_profile: "sensor_data",
+      message_format: {
+        stamp: "time",
+        joint_positions: {
+          $type: "array",
+          $items: "f64",
+          $length: 3
+        },
+        // The subgoal the executor is servoing on, echoed back from
+        // `subgoal.subgoal_id`, or 0 when nothing is authoritative. Adoption is
+        // reported by the side that adopts: delivery is not adoption, and this
+        // is also what lets a third party observing this role tell a newly
+        // adopted subgoal from a redelivery of the previous one.
+        active_subgoal_id: "u32",
+        // Set when the executor is asking the planner for a subgoal. The stream
+        // runs either way, so the planner always has recent state to plan
+        // against.
+        escalated: "bool"
+      }
+    },
+    {
+      emitted_by: "planner",
+      name: "subgoal",
+      // Low rate and individually meaningful: dropping one costs the executor a
+      // whole planning cycle, so this direction is reliable.
+      qos_profile: "reliable",
+      message_format: {
+        stamp: "time",
+        subgoal_id: "u32",
+        target_position: {
+          $type: "array",
+          $items: "f64",
+          $length: 3
+        },
+        // How far ahead the planner planned. The executor weighs this against
+        // its own staleness bound when deciding how long to keep trusting the
+        // subgoal.
+        horizon_s: "f64"
+      }
+    }
+  ]
+}

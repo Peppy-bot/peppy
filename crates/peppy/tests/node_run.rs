@@ -1,5 +1,5 @@
 use config::node::Toolchain;
-use peppy::test_support::{LogCapture, ServeCommandEmulation};
+use peppy::test_support::{InstanceLifetime, LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,7 +71,11 @@ async fn node_run_command_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The spawned instance has to still be in the stack for the post-run
+    // `instance_count()` assertion, so tie it to the test rather than to
+    // a fixed `sleep`.
+    let instances = InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -296,7 +300,11 @@ async fn node_run_command_with_args_succeeds() {
 }
 "#;
     std::fs::write(&peppy_json5_path, peppy_config).expect("peppy.json5 should be writable");
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The spawned instance has to still be in the stack for the post-run
+    // `instance_count()` assertion, so tie it to the test rather than to
+    // a fixed `sleep`.
+    let instances = InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -496,7 +504,11 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         peppy_json5_path.display()
     );
 
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The spawned instance has to still be in the stack for the post-run
+    // `instance_count()` assertion, so tie it to the test rather than to
+    // a fixed `sleep`.
+    let instances = InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node to the node stack (without running)
     NodeCommand {
@@ -681,7 +693,11 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(peppy_json5_path.exists());
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The spawned instance has to still be in the stack for the post-run
+    // `instance_count()` assertion, so tie it to the test rather than to
+    // a fixed `sleep`.
+    let instances = InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node WITHOUT building it. The node should land in the `Added`
     // stage so that `node run -b` has something to build.
@@ -854,7 +870,11 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     let node_path = node_dir.path().join(node_name);
     let peppy_json5_path = node_path.join("peppy.json5");
     assert!(peppy_json5_path.exists());
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The spawned instance has to still be in the stack for the post-run
+    // `instance_count()` assertion, so tie it to the test rather than to
+    // a fixed `sleep`.
+    let instances = InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node WITH building it. The node should land in the `Ready`
     // stage so that `node run -b` finds it already built.
@@ -989,6 +1009,7 @@ fn write_consumer_with_depends_on(
     consumer_name: &str,
     producer_name: &str,
     link_ids: &[&str],
+    instances: &InstanceLifetime,
 ) -> std::path::PathBuf {
     let consumer_dir = work_dir.join(consumer_name);
     std::fs::create_dir_all(&consumer_dir).expect("create consumer dir");
@@ -999,6 +1020,10 @@ fn write_consumer_with_depends_on(
         })
         .collect::<Vec<_>>()
         .join(",\n");
+    // Keep-alive rather than `sleep 30`: several tests below leave a consumer
+    // running as the backdrop for a later assertion, and a backdrop that can
+    // expire on a slow machine makes those tests silently stop testing.
+    let run_cmd = instances.keep_alive_run_cmd();
     let body = format!(
         r#"{{
     peppy_schema: "node/v1",
@@ -1013,7 +1038,7 @@ fn write_consumer_with_depends_on(
     }},
     execution: {{
         language: "rust",
-        run_cmd: ["sleep", "30"]
+        run_cmd: {run_cmd}
     }}
 }}
 "#
@@ -1030,6 +1055,7 @@ async fn add_built_producer(
     node_ctx: &Arc<AppContext>,
     work_dir: &std::path::Path,
     producer_name: &str,
+    instances: &InstanceLifetime,
 ) {
     NodeCommand {
         command: NodeCommands::Init {
@@ -1043,7 +1069,10 @@ async fn add_built_producer(
     .expect("producer node init should succeed");
     let producer_path = work_dir.join(producer_name);
     let producer_json5 = producer_path.join("peppy.json5");
-    peppy::test_support::override_run_cmd(&producer_json5);
+    // Producer instances spawned from this node are named by `--link`s
+    // validated several CLI round-trips later, so they must outlive their own
+    // spawn; a fixed `sleep` would make that a race.
+    peppy::test_support::override_run_cmd_while(&producer_json5, &instances.sentinel());
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(producer_path.display().to_string()),
@@ -1070,9 +1099,10 @@ async fn add_built_consumer_with_pins(
     consumer_name: &str,
     producer_name: &str,
     link_ids: &[&str],
+    instances: &InstanceLifetime,
 ) {
     let consumer_dir =
-        write_consumer_with_depends_on(work_dir, consumer_name, producer_name, link_ids);
+        write_consumer_with_depends_on(work_dir, consumer_name, producer_name, link_ids, instances);
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(consumer_dir.display().to_string()),
@@ -1156,13 +1186,15 @@ async fn node_run_rejects_unbound_slots() {
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
         &["wrist_left", "wrist_right"],
+        &instances,
     )
     .await;
 
@@ -1222,13 +1254,15 @@ async fn node_run_bind_rejects_dead_key() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
         &["wrist_left"],
+        &instances,
     )
     .await;
 
@@ -1307,13 +1341,15 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
         &["wrist_left", "wrist_right"],
+        &instances,
     )
     .await;
 
@@ -1422,14 +1458,16 @@ async fn node_run_bind_rejects_target_mismatch() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    add_built_producer(&node_ctx, work_dir.path(), expected_producer).await;
-    add_built_producer(&node_ctx, work_dir.path(), wrong_producer).await;
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), expected_producer, &instances).await;
+    add_built_producer(&node_ctx, work_dir.path(), wrong_producer, &instances).await;
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         expected_producer,
         &["wrist_left"],
+        &instances,
     )
     .await;
 
@@ -1522,13 +1560,15 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
         &["wrist_left", "wrist_right"],
+        &instances,
     )
     .await;
 
@@ -1667,13 +1707,15 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_a_name,
         producer_name,
         &["wrist_left", "wrist_right"],
+        &instances,
     )
     .await;
     add_built_consumer_with_pins(
@@ -1682,6 +1724,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
         consumer_b_name,
         producer_name,
         &["second_consumer_pin"],
+        &instances,
     )
     .await;
 
@@ -1806,13 +1849,15 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
-    add_built_producer(&node_ctx, work_dir.path(), producer_name).await;
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
     add_built_consumer_with_pins(
         &node_ctx,
         work_dir.path(),
         consumer_name,
         producer_name,
         &["wrist_left", "wrist_right"],
+        &instances,
     )
     .await;
 

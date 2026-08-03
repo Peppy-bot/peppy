@@ -6,7 +6,7 @@ use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use config::runtime::PairingSlotBinding;
-use core_node_api::encoding::StackListRequest;
+use core_node_api::encoding::{LaunchIdentity, StackListRequest};
 use core_node_api::{InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode};
 use futures::future::join_all;
 
@@ -29,6 +29,13 @@ pub struct StackSection {
     /// Live instance ids advertising this name at enumeration time; more than
     /// one means an active collision. Zero when no live token was found.
     pub live_claimants: usize,
+    /// The federated launch this daemon's stack slice came from, as the
+    /// daemon self-reports it.
+    pub launch: Option<LaunchIdentity>,
+    /// The launch currently HOLDING this daemon, as it self-reports it. A
+    /// reservation without a matching live launch is a machine every new
+    /// launch bounces off, so it must be visible here.
+    pub reservation: Option<LaunchIdentity>,
     pub outcome: std::result::Result<(Vec<SerializedNode>, Vec<SerializedEdge>), String>,
 }
 
@@ -109,6 +116,8 @@ pub async fn list_nodes_collecting(
                     instance_id: (!response.instance_id.is_empty()).then_some(response.instance_id),
                     host_name: response.host_name,
                     live_claimants,
+                    launch: response.launch,
+                    reservation: response.reservation,
                     outcome: crate::commands::parse_stack_graph(&response.graph_json)
                         .map(|mut graph| {
                             sort_graph(&mut graph.nodes, &mut graph.edges);
@@ -121,6 +130,8 @@ pub async fn list_nodes_collecting(
                     instance_id: None,
                     host_name: "unknown".to_string(),
                     live_claimants,
+                    launch: None,
+                    reservation: None,
                     outcome: Err(error.to_string()),
                 },
             }
@@ -210,6 +221,32 @@ pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
                     section.live_claimants
                 ),
             };
+            let _ = writeln!(body);
+        }
+
+        // Launch ownership before the tables: which launch produced this
+        // slice, and which launch is holding the machine right now. The
+        // reservation line is what tells an operator WHERE a refused launch
+        // is wedged and the exact command that clears it.
+        let mut owned = false;
+        if let Some(launch) = &section.launch {
+            let _ = writeln!(
+                body,
+                "Slice of launch {} (coordinator: {})",
+                launch.launch_id, launch.coordinator_core_node
+            );
+            owned = true;
+        }
+        if let Some(reservation) = &section.reservation {
+            let _ = writeln!(
+                body,
+                "Reserved for launch {} driven by {}; clear with `peppy stack reset \
+                 --core-node {}`",
+                reservation.launch_id, reservation.coordinator_core_node, section.core_node
+            );
+            owned = true;
+        }
+        if owned {
             let _ = writeln!(body);
         }
 
@@ -716,11 +753,47 @@ mod tests {
             instance_id: Some("gen-1".to_string()),
             host_name: host_name.to_string(),
             live_claimants: 1,
+            launch: None,
+            reservation: None,
             outcome: Ok((
                 vec![node(core_node, "v1", NodeStage::Root, vec![])],
                 Vec::new(),
             )),
         }
+    }
+
+    /// The slice line attributes a stack to the launch that produced it, and
+    /// the reservation line shows a machine currently held: which launch,
+    /// which coordinator, and the exact command that clears THIS machine.
+    /// Without that line a stale reservation is invisible everywhere, and the
+    /// operator has no way to aim the escape hatch.
+    #[test]
+    fn launch_slice_and_reservation_are_reported_with_the_clearing_command() {
+        let sections = vec![StackSection {
+            launch: Some(LaunchIdentity::new("launch-old", "cn-coordinator")),
+            reservation: Some(LaunchIdentity::new("launch-held", "cn-coordinator")),
+            ..successful_section("cn-participant", "robo-a")
+        }];
+        let out = format_stack_list(&sections, false);
+        assert!(
+            out.contains("Slice of launch launch-old (coordinator: cn-coordinator)"),
+            "the slice must name its launch:\n{out}"
+        );
+        assert!(
+            out.contains("Reserved for launch launch-held driven by cn-coordinator"),
+            "the reservation must name the launch holding the machine:\n{out}"
+        );
+        assert!(
+            out.contains("`peppy stack reset --core-node cn-participant`"),
+            "the reservation line must spell the command that clears THIS machine:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_standalone_stack_reports_no_launch_ownership() {
+        let out = format_stack_list(&[successful_section("cn-solo", "robo-a")], false);
+        assert!(!out.contains("Slice of launch"), "got:\n{out}");
+        assert!(!out.contains("Reserved for launch"), "got:\n{out}");
     }
 
     #[test]
@@ -803,6 +876,8 @@ mod tests {
             instance_id: None,
             host_name: "unknown".to_string(),
             live_claimants: 3,
+            launch: None,
+            reservation: None,
             outcome: Err("daemon disappeared".to_string()),
         }];
         let out = format_stack_list(&sections, false);

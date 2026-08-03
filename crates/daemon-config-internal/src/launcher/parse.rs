@@ -41,10 +41,7 @@ mod tests {
             peppy_schema: "launcher/v1",
             deployments: [
                 {
-                    source: {
-                        url: "https://example.com/fake_robot_brain.tar.zst",
-                        sha256: "33e83da60a54e3bb487a9a3b67705918602143b30f158143b6909acaf017a36a"
-                    },
+                    source: { name: "fake_robot_brain", tag: "v1" },
                     instances: [
                         {
                             instance_id: "the_brain",
@@ -53,11 +50,7 @@ mod tests {
                     ]
                 },
                 {
-                    source: {
-                        repo: "https://github.com/Peppy-bot/nodes-hub.git",
-                        path: "fake_openarm01_controller",
-                        ref: "0.1.0"
-                    },
+                    source: { name: "fake_openarm01_controller:v1" },
                     instances: [
                         {
                             instance_id: "the_nervous_system",
@@ -66,7 +59,7 @@ mod tests {
                     ]
                 },
                 {
-                    source: { local: "./esp32_board" },
+                    source: { name: "esp32_board:v1" },
                     instances: [
                         {
                             instance_id: "esp32_1",
@@ -83,19 +76,17 @@ mod tests {
         let deployments = cfg.deployments;
         assert_eq!(deployments.len(), 3);
 
-        // Check first deployment
-        let DeploymentSource::Url(url) = &deployments[0].source else {
-            panic!("expected url source");
-        };
-        assert_eq!(url.url, "https://example.com/fake_robot_brain.tar.zst");
+        // Check first deployment (long form)
+        let DeploymentSource { name, tag } = &deployments[0].source;
+        assert_eq!(name, "fake_robot_brain");
+        assert_eq!(tag, "v1");
         assert_eq!(deployments[0].instances[0].instance_id, "the_brain");
         assert!(deployments[0].instances[0].arguments.is_empty());
 
-        // Check second deployment
-        let DeploymentSource::Git(git) = &deployments[1].source else {
-            panic!("expected git source");
-        };
-        assert_eq!(git.ref_, "0.1.0");
+        // Check second deployment (combined `name:tag` shorthand)
+        let DeploymentSource { name, tag } = &deployments[1].source;
+        assert_eq!(name, "fake_openarm01_controller");
+        assert_eq!(tag, "v1");
         assert_eq!(
             deployments[1].instances[0].instance_id,
             "the_nervous_system"
@@ -103,10 +94,7 @@ mod tests {
         assert!(deployments[1].instances[0].arguments.is_empty());
 
         // Check third deployment
-        let DeploymentSource::Local(local) = &deployments[2].source else {
-            panic!("expected local source");
-        };
-        assert_eq!(local.local, std::path::PathBuf::from("esp32_board"));
+        assert_eq!(deployments[2].source.name, "esp32_board");
         assert_eq!(deployments[2].instances.len(), 1);
         assert_eq!(deployments[2].instances[0].instance_id, "esp32_1");
         assert!(deployments[2].instances[0].arguments.is_empty());
@@ -185,7 +173,7 @@ mod tests {
             peppy_schema: "launcher/v1",
             deployments: [
                 {
-                    source: { local: "" },
+                    source: { name: "" },
                     instances: []
                 }
             ]
@@ -195,7 +183,7 @@ mod tests {
         let Error::Parsing(ParsingError::InvalidDeploymentSource(msg)) = result.unwrap_err() else {
             panic!("expected InvalidDeploymentSource error");
         };
-        assert_eq!(msg, "local path cannot be empty");
+        assert_eq!(msg, "deployment source name cannot be empty");
     }
 
     #[test]
@@ -209,5 +197,139 @@ mod tests {
             !cfg.deployments.is_empty(),
             "example launcher should contain deployments"
         );
+    }
+
+    // ── Core node links (federation) ──────────────────────────────────────
+
+    fn parse_launcher(body: &str) -> Result<crate::internal::launcher::PeppyLauncher, String> {
+        serde_json5::from_str(body).map_err(|e| e.to_string())
+    }
+
+    fn split_compute(core_nodes: &str, placement: &str) -> String {
+        format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                {core_nodes}
+                deployments: [{{
+                    source: {{ name: "uvc_camera", tag: "v1" }},
+                    instances: [{{ instance_id: "wrist_cam_inst"{placement} }}]
+                }}]
+            }}"#
+        )
+    }
+
+    #[test]
+    fn a_launcher_declaring_core_node_links_parses() {
+        let launcher = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "cloud_inference"],"#,
+            r#", core_node: "robot_onboard""#,
+        ))
+        .expect("valid launcher");
+        assert_eq!(launcher.core_nodes, ["robot_onboard", "cloud_inference"]);
+        assert_eq!(
+            launcher.deployments[0].instances[0].core_node.as_deref(),
+            Some("robot_onboard")
+        );
+    }
+
+    /// The field is optional: an instance that omits it runs on the
+    /// coordinator, so a single-machine launcher is unchanged.
+    #[test]
+    fn an_instance_may_omit_its_placement() {
+        let launcher = parse_launcher(&split_compute(r#"core_nodes: ["robot_onboard"],"#, ""))
+            .expect("valid launcher");
+        assert_eq!(launcher.deployments[0].instances[0].core_node, None);
+    }
+
+    /// A launcher may declare links and place nothing on them. That is the
+    /// half-migrated state an author passes through, and it is not an error:
+    /// every declared link still has to be wired at launch.
+    #[test]
+    fn declaring_links_without_placing_anything_parses() {
+        let launcher = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "cloud_inference"],"#,
+            "",
+        ))
+        .expect("valid launcher");
+        assert_eq!(launcher.core_nodes.len(), 2);
+    }
+
+    #[test]
+    fn a_placement_with_no_core_nodes_list_is_refused_and_says_how_to_fix_it() {
+        let error = parse_launcher(&split_compute("", r#", core_node: "robot_onboard""#))
+            .expect_err("a placement needs a declared link");
+        assert!(error.contains("declares no `core_nodes`"), "got: {error}");
+        assert!(error.contains("--place robot_onboard@"), "got: {error}");
+    }
+
+    #[test]
+    fn a_placement_naming_an_undeclared_link_lists_the_declared_ones() {
+        let error = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "cloud_inference"],"#,
+            r#", core_node: "typo_onboard""#,
+        ))
+        .expect_err("undeclared link must fail");
+        assert!(error.contains("typo_onboard"), "got: {error}");
+        assert!(error.contains("`robot_onboard`"), "got: {error}");
+        assert!(error.contains("`cloud_inference`"), "got: {error}");
+    }
+
+    #[test]
+    fn duplicate_core_node_link_names_are_refused() {
+        let error = parse_launcher(&split_compute(
+            r#"core_nodes: ["robot_onboard", "robot_onboard"],"#,
+            "",
+        ))
+        .expect_err("duplicate link must fail");
+        assert!(error.contains("more than once"), "got: {error}");
+    }
+
+    #[test]
+    fn an_empty_core_node_link_name_is_refused() {
+        let error = parse_launcher(&split_compute(r#"core_nodes: ["", "cloud"],"#, ""))
+            .expect_err("empty link must fail");
+        assert!(error.contains("empty core node link"), "got: {error}");
+    }
+
+    /// A link id is one half of `--place <link>@<core-node>`, so it obeys the
+    /// same name grammar as the other half. A link carrying a space, a `/`, or
+    /// an `@` would be unwireable from the very surface it exists for.
+    #[test]
+    fn a_core_node_link_name_that_could_not_be_wired_is_refused() {
+        for malformed in [
+            "has space".to_owned(),
+            "has/slash".to_owned(),
+            "has@at".to_owned(),
+            "n".repeat(300),
+        ] {
+            let error = parse_launcher(&split_compute(
+                &format!(r#"core_nodes: ["{malformed}"],"#),
+                "",
+            ))
+            .expect_err("a link name that cannot be wired must be refused");
+            assert!(error.contains(&malformed), "got: {error}");
+        }
+    }
+
+    /// `self` already means "the coordinator" at the `--place` surface, so a
+    /// link of the same name would make `--place self@self` parse as something
+    /// with nothing to tell a reader which `self` was which.
+    #[test]
+    fn a_core_node_link_named_self_is_refused() {
+        let error = parse_launcher(&split_compute(r#"core_nodes: ["self"],"#, ""))
+            .expect_err("`self` must not be a link name");
+        assert!(error.contains("reserved"), "got: {error}");
+    }
+
+    /// The schema stays `launcher/v1`, so an older daemon rejects these keys
+    /// with its existing unknown-field error, which names the offending key
+    /// and so points at the version gap rather than reading as a typo.
+    #[test]
+    fn unknown_top_level_keys_are_still_refused() {
+        let error = parse_launcher(
+            r#"{ peppy_schema: "launcher/v1", core_node: "oops", deployments: [] }"#,
+        )
+        .expect_err("unknown key must fail");
+        assert!(error.contains("core_node"), "got: {error}");
     }
 }

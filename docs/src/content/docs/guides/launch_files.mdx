@@ -38,16 +38,16 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` and `instances` attribute. Besides `instance_id`, an instance can carry `arguments`, `env_vars`, `links` (one map filling every kind of `depends_on` slot, keyed by `link_id`), and `defer_links` (explicitly starting a required pairing or observer slot unresolved). A `links` value is interpreted against the slot it names: a producer slot (`depends_on.{nodes,contracts}`) takes a producer instance (a scalar for a `one` slot, an array for a multi-cardinality slot); a [pairing](/advanced_guides/pairing/) participant slot takes a single peer instance (`"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate); and an observer slot takes a single source instance to observe (`"<source>"` or `"<source>/<source_link_id>"`)
+ 3. Each deployment requires a `source` (where the node comes from) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, `links`, and `defer_links` are optional. See [Instance attributes](#instance-attributes) for what each one does
 
-The `source` attribute supports four formats:
- - **URL**: A link to a `.tar.zst` archive, requiring both `url` and `sha256` attributes. The download is retried automatically on transient network failures (connection errors or `5xx` responses); a mismatch against `sha256`, or a client (`4xx`) error, fails immediately
- - **Git repository**: Requires `repo`, `path` (location within the repo), and `ref` attributes
- - **Local path**: Specified via the `local` key, pointing to a directory on your filesystem. The path can be either absolute or relative to the launcher file
- - **Repository**: Reference a node that is already registered in your user repositories. Specify `name` and `tag`, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
+The `source` attribute always references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
+
+If a node you want to deploy lives outside your configured repositories, add its location first: register a local directory with `peppy repo add /path/to/my/nodes`, or a git repository with `peppy repo add https://github.com/org/repo.git`. A repository states what it publishes through a committed `peppy_repository.json5`, so run `peppy repo index /path/to/my/nodes` to write it, and re-run it after adding, moving, or renaming a node, since the refresh reads the index rather than the filesystem. Then `peppy repo refresh` makes the nodes resolvable (see [Repositories](/advanced_guides/repositories/)).
 
 :::note
-The repository source resolves nodes from a locally cached index. Run `peppy repo refresh` before launching to ensure the cache is up to date. If a node or tag is missing from the cache, the launch will fail with a "not found" error.
+The source resolves nodes from the locally cached index of the machine the launch is submitted to. Run `peppy repo refresh` on that machine before launching to ensure its cache is up to date. In a federated launch it is the only machine whose cache matters: it resolves every deployment and its dependencies once and ships the result to the other machines as pinned content, so their caches need no refresh and cannot change what the launch runs.
+
+If a node or tag is missing from the cache, the launch fails with a "not found" error. If the cache instead contains the same `name:tag` **twice from one repository**, the launch fails with a distinct ambiguity error naming both manifests, never "not found", since the node is present rather than absent. The refusal happens while sources are being resolved, before anything is added, built, or run, and it covers transitive dependencies too: an ambiguity two levels down is exactly as fatal as one at the top. See [Using a repository-indexed node](/advanced_guides/repositories/#using-a-repository-indexed-node).
 :::
 
 ```json5
@@ -76,7 +76,7 @@ The repository source resolves nodes from a locally cached index. Run `peppy rep
 ```
 
 :::caution
-The git `ref` and the node `tag` declared in `peppy.json5` are independent values, and they do not share the same format: git refs can contain dots (e.g. `v0.1.0`), but node tags must start with an ASCII letter and forbid dots (e.g. `v1`, `donut`). This means you could have a git `ref` of `v0.1.0` while `peppy.json5` specifies `tag: "v1"`. Keep them coordinated so a checkout of a given git ref lines up with the tag your launcher expects.
+A git ref pinned in `repositories.json5` and the node `tag` declared in `peppy.json5` are independent values, and they do not share the same format: git refs can contain dots (e.g. `v0.1.0`), but node tags must start with an ASCII letter and forbid dots (e.g. `v1`, `donut`). This means a repository could be pinned to the git ref `v0.1.0` while `peppy.json5` specifies `tag: "v1"`. Keep them coordinated so a checkout of a given git ref lines up with the tag your launcher expects.
 :::
 
 From within the cloned repository, execute the launcher:
@@ -103,7 +103,9 @@ Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guide
 peppy stack launch openarm01_sim_teleop
 ```
 
-An argument that contains a path separator or ends in `.json5` is always resolved as a filesystem path. A bare name (no separator, no extension) is first tried on disk as `<name>.json5` next to your current directory, and only falls back to the repository cache at `~/.peppy/cache/launchers.json5` when no such file exists. Run `peppy repo refresh` first to ensure the launcher cache is populated. If the name resolves neither to a file nor to a cached launcher, the launch fails with an explicit "not found" error.
+An argument that contains a path separator or ends in `.json5` is always resolved as a filesystem path. A bare name (no separator, no extension) is first tried on disk as `<name>.json5` next to your current directory, and only falls back to the repository cache at `~/.peppy/cache/launchers.json5` when no such file exists. Run `peppy repo refresh` first on the machine you submit the launch to; the launcher document, like every repository source, resolves on that machine alone.
+
+If the name resolves neither to a file nor to a cached launcher, the launch fails with an explicit "not found" error. If one repository provides two launcher files with that name, the launch fails with a distinct ambiguity error naming both: launchers are keyed by filename, so two identically named `.json5` files anywhere in one repository contest the same name even in different directories.
 
 :::caution
 Running the `peppy stack launch` command clears the existing node stack and stops all running instances
@@ -115,6 +117,8 @@ $ peppy stack list
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ Core node: cn-adoring-wiles (host: robot-host)                                                                                                                             │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Slice of launch launch-brave-otter (coordinator: cn-adoring-wiles)                                                                                                         │
+│                                                                                                                                                                            │
 │ Node stack                                                                                                                                                                 │
 │                                                                                                                                                                            │
 │ ┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────────────┐                                                   │
@@ -152,4 +156,109 @@ $ peppy stack list
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared slot except `zero_or_more` must be bound (a launcher that leaves one out is rejected at validation); see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality).
+The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) except `zero_or_more` must be bound; a launcher that leaves one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow their own rules: an `optional` pairing slot boots unpaired with no entry, and a required one can be covered by [`defer_links`](#defer_links-optional) instead. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
+
+## Instance attributes
+
+Every entry in an `instances` array configures one running copy of the deployment's node. Two instances of the same node are independent: they get their own arguments, their own environment, and their own bindings.
+
+```json5 title="peppy_launcher.json5"
+{
+  source: { name: "uvc_camera:v1" },
+  instances: [
+    {
+      instance_id: "camera_front",
+      arguments: { device: { path: "/dev/video0" }, frame_rate: 30 },
+      env_vars: { GST_DEBUG: "2" },
+      framework: { use_sim_time: false },
+    },
+    {
+      instance_id: "camera_rear",
+      arguments: { device: { path: "/dev/video1" }, frame_rate: 15 },
+    },
+  ],
+}
+```
+
+### `instance_id` (required)
+
+The name this copy runs under. It labels the instance in `peppy stack list`, in its log file, and in every `links` value that points at it.
+
+Allowed characters are letters, digits, `_` and `-`. The id must be unique across the whole stack, not just within its own deployment: two deployments cannot both declare `camera_front`, and no instance may take the core node's own id. A collision is reported before anything starts.
+
+### `arguments` (optional)
+
+Values for the parameters the node declares in its `execution.parameters` block, written with the same nesting as that schema. See the [Parameters reference](/reference/parameters/) for the full syntax.
+
+A parameter that declares a `$default` may be omitted, and the daemon fills it in before the node starts. A required parameter left without a value fails the launch as that instance starts, naming the leaf it is missing (`Missing required parameters: device.serial`). Unknown keys and type mismatches are caught by the node itself as it boots, so they surface as that instance failing to come up.
+
+A [container node](/advanced_guides/containers/) can also reference these values in its `mount_paths` with `${parameters:<path>}`, which is how two instances of one node mount two different host devices.
+
+### `env_vars` (optional)
+
+Environment variables for this instance's process.
+
+`peppy stack launch` forwards a filtered copy of your shell environment to the instances it starts on the machine you launch from, so a node there already sees your `PATH` and the rest. The filter drops `PWD`, `OLDPWD`, `TMPDIR`, `TEMP`, and `TMP`, plus any name that is not a shell identifier, any value with whitespace or shell metacharacters, and the injection-prone names listed below. An instance placed on another machine receives only its declared `env_vars`. `env_vars` is layered on top of the forwarded set for what differs per instance (a device path, a board serial, a log level), and a name declared here replaces the forwarded value:
+
+```json5
+{
+  source: { name: "esp32_board:v1" },
+  instances: [
+    { instance_id: "esp32_left",  env_vars: { ESP32_DEVICE: "/dev/ttyUSB0" } },
+    { instance_id: "esp32_right", env_vars: { ESP32_DEVICE: "/dev/ttyUSB1" } },
+  ],
+}
+```
+
+Entries are checked when the launcher file is read, before the running stack is touched:
+
+- **Names** must be shell identifiers: a letter or `_` first, then letters, digits and `_`. `ESP32_DEVICE` is fine, `esp32-device` is not.
+- **Values** may hold letters, digits and `` _ - . / : , = @ + % ``. Whitespace, quotes and shell metacharacters (`;`, `$`, `` ` ``, `|`, and friends) are rejected, so a value like `"--flag other"` has to reach the node another way, typically as an [argument](#arguments-optional).
+- **Injection-prone names** are rejected outright: the dynamic-linker and shell hooks (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `BASH_ENV`, `IFS`, and the rest of that family).
+
+:::note
+The name and value rules exist because a container node receives its environment through Apptainer, which writes each variable unquoted into a script the container sources at startup. A name or value that does not survive that step would take `PEPPY_RUNTIME_CONFIG` down with it and leave the node running on its standalone defaults. The same rule applies to process nodes so that adding a `container` block to a node later cannot break the launchers that already deploy it.
+:::
+
+`env_vars` reach the instance when it starts. Fetching and building a node happen once for the node, not once per instance, so a variable your build needs (a registry token, a toolchain path) belongs in the shell you run `peppy stack launch` from, where it is forwarded to build steps on that machine too. A build on another machine sees none of your caller environment: your environment describes your machine, so it stays there.
+
+### `framework` (optional)
+
+Framework knobs owned by peppylib rather than by the node author, so they mean the same thing for every node. The block holds one knob:
+
+- `use_sim_time`: read the clock from a simulator or bag replay instead of the daemon's wall clock. Setting it here wins over the daemon's `--clock-source` flag; omitting it falls through to that flag (which defaults to `wall`). See [System clock](/advanced_guides/system_clock/#sim-and-replay-clocks).
+
+An unknown key inside `framework` is an error rather than a no-op, so a typo like `use_simulation_time` fails the launch instead of silently leaving the instance on wall time.
+
+### `core_node` (optional)
+
+The machine this instance runs on, named by one of the placeholders the launcher declares under `core_nodes`. An instance that omits it runs on the daemon you launched from. See [Running one launcher across several machines](#running-one-launcher-across-several-machines).
+
+### `links` (optional)
+
+One map filling every kind of `depends_on` slot the node declares, keyed by the slot's `link_id`. A value is interpreted against the slot it names:
+
+- a producer slot (`depends_on.nodes` / `depends_on.contracts`) takes the producer instance to bind: a scalar for a `one` slot, an array for a multi-cardinality slot;
+- a [pairing](/advanced_guides/pairing/) participant slot takes a single peer instance, `"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate which of the peer's slots to use;
+- an observer slot takes the single source instance to observe, `"<source>"` or `"<source>/<source_link_id>"`.
+
+Every target must name an `instance_id` declared somewhere in the same launcher.
+
+### `defer_links` (optional)
+
+The `link_id`s of required pairing or observer slots this instance should start with left unresolved, listed by name. Every required participant slot must either be paired or appear here, and every observer slot must either be linked or appear here; a producer-binding slot cannot be deferred. Deferring an `optional` pairing slot is also an error (it boots unpaired without deferral), as is deferring a slot the same plan already links. Use it when the peer arrives later, at runtime, rather than in this launch.
+
+## Running one launcher across several machines
+
+A launcher can span machines. It declares named placeholders under `core_nodes`,
+each instance says which one it runs on via `core_node`, and
+`peppy stack launch --place <core-node-link>@<core-node>` binds those
+placeholders to real hardware at launch time. Producer links, pairings, and
+observations all work across the boundary, and consumers still start after their
+producers. See [Federation](/advanced_guides/federation/).
+
+Every placeholder the launcher declares must be bound with `--place`; a launch
+that leaves one unwired is refused. The escape hatch is
+`peppy stack launch --local`, which ignores the launcher's placements and runs
+every instance on the daemon you launched from. `--local` and `--place` are
+mutually exclusive.

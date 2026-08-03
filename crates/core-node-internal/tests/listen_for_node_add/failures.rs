@@ -10,7 +10,7 @@ async fn repo_node_add_fails_when_packages_cache_missing() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "ghost",
             tag: "v1",
         },
@@ -49,7 +49,7 @@ async fn repo_node_add_fails_when_root_node_unknown() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "ghost",
             tag: "v1",
         },
@@ -89,7 +89,7 @@ async fn repo_node_add_fails_when_dep_missing_in_cache() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "target",
             tag: "v1",
         },
@@ -128,7 +128,7 @@ async fn repo_node_add_fails_on_cycle() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },
@@ -176,7 +176,7 @@ async fn repo_node_add_rolls_back_on_mid_batch_failure() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },

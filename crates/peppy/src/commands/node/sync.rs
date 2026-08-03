@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::encoding::{NodeSyncRequest, RepoSourceKind};
+use core_node_api::encoding::NodeSyncRequest;
 use tracing::info;
 
 use super::source::resolve_node_root_dir;
@@ -91,12 +91,12 @@ async fn sync_resolved_node(
         if !response.resolved_from_repositories.is_empty() {
             info!("Synchronized from repositories:");
             for entry in &response.resolved_from_repositories {
-                let label = match entry.source_kind {
-                    RepoSourceKind::Fs => "fs",
-                    RepoSourceKind::Git => "git",
-                    RepoSourceKind::Url => "http",
-                };
-                info!("  - {}:{} ({})", entry.name, entry.tag, label);
+                info!(
+                    "  - {}:{} ({})",
+                    entry.name,
+                    entry.tag,
+                    entry.source_kind.as_str()
+                );
             }
         }
     }

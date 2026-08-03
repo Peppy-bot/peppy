@@ -83,7 +83,20 @@ If we look at the logs of the started `fake_video_reconstruction` node:
 
 We can see the video has been saved to a temporary folder. Go ahead and open it; you'll find the reconstructed video of the robot.
 In the same way, you can share your own nodes by hosting them in a Git repository so others can pull them into their own stacks.
-A node can also be pulled in the same way if it's in a `.tar.zst` archive.
+A node can also be pulled in the same way if it's in a Zstandard-compressed tar archive (`.tar.zst`, `.tar.zstd`, or `.tzst`).
+
+Publishing a node has a second step that is easy to forget: claiming its identity in the repository's
+index. After adding, moving, or renaming a node, run `peppy repo index` at the root of the repository
+and commit the result alongside the node:
+
+```sh
+peppy repo index .
+peppy repo index . --check   # what CI runs on your pull request
+```
+
+The index is what makes `name:tag` unambiguous within a repository. Generation refuses, naming both
+files, if your new node claims an identity another one already publishes. See
+[the repository index](/advanced_guides/repositories/#the-repository-index).
 
 :::note
 Archive downloads over HTTP tolerate flaky networks: a transient failure (a connection error or a `5xx` response) is retried automatically, up to three attempts with a short backoff. A checksum mismatch or a client (`4xx`) error fails immediately, without retrying.

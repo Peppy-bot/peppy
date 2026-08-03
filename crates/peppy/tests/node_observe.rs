@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::commands::service::{ServiceCommand, ServiceCommands};
+use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::MessengerHandle;
@@ -31,63 +31,48 @@ use peppylib::services::observation_update::listen_for_observation_update;
 use peppylib::services::shutdown::listen_for_shutdown;
 use tokio::sync::watch;
 
+use peppy::test_support::InstanceLifetime;
+
 use super::common::{
     add_built_node, emulate_startup_services, node_run_command, seed_pairing_repo, test_node_target,
 };
 
+/// The observer: watches the `arm` role of `arm_link/v1` through observer slot
+/// `watch`, consuming the topic that role emits. Emits nothing.
+fn observer_config(instances: &InstanceLifetime) -> String {
+    let run_cmd = instances.keep_alive_run_cmd();
+    format!(
+        r#"{{
+        peppy_schema: "node/v1",
+        manifest: {{
+            name: "recorder",
+            tag: "v1",
+            depends_on: {{
+                pairing_observers: [
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }}
+                ]
+            }}
+        }},
+        interfaces: {{
+            topics: {{
+                consumes: [{{ link_id: "watch", name: "joint_states" }}]
+            }}
+        }},
+        execution: {{ language: "rust", run_cmd: {run_cmd} }}
+    }}"#
+    )
+}
+
 /// The source: plays the `arm` role of `arm_link/v1` through participant slot
 /// `controller`, emitting that role's `joint_states`. It boots standalone by
 /// deferring its own participant slot (it is observed, never paired here).
-fn source_config() -> &'static str {
-    r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "robot_arm",
-            tag: "v1",
-            depends_on: {
-                pairings: [
-                    { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
-                ]
-            }
-        },
-        interfaces: {
-            topics: {
-                emits: [{ link_id: "controller", name: "joint_states" }],
-                consumes: [{ link_id: "controller", name: "joint_commands" }]
-            }
-        },
-        execution: { language: "rust", run_cmd: ["sleep", "30"] }
-    }"#
-}
-
-/// The observer: watches the `arm` role of `arm_link/v1` through observer slot
-/// `watch`, consuming the topic that role emits. Emits nothing.
-fn observer_config() -> &'static str {
-    r#"{
-        peppy_schema: "node/v1",
-        manifest: {
-            name: "recorder",
-            tag: "v1",
-            depends_on: {
-                pairings: [
-                    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
-                ]
-            }
-        },
-        interfaces: {
-            topics: {
-                consumes: [{ link_id: "watch", name: "joint_states" }]
-            }
-        },
-        execution: { language: "rust", run_cmd: ["sleep", "30"] }
-    }"#
-}
-
-/// Same source as [`source_config`], but its `run_cmd` records its own pid to
-/// `pidfile` before sleeping, so a cooperatively-emulated shutdown can kill the
-/// exact process (see [`emulate_cooperative_source`]). `exec` keeps the pid the
-/// daemon tracks (the shell becomes the sleep).
-fn killable_source_config(pidfile: &Path) -> String {
+///
+/// Its `run_cmd` records its own pid to `pidfile` before waiting, so a
+/// cooperatively-emulated shutdown can kill the exact process (see
+/// [`emulate_cooperative_source`]). `$$` is the shell the daemon spawned and
+/// therefore the pid it tracks.
+fn killable_source_config(pidfile: &Path, instances: &InstanceLifetime) -> String {
+    let keep_alive = instances.keep_alive_script();
     format!(
         r#"{{
         peppy_schema: "node/v1",
@@ -106,7 +91,7 @@ fn killable_source_config(pidfile: &Path) -> String {
                 consumes: [{{ link_id: "controller", name: "joint_commands" }}]
             }}
         }},
-        execution: {{ language: "rust", run_cmd: ["sh", "-c", "echo $$ > '{pidfile}'; exec sleep 30"] }}
+        execution: {{ language: "rust", run_cmd: ["sh", "-c", "echo $$ > '{pidfile}'; {keep_alive}"] }}
     }}"#,
         pidfile = pidfile.display()
     )
@@ -179,6 +164,14 @@ async fn emulate_observer_services(
 /// the handles a test needs to drive `node run`/`stop`/`remove`. The temp dirs
 /// and the serve emulation are held so nothing is torn down mid-test.
 struct Fixture {
+    // Instances outlive their own spawn in every test here (an observer links
+    // to an already-running source), so their lifetime is the fixture's.
+    _instances: InstanceLifetime,
+    // Where the source's `run_cmd` records its pid, so a stop can be answered
+    // by actually ending the process instead of waiting out the daemon's
+    // force-kill deadline.
+    source_pidfile: PathBuf,
+    _ctrl_dir: tempfile::TempDir,
     _serve: ServeCommandEmulation,
     ctx: Arc<AppContext>,
     messenger: MessengerHandle,
@@ -204,14 +197,24 @@ async fn setup() -> Fixture {
     );
 
     // Pairing doc into the daemon's repo cache, then both nodes.
+    let instances = InstanceLifetime::new();
+    let ctrl_dir = tempfile::tempdir().expect("temp control dir");
+    let source_pidfile = ctrl_dir.path().join("source.pid");
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
     let source_dir = tempfile::tempdir().expect("source node dir");
-    add_built_node(&ctx, source_dir.path(), source_config());
+    add_built_node(
+        &ctx,
+        source_dir.path(),
+        &killable_source_config(&source_pidfile, &instances),
+    );
     let observer_dir = tempfile::tempdir().expect("observer node dir");
-    add_built_node(&ctx, observer_dir.path(), observer_config());
+    add_built_node(&ctx, observer_dir.path(), &observer_config(&instances));
 
     Fixture {
+        _instances: instances,
+        source_pidfile,
+        _ctrl_dir: ctrl_dir,
         _serve: serve,
         ctx,
         messenger,
@@ -227,7 +230,14 @@ async fn setup() -> Fixture {
 /// the observer with `--link watch@arm_1`, and returns the observer's state
 /// watch already advanced past the initial live delivery.
 async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
-    emulate_startup_services(&fx.messenger, &fx.core_node_name, "robot_arm", "arm_1").await;
+    emulate_cooperative_source(
+        &fx.messenger,
+        &fx.core_node_name,
+        "robot_arm",
+        "arm_1",
+        fx.source_pidfile.clone(),
+    )
+    .await;
     node_run_command(
         "arm_1",
         "robot_arm",
@@ -396,11 +406,12 @@ async fn service_reset_clears_the_observation_registry() {
     let repo_dir = tempfile::tempdir().expect("temp repo dir");
     seed_pairing_repo(&serve, &ctx, repo_dir.path());
 
+    let instances = InstanceLifetime::new();
     let ctrl_dir = tempfile::tempdir().expect("temp control dir");
     let arm_pidfile = ctrl_dir.path().join("arm.pid");
     // One config string reused for both adds: re-adding the same node dir with a
     // different config would trip the codegen fingerprint check.
-    let arm_config = killable_source_config(&arm_pidfile);
+    let arm_config = killable_source_config(&arm_pidfile, &instances);
     let arm_dir = tempfile::tempdir().expect("source node dir");
 
     // Phase 1: run the source so it reaches Running and bumps its incarnation
@@ -427,8 +438,8 @@ async fn service_reset_clears_the_observation_registry() {
     // Reset: mass teardown (the source's shutdown service kills its process, so
     // this returns promptly) + node_stack.reset() (clears pairing) + the fix
     // under test (observation.clear()).
-    ServiceCommand {
-        command: ServiceCommands::Reset {},
+    StackCommand {
+        command: StackCommands::Reset { federated: false },
     }
     .execute(&ctx)
     .expect("service reset should succeed");
@@ -450,7 +461,7 @@ async fn service_reset_clears_the_observation_registry() {
     // reset left the registry stale, arm_1 would resume at generation 2; a
     // cleared registry makes it a clean first incarnation at generation 1.
     let obs_dir = tempfile::tempdir().expect("observer node dir");
-    add_built_node(&ctx, obs_dir.path(), observer_config());
+    add_built_node(&ctx, obs_dir.path(), &observer_config(&instances));
     let mut obs_rx =
         emulate_observer_services(&messenger, &core_node_name, "recorder", "rec_2", "watch").await;
     node_run_command(

@@ -54,7 +54,7 @@ A contract lives in its own file under a repository Peppy scans (see [Repositori
 }
 ```
 
-After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like; Peppy identifies a `contract/v1` document by its `peppy_schema` field.
+After `peppy repo refresh`, the contract is cached and addressable by `(name, tag)`. Files use whatever filename you like as long as it ends in `.json5`; Peppy identifies a `contract/v1` document by its `peppy_schema` field.
 
 ### 2. A producer that implements the contract
 
@@ -145,12 +145,12 @@ This is the point of the explicit-entry design: the node's `peppy.json5` shows w
 
 #### link_id rules
 
-Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings}` link_ids; a collision is rejected at parse time. Direction matters:
+Implements link_ids share one flat namespace with `depends_on.{nodes,contracts,pairings,pairing_observers}` link_ids; a collision is rejected at parse time. Direction matters:
 
 - `services.exposes` and `actions.exposes` may only reference a `manifest.implements` slot.
 - `topics.emits` may reference a `manifest.implements` slot or a `depends_on.pairings` slot, because a [pairing](/advanced_guides/pairing/) role produces the document's topics as well as consuming them.
 - `services.consumes` and `actions.consumes` may only reference a `depends_on.{nodes,contracts}` slot; a pairing document declares topics only, so it exposes no service or action to consume.
-- `topics.consumes` may additionally reference a `depends_on.pairings` slot, naming a topic the counterpart role emits.
+- `topics.consumes` may additionally reference a `depends_on.pairings` slot, naming a topic the counterpart role emits, or a `depends_on.pairing_observers` slot, naming a topic the observed role emits.
 
 Pick semantic short names for implements link_ids (`cam`, `collision`, `hw_ready`, `moves`), matching the consumer-side style, rather than echoing the contract name.
 
@@ -538,7 +538,7 @@ Every binding key names its slot's `link_id`, and the launcher checks each targe
 
 Swapping `realsense_d405:v1` for `mujoco_depth_camera_sim:v1` in the launcher requires no change to the consumer node, since both producers implement the same contract and the binding works unchanged.
 
-Once the stack is running, these contract-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 contract implementation)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. Both draw a heavy `➔` arrow for a contract-implementation edge to distinguish it from a direct `depends_on.nodes` edge (`→`).
+Once the stack is running, these contract-resolved dependencies surface in the tooling alongside direct ones. `peppy stack list` includes them in its **Dependencies** section, annotated `(via depth_camera:v1 contract implementation)`, and [`peppy stack benchmark`](/advanced_guides/stack_benchmark/) measures each consumed topic, service, and action across the resolved edge. `peppy stack benchmark` draws a heavy `➔` arrow for a contract-implementation edge to distinguish it from a direct `depends_on.nodes` edge (`→`); in `peppy stack list` every dependency edge uses `➔` and the `(via ...)` annotation is what marks the contract-resolved ones.
 
 ## Caller-driven cycles are rejected
 

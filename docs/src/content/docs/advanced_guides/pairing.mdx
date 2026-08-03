@@ -110,8 +110,8 @@ Pairs are established **when an instance starts**; there is no runtime "pair" co
 
 ```sh
 peppy repo refresh
-peppy node sync ./robot_arm
-peppy node sync ./arm_controller
+peppy node add -s ./robot_arm        # sync interfaces, then add to the stack
+peppy node add -s ./arm_controller
 
 # The first instance has no peer yet, so its required slot must be
 # explicitly deferred; it boots with the slot silent.
@@ -125,8 +125,9 @@ The `--link` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the runnin
 
 ```sh
 $ peppy node run arm_controller:v1
-Error: required pairing slot(s) not covered: [arm]. Pass `--link <link_id>@<peer_instance>`
-to pair each at start, or `--defer-link <link_id>` to explicitly start unpaired
+Error: instance `brave-lovelace-4821` declares required pairing slot `arm` (pairing `arm_link:v1`,
+role `controller`) with no pair. Pair it (launcher `links: { arm: "<peer_instance>" }` /
+`--link arm@<peer_instance>`), or defer it deliberately (`defer_links: ["arm"]` / `--defer-link arm`)
 ```
 
 In a launcher, the pair is declared once, on either instance, with `links:`; a slot left intentionally unpaired goes in `defer_links:`:
@@ -154,7 +155,7 @@ In a launcher, the pair is declared once, on either instance, with `links:`; a s
 
 `peppy stack launch` validates the whole pair plan up front (coverage, complementary roles, exclusivity, ambiguity) and establishes each pair as its second endpoint comes up.
 
-`peppy stack list` shows every pairing slot, paired or not, with a bidirectional `⇌` arrow:
+`peppy stack list` shows every pairing participant slot, paired or not, with a bidirectional `⇌` arrow ([observer slots](#observers-watching-a-pairing-without-joining-it) are not listed there):
 
 ```
 Instance pairings
@@ -221,7 +222,7 @@ Because the slot, not the node, is the unit of pairing, a node can declare sever
 Each slot is declared and covered on its own, so the two arms stay independent all the way down to the generated modules:
 
 ```json5
-// commander/peppy.json5 (manifest excerpt)
+// two_arm_commander/peppy.json5 (manifest excerpt)
 depends_on: {
   pairings: [
     { name: "arm_link", tag: "v1", role: "controller", link_id: "left_arm" },
@@ -245,6 +246,8 @@ interfaces: {
 ```
 
 ```sh
+peppy node add -s ./two_arm_commander
+
 peppy node run --instance-id arm_l robot_arm:v1 --defer-link controller
 peppy node run --instance-id arm_r robot_arm:v1 --defer-link controller
 peppy node run --instance-id cmd_1 two_arm_commander:v1 \
@@ -257,14 +260,14 @@ The generated code addresses each arm through its slot module (`paired_topics.le
 
 A pair is exclusive between two instances, but sometimes a third node just wants to *watch* one side's stream: a recorder logging every `joint_states` an arm emits, a dashboard tailing a controller's setpoints. Joining the pair is wrong (it is 1:1, and the watcher has nothing to send back), and a separate contract would duplicate the topic shape. An **observer slot** solves this: it passively taps the topics a chosen role emits, following that source instance's own lifecycle rather than any pairing.
 
-Declare an observer slot in `depends_on.pairings` with `observes_role` instead of `role`, and list the topics it taps in `interfaces.topics.consumes` under its `link_id`. An observer plays no role, claims no endpoint, and emits nothing, so it never needs coverage on an emit side:
+Declare an observer slot in `depends_on.pairing_observers`, where `role` names the role being observed rather than one this node plays, and list the topics it taps in `interfaces.topics.consumes` under its `link_id`. An observer plays no role, claims no endpoint, and emits nothing, so it never needs coverage on an emit side:
 
 ```json5
 // recorder/peppy.json5 (manifest excerpt)
 depends_on: {
-  pairings: [
+  pairing_observers: [
     // Watch whatever the `arm` role of arm_link/v1 publishes.
-    { name: "arm_link", tag: "v1", observes_role: "arm", link_id: "watch" }
+    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
   ]
 },
 interfaces: {
@@ -278,6 +281,8 @@ interfaces: {
 Link the observer to a **source instance** the same way you establish a pairing, with `--link` (or a launcher `links:` entry); the target is the instance to observe, not a peer to pair with:
 
 ```sh
+peppy node add -s ./recorder
+
 # Observe arm_1, whichever controller it happens to be paired with (or none).
 peppy node run --instance-id rec_1 recorder:v1 --link watch@arm_1
 ```
@@ -288,6 +293,7 @@ The runtime guarantees mirror pairing's, with the lifecycle twist that defines a
 - **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
 - **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation; no message from a previous run of the source leaks across the restart.
 - **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a `source()` helper reporting the resolved source (or `None` before it resolves). There is no publisher and no `paired()`; an observer never talks back.
+- **Not shown in `peppy stack list`.** The `Instance pairings` table renders participant slots only; inspect an observer's link through its generated `source()` helper instead.
 
 The generated modules live alongside participant slots under `peppygen.paired_topics.<link_id>.<topic>` (Python) / `peppygen::paired_topics::<link_id>::<topic>` (Rust). Every observer slot is required (it has no `optional` form); cover it with a `--link`/`links:` entry or defer it explicitly with `--defer-link`/`defer_links:`, exactly like a required pairing slot.
 

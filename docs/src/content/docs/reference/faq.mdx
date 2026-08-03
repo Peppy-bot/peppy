@@ -4,25 +4,23 @@ description: Frequently asked questions about Peppy
 ---
 
 <details>
-<summary>What languages will Peppy support?</summary>
+<summary>What languages does Peppy support?</summary>
 
-Since Peppy is built in Rust, Rust will be the first supported language, followed by Python and C.
+Peppy supports Rust and Python. The daemon and tooling are built in Rust; nodes in either language use the same `peppy.json5` interfaces through the generated `peppygen` code and the `peppylib` runtime.
 
 </details>
 
 <details>
 <summary>What tech are you using under the hood?</summary>
 
-Peppy is written in [Rust](https://rust-lang.org/) and uses [Zenoh](https://zenoh.io/) for node communication.
+Peppy is written in [Rust](https://rust-lang.org/). Nodes communicate over [Zenoh](https://zenoh.io/), messages are encoded with [Cap'n Proto](https://capnproto.org/), and container nodes run on [Apptainer](https://apptainer.org/) (with Lima providing the Linux VM on macOS).
 
 </details>
 
 <details>
 <summary>Can Peppy instances on different machines communicate with each other?</summary>
 
-Yes! Peppy is designed to be highly modular. 
-You'll be able to connect core nodes from different locations into a unified network, where each core node manages a single robot and its components. 
-This feature is on the roadmap for an upcoming release.
+Yes. Core nodes connect into a unified network through [federation](/advanced_guides/federation/): each core node manages its own machine, and a single launch can place nodes across machines, with the coordinator resolving every deployment once and the other machines running exactly what it resolved. Machines join the same network by logging into a shared workspace with [`peppy platform login`](/advanced_guides/platform/).
 </details>
 
 <details>
@@ -35,15 +33,36 @@ Not until version 1.0. Since Peppy is still in alpha/beta, maintaining backward 
 <details>
 <summary>Any plans to make Peppy compatible with Windows?</summary>
 
-Windows support is not currently planned. Our focus remains on improving Peppy core functionality, with official support limited to Linux (x86/ARM) and macOS (Apple Silicon).
+No. Official support is limited to Linux (x86_64 and ARM64) and macOS (Apple Silicon).
 </details>
 
 <details>
-<summary>How will you make money?</summary>
+<summary>Is Peppy free to use?</summary>
 
-Peppy will always be free, including for commercial use; our goal is to make it as widely accessible as possible.
-We are currently building a SaaS platform that will provide centralized monitoring and management of nodes through a web dashboard.
-This dashboard will also allow you to "vibecode" robot environements.
+Peppy is source-available under the Business Source License 1.1. You can use it in production for free, provided your use does not include offering a product or service to third parties whose value derives primarily from Peppy itself; that kind of use requires a commercial license. Each release converts to the Apache License 2.0 on its Change Date (2031-01-01 for current releases).
+Alongside the open code, the [Peppy platform](/advanced_guides/platform/) provides workspace login and centralized monitoring of your machines' core nodes through `peppy platform`.
+
+</details>
+
+<details>
+<summary>My launch failed with an error that looks unrelated to what I changed. Where do I start?</summary>
+
+Check `peppy repo list` on the machine you submitted the launch to, before reading the error too literally.
+
+Peppy's default repositories track a moving branch, so a change merged upstream reaches your machine on the next `peppy repo refresh` without a Peppy release. Only the submitting machine's repositories decide what a launch runs: it resolves every deployment once and every other machine in the launch runs those exact bytes, so a stale or differently-configured cache on another machine is never the cause. A repository cannot declare the same `name:tag` twice: `peppy repo index` refuses to generate an index for it and names both manifests, so the duplicate is caught when the repository is published rather than at your launch. See [When a repository fails](/advanced_guides/repositories/#when-a-repository-fails).
+
+</details>
+
+<details>
+<summary>Why did <code>peppy repo refresh</code> start failing, and can I still work?</summary>
+
+Yes, you can almost certainly still work. A refresh failure is scoped to the repository that caused it: every other repository is indexed as usual, and the failing one **keeps the entries it last published**, so everything that launched before still launches. The run reports failure so you know the state is not current, and names every repository that failed in one message.
+
+Read the failure kind. `unreachable` means the repository could not be read at all: network, a bad ref, an unmounted path, or a root with no committed `peppy_repository.json5` (the fix for that last one is authoring, not waiting: run `peppy repo index` in the repository and commit the result). `conflict` means the repository was read fine but its committed index contradicts itself or the tree, and the message names what to fix.
+
+`peppy repo list` marks a failing repository's entries `[retained, last read <date>]`. Watch that date: retention is deliberate so that identities do not vanish out from under your launchers, but a repository failing for weeks is still serving weeks-old entries.
+
+The one case with no local workaround is a machine that has never read that repository successfully: it has nothing to fall back to. Excluding the repository is the only lever, and it removes every identity that repository provides, not just the broken one.
 
 </details>
 

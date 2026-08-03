@@ -832,6 +832,16 @@ where
     }
 }
 
+/// Whether [`ensure_extra_mounts`] would rewrite the config for these paths,
+/// asked without rewriting it.
+///
+/// The answer is "would the VM be restarted", which callers need before they
+/// take an action that a restart would ruin: every container running in the
+/// guest dies with it.
+pub(crate) fn extra_mounts_would_change(config_path: &Path, paths: &[&str]) -> Result<bool> {
+    Ok(plan_extra_mounts(config_path, paths)?.changes_config())
+}
+
 /// Ensure that the given host paths are listed as mounts in the Lima config.
 ///
 /// Reads the Lima YAML config, checks existing mount locations, and appends
@@ -841,6 +851,52 @@ where
 /// Also performs cleanup: removes existing mount entries for paths that no longer
 /// exist on the host or that are blocked system paths (which Lima would reject).
 pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<bool> {
+    let plan = plan_extra_mounts(config_path, paths)?;
+    if !plan.changes_config() {
+        return Ok(false);
+    }
+
+    for location in &plan.removed {
+        tracing::info!("Removing Lima mount (stale or system path): {}", location);
+    }
+    for location in &plan.added {
+        tracing::info!("Adding Lima mount: {}", location);
+    }
+
+    let yaml_str = serde_yaml::to_string(&plan.config)
+        .map_err(|e| Error::LimaInstanceError(format!("failed to serialize Lima config: {e}")))?;
+    std::fs::write(config_path, yaml_str).map_err(|e| {
+        Error::LimaInstanceError(format!(
+            "failed to write Lima config {}: {e}",
+            config_path.display()
+        ))
+    })?;
+    Ok(true)
+}
+
+/// The mount list as it should be, and what getting there costs.
+///
+/// Planning is separated from writing so that asking "would this restart the
+/// VM" reads the same file through the same rules as the call that acts on the
+/// answer, without touching the config or announcing changes it is not making.
+struct MountPlan {
+    config: serde_yaml::Value,
+    /// Locations dropped because they are gone from the host or are system
+    /// paths Lima would reject.
+    removed: Vec<String>,
+    /// Requested locations that were not registered yet.
+    added: Vec<String>,
+}
+
+impl MountPlan {
+    /// Whether applying this plan rewrites the config, which is the same
+    /// question as whether it restarts the VM.
+    fn changes_config(&self) -> bool {
+        !self.removed.is_empty() || !self.added.is_empty()
+    }
+}
+
+fn plan_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<MountPlan> {
     let content = std::fs::read_to_string(config_path).map_err(|e| {
         Error::LimaInstanceError(format!(
             "failed to read Lima config {}: {e}",
@@ -866,10 +922,10 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
         .as_sequence_mut()
         .ok_or_else(|| Error::LimaInstanceError("Lima config 'mounts' is not a sequence".into()))?;
 
-    let mut modified = false;
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
 
     // Phase 1: Clean up stale or invalid existing mounts.
-    let original_len = mounts_seq.len();
     mounts_seq.retain(|entry| {
         let Some(location) = entry.get("location").and_then(|v| v.as_str()) else {
             return true; // Keep entries without a location field
@@ -878,22 +934,12 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
         if location == "~" || location == "null" {
             return true;
         }
-        if is_blocked_mount_source(location) {
-            tracing::info!("Removing invalid Lima mount (system path): {}", location);
-            return false;
-        }
-        if !Path::new(location).exists() {
-            tracing::info!(
-                "Removing stale Lima mount (path does not exist): {}",
-                location
-            );
+        if is_blocked_mount_source(location) || !Path::new(location).exists() {
+            removed.push(location.to_string());
             return false;
         }
         true
     });
-    if mounts_seq.len() != original_len {
-        modified = true;
-    }
 
     // Phase 2: Add new mounts (skip blocked system paths).
     let existing: Vec<String> = mounts_seq
@@ -925,24 +971,15 @@ pub(crate) fn ensure_extra_mounts(config_path: &Path, paths: &[&str]) -> Result<
                 serde_yaml::Value::Bool(true),
             );
             mounts_seq.push(serde_yaml::Value::Mapping(mount_entry));
-            tracing::info!("Adding Lima mount: {}", path);
-            modified = true;
+            added.push((*path).to_string());
         }
     }
 
-    if modified {
-        let yaml_str = serde_yaml::to_string(&config).map_err(|e| {
-            Error::LimaInstanceError(format!("failed to serialize Lima config: {e}"))
-        })?;
-        std::fs::write(config_path, yaml_str).map_err(|e| {
-            Error::LimaInstanceError(format!(
-                "failed to write Lima config {}: {e}",
-                config_path.display()
-            ))
-        })?;
-    }
-
-    Ok(modified)
+    Ok(MountPlan {
+        config,
+        removed,
+        added,
+    })
 }
 
 #[cfg(test)]
@@ -1012,6 +1049,42 @@ mod tests {
 
         let modified = ensure_extra_mounts(&config_path, &[existing_path]).expect("should succeed");
         assert!(!modified, "config should not have been modified");
+    }
+
+    /// The dry run answers the same question as the write, and leaves the
+    /// config exactly as it found it. Callers ask it before doing something a
+    /// VM restart would ruin, so a false "no" costs them running containers and
+    /// a write here would restart the VM they were protecting.
+    #[test]
+    fn extra_mounts_would_change_matches_the_write_without_performing_it() {
+        let dir = tempdir().expect("create temp dir");
+        let config_path = dir.path().join("lima.yaml");
+        let registered = dir.path().join("registered_mount");
+        fs::create_dir_all(&registered).expect("create registered mount dir");
+        let registered = registered.to_str().expect("utf-8 path");
+        let initial = format!(
+            "mounts:\n  - location: \"~\"\n    writable: true\n  - location: {registered}\n    writable: true\n"
+        );
+        fs::write(&config_path, &initial).expect("write initial config");
+
+        assert!(
+            !extra_mounts_would_change(&config_path, &[registered]).expect("should succeed"),
+            "an already-registered path changes nothing"
+        );
+        assert!(
+            extra_mounts_would_change(&config_path, &["/data/new_mount"]).expect("should succeed"),
+            "a path the guest cannot see yet has to be written in"
+        );
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read config"),
+            initial,
+            "asking must not rewrite the config"
+        );
+
+        assert!(
+            ensure_extra_mounts(&config_path, &["/data/new_mount"]).expect("should succeed"),
+            "the write must agree with the answer the dry run gave"
+        );
     }
 
     #[test]

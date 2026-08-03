@@ -29,7 +29,7 @@ peppy container setup
 This configures the following (prompting for `sudo` when needed):
 
 1. **uidmap package**: installs `newuidmap` (required for fakeroot mode).
-2. **AppArmor profile** (Ubuntu 24.04+ only): installs a profile that allows Apptainer to create user namespaces.
+2. **AppArmor profile** (on systems that restrict unprivileged user namespaces via AppArmor): installs a profile that allows Apptainer to create user namespaces and loads it into the kernel. When the profile already exists but is not loaded, it is reloaded without being rewritten.
 
 To check the current state without making any changes:
 
@@ -157,7 +157,7 @@ Here is what `peppy node init --container` generates:
   <TabItem label="Python">
     ```apptainer title="apptainer.def"
     Bootstrap: docker
-    From: tuatini/peppy-python-uv-base
+    From: tuatini/peppy-python-uv-base:latest
 
     %labels
         Name my_node
@@ -171,8 +171,12 @@ Here is what `peppy node init --container` generates:
 
     %post
         set -eux
+        export DEBIAN_FRONTEND=noninteractive
+
+        export UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
         cd /opt/my_node
+        uv python install
         uv sync --no-editable
 
     %runscript
@@ -183,7 +187,7 @@ Here is what `peppy node init --container` generates:
   <TabItem label="Rust">
     ```apptainer title="apptainer.def"
     Bootstrap: docker
-    From: tuatini/peppy-rust-cargo-base
+    From: tuatini/peppy-rust-cargo-base:latest
 
     %labels
         Name my_node
@@ -220,6 +224,10 @@ Each section serves a specific purpose:
 The `%files` section copies the entire node directory into the container. Peppy automatically copies (rather than symlinks) internal libraries like `peppylib` so that they are fully available inside the image.
 :::
 
+:::caution
+Keep whatever the build produces out of the container user's home directory. At run time apptainer mounts the home of the user running the daemon over the image's own home, so anything the build left there is hidden. That is what `UV_PYTHON_INSTALL_DIR` above is for: uv installs managed interpreters under `$HOME`, so without it the interpreter lands in `/root` and a daemon running as root hides it, leaving the node to fail at startup with `./.venv/bin/python: not found`.
+:::
+
 ## Adding a container node
 
 Adding a container node works the same as a regular node: first stage it, then build.
@@ -238,7 +246,6 @@ The resulting `.sif` file is stored in Peppy's internal storage and is ready to 
 
 :::note
 Container builds can take longer than regular builds because they install system packages and toolchains from scratch.
-Subsequent builds reuse Docker layer caches when possible.
 :::
 
 ## Starting a container node
@@ -249,7 +256,7 @@ Starting a container node also uses the same command:
 peppy node run my_node:v1
 ```
 
-Peppy runs the `.sif` image with `apptainer run`. Environment variables such as `PEPPY_RUNTIME_CONFIG` are passed into the container automatically; you don't need to configure anything beyond what a regular node requires.
+Peppy runs the `.sif` image with `apptainer run` and a clean environment: the daemon's own environment is not inherited. The instance's declared `env_vars` (minus `HOME`, which is dropped) and `PEPPY_RUNTIME_CONFIG` are passed in explicitly, and the image's `%environment` section applies as usual.
 
 The container executes the `%runscript` section, which runs the compiled binary (Rust) or the Python module entry point.
 
@@ -288,14 +295,18 @@ Each entry follows the format `host_path:container_path[:options]`:
 | `host_path:container_path` | `"/data/models:/opt/models"` | Mounted at a different path inside the container |
 | `host_path:container_path:options` | `"/data/models:/opt/models:ro"` | Mounted with explicit options (`ro` for read-only, `rw` for read-write) |
 
-Peppy creates any missing parent directories on the host automatically before starting the container.
+A source under `/dev` with no remap (no destination, or a destination equal to the source) is passed through rather than bound: host devices reach the container through Apptainer's device mount, and only a remapped device bind emits an explicit `--bind`.
+
+A missing mount source is created on the host as a directory before the container starts, and a warning names each auto-created path, so a typo in a file bind shows up as an unexpectedly created empty directory. Sources under the host runtime trees (`/dev`, `/proc`, `/run`, `/sys`) are used as-is and never created.
 
 :::note
-Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`, `/home`, `/opt`, `/bin`, and `/sbin` cannot be used as mount sources. Subdirectories of these paths are fine; for example, `/tmp/my_app_data` is allowed but `/tmp` is not.
+Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`, `/home`, `/opt`, `/bin`, and `/sbin` cannot be used as mount sources, and on macOS neither can their `/private/*` equivalents (`/private/tmp`, `/private/var`, `/private/etc`). Subdirectories of these paths are fine; for example, `/tmp/my_app_data` is allowed but `/tmp` is not.
 :::
 
 :::note
-On macOS, Peppy automatically configures the Lima VM to make mounted paths accessible inside the guest. No extra setup is needed; paths outside your home directory are handled transparently.
+On macOS, Peppy automatically configures the Lima VM to make mounted paths accessible inside the guest, including paths outside your home directory. Sources under the host runtime trees (`/dev`, `/proc`, `/run`, `/sys`) are the exception: a device plugged into the Mac cannot be forwarded into the Linux guest, so such a bind is refused with an error naming the path; run that node on a Linux daemon instead.
+
+Registering a new path with the VM restarts it, which stops every container node running on that machine. `peppy stack launch` prepares a machine's mount paths before it starts anything, so a launch never pays that cost in stopped nodes: the restart, when needed, happens before anything is running. A `peppy node run` that would introduce a new path while container nodes are already running is refused instead, naming the instances it would have stopped: stop them first, or launch them together.
 :::
 
 ### Using parameters in mount paths
@@ -352,11 +363,11 @@ For nested parameters, use dot notation:
 ```
 
 :::note
-Only parameters of type `"string"` can be referenced in mount paths. Numeric or object parameters will be rejected at parse time.
+Only parameters of type `"string"` can be referenced in mount paths. Numeric or object parameters are rejected at parse time.
 :::
 
 :::note
-Blocked system directory validation (e.g., rejecting `/tmp` as a mount source) is applied to the resolved path at runtime, not at parse time.
+A literal blocked source (e.g., `/tmp`) is rejected at parse time. A source containing `${parameters:...}` is checked at runtime instead, against the resolved path.
 :::
 
 ## Extra runtime arguments
@@ -397,7 +408,7 @@ These arguments are passed verbatim; no validation is performed beyond basic str
 ## macOS support
 
 On macOS, Apptainer is not natively available. Peppy bundles a [Lima](https://lima-vm.io/) virtual machine that runs Apptainer inside a lightweight Linux guest.
-This is handled transparently; all `peppy node` commands work identically on macOS and Linux. No additional installation or configuration is required.
+This is handled transparently and requires no additional installation or configuration; `peppy node` commands work the same way on macOS and Linux, with one exception: mount sources under the host runtime trees (`/dev`, `/proc`, `/run`, `/sys`) are refused, since a device plugged into the Mac cannot be forwarded into the Linux guest.
 
 ## Customizing the definition file
 

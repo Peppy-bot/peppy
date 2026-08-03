@@ -1,17 +1,18 @@
 use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
-use crate::services::node::clone_with_progress;
+use crate::services::node::cache as node_cache;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
+use crate::services::node::{checkout_repo_ref, clone_repo_shallow, head_commit};
 use crate::services::repo::cache::{
-    ContractCacheEntry, DiscoveredEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
-    RepoCacheEntry, write_repo_cache,
+    ContractCacheEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry, RepoCacheEntry,
+    RepoItems, write_repo_cache,
 };
 use crate::services::repo::exclude::ExclusionSet;
-use crate::services::repo::{normalize_repo_entries, source_identity};
-use config::consts::NODE_CONFIG_FILE;
-use config::fingerprint::fingerprint_for_bytes;
-use config::node::NodeConfigParser;
-use config::schema::PeppySchema;
+use crate::services::repo::index::{
+    PublishedItem, ReadSource, build_cache_entries, read_published_items,
+};
+use crate::services::repo::status::{self, RepoStatus, RepoStatusFailure};
+use crate::services::repo::{RepoOwners, normalize_repo_entries, source_identity};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult, RepoSource,
@@ -19,30 +20,17 @@ use core_node_api::encoding::{
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::contract::PeppyContractParser;
-use daemon_config::launcher::PeppyLauncherParser;
-use daemon_config::pairing::PeppyPairingParser;
+use daemon_config::repository::GitCommit;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{ConcurrentAction, PendingGoal};
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult};
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
-
-/// Directory names that should never be descended into while searching for
-/// `peppy.json5` files.
-pub(crate) const PRUNED_DIR_NAMES: &[&str] = &[
-    ".git",
-    ".peppy",
-    "target",
-    "node_modules",
-    ".venv",
-    "__pycache__",
-];
 
 pub async fn listen_for_repo_refresh(
     messenger: &MessengerHandle,
@@ -146,43 +134,37 @@ impl GoalHandler for RepoRefreshGoalHandler {
             });
 
             let dirs = peppy_dirs;
-            let scan = tokio::task::spawn_blocking(move || {
+            let scan = tokio::task::spawn_blocking(move || -> Result<RefreshCounts> {
                 let _guard = crate::services::repo::refresh_lock().lock();
                 let mut emit = |fb: RepoRefreshFeedback| {
                     let _ = tx.send(fb);
                 };
-                match process_refresh(&dirs, &mut emit) {
-                    Ok(refreshed) => {
-                        // Caches store every discovered entry so that
-                        // `repo list` can display every source and users
-                        // can pick a specific `sha256` when they need to.
-                        write_all_caches(&dirs, &refreshed)?;
-                        Ok((
-                            count_unique(&refreshed.nodes),
-                            count_unique(&refreshed.launchers),
-                            count_unique(&refreshed.contracts),
-                            count_unique(&refreshed.pairings),
-                            refreshed.excluded,
-                        ))
-                    }
-                    Err(e) => Err(e),
-                }
+                let refreshed = process_refresh(&dirs, SystemTime::now(), &mut emit)?;
+                // Written whether or not a repository failed: the whole
+                // point of containing a failure is that the repositories
+                // that did update take effect, and that the ones that
+                // did not keep the entries they last published. Caches
+                // store every entry so that `repo list` can display every
+                // source and users can pick a specific `sha256`.
+                write_all_caches(&dirs, &refreshed)?;
+                Ok(RefreshCounts {
+                    nodes: count_unique(&refreshed.nodes),
+                    launchers: count_unique(&refreshed.launchers),
+                    contracts: count_unique(&refreshed.contracts),
+                    pairings: count_unique(&refreshed.pairings),
+                    failures: refreshed.failures,
+                })
             })
             .await;
 
             let result = match scan {
-                Ok(Ok((
-                    unique_nodes,
-                    unique_launchers,
-                    unique_contracts,
-                    unique_pairings,
-                    _excluded,
-                ))) => RepoRefreshResult::success(
-                    unique_nodes,
-                    unique_launchers,
-                    unique_contracts,
-                    unique_pairings,
+                Ok(Ok(counts)) if counts.failures.is_empty() => RepoRefreshResult::success(
+                    counts.nodes,
+                    counts.launchers,
+                    counts.contracts,
+                    counts.pairings,
                 ),
+                Ok(Ok(counts)) => RepoRefreshResult::failure(failure_report(&counts.failures)),
                 Ok(Err(e)) => {
                     warn!("Repo refresh failed: {}", e);
                     RepoRefreshResult::failure(e.to_string())
@@ -202,6 +184,58 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
+/// Unique-identity counts for the four caches, plus the repositories
+/// that failed. What one refresh has to report back. Named fields rather
+/// than a tuple: four `u32`s in a row are indistinguishable at the call
+/// site, and swapping two of them would go unnoticed.
+struct RefreshCounts {
+    nodes: u32,
+    launchers: u32,
+    contracts: u32,
+    pairings: u32,
+    failures: Vec<RepoFailure>,
+}
+
+/// One message naming every repository that failed and why, so a user
+/// with four problems fixes four things after one run rather than
+/// running four times. `failures` arrives in repository id order, which
+/// is what makes the report reproducible between machines.
+pub(crate) fn failure_report(failures: &[RepoFailure]) -> String {
+    let lines: Vec<String> = failures.iter().map(|f| f.to_string()).collect();
+    format!(
+        "{} of the configured repositories could not be updated. \
+         Every other repository was updated normally.{}",
+        failures.len(),
+        daemon_config::format_bulleted(&lines)
+    )
+}
+
+/// Re-indexes after a change to the repository list, returning a report
+/// of everything that went wrong, or `None` when it all worked.
+///
+/// The caller's own edit has already been applied; this is the re-read
+/// that makes it take effect. Its problems belong in the caller's
+/// response rather than in a log nobody reads: this is the recovery
+/// path, where a user who just added, removed or excluded a repository
+/// to unblock themselves needs to know whether it worked.
+pub(crate) async fn reindex_after_change(peppy_dirs: &PeppyDirs) -> Option<String> {
+    let dirs = peppy_dirs.clone();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<Vec<RepoFailure>> {
+        let _guard = crate::services::repo::refresh_lock().lock();
+        let refreshed = process_refresh(&dirs, SystemTime::now(), &mut |_| {})?;
+        write_all_caches(&dirs, &refreshed)?;
+        Ok(refreshed.failures)
+    })
+    .await;
+
+    match outcome {
+        Ok(Ok(failures)) if failures.is_empty() => None,
+        Ok(Ok(failures)) => Some(failure_report(&failures)),
+        Ok(Err(e)) => Some(format!("re-indexing failed: {e}")),
+        Err(e) => Some(format!("re-indexing task panicked: {e}")),
+    }
+}
+
 /// A repository that was skipped during refresh because it appears in the
 /// `excluded_repositories.json5` configuration.
 #[derive(Debug, Clone)]
@@ -210,39 +244,175 @@ pub(crate) struct ExcludedRepo {
     pub(crate) identity: String,
 }
 
-/// Aggregated output of [`process_refresh`]: all discovered entries
-/// (nodes, launchers, contracts) plus the repositories that were
-/// skipped because they appear in the exclusion list.
+/// Why one repository contributed nothing new to a refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RepoFailureKind {
+    /// Could not be read at all: the clone failed, the configured path is
+    /// gone, the configuration entry is unrecognized. Kept distinct from
+    /// [`RepoFailureKind::Conflict`] because an outage is not a content
+    /// bug, and reporting one as the other sends the user to the wrong
+    /// place entirely.
+    Unreachable,
+    /// Read fine; the contents are wrong. An identity is claimed by
+    /// several manifests, so the repository states two different answers
+    /// to the same question and there is no defensible winner.
+    Conflict,
+}
+
+impl RepoFailureKind {
+    /// Stable machine-readable value, recorded in `repo_status.json5` and
+    /// put on the wire. Kept separate from [`Self::describe`] so the
+    /// prose can be reworded without changing what tools match on.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            RepoFailureKind::Unreachable => "unreachable",
+            RepoFailureKind::Conflict => "conflict",
+        }
+    }
+
+    /// Predicate that reads as a sentence about the repository.
+    fn describe(self) -> &'static str {
+        match self {
+            RepoFailureKind::Unreachable => "could not be read",
+            RepoFailureKind::Conflict => "contradicts itself",
+        }
+    }
+}
+
+/// One repository whose read failed, and what the machine fell back to.
+/// A failure is scoped to its own repository: the others still update.
+#[derive(Debug, Clone)]
+pub(crate) struct RepoFailure {
+    pub(crate) id: u64,
+    /// Human-facing label (path for fs, `url (ref: r)` for git).
+    pub(crate) label: String,
+    pub(crate) kind: RepoFailureKind,
+    pub(crate) detail: String,
+    /// Previous entries kept in place for this repository, across all
+    /// four kinds. Zero on a machine that has never read it successfully.
+    pub(crate) retained: usize,
+}
+
+impl std::fmt::Display for RepoFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "repository {} ({}) {} [{}]: {}",
+            self.id,
+            self.label,
+            self.kind.describe(),
+            self.kind.as_str(),
+            self.detail
+        )?;
+        match self.retained {
+            0 => f.write_str(
+                ". Nothing had been read from it before, so it contributes nothing this time",
+            ),
+            1 => f.write_str(". Kept 1 entry from its last successful read"),
+            n => write!(f, ". Kept {n} entries from its last successful read"),
+        }
+    }
+}
+
+/// Aggregated output of [`process_refresh`]: all entries that belong in
+/// the caches (freshly read, plus previous entries retained for
+/// repositories that failed), the repositories skipped by the exclusion
+/// list, and the repositories that failed.
 pub(crate) struct RefreshedRepos {
     pub(crate) nodes: Vec<NodeCacheEntry>,
     pub(crate) launchers: Vec<LauncherCacheEntry>,
     pub(crate) contracts: Vec<ContractCacheEntry>,
     pub(crate) pairings: Vec<PairingCacheEntry>,
+    /// Reported to the client through [`RepoRefreshFeedback::Excluded`]
+    /// as the scan runs, so the handler has nothing left to do with it;
+    /// kept on the result because the tests assert against it.
+    #[allow(dead_code)]
     pub(crate) excluded: Vec<ExcludedRepo>,
+    pub(crate) failures: Vec<RepoFailure>,
+    /// One entry per repository that was actually read (excluded ones are
+    /// absent), carrying when it last read cleanly and how it last failed.
+    pub(crate) statuses: Vec<RepoStatus>,
 }
 
-/// Publishes every cache file from one refresh result. The four caches
-/// must always move together: rewriting only a subset leaves the
+/// The four caches as they stood before this refresh. A repository that
+/// fails its read keeps serving what it last published, so its
+/// identities do not vanish out from under launchers that reference
+/// them.
+struct PreviousCaches {
+    nodes: Vec<NodeCacheEntry>,
+    launchers: Vec<LauncherCacheEntry>,
+    contracts: Vec<ContractCacheEntry>,
+    pairings: Vec<PairingCacheEntry>,
+}
+
+impl PreviousCaches {
+    /// A cache that cannot be read is treated as empty rather than fatal:
+    /// this runs on the recovery path, where refusing to start because
+    /// the fallback is also broken helps nobody.
+    fn load(peppy_dirs: &PeppyDirs) -> Self {
+        fn read<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> Vec<E> {
+            crate::services::repo::cache::load_repo_cache::<E>(peppy_dirs).unwrap_or_else(|e| {
+                warn!("Could not read the previous {} cache: {e}", E::KIND);
+                Vec::new()
+            })
+        }
+        Self {
+            nodes: read(peppy_dirs),
+            launchers: read(peppy_dirs),
+            contracts: read(peppy_dirs),
+            pairings: read(peppy_dirs),
+        }
+    }
+}
+
+/// The previous entries of one kind that `repo_id` owns, using the same
+/// attribution rule that tags entries at lookup time so a retained entry
+/// keeps exactly the priority it had.
+fn retained_entries<E: RepoCacheEntry>(
+    previous: &[E],
+    owners: &RepoOwners,
+    repo_id: u64,
+) -> Vec<E> {
+    previous
+        .iter()
+        .filter(|e| owners.owner_of(e.origin()) == Some(repo_id))
+        .cloned()
+        .collect()
+}
+
+/// Publishes every cache file from one refresh result. The four entry
+/// caches must always move together: rewriting only a subset leaves the
 /// untouched files still listing items from repositories that are no
-/// longer configured.
+/// longer configured. The status file moves with them so it always
+/// describes the entries that are actually on disk.
 pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepos) -> Result<()> {
     write_repo_cache(peppy_dirs, &refreshed.nodes)?;
     write_repo_cache(peppy_dirs, &refreshed.launchers)?;
     write_repo_cache(peppy_dirs, &refreshed.contracts)?;
-    write_repo_cache(peppy_dirs, &refreshed.pairings)
+    write_repo_cache(peppy_dirs, &refreshed.pairings)?;
+    status::write(peppy_dirs, &refreshed.statuses)?;
+
+    // Pruned only once the caches that could still name a checkout have
+    // been replaced, so nothing is dropped while it is still reachable. A
+    // repository whose read failed keeps its previous entries, so its
+    // checkouts stay live along with them.
+    let removed = node_cache::git::prune_checkouts(peppy_dirs, live_checkouts(refreshed));
+    if removed > 0 {
+        debug!("Removed {removed} cached git checkout(s) no repository cache points at");
+    }
+    Ok(())
 }
 
-/// Source-and-file context shared by every `.json5` collector. The
-/// collectors only need read access; bundling these arguments keeps
-/// their signatures focused on the entry-specific state (seen set +
-/// output vector).
-struct EntryContext<'a> {
-    root: &'a Path,
-    source_type: RepoSourceKind,
-    source_uri: Option<&'a str>,
-    resolved_ref: Option<&'a str>,
-    config_path: &'a Path,
-    bytes: &'a [u8],
+/// Every `(repo_url, commit)` the four caches still resolve through the
+/// checkout cache.
+fn live_checkouts(refreshed: &RefreshedRepos) -> impl Iterator<Item = (&str, &GitCommit)> {
+    fn checkouts<E: RepoCacheEntry>(entries: &[E]) -> impl Iterator<Item = (&str, &GitCommit)> {
+        entries.iter().filter_map(|entry| entry.origin().checkout())
+    }
+    checkouts(&refreshed.nodes)
+        .chain(checkouts(&refreshed.launchers))
+        .chain(checkouts(&refreshed.contracts))
+        .chain(checkouts(&refreshed.pairings))
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -263,10 +433,6 @@ pub(crate) fn parse_repo_entry(entry: &Value) -> Option<RepoSource> {
                 repo_url: url,
                 repo_ref,
             })
-        }
-        "url" => {
-            let url = entry.get("url")?.as_str()?.to_owned();
-            Some(RepoSource::Url(url))
         }
         _ => None,
     }
@@ -300,8 +466,8 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 }
 
 /// Main synchronous processing: reads repos, walks each source, returns
-/// discovered nodes, launchers, contracts, and the list of
-/// repositories that were excluded.
+/// the entries that belong in the caches plus the repositories that were
+/// excluded or failed.
 ///
 /// Every discovered entry is kept in the result so the cache (and
 /// `repo list`) can display every source. When several repositories
@@ -310,8 +476,21 @@ pub(crate) fn read_or_create_repos(peppy_dirs: &PeppyDirs) -> Result<Vec<Value>>
 /// distinguish entries with the same identity but different content.
 /// Discovery feedback is emitted once per unique identity from the
 /// highest-priority repository; extra entries are silently cached.
+///
+/// A failure is contained to the repository that caused it: that
+/// repository keeps its previous entries and is recorded in `failures`,
+/// while every other repository updates normally. The caller decides
+/// what a non-empty `failures` means for the run as a whole. One
+/// consequence is deliberate and worth knowing: a cache can then hold
+/// entries read at two different times. The caches never had a notion of
+/// a synchronised snapshot across repositories, so this is not a new
+/// class of skew, but anything that later needs one coherent set of
+/// bytes must establish that itself.
+/// `now` is passed in rather than read from the clock so that tests are
+/// deterministic.
 pub(crate) fn process_refresh(
     peppy_dirs: &PeppyDirs,
+    now: SystemTime,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) -> Result<RefreshedRepos> {
     let (repos, exclusions) = {
@@ -320,6 +499,15 @@ pub(crate) fn process_refresh(
         let exclusions = ExclusionSet::load(peppy_dirs);
         (repos, exclusions)
     };
+    let previous = PreviousCaches::load(peppy_dirs);
+    // Resolved once for the whole refresh: retention asks which repository
+    // owns an entry for every previous entry of all four kinds, of every
+    // repository that failed.
+    let owners = RepoOwners::new(&repos);
+    let previous_statuses = status::read(peppy_dirs);
+    let stamp = status::unix_secs(now);
+    let mut failures: Vec<RepoFailure> = Vec::new();
+    let mut statuses: Vec<RepoStatus> = Vec::new();
 
     let mut global_seen_nodes: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_launchers: HashSet<(String, String)> = HashSet::new();
@@ -346,8 +534,18 @@ pub(crate) fn process_refresh(
     }
 
     for entry in &repos {
+        let id = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        // An entry peppy cannot parse has no source kind or identity to
+        // record, so it is reported but gets no status line.
         let Some(source) = parse_repo_entry(entry) else {
-            warn!("Skipping unrecognized repository entry: {:?}", entry);
+            failures.push(RepoFailure {
+                id,
+                label: entry.to_string(),
+                kind: RepoFailureKind::Unreachable,
+                detail: "unrecognized repository entry".to_owned(),
+                retained: 0,
+            });
             continue;
         };
 
@@ -358,21 +556,8 @@ pub(crate) fn process_refresh(
             continue;
         }
 
-        let walked = match source {
-            RepoSource::Url(url) => {
-                debug!("Skipping URL repository (not yet implemented): {}", url);
-                continue;
-            }
-            RepoSource::Fs(path) => {
-                if !path.exists() {
-                    debug!("Skipping non-existent FS repository: {}", path.display());
-                    continue;
-                }
-                on_feedback(RepoRefreshFeedback::Progress {
-                    message: format!("Scanning {}", path.display()),
-                });
-                walk_directory(&path, RepoSourceKind::Fs, None, None, &exclusions.fs_paths)
-            }
+        let read = match &source {
+            RepoSource::Fs(path) => read_fs_repo(path, &exclusions, on_feedback),
             RepoSource::Git { repo_url, repo_ref } => {
                 let ref_suffix = repo_ref
                     .as_deref()
@@ -381,41 +566,102 @@ pub(crate) fn process_refresh(
                 on_feedback(RepoRefreshFeedback::Progress {
                     message: format!("Cloning {}{}", repo_url, ref_suffix),
                 });
-                match clone_and_walk_git_repo(
-                    &repo_url,
-                    repo_ref.as_deref(),
-                    peppy_dirs,
-                    on_feedback,
-                ) {
-                    Ok(walked) => walked,
-                    Err(e) => {
-                        warn!("Failed to refresh git repository {}: {}", repo_url, e);
-                        continue;
-                    }
-                }
+                read_git_repo(repo_url, repo_ref.as_deref(), peppy_dirs, on_feedback)
             }
         };
 
-        merge_walked(
-            walked.nodes,
+        // A repository that could not be read and one whose index does not
+        // describe it both fall back to their previous entries; only the
+        // wording differs, so an outage never reads as a content bug.
+        let read = read.and_then(|items| {
+            build_cache_entries(items).map_err(|detail| (RepoFailureKind::Conflict, detail))
+        });
+
+        let items = match read {
+            Ok(items) => {
+                statuses.push(RepoStatus {
+                    id,
+                    identity: identity.clone(),
+                    source_type: source.kind(),
+                    last_read_unix_secs: Some(stamp),
+                    // Cleared on success, so a repository that recovered
+                    // stops reporting an old failure.
+                    last_failure: None,
+                });
+                items
+            }
+            Err((kind, detail)) => {
+                // Matched on identity as well as id: an id repointed at
+                // another path or url is a different repository, and
+                // carrying the old read timestamp forward would date
+                // entries this source never published.
+                let previous_read = previous_statuses
+                    .iter()
+                    .find(|s| s.id == id && s.identity == identity)
+                    .and_then(|s| s.last_read_unix_secs);
+                let retained = RepoItems {
+                    nodes: retained_entries(&previous.nodes, &owners, id),
+                    launchers: retained_entries(&previous.launchers, &owners, id),
+                    contracts: retained_entries(&previous.contracts, &owners, id),
+                    pairings: retained_entries(&previous.pairings, &owners, id),
+                };
+                let count = retained.nodes.len()
+                    + retained.launchers.len()
+                    + retained.contracts.len()
+                    + retained.pairings.len();
+                let failure = RepoFailure {
+                    id,
+                    label: source.display_label(),
+                    kind,
+                    detail,
+                    retained: count,
+                };
+                statuses.push(RepoStatus {
+                    id,
+                    identity: identity.clone(),
+                    source_type: source.kind(),
+                    // Carried forward untouched: the retained entries are
+                    // still the ones read at that time, and overwriting it
+                    // with now would claim they are current.
+                    last_read_unix_secs: previous_read,
+                    last_failure: Some(RepoStatusFailure {
+                        kind: failure.kind.as_str().to_owned(),
+                        message: failure.detail.clone(),
+                        unix_secs: stamp,
+                    }),
+                });
+                warn!("{failure}");
+                on_feedback(RepoRefreshFeedback::Progress {
+                    message: failure.to_string(),
+                });
+                failures.push(failure);
+                retained
+            }
+        };
+
+        // Merged in this repository's own slot in the id-ordered loop,
+        // retained or not, so priority order and the first-seen discovery
+        // feedback stay exactly as they would have been.
+        merge_published(
+            items.nodes,
             &mut global_seen_nodes,
             &mut all_nodes,
             on_feedback,
         );
-        merge_walked(
-            walked.launchers,
+        merge_published(
+            items.launchers,
             &mut global_seen_launchers,
             &mut all_launchers,
             on_feedback,
         );
-        merge_walked(
-            walked.contracts,
+        merge_published(
+            items.contracts,
             &mut global_seen_contracts,
             &mut all_contracts,
             on_feedback,
         );
-        merge_walked(
-            walked.pairings,
+        merge_published(
+            items.pairings,
             &mut global_seen_pairings,
             &mut all_pairings,
             on_feedback,
@@ -428,37 +674,31 @@ pub(crate) fn process_refresh(
         contracts: all_contracts,
         pairings: all_pairings,
         excluded: excluded_repos,
+        failures,
+        statuses,
     })
 }
 
-/// Items discovered by walking a single repository's working tree.
-pub(crate) struct WalkResult {
-    pub nodes: Vec<NodeCacheEntry>,
-    pub launchers: Vec<LauncherCacheEntry>,
-    pub contracts: Vec<ContractCacheEntry>,
-    pub pairings: Vec<PairingCacheEntry>,
-}
-
-/// Appends one repository's walked entries to the running cross-repo
-/// collection, emitting a `Discovered` feedback the first time each
-/// `(name, tag)` identity is seen. Every entry is kept (including
-/// same-identity duplicates from lower-priority repos); feedback fires
-/// only for the highest-priority repository, which is walked first.
-fn merge_walked<E: RepoCacheEntry>(
-    walked: Vec<E>,
+/// Appends one repository's entries to the running cross-repo collection,
+/// emitting a `Discovered` feedback the first time each `(name, tag)`
+/// identity is seen. Every entry is kept (including same-identity
+/// duplicates from lower-priority repositories); feedback fires only for
+/// the highest-priority repository, which is read first.
+fn merge_published<E: RepoCacheEntry>(
+    published: Vec<E>,
     global_seen: &mut HashSet<(String, String)>,
     all: &mut Vec<E>,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
 ) {
-    for entry in walked {
+    for entry in published {
         if global_seen.insert((entry.name().to_owned(), entry.tag().to_owned())) {
             on_feedback(RepoRefreshFeedback::Discovered {
                 kind: E::ITEM_KIND,
                 item_name: entry.name().to_owned(),
                 item_tag: entry.tag().to_owned(),
-                source_type: entry.source_type(),
-                path: entry.path().to_owned(),
-                sha256: entry.sha256().to_owned(),
+                source_type: entry.origin().kind(),
+                path: entry.origin().path_str().to_owned(),
+                sha256: entry.sha256().to_string(),
             });
         }
         all.push(entry);
@@ -473,367 +713,112 @@ fn count_unique<E: RepoCacheEntry>(entries: &[E]) -> u32 {
     set.len() as u32
 }
 
-/// Walk a directory looking for `peppy.json5` (node) and any `.json5`
-/// file whose body declares `peppy_schema: "launcher/v1"` (launcher),
-/// collecting discovered nodes and launchers.
-///
-/// Any directory whose path matches one of the `excluded_paths` entries is
-/// pruned from the walk (neither descended into nor scanned for config files).
-///
-/// Each `.json5` file is read once. Files named `peppy.json5` are tried
-/// as nodes first (preserves filename-driven node ergonomics); any
-/// `.json5` whose body declares a `peppy_schema` value is dispatched to
-/// the matching collector. Within a single repository walk, a given
-/// `(name, tag)` (or launcher name) is collected only once; the
-/// global cross-repo dedup happens in `process_refresh`.
-pub(crate) fn walk_directory(
+/// What one repository read yields, or why it failed.
+type ReadResult = std::result::Result<Vec<PublishedItem>, (RepoFailureKind, String)>;
+
+/// Reads a repository that lives on this machine, minus the subtrees this
+/// machine is configured to stay out of.
+fn read_fs_repo(
     root: &Path,
-    source_type: RepoSourceKind,
-    source_uri: Option<&str>,
-    resolved_ref: Option<&str>,
-    excluded_paths: &[PathBuf],
-) -> WalkResult {
-    // Canonicalize the root so that paths emitted by the walker share a
-    // common prefix representation with the excluded paths (which come from
-    // `ExclusionSet::load` already canonicalized). Without this, macOS
-    // `/var/...` symlinks break subdirectory exclusion: the walker emits
-    // `/var/...` while excluded paths resolve to `/private/var/...`.
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let excluded = excluded_paths.to_vec();
-    let walker = ignore::WalkBuilder::new(&root)
-        .hidden(true)
-        .filter_entry(move |entry| {
-            if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
-                return true;
-            }
-            if entry.depth() == 0 {
-                return true;
-            }
-            let name = entry.file_name().to_string_lossy();
-            if PRUNED_DIR_NAMES.iter().any(|pruned| name == *pruned) {
-                return false;
-            }
-            let entry_path = entry.path();
-            !excluded.iter().any(|exc| entry_path.starts_with(exc))
-        })
-        .build();
-
-    let mut nodes_seen: HashSet<(String, String)> = HashSet::new();
-    let mut launchers_seen: HashSet<(String, String)> = HashSet::new();
-    let mut contracts_seen: HashSet<(String, String)> = HashSet::new();
-    let mut pairings_seen: HashSet<(String, String)> = HashSet::new();
-    let mut nodes: Vec<NodeCacheEntry> = Vec::new();
-    let mut launchers: Vec<LauncherCacheEntry> = Vec::new();
-    let mut contracts: Vec<ContractCacheEntry> = Vec::new();
-    let mut pairings: Vec<PairingCacheEntry> = Vec::new();
-
-    for entry in walker.flatten() {
-        let file_name = entry.file_name().to_string_lossy();
-        let config_path = entry.path();
-        if !has_json5_extension(config_path) {
-            continue;
-        }
-        let bytes = match std::fs::read(config_path) {
-            Ok(bytes) if !bytes.is_empty() => bytes,
-            Ok(_) => continue,
-            Err(e) => {
-                debug!(
-                    "Skipping unreadable .json5 at {}: {}",
-                    config_path.display(),
-                    e
-                );
-                continue;
-            }
-        };
-        let ctx = EntryContext {
-            root: &root,
-            source_type,
-            source_uri,
-            resolved_ref,
-            config_path,
-            bytes: &bytes,
-        };
-        if file_name == NODE_CONFIG_FILE {
-            // Try node parse first to preserve the documented filename
-            // convention for nodes. If the file's schema doesn't match,
-            // fall through to the launcher/contract dispatch; that
-            // way a non-node `peppy.json5` is still discoverable.
-            if try_collect_node_entry(&ctx, &mut nodes_seen, &mut nodes) {
-                continue;
-            }
-        }
-        let Some(schema) = peek_peppy_schema(&bytes) else {
-            continue;
-        };
-        match schema {
-            PeppySchema::NodeV1 => {
-                // A non-`peppy.json5` file declaring `node/v1` is unusual
-                // but we still parse it strictly: matches the documented
-                // "schema dispatch" rule for any `.json5`.
-                try_collect_node_entry(&ctx, &mut nodes_seen, &mut nodes);
-            }
-            PeppySchema::LauncherV1 => {
-                collect_launcher_entry(&ctx, &mut launchers_seen, &mut launchers);
-            }
-            PeppySchema::ContractV1 => {
-                collect_contract_entry(&ctx, &mut contracts_seen, &mut contracts);
-            }
-            PeppySchema::PairingV1 => {
-                collect_pairing_entry(&ctx, &mut pairings_seen, &mut pairings);
-            }
-        }
-    }
-
-    WalkResult {
-        nodes,
-        launchers,
-        contracts,
-        pairings,
-    }
-}
-
-fn has_json5_extension(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext == "json5")
-}
-
-/// Cheap schema sniff over the raw bytes. Returns `None` when the file
-/// either doesn't declare a `peppy_schema` field or declares one we
-/// don't know about; the caller treats both as "skip silently".
-fn peek_peppy_schema(bytes: &[u8]) -> Option<PeppySchema> {
-    #[derive(Deserialize)]
-    struct SchemaPeek {
-        peppy_schema: PeppySchema,
-    }
-    let content = std::str::from_utf8(bytes).ok()?;
-    serde_json5::from_str::<SchemaPeek>(content)
-        .ok()
-        .map(|p| p.peppy_schema)
-}
-
-/// Shared body of the four collectors: UTF-8 check, strict parse via
-/// `identity`, intra-repo dedup, then entry construction through
-/// [`RepoCacheEntry::from_discovered`]. The strict parse catches
-/// structural problems (unknown fields, malformed sections) that the
-/// cheap schema peek can't.
-///
-/// `identity` returns the document's `(name, tag)` — `Ok(None)` to skip
-/// the file silently (wrong schema variant, unusable file stem), or
-/// `Err` when the content does not parse as `E`'s document kind at all.
-/// `parse_failure_label` words that last case: a `peppy.json5` failing
-/// the node parse is usually a different document kind rather than a
-/// malformed node, so the node collector logs "non-node".
-///
-/// Returns `false` only on parse failure, so the node collector can
-/// fall back to schema dispatch; intra-repo duplicates return `true`
-/// because the file is a valid document of the kind.
-fn collect_repo_entry<E: RepoCacheEntry>(
-    ctx: &EntryContext<'_>,
-    parse_failure_label: &str,
-    seen: &mut HashSet<(String, String)>,
-    out: &mut Vec<E>,
-    identity: impl FnOnce(&str) -> std::result::Result<Option<(String, String)>, String>,
-) -> bool {
-    let content = match std::str::from_utf8(ctx.bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            debug!(
-                "Skipping non-utf8 {} .json5 at {}: {}",
-                E::KIND,
-                ctx.config_path.display(),
-                e
-            );
-            return false;
-        }
-    };
-    let (name, tag) = match identity(content) {
-        Ok(Some(identity)) => identity,
-        Ok(None) => return true,
-        Err(e) => {
-            debug!(
-                "Skipping {} .json5 at {}: {}",
-                parse_failure_label,
-                ctx.config_path.display(),
-                e
-            );
-            return false;
-        }
-    };
-
-    if !seen.insert((name.clone(), tag.clone())) {
-        return true;
-    }
-
-    out.push(E::from_discovered(DiscoveredEntry {
-        name,
-        tag,
-        sha256: fingerprint_for_bytes(ctx.bytes),
-        path: relative_or_absolute_file_path(ctx.root, ctx.config_path, ctx.source_type),
-        source_type: ctx.source_type,
-        source_uri: ctx.source_uri.map(str::to_owned),
-        resolved_ref: ctx.resolved_ref.map(str::to_owned),
-    }));
-    true
-}
-
-/// Returns `true` when the file parsed cleanly as a node and was
-/// collected (or skipped because of an intra-repo duplicate). `false`
-/// means parsing failed; the caller can fall back to a different
-/// schema dispatch.
-fn try_collect_node_entry(
-    ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
-    nodes: &mut Vec<NodeCacheEntry>,
-) -> bool {
-    collect_repo_entry(ctx, "non-node", seen, nodes, |content| {
-        let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
-        Ok(Some((
-            parsed.manifest.name.as_str().to_string(),
-            parsed.manifest.tag.clone(),
-        )))
-    })
-}
-
-fn collect_launcher_entry(
-    ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
-    launchers: &mut Vec<LauncherCacheEntry>,
-) {
-    collect_repo_entry(ctx, "malformed launcher", seen, launchers, |content| {
-        let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
-        if parsed.peppy_schema != PeppySchema::LauncherV1 {
-            return Ok(None);
-        }
-        // Launcher name = basename without `.json5` (launcher documents
-        // carry no manifest name). This matches `resolve_launcher_path`,
-        // which appends `.json5` to a bare name when looking up a
-        // launcher file.
-        Ok(ctx
-            .config_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|stem| !stem.is_empty())
-            .map(|stem| (stem.to_string(), String::new())))
-    });
-}
-
-fn collect_contract_entry(
-    ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
-    contracts: &mut Vec<ContractCacheEntry>,
-) {
-    collect_repo_entry(ctx, "malformed contract", seen, contracts, |content| {
-        let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
-        Ok(Some((
-            parsed.manifest.name.as_str().to_string(),
-            parsed.manifest.tag.clone(),
-        )))
-    });
-}
-
-fn collect_pairing_entry(
-    ctx: &EntryContext<'_>,
-    seen: &mut HashSet<(String, String)>,
-    pairings: &mut Vec<PairingCacheEntry>,
-) {
-    collect_repo_entry(ctx, "malformed pairing", seen, pairings, |content| {
-        let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
-        Ok(Some((
-            parsed.manifest.name.as_str().to_string(),
-            parsed.manifest.tag.clone(),
-        )))
-    });
-}
-
-/// Returns the path of the manifest file itself (not its parent
-/// directory). For git repos the result is relative to the repo root;
-/// for fs repos it is the absolute path.
-fn relative_or_absolute_file_path(
-    root: &Path,
-    config_path: &Path,
-    source_type: RepoSourceKind,
-) -> String {
-    if source_type == RepoSourceKind::Git {
-        config_path
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    } else {
-        config_path.to_string_lossy().into_owned()
-    }
-}
-
-/// Shallow-clone a git repository into `dst` and check out `repo_ref` if set,
-/// forwarding throttled transfer-progress lines into `on_feedback`.
-pub(crate) fn clone_shallow(
-    repo_url: &str,
-    repo_ref: Option<&str>,
-    dst: &Path,
+    exclusions: &ExclusionSet,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> std::result::Result<git2::Repository, String> {
-    clone_with_progress(repo_url, repo_ref, dst, true, &mut |line| {
-        on_feedback(RepoRefreshFeedback::Progress {
-            message: line.to_owned(),
-        });
-    })
+) -> ReadResult {
+    if !root.exists() {
+        return Err((
+            RepoFailureKind::Unreachable,
+            format!("path does not exist: {}", root.display()),
+        ));
+    }
+    on_feedback(RepoRefreshFeedback::Progress {
+        message: format!("Reading {}", root.display()),
+    });
+
+    read_published_items(
+        root,
+        &ReadSource::Fs {
+            excluded: exclusions.fs_paths.clone(),
+        },
+    )
 }
 
-/// Pick the ref string to persist in the cache so later batch installs can
-/// re-fetch and re-check-out the same state.
+/// Reads a repository held by a remote, at the commit its configured ref
+/// currently points at.
 ///
-/// `checkout_repo_ref` always detaches HEAD, which leaves `head().shorthand()`
-/// equal to `"HEAD"` whenever the repo config pinned a ref; storing that
-/// makes `add_batch` install the remote's default branch tip instead of the
-/// pinned ref. Prefer the explicit config ref, then the cloned repo's
-/// symbolic HEAD (for repos without a pin), and finally the commit OID.
-fn resolve_ref_for_cache(repo: &git2::Repository, repo_ref: Option<&str>) -> String {
-    if let Some(r) = repo_ref {
-        let trimmed = r.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_owned();
-        }
-    }
-
-    if let Ok(head) = repo.head() {
-        if let Ok(short) = head.shorthand()
-            && short != "HEAD"
-        {
-            return short.to_owned();
-        }
-        if let Some(oid) = head.target() {
-            return oid.to_string();
-        }
-    }
-
-    "HEAD".to_owned()
-}
-
-fn clone_and_walk_git_repo(
+/// What survives the read is the index the repository published and the
+/// commit it was read at, which is what lets another machine read the same
+/// bytes later — and the clone itself, which goes to the checkout cache
+/// because it is already the tree every item read here resolves to.
+fn read_git_repo(
     repo_url: &str,
     repo_ref: Option<&str>,
     peppy_dirs: &PeppyDirs,
     on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
-) -> std::result::Result<WalkResult, String> {
+) -> ReadResult {
+    let unreachable = |detail: String| (RepoFailureKind::Unreachable, detail);
+
     let tmp_dir = peppy_dirs.tmp_dir();
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {}", e))?;
-    let tmp =
-        tempfile::tempdir_in(&tmp_dir).map_err(|e| format!("failed to create temp dir: {}", e))?;
+    std::fs::create_dir_all(&tmp_dir)
+        .map_err(|e| unreachable(format!("failed to create tmp dir: {e}")))?;
+    let tmp = tempfile::tempdir_in(&tmp_dir)
+        .map_err(|e| unreachable(format!("failed to create temp dir: {e}")))?;
 
-    let repo = clone_shallow(repo_url, repo_ref, tmp.path(), on_feedback)?;
-    let resolved_ref = resolve_ref_for_cache(&repo, repo_ref);
+    let repo = clone_repo_shallow(repo_url, tmp.path(), &mut |line| {
+        on_feedback(RepoRefreshFeedback::Progress {
+            message: line.to_owned(),
+        });
+    })
+    .map_err(unreachable)?;
 
-    Ok(walk_directory(
+    // Recorded as configured rather than as resolved: it is what attributes
+    // an entry back to its repository, and what a later fetch of the pinned
+    // commit starts from.
+    let configured_ref = repo_ref.map(str::trim).filter(|r| !r.is_empty());
+
+    // Positioned on the configured ref before the commit is read, so the
+    // pin follows the line of development the repository was added for
+    // rather than whatever the remote's default branch happens to be. A ref
+    // the remote no longer serves is a refusal: pinning the default branch
+    // instead would publish a different tree under the same repository id
+    // without saying so.
+    if let Some(configured_ref) = configured_ref {
+        checkout_repo_ref(&repo, configured_ref).map_err(|e| {
+            unreachable(format!(
+                "{repo_url} does not serve the configured ref `{configured_ref}`: {e}"
+            ))
+        })?;
+    }
+    let commit = head_commit(&repo)
+        .map_err(|e| unreachable(format!("the clone of {repo_url} has no usable commit: {e}")))?;
+
+    let items = read_published_items(
         tmp.path(),
-        RepoSourceKind::Git,
-        Some(repo_url),
-        Some(&resolved_ref),
-        &[],
-    ))
+        &ReadSource::Git {
+            repo_url: repo_url.to_owned(),
+            repo_ref: configured_ref.map(str::to_owned),
+            commit: commit.clone(),
+        },
+    )?;
+
+    // Handed over rather than deleted: this clone is the tree every item
+    // just read resolves to, so donating it is the difference between the
+    // daemon fetching one commit of one repository once and fetching it
+    // again the first time anything from it is materialized. The repository
+    // handle is dropped first so no libgit2 file handle is open across the
+    // move.
+    drop(repo);
+    node_cache::git::adopt_checkout(peppy_dirs, repo_url, &commit, tmp.keep());
+    Ok(items)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::repo::cache::repositories_list_path;
+    use config::consts::NODE_CONFIG_FILE;
+
+    /// A fixed instant for every refresh under test, so nothing depends
+    /// on the host clock or on how fast the test runs.
+    const TEST_NOW: SystemTime = SystemTime::UNIX_EPOCH;
 
     #[test]
     fn read_or_create_repos_creates_file_when_missing() {
@@ -969,6 +954,136 @@ mod tests {
         assert_eq!(ids[2], 7, "second missing id should be auto-assigned 7");
     }
 
+    fn write_launcher_json5(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(
+            path,
+            r#"{
+  peppy_schema: "launcher/v1",
+  deployments: []
+}"#,
+        )
+        .unwrap();
+    }
+
+    fn write_contract_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let body = format!(
+            r#"{{
+  peppy_schema: "contract/v1",
+  manifest: {{ name: "{name}", tag: "{tag}" }},
+  interfaces: {{}}
+}}"#
+        );
+        std::fs::write(path, &body).unwrap();
+        body.into_bytes()
+    }
+
+    /// Writes the index a repository publishes, the way `peppy repo index`
+    /// does.
+    ///
+    /// A repository states what it holds by committing this file, so a test
+    /// that writes a tree has to publish it before a refresh can read it.
+    fn publish_repo(root: &Path) {
+        crate::services::repo::index::publish_repository_index(root)
+            .expect("a well-formed test repository can be published");
+    }
+
+    /// Publishes `root`'s index and commits it alongside `files`, returning
+    /// the branch HEAD is on.
+    ///
+    /// A remote repository is read from a clone, so what it publishes has to
+    /// be committed, not merely written.
+    fn publish_and_commit(repo: &git2::Repository, root: &Path, files: &[&str]) -> String {
+        publish_repo(root);
+
+        let mut index = repo.index().expect("open index");
+        for file in files {
+            index
+                .add_path(Path::new(file))
+                .unwrap_or_else(|e| panic!("stage {file}: {e}"));
+        }
+        index
+            .add_path(Path::new(daemon_config::consts::REPOSITORY_INDEX_FILE))
+            .expect("stage the repository index");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature =
+            git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
+        let parents: Vec<git2::Commit> = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| vec![repo.find_commit(oid).expect("find parent commit")])
+            .unwrap_or_default();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "publish",
+            &tree,
+            &parent_refs,
+        )
+        .expect("commit");
+
+        repo.head()
+            .expect("head")
+            .shorthand()
+            .expect("shorthand")
+            .to_owned()
+    }
+
+    /// Publishes `root`, then removes the file its index names for
+    /// `removed_rel`, leaving a repository that reads fine and states
+    /// something untrue about itself.
+    ///
+    /// This is what a broken repository looks like now that an index cannot
+    /// claim an identity twice: the statement and the tree disagree.
+    fn stale_index(root: &Path, removed_rel: &str) {
+        publish_repo(root);
+        std::fs::remove_file(root.join(removed_rel))
+            .unwrap_or_else(|e| panic!("remove {removed_rel}: {e}"));
+    }
+
+    /// Publishes only `roots`, then refreshes. For tests that deliberately
+    /// leave a repository broken and must not have it re-published.
+    fn refresh_publishing(
+        peppy_dirs: &PeppyDirs,
+        roots: &[&Path],
+        now: SystemTime,
+        on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
+    ) -> Result<RefreshedRepos> {
+        for root in roots {
+            publish_repo(root);
+        }
+        process_refresh(peppy_dirs, now, on_feedback)
+    }
+
+    /// Publishes every configured fs repository, then refreshes.
+    ///
+    /// Keeps each test about the case it is testing rather than about
+    /// re-stating the publish step.
+    fn refresh_indexed(
+        peppy_dirs: &PeppyDirs,
+        now: SystemTime,
+        on_feedback: &mut dyn FnMut(RepoRefreshFeedback),
+    ) -> Result<RefreshedRepos> {
+        for entry in read_or_create_repos(peppy_dirs)? {
+            if let Some(RepoSource::Fs(path)) = parse_repo_entry(&entry)
+                && path.exists()
+            {
+                publish_repo(&path);
+            }
+        }
+        process_refresh(peppy_dirs, now, on_feedback)
+    }
+
     /// Helper: write a minimal valid peppy.json5 into `dir`.
     fn write_peppy_json5(dir: &Path, name: &str, tag: &str) {
         std::fs::create_dir_all(dir).unwrap();
@@ -998,6 +1113,372 @@ mod tests {
         let conf_dir = peppy_dirs.conf_dir();
         std::fs::create_dir_all(&conf_dir).unwrap();
         std::fs::write(conf_dir.join("excluded_repositories.json5"), content).unwrap();
+    }
+
+    /// The load-bearing case: a failure is scoped to the repository that
+    /// caused it. The healthy repository picks up its change, the broken
+    /// one keeps the entries it last published, and only the broken one
+    /// is named.
+    #[test]
+    fn process_refresh_contains_a_failure_to_its_own_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let healthy = tmp.path().join("healthy");
+        let broken = tmp.path().join("broken");
+        write_peppy_json5(&healthy.join("first"), "first", "v1");
+        write_peppy_json5(&broken.join("kept"), "kept", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                healthy.display(),
+                broken.display()
+            ),
+        );
+
+        // A clean run first, so the broken repository has something to
+        // fall back to.
+        let clean = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        assert!(clean.failures.is_empty());
+        write_all_caches(&peppy_dirs, &clean).unwrap();
+
+        // Now break the second repository and add a node to the first.
+        write_peppy_json5(&healthy.join("second"), "second", "v1");
+        write_peppy_json5(&broken.join("gone"), "gone", "v1");
+        stale_index(&broken, "gone/peppy.json5");
+
+        let refreshed =
+            refresh_publishing(&peppy_dirs, &[&healthy], TEST_NOW, &mut |_| {}).unwrap();
+
+        let names: HashSet<&str> = refreshed
+            .nodes
+            .iter()
+            .map(|n| n.node_name.as_str())
+            .collect();
+        assert!(
+            names.contains("first") && names.contains("second"),
+            "the healthy repository still picked up its change: {names:?}"
+        );
+        assert!(
+            names.contains("kept"),
+            "the broken repository kept its previous entries: {names:?}"
+        );
+        assert!(
+            !names.contains("gone"),
+            "an identity the repository states but cannot produce is not published: {names:?}"
+        );
+
+        assert_eq!(refreshed.failures.len(), 1, "only the broken repo failed");
+        let failure = &refreshed.failures[0];
+        assert_eq!(failure.id, 2);
+        assert_eq!(failure.kind, RepoFailureKind::Conflict);
+        assert_eq!(failure.retained, 1, "one node kept from the last read");
+        assert!(failure.detail.contains("gone:v1"), "{}", failure.detail);
+        assert!(
+            failure.detail.contains("gone/peppy.json5"),
+            "{}",
+            failure.detail
+        );
+    }
+
+    /// A re-index that reads every repository cleanly has nothing to add
+    /// to the caller's response, and publishes the caches that make the
+    /// caller's edit take effect.
+    #[tokio::test]
+    async fn reindex_after_change_reports_nothing_when_the_re_read_is_clean() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("first"), "first", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+        publish_repo(&repo);
+
+        assert_eq!(reindex_after_change(&peppy_dirs).await, None);
+
+        let cached = crate::services::repo::cache::load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+            .expect("the re-index published the node cache");
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].node_name, "first");
+    }
+
+    /// A re-index that cannot read the configuration at all reports it:
+    /// the caller just changed that configuration, so this belongs in
+    /// their response rather than in a log nobody reads.
+    #[tokio::test]
+    async fn reindex_after_change_reports_a_re_read_that_failed_outright() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        write_repos(
+            &peppy_dirs,
+            r#"[
+                { "id": 1, "type": "fs", "path": "/a" },
+                { "id": 1, "type": "fs", "path": "/b" }
+            ]"#,
+        );
+
+        let report = reindex_after_change(&peppy_dirs)
+            .await
+            .expect("a re-read that failed outright is reported");
+        assert!(report.starts_with("re-indexing failed:"), "got: {report}");
+        assert!(
+            report.contains("duplicate repository id 1"),
+            "the report names what to fix, got: {report}"
+        );
+    }
+
+    /// The report reads as prose while still carrying the machine value,
+    /// so an operator can act on it and a tool can match on it.
+    #[test]
+    fn failure_report_reads_as_a_sentence_and_names_the_kind() {
+        let unreachable = RepoFailure {
+            id: 1002,
+            label: "https://example.com/hub.git (ref: main)".to_owned(),
+            kind: RepoFailureKind::Unreachable,
+            detail: "failed to connect".to_owned(),
+            retained: 8,
+        };
+        let conflict = RepoFailure {
+            id: 1000,
+            label: "/home/user/workspace".to_owned(),
+            kind: RepoFailureKind::Conflict,
+            detail: "2 node manifests claim `a:v1`".to_owned(),
+            retained: 0,
+        };
+
+        let report = failure_report(&[conflict, unreachable]);
+
+        assert!(
+            report.contains("could not be read [unreachable]"),
+            "{report}"
+        );
+        assert!(report.contains("contradicts itself [conflict]"), "{report}");
+        assert!(
+            report.contains("Kept 8 entries from its last successful read"),
+            "{report}"
+        );
+        assert!(
+            report.contains("contributes nothing this time"),
+            "a machine with nothing to fall back to says so: {report}"
+        );
+        assert!(
+            report.contains("Every other repository was updated normally"),
+            "{report}"
+        );
+    }
+
+    /// A failing repository keeps the timestamp of its last successful
+    /// read rather than being stamped with now: the retained entries are
+    /// still the ones read at that time, and restamping them would claim
+    /// they are current.
+    #[test]
+    fn process_refresh_carries_forward_the_last_successful_read_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+
+        let first_read = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let clean = refresh_indexed(&peppy_dirs, first_read, &mut |_| {}).unwrap();
+        write_all_caches(&peppy_dirs, &clean).unwrap();
+        assert_eq!(clean.statuses.len(), 1);
+        assert_eq!(clean.statuses[0].last_read_unix_secs, Some(1_000));
+        assert!(!clean.statuses[0].is_retained());
+
+        // Break it, and refresh much later.
+        write_peppy_json5(&repo.join("vanished"), "vanished", "v1");
+        stale_index(&repo, "vanished/peppy.json5");
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(99_000);
+        let failed = refresh_publishing(&peppy_dirs, &[], later, &mut |_| {}).unwrap();
+
+        let status = &failed.statuses[0];
+        assert_eq!(
+            status.last_read_unix_secs,
+            Some(1_000),
+            "the entries still date from the last clean read"
+        );
+        assert!(status.is_retained());
+        let failure = status.last_failure.as_ref().expect("failure recorded");
+        assert_eq!(failure.kind, "conflict");
+        assert_eq!(failure.unix_secs, 99_000, "the failure itself is recent");
+    }
+
+    /// A repository that recovers stops reporting its old failure, so a
+    /// fixed problem does not linger in the diagnostics.
+    #[test]
+    fn process_refresh_clears_the_failure_once_a_repository_recovers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("vanished"), "vanished", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+        stale_index(&repo, "vanished/peppy.json5");
+
+        let broken = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
+        write_all_caches(&peppy_dirs, &broken).unwrap();
+        assert!(broken.statuses[0].is_retained());
+
+        // Re-publishing states what the repository actually holds again.
+        let fixed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        assert!(fixed.failures.is_empty());
+        assert!(!fixed.statuses[0].is_retained());
+        assert!(fixed.statuses[0].last_failure.is_none());
+    }
+
+    /// A repository that cannot be reached at all is reported as
+    /// unreachable, not as broken content: an outage and a content bug
+    /// send the user to completely different places.
+    #[test]
+    fn process_refresh_reports_a_missing_fs_repo_as_unreachable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let healthy = tmp.path().join("healthy");
+        write_peppy_json5(&healthy.join("node_a"), "node_a", "v1");
+        let gone = tmp.path().join("not-mounted");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                healthy.display(),
+                gone.display()
+            ),
+        );
+
+        let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        assert_eq!(refreshed.nodes.len(), 1, "the healthy repository updated");
+        assert_eq!(refreshed.failures.len(), 1);
+        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+        assert_eq!(
+            refreshed.failures[0].retained, 0,
+            "nothing was ever read from it"
+        );
+    }
+
+    /// An unrecognized `repositories.json5` entry is a failure rather
+    /// than a silent skip: a typo in the configuration should not look
+    /// like a repository that simply has no content.
+    #[test]
+    fn process_refresh_reports_an_unrecognized_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        write_repos(&peppy_dirs, r#"[{ "id": 1, "type": "nonsense" }]"#);
+
+        let refreshed = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+
+        assert_eq!(refreshed.failures.len(), 1);
+        assert_eq!(refreshed.failures[0].kind, RepoFailureKind::Unreachable);
+    }
+
+    /// Several failures across several repositories come back in one
+    /// pass, ordered by repository id, so one run tells the user
+    /// everything they have to fix.
+    #[test]
+    fn process_refresh_reports_every_failure_in_repository_id_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let conflicted = tmp.path().join("conflicted");
+        write_peppy_json5(&conflicted.join("a"), "vanished", "v1");
+        stale_index(&conflicted, "a/peppy.json5");
+        let gone = tmp.path().join("not-mounted");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 5, "type": "fs", "path": "{}" }}, {{ "id": 9, "type": "fs", "path": "{}" }}]"#,
+                gone.display(),
+                conflicted.display()
+            ),
+        );
+
+        let refreshed = refresh_publishing(&peppy_dirs, &[], TEST_NOW, &mut |_| {}).unwrap();
+
+        let seen: Vec<(u64, RepoFailureKind)> =
+            refreshed.failures.iter().map(|f| (f.id, f.kind)).collect();
+        assert_eq!(
+            seen,
+            vec![
+                (5, RepoFailureKind::Unreachable),
+                (9, RepoFailureKind::Conflict)
+            ]
+        );
+
+        let report = failure_report(&refreshed.failures);
+        assert!(report.contains("unreachable"), "{report}");
+        assert!(report.contains("conflict"), "{report}");
+    }
+
+    /// Retention follows the same attribution rule as lookup, so a
+    /// retained entry keeps exactly the priority it had and a failing
+    /// repository never inherits another repository's entries.
+    #[test]
+    fn process_refresh_retains_only_the_failed_repositorys_own_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let one = tmp.path().join("one");
+        let two = tmp.path().join("two");
+        write_peppy_json5(&one.join("from_one"), "from_one", "v1");
+        write_peppy_json5(&two.join("from_two"), "from_two", "v1");
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}, {{ "id": 2, "type": "fs", "path": "{}" }}]"#,
+                one.display(),
+                two.display()
+            ),
+        );
+        let clean = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        write_all_caches(&peppy_dirs, &clean).unwrap();
+
+        // Break repository 2 only.
+        write_peppy_json5(&two.join("vanished"), "vanished", "v1");
+        stale_index(&two, "vanished/peppy.json5");
+        let refreshed = refresh_publishing(&peppy_dirs, &[&one], TEST_NOW, &mut |_| {}).unwrap();
+
+        assert_eq!(refreshed.failures.len(), 1);
+        assert_eq!(
+            refreshed.failures[0].retained, 1,
+            "only `from_two` is retained, not `from_one`"
+        );
+        // Node paths are stored canonicalized, so compare against the
+        // canonical form of the repo root (on macOS the tempdir `two` is a
+        // `/var` symlink to `/private/var`).
+        let two_root = std::fs::canonicalize(&two).unwrap();
+        let retained: Vec<&str> = refreshed
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.origin
+                    .path_str()
+                    .starts_with(two_root.to_string_lossy().as_ref())
+            })
+            .map(|n| n.node_name.as_str())
+            .collect();
+        assert_eq!(retained, vec!["from_two"]);
     }
 
     #[test]
@@ -1030,7 +1511,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "only non-excluded repo nodes returned");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "one repo should be excluded");
@@ -1077,7 +1558,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(
             discovered.len(),
             1,
@@ -1095,6 +1576,84 @@ mod tests {
         assert!(
             excluded[0].identity.contains("secret_node"),
             "excluded identity should reference the subdirectory"
+        );
+    }
+
+    /// An excluded subtree is one this machine does not answer for, so its
+    /// files are never opened — which is also what keeps a broken manifest
+    /// inside it from failing the repository the user did ask for. The
+    /// index still declares the item; only the read is skipped.
+    #[test]
+    fn process_refresh_does_not_read_an_excluded_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+
+        let repo = tmp.path().join("repo");
+        write_peppy_json5(&repo.join("keep_node"), "keep_node", "v1");
+        write_peppy_json5(&repo.join("secret_node"), "secret_node", "v1");
+        // Published first, so the index declares both, then the excluded
+        // one is made unreadable behind peppy's back.
+        publish_repo(&repo);
+        std::fs::remove_file(repo.join("secret_node").join(NODE_CONFIG_FILE))
+            .expect("remove the excluded manifest");
+
+        write_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.display()
+            ),
+        );
+        write_excluded_repos(
+            &peppy_dirs,
+            &format!(
+                r#"[{{ "id": 1, "type": "fs", "path": "{}" }}]"#,
+                repo.join("secret_node").display()
+            ),
+        );
+
+        let RefreshedRepos {
+            nodes: discovered,
+            failures,
+            ..
+        } = process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        assert!(
+            failures.is_empty(),
+            "an item the machine does not serve cannot break the read: {failures:?}"
+        );
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].node_name, "keep_node");
+    }
+
+    /// The clone `repo refresh` pays for is the tree every item it read
+    /// resolves to, so it becomes the cached checkout instead of being
+    /// deleted and downloaded again on first use.
+    #[test]
+    fn process_refresh_hands_its_clone_to_the_checkout_cache() {
+        let src_tmp = tempfile::tempdir().unwrap();
+        let src = src_tmp.path();
+        let repo = git2::Repository::init(src).expect("init repo");
+        write_peppy_json5(&src.join("arm"), "arm", "v1");
+        let branch = publish_and_commit(&repo, src, &["arm/peppy.json5"]);
+
+        let peppy_tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
+        let repo_url = format!("file://{}", src.display());
+        write_repos(
+            &peppy_dirs,
+            &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#),
+        );
+
+        let RefreshedRepos { nodes, .. } =
+            process_refresh(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
+        let (url, commit) = nodes[0].origin.checkout().expect("a git origin");
+
+        let checkout =
+            crate::services::node::cache::git::checkout_dir_for(&peppy_dirs, url, commit);
+        assert!(
+            checkout.join("arm").join(NODE_CONFIG_FILE).exists(),
+            "the refresh clone is now the cached checkout at {}",
+            checkout.display()
         );
     }
 
@@ -1125,7 +1684,7 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "FS node should still be found");
         assert_eq!(discovered[0].node_name, "node_a");
         assert_eq!(excluded.len(), 1, "git repo should be excluded");
@@ -1154,78 +1713,11 @@ mod tests {
             nodes: discovered,
             excluded,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "node should be found normally");
         assert!(excluded.is_empty(), "no repos should be excluded");
     }
 
-    #[test]
-    fn process_refresh_skips_excluded_url_repo() {
-        let tmp = tempfile::tempdir().unwrap();
-        let peppy_dirs = PeppyDirs::new(tmp.path());
-
-        let repo = tmp.path().join("repo");
-        write_peppy_json5(&repo.join("node_a"), "node_a", "v1");
-
-        write_repos(
-            &peppy_dirs,
-            &format!(
-                r#"[
-                    {{ "id": 1, "type": "fs", "path": "{}" }},
-                    {{ "id": 2, "type": "url", "url": "https://example.com/packages" }}
-                ]"#,
-                repo.display()
-            ),
-        );
-        write_excluded_repos(
-            &peppy_dirs,
-            r#"[{ "id": 1, "type": "url", "url": "https://example.com/packages" }]"#,
-        );
-
-        let RefreshedRepos {
-            nodes: discovered,
-            excluded,
-            ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
-        assert_eq!(discovered.len(), 1, "FS node should still be found");
-        assert_eq!(excluded.len(), 1, "url repo should be excluded");
-        assert_eq!(excluded[0].source_type, RepoSourceKind::Url);
-    }
-
-    /// Helper: write a `.json5` launcher file at `path` (any name accepted).
-    fn write_launcher_json5(path: &Path) {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(
-            path,
-            r#"{
-  peppy_schema: "launcher/v1",
-  deployments: []
-}"#,
-        )
-        .unwrap();
-    }
-
-    /// Helper: write a minimal valid contract manifest at `path`.
-    fn write_contract_json5(path: &Path, name: &str, tag: &str) -> Vec<u8> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        let body = format!(
-            r#"{{
-  peppy_schema: "contract/v1",
-  manifest: {{ name: "{name}", tag: "{tag}" }},
-  interfaces: {{}}
-}}"#
-        );
-        std::fs::write(path, &body).unwrap();
-        body.into_bytes()
-    }
-
-    /// FS-side contract discovery: a `contract/v1` document is
-    /// recognized regardless of its filename, the cached `path` points
-    /// at the manifest file itself, and `sha256` matches the raw bytes.
     #[test]
     fn process_refresh_discovers_contracts_from_fs_repo() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1243,20 +1735,21 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { contracts, .. } =
+            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
         assert_eq!(iface.tag, "v1");
-        assert_eq!(iface.source_type, RepoSourceKind::Fs);
+        assert_eq!(iface.origin.kind(), RepoSourceKind::Fs);
         assert!(
-            iface.path.ends_with("uvc_camera/peppy.json5"),
+            iface.origin.path_str().ends_with("uvc_camera/peppy.json5"),
             "fs path should be absolute to the manifest file: {}",
-            iface.path
+            iface.origin.path_str()
         );
         assert_eq!(
             iface.sha256,
-            fingerprint_for_bytes(&bytes),
+            daemon_config::repository::ManifestFingerprint::of_bytes(&bytes),
             "cached sha256 must equal fingerprint_for_bytes of raw manifest bytes"
         );
     }
@@ -1271,29 +1764,7 @@ mod tests {
         let repo = git2::Repository::init(src).expect("init repo");
         let iface_rel = Path::new("uvc_camera/peppy.json5");
         write_contract_json5(&src.join(iface_rel), "uvc_camera", "v1");
-
-        let signature =
-            git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
-        let mut index = repo.index().expect("open index");
-        index.add_path(iface_rel).expect("stage contract");
-        index.write().expect("write index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "add uvc_camera contract",
-            &tree,
-            &[],
-        )
-        .expect("commit");
-        let branch = repo
-            .head()
-            .expect("head")
-            .shorthand()
-            .expect("shorthand")
-            .to_owned();
+        let branch = publish_and_commit(&repo, src, &["uvc_camera/peppy.json5"]);
 
         let peppy_tmp = tempfile::tempdir().unwrap();
         let peppy_dirs = PeppyDirs::new(peppy_tmp.path());
@@ -1303,16 +1774,17 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { contracts, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { contracts, .. } =
+            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(contracts.len(), 1, "exactly one contract expected");
         let iface = &contracts[0];
         assert_eq!(iface.contract_name, "uvc_camera");
         assert_eq!(iface.tag, "v1");
-        assert_eq!(iface.source_type, RepoSourceKind::Git);
-        assert_eq!(iface.path, "uvc_camera/peppy.json5");
-        assert_eq!(iface.resolved_ref.as_deref(), Some(branch.as_str()));
+        assert_eq!(iface.origin.kind(), RepoSourceKind::Git);
+        assert_eq!(iface.origin.path_str(), "uvc_camera/peppy.json5");
+        assert_eq!(iface.origin.repo_ref(), Some(branch.as_str()));
         assert!(
-            !iface.sha256.is_empty(),
+            iface.sha256.as_str().len() == 64,
             "sha256 should be populated from the manifest file bytes"
         );
     }
@@ -1365,7 +1837,7 @@ mod tests {
 
         let mut feedbacks = Vec::new();
         let RefreshedRepos { contracts, .. } =
-            process_refresh(&peppy_dirs, &mut |fb| feedbacks.push(fb)).unwrap();
+            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb)).unwrap();
 
         assert_eq!(
             contracts.len(),
@@ -1402,30 +1874,6 @@ mod tests {
         );
     }
 
-    /// `walk_directory` dispatches `.json5` files by `peppy_schema`:
-    /// a node manifest, a launcher, and a contract coexisting in the
-    /// same repository each land in the matching collector.
-    #[test]
-    fn walk_directory_dispatches_by_schema() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("mixed");
-        write_peppy_json5(&repo.join("nodes/my_sensor"), "my_sensor", "v1");
-        write_launcher_json5(&repo.join("teleop.json5"));
-        write_contract_json5(
-            &repo.join("interfaces/uvc_camera.json5"),
-            "uvc_camera",
-            "v1",
-        );
-
-        let walked = walk_directory(&repo, RepoSourceKind::Fs, None, None, &[]);
-        assert_eq!(walked.nodes.len(), 1, "one node");
-        assert_eq!(walked.nodes[0].node_name, "my_sensor");
-        assert_eq!(walked.launchers.len(), 1, "one launcher");
-        assert_eq!(walked.launchers[0].launcher_name, "teleop");
-        assert_eq!(walked.contracts.len(), 1, "one contract");
-        assert_eq!(walked.contracts[0].contract_name, "uvc_camera");
-    }
-
     /// Process_refresh discovers launcher files (any `.json5` filename
     /// with `peppy_schema: "launcher/v1"`) alongside node files in the
     /// same FS walk, names them by basename, and dedupes across repos.
@@ -1459,7 +1907,7 @@ mod tests {
             nodes: discovered,
             launchers,
             ..
-        } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        } = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(discovered.len(), 1, "node_a should be the only node");
         assert_eq!(
             launchers.len(),
@@ -1484,9 +1932,9 @@ mod tests {
         // directory, so downstream code can read it directly.
         let demo = unique_by_name.get("demo").expect("demo launcher");
         assert!(
-            demo.path.ends_with("demo.json5"),
+            demo.origin.path_str().ends_with("demo.json5"),
             "launcher path should be the .json5 file itself: {}",
-            demo.path
+            demo.origin.path_str()
         );
 
         // Both `openarm01_sim_teleop` entries are present; the
@@ -1497,11 +1945,11 @@ mod tests {
             .collect();
         assert_eq!(dup.len(), 2);
         assert!(
-            dup.iter().any(|l| l.path.contains("repo_a")),
+            dup.iter().any(|l| l.origin.path_str().contains("repo_a")),
             "primary entry should be from repo_a"
         );
         assert!(
-            dup.iter().any(|l| l.path.contains("repo_b")),
+            dup.iter().any(|l| l.origin.path_str().contains("repo_b")),
             "secondary entry should be from repo_b"
         );
     }
@@ -1541,7 +1989,8 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } =
+            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(
             launchers.len(),
             1,
@@ -1570,7 +2019,8 @@ mod tests {
             ),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } =
+            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         write_repo_cache(&peppy_dirs, &launchers).unwrap();
 
         let cache_path = launchers_repo_cache_path(&peppy_dirs);
@@ -1582,8 +2032,10 @@ mod tests {
         let arr = parsed.as_array().expect("expected JSON array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["launcher_name"], "openarm01_sim_teleop");
-        assert_eq!(arr[0]["source_type"], "fs");
-        let path_str = arr[0]["path"].as_str().expect("path should be a string");
+        assert_eq!(arr[0]["origin"]["source_type"], "fs");
+        let path_str = arr[0]["origin"]["path"]
+            .as_str()
+            .expect("path should be a string");
         assert!(
             path_str.ends_with("openarm01_sim_teleop.json5"),
             "cached path should point at the .json5 file: {path_str}"
@@ -1614,30 +2066,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let signature =
-            git2::Signature::now("Peppy", "peppy@example.com").expect("create signature");
-        let mut index = repo.index().expect("open index");
-        index
-            .add_path(Path::new("openarm01/openarm01_teleop.json5"))
-            .expect("stage launcher");
-        index.write().expect("write index");
-        let tree_id = index.write_tree().expect("write tree");
-        let tree = repo.find_tree(tree_id).expect("find tree");
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "add openarm01_teleop launcher",
-            &tree,
-            &[],
-        )
-        .expect("commit");
-        let branch = repo
-            .head()
-            .expect("head")
-            .shorthand()
-            .expect("shorthand")
-            .to_owned();
+        let branch = publish_and_commit(&repo, src, &["openarm01/openarm01_teleop.json5"]);
 
         // Configure peppy with a single git repo entry pointing at the
         // local source via `file://`.
@@ -1649,20 +2078,24 @@ mod tests {
             &format!(r#"[{{ "id": 1, "type": "git", "url": "{repo_url}", "ref": "{branch}" }}]"#,),
         );
 
-        let RefreshedRepos { launchers, .. } = process_refresh(&peppy_dirs, &mut |_| {}).unwrap();
+        let RefreshedRepos { launchers, .. } =
+            refresh_indexed(&peppy_dirs, TEST_NOW, &mut |_| {}).unwrap();
         assert_eq!(launchers.len(), 1, "exactly one launcher expected");
         let launcher = &launchers[0];
         assert_eq!(launcher.launcher_name, "openarm01_teleop");
-        assert_eq!(launcher.source_type, RepoSourceKind::Git);
-        assert_eq!(launcher.source_uri.as_deref(), Some(repo_url.as_str()));
+        assert_eq!(launcher.origin.kind(), RepoSourceKind::Git);
+        assert_eq!(launcher.origin.repo_url(), Some(repo_url.as_str()));
         assert_eq!(
-            launcher.resolved_ref.as_deref(),
+            launcher.origin.repo_ref(),
             Some(branch.as_str()),
             "resolved_ref should record the branch we cloned, not literal `HEAD`"
         );
-        assert_eq!(launcher.path, "openarm01/openarm01_teleop.json5");
+        assert_eq!(
+            launcher.origin.path_str(),
+            "openarm01/openarm01_teleop.json5"
+        );
         assert!(
-            !launcher.sha256.is_empty(),
+            launcher.sha256.as_str().len() == 64,
             "sha256 should be populated from the manifest file bytes"
         );
 
@@ -1676,13 +2109,18 @@ mod tests {
             serde_json5::from_str(&raw).expect("launcher cache should be valid JSON5");
         let entry = &parsed.as_array().expect("array")[0];
         assert_eq!(entry["launcher_name"], "openarm01_teleop");
-        assert_eq!(entry["source_type"], "git");
-        assert_eq!(entry["source_uri"], repo_url);
-        assert_eq!(entry["resolved_ref"], branch);
-        assert_eq!(entry["path"], "openarm01/openarm01_teleop.json5");
-        assert!(
-            entry.get("entry_type").is_none(),
-            "entry_type should not be present in the on-disk schema"
+        let origin = &entry["origin"];
+        assert_eq!(origin["source_type"], "git");
+        assert_eq!(origin["repo_url"], repo_url);
+        assert_eq!(origin["repo_ref"], branch);
+        assert_eq!(origin["path"], "openarm01/openarm01_teleop.json5");
+        assert_eq!(
+            origin["commit"]
+                .as_str()
+                .expect("a commit is recorded")
+                .len(),
+            40,
+            "the entry records the commit it was read at, not just the branch"
         );
         assert!(
             entry.get("node_name").is_none(),
@@ -1707,7 +2145,7 @@ mod tests {
         );
 
         let mut feedbacks: Vec<RepoRefreshFeedback> = Vec::new();
-        let _ = process_refresh(&peppy_dirs, &mut |fb| feedbacks.push(fb)).unwrap();
+        let _ = refresh_indexed(&peppy_dirs, TEST_NOW, &mut |fb| feedbacks.push(fb)).unwrap();
 
         let progress_messages: Vec<&str> = feedbacks
             .iter()
@@ -1717,8 +2155,8 @@ mod tests {
             })
             .collect();
         assert!(
-            progress_messages.iter().any(|m| m.starts_with("Scanning ")),
-            "expected a 'Scanning …' progress feedback, got: {:?}",
+            progress_messages.iter().any(|m| m.starts_with("Reading ")),
+            "expected a 'Reading …' progress feedback, got: {:?}",
             feedbacks
         );
 
@@ -1816,7 +2254,7 @@ mod tests {
         let dst = dst_tmp.path().join("clone");
         let repo_url = format!("file://{}", src_tmp.path().display());
 
-        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
             .expect("file:// clone should succeed (depth must be skipped)");
 
         assert!(
@@ -1836,15 +2274,18 @@ mod tests {
         let dst = dst_tmp.path().join("clone");
         let repo_url = src_tmp.path().display().to_string();
 
-        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {})
             .expect("raw-path clone should succeed (depth must be skipped)");
 
         assert!(!dst.join(".git/shallow").exists());
         assert_eq!(count_commits(&repo), 3);
     }
 
+    /// The clone and the positioning are two steps, so a caller that wants
+    /// a specific revision gets it from the same clone every other caller
+    /// makes rather than from a clone of its own.
     #[test]
-    fn clone_shallow_ref_checkout_works_on_local_clone() {
+    fn a_shallow_clone_positions_on_any_revision_it_brought() {
         let src_tmp = tempfile::tempdir().unwrap();
         let commits = init_repo_with_commits(src_tmp.path(), 3);
         let target_sha = commits[1].to_string();
@@ -1853,102 +2294,11 @@ mod tests {
         let dst = dst_tmp.path().join("clone");
         let repo_url = format!("file://{}", src_tmp.path().display());
 
-        let repo = clone_shallow(&repo_url, Some(&target_sha), &dst, &mut |_| {})
-            .expect("clone_shallow with ref should succeed");
+        let repo = clone_repo_shallow(&repo_url, &dst, &mut |_| {}).expect("clone should succeed");
+        checkout_repo_ref(&repo, &target_sha).expect("position on the revision");
 
         let head = repo.head().expect("head");
         let head_oid = head.target().expect("head oid");
         assert_eq!(head_oid.to_string(), target_sha);
-    }
-
-    /// `checkout_repo_ref` detaches HEAD for every pinned ref, so
-    /// `head().shorthand()` of the cloned repo is always `"HEAD"`. Guard
-    /// against falling back to that literal; batch installs reuse
-    /// `resolved_ref` as the fetch/checkout ref, so storing `"HEAD"`
-    /// silently resolves to the remote's default branch instead of the
-    /// pinned ref.
-    #[test]
-    fn resolve_ref_prefers_config_ref_over_detached_head() {
-        let src_tmp = tempfile::tempdir().unwrap();
-        let commits = init_repo_with_commits(src_tmp.path(), 2);
-        let target_sha = commits[0].to_string();
-
-        let dst_tmp = tempfile::tempdir().unwrap();
-        let dst = dst_tmp.path().join("clone");
-        let repo_url = format!("file://{}", src_tmp.path().display());
-
-        let repo = clone_shallow(&repo_url, Some(&target_sha), &dst, &mut |_| {})
-            .expect("clone_shallow with pinned commit should succeed");
-
-        assert_eq!(
-            repo.head().unwrap().shorthand(),
-            Ok("HEAD"),
-            "precondition: checkout_repo_ref always detaches HEAD"
-        );
-
-        let resolved = resolve_ref_for_cache(&repo, Some(&target_sha));
-        assert_eq!(
-            resolved, target_sha,
-            "pinned commit ref must be preserved so batch installs fetch it back"
-        );
-    }
-
-    #[test]
-    fn resolve_ref_trims_and_rejects_empty_config_ref() {
-        let src_tmp = tempfile::tempdir().unwrap();
-        init_repo_with_commits(src_tmp.path(), 1);
-
-        let dst_tmp = tempfile::tempdir().unwrap();
-        let dst = dst_tmp.path().join("clone");
-        let repo_url = format!("file://{}", src_tmp.path().display());
-
-        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
-            .expect("clone_shallow without ref should succeed");
-
-        let short = repo
-            .head()
-            .unwrap()
-            .shorthand()
-            .expect("default branch shorthand")
-            .to_owned();
-        assert_ne!(short, "HEAD", "fresh clone without ref must stay attached");
-
-        assert_eq!(
-            resolve_ref_for_cache(&repo, Some("  v1.0  ")),
-            "v1.0",
-            "config ref should be trimmed"
-        );
-        assert_eq!(
-            resolve_ref_for_cache(&repo, Some("")),
-            short,
-            "empty config ref should fall through to the attached branch name"
-        );
-        assert_eq!(
-            resolve_ref_for_cache(&repo, None),
-            short,
-            "absent config ref should fall through to the attached branch name"
-        );
-    }
-
-    #[test]
-    fn resolve_ref_falls_back_to_commit_oid_when_detached_without_config_ref() {
-        let src_tmp = tempfile::tempdir().unwrap();
-        let commits = init_repo_with_commits(src_tmp.path(), 1);
-
-        let dst_tmp = tempfile::tempdir().unwrap();
-        let dst = dst_tmp.path().join("clone");
-        let repo_url = format!("file://{}", src_tmp.path().display());
-
-        let repo = clone_shallow(&repo_url, None, &dst, &mut |_| {})
-            .expect("clone_shallow should succeed");
-        repo.set_head_detached(commits[0])
-            .expect("detach head for test");
-        assert_eq!(repo.head().unwrap().shorthand(), Ok("HEAD"));
-
-        assert_eq!(
-            resolve_ref_for_cache(&repo, None),
-            commits[0].to_string(),
-            "detached HEAD with no config ref should record the commit OID"
-        );
     }
 }

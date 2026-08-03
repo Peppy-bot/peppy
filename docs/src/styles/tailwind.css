@@ -3,6 +3,40 @@
 @import 'tailwindcss';
 @import '@astrojs/starlight-tailwind';
 
+/* JetBrains Mono is served from `public/fonts/` rather than Google Fonts, which
+   subsets it and ships no glyphs for the box-drawing block (U+2500-257F). Those
+   characters then fell out of the family to `ui-monospace`, whose cell is 0.6182em
+   against JetBrains Mono's 0.6000em, so every CLI table in the docs rendered with
+   its rules about 2.4 cells longer than the rows they bracket. The upstream font
+   carries the block at the same 0.6000em advance as its Latin glyphs, so serving
+   it whole is what keeps the art aligned.
+
+   Files are the official woff2 webfonts from the JetBrains Mono 2.304 release,
+   verbatim, under the OFL-1.1 in `public/fonts/OFL.txt`. Weights match what the
+   theme asks for; italics are absent here exactly as they were absent from the
+   Google request, so code italics stay synthetic and their metrics do not shift. */
+@font-face {
+	font-family: 'JetBrains Mono';
+	src: url('/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	src: url('/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	src: url('/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+	font-weight: 700;
+	font-style: normal;
+	font-display: swap;
+}
+
 /* Peppy brand tokens. @astrojs/starlight-tailwind wires these Tailwind scales
    into Starlight's --sl-* variables, so the lime accent scale, the navy gray
    ramp, and the brand fonts defined here are the single source of truth for the

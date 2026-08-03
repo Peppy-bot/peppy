@@ -103,11 +103,11 @@ Each topic defines a `name`, a `qos_profile`, and a `message_format`:
   </TabItem>
 </Tabs>
 
-The `qos_profile` controls delivery guarantees. Available profiles are:
+The `qos_profile` sets the **publisher's** delivery behavior for this topic; consumers always subscribe with the standard profile. Available profiles are:
 - **`sensor_data`**: optimized for high-frequency data where occasional drops are acceptable.
 - **`standard`**: balanced defaults suitable for most use cases. This is the default when `qos_profile` is omitted.
-- **`reliable`**: guarantees delivery at the cost of higher latency.
-- **`critical`**: strongest delivery guarantees for safety-critical data.
+- **`reliable`**: blocks on congestion instead of dropping, at the cost of higher latency.
+- **`critical`**: the same block-on-congestion guarantee as `reliable`, dispatched at the highest scheduling priority with express batching, for the lowest latency on safety-critical data.
 
 ### Publishing messages
 
@@ -385,7 +385,7 @@ fn main() -> Result<()> {
 `subscribe` takes only `node_runner` (the node runner reference) and returns a `Subscription` covering the slot's **complete bound producer set**: one producer-pinned wire subscription per bound producer, merged client-side behind the single `subscribe()` API. The shape is identical for every [cardinality](#dependency-cardinality); only the size of the bound set changes. Awaiting `subscription.next()` yields:
 - a `(producer, message)` pair for each message (`Ok(Some((producer, message)))` in Rust), where `producer` is a `ProducerRef` carrying the publisher's full `(core_node, instance_id)` wire identity, so the consumer can tell messages from different bound producers apart, and `message` is the deserialized message, with fields matching the topic's `message_format`.
 - `None` (`Ok(None)` in Rust) once the node is shutting down and no queued message remains, or when every source has closed.
-- an error if a received payload fails to deserialize: `Err(..)` in Rust, a raised exception in Python. The error carries producer context and neither tears down the subscription nor shrinks the bound set.
+- an error if a received payload fails to deserialize: `Err(..)` in Rust, a raised exception in Python. The error names the message type that failed to decode, and neither tears down the subscription nor shrinks the bound set.
 
 Each underlying subscription holds an in-order buffer, so a message published between `next` calls is kept, not dropped; loop on `next` and nothing is lost in the gap between iterations. Message order is preserved independently per producer (no total ordering across producers is promised), and ready producers are merged fairly so one busy producer cannot indefinitely starve another. `ProducerRef` is `Eq + Hash`, so it keys per-producer state directly; to follow a single producer, filter on the yielded producer.
 
@@ -585,7 +585,7 @@ In a launcher / stack config:
 
 ```json5
 {
-  source: { local: "./consumer" },
+  source: { name: "consumer:v1" },
   instances: [{
     instance_id: "my_consumer",
     links: { uvc_camera: "my-camera-instance" },
@@ -596,7 +596,7 @@ In a launcher / stack config:
 or, when launching a single node during development:
 
 ```sh
-peppy node run --link uvc_camera@my-camera-instance .
+peppy node run --link uvc_camera@my-camera-instance web_video_stream:v1
 ```
 
 ### Dependency cardinality
@@ -628,10 +628,10 @@ links: {
 Any other combination is an error: an array on a `one` slot (single-element arrays included), a scalar on a multi slot, and an empty array on a `one_or_more` slot (cardinality unmet). The CLI mirrors the array form by repetition, which accumulates on a multi slot and stays a hard error on a `one` slot; the empty set has no flag spelling, omission is it:
 
 ```sh
-peppy node run --link camera@front_camera --link camera@rear_camera .
+peppy node run --link camera@front_camera --link camera@rear_camera web_video_stream:v1
 ```
 
-Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances, and it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. `depends_on.pairings` entries have no cardinality (a pairing is strictly 1:1 and expresses absence with its `optional` flag; a `cardinality` key on a pairing entry is a manifest error).
+Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances, and it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. `depends_on.pairings` and `depends_on.pairing_observers` entries have no cardinality (a pairing is strictly 1:1 and expresses absence with its `optional` flag; a `cardinality` key on a pairing entry is a manifest error).
 
 The consuming API is uniform across cardinalities in everything except the [bound-producer accessor](#receiving-messages): topics subscribe to the slot's complete bound set and yield the producing `ProducerRef` with every message, and [services](/advanced_guides/services/) and [actions](/advanced_guides/actions/) require the caller to select one explicit, membership-checked member of that set, whatever its size. The accessor itself is cardinality-typed: `one` generates the singular, infallible `bound_producer()`, `one_or_more` generates `bound_producers()` returning a never-empty set whose `first()` needs no unwrap, and `zero_or_more` generates `bound_producers()` returning a possibly empty slice, so the empty branch is forced by the type. For a `zero_or_more` slot bound to nothing, the subscription simply yields nothing until the node stops.
 
@@ -696,7 +696,7 @@ The launcher validator runs these checks before the stack starts:
 2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar only (an array is rejected, single-element and empty included), a multi slot takes an array only (a scalar is rejected), and an empty array meets only `zero_or_more` (on `one_or_more` it is a cardinality-unmet error). Repeated `--link KEY@…` flags carry no shape and are checked by count: more than one occurrence on a `one` slot is rejected. Duplicate targets within one slot are rejected rather than deduplicated.
 3. **Every target must satisfy the slot, checked per bound instance.** For node slots, each target producer's `(node_name, node_tag)` must equal the slot's declared pair (`BindingTargetMismatch` otherwise). For contract slots, each target's `manifest.implements` must include the slot's `(name, tag)` (`BindingContractNotImplemented` otherwise); see [Contract implementation](/advanced_guides/contract_implementation/) for the implementation rules.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so reusing one across two different node kinds would make the binding ambiguous.
-5. **Bindings are stamped with the daemon's `core_node`.** The `--link KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps the launching daemon's `core_node` into every resolved binding, so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot. Bound-set member order is the application declaration order (launcher array order / CLI flag occurrence order), preserved verbatim into the runtime configuration.
+5. **Bindings are stamped with the producer's `core_node`.** The `--link KEY@instance_id` syntax names producers by `instance_id` alone, but the wire addresses producers by the full `(core_node, instance_id)` pair, since `instance_id` is only unique within one stack. The validator stamps each target producer instance's resolved `core_node` into the binding (the machine the launcher places that instance on, which is the launching daemon only in the single-machine case), so the runtime never matches on `instance_id` alone: a slot subscribes with both wire fields set. A producer on another core node that happens to share an `instance_id` can never feed a bound slot. Bound-set member order is the application declaration order (launcher array order / CLI flag occurrence order), preserved verbatim into the runtime configuration.
 
 ## Message format types
 
@@ -736,7 +736,7 @@ Fields can also use complex types:
     $items: "u8"
   }
   ```
-- **Fixed-length array**: an array with a known size (`[T; N]` in Rust, a `list[T]` that must hold exactly `N` items in Python):
+- **Fixed-length array**: an array with a known size (`[T; N]` in Rust, a `list[T]` that must hold exactly `N` items in Python; the `u8` item type is the exception, arriving as `bytes` in Python regardless of `$length`):
   ```json5
   position: {
     $type: "array",

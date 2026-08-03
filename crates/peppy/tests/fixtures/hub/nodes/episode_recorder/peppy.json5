@@ -1,0 +1,42 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "episode_recorder",
+    tag: "v1",
+    depends_on: {
+      // An OBSERVER slot, not a participant one. It taps whatever the
+      // `executor` role publishes without joining the 1:1 pair: it claims no
+      // endpoint, holds no peer, and emits nothing, so however it behaves it
+      // cannot perturb the loop it is recording.
+      //
+      // It follows its source instance's own lifecycle rather than any pairing.
+      // If the executor re-pairs to a different planner, this keeps recording;
+      // if the executor restarts, this picks up the new incarnation and no
+      // message from the previous run leaks across.
+      pairing_observers: [
+        { name: "deliberation", tag: "v1", role: "executor", link_id: "observed_execution" }
+      ]
+    },
+    labels: ["recorder"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "episode_recorder"],
+    parameters: {
+      // How often the recorder reports what it has captured. It writes no
+      // dataset: what it proves is that a third party can watch one side of a
+      // pairing from a machine that is party to neither.
+      report_every: { $type: "u32", $default: 20 }
+    }
+  },
+  interfaces: {
+    topics: {
+      // Consume only. An observer never talks back, so there is no emit side to
+      // cover.
+      consumes: [
+        { link_id: "observed_execution", name: "situation" }
+      ]
+    }
+  }
+}

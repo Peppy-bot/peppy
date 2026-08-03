@@ -10,13 +10,13 @@ pub use entity::{
     TrackedNodeInstance, WorkingDirGuard,
 };
 use pairing::PairingRegistry;
-pub use pairing::{PairEndpoint, Pairing, SlotAddr};
+pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
 
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
-    NodeConfig, PairingDependency, PairingParticipantDependency,
-    collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
+    NodeConfig, PairingParticipantDependency, collect_contract_implementation_edges,
+    collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
 use core_node_api::{
@@ -73,6 +73,19 @@ fn dependency_keys(node: &NodeConfig) -> Vec<NodeKey> {
 fn instance_matches(inst: &TrackedNodeInstance, instance_id: &Name, require_running: bool) -> bool {
     inst.instance_id() == instance_id
         && (!require_running || inst.state() == InstanceState::Running)
+}
+
+/// One pair endpoint's pairing identity, normalized so a locally-resolved
+/// endpoint and a coordinator-supplied remote one are compared by the same
+/// code. Exists so `pair_slots_impl` has exactly one shape to reason about
+/// regardless of which side of a daemon boundary each endpoint sits on.
+struct EndpointMeta {
+    name: String,
+    tag: String,
+    role: String,
+    /// `None` for a remote endpoint: the pin only exists to make two manifests
+    /// agree, and the coordinator already checked that with both in hand.
+    sha256: Option<String>,
 }
 
 struct NodeStackInner {
@@ -603,17 +616,24 @@ impl NodeStackInner {
     }
 
     /// Live pairs, liveness-filtered without mutating the registry (for
-    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]).
+    /// read-lock paths; write paths use [`Self::prune_dead_pairs`]). Same
+    /// rule as [`PairingRegistry::prune_dead`]: only LOCAL endpoints are
+    /// judged, because this daemon cannot see whether an instance on
+    /// another machine is alive, and "cannot see" must not read as "dead".
     fn live_pairs_filtered(&self) -> Vec<Pairing> {
         if self.pairing_registry.pairs().is_empty() {
             return Vec::new();
         }
         let live = self.live_instance_ids_for_pairing();
+        let local_core_node = self.root_core_node_name();
         self.pairing_registry
             .pairs()
             .iter()
             .filter(|p| {
-                live.contains(&p.a.slot.instance_id) && live.contains(&p.b.slot.instance_id)
+                [&p.a, &p.b].into_iter().all(|endpoint| {
+                    !endpoint.slot.is_on(&local_core_node)
+                        || live.contains(&endpoint.slot.instance_id)
+                })
             })
             .cloned()
             .collect()
@@ -629,8 +649,8 @@ impl NodeStackInner {
                 .iter()
                 .find(|inst| inst.instance_id().as_str() == slot.instance_id)
                 .map(|inst| {
-                    // Only a participant slot can be paired; an observer slot
-                    // with this link_id is treated as not a pair slot.
+                    // Only a participant slot can be paired, so an observer
+                    // slot with this link_id resolves to no pair slot.
                     let dep = entity
                         .config()
                         .manifest
@@ -640,15 +660,8 @@ impl NodeStackInner {
                             depends_on
                                 .pairings
                                 .iter()
-                                .find_map(|dependency| match dependency {
-                                    PairingDependency::Participant(participant)
-                                        if participant.link_id == slot.link_id =>
-                                    {
-                                        Some(participant.clone())
-                                    }
-                                    PairingDependency::Participant(_)
-                                    | PairingDependency::Observer(_) => None,
-                                })
+                                .find(|participant| participant.link_id == slot.link_id)
+                                .cloned()
                         });
                     (dep, inst.state())
                 })
@@ -669,22 +682,67 @@ impl NodeStackInner {
         })
     }
 
+    /// One endpoint's pairing identity, from whichever authority can supply
+    /// it: this daemon's own manifests for a slot it hosts, or the
+    /// coordinator's already-validated [`RemoteSlotMeta`] for one it does not.
+    ///
+    /// A remote endpoint carries no sha256 pin because the pin only exists to
+    /// make two manifests agree, and the coordinator has already checked that
+    /// agreement with both manifests in hand.
+    fn resolve_endpoint_meta(
+        &self,
+        slot: &SlotAddr,
+        remote_meta: Option<&RemoteSlotMeta>,
+    ) -> Result<EndpointMeta> {
+        if let Some(meta) = remote_meta {
+            return Ok(EndpointMeta {
+                name: meta.pairing_name.clone(),
+                tag: meta.pairing_tag.clone(),
+                role: meta.role.clone(),
+                sha256: None,
+            });
+        }
+        // No verdict means the local manifests are the authority, so the slot
+        // has to actually be one this daemon hosts. `pairing_slot_meta` matches
+        // on instance id alone, and two daemons can host same-named instances:
+        // without this, a remote slot arriving with no verdict would resolve
+        // against whichever local instance happens to share its name.
+        if !slot.is_on(&self.root_core_node_name()) {
+            return Err(Error::PairingInstanceNotRunning {
+                instance_id: slot.instance_id.clone(),
+            });
+        }
+        let dep = self.pairing_slot_meta(slot)?;
+        Ok(EndpointMeta {
+            name: dep.name.as_str().to_string(),
+            tag: dep.tag.clone(),
+            role: dep.role.clone(),
+            sha256: dep.sha256.clone(),
+        })
+    }
+
     /// Establishes a pair between two complementary slots. Validates that
     /// both instances are live (Running, or Starting for the
     /// reserve-before-spawn path), that both manifests declare the slots,
     /// that both reference the same pairing with complementary roles and
     /// compatible sha256 pins, and that neither slot is already paired.
-    fn pair_slots_impl(&mut self, a: &SlotAddr, b: &SlotAddr) -> Result<Pairing> {
-        let dep_a = self.pairing_slot_meta(a)?;
-        let dep_b = self.pairing_slot_meta(b)?;
+    fn pair_slots_impl(
+        &mut self,
+        a: &SlotAddr,
+        a_remote_meta: Option<&RemoteSlotMeta>,
+        b: &SlotAddr,
+        b_remote_meta: Option<&RemoteSlotMeta>,
+    ) -> Result<Pairing> {
+        let dep_a = self.resolve_endpoint_meta(a, a_remote_meta)?;
+        let dep_b = self.resolve_endpoint_meta(b, b_remote_meta)?;
 
         if dep_a.name != dep_b.name || dep_a.tag != dep_b.tag {
             return Err(Error::PairingMismatch {
                 a: a.to_string(),
-                name_a: dep_a.name.as_str().to_string(),
+                name_a: dep_a.name.clone(),
                 tag_a: dep_a.tag.clone(),
                 b: b.to_string(),
-                name_b: dep_b.name.as_str().to_string(),
+                name_b: dep_b.name.clone(),
                 tag_b: dep_b.tag.clone(),
             });
         }
@@ -693,7 +751,7 @@ impl NodeStackInner {
                 a: a.to_string(),
                 b: b.to_string(),
                 role: dep_a.role.clone(),
-                name: dep_a.name.as_str().to_string(),
+                name: dep_a.name.clone(),
                 tag: dep_a.tag.clone(),
             });
         }
@@ -705,7 +763,7 @@ impl NodeStackInner {
                 sha_a: sha_a.clone(),
                 b: b.to_string(),
                 sha_b: sha_b.clone(),
-                name: dep_a.name.as_str().to_string(),
+                name: dep_a.name.clone(),
                 tag: dep_a.tag.clone(),
             });
         }
@@ -726,7 +784,7 @@ impl NodeStackInner {
         }
 
         let pairing = Pairing {
-            pairing_name: dep_a.name.as_str().to_string(),
+            pairing_name: dep_a.name.clone(),
             pairing_tag: dep_a.tag.clone(),
             a: pairing::PairEndpoint {
                 slot: a.clone(),
@@ -741,6 +799,19 @@ impl NodeStackInner {
         Ok(pairing)
     }
 
+    /// This daemon's core-node name, read from the root entity of the graph.
+    /// The one definition; `NodeStack::core_node_name` is the public door onto
+    /// it, so neither side can drift from a cached copy.
+    fn root_core_node_name(&self) -> String {
+        self.root()
+            .read()
+            .config()
+            .manifest
+            .name
+            .as_str()
+            .to_owned()
+    }
+
     fn prune_dead_pairs(&mut self) {
         if self.pairing_registry.pairs().is_empty() {
             return;
@@ -748,7 +819,9 @@ impl NodeStackInner {
         // Collect liveness first: `prune_dead`'s closure cannot borrow
         // `self` while the registry is borrowed mutably.
         let liveness = self.live_instance_ids_for_pairing();
-        self.pairing_registry.prune_dead(|id| liveness.contains(id));
+        let local_core_node = self.root_core_node_name();
+        self.pairing_registry
+            .prune_dead(&local_core_node, |id| liveness.contains(id));
     }
 
     /// Live pairs only (dead endpoints pruned lazily on read).
@@ -762,6 +835,7 @@ impl NodeStackInner {
     /// excluded: they hold no peer and are never "paired".
     fn unpaired_pairing_slots_impl(&mut self) -> Vec<(SlotAddr, PairingParticipantDependency)> {
         self.prune_dead_pairs();
+        let local_core_node = self.root_core_node_name();
         let mut out = Vec::new();
         for handle in self.graph.node_weights() {
             let entity = handle.read();
@@ -776,10 +850,8 @@ impl NodeStackInner {
                     continue;
                 }
                 for dep in &deps.pairings {
-                    let PairingDependency::Participant(dep) = dep else {
-                        continue;
-                    };
-                    let slot = SlotAddr::new(inst.instance_id().as_str(), &dep.link_id);
+                    let slot =
+                        SlotAddr::new(&local_core_node, inst.instance_id().as_str(), &dep.link_id);
                     if self.pairing_registry.find_by_slot(&slot).is_none() {
                         out.push((slot, dep.clone()));
                     }
@@ -817,9 +889,9 @@ impl NodeStackInner {
         // Paired (`to_serialized_graph` holds a read lock, so filtering
         // replaces the write-path pruning here).
         let live_pairs = self.live_pairs_filtered();
-        // Stack-scoped v1: every pair lives under this daemon, so the peer's
-        // core_node is the daemon's own (the root entity's manifest name —
-        // the core node binds to itself).
+        // `core_node` (the root entity's manifest name) addresses this
+        // daemon's own slots in the view; the peer half of each binding
+        // carries its own address, which may name another daemon.
         for (node, config) in nodes.iter_mut().zip(&configs) {
             let Some(deps) = config.manifest.depends_on.as_ref() else {
                 continue;
@@ -985,6 +1057,18 @@ impl NodeStack {
     pub fn root(&self) -> EntityHandle {
         let guard = self.shared.read();
         guard.root()
+    }
+
+    /// This daemon's core-node name, read from the root entity rather than
+    /// stored alongside it.
+    ///
+    /// The core node IS the root of the stack, so its manifest name is already
+    /// the authoritative answer; keeping a second copy in sync would be the
+    /// only way for the two to ever disagree. The pairing registry needs this
+    /// to tell its own slots from a peer daemon's, which is what stops a
+    /// remote instance's death from dissolving a same-named local one's pairs.
+    pub fn core_node_name(&self) -> String {
+        self.shared.read().root_core_node_name()
     }
 
     pub fn contains(&self, name: &str, tag: &str) -> bool {
@@ -1196,7 +1280,31 @@ impl NodeStack {
     /// the `PairingCoordinator`'s job.
     pub fn pair_slots(&self, a: &SlotAddr, b: &SlotAddr) -> Result<Pairing> {
         let mut guard = self.shared.write();
-        guard.pair_slots_impl(a, b)
+        guard.pair_slots_impl(a, None, b, None)
+    }
+
+    /// Establishes a pair whose peer endpoint lives on ANOTHER daemon.
+    ///
+    /// This daemon validates the half it owns exactly as it would for a local
+    /// pair (the instance is live, its manifest declares the slot, the slot is
+    /// not already claimed) and takes the peer's role and pairing identity
+    /// from `remote_meta`, which it cannot read for itself.
+    ///
+    /// That is not a weakening of the checks: the coordinator of a federated
+    /// launch holds every participant's manifests and has already validated
+    /// same-pairing, complementary-roles, and sha-pin agreement across both
+    /// sides before anything starts. The coordinator is the serialization
+    /// point precisely so two daemons never have to negotiate this between
+    /// themselves, which is what would introduce a reserved-but-undelivered
+    /// state that only a full stack reset could clear.
+    pub fn pair_slot_with_remote(
+        &self,
+        local: &SlotAddr,
+        remote: &SlotAddr,
+        remote_meta: &RemoteSlotMeta,
+    ) -> Result<Pairing> {
+        let mut guard = self.shared.write();
+        guard.pair_slots_impl(local, None, remote, Some(remote_meta))
     }
 
     /// Clears the pair containing `slot`, returning it (so the caller can
@@ -1212,6 +1320,25 @@ impl NodeStack {
     pub fn pairs(&self) -> Vec<Pairing> {
         let mut guard = self.shared.write();
         guard.pairs_impl()
+    }
+
+    /// The registry exactly as recorded, without the copy, for callers that
+    /// only want to derive something from the set and then drop it.
+    ///
+    /// The lifecycle paths ask "who else needs to hear about this instance?"
+    /// on every start and stop, and cloning the whole registry to answer a
+    /// question about one instance is the bulk of that cost — on stacks with
+    /// no pairs at all as much as on federated ones.
+    ///
+    /// Deliberately NOT pruned, unlike [`Self::pairs`]. The question is asked
+    /// about an instance that has just been removed from the stack, so pruning
+    /// would drop the very pairs that name the recipients and the answer would
+    /// always be "nobody". Dissolution is the explicit step that removes them,
+    /// and it must be the one that observes them first. `f` runs under the
+    /// stack guard, so it must not touch this stack.
+    pub fn with_pairs<R>(&self, f: impl FnOnce(&[Pairing]) -> R) -> R {
+        let guard = self.shared.read();
+        f(guard.pairing_registry.pairs())
     }
 
     /// Read-only variant of [`Self::pairs`]: dead pairs are liveness-
@@ -1234,8 +1361,28 @@ impl NodeStack {
     /// paths and the process-exit watcher (death auto-clears; re-pairing is
     /// explicit).
     pub fn dissolve_pairs_for_instance(&self, instance_id: &str) -> Vec<Pairing> {
+        let core_node = self.core_node_name();
         let mut guard = self.shared.write();
-        guard.pairing_registry.remove_for_instance(instance_id)
+        guard
+            .pairing_registry
+            .remove_for_instance(&core_node, instance_id)
+    }
+
+    /// Dissolves every pair involving an instance on ANOTHER daemon, returning
+    /// them so the caller can live-notify the surviving local endpoints.
+    ///
+    /// Driven by the peer daemon's death notification rather than by local
+    /// liveness: this daemon cannot see a remote instance, and the daemon that
+    /// owns it stays authoritative for its death.
+    pub fn dissolve_pairs_for_remote_instance(
+        &self,
+        core_node: &str,
+        instance_id: &str,
+    ) -> Vec<Pairing> {
+        let mut guard = self.shared.write();
+        guard
+            .pairing_registry
+            .remove_for_instance(core_node, instance_id)
     }
 
     /// Instance liveness for pairing purposes: tracked with a non-terminal
@@ -1252,6 +1399,25 @@ impl NodeStack {
     pub fn live_instance_ids_for_pairing(&self) -> std::collections::HashSet<String> {
         let guard = self.shared.read();
         guard.live_instance_ids_for_pairing()
+    }
+
+    /// The instance ids that a container-runtime restart would take with it:
+    /// the live instances of container nodes, in start order.
+    ///
+    /// Process nodes are excluded because they run on the host, outside any
+    /// runtime the daemon can restart, and so does the root entity. `Starting`
+    /// counts alongside `Running`: an instance whose container is up but whose
+    /// handshake has not landed dies just as thoroughly.
+    pub fn live_container_instance_ids(&self) -> Vec<String> {
+        let guard = self.shared.read();
+        guard
+            .entities_snapshot()
+            .iter()
+            .flat_map(|handle| {
+                let entity = handle.read();
+                live_container_instances_of(entity.config(), entity.instances())
+            })
+            .collect()
     }
 
     /// Snapshot for plan-phase pairing validation: every non-root entity
@@ -1297,6 +1463,24 @@ impl NodeStack {
     }
 }
 
+/// One entity's contribution to [`NodeStack::live_container_instance_ids`].
+///
+/// A process node contributes nothing however many instances it has: its
+/// children run on the host, where no container-runtime restart reaches them.
+fn live_container_instances_of(
+    config: &NodeConfig,
+    instances: &[TrackedNodeInstance],
+) -> Vec<String> {
+    if config.execution.container.is_none() {
+        return Vec::new();
+    }
+    instances
+        .iter()
+        .filter(|instance| !instance.state().is_terminal())
+        .map(|instance| instance.instance_id().as_str().to_string())
+        .collect()
+}
+
 /// One node's contribution to the plan-phase pairing snapshot: its live
 /// (non-terminal) instance ids plus its declared pairing slots. Consumed by
 /// the daemon's `node_run` pairing re-check, which feeds it to the
@@ -1306,34 +1490,33 @@ pub struct PairingNodeSnapshot {
     pub node_name: String,
     pub node_tag: String,
     pub instance_ids: Vec<String>,
-    pub pairing_deps: Vec<config::node::PairingDependency>,
+    pub pairing_deps: Vec<config::node::PairingParticipantDependency>,
 }
 
 /// The serialized pairing-slot view of one instance: every declared
 /// `depends_on.pairings` slot joined with its live binding from
 /// `live_pairs`. Shared by the stack-list graph overlay and the daemon's
 /// `node_info` handler so the join rule stays in one place. `core_node`
-/// stamps the peer's `ProducerRef` (stack-scoped v1: every pair lives
-/// under this daemon, so the peer's core_node is the daemon's own).
+/// addresses the LOCAL slot being viewed; the peer's `ProducerRef` is
+/// stamped from the pair's recorded endpoint address, which names another
+/// daemon when the pair crosses machines.
 pub fn pairing_slot_view(
     core_node: &str,
     instance_id: &str,
-    deps: &[config::node::PairingDependency],
+    deps: &[config::node::PairingParticipantDependency],
     live_pairs: &[Pairing],
 ) -> std::collections::BTreeMap<String, SerializedPairingSlot> {
     let mut out = std::collections::BTreeMap::new();
     for dep in deps {
-        // Observer slots are not pairing slots (no role, no peer, never
-        // paired), so they do not appear in the pairing-slot view.
-        let PairingDependency::Participant(dep) = dep else {
-            continue;
-        };
-        let slot = SlotAddr::new(instance_id, &dep.link_id);
+        let slot = SlotAddr::new(core_node, instance_id, &dep.link_id);
         let binding = live_pairs
             .iter()
             .find_map(|pair| pair.peer_of(&slot))
             .map(|peer| config::runtime::PairingSlotBinding::Paired {
-                peer: config::runtime::ProducerRef::new(core_node, peer.slot.instance_id.as_str()),
+                peer: config::runtime::ProducerRef::new(
+                    peer.slot.core_node.as_str(),
+                    peer.slot.instance_id.as_str(),
+                ),
                 peer_link_id: peer.slot.link_id.clone(),
             })
             .unwrap_or(config::runtime::PairingSlotBinding::Unpaired);
@@ -1349,4 +1532,78 @@ pub fn pairing_slot_view(
         );
     }
     out
+}
+
+/// Which instances a container-runtime restart would take with it, decided per
+/// entity. The graph walk around it ([`NodeStack::live_container_instance_ids`])
+/// is a `flat_map`; the rule is here, where it can be stated on hand-built
+/// entities rather than on a stack with real children in it.
+#[cfg(test)]
+mod live_container_instances_tests {
+    use super::*;
+    use config::node::NodeConfigParser;
+
+    fn config_of(execution: &str) -> NodeConfig {
+        NodeConfigParser::from_content(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "recon", tag: "v1" }},
+                execution: {execution},
+                interfaces: {{}},
+            }}"#
+        ))
+        .expect("valid test node config")
+    }
+
+    fn container_config() -> NodeConfig {
+        config_of(r#"{ language: "python", container: { def_file: "apptainer.def" } }"#)
+    }
+
+    fn instance(id: &str, state: InstanceState) -> TrackedNodeInstance {
+        TrackedNodeInstance::new(
+            Name::new(id).expect("valid instance id"),
+            None,
+            state,
+            std::collections::BTreeMap::new(),
+        )
+    }
+
+    /// `Starting` counts alongside `Running`: its container is already up in
+    /// the runtime even though the handshake has not landed, so a restart kills
+    /// it just as thoroughly.
+    #[test]
+    fn a_container_nodes_non_terminal_instances_are_all_at_risk() {
+        let instances = [
+            instance("running_inst", InstanceState::Running),
+            instance("starting_inst", InstanceState::Starting),
+        ];
+        assert_eq!(
+            live_container_instances_of(&container_config(), &instances),
+            vec!["running_inst".to_string(), "starting_inst".to_string()]
+        );
+    }
+
+    /// An instance that has already exited cannot be stopped again, so naming
+    /// it in a refusal would be telling the operator to save something dead.
+    #[test]
+    fn a_container_nodes_finished_instances_are_not_at_risk() {
+        let instances = [
+            instance("finished_inst", InstanceState::Finished),
+            instance("failed_inst", InstanceState::Failed),
+        ];
+        assert!(
+            live_container_instances_of(&container_config(), &instances).is_empty(),
+            "a terminal instance has nothing left to lose"
+        );
+    }
+
+    /// A process node's children run on the host. Counting them would refuse
+    /// starts that cost nothing, including on the root entity, which is always
+    /// running and is never a container.
+    #[test]
+    fn a_process_nodes_instances_are_never_at_risk() {
+        let process = config_of(r#"{ language: "rust", run_cmd: ["recon"] }"#);
+        let instances = [instance("running_inst", InstanceState::Running)];
+        assert!(live_container_instances_of(&process, &instances).is_empty());
+    }
 }

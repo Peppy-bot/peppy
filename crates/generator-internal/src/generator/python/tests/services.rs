@@ -62,10 +62,13 @@ pub(super) const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES: &str = r#"
+/// Only pointer-backed fields can be optional, so a `_has` presence probe is
+/// only ever emitted for these. `$optional` on a scalar is rejected when the
+/// config is parsed and never reaches code generation.
+const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_POINTERS: &str = r#"
 {
-  maybe_code: {
-    $type: "u32",
+  maybe_text: {
+    $type: "string",
     $optional: true
   },
   maybe_payload: {
@@ -90,8 +93,6 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
     interval: "string"
 }
 "#;
-
-const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
 
 /// In the case of a service, an "exposed" service is an entity that accepts incoming requests.
 #[test]
@@ -459,11 +460,11 @@ fn consumed_service() {
 }
 
 #[test]
-fn consumed_service_optional_scalar_and_bytes_use_has_checks() {
+fn consumed_service_optional_pointer_fields_use_has_checks() {
     let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
-    let request_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let request_format = empty_message_format();
     let response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR_AND_BYTES).unwrap();
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_POINTERS).unwrap();
 
     let mut generator = PythonGenerator::new();
     generator
@@ -482,11 +483,11 @@ fn consumed_service_optional_scalar_and_bytes_use_has_checks() {
     assert_contains_all(
         &rendered,
         &[
-            "maybe_code: Optional[int]",
+            "maybe_text: Optional[str]",
             "maybe_payload: Optional[bytes]",
-            "if not capnp_msg._has(\"maybeCode\"):",
+            "if not capnp_msg._has(\"maybeText\"):",
             "if not capnp_msg._has(\"maybePayload\"):",
-            "maybe_code_0 = None",
+            "maybe_text_0 = None",
             "maybe_payload_1 = None",
         ],
     );
@@ -502,7 +503,7 @@ fn consumed_two_services_same_node() {
 
     // Second service pointing to the same node
     let service2: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let empty_format = empty_message_format();
     let response_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
@@ -586,7 +587,7 @@ fn consumed_service_without_response_payload() {
         "#,
     )
     .unwrap();
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let empty_format = empty_message_format();
 
     let mut generator = PythonGenerator::new();
     generator

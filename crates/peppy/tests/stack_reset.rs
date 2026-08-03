@@ -10,7 +10,7 @@ use core_node_api::encoding::StackListRequest;
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::commands::service::{ServiceCommand, ServiceCommands};
+use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
 
 use peppylib::core_node::transport::poll;
@@ -148,8 +148,8 @@ async fn service_reset_command_resets_node_stack() {
         graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
     );
 
-    ServiceCommand {
-        command: ServiceCommands::Reset {},
+    StackCommand {
+        command: StackCommands::Reset { federated: false },
     }
     .execute(&ctx)
     .expect("service reset command should succeed");

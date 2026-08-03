@@ -7,8 +7,8 @@ edition.workspace = true
 [dependencies]
 config = { workspace = true }
 daemon-config = { workspace = true }
-capnp = "0.26"
-capnpc = "0.26"
+capnp = "0.27"
+capnpc = "0.27"
 proc-macro2 = "1.0"
 tempfile = "3.8"
 indexmap = "2.2"

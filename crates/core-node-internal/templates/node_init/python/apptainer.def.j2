@@ -15,6 +15,13 @@ From: {{ base_image }}
     set -eux
     export DEBIAN_FRONTEND=noninteractive
 
+    # Keep the interpreter out of the container user's home directory. uv
+    # installs managed Pythons under $HOME, and at run time apptainer mounts
+    # the daemon user's home over the image's own, hiding whatever the build
+    # left there. A daemon running as root hides /root every time: the venv
+    # builds fine and then dies at exec with `./.venv/bin/python: not found`.
+    export UV_PYTHON_INSTALL_DIR=/opt/uv-python
+
     cd /opt/{{ node_name }}
     uv python install
     uv sync --no-editable

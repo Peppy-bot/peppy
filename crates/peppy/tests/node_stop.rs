@@ -74,7 +74,12 @@ async fn node_stop_command_succeeds() {
 
     // Override the launch command to avoid spawning a real node process.
     // Health/shutdown services are provided in-process via the mock messenger.
-    peppy::test_support::override_run_cmd(&peppy_json5_path);
+    // The instance has to survive the run, the `instance_count() == 1` check
+    // and the stop, so its lifetime is the test's, not a fixed 4s. The
+    // keep-alive is still just as non-cooperative as the old bare `sleep`, so
+    // the SIGKILL-on-signal modelling below is unaffected.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
 
     // Add the node to the node stack (without running)
     NodeCommand {

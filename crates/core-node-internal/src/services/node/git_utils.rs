@@ -1,12 +1,11 @@
 //! Git utilities shared by the node command handlers: repo-path
-//! sanitization, ref checkout, and a clone that honors a deadline on the
-//! network transfer.
+//! sanitization, ref checkout, reading the commit a working tree sits on,
+//! and a clone that honors a deadline on the network transfer.
 
+use daemon_config::repository::GitCommit;
 use git2::Repository;
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Throttle window between consecutive `transfer_progress` reports surfaced
@@ -90,6 +89,45 @@ pub(crate) fn checkout_repo_ref(
 ///
 /// `shallow` requests a `depth=1` fetch, but is silently downgraded to a
 /// full clone when `repo_url` targets the local transport.
+/// The commit `repo`'s working tree is sitting on.
+///
+/// The one place a `git2::Oid` becomes a [`GitCommit`], so a caller that
+/// wants to know which bytes a checkout holds compares validated commits
+/// rather than rendered strings.
+pub(crate) fn head_commit(repo: &Repository) -> std::result::Result<GitCommit, String> {
+    let head = repo
+        .head()
+        .map_err(|e| format!("the repository has no HEAD to read a commit from: {e}"))?;
+    let commit = head
+        .peel_to_commit()
+        .map_err(|e| format!("the repository's HEAD does not name a commit: {e}"))?;
+    GitCommit::parse(&commit.id().to_string())
+        .map_err(|e| format!("the repository's HEAD is not a usable commit: {e}"))
+}
+
+/// Shallow-clones `repo_url` into `dst`, leaving the working tree wherever
+/// the remote's HEAD points.
+///
+/// The one way peppy fetches a repository it reads, shared by `repo refresh`
+/// and the commit-keyed checkout cache so the two can never disagree about
+/// what cloning a repository brings. It brings every head the remote
+/// publishes at depth 1: libgit2 clones with the standard
+/// `refs/heads/*:refs/remotes/origin/*` refspec whatever branch is asked
+/// for, so which ref a caller cares about changes nothing about the fetch.
+///
+/// Callers therefore position the working tree themselves, and the
+/// positioning is the only thing that differs between them: refresh onto
+/// the ref a repository is configured to follow, so the commit it pins is
+/// that ref's tip; the checkout cache onto the commit an entry pins, which
+/// is already here whenever it is a head's tip.
+pub(crate) fn clone_repo_shallow(
+    repo_url: &str,
+    dst: &Path,
+    on_progress: &mut dyn FnMut(&str),
+) -> std::result::Result<Repository, String> {
+    clone_with_progress(repo_url, None, dst, true, on_progress)
+}
+
 pub(crate) fn clone_with_progress(
     repo_url: &str,
     repo_ref: Option<&str>,
@@ -161,40 +199,4 @@ fn progress_callbacks<'cb>(
         true
     });
     callbacks
-}
-
-/// Clones a git repository, aborting the network transfer if `deadline` is
-/// exceeded.  When `deadline` is `None` the clone runs without any time limit.
-pub(crate) fn clone_repo_with_deadline(
-    repo_url: &str,
-    dest: &Path,
-    deadline: Option<Instant>,
-) -> std::result::Result<Repository, String> {
-    let deadline_triggered = Arc::new(AtomicBool::new(false));
-
-    let mut callbacks = git2::RemoteCallbacks::new();
-    if let Some(deadline) = deadline {
-        let flag = Arc::clone(&deadline_triggered);
-        callbacks.transfer_progress(move |_progress| {
-            if Instant::now() >= deadline {
-                flag.store(true, Ordering::SeqCst);
-                return false;
-            }
-            true
-        });
-    }
-
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
-
-    RepoBuilder::new()
-        .fetch_options(fetch_opts)
-        .clone(repo_url, dest)
-        .map_err(|e| {
-            if deadline_triggered.load(Ordering::SeqCst) {
-                format!("Git clone timed out for {}", repo_url)
-            } else {
-                format!("Failed to clone repository: {}", e)
-            }
-        })
 }

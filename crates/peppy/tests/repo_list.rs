@@ -56,6 +56,9 @@ fn repo_list_finds_nodes_in_fs_repo() {
     )
     .expect("write peppy.json5");
 
+    // Publish the repository's index, which is what refresh reads.
+    super::common::publish_repo_index(&repo_dir);
+
     // Write repositories.json5 pointing to that directory
     let conf_dir = peppy_dirs.conf_dir();
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");

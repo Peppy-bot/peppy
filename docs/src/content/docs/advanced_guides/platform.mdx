@@ -17,7 +17,7 @@ The CLI never sees your Google/passkey credentials. Those stay in the browser.
 | `peppy platform login [--api-url <url>] [--no-browser] [--yes]` | Logs in via the OAuth 2.0 Device Authorization Grant, caches the tokens, and federates a managed router to your workspace's cloud router. |
 | `peppy platform whoami` (alias `status`) | Shows the current identity, backend, and token validity. `--json` for machine-readable output. |
 | `peppy platform list [--api-url <url>] [--json]` | Lists the core nodes registered to your workspace and whether each one is running right now. |
-| `peppy platform logout [--yes]` | Removes this machine from the workspace's core-node registry, revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
+| `peppy platform logout [--api-url <url>] [--yes]` | Removes this machine from the workspace's core-node registry, revokes the access token on the backend (across replicas), deletes the local credentials, and de-federates a managed router. |
 
 `--yes` (`-y`) skips the daemon-restart confirmation prompt described under
 [Workspace federation](#workspace-federation).
@@ -43,7 +43,7 @@ peppy platform login --no-browser
 
 ### How it works
 
-1. The CLI fetches the public `GET {api_url}/cli/config`, which returns the
+1. The CLI fetches the public `GET {api_url}/cli/auth-config`, which returns the
    `issuer`, the `client_id`, and the exact `scopes` to request.
 2. It runs OIDC discovery against the `issuer`
    (`{issuer}/.well-known/openid-configuration`) to find the device and token
@@ -75,10 +75,11 @@ Logging in changes this machine's workspace namespace, which restarts the messag
 Continue? [y/N]
 ```
 
-Pass `--yes` (`-y`) to skip the prompt. It is also skipped automatically when
-stdin is not a terminal (so scripts and CI are never blocked), when no daemon is
-running, or when the stack holds no user nodes; in each case the restart wipes
-nothing.
+Pass `--yes` (`-y`) to skip the prompt. It is also skipped automatically when no
+daemon is running or when the stack holds no user nodes; in those cases the
+restart wipes nothing. When stdin is not a terminal the prompt is skipped
+unconditionally so scripts and CI are never blocked, which means a
+non-interactive login on a machine with a loaded stack still wipes it.
 
 Under `zenoh.managed`, `login` is **strict** about federation: after your
 credentials are saved it waits for the daemon to establish the federation link
@@ -175,10 +176,11 @@ the platform is never told about it.
 
 `REGISTERED` is the date a machine first registered, in UTC. There is
 deliberately no "last seen" column: the platform's other timestamp records when
-a daemon last pulled its configuration, which is not the same as when it was
-last running. A machine that has been up for a week without re-pulling would
+a machine last asserted its identity, which is not the same as when it was last
+running. A machine that has been up for a week without re-registering would
 look a week stale. Liveness lives in the `APPLICATION` column and nowhere else.
-`--json` exposes the pull time under its own name, `last_config_pull_at`.
+`--json` exposes the re-registration time under its own name,
+`last_registered_at`.
 
 Two caveats worth knowing:
 
@@ -272,8 +274,9 @@ is stored in the `resource_servers` block of
 seeded on first run and editable in place. To point at a different backend
 without editing the file, use `--api-url` or `PEPPY_API_URL`.
 The URL is resolved in precedence order: `--api-url`, then `PEPPY_API_URL`, then
-`resource_servers.api`. Plain `http` is allowed only for local backends (loopback
-/ `*.localhost`); anything else must be `https`.
+`resource_servers.api`. In release builds, plain `http` is allowed only for
+local backends (loopback / `*.localhost`); anything else must be `https`. Debug
+builds accept remote plain `http` with a warning.
 
 ## CI and automation
 
@@ -327,3 +330,9 @@ next manual daemon restart (see
 | `PEPPY_API_URL` | Override the backend base URL. |
 | `PEPPY_HOME` | Override the `~/.peppy` data root (also moves the credentials file). |
 | `NO_COLOR` | Disable colored output. |
+
+## Running one stack across your workspace's machines
+
+Once two machines are logged into the same workspace they share a namespace and
+can address each other, which is the foundation for running a single Peppy stack
+across both. See [Federation](/advanced_guides/federation/).

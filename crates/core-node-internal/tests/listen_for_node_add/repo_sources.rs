@@ -18,7 +18,7 @@ async fn repo_node_add_single_no_deps_fs_source() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "standalone",
             tag: "v1",
         },
@@ -61,7 +61,7 @@ async fn repo_node_add_chain_of_three_fs() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "c",
             tag: "v1",
         },
@@ -117,7 +117,7 @@ async fn repo_node_add_diamond() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "d",
             tag: "v1",
         },
@@ -183,7 +183,7 @@ async fn repo_node_add_partial_stack_coverage() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },
@@ -199,13 +199,90 @@ async fn repo_node_add_partial_stack_coverage() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    // Stack: root + b + c + a = 4. B's stack entry is replaced in-place
-    // by the fresh materialization (same key, same count), and c + a are
+    // Stack: root + b + c + a = 4. B's manifest is unchanged, so its
+    // stack entry is left alone (same key, same count), and c + a are
     // added as new entries.
     assert!(node_stack.contains("a", "v1"));
     assert!(node_stack.contains("b", "v1"));
     assert!(node_stack.contains("c", "v1"));
     assert_eq!(node_stack.len(), 4);
+}
+
+/// The launch-shaped sequence: a dependency is added and BUILT on its own,
+/// then a dependent's batch resolves the same identity from the cache with
+/// an unchanged manifest. The batch must leave the built entity alone —
+/// re-pushing it would reset it to `Added` and silently discard the
+/// artifact, so a stack launch whose later deployment depends on an
+/// earlier, already-built one would fail its run phase with "added but
+/// not built".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_node_add_preserves_built_unchanged_dependency() {
+    let started = start_core_node_with_mock_messenger().await;
+    let node_stack = started.node_stack.clone();
+    let peppy_dirs = started.peppy_dirs.clone();
+
+    let tmp = TempDir::new().unwrap();
+    let dep_dir = tmp.path().join("dep");
+    let top_dir = tmp.path().join("top");
+    write_plain_peppy_json5(&dep_dir, &minimal_node_config("dep", "v1", &[]));
+    write_plain_peppy_json5(
+        &top_dir,
+        &minimal_node_config("top", "v1", &[("dep", "v1")]),
+    );
+
+    TestPackagesCache::new()
+        .fs_entry("dep", "v1", &dep_dir)
+        .fs_entry("top", "v1", &top_dir)
+        .write(&peppy_dirs);
+
+    let pre = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::ResolveRef {
+            name: "dep",
+            tag: "v1",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("pre-add for dep should complete");
+    assert!(
+        pre.success,
+        "pre-add for dep should succeed, err={:?}",
+        pre.error_message
+    );
+    build_staged_node(&started, "dep", "v1").await;
+    let built = entity_artifact_path(&node_stack, "dep", "v1");
+
+    let res = send_node_add_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        NodeAddSource::ResolveRef {
+            name: "top",
+            tag: "v1",
+        },
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(
+        res.success,
+        "add should succeed, err={:?}",
+        res.error_message
+    );
+
+    assert!(node_stack.contains("top", "v1"));
+    // `entity_artifact_path` panics if the entity was reset to `Added`,
+    // which is exactly the regression this guards against.
+    assert_eq!(
+        entity_artifact_path(&node_stack, "dep", "v1"),
+        built,
+        "an unchanged, already-built dependency must keep its artifact through a batch add"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -258,7 +335,7 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },
@@ -274,8 +351,9 @@ async fn repo_node_add_does_not_materialize_nodes_outside_declared_tree() {
         "add should succeed, err={:?}",
         res.error_message
     );
-    // Stack = root + c + b + a = 4. c is replaced in-place when re-
-    // materialized; b and a are new.
+    // Stack = root + c + b + a = 4. c is re-materialized (to walk its
+    // deps) but left in place, its manifest being unchanged; b and a are
+    // new.
     assert_eq!(node_stack.len(), 4);
     assert!(node_stack.contains("a", "v1"));
     assert!(node_stack.contains("b", "v1"));
@@ -297,8 +375,8 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
     //                         d (cache)  e (stack)
     //
     // Expected outcome:
-    //   - b and e keep their keys but are replaced in-place by fresh
-    //     materializations (push_config_impl's same-key update path).
+    //   - b and e keep their keys; their manifests are unchanged, so their
+    //     stack entries are left alone rather than re-pushed.
     //   - a, c, d are materialized from the cache and pushed in topo order.
     //   - Stack size: root + b + e + d + c + a = 6.
     let started = start_core_node_with_mock_messenger().await;
@@ -353,7 +431,7 @@ async fn repo_node_add_deep_mixed_tree_stack_and_cache_at_multiple_levels() {
     let res = send_node_add_and_wait(
         &started.caller_handle,
         &started.core_node_name,
-        NodeAddSource::RepoNode {
+        NodeAddSource::ResolveRef {
             name: "a",
             tag: "v1",
         },

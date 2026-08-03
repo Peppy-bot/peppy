@@ -49,10 +49,7 @@ pub(super) async fn materialize_repo_deps(
     // nodes.json5 (and a malformed cache can't fail a sync that
     // wouldn't have used it). Loaded once for the whole BFS so the
     // `mtime`-keyed memo + checkout dedup amortize across deps.
-    let mut cache: Option<(
-        Vec<repo_cache::NodeCacheEntry>,
-        Option<std::time::SystemTime>,
-    )> = None;
+    let mut cache: Option<Vec<repo_cache::NodeCacheEntry>> = None;
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut pending: Vec<(String, String)> = deps
@@ -74,27 +71,28 @@ pub(super) async fn materialize_repo_deps(
         }
         if cache.is_none() {
             cache = Some(
-                repo_cache::load_with_generation(peppy_dirs)
+                repo_cache::load_node_cache(peppy_dirs)
                     .map_err(|e| format!("failed to load nodes cache: {e}"))?,
             );
         }
-        let (entries, cache_generation) = cache.as_ref().expect("cache loaded above");
-        let Some(entry) = repo_cache::lookup(entries, &name, &tag) else {
+        let entries = cache.as_ref().expect("cache loaded above");
+        // An ambiguity two levels down the closure is exactly as fatal as
+        // one at the top, and must not read as "not found": the dep is
+        // present, twice.
+        let cache_hit =
+            repo_cache::lookup(entries, &name, &tag).map_err(|ambiguity| ambiguity.to_string())?;
+        let Some(entry) = cache_hit else {
             return Err(format!(
                 "dep `{name}:{tag}` not found in node stack or repository cache; \
                  run `peppy repo refresh`"
             ));
         };
         let entry = entry.clone();
-        let source_kind = entry.source_type;
-        let (_root_dir, parsed) = node_cache::materialize_entry(
-            &entry,
-            peppy_dirs,
-            *cache_generation,
-            node_cache::silent_feedback(),
-        )
-        .await
-        .map_err(|e| format!("failed to materialize {name}:{tag} from repo cache: {e}"))?;
+        let source_kind = entry.origin.kind();
+        let (_root_dir, parsed) =
+            node_cache::materialize_entry(&entry, peppy_dirs, node_cache::silent_feedback())
+                .await
+                .map_err(|e| format!("failed to materialize {name}:{tag} from repo cache: {e}"))?;
 
         // Push transitive deps onto the BFS queue, skipping anything we
         // already plan to visit. Stack-tier shadowing happens at pop time.

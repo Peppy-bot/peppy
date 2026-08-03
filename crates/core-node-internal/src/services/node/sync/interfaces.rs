@@ -32,13 +32,20 @@ pub fn collect_all_deployment_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
-    let mut interfaces =
-        collect_consumed_interfaces(manifest, interfaces_cfg, resolve, peppy_dirs, on_feedback)
-            .map_err(|reason| format!("failed to resolve consumed interfaces: {reason}"))?;
+    let mut interfaces = collect_consumed_interfaces(
+        manifest,
+        interfaces_cfg,
+        resolve,
+        peppy_dirs,
+        doc_pins,
+        on_feedback,
+    )
+    .map_err(|reason| format!("failed to resolve consumed interfaces: {reason}"))?;
     interfaces.extend(
-        resolve_implements(manifest, interfaces_cfg, peppy_dirs, on_feedback)
+        resolve_implements(manifest, interfaces_cfg, peppy_dirs, doc_pins, on_feedback)
             .map_err(|reason| format!("failed to resolve `manifest.implements`: {reason}"))?,
     );
     interfaces.extend(
@@ -46,14 +53,16 @@ pub fn collect_all_deployment_interfaces(
             manifest,
             interfaces_cfg,
             peppy_dirs,
+            doc_pins,
             on_feedback,
         )
-        .map_err(|reason| format!("failed to resolve `depends_on.pairings`: {reason}"))?,
+        .map_err(|reason| format!("failed to resolve pairing slots: {reason}"))?,
     );
     Ok(interfaces)
 }
 
-/// The `depends_on.pairings` slot link_ids of a manifest. Entries naming one
+/// The pairing slot link_ids of a manifest, participants and observers alike.
+/// Entries naming one
 /// are resolved by `collect_pairing_interfaces` against the pairing document
 /// and generated under `paired_topics/<link_id>/<topic>`, so both the consumed
 /// collector and the implements resolver must step over them: neither knows
@@ -63,7 +72,7 @@ fn pairing_slot_link_ids(manifest: &config::node::Manifest) -> HashSet<&str> {
     manifest
         .depends_on
         .iter()
-        .flat_map(|d| d.pairings.iter().map(|p| p.link_id()))
+        .flat_map(|d| d.pairing_link_ids())
         .collect()
 }
 
@@ -88,6 +97,7 @@ pub fn collect_consumed_interfaces(
     interfaces_cfg: &config::node::Interfaces,
     resolve: impl Fn(&str, &str) -> Option<config::node::NodeConfig>,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, String> {
     let mut interfaces = Vec::new();
@@ -121,6 +131,7 @@ pub fn collect_consumed_interfaces(
                     &entry.name,
                     &entry.tag,
                     entry.sha256.as_deref(),
+                    doc_pins,
                     on_feedback,
                 )?;
                 deps.contract_docs.insert(link_id.clone(), parsed);
@@ -328,7 +339,7 @@ pub(super) fn action_message_from_exposed(
         feedback: exposed_action
             .feedback_topic
             .as_ref()
-            .and_then(|t| t.message_format.clone()),
+            .map(|t| t.message_format.clone()),
         result_response: exposed_action
             .result_service
             .as_ref()
@@ -385,26 +396,36 @@ pub(crate) fn resolve_contract_doc(
     name: &str,
     tag: &str,
     sha256_pin: Option<&str>,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<daemon_config::contract::PeppyContract, String> {
     let cache = repo_cache::load_contract_cache(peppy_dirs)
         .map_err(|e| format!("failed to load contract cache: {e}"))?;
-
-    let entry = match sha256_pin {
-        Some(sha) => repo_cache::lookup_contract_by_sha256(&cache, name, tag, sha),
-        None => repo_cache::lookup_contract(&cache, name, tag),
+    let parse = |content: &str| {
+        daemon_config::contract::PeppyContractParser::from_content(content)
+            .map_err(|e| e.to_string())
     };
 
+    // A launch pin fixes the bytes: this machine reuses its own copy on a
+    // content match and fetches the pin's origin otherwise, but its own
+    // priority rules never pick the document. Without one, the local rules
+    // apply, with the manifest's own optional sha pin.
+    if let Some(pins) = doc_pins {
+        let pin = pins.require(
+            daemon_config::repository::PinKind::Contract,
+            name,
+            tag,
+            sha256_pin,
+        )?;
+        return repo_cache::resolve_pinned_doc(peppy_dirs, &cache, pin, parse, on_feedback);
+    }
     repo_cache::resolve_cached_doc(
         peppy_dirs,
-        "contract",
-        &format!("{name}:{tag}"),
+        &cache,
+        name,
+        tag,
         sha256_pin,
-        entry.map(Into::into),
-        |content| {
-            daemon_config::contract::PeppyContractParser::from_content(content)
-                .map_err(|e| e.to_string())
-        },
+        parse,
         on_feedback,
     )
 }
@@ -477,6 +498,7 @@ pub fn resolve_implements(
     manifest: &config::node::Manifest,
     interfaces_cfg: &config::node::Interfaces,
     peppy_dirs: &PeppyDirs,
+    doc_pins: Option<&crate::services::node::pins::DocPins>,
     on_feedback: &dyn Fn(&str),
 ) -> std::result::Result<Vec<DeploymentInterface>, ImplementsError> {
     if manifest.implements.is_empty() {
@@ -499,6 +521,7 @@ pub fn resolve_implements(
             slot.name.as_str(),
             &slot.tag,
             slot.sha256.as_deref(),
+            doc_pins,
             on_feedback,
         )?;
         docs.insert(slot.link_id.as_str(), (slot, parsed));
@@ -679,7 +702,6 @@ mod implements_tests {
 
     use super::*;
     use config::node::{Interfaces, Manifest};
-    use core_node_api::encoding::RepoSourceKind;
     use generator::InterfaceVariant;
     use std::fs;
     use tempfile::TempDir;
@@ -697,15 +719,12 @@ mod implements_tests {
         let file_name = format!("{name}_{tag}.json5");
         let path = dir.join(&file_name);
         fs::write(&path, body).expect("write contract file");
-        let sha = config::fingerprint::fingerprint_for_bytes(body.as_bytes());
         repo_cache::ContractCacheEntry {
-            contract_name: name.to_string(),
-            tag: tag.to_string(),
-            sha256: sha,
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            path: path.to_string_lossy().to_string(),
+            contract_name: daemon_config::repository::ItemName::parse(name)
+                .expect("test name is valid"),
+            tag: daemon_config::repository::ItemTag::parse(tag).expect("test tag is valid"),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(body.as_bytes()),
+            origin: repo_cache::EntryOrigin::Fs { path: path.clone() },
             repo_id: 0,
         }
     }
@@ -749,8 +768,8 @@ mod implements_tests {
     fn returns_empty_when_no_implements() {
         let dirs = PeppyDirs::new(TempDir::new().unwrap().path().to_path_buf());
         let manifest: Manifest = serde_json5::from_str(r#"{ name: "plain", tag: "v1" }"#).unwrap();
-        let out =
-            resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {}).expect("ok");
+        let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
+            .expect("ok");
         assert!(out.is_empty());
     }
 
@@ -769,7 +788,8 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {}).expect("happy path");
+        let out =
+            resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {}).expect("happy path");
         assert_eq!(out.len(), 1, "should pull the one video_stream topic");
         match out[0].interface() {
             InterfaceVariant::EmittedTopic {
@@ -815,7 +835,7 @@ mod implements_tests {
             }"#,
         );
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("partial coverage must error");
         let ImplementsError::Coverage(mismatches) = &err else {
             panic!("coverage failure must carry structured mismatches, got {err:?}");
@@ -849,7 +869,7 @@ mod implements_tests {
             r#"{ services: { exposes: [{ link_id: "cam", name: "video_stream" }] } }"#,
         );
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("wrong-kind entry must error")
             .to_string();
         assert!(
@@ -884,7 +904,7 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("broken slot must error")
             .to_string();
         assert!(
@@ -912,7 +932,7 @@ mod implements_tests {
 
         let manifest =
             manifest_with_implements(r#"{ name: "empty_contract", tag: "v1", link_id: "noop" }"#);
-        let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {})
+        let out = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
             .expect("degenerate coverage passes");
         assert!(out.is_empty());
     }
@@ -924,7 +944,7 @@ mod implements_tests {
         let manifest =
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
 
-        let err = resolve_implements(&manifest, &Interfaces::default(), &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &Interfaces::default(), &dirs, None, &|_| {})
             .expect_err("miss must error")
             .to_string();
         assert!(
@@ -958,7 +978,8 @@ mod implements_tests {
             }"#,
         );
 
-        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {}).expect("happy path");
+        let out =
+            resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {}).expect("happy path");
 
         let mut saw_service = false;
         let mut saw_action = false;
@@ -997,7 +1018,7 @@ mod implements_tests {
         // the cache's `sha256`, i.e. the cache thinks the file is X but it
         // is now Y. resolve_implements must catch this.
         fs::write(
-            &entry.path,
+            entry.origin.path_str(),
             DEPTH_V1_BODY.replace("video_stream", "video_stream_v2"),
         )
         .unwrap();
@@ -1009,7 +1030,7 @@ mod implements_tests {
             manifest_with_implements(r#"{ name: "depth_camera", tag: "v1", link_id: "cam" }"#);
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("drift must error")
             .to_string();
         assert!(
@@ -1025,7 +1046,7 @@ mod implements_tests {
         repo_dir: &std::path::Path,
         repo_relative_path: &str,
         body: &str,
-    ) -> String {
+    ) -> (String, daemon_config::repository::GitCommit) {
         let repo = git2::Repository::init(repo_dir).expect("git init");
         let abs = repo_dir.join(repo_relative_path);
         if let Some(parent) = abs.parent() {
@@ -1041,13 +1062,20 @@ mod implements_tests {
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
         let sig = git2::Signature::now("Peppy", "peppy@example.com").expect("signature");
-        repo.commit(Some("HEAD"), &sig, &sig, "seed contract", &tree, &[])
+        let oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "seed contract", &tree, &[])
             .expect("commit");
-        repo.head()
+        let branch = repo
+            .head()
             .expect("head")
             .shorthand()
             .expect("shorthand")
-            .to_owned()
+            .to_owned();
+        (
+            branch,
+            daemon_config::repository::GitCommit::parse(&oid.to_string())
+                .expect("a real commit is a full hash"),
+        )
     }
 
     /// A `manifest.implements` slot whose cache record is git-sourced (so
@@ -1063,7 +1091,7 @@ mod implements_tests {
         let source_parent = TempDir::new().unwrap();
         let source_repo_dir = source_parent.path().join("contracts_hub");
         fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let branch = init_git_repo_with_contract(
+        let (branch, commit) = init_git_repo_with_contract(
             &source_repo_dir,
             "cameras/depth_camera.json5",
             DEPTH_V1_BODY,
@@ -1071,13 +1099,20 @@ mod implements_tests {
         let repo_url = source_repo_dir.display().to_string();
 
         let entry = repo_cache::ContractCacheEntry {
-            contract_name: "depth_camera".to_string(),
-            tag: "v1".to_string(),
-            sha256: config::fingerprint::fingerprint_for_bytes(DEPTH_V1_BODY.as_bytes()),
-            source_type: RepoSourceKind::Git,
-            source_uri: Some(repo_url),
-            resolved_ref: Some(branch),
-            path: "cameras/depth_camera.json5".to_string(),
+            contract_name: daemon_config::repository::ItemName::parse("depth_camera").unwrap(),
+            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(
+                DEPTH_V1_BODY.as_bytes(),
+            ),
+            origin: repo_cache::EntryOrigin::Git {
+                repo_url,
+                repo_ref: Some(branch),
+                commit,
+                path: daemon_config::repository::RepoRelativePath::parse(
+                    "cameras/depth_camera.json5",
+                )
+                .unwrap(),
+            },
             repo_id: 0,
         };
         let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
@@ -1092,7 +1127,7 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let out = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let out = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect("git-sourced implements should resolve");
         assert_eq!(out.len(), 1, "should pull the one video_stream topic");
         match out[0].interface() {
@@ -1122,7 +1157,7 @@ mod implements_tests {
         let source_parent = TempDir::new().unwrap();
         let source_repo_dir = source_parent.path().join("contracts_hub");
         fs::create_dir_all(&source_repo_dir).expect("create source repo dir");
-        let branch = init_git_repo_with_contract(
+        let (branch, commit) = init_git_repo_with_contract(
             &source_repo_dir,
             "cameras/depth_camera.json5",
             DEPTH_V1_BODY,
@@ -1130,14 +1165,19 @@ mod implements_tests {
         let repo_url = source_repo_dir.display().to_string();
 
         let entry = repo_cache::ContractCacheEntry {
-            contract_name: "depth_camera".to_string(),
-            tag: "v1".to_string(),
+            contract_name: daemon_config::repository::ItemName::parse("depth_camera").unwrap(),
+            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
             // Deliberately wrong fingerprint; must trigger drift detection.
-            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            source_type: RepoSourceKind::Git,
-            source_uri: Some(repo_url),
-            resolved_ref: Some(branch),
-            path: "cameras/depth_camera.json5".to_string(),
+            sha256: daemon_config::repository::ManifestFingerprint::parse(&"0".repeat(64)).unwrap(),
+            origin: repo_cache::EntryOrigin::Git {
+                repo_url,
+                repo_ref: Some(branch),
+                commit,
+                path: daemon_config::repository::RepoRelativePath::parse(
+                    "cameras/depth_camera.json5",
+                )
+                .unwrap(),
+            },
             repo_id: 0,
         };
         let cache_path = repo_cache::contracts_repo_cache_path(&dirs);
@@ -1152,7 +1192,7 @@ mod implements_tests {
         let interfaces =
             interfaces_from(r#"{ topics: { emits: [{ link_id: "cam", name: "video_stream" }] } }"#);
 
-        let err = resolve_implements(&manifest, &interfaces, &dirs, &|_| {})
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
             .expect_err("git-sourced drift must error")
             .to_string();
         assert!(
@@ -1207,7 +1247,7 @@ mod implements_tests {
         )
         .expect("interfaces parses");
 
-        let out = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
+        let out = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
             .expect("response-only service must resolve");
 
         assert_eq!(
@@ -1267,13 +1307,14 @@ mod implements_tests {
         let pairing_path = tmp.path().join("arm_link_v1.json5");
         fs::write(&pairing_path, ARM_LINK_BODY).expect("write pairing doc");
         let pairing_entry = repo_cache::PairingCacheEntry {
-            pairing_name: "arm_link".to_string(),
-            tag: "v1".to_string(),
-            sha256: config::fingerprint::fingerprint_for_bytes(ARM_LINK_BODY.as_bytes()),
-            source_type: RepoSourceKind::Fs,
-            source_uri: None,
-            resolved_ref: None,
-            path: pairing_path.to_string_lossy().to_string(),
+            pairing_name: daemon_config::repository::ItemName::parse("arm_link").unwrap(),
+            tag: daemon_config::repository::ItemTag::parse("v1").unwrap(),
+            sha256: daemon_config::repository::ManifestFingerprint::of_bytes(
+                ARM_LINK_BODY.as_bytes(),
+            ),
+            origin: repo_cache::EntryOrigin::Fs {
+                path: pairing_path.clone(),
+            },
             repo_id: 0,
         };
         fs::write(
@@ -1309,8 +1350,9 @@ mod implements_tests {
             } }"#,
         );
 
-        let out = collect_all_deployment_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
-            .expect("all three kinds resolve together");
+        let out =
+            collect_all_deployment_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
+                .expect("all three kinds resolve together");
 
         let mut emitted_topics = Vec::new();
         let mut peer_emitted = Vec::new();
@@ -1371,7 +1413,7 @@ mod implements_tests {
             r#"{ topics: { consumes: [{ link_id: "cam", name: "video_strem" }] } }"#,
         );
 
-        let err = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, &|_| {})
+        let err = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
             .expect_err("a name absent from the contract must not be dropped silently");
         for needle in [
             "video_strem",
@@ -1421,6 +1463,7 @@ mod implements_tests {
             &cfg,
             |name, _| (name == "producer_node").then(|| producer.clone()),
             &dirs,
+            None,
             &|_| {},
         )
         .expect("collection itself must not fail for a node dep");
@@ -1486,6 +1529,7 @@ mod implements_tests {
             &native_cfg,
             |name, _| (name == "hybrid").then(|| producer.clone()),
             &dirs,
+            None,
             &|_| {},
         )
         .expect("native consumption resolves");
@@ -1512,6 +1556,7 @@ mod implements_tests {
             &contract_backed_cfg,
             |name, _| (name == "hybrid").then(|| producer.clone()),
             &dirs,
+            None,
             &|_| {},
         )
         .expect("collection itself does not fail");

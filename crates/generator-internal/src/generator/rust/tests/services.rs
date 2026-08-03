@@ -1,5 +1,5 @@
 use super::*;
-use config::node::{ConsumedService, NativeExposedService, PeppygenLanguage};
+use config::node::{ConsumedService, NativeExposedService};
 
 const EXPOSED_SERVICE_EXAMPLE: &str = r#"
 {
@@ -62,15 +62,6 @@ pub(super) const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 }
 "#;
 
-const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR: &str = r#"
-{
-  maybe_code: {
-    $type: "u32",
-    $optional: true
-  }
-}
-"#;
-
 const SUBSCRIBED_SERVICE_EXAMPLE2: &str = r#"
 {
     link_id: "uvc_camera",
@@ -85,8 +76,6 @@ const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2: &str = r#"
     interval: "string"
 }
 "#;
-
-const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
 
 /// In the case of a service, an "exposed" service is an entity that accept incoming messages
 #[test]
@@ -374,7 +363,7 @@ fn consumed_two_services_same_node() {
 
     // Second service pointing to the same node
     let service2: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE2).unwrap();
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let empty_format = empty_message_format();
     let response_format2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
@@ -428,7 +417,7 @@ fn consumed_service_without_response_payload() {
         }
         "#;
     let service: ConsumedService = serde_json5::from_str(service).unwrap();
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let empty_format = empty_message_format();
 
     let mut generator = RustGenerator::new();
     generator
@@ -449,39 +438,6 @@ fn consumed_service_without_response_payload() {
     );
 
     assert_artifact_contains(&artifacts, "let _ = peppylib::ServiceMessenger::poll(");
-}
-
-#[test]
-fn consumed_service_rejects_optional_scalar_response_field() {
-    use crate::error::Error;
-
-    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
-    let response_format: MessageFormat =
-        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_SCALAR).unwrap();
-
-    let mut generator = RustGenerator::new();
-    let err = generator
-        .add_consumed_service(
-            &service,
-            &empty_format,
-            &response_format,
-            &native_dep("uvc_camera", "v1", "uvc_camera"),
-        )
-        .unwrap_err();
-
-    match err {
-        Error::UnsupportedOptionalScalarType {
-            language,
-            field,
-            item,
-        } => {
-            assert_eq!(language, PeppygenLanguage::Rust);
-            assert_eq!(field, "maybe_code");
-            assert_eq!(item, "u32");
-        }
-        other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
-    }
 }
 
 /// Checks for clippy warnings when there is only one exposed service without a request body.
@@ -583,7 +539,7 @@ fn compile_lib_with_exposed_and_consumed_services() {
     let consumed_service_response2: MessageFormat =
         serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE2).unwrap();
 
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let empty_format = empty_message_format();
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator
@@ -679,7 +635,7 @@ fn clippy_consumed_service_empty_request_format() {
         "#,
     )
     .unwrap();
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let empty_format = empty_message_format();
     let response_format: MessageFormat = serde_json5::from_str(r#"{ status: "string" }"#).unwrap();
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
@@ -719,7 +675,7 @@ fn clippy_consumed_service_empty_response_format() {
     )
     .unwrap();
     let request_format: MessageFormat = serde_json5::from_str(r#"{ action_id: "u32" }"#).unwrap();
-    let empty_format: MessageFormat = serde_json5::from_str(EMPTY_MESSAGE_FORMAT).unwrap();
+    let empty_format = empty_message_format();
 
     let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
     generator

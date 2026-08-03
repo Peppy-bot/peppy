@@ -1,9 +1,16 @@
 //! Authenticated calls to the `platform-backend` resource server: `GET /me`,
-//! `POST /logout`, and `POST /me/cli/federation` (fetch the
-//! shared router's connection config). On a `401` with a refreshable session credential the
-//! request is retried once after refreshing (and persisting) the token; a `401`
-//! on a PAT is a hard error (a PAT cannot be refreshed). `502`/`503` map to
-//! distinct messages so an ops problem isn't mistaken for a bad token.
+//! `POST /logout`, `GET /me/cli/router-config` (fetch the shared router's
+//! connection config), and `POST /me/core-nodes` (claim this machine's
+//! identity). On a `401` with a refreshable session credential the request is
+//! retried once after refreshing (and persisting) the token; a `401` on a PAT is
+//! a hard error (a PAT cannot be refreshed). `502`/`503` map to distinct
+//! messages so an ops problem isn't mistaken for a bad token.
+//!
+//! Reading the router config and claiming an identity are separate calls
+//! deliberately. The config is valid for anyone holding the token; the identity
+//! claim is valid only for a daemon generation that has settled its namespace
+//! and owns the router it names. Fusing them let a generation about to be torn
+//! down publish a zid it never ran under.
 
 use config::namespace::Namespace;
 use secrecy::ExposeSecret;
@@ -78,16 +85,17 @@ pub struct CoreNodeEntry {
     pub core_node_name: String,
     /// Whether the platform has a registry row for this name. `false` is the
     /// normal appearance of a `zenoh.external` daemon, which adopts its cached
-    /// workspace namespace but never pulls federation config.
+    /// workspace namespace but never registers.
     #[serde(default)]
     pub registered: bool,
     /// RFC 3339 UTC, or null on an unregistered entry.
     #[serde(default)]
     pub first_seen_at: Option<String>,
-    /// RFC 3339 UTC, or null on an unregistered entry. A config-pull time, not
-    /// a liveness signal, which is why it is never rendered as "last seen".
+    /// RFC 3339 UTC, or null on an unregistered entry. When that machine last
+    /// asserted its identity, not a liveness signal, which is why it is never
+    /// rendered as "last seen".
     #[serde(default)]
-    pub last_config_pull_at: Option<String>,
+    pub last_registered_at: Option<String>,
     #[serde(default)]
     pub network: NetworkStatus,
     #[serde(default)]
@@ -215,36 +223,51 @@ pub fn split_locator(endpoint: &str) -> Result<(String, u16)> {
     Ok((host.to_string(), port))
 }
 
-/// `POST {api_url}/me/cli/federation`: fetch the shared router's
-/// connection config (the daemon's discovery point), refreshing the access token
-/// once on a 401 for session credentials (the same reactive-refresh contract as
+/// `GET {api_url}/me/cli/router-config`: fetch the shared router's connection
+/// config (the daemon's discovery point), refreshing the access token once on a
+/// 401 for session credentials (the same reactive-refresh contract as
 /// [`get_me`]). The daemon dials the returned endpoint over one-way TLS,
 /// verifying the router's certificate and presenting none of its own.
 ///
-/// The body always carries two required fields, both upserted into the backend's
-/// per-principal core-node registry:
+/// Carries no daemon identity, and the call writes nothing on the backend.
+/// Claiming an identity is [`register_core_node`].
+pub fn fetch_router_config(
+    http: &HttpClient,
+    api_url: &str,
+    cred: &mut Credential,
+) -> Result<ZenohRouterConfig> {
+    authed_get_json(http, api_url, "/me/cli/router-config", cred)
+}
+
+/// `POST {api_url}/me/core-nodes`: record that this machine runs
+/// `core_node_name` behind the router `router_zid` pins, refreshing the access
+/// token once on a 401 for session credentials.
 ///
-/// * `core_node_name`, the daemon's application-layer identity (its
-///   `last_seen_at` tracks config pulls, not liveness).
-/// * `router_zid`, the transport identity this daemon's managed router pins.
-///   The platform joins it against the shared router's live session list, which
-///   is what separates "the uplink is up, the daemon is not" from "this site is
-///   unreachable". Only a managed daemon pulls federation config, and a managed
-///   daemon always owns a router, so there is no caller that legitimately lacks
-///   one and the backend rejects a request without it.
-pub fn establish_federation(
+/// The platform joins the zid against the shared router's live session list,
+/// which is what separates "the uplink is up, the daemon is not" from "this site
+/// is unreachable". The caller must therefore pass the identity its live router
+/// actually pins, never one read back from disk after the fact.
+pub fn register_core_node(
     http: &HttpClient,
     api_url: &str,
     cred: &mut Credential,
     core_node_name: &str,
     router_zid: &pmi::RouterId,
-) -> Result<ZenohRouterConfig> {
+) -> Result<()> {
     let body = serde_json::json!({
         "core_node_name": core_node_name,
         "router_zid": router_zid.as_str(),
     })
     .to_string();
-    authed_post_json(http, api_url, "/me/cli/federation", &body, cred)
+    let path = "/me/core-nodes";
+    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
+    let resp = authed_post(http, &url, &body, cred)?;
+    // A registration answers `204`, so there is no body to deserialize; the rest
+    // of the status contract is the one every authed call shares.
+    match resp.status {
+        204 => Ok(()),
+        status => Err(interpret_authed_status(status, cred, "POST", &url)),
+    }
 }
 
 /// `POST {api_url}/logout` with the current access token. Returns the status code
@@ -322,27 +345,10 @@ fn authed_get_json<T: DeserializeOwned>(
     interpret_authed_json(resp, cred, "GET", &url, path)
 }
 
-/// An authenticated `POST {api_url}{path}` with a JSON `body` whose `200` response
-/// deserializes to `T`. See [`interpret_authed_json`] for the shared status
-/// contract.
-fn authed_post_json<T: DeserializeOwned>(
-    http: &HttpClient,
-    api_url: &str,
-    path: &str,
-    body: &str,
-    cred: &mut Credential,
-) -> Result<T> {
-    let url = format!("{}{}", api_url.trim_end_matches('/'), path);
-    let resp = authed_post(http, &url, body, cred)?;
-    interpret_authed_json(resp, cred, "POST", &url, path)
-}
-
 /// The status contract every authenticated `/me*` JSON endpoint shares: a `200`
-/// body deserializes to `T`, a `401` becomes the credential-specific auth error
-/// (after the single reactive refresh the `authed_*` callers already attempt),
-/// `502`/`503` map to distinct ops-vs-token messages, and any other status to a
-/// generic HTTP error. `path` doubles as the deserialization context label, so a
-/// new authed endpoint is one line, not a copied block.
+/// body deserializes to `T`, and every other status goes through
+/// [`interpret_authed_status`]. `path` doubles as the deserialization context
+/// label, so a new authed endpoint is one line, not a copied block.
 fn interpret_authed_json<T: DeserializeOwned>(
     resp: HttpResponse,
     cred: &Credential,
@@ -352,15 +358,27 @@ fn interpret_authed_json<T: DeserializeOwned>(
 ) -> Result<T> {
     match resp.status {
         200 => resp.json(path),
-        401 => Err(unauthorized_error(cred)),
-        502 => Err(Error::Auth(
+        status => Err(interpret_authed_status(status, cred, method, url)),
+    }
+}
+
+/// The failure half of that contract, shared by the JSON endpoints and the
+/// bodyless ones (which cannot go through [`interpret_authed_json`] at all): a
+/// `401` becomes the credential-specific auth error (after the single reactive
+/// refresh the `authed_*` callers already attempt), `502`/`503` map to distinct
+/// ops-vs-token messages, and any other status to a generic HTTP error.
+///
+/// Split out rather than duplicated so the two interpreters cannot drift on what
+/// a `503` means.
+fn interpret_authed_status(status: u16, cred: &Credential, method: &str, url: &str) -> Error {
+    match status {
+        401 => unauthorized_error(cred),
+        502 => Error::Auth(
             "the backend's introspection credentials were rejected (server-side problem)"
                 .to_string(),
-        )),
-        503 => Err(Error::Http(
-            "backend temporarily unavailable, try again shortly".to_string(),
-        )),
-        s => Err(Error::Http(format!("{method} {url} returned {s}"))),
+        ),
+        503 => Error::Http("backend temporarily unavailable, try again shortly".to_string()),
+        s => Error::Http(format!("{method} {url} returned {s}")),
     }
 }
 

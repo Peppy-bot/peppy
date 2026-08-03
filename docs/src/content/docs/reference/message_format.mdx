@@ -6,7 +6,7 @@ sidebar:
 ---
 
 The `message_format` defines the structure of messages exchanged between nodes through [topics](/advanced_guides/topics/), [services](/advanced_guides/services/), and [actions](/advanced_guides/actions/).
-It is a map of field names to schema types, declared inline in `peppy.json5`.
+It is a map of field names to schema types. A native interface entry declares it inline in `peppy.json5`; an entry that carries a `link_id` into a contract or pairing document takes its shape from that document instead, using the same syntax there, and an inline `message_format` on such an entry is rejected at parse time.
 
 ```json5
 message_format: {
@@ -16,6 +16,10 @@ message_format: {
 ```
 
 Each field value is a **schema type**: either a bare type token, or a structured schema with modifiers.
+
+:::note
+A declared `message_format` holds at least one field. An endpoint that carries no payload omits the key entirely, and an empty `message_format: {}` is rejected when the config is parsed.
+:::
 
 ---
 
@@ -42,11 +46,13 @@ A bare type string is the simplest form. These map directly to language-native t
 
 Aliases can be used interchangeably with their canonical name (e.g. `"float"` is equivalent to `"f32"`).
 
+One field name is reserved: `instance_id` is rejected anywhere in a `message_format`, at the root or nested, because peppy's transport metadata claims it.
+
 ---
 
 ## Optional modifier
 
-Any primitive type can be made optional by using the structured form with `$optional`:
+A field with a presence bit on the wire can be made optional by using the structured form with `$optional`:
 
 ```json5
 error_msg: {
@@ -57,8 +63,10 @@ error_msg: {
 
 | Field       | Required | Description                            |
 |-------------|----------|----------------------------------------|
-| `$type`     | Yes      | Any primitive type token               |
+| `$type`     | Yes      | `string`, `bytes`, or `time` (arrays and objects take `$optional` in their own structured forms) |
 | `$optional` | No       | When `true`, the field may be absent. Defaults to `false` |
+
+Scalar-copy types (`bool`, the integer types, `f32`, `f64`) carry no presence bit, so an absent value is indistinguishable from a zero one: `$optional` on them is rejected when the config is parsed. Model an optional scalar as an optional `bytes`/`string` or restructure the message.
 
 :::note
 `$optional` can only be used on **root-level fields** of a `message_format`: direct children, not fields nested inside objects or array items. If a parent structure is present, all its fields must be present too.
@@ -123,7 +131,7 @@ distances: {
 |-------------|----------|-----------------------------------------------------|
 | `$type`     | Yes      | Must be `"array"`                                   |
 | `$items`    | Yes      | A primitive type or an object schema. Nested arrays (arrays of arrays) are not supported |
-| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive (not supported for `string`, `time`, or object items). Omit for variable-length |
+| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive (not supported for `string`, `bytes`, `time`, or object items). Omit for variable-length |
 | `$optional` | No       | When `true`, the entire array may be absent          |
 
 ### Fixed-length array

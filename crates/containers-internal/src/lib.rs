@@ -12,7 +12,9 @@ pub use apptainer::Apptainer;
 #[cfg(target_os = "linux")]
 pub use apptainer::{SetupStatus, check_setup_status};
 pub use error::{Error, Result};
-pub use mount_source::is_host_provided_mount_source;
+pub use mount_source::{
+    auto_created_warning, ensure_bind_source, is_host_provided_mount_source, mount_spec_source,
+};
 
 /// Pinned Apptainer version bundled at build time.
 pub const APPTAINER_VERSION: &str = env!("APPTAINER_VERSION");
@@ -25,3 +27,12 @@ pub const LIMA_VERSION: &str = env!("LIMA_VERSION");
 /// without requiring users to install gocryptfs via their distro package
 /// manager.
 pub const GOCRYPTFS_VERSION: &str = env!("GOCRYPTFS_VERSION");
+/// Pinned squashfuse version compiled and shipped alongside the apptainer
+/// install.
+///
+/// Apptainer auto-discovers `squashfuse_ll` in `libexec/apptainer/bin/` and
+/// uses it to FUSE-mount a SIF's squashfs partition. Without it every
+/// `apptainer run` first extracts the whole image into a temporary sandbox,
+/// which is both slow and fatal on hosts whose `/tmp` is a quota-limited
+/// tmpfs.
+pub const SQUASHFUSE_VERSION: &str = env!("SQUASHFUSE_VERSION");

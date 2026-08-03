@@ -101,8 +101,10 @@ impl AppContext {
         messaging_port: u16,
         namespace: config::namespace::Namespace,
     ) -> crate::error::Result<()> {
-        // Open the control session under the typed namespace recorded by the
-        // daemon generation so the CLI reaches its daemon and node services.
+        // Open the control session as a pure Zenoh client under the typed
+        // namespace recorded by the daemon generation: no loopback listener,
+        // no gossip discovery, every request relayed through the daemon's
+        // router.
         self.messenger_handle
             .get_or_try_init(|| async {
                 MessengerHandle::connect(messaging_host, messaging_port)
@@ -139,12 +141,6 @@ pub(crate) struct DaemonConnection<'a> {
     /// node, from its `peppy_config`. Lets `node stop` size its request timeout
     /// to outlast the daemon's grace + reap window.
     pub shutdown_grace_secs: u64,
-    /// The workspace namespace recorded by the generation this connection was
-    /// established against, captured from the *same* `DaemonState` read the
-    /// connection used. Callers reuse this instead of reading the state again,
-    /// which could race a restart and pair this connection's data with a different
-    /// generation's namespace.
-    pub namespace: config::namespace::Namespace,
 }
 
 impl AppContext {
@@ -171,7 +167,6 @@ impl AppContext {
             target_is_override,
             git_hash: daemon_state.git_hash,
             shutdown_grace_secs: daemon_state.shutdown_grace_secs,
-            namespace: daemon_state.namespace,
         })
     }
 }

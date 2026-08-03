@@ -19,6 +19,7 @@ pub async fn listen_for_stack_list(
     instance_id: &str,
     node_name: &str,
     node_stack: Arc<NodeStack>,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -42,6 +43,7 @@ pub async fn listen_for_stack_list(
                     Arc::clone(&node_stack),
                     core_node.clone(),
                     instance_id.clone(),
+                    Arc::clone(&ownership),
                 )
             })
             .await
@@ -56,10 +58,11 @@ async fn handle_stack_list_request(
     node_stack: Arc<NodeStack>,
     core_node: String,
     instance_id: String,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
-        handle_node_list_request_inner(&context, node_stack, core_node, instance_id),
+        handle_node_list_request_inner(&context, node_stack, core_node, instance_id, &ownership),
     )
 }
 
@@ -68,6 +71,7 @@ fn handle_node_list_request_inner(
     node_stack: Arc<NodeStack>,
     core_node: String,
     instance_id: String,
+    ownership: &crate::services::federation::SliceOwnership,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload();
@@ -80,7 +84,23 @@ fn handle_node_list_request_inner(
     // so `stack list` reports health without a separate `node_health` round-trip.
     let serialized_graph = node_stack.to_serialized_graph();
     let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
-    StackListResponse::new(graph_json, core_node, instance_id, current_host_name())
-        .encode()
-        .map_err(Into::into)
+    // The slice names the launch it belongs to. That is what makes it
+    // self-describing, and therefore what lets a coordinator rediscover its
+    // participants with this very fan-out instead of remembering them in RAM.
+    // The reservation names the launch holding this machine RIGHT NOW, which
+    // is what makes a held machine visible to `stack list` and discoverable
+    // by `stack reset --federated` even when its launch never populated a
+    // slice.
+    let mut response =
+        StackListResponse::new(graph_json, core_node, instance_id, current_host_name());
+    if let Some(launch) = ownership.slice() {
+        response = response.with_launch(launch);
+    }
+    if let Some((launch_id, coordinator_core_node)) = ownership.held_reservation() {
+        response = response.with_reservation(core_node_api::encoding::LaunchIdentity::new(
+            launch_id,
+            coordinator_core_node,
+        ));
+    }
+    response.encode().map_err(Into::into)
 }

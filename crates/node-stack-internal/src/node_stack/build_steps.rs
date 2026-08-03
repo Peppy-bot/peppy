@@ -359,7 +359,7 @@ pub(super) async fn run_build_cmd(
         command.env(key, value);
     }
     let child = spawn_in_process_group(command)
-        .map_err(|e| format!("failed to execute build_cmd `{}`: {}", full_cmd_display, e))?;
+        .map_err(|e| spawn_failure_message(&full_cmd_display, &program, working_dir, &e))?;
 
     let (status, _) =
         stream_child_output(child, feedback_tx, log_file, false, cancel_token).await?;
@@ -373,6 +373,33 @@ pub(super) async fn run_build_cmd(
 
     debug!("build_cmd completed successfully");
     Ok(())
+}
+
+/// Explains a failed `build_cmd` spawn. The raw OS error for the common
+/// failure, ENOENT, names no path at all, and it covers two very different
+/// repairs: the program is not on the PATH the daemon runs build commands
+/// with (a host missing a toolchain), or the node's working directory
+/// vanished. The error an operator sees for a launch that failed on another
+/// machine has to say which one it is.
+fn spawn_failure_message(
+    full_cmd_display: &str,
+    program: &str,
+    working_dir: &Path,
+    error: &std::io::Error,
+) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        if !working_dir.exists() {
+            return format!(
+                "failed to execute build_cmd `{full_cmd_display}`: \
+                 working directory {working_dir:?} does not exist"
+            );
+        }
+        return format!(
+            "failed to execute build_cmd `{full_cmd_display}`: program `{program}` \
+             not found on the PATH the daemon runs build commands with"
+        );
+    }
+    format!("failed to execute build_cmd `{full_cmd_display}`: {error}")
 }
 
 #[cfg(test)]
@@ -438,6 +465,87 @@ mod tests {
                 tag
             );
         }
+    }
+
+    fn test_log_file() -> Arc<StdMutex<File>> {
+        Arc::new(StdMutex::new(
+            tempfile::tempfile().expect("tempfile should succeed"),
+        ))
+    }
+
+    #[tokio::test]
+    async fn run_build_cmd_names_a_missing_program() {
+        let working_dir = tempfile::tempdir().expect("tempdir should succeed");
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let cmd = vec!["peppy-test-no-such-tool".to_string(), "sync".to_string()];
+        let err = run_build_cmd(
+            Some(&cmd),
+            working_dir.path(),
+            &[],
+            &feedback_tx,
+            test_log_file(),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("a nonexistent program must fail to spawn");
+        assert!(
+            err.contains("program `peppy-test-no-such-tool` not found on the PATH"),
+            "the error must name the missing program, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_build_cmd_names_a_missing_working_dir() {
+        let working_dir = std::path::Path::new("/nonexistent-peppy-build-cwd");
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let cmd = vec!["true".to_string()];
+        let err = run_build_cmd(
+            Some(&cmd),
+            working_dir,
+            &[],
+            &feedback_tx,
+            test_log_file(),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("a missing working directory must fail the spawn");
+        assert!(
+            err.contains("working directory \"/nonexistent-peppy-build-cwd\" does not exist"),
+            "the error must name the missing working directory, got: {err}"
+        );
+    }
+
+    /// A PATH handed to the child through `env_vars` is what the spawned
+    /// program is looked up against. This is what makes the environment a
+    /// build goal carries decisive: a goal with no PATH of its own resolves
+    /// programs against the daemon's environment, and one that carries a
+    /// PATH resolves against that PATH alone.
+    #[tokio::test]
+    async fn run_build_cmd_resolves_the_program_via_the_child_path() {
+        let tool_dir = tempfile::tempdir().expect("tempdir should succeed");
+        let tool = tool_dir.path().join("peppy-test-stub-tool");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").expect("write stub tool");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod stub tool");
+        }
+
+        let working_dir = tempfile::tempdir().expect("tempdir should succeed");
+        let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
+        let cmd = vec!["peppy-test-stub-tool".to_string(), "sync".to_string()];
+        let env_vars = vec![("PATH".to_string(), tool_dir.path().display().to_string())];
+        run_build_cmd(
+            Some(&cmd),
+            working_dir.path(),
+            &env_vars,
+            &feedback_tx,
+            test_log_file(),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("the stub tool must resolve through the env_vars PATH alone");
     }
 
     #[test]

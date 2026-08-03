@@ -47,11 +47,10 @@ const EXPOSED_ACTION_EXAMPLE: &str = r#"
 }
 "#;
 
-const EXPOSED_ACTION_EXAMPLE_EMPTY_GOAL_REQUEST: &str = r#"
+const EXPOSED_ACTION_EXAMPLE_WITHOUT_GOAL_REQUEST: &str = r#"
 {
   name: "move_arm",
   goal_service: {
-    request_message_format: {},
     response_message_format: {
       accepted: "bool"
     }
@@ -988,12 +987,13 @@ fn consumed_action_without_feedback() {
 }
 
 /// This is a long running test
-/// Checks for clippy warnings when there is only one exposed action with an empty goal request.
+/// Checks for clippy warnings when there is only one exposed action and its
+/// goal carries no request payload.
 #[test]
-fn clippy_single_exposed_action_empty_goal_request() {
+fn clippy_single_exposed_action_without_goal_request() {
     let temp_dir = TempDir::new().unwrap();
     let action: NativeExposedAction =
-        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE_EMPTY_GOAL_REQUEST).unwrap();
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE_WITHOUT_GOAL_REQUEST).unwrap();
 
     let consumed_action1: ConsumedAction =
         serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();

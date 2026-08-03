@@ -9,9 +9,10 @@ A **Node** is the fundamental unit of computation in Peppy. It represents a runn
 
 A node is defined by its **configuration** file (`peppy.json5`) which includes:
 
+- **`peppy_schema`**: The schema identifier, always `"node/v1"`
 - **Manifest**: The node's identity
 - **Execution**: Commands to build and run the node, plus the parameters it accepts
-- **Interfaces**: What the node exposes and consumes
+- **Interfaces**: What the node exposes and consumes (optional; a node with no interfaces omits it)
 
 ### Manifest
 
@@ -22,7 +23,8 @@ The manifest defines a node's identity:
 | `name` | A validated identifier (ASCII letters, digits, `_`, `-`) |
 | `tag` | A short contract identifier (e.g., `v1`, `donut`). Must start with an ASCII letter; allowed chars are letters, digits, `_`, `-`. Dots are forbidden. |
 | `labels` | Optional metadata labels |
-| `depends_on` | Optional dependency declarations on other nodes (`depends_on.nodes`) or contracts (`depends_on.contracts`); see [Contract implementation](/advanced_guides/contract_implementation/) |
+| `implements` | Optional list of contracts this node implements, making it eligible to fill contract slots; see [Contract implementation](/advanced_guides/contract_implementation/) |
+| `depends_on` | Optional dependency declarations, in four lists: `nodes`, `contracts`, `pairings`, and `pairing_observers`; see [Contract implementation](/advanced_guides/contract_implementation/) and [Pairing](/advanced_guides/pairing/) |
 
 A node is uniquely identified by its `name:tag` combination.
 
@@ -38,7 +40,7 @@ The execution section defines how to prepare and launch the node:
 | `parameters` | Optional parameter schema for runtime configuration |
 | `build_cmd` | Command to run during the node build phase |
 | `run_cmd` | Command to launch the node |
-| `container` | Optional container configuration (mutually exclusive with `build_cmd`/`run_cmd`) |
+| `container` | Optional container configuration. Exactly one of `run_cmd` or `container` must be present; a container node's build goes through the container image, so `build_cmd` is not used |
 
 ### Interfaces
 
@@ -52,29 +54,24 @@ Nodes communicate through three types of interfaces:
 
 A node can **expose** interfaces (make them available to others) and **consume** interfaces from other nodes.
 
-Two higher-level constructs build on these: [contract implementation](/advanced_guides/contract_implementation/), where the contract lives in a standalone document and any implementing producer can fill the consumer's slot, and [pairing](/advanced_guides/pairing/), an exclusive 1:1 bidirectional topic exchange between two instances. See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for how to pick between all of them.
+Three higher-level constructs build on these: [contract implementation](/advanced_guides/contract_implementation/), where the contract lives in a standalone document and any implementing producer can fill the consumer's slot; [pairing](/advanced_guides/pairing/), an exclusive 1:1 bidirectional topic exchange between two instances; and [observer slots](/advanced_guides/pairing/#observers-watching-a-pairing-without-joining-it), read-only taps on one role of an existing pairing. See [Choosing a communication pattern](/advanced_guides/communication_patterns/) for how to pick between all of them.
 
 ## Node Instance
 
 A **Node Instance** represents a single running execution of a node. Each instance has:
 
 - **Instance ID**: A unique identifier for this running process
-- **PID**: The process ID (when running locally)
 - **State**: Its runtime lifecycle state: `starting` while it comes up, `running` once started, then the terminal `finished` (clean exit) or `failed` (crash) if its process exits on its own
 - **Health**: The result of the core node's latest liveness probe against a running instance, `healthy` or `unhealthy` (not applicable once the instance is terminal)
 
 A node can have multiple instances running simultaneously. For example, you might run multiple instances of a camera node, each connected to separate physical devices.
-
-:::note
-For nodes running on remote systems (e.g., embedded devices), the PID may not be available.
-:::
 
 ## Node Stack
 
 The **Node Stack** is the central data structure that manages all active nodes in the system. It maintains a directed acyclic graph (DAG) where:
 
 - **Vertices** are node entities
-- **Edges** represent dependency relationships, pointing from a dependent node to its dependency. These edges are derived from interface connections between nodes (exposers and consumers).
+- **Edges** represent dependency relationships, pointing from a dependent node to its dependency. Edges come from each node's `depends_on.nodes` declarations; contract, pairing, and observer slots do not add DAG edges. The declared interfaces are then validated against those edges.
 
 ### Key responsibilities
 
@@ -100,16 +97,15 @@ The stack-list API exposes the nodes and dependency edges as a serialized JSON g
 
 The **Core Node** is a special node that serves as the root of the node stack and is always present. It is the daemon (`peppy service serve`) that the `peppy` CLI talks to. It is responsible for:
 
-- **Dependency Creation**: When a node consumes an interface, the core node creates a dependency on the node that exposes that interface
+- **Dependency Attachment**: When a node declares a dependency in `depends_on.nodes`, the core node attaches the edge and validates that the dependency exposes the interfaces the dependent consumes
 - **Stack Management**: Managing the lifecycle of all other nodes in the system: spawning them, probing their health, and tearing them down so none is left orphaned when the daemon stops or dies
 - **System Coordination**: Acting as the central coordinator for the local Peppy runtime
 
 When the core node shuts down cleanly it stops every spawned node (cooperatively, then force-killing any straggler's process group); if it dies unexpectedly, each node's watchdog notices the missing heartbeat and shuts the node down after a grace period. See [Daemon shutdown and orphan prevention](/guides/node_stack/#daemon-shutdown-and-orphan-prevention) for details.
 
 Each Peppy runtime has exactly one core node that manages its local DAG of nodes. 
-In a distributed deployment, multiple runtimes (each with their own core node) can run on separate machines. 
-The core nodes operate independently, managing their local node stacks without a centralized controller. 
-Nodes communicate across runtimes through the shared messaging layer, enabling a fully decentralized system where each core node is responsible only for its own set of nodes.
+In a distributed deployment, multiple runtimes (each with their own core node) can run on separate machines, and nodes communicate across runtimes through the shared messaging layer. 
+Each core node owns only its local stack. A federated launch is driven by a coordinator: the daemon that received the launch resolves every deployment once and drives the participating core nodes, which run exactly what it resolved (see [Federation](/advanced_guides/federation/)).
 
 Each machine runs at most one daemon per Peppy data root. `peppy service serve` takes an exclusive lock at startup, and a second invocation refuses to boot while the first runs.
 

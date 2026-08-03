@@ -1071,7 +1071,7 @@ impl LanguageGenerator for RustGenerator {
             let struct_prefix = format!("{action_prefix}Feedback");
             let feedback_schema_name = format!("{base_name}_feedback");
             let format_artifacts =
-                map_message_format(&feedback_schema_name, feedback.message_format.as_ref())?;
+                map_message_format(&feedback_schema_name, Some(&feedback.message_format))?;
             let params = collect_function_params(
                 format_artifacts.as_ref(),
                 None,
@@ -1079,17 +1079,22 @@ impl LanguageGenerator for RustGenerator {
                 &mut context,
                 None,
             )?;
-            let encoding = self.prepare_message_encoding(
-                &scoped_schema_key(origin, &format!("emit_{base_name}_feedback")),
-                &struct_prefix,
-                format_artifacts.as_ref(),
-                &params,
-            )?;
+            let encoding = self
+                .prepare_message_encoding(
+                    &scoped_schema_key(origin, &format!("emit_{base_name}_feedback")),
+                    &struct_prefix,
+                    format_artifacts.as_ref(),
+                    &params,
+                )?
+                .ok_or_else(|| Error::InvariantViolation {
+                    context: format!(
+                        "feedback topic `{}` parsed with a message format but produced no encoding",
+                        action.name
+                    ),
+                })?;
 
             goal_context_methods.push(build_goal_context_publish_feedback(
-                &params,
-                encoding.as_ref(),
-                &label,
+                &params, &encoding, &label,
             ));
         }
 

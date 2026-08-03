@@ -182,7 +182,7 @@ Each `ClockTick` carries a single field, `time` (`u64` in Rust, `int` in Python)
 Most of the time the core node feeds these helpers from its own OS wall time. For simulators and bag replay you usually want the same node binaries to read a virtual clock instead, without rebuilding. Peppy makes this a deployment-time choice through two knobs:
 
 - A typed `framework` block on each per-instance launcher entry, sibling to `arguments` and `env_vars`.
-- A daemon-wide CLI flag `--clock-source=wall|sim` that decides the default for instances that omit the override.
+- A daemon-wide flag, `peppy service serve --clock-source=wall|sim`, that decides the default for instances that omit the override.
 
 Resolution order, applied once in the daemon before each spawned node receives its runtime config:
 
@@ -190,7 +190,7 @@ Resolution order, applied once in the daemon before each spawned node receives i
 2. The daemon's `--clock-source` flag (`wall` is the default).
 
 The wire format does not change. `ClockTick` and `ClockResponse` carry only timestamps; the daemon decides internally which source feeds them. In wall mode the daemon stamps every `t1`/`t2` and every published tick from its own OS clock. In sim mode the daemon stops publishing, subscribes to the `clock` topic, and answers `synchronize` from a cache populated by an external publisher. 
-Subscribers see the same shape either way.
+Subscribers see the same shape either way. Until that external publisher lands its first tick, sim mode has no time to serve: `synchronize` fails with an error and a `subscribe` stream yields nothing, so both helpers depend on the publisher being up.
 
 ### Launcher syntax
 
@@ -199,7 +199,7 @@ Subscribers see the same shape either way.
   peppy_schema: "launcher/v1",
   deployments: [
     {
-      source: { local: "./uvc_camera" },
+      source: { name: "uvc_camera:v1" },
       instances: [
         {
           instance_id: "camera_front",

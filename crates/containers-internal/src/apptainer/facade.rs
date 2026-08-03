@@ -3,6 +3,7 @@ use super::lima;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Serializes Lima VM initialization to prevent concurrent boot/sync races.
@@ -15,6 +16,67 @@ static LIMA_INIT: Mutex<()> = Mutex::new(());
 /// Lima hostname that resolves to the macOS host IP from inside the guest VM.
 const LIMA_HOST_GATEWAY: &str = "host.lima.internal";
 
+/// Apptainer's env spelling of its hidden `--tmpdir` flag.
+const APPTAINER_TMPDIR_ENV: &str = "APPTAINER_TMPDIR";
+
+/// Scratch directory handed to apptainer as its `--tmpdir`.
+///
+/// Apptainer only falls back to this when it cannot FUSE-mount an image's
+/// squashfs partition, in which case it `unsquashfs`-extracts the entire rootfs
+/// there ("Converting SIF file to temporary sandbox..."). peppy bundles
+/// `squashfuse_ll` precisely so that path is never taken, but the fallback is
+/// still reachable on a host with no `/dev/fuse`, and apptainer's own default
+/// (`/tmp`) is the worst possible place for it: on a distro that backs `/tmp`
+/// with tmpfs under a systemd per-user quota, extracting several node images
+/// fails with "Disk quota exceeded" partway through a stack launch. Rooting it
+/// in the peppy tree puts it on real storage sized like the rest of peppy's
+/// data.
+fn apptainer_scratch_dir() -> PathBuf {
+    daemon_config::consts::PeppyDirs::default()
+        .tmp_dir()
+        .join("apptainer")
+}
+
+/// Creates the scratch directory and confirms this process can actually write
+/// into it.
+///
+/// The write probe is not redundant with the creation: `create_dir_all`
+/// succeeds on a directory that already exists whatever its mode, so a scratch
+/// dir left behind non-writable — the classic case being one created while the
+/// daemon ran under `sudo` and now owned by root — passes creation and only
+/// fails later, inside apptainer, as an opaque `MkdirTemp` error on the extract
+/// fallback. Probing here surfaces it at construction, named and pointed at the
+/// offending path. The probe is a file rather than a directory (which would
+/// mirror apptainer's own `os.MkdirTemp` more closely) because it needs the
+/// same `w`+`x` bits on the parent.
+///
+/// The probe name is unique per call, not merely per process: several threads
+/// can build an `Apptainer` at once (the unit tests do), and a name keyed only
+/// on the pid has them all probing one shared path, where the first
+/// `remove_file` to land leaves the others failing `ENOENT` on a scratch
+/// directory that is perfectly writable. For the same reason a probe that has
+/// already vanished is not an error — the `create` is what proves writability,
+/// and the `remove` only keeps apptainer's `--tmpdir` free of litter.
+pub(crate) fn prepare_scratch_dir(tmp_dir: &Path) -> Result<()> {
+    static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let probe = tmp_dir.join(format!(
+        ".peppy-scratch-probe-{}-{}",
+        std::process::id(),
+        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(tmp_dir)
+        .and_then(|()| std::fs::File::create(&probe))
+        .and_then(|_| match std::fs::remove_file(&probe) {
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        })
+        .map_err(|source| Error::ScratchDirUnavailable {
+            path: tmp_dir.display().to_string(),
+            source,
+        })
+}
+
 /// Returns `true` if the string looks like a URI reference (e.g. `docker://...`, `library://...`)
 /// rather than a filesystem path.
 pub(crate) fn is_uri(s: &str) -> bool {
@@ -25,7 +87,15 @@ pub(crate) fn is_uri(s: &str) -> bool {
 #[derive(Debug)]
 pub(crate) enum Backend {
     /// Linux: run apptainer directly on the host.
-    Native { apptainer_bin: PathBuf },
+    Native {
+        apptainer_bin: PathBuf,
+        /// Host-side scratch directory exported as `APPTAINER_TMPDIR`; see
+        /// [`apptainer_scratch_dir`]. The Lima backend has no counterpart: its
+        /// commands run over `limactl shell`, which does not carry the host
+        /// environment into the guest, and the guest's own `/tmp` is ordinary
+        /// disk-backed storage inside the VM rather than a quota-limited tmpfs.
+        tmp_dir: PathBuf,
+    },
     /// macOS: route commands through a Lima VM.
     Lima {
         /// Path to `bin/apptainer` used for invocation (guest-side inside the VM).
@@ -403,7 +473,10 @@ impl Apptainer {
                 lima_home,
             }
         } else {
-            Backend::Native { apptainer_bin }
+            Backend::Native {
+                apptainer_bin,
+                tmp_dir: apptainer_scratch_dir(),
+            }
         };
 
         let mut facade = Self {
@@ -418,14 +491,21 @@ impl Apptainer {
     /// Ensures the execution backend is fully ready for running commands.
     /// Called once during construction.
     ///
-    /// On Linux (`Backend::Native`): verifies user namespace prerequisites (AppArmor).
+    /// On Linux (`Backend::Native`): prepares the scratch directory apptainer is
+    /// pointed at and verifies user namespace prerequisites (AppArmor).
     ///
     /// On macOS (`Backend::Lima`): boots the Lima VM if it is not already running,
     /// and syncs the apptainer installation into the guest. This may take minutes
     /// on first run.
     fn ensure_ready(&mut self) -> Result<()> {
         match &mut self.backend {
-            Backend::Native { .. } => {
+            Backend::Native { tmp_dir, .. } => {
+                // Prepared up front rather than on first use: apptainer's
+                // `os.MkdirTemp` into `--tmpdir` fails outright when the
+                // directory is absent or unwritable, and that only ever happens
+                // on the extract fallback, i.e. the one path that is already
+                // struggling.
+                prepare_scratch_dir(tmp_dir)?;
                 #[cfg(target_os = "linux")]
                 check_userns_prerequisites(&self.apptainer_dir)?;
                 Ok(())
@@ -486,28 +566,7 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
-                let home = std::env::var("HOME").map_err(|_| {
-                    Error::ConfigurationError("HOME environment variable not set".into())
-                })?;
-
-                // Host runtime trees are never Lima's to carry. Registering
-                // `/run/user` here would write it into the Lima YAML — restarting
-                // the VM to mount the Mac's copy (which does not exist) over the
-                // guest's own runtime tmpfs — and would then whitelist it in
-                // `extra_mounts`, so `translate_path` would wave it through. The
-                // filter lives here rather than at the call sites because all
-                // three of them (stack preflight, node run, node build) funnel
-                // through this one method.
-                let external_paths: Vec<&str> = mount_src_paths
-                    .iter()
-                    .filter(|p| {
-                        let absolute = resolve_absolute(p);
-                        !absolute.starts_with(&home)
-                            && !crate::is_host_provided_mount_source(&absolute)
-                    })
-                    .copied()
-                    .collect();
-
+                let external_paths = paths_lima_must_mount(mount_src_paths)?;
                 if external_paths.is_empty() {
                     return Ok(());
                 }
@@ -548,6 +607,27 @@ impl Apptainer {
                 }
 
                 Ok(())
+            }
+        }
+    }
+
+    /// Whether [`Self::ensure_host_mounts`] would restart the execution
+    /// environment for these paths, asked without doing it.
+    ///
+    /// Always `false` on `Backend::Native`: there is no VM, so nothing a mount
+    /// registration does can disturb a running container. On `Backend::Lima` a
+    /// restart is what makes a new mount visible, and it takes every container
+    /// in the guest with it, so callers with something running ask first.
+    pub fn host_mounts_need_restart(&self, mount_src_paths: &[&str]) -> Result<bool> {
+        match &self.backend {
+            Backend::Native { .. } => Ok(false),
+            Backend::Lima { lima_home, .. } => {
+                let external_paths = paths_lima_must_mount(mount_src_paths)?;
+                if external_paths.is_empty() {
+                    return Ok(false);
+                }
+                let config_path = lima_home.join(lima::LIMA_INSTANCE).join("lima.yaml");
+                lima::extra_mounts_would_change(&config_path, &external_paths)
             }
         }
     }
@@ -906,7 +986,9 @@ impl Apptainer {
     /// Build a [`Command`] that will invoke apptainer with the given arguments.
     ///
     /// On Linux: runs `{apptainer_bin} <args...>` directly, with `working_dir`
-    /// (when set) applied via [`Command::current_dir`].
+    /// (when set) applied via [`Command::current_dir`] and `APPTAINER_TMPDIR`
+    /// pointed at the backend's scratch directory (see
+    /// [`apptainer_scratch_dir`]).
     /// On macOS: runs `{limactl} shell peppy -- {guest_apptainer_bin} <args...>` to
     /// execute inside the Lima VM using the synced guest-side binary. A
     /// `working_dir` is translated via [`translate_path`](Self::translate_path)
@@ -931,8 +1013,12 @@ impl Apptainer {
         working_dir: Option<&Path>,
     ) -> Result<Command> {
         match &self.backend {
-            Backend::Native { apptainer_bin } => {
+            Backend::Native {
+                apptainer_bin,
+                tmp_dir,
+            } => {
                 let mut cmd = Command::new(apptainer_bin);
+                cmd.env(APPTAINER_TMPDIR_ENV, tmp_dir);
                 cmd.args(args);
                 if let Some(dir) = working_dir {
                     cmd.current_dir(dir);
@@ -1008,6 +1094,30 @@ fn to_absolute(path: &Path) -> std::io::Result<PathBuf> {
     } else {
         Ok(path.to_path_buf())
     }
+}
+
+/// The subset of `mount_src_paths` that has to be written into the Lima config
+/// for the guest to see it.
+///
+/// `$HOME` is already auto-mounted, so paths under it need nothing. Host
+/// runtime trees are never Lima's to carry: registering `/run/user` would write
+/// it into the Lima YAML, restarting the VM to mount the Mac's copy (which does
+/// not exist) over the guest's own runtime tmpfs, and would then whitelist it in
+/// `extra_mounts` so `translate_path` waved it through. The filter lives here
+/// rather than at the call sites because all of them (stack preflight, node
+/// run, node build) funnel through the two methods that use it, which must
+/// agree on what counts.
+fn paths_lima_must_mount<'a>(mount_src_paths: &[&'a str]) -> Result<Vec<&'a str>> {
+    let home = std::env::var("HOME")
+        .map_err(|_| Error::ConfigurationError("HOME environment variable not set".into()))?;
+    Ok(mount_src_paths
+        .iter()
+        .filter(|p| {
+            let absolute = resolve_absolute(p);
+            !absolute.starts_with(&home) && !crate::is_host_provided_mount_source(&absolute)
+        })
+        .copied()
+        .collect())
 }
 
 /// Resolve a potentially relative path to an absolute one.
