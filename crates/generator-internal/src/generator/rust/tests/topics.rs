@@ -717,18 +717,18 @@ fn consumed_two_topics_same_node() {
     }
 }
 
-/// Checks for clippy warnings when there is only one emitted topic with an empty message format.
+/// Checks for clippy warnings when there is only one emitted topic and it
+/// declares no message format.
 #[test]
-fn clippy_single_emitted_topic_empty_format() {
+fn clippy_single_emitted_topic_without_message_format() {
     let temp_dir = TempDir::new().unwrap();
-    let emitted_topic_example_empty_format: &str = r#"
+    let emitted_topic_example_without_format: &str = r#"
     {
       name: "video_stream",
-      qos_profile: "sensor_data",
-      message_format: {}
+      qos_profile: "sensor_data"
     }
     "#;
-    let emitted_topic = parse_emitted_topic(emitted_topic_example_empty_format);
+    let emitted_topic = parse_emitted_topic(emitted_topic_example_without_format);
 
     let consumed_action1: ConsumedAction = serde_json5::from_str(
         r#"

@@ -17,6 +17,10 @@ message_format: {
 
 Each field value is a **schema type**: either a bare type token, or a structured schema with modifiers.
 
+:::note
+A declared `message_format` holds at least one field. An endpoint that carries no payload omits the key entirely, and an empty `message_format: {}` is rejected when the config is parsed.
+:::
+
 ---
 
 ## Primitive types
@@ -62,7 +66,7 @@ error_msg: {
 | `$type`     | Yes      | `string`, `bytes`, or `time` (arrays and objects take `$optional` in their own structured forms) |
 | `$optional` | No       | When `true`, the field may be absent. Defaults to `false` |
 
-Scalar-copy types (`bool`, the integer types, `f32`, `f64`) carry no presence bit, so `$optional` on them is rejected at interface generation; model an optional scalar as an optional `bytes`/`string` or restructure the message.
+Scalar-copy types (`bool`, the integer types, `f32`, `f64`) carry no presence bit, so an absent value is indistinguishable from a zero one: `$optional` on them is rejected when the config is parsed. Model an optional scalar as an optional `bytes`/`string` or restructure the message.
 
 :::note
 `$optional` can only be used on **root-level fields** of a `message_format`: direct children, not fields nested inside objects or array items. If a parent structure is present, all its fields must be present too.

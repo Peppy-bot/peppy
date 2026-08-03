@@ -16,7 +16,15 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 use super::types::{DependencyContext, InterfaceArtifact};
-use config::node::Cardinality;
+use config::node::{Cardinality, MessageFormat};
+
+/// A consumed service whose producer declares no request (or response) format
+/// reaches the generator as an empty `MessageFormat`: the daemon defaults the
+/// absent side rather than passing an `Option`. A parsed format is never
+/// empty, so the empty case is built the way the daemon builds it.
+pub fn empty_message_format() -> MessageFormat {
+    MessageFormat::default()
+}
 
 /// A node dependency slot at the manifest's default `one` cardinality,
 /// for tests where cardinality is irrelevant to what is being verified.

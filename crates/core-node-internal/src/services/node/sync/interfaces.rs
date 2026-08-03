@@ -339,7 +339,7 @@ pub(super) fn action_message_from_exposed(
         feedback: exposed_action
             .feedback_topic
             .as_ref()
-            .and_then(|t| t.message_format.clone()),
+            .map(|t| t.message_format.clone()),
         result_response: exposed_action
             .result_service
             .as_ref()

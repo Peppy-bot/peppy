@@ -67,10 +67,13 @@ pub fn build_exposed_action(
         .result_service
         .as_ref()
         .and_then(|result| non_empty_message_format(result.response_message_format.as_ref()));
+    // A declared `feedback_topic` always carries a non-empty message_format
+    // (enforced when the config is parsed), so the presence of the block is
+    // the only thing deciding whether `publish_feedback` is generated.
     let feedback_format = action
         .feedback_topic
         .as_ref()
-        .and_then(|topic| non_empty_message_format(topic.message_format.as_ref()));
+        .map(|topic| &topic.message_format);
 
     let has_goal_request = goal_request_format.is_some();
     let has_goal_response = goal_response_format.is_some();
