@@ -42,8 +42,6 @@ const CONSUMED_SERVICE_REQUEST_FORMAT_EXAMPLE: &str = r#"
 }
 "#;
 
-const EMPTY_MESSAGE_FORMAT: &str = r#"{}"#;
-
 // --- Service without request body
 
 const CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE: &str = r#"
@@ -401,8 +399,7 @@ async fn services_communication_exposed_service_without_request_body(
     let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
     let consumed_service: ConsumedService =
         serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_EXAMPLE).unwrap();
-    let consumed_request_format: MessageFormat =
-        serde_json5::from_str(EMPTY_MESSAGE_FORMAT).expect("empty request format should parse");
+    let consumed_request_format = crate::helpers::empty_message_format();
     let consumed_response_format: MessageFormat =
         serde_json5::from_str(CONSUMED_SERVICE_NO_REQUEST_RESPONSE_FORMAT_EXAMPLE).unwrap();
     let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =

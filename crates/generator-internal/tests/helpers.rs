@@ -3,7 +3,7 @@
 use config::consts::{
     NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH, PYTHON_MAX_VERSION, PYTHON_MIN_VERSION,
 };
-use config::node::PeppygenLanguage;
+use config::node::{MessageFormat, PeppygenLanguage};
 use daemon_config::consts::{PEPPYLIB_OUTPUT_PATH, PeppyDirs};
 use generator::generate_peppygen_lib;
 use peppylib::messaging::SenderTarget;
@@ -27,6 +27,14 @@ use tokio::time::sleep;
 /// shared cache directories for deploying vendored crates and Python packages.
 pub fn test_peppy_dirs() -> PeppyDirs {
     PeppyDirs::default()
+}
+
+/// A consumed service whose producer declares no request (or response) format
+/// reaches the generator as an empty `MessageFormat`: the daemon defaults the
+/// absent side rather than passing an `Option`. A parsed format is never
+/// empty, so the empty case is built the way the daemon builds it.
+pub fn empty_message_format() -> MessageFormat {
+    MessageFormat::default()
 }
 
 /// A node dependency slot at the manifest's default `one` cardinality,

@@ -48,14 +48,6 @@ This field name is reserved by peppy transport metadata and cannot be used insid
     #[error("unsupported fixed-length array item type `{item}` in field `{field}`")]
     UnsupportedFixedArrayItemType { field: String, item: &'static str },
     #[error(
-        "unsupported optional scalar type `{item}` in field `{field}` for `{language:?}` generator"
-    )]
-    UnsupportedOptionalScalarType {
-        language: PeppygenLanguage,
-        field: String,
-        item: &'static str,
-    },
-    #[error(
         "generated type name collision in `{context}`: fields `{first_field}` and `{second_field}` \
 both produce the type name `{type_name}`"
     )]

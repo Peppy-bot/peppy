@@ -3,8 +3,9 @@ use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, SchemaType, TypeToken,
+    NativeExposedAction, NativeExposedService, SchemaType,
 };
+use config::type_token_name;
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -590,42 +591,6 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
 
 const RESERVED_MESSAGE_FIELD_NAMES: &[&str] = &["instance_id"];
 
-pub(crate) fn type_token_name(token: &TypeToken) -> &'static str {
-    match token {
-        TypeToken::Bool => "bool",
-        TypeToken::String => "string",
-        TypeToken::Bytes => "bytes",
-        TypeToken::Time => "time",
-        TypeToken::U8 => "u8",
-        TypeToken::U16 => "u16",
-        TypeToken::U32 => "u32",
-        TypeToken::U64 => "u64",
-        TypeToken::I8 => "i8",
-        TypeToken::I16 => "i16",
-        TypeToken::I32 => "i32",
-        TypeToken::I64 => "i64",
-        TypeToken::F32 => "f32",
-        TypeToken::F64 => "f64",
-    }
-}
-
-pub(crate) fn is_scalar_copy_type(token: &TypeToken) -> bool {
-    matches!(
-        token,
-        TypeToken::Bool
-            | TypeToken::U8
-            | TypeToken::U16
-            | TypeToken::U32
-            | TypeToken::U64
-            | TypeToken::I8
-            | TypeToken::I16
-            | TypeToken::I32
-            | TypeToken::I64
-            | TypeToken::F32
-            | TypeToken::F64
-    )
-}
-
 fn validate_fixed_array_schema(schema: &SchemaType, path: &str) -> Result<()> {
     match schema {
         SchemaType::Array(array) => {
@@ -641,7 +606,7 @@ fn validate_fixed_array_schema(schema: &SchemaType, path: &str) -> Result<()> {
                         field: path.to_string(),
                     }
                 })?;
-                if !is_scalar_copy_type(token) {
+                if !token.is_scalar() {
                     return Err(Error::UnsupportedFixedArrayItemType {
                         field: path.to_string(),
                         item: type_token_name(token),

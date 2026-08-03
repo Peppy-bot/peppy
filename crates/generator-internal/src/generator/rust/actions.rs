@@ -253,7 +253,7 @@ pub fn build_goal_context_base_methods() -> TokenStream {
 /// message and publishing it on this goal's per-goal stream.
 pub fn build_goal_context_publish_feedback(
     params: &[FunctionParam],
-    encoding: Option<&MessageEncodingSpec>,
+    encoding: &MessageEncodingSpec,
     label: &str,
 ) -> TokenStream {
     let label_literal = Literal::string(label);
@@ -273,7 +273,6 @@ pub fn build_goal_context_publish_feedback(
             self.inner.publish_feedback(payload).await?;
         },
         error_context: quote!(format!("{} {}", #label_literal, ACTION_NAME)),
-        suppress_unused: Vec::new(),
     })
 }
 

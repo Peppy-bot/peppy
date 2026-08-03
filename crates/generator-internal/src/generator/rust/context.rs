@@ -3,8 +3,8 @@ use super::type_mapping::schema_type_to_tokens;
 use crate::error::{Error, Result};
 use crate::generator::naming::sanitize_capnp_field_name;
 use crate::generator::types::{
-    is_scalar_copy_type, type_token_name, validate_fixed_length_array_items,
-    validate_generated_type_name_collisions, validate_message_format_field_names,
+    validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    validate_message_format_field_names,
 };
 use config::node::{MessageFormat, PeppygenLanguage, SchemaType};
 use encoding::{CapnpSchemaArtifacts, FunctionParam, MessageFormatMapper};
@@ -102,7 +102,6 @@ pub fn map_message_format(
             validate_message_format_field_names(format, "message_format")?;
             validate_fixed_length_array_items(format)?;
             validate_generated_type_name_collisions(format, "Message")?;
-            validate_optional_scalar_fields_for_rust(format)?;
             MessageFormatMapper::new(schema_name, format.clone())
                 .map_message_format_to_capnpn()
                 .map(Some)
@@ -110,39 +109,6 @@ pub fn map_message_format(
         }
         None => Ok(None),
     }
-}
-
-fn validate_optional_scalar_schema_for_rust(schema: &SchemaType, path: &str) -> Result<()> {
-    match schema {
-        SchemaType::Primitive(primitive) => {
-            if primitive.optional && is_scalar_copy_type(&primitive.kind) {
-                return Err(Error::UnsupportedOptionalScalarType {
-                    language: PeppygenLanguage::Rust,
-                    field: path.to_string(),
-                    item: type_token_name(&primitive.kind),
-                });
-            }
-            Ok(())
-        }
-        SchemaType::Array(array) => {
-            validate_optional_scalar_schema_for_rust(array.items.as_ref(), &format!("{path}[]"))
-        }
-        SchemaType::Object(object) => {
-            for (field_name, nested) in &object.fields {
-                let nested_path = format!("{path}.{field_name}");
-                validate_optional_scalar_schema_for_rust(nested, &nested_path)?;
-            }
-            Ok(())
-        }
-        SchemaType::Type(_) => Ok(()),
-    }
-}
-
-fn validate_optional_scalar_fields_for_rust(format: &MessageFormat) -> Result<()> {
-    for (field_name, schema) in &format.0 {
-        validate_optional_scalar_schema_for_rust(schema, field_name)?;
-    }
-    Ok(())
 }
 
 fn validate_normalized_field_names_for_rust(format: &MessageFormat) -> Result<()> {
@@ -342,9 +308,11 @@ pub fn collect_function_params(
 mod tests {
     use super::*;
 
+    /// `$optional` on a scalar never reaches code generation: it is rejected
+    /// when the config is parsed, identically for every language.
     #[test]
-    fn reject_optional_scalar_for_rust() {
-        let format: MessageFormat = serde_json5::from_str(
+    fn reject_optional_scalar_at_parse_time() {
+        let result: std::result::Result<MessageFormat, _> = serde_json5::from_str(
             r#"
             {
                 maybe_code: {
@@ -353,49 +321,15 @@ mod tests {
                 }
             }
             "#,
-        )
-        .unwrap();
-
-        let err = validate_optional_scalar_fields_for_rust(&format).unwrap_err();
-        match err {
-            Error::UnsupportedOptionalScalarType {
-                language,
-                field,
-                item,
-            } => {
-                assert_eq!(language, PeppygenLanguage::Rust);
-                assert_eq!(field, "maybe_code");
-                assert_eq!(item, "u32");
-            }
-            other => panic!("expected UnsupportedOptionalScalarType, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn reject_optional_nested_scalar_at_parse_time() {
-        // `$optional` on nested object fields is rejected at deserialization
-        // time by the ObjectSchema visitor, not at generator validation time.
-        let result: std::result::Result<MessageFormat, _> = serde_json5::from_str(
-            r#"
-            {
-                status: {
-                    $type: "object",
-                    healthy: {
-                        $type: "bool",
-                        $optional: true
-                    }
-                }
-            }
-            "#,
         );
         assert!(
             result.is_err(),
-            "optional on nested object field should be rejected at parse time"
+            "optional on a scalar should be rejected at parse time"
         );
     }
 
     #[test]
-    fn allow_optional_pointer_types_for_rust() {
+    fn allow_optional_pointer_types() {
         let format: MessageFormat = serde_json5::from_str(
             r#"
             {
@@ -410,10 +344,9 @@ mod tests {
             }
             "#,
         )
-        .unwrap();
+        .expect("optional string/bytes remain supported");
 
-        validate_optional_scalar_fields_for_rust(&format)
-            .expect("optional string/bytes should remain supported for Rust");
+        map_message_format("test", Some(&format)).expect("optional pointer types generate");
     }
 
     #[test]
