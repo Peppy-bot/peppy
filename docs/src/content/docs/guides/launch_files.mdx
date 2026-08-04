@@ -242,6 +242,30 @@ One map filling every kind of `depends_on` slot the node declares, keyed by the 
 - a [pairing](/advanced_guides/pairing/) participant slot takes a single peer instance, `"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate which of the peer's slots to use;
 - an [observer](/advanced_guides/pairing/#observing-several-pairings-through-one-slot) slot takes the source instance(s) to observe, each `"<source>"` or `"<source>/<source_link_id>"`: a scalar for a `one` slot, an array for a multi-cardinality slot, in the order the node reads them back.
 
+One instance filling all three kinds:
+
+```json5
+{
+  source: { name: "session_recorder:v1" },
+  instances: [
+    {
+      instance_id: "rec_1",
+      links: {
+        // Producer slots: `storage` is `one`, `cameras` is multi-cardinality.
+        storage: "disk_1",
+        cameras: ["cam_left", "cam_right"],
+        // A participant slot names the peer to pair with, with
+        // `/<peer_link_id>` when the peer declares more than one slot.
+        arm: "arm_1/limb",
+        // A `one` observer slot names a single source instance to observe.
+        // The multi cardinalities take these same values in an array.
+        watch: "ctrl_1",
+      },
+    },
+  ],
+}
+```
+
 Every target must name an `instance_id` declared somewhere in the same launcher.
 
 ### `defer_links` (optional)
