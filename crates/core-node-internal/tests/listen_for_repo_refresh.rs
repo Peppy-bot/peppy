@@ -498,6 +498,73 @@ async fn refresh_empty_repos() {
     );
 }
 
+/// A repository that cannot be read is reported, not fatal. The run
+/// publishes the caches, the repositories that read cleanly are current,
+/// and the result names the ones that were not so the caller can offer a
+/// retry instead of stopping. Both ways a repository goes unreadable are
+/// covered: a root with no committed `peppy_repository.json5`, and a
+/// path that is not there at all (an offline git remote fails the same
+/// way, without needing a network in a test).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_reports_unreadable_repos_without_failing() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let healthy = started.peppy_dirs.root().join("healthy_repo");
+    create_node_dir(&healthy, "reachable_node", "v1");
+    common::publish_repo_index(&healthy);
+
+    // Holds a node but never published an index, so it states nothing
+    // about what it holds.
+    let unpublished = started.peppy_dirs.root().join("unpublished_repo");
+    create_node_dir(&unpublished, "unpublished_node", "v1");
+
+    let never_mounted = started.peppy_dirs.root().join("never_mounted");
+
+    write_repositories_json5(
+        &started,
+        &format!(
+            r#"[{{ "id": 1, "type": "fs", "path": "{}" }},
+                {{ "id": 2, "type": "fs", "path": "{}" }},
+                {{ "id": 3, "type": "fs", "path": "{}" }}]"#,
+            healthy.display(),
+            unpublished.display(),
+            never_mounted.display(),
+        ),
+    );
+
+    let result = send_refresh_and_wait(&started).await;
+
+    assert!(
+        result.result.success,
+        "an unreadable repository does not fail the run: {:?}",
+        result.result.error_message
+    );
+    assert_eq!(
+        result.result.total_nodes_found, 1,
+        "the readable repository still updated"
+    );
+
+    let report = &result.result.failure_report;
+    assert!(
+        report.contains("2 of the configured repositories could not be updated"),
+        "one message names every repository that failed: {report}"
+    );
+    assert!(
+        report.contains("peppy_repository.json5 is missing"),
+        "a root with no published index says so: {report}"
+    );
+    assert!(
+        report.contains("path does not exist"),
+        "a repository that is not on this machine says so: {report}"
+    );
+
+    let cache_path = nodes_repo_cache_path(&started.peppy_dirs);
+    let content = std::fs::read_to_string(&cache_path).expect("the node cache is published");
+    let entries: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse cache");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["node_name"], "reachable_node");
+}
+
 // ── Exclusion tests ──────────────────────────────────────────────
 
 /// When one of two FS repos is excluded, only nodes from the non-excluded

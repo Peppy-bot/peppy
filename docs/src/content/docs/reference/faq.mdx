@@ -54,9 +54,9 @@ Peppy's default repositories track a moving branch, so a change merged upstream 
 </details>
 
 <details>
-<summary>Why did <code>peppy repo refresh</code> start failing, and can I still work?</summary>
+<summary>Why is <code>peppy repo refresh</code> reporting repositories it could not update, and can I still work?</summary>
 
-Yes, you can almost certainly still work. A refresh failure is scoped to the repository that caused it: every other repository is indexed as usual, and the failing one **keeps the entries it last published**, so everything that launched before still launches. The run reports failure so you know the state is not current, and names every repository that failed in one message.
+Yes, you can almost certainly still work. A refresh failure is scoped to the repository that caused it: every other repository is indexed as usual, and the failing one **keeps the entries it last published**, so everything that launched before still launches. The run itself succeeds, names every repository that failed in one message so you know which parts of the state are not current, and asks you to run `peppy repo refresh` again.
 
 Read the failure kind. `unreachable` means the repository could not be read at all: network, a bad ref, an unmounted path, or a root with no committed `peppy_repository.json5` (the fix for that last one is authoring, not waiting: run `peppy repo index` in the repository and commit the result). `conflict` means the repository was read fine but its committed index contradicts itself or the tree, and the message names what to fix.
 

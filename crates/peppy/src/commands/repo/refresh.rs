@@ -3,7 +3,7 @@ use std::sync::Arc;
 use core_node_api::encoding::{
     RepoRefreshFeedback, RepoRefreshGoal, RepoRefreshGoalResponse, RepoRefreshResult,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::commands::action_poll::poll_action_to_completion;
 use crate::commands::node::TimeoutConfig;
@@ -90,6 +90,16 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
         result.total_contracts_found,
         result.total_pairings_found
     );
+
+    // A repository that could not be read is not a failed command: every
+    // other repository updated, and this one still serves the entries it
+    // last published. Naming it and naming the retry is the whole
+    // response, and it is what lets an install finish on a hub that was
+    // briefly unreachable rather than stopping there.
+    if !result.failure_report.is_empty() {
+        warn!("{}", result.failure_report);
+        warn!("Run `peppy repo refresh` again to pick those repositories up.");
+    }
     Ok(())
 }
 
