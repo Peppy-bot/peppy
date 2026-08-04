@@ -92,7 +92,8 @@ fn fleet_observer_config(instances: &InstanceLifetime) -> String {
 
 /// The source: plays the `arm` role of `arm_link/v1` through participant slot
 /// `controller`, emitting that role's `joint_states`. It boots standalone by
-/// deferring its own participant slot (it is observed, never paired here).
+/// declaring its own participant slot vacant (it is observed, never paired
+/// here).
 ///
 /// Its `run_cmd` records its own pid to `pidfile` before waiting, so a
 /// cooperatively-emulated shutdown can kill the exact process (see
@@ -263,7 +264,8 @@ async fn setup() -> Fixture {
     }
 }
 
-/// Runs the source (deferring its participant slot so it boots standalone) then
+/// Runs the source (its participant slot declared vacant so it boots
+/// standalone) then
 /// the observer with `--link watch@arm_1`, and returns the observer's state
 /// watch already advanced past the initial live delivery.
 async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
@@ -279,10 +281,13 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
         "arm_1",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&fx.ctx)
-    .expect("source run (participant slot deferred) should succeed");
+    .expect("source run (participant slot vacant) should succeed");
 
     let mut obs_rx = emulate_observer_services(
         &fx.messenger,
@@ -329,34 +334,31 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
     let fx = setup().await;
 
     // Coverage is enforced loudly on the observer's own slot: no `--link` and no
-    // `--defer-link` fails at preflight, naming the slot and the opt-out flag.
+    // `--vacant-link` fails at preflight, naming the slot and the opt-out flag.
     let err = node_run_command("rec_1", "recorder", Vec::new(), Vec::new())
         .execute(&fx.ctx)
-        .expect_err("a required observer slot without --link/--defer-link must fail");
+        .expect_err("a required observer slot without --link/--vacant-link must fail");
     let msg = err.to_string();
     assert!(
-        msg.contains("watch") && msg.contains("--defer-link"),
+        msg.contains("watch") && msg.contains("--vacant-link"),
         "coverage failure should name the observer slot and its opt-out: {msg}"
     );
 
-    // An observer defer belongs only to observation coverage. It must not ride
+    // An observer vacancy belongs only to observation coverage. It must not ride
     // the pair-specific goal field and be rejected later as a non-participant
     // pairing slot.
-    emulate_startup_services(
-        &fx.messenger,
-        &fx.core_node_name,
-        "recorder",
-        "rec_deferred",
-    )
-    .await;
+    emulate_startup_services(&fx.messenger, &fx.core_node_name, "recorder", "rec_vacant").await;
     node_run_command(
-        "rec_deferred",
+        "rec_vacant",
         "recorder",
         Vec::new(),
-        vec!["watch".to_string()],
+        vec![(
+            "watch".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&fx.ctx)
-    .expect("an observer slot deferred with --defer-link should boot");
+    .expect("an observer slot declared vacant with --vacant-link should boot");
 
     let mut obs_rx = run_source_then_observer(&fx).await;
 
@@ -415,10 +417,13 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
             instance_id,
             "robot_arm",
             Vec::new(),
-            vec!["controller".to_string()],
+            vec![(
+                "controller".to_string(),
+                "test rig: this slot has no peer".to_string(),
+            )],
         )
         .execute(&fx.ctx)
-        .expect("source run (participant slot deferred) should succeed");
+        .expect("source run (participant slot vacant) should succeed");
     }
 
     let mut obs_rx = emulate_observer_services(
@@ -495,7 +500,10 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
         "arm_2",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&fx.ctx)
     .expect("source re-run should succeed");
@@ -600,7 +608,10 @@ async fn service_reset_clears_the_observation_registry() {
         "arm_1",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&ctx)
     .expect("source run should succeed");
@@ -622,7 +633,10 @@ async fn service_reset_clears_the_observation_registry() {
         "arm_1",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&ctx)
     .expect("source re-run after reset should succeed");

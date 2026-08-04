@@ -1,7 +1,6 @@
 //! Plan-phase validation for the observer-slot entries of the launcher's
-//! per-instance `links` map and its `defer_links` field (and the CLI's
-//! `--link` / `--defer-link`, which feed the same validator through the
-//! daemon).
+//! per-instance `links` map (and the CLI's `--link` / `--vacant-link`, which
+//! feed the same validator through the daemon).
 //!
 //! An observer slot (`depends_on.pairing_observers`) passively taps
 //! the topics a participant emits for that role, without joining the 1:1
@@ -12,9 +11,10 @@
 //! A slot observes as many pairings as its declared `cardinality` allows, and
 //! its link value's shape follows that cardinality exactly as a producer
 //! binding's does: `one` takes a single target, the multi cardinalities take an
-//! array. A `one` or `one_or_more` slot must be linked or explicitly deferred
-//! (`ObservationSlotUncovered` otherwise); omitting a `zero_or_more` slot IS its
-//! empty set.
+//! array. A `one` or `one_or_more` slot must carry a `links` entry
+//! (`ObservationSlotUncovered` otherwise), and a `one` slot may spend that
+//! entry on `{ vacant: "<why>" }`; omitting a `zero_or_more` slot IS its empty
+//! set.
 
 use super::types::Placements;
 use crate::error::{
@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::pairings::PairingValidationItem;
 use super::types::{
-    CardinalityShapeViolation, LinkValue, check_cardinality_shape, split_link_target,
+    CardinalityShapeViolation, Selection, check_cardinality_shape, split_link_target,
 };
 
 /// One validated observation, ready for the daemon to deliver to the observer
@@ -81,8 +81,8 @@ pub struct ValidatedObservations {
 /// 5. No two of a slot's targets resolve to the same observed pairing
 ///    (`DuplicateObservationTarget`).
 /// 6. Coverage: every `one` / `one_or_more` observer slot of every planned
-///    instance is linked or listed in `defer_links`
-///    (`ObservationSlotUncovered`), and no slot is both.
+///    instance carries a `links` entry, naming sources or (on a `one` slot)
+///    declaring it vacant (`ObservationSlotUncovered` otherwise).
 ///
 /// Rules 2-5 are all-or-nothing per slot: a slot with any failing member
 /// contributes no observation at all, so a partially-resolved member set can
@@ -115,7 +115,14 @@ pub fn validate_observations(
                 let Some(own_dep) = observers_by_link.get(key.as_str()).copied() else {
                     continue;
                 };
-                match resolve_observation_slot(owner_id, own_dep, key, value, &lookup, placements) {
+                // A vacant slot observes nothing on purpose: it covers the
+                // slot (rule 6) and resolves no members.
+                let Some(selection) = value.selection() else {
+                    continue;
+                };
+                match resolve_observation_slot(
+                    owner_id, own_dep, key, selection, &lookup, placements,
+                ) {
                     Ok(planned) => out.planned.extend(planned),
                     Err(errors) => out.errors.extend(errors),
                 }
@@ -128,7 +135,7 @@ pub fn validate_observations(
     out
 }
 
-/// Resolves ONE observer slot's whole link value: the shape check (rule 1),
+/// Resolves ONE observer slot's whole selection: the shape check (rule 1),
 /// then every target in declaration order (rules 2-4), then the duplicate-member
 /// check (rule 5). Returns the slot's member set in that same order, or every
 /// rule violation it collected; a slot that fails contributes nothing.
@@ -136,17 +143,17 @@ fn resolve_observation_slot(
     owner_id: &str,
     own_dep: &PairingObserverDependency,
     key: &str,
-    value: &LinkValue,
+    selection: &Selection,
     lookup: &BTreeMap<&str, &PairingValidationItem<'_>>,
     placements: &Placements,
 ) -> Result<Vec<PlannedObservation>, Vec<ParsingError>> {
-    if let Err(violation) = check_cardinality_shape(own_dep.cardinality, value) {
+    if let Err(violation) = check_cardinality_shape(own_dep.cardinality, selection) {
         return Err(vec![shape_error(violation, owner_id, key)]);
     }
 
-    let mut planned = Vec::with_capacity(value.targets().len());
+    let mut planned = Vec::with_capacity(selection.targets().len());
     let mut errors = Vec::new();
-    for target in value.targets() {
+    for target in selection.targets() {
         match resolve_observation(owner_id, own_dep, key, target, lookup, placements) {
             Ok(observation) => planned.push(observation),
             Err(error) => errors.push(error),
@@ -306,11 +313,16 @@ fn resolve_observation(
     })
 }
 
-/// Rule 6: a `one` / `one_or_more` observer slot must be linked (a `links`
-/// entry) or deferred (a `defer_links` entry), and no slot may be both.
-/// Omitting a `zero_or_more` slot is how a deployment writes its empty set, so
-/// it needs no coverage; deferring it stays valid and says the same thing
-/// explicitly.
+/// Rule 6: a `one` / `one_or_more` observer slot must carry a `links` entry,
+/// whether that entry names sources or declares the slot vacant. Omitting a
+/// `zero_or_more` slot is how a deployment writes its empty set, so it needs
+/// no coverage.
+///
+/// A vacancy covers a `one` slot ONLY. A `one_or_more` slot has no empty
+/// state, so a vacancy there covers nothing here and is separately rejected by
+/// `validate_link_slots` with the reason; judging it independently is what
+/// keeps the generated "the plan bound at least one pairing to it" docstring
+/// true no matter which validator runs first.
 fn validate_coverage(
     instance: &super::types::DeploymentInstance,
     item: &PairingValidationItem<'_>,
@@ -318,17 +330,11 @@ fn validate_coverage(
 ) {
     let owner_id = instance.instance_id.as_str();
     for observer in item.observer_deps {
-        let linked = instance.links.contains_key(&observer.link_id);
-        let deferred = instance.defer_links.contains(&observer.link_id);
-        if linked && deferred {
-            errors.push(ParsingError::LinkDeferInvalid {
-                owner_instance_id: owner_id.to_string(),
-                link_id: observer.link_id.clone(),
-                reason: "the slot is also linked in this plan".to_string(),
-            });
-            continue;
-        }
-        if linked || deferred || observer.cardinality.allows_empty() {
+        let covered = match instance.links.get(&observer.link_id) {
+            Some(value) => value.selection().is_some() || observer.cardinality.is_one(),
+            None => false,
+        };
+        if covered || observer.cardinality.allows_empty() {
             continue;
         }
         errors.push(ParsingError::ObservationSlotUncovered(Box::new(
@@ -476,15 +482,22 @@ mod tests {
         assert_eq!(info.link_id, "observed_arm");
         assert_eq!(info.observed_role, "arm");
         assert!(
-            info.to_string().contains("--defer-link observed_arm"),
-            "message should show the defer: {info}"
+            info.to_string()
+                .contains("--vacant-link 'observed_arm=<why>'"),
+            "message should show how to declare it vacant: {info}"
         );
     }
 
+    /// A `one` observer slot is scalar-valued and has no empty shape, so a
+    /// vacancy is how a deployment says it watches nothing.
     #[test]
-    fn deferred_observer_is_covered() {
-        let rec_instances =
-            parse_instances(r#"[{ instance_id: "rec_1", defer_links: ["observed_arm"] }]"#);
+    fn a_vacant_one_observer_is_covered() {
+        let rec_instances = parse_instances(
+            r#"[{
+                instance_id: "rec_1",
+                links: { observed_arm: { vacant: "bench rig: no arm to watch" } }
+            }]"#,
+        );
         let rec_deps = recorder_deps();
         let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
         let out = validate_observations(&items, &all_local());
@@ -668,12 +681,12 @@ mod tests {
             let mut instances = parse_instances(r#"[{ instance_id: "rec_1" }]"#);
             instances[0].links.insert(
                 "observed_arm".to_string(),
-                LinkValue::Flags(
+                super::super::types::LinkValue::Bound(Selection::Flags(
                     super::super::types::LinkTargets::new(
                         targets.iter().map(|target| target.to_string()).collect(),
                     )
                     .expect("distinct flag targets"),
-                ),
+                )),
             );
             instances
         };
@@ -819,7 +832,8 @@ mod tests {
     }
 
     /// Coverage follows the cardinality: `one` and `one_or_more` must be
-    /// linked or deferred, while omitting `zero_or_more` IS its empty set.
+    /// linked or declared vacant, while omitting `zero_or_more` IS its empty
+    /// set.
     #[test]
     fn omitted_observer_slots_error_per_cardinality() {
         for (cardinality, expect_uncovered) in [
@@ -843,12 +857,13 @@ mod tests {
         }
     }
 
-    /// Deferring a `zero_or_more` slot says its empty set explicitly, and
-    /// stays valid.
+    /// A `zero_or_more` slot already spells its empty set as `[]`, so that is
+    /// the spelling it keeps; `validate_link_slots` rejects the vacancy that
+    /// would be a second one.
     #[test]
-    fn deferring_a_zero_or_more_slot_is_valid() {
+    fn a_zero_or_more_slot_writes_its_empty_set_as_an_array() {
         let rec_instances =
-            parse_instances(r#"[{ instance_id: "rec_1", defer_links: ["observed_arm"] }]"#);
+            parse_instances(r#"[{ instance_id: "rec_1", links: { observed_arm: [] } }]"#);
         let rec_deps = recorder_deps_with(Some("zero_or_more"));
         let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
         let out = validate_observations(&items, &all_local());
@@ -856,28 +871,49 @@ mod tests {
         assert!(out.planned.is_empty());
     }
 
-    /// Linking and deferring one slot in the same plan is contradictory,
-    /// mirroring the participant rule.
+    /// Coverage follows the cardinality, and a vacancy covers only where it is
+    /// legal: a `one_or_more` slot has no empty state, so vacancy neither
+    /// covers it nor is accepted for it (`validate_link_slots` rejects it),
+    /// which is what keeps the generated "at least one pairing" docstring
+    /// true.
     #[test]
-    fn a_slot_that_is_both_linked_and_deferred_is_invalid() {
-        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        let arm_deps = arm_deps();
+    fn a_vacant_one_or_more_observer_is_not_covered() {
         let rec_instances = parse_instances(
-            r#"[{ instance_id: "rec_1", links: { observed_arm: "arm_1" }, defer_links: ["observed_arm"] }]"#,
+            r#"[{
+                instance_id: "rec_1",
+                links: { observed_arm: { vacant: "nothing to watch" } }
+            }]"#,
         );
-        let rec_deps = recorder_deps();
-        let items = vec![
-            item("robot_arm", &arm_instances, &arm_deps),
-            observer_item("recorder", &rec_instances, &rec_deps),
-        ];
+        let rec_deps = recorder_deps_with(Some("one_or_more"));
+        let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
         let out = validate_observations(&items, &all_local());
         assert!(
-            out.errors.iter().any(|e| matches!(
-                e,
-                ParsingError::LinkDeferInvalid { reason, .. } if reason.contains("also linked")
-            )),
-            "expected LinkDeferInvalid, got {:?}",
             out.errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::ObservationSlotUncovered(_))),
+            "a vacancy must not cover a `one_or_more` slot: {:?}",
+            out.errors
+        );
+    }
+
+    /// Linking a slot and declaring it vacant are one key holding one value,
+    /// so the contradiction is unwritable: a launch file naming a slot twice
+    /// is rejected as it parses, before any validator sees it.
+    #[test]
+    fn a_slot_cannot_be_both_linked_and_vacant_in_one_launch_file() {
+        let err = serde_json5::from_str::<Vec<DeploymentInstance>>(
+            r#"[{
+                instance_id: "rec_1",
+                links: {
+                    observed_arm: "arm_1",
+                    observed_arm: { vacant: "nothing to watch" }
+                }
+            }]"#,
+        )
+        .expect_err("one slot cannot hold two values");
+        assert!(
+            err.to_string().contains("observed_arm"),
+            "the duplicate key should be named: {err}"
         );
     }
 

@@ -285,14 +285,11 @@ pub struct PairingSha256Mismatch {
 }
 
 /// Payload for [`ParsingError::PairingSlotUncovered`]. A required pairing
-/// slot was neither paired nor explicitly deferred.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "instance `{instance_id}` declares required pairing slot `{link_id}` (pairing \
-     `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
-     `links: {{ {link_id}: \"<peer_instance>\" }}` / `--link {link_id}@<peer_instance>`), \
-     or defer it deliberately (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
-)]
+/// slot was neither paired nor declared vacant.
+///
+/// `Display` is hand-written rather than derived so the "leave it empty on
+/// purpose" clause comes from [`vacancy_hint`], the one place that spells it.
+#[derive(Debug, Clone)]
 pub struct PairingSlotUncovered {
     pub instance_id: String,
     pub link_id: String,
@@ -300,6 +297,28 @@ pub struct PairingSlotUncovered {
     pub pairing_tag: String,
     pub role: String,
 }
+
+impl std::fmt::Display for PairingSlotUncovered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            instance_id,
+            link_id,
+            pairing_name,
+            pairing_tag,
+            role,
+        } = self;
+        write!(
+            f,
+            "instance `{instance_id}` declares required pairing slot `{link_id}` (pairing \
+             `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
+             `links: {{ {link_id}: \"<peer_instance>\" }}` / \
+             `--link {link_id}@<peer_instance>`), {hint}",
+            hint = vacancy_hint(link_id)
+        )
+    }
+}
+
+impl std::error::Error for PairingSlotUncovered {}
 
 /// Payload for [`ParsingError::ObservationTargetNotObservable`]. The observer
 /// slot's source instance declares no participant slot playing the observed
@@ -347,8 +366,8 @@ pub struct ObservationTargetAmbiguous {
 }
 
 /// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared `one` or
-/// `one_or_more` observer slot was neither linked to a source nor explicitly
-/// deferred. Mirror of [`PairingSlotUncovered`] for observers. A `zero_or_more`
+/// `one_or_more` observer slot was neither linked to a source nor declared
+/// vacant. Mirror of [`PairingSlotUncovered`] for observers. A `zero_or_more`
 /// slot never raises this: omitting it IS its empty set.
 ///
 /// `Display` is hand-written rather than derived because the launcher link shape
@@ -374,18 +393,25 @@ impl std::fmt::Display for ObservationSlotUncovered {
             observed_role,
             cardinality,
         } = self;
+        // A `one` slot is scalar-valued and has no empty shape, so vacancy is
+        // how it says "nothing here". A `one_or_more` slot has no empty state
+        // at all, so its only fix is a source.
         let link_shape = if cardinality.is_one() {
             format!("links: {{ {link_id}: \"<source_instance>\" }}")
         } else {
             format!("links: {{ {link_id}: [\"<source_instance>\", ...] }}")
+        };
+        let fix = if cardinality.is_one() {
+            vacancy_hint(link_id)
+        } else {
+            "a `one_or_more` slot has no empty state, so it takes at least one source".to_string()
         };
         write!(
             f,
             "instance `{instance_id}` declares observer slot `{link_id}` (cardinality \
              `{cardinality}`, observes role `{observed_role}` of pairing \
              `{pairing_name}:{pairing_tag}`) with no source. Link it (launcher `{link_shape}` / \
-             `--link {link_id}@<source_instance>`), or defer it deliberately \
-             (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
+             `--link {link_id}@<source_instance>`), {fix}"
         )
     }
 }
@@ -610,16 +636,31 @@ pub enum ParsingError {
         source_link_id: String,
     },
 
-    /// A `defer_links` entry that is invalid. Structural reasons (the entry
-    /// names no declared slot, or names a producer-binding slot, which cannot
-    /// be deferred) and the stateful reason (the slot is also linked in the
-    /// same plan) both surface here with a specific `reason`.
-    #[error("defer_links entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}")]
-    LinkDeferInvalid {
+    /// A `{ vacant: "<why>" }` value on a slot that already has a spelling for
+    /// its empty state. Vacancy is how a participant slot and a `one` observer
+    /// slot say "nothing here"; every other slot says it another way, and one
+    /// spelling per fact is the rule this enforces.
+    #[error(
+        "link `{link_id}` on instance `{owner_instance_id}` is a {slot_kind} and cannot be \
+         vacant. Its empty state is {empty_spelling}"
+    )]
+    LinkVacantInvalid {
         owner_instance_id: String,
         link_id: String,
-        reason: String,
+        slot_kind: String,
+        empty_spelling: String,
     },
+}
+
+/// How a coverage failure tells the reader to write the vacancy down, shared
+/// by [`PairingSlotUncovered`] and [`ObservationSlotUncovered`] so the two
+/// surfaces cannot drift on the spelling of a feature whose whole point is
+/// that there is one spelling.
+fn vacancy_hint(link_id: &str) -> String {
+    format!(
+        "or leave it empty on purpose (`links: {{ {link_id}: {{ vacant: \"<why>\" }} }}` / \
+         `--vacant-link '{link_id}=<why>'`)"
+    )
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

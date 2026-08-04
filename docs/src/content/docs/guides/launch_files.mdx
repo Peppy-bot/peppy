@@ -38,7 +38,7 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` (where the node comes from) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, `links`, and `defer_links` are optional. See [Instance attributes](#instance-attributes) for what each one does
+ 3. Each deployment requires a `source` (where the node comes from) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, and `links` are optional. See [Instance attributes](#instance-attributes) for what each one does
 
 The `source` attribute always references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
 
@@ -156,7 +156,7 @@ $ peppy stack list
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) except `zero_or_more` must be bound; a launcher that leaves one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow their own rules: a participant slot is paired or covered by [`defer_links`](#defer_links-optional), and an observer slot is linked or deferred unless its cardinality is `zero_or_more`, where omitting it IS its empty set. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
+The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and a `zero_or_more` slot bound to nothing shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) except `zero_or_more` must be bound; a launcher that leaves one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow their own rules: a participant slot is paired or declared [`vacant`](#links-optional), and an observer slot is linked or declared vacant unless its cardinality is `zero_or_more`, where omitting it IS its empty set. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
 
 ## Instance attributes
 
@@ -242,7 +242,9 @@ One map filling every kind of `depends_on` slot the node declares, keyed by the 
 - a [pairing](/advanced_guides/pairing/) participant slot takes a single peer instance, `"<peer>"` or `"<peer>/<peer_link_id>"` to disambiguate which of the peer's slots to use;
 - an [observer](/advanced_guides/pairing/#observing-several-pairings-through-one-slot) slot takes the source instance(s) to observe, each `"<source>"` or `"<source>/<source_link_id>"`: a scalar for a `one` slot, an array for a multi-cardinality slot, in the order the node reads them back.
 
-One instance filling all three kinds:
+A slot that starts unresolved on purpose says so here too, as `{ vacant: "<why>" }`. That value binds nothing and covers the slot, so the fate of every declared slot is one entry in this one map and a slot you forgot is an absence rather than a value. It is legal exactly where the slot has no other way to write "empty": a participant pairing slot, and a `cardinality: "one"` observer slot. A multi-cardinality slot writes its empty set as `[]` (or omits the key), and a required producer slot has no empty state at all; a vacancy on any of those is rejected, naming the spelling that slot does have. The reason is required, is trimmed, and travels with the instance, so `peppy stack launch` reports it back when the node starts.
+
+One instance filling all three kinds, plus a slot left deliberately empty:
 
 ```json5
 {
@@ -260,6 +262,8 @@ One instance filling all three kinds:
         // A `one` observer slot names a single source instance to observe.
         // The multi cardinalities take these same values in an array.
         watch: "ctrl_1",
+        // A slot this deployment leaves empty on purpose, and why.
+        gripper: { vacant: "bench rig: no gripper on this frame" },
       },
     },
   ],
@@ -268,9 +272,20 @@ One instance filling all three kinds:
 
 Every target must name an `instance_id` declared somewhere in the same launcher.
 
-### `defer_links` (optional)
+Two instances of the same node can choose different fates for the same slot, which is why this is written per instance rather than in the node's manifest:
 
-The `link_id`s of pairing or observer slots this instance should start with left unresolved, listed by name. Every participant slot must either be paired or appear here, and every `one` / `one_or_more` observer slot must either be linked or appear here; a producer-binding slot cannot be deferred. A `zero_or_more` observer slot needs no entry (omitting it is its empty set), though deferring it is valid and says the same thing explicitly. Deferring a slot the same plan already links is an error. Use it when the peer arrives later, at runtime, rather than in this launch.
+```json5
+instances: [
+  {
+    instance_id: "backbone_governed",
+    links: { leader_left_arm: "commander_inst/left_arm" },
+  },
+  {
+    instance_id: "backbone_monitor",
+    links: { leader_left_arm: { vacant: "monitor rig: nothing commands this backbone" } },
+  },
+]
+```
 
 ## Running one launcher across several machines
 

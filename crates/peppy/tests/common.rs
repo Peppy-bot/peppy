@@ -87,7 +87,7 @@ pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -102,7 +102,7 @@ pub fn node_run_command(
     instance_id: &str,
     node: &str,
     links: Vec<(String, String)>,
-    defer_links: Vec<String>,
+    vacant_links: Vec<(String, String)>,
 ) -> peppy::commands::node::NodeCommand {
     peppy::commands::node::NodeCommand {
         command: peppy::commands::node::NodeCommands::Run {
@@ -112,7 +112,7 @@ pub fn node_run_command(
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             links,
-            defer_links,
+            vacant_links,
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,

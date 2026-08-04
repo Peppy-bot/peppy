@@ -196,8 +196,8 @@ pub fn run_snippet_with_deps(
 /// workspace-relative directory of `contract/v1` / `pairing/v1` documents;
 /// it is registered as an fs repo and refreshed, then the snippet is synced
 /// with `-r`, added, built, and launched with `start_args`. The pairing
-/// snippets launch solo with `--defer-link <slot>`: a required slot boots
-/// unpaired when explicitly deferred, with no peer present.
+/// snippets launch solo with `--vacant-link <slot>=<why>`: a required slot
+/// boots unpaired when explicitly declared vacant, with no peer present.
 pub fn run_snippet_with_contract_repo(
     snippets_root: &str,
     snippet_name: &str,

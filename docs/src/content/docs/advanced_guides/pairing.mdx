@@ -102,7 +102,7 @@ The two directions are checked differently, and for the same reasons contracts a
 
 Naming a topic under `consumes` that this node's own role emits is an error, as is naming a topic that is absent from the document. Both are reported as one aggregated diff per slot, so a manifest with several wrong entries produces one readable report rather than a cascade.
 
-Every participant slot must be covered: starting the instance without pairing the slot, or without deferring it explicitly, fails loudly. A deployment that runs the node with a slot unpaired says so with `--defer-link`/`defer_links:`, so an unpaired slot is always something the deployment wrote down rather than something it forgot. Coverage is a launch-time question and has no bearing on what the node declares: a slot that boots deferred is interface-checked exactly like a paired one.
+Every participant slot must be covered: starting the instance without pairing the slot, or without declaring it vacant, fails loudly. A deployment that runs the node with a slot unpaired says so with `--vacant-link 'SLOT=<why>'` / `links: { <slot>: { vacant: "<why>" } }`, and the reason is required, so an unpaired slot is always something the deployment wrote down, with its rationale, rather than something it forgot. Coverage is a launch-time question and has no bearing on what the node declares: a slot that boots vacant is interface-checked exactly like a paired one.
 
 ## Establishing pairs
 
@@ -113,24 +113,26 @@ peppy repo refresh
 peppy node add -s ./robot_arm        # sync interfaces, then add to the stack
 peppy node add -s ./arm_controller
 
-# The first instance has no peer yet, so its required slot must be
-# explicitly deferred; it boots with the slot silent.
-peppy node run --instance-id arm_1 robot_arm:v1 --defer-link controller
+# The first instance has no peer yet, so its required slot is declared
+# vacant; it boots with the slot silent.
+peppy node run --instance-id arm_1 robot_arm:v1 \
+  --vacant-link 'controller=the commander starts after this arm'
 
 # The second instance pairs its `arm` slot with arm_1 at start.
 peppy node run --instance-id ctrl_1 arm_controller:v1 --link arm@arm_1
 ```
 
-The `--link` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the running peer instance, and (only when the peer declares several complementary slots of the same pairing) which of the peer's slots to claim. Running a node whose required slot is neither `--link`ed nor `--defer-link`ed is a hard error naming the missing slot and both flags:
+The `--link` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the running peer instance, and (only when the peer declares several complementary slots of the same pairing) which of the peer's slots to claim. The `--vacant-link` value is `SLOT=<why>`, split on the first `=`, so the reason may itself contain `=` and needs no escaping. Running a node whose required slot is neither `--link`ed nor `--vacant-link`ed is a hard error naming the missing slot and both flags:
 
 ```sh
 $ peppy node run arm_controller:v1
 Error: instance `brave-lovelace-4821` declares required pairing slot `arm` (pairing `arm_link:v1`,
 role `controller`) with no pair. Pair it (launcher `links: { arm: "<peer_instance>" }` /
-`--link arm@<peer_instance>`), or defer it deliberately (`defer_links: ["arm"]` / `--defer-link arm`)
+`--link arm@<peer_instance>`), or leave it empty on purpose
+(`links: { arm: { vacant: "<why>" } }` / `--vacant-link 'arm=<why>'`)
 ```
 
-In a launcher, the pair is declared once, on either instance, with `links:`; a slot left intentionally unpaired goes in `defer_links:`:
+In a launcher, the pair is declared once, on either instance, with `links:`; a slot left intentionally unpaired takes a `{ vacant: "<why>" }` value in that same map:
 
 ```json5 title="peppy_launcher.json5"
 {
@@ -248,8 +250,10 @@ interfaces: {
 ```sh
 peppy node add -s ./two_arm_commander
 
-peppy node run --instance-id arm_l robot_arm:v1 --defer-link controller
-peppy node run --instance-id arm_r robot_arm:v1 --defer-link controller
+peppy node run --instance-id arm_l robot_arm:v1 \
+  --vacant-link 'controller=the commander starts after both arms'
+peppy node run --instance-id arm_r robot_arm:v1 \
+  --vacant-link 'controller=the commander starts after both arms'
 peppy node run --instance-id cmd_1 two_arm_commander:v1 \
   --link left_arm@arm_l --link right_arm@arm_r
 ```
@@ -303,11 +307,11 @@ An observer slot carries a [`cardinality`](/advanced_guides/topics/#dependency-c
 
 | `cardinality` | Launcher `links:` value | Omitting the slot |
 |---|---|---|
-| `one` (the default) | a single target, `watch: "arm_1"` | rejected: link it or defer it |
-| `one_or_more` | an array, `watch: ["arm_1", "arm_2"]` | rejected: link it or defer it |
+| `one` (the default) | a single target, `watch: "arm_1"`, or `{ vacant: "<why>" }` | rejected: link it or declare it vacant |
+| `one_or_more` | an array, `watch: ["arm_1", "arm_2"]` | rejected: it has no empty state, so it takes at least one source |
 | `zero_or_more` | an array, possibly empty | valid, and means the empty set |
 
-On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot. Deferring a `zero_or_more` slot is valid too, and says its empty set explicitly.
+Vacancy is only for the `one` row: a `one` slot is scalar-valued and has no empty shape, while a multi-cardinality slot already writes its empty set as `[]`, and a `one_or_more` slot has no empty state to write. On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot.
 
 The declared cardinality types the generated accessor, so flipping it surfaces at every call site rather than silently reading one member of many: a `one` slot exposes `source()` returning a single observed pairing, and the multi cardinalities expose `sources()` returning the whole set in plan order. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the member that published it.
 

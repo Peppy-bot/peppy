@@ -92,7 +92,7 @@ async fn node_stop_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -173,7 +173,7 @@ async fn node_stop_command_succeeds() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
