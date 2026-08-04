@@ -229,6 +229,15 @@ pub(super) async fn build_container_image(
             Some(container_build_cache::BIND_DEST),
             None,
         );
+        // Nested over the directory bind so the executable that later builds
+        // run cannot be replaced from inside `%post`.
+        if let Some(sccache_bin) = &cache.sccache_bin {
+            cmd_builder = cmd_builder.bind(
+                &sccache_bin.to_string_lossy(),
+                Some(&container_build_cache::sccache_bin_dest()),
+                Some("ro"),
+            );
+        }
         for (key, value) in &cache.env {
             cmd_builder = cmd_builder.apptainer_env(key, value);
         }

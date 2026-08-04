@@ -47,14 +47,23 @@ const SCCACHE_CACHE_SUBDIR: &str = "sccache-cache";
 /// `APPTAINERENV_` so apptainer forwards them into `%post`.
 pub(super) struct ContainerBuildCache {
     pub host_dir: PathBuf,
+    /// Host path of the installed sccache binary, bound read-only over its
+    /// location inside [`BIND_DEST`] so `%post` cannot replace the executable
+    /// that later builds run. Set only when sccache is active.
+    pub sccache_bin: Option<PathBuf>,
     pub env: Vec<(&'static str, String)>,
     /// One-line summary streamed to the build feedback channel.
     pub summary: String,
 }
 
+/// Container-side path of the read-only sccache binary bind.
+pub(super) fn sccache_bin_dest() -> String {
+    format!("{BIND_DEST}/{SCCACHE_BIN_SUBDIR}")
+}
+
 /// Prepares the shared build cache for a container build, or `None` when
-/// caching does not apply: non-Rust node, user opt-out, a build that already
-/// uses the mount point itself, or cache directory setup failure.
+/// caching does not apply: non-Rust node, user opt-out, a build whose
+/// configuration conflicts with the cache, or cache directory setup failure.
 pub(super) fn prepare(
     peppy_dirs: &PeppyDirs,
     language: PeppygenLanguage,
@@ -66,18 +75,11 @@ pub(super) fn prepare(
     if !enabled {
         return None;
     }
-    if references_bind_dest(def_contents, apptainer_build_extra_args) {
+    if let Some(marker) = cache_conflict_marker(def_contents, apptainer_build_extra_args) {
         warn!(
             "container build cache disabled: the def file or \
-             apptainer_build_extra_args reference {BIND_DEST}"
-        );
-        return None;
-    }
-    if def_contents.contains("rustup") {
-        warn!(
-            "container build cache disabled: the def file mentions rustup, \
-             and a rustup install in %post would be misplaced by the \
-             CARGO_HOME override"
+             apptainer_build_extra_args mention `{marker}`, which the cache \
+             mount or its environment overrides would interfere with"
         );
         return None;
     }
@@ -87,14 +89,29 @@ pub(super) fn prepare(
     )
 }
 
-/// Whether the node's own build configuration uses the cache mount point,
-/// in which case mounting over it could break the build or shadow a
-/// user-supplied bind.
-fn references_bind_dest(def_contents: &str, apptainer_build_extra_args: &[String]) -> bool {
-    def_contents.contains(BIND_DEST)
-        || apptainer_build_extra_args
-            .iter()
-            .any(|arg| arg.contains(BIND_DEST))
+/// Returns the first marker showing the build's own configuration would
+/// collide with the cache: the mount point itself, a rustup install that the
+/// `CARGO_HOME` override would misplace, or one of the environment variables
+/// the cache manages. Plain substring matching errs toward skipping the
+/// cache.
+fn cache_conflict_marker(
+    def_contents: &str,
+    apptainer_build_extra_args: &[String],
+) -> Option<&'static str> {
+    const CONFLICT_MARKERS: [&str; 6] = [
+        BIND_DEST,
+        "rustup",
+        "CARGO_HOME",
+        "RUSTC_WRAPPER",
+        "SCCACHE_DIR",
+        "SCCACHE_SERVER_PORT",
+    ];
+    CONFLICT_MARKERS.into_iter().find(|marker| {
+        def_contents.contains(marker)
+            || apptainer_build_extra_args
+                .iter()
+                .any(|arg| arg.contains(marker))
+    })
 }
 
 /// Testable core of [`prepare`]: lays out `cache_root` and derives the bind
@@ -121,11 +138,12 @@ fn prepare_in(cache_root: &Path, sccache_source: Option<PathBuf>) -> Option<Cont
 
     let mut env = vec![("CARGO_HOME", format!("{BIND_DEST}/{CARGO_HOME_SUBDIR}"))];
     let mut parts = vec!["cargo registry"];
+    let mut sccache_bin = None;
 
     if let Some(source) = sccache_source {
         match install_sccache(&source, cache_root) {
             Ok(()) => {
-                env.push(("RUSTC_WRAPPER", format!("{BIND_DEST}/{SCCACHE_BIN_SUBDIR}")));
+                env.push(("RUSTC_WRAPPER", sccache_bin_dest()));
                 env.push(("SCCACHE_DIR", format!("{BIND_DEST}/{SCCACHE_CACHE_SUBDIR}")));
                 // Concurrent builds share the host network namespace. A unique
                 // port per build keeps each sccache server paired with the
@@ -133,6 +151,7 @@ fn prepare_in(cache_root: &Path, sccache_source: Option<PathBuf>) -> Option<Cont
                 // namespace, so ports free up immediately.
                 env.push(("SCCACHE_SERVER_PORT", next_server_port().to_string()));
                 parts.push("sccache");
+                sccache_bin = Some(cache_root.join(SCCACHE_BIN_SUBDIR));
             }
             Err(e) => warn!("sccache disabled for this build: {e}"),
         }
@@ -140,6 +159,7 @@ fn prepare_in(cache_root: &Path, sccache_source: Option<PathBuf>) -> Option<Cont
 
     Some(ContainerBuildCache {
         host_dir: cache_root.to_path_buf(),
+        sccache_bin,
         env,
         summary: format!("Container build cache: {}", parts.join(" + ")),
     })
@@ -238,14 +258,18 @@ fn next_server_port() -> u16 {
 }
 
 /// Returns whether `path` is a 64-bit little-endian ELF executable for this
-/// machine's architecture with no `PT_INTERP` program header, i.e. one that
-/// runs in the container without a host dynamic linker. Static-pie binaries
-/// qualify; glibc-dynamic and foreign-arch ones do not. Any parse failure or
-/// foreign format returns `Ok(false)`.
+/// machine's architecture that the kernel can load without a dynamic linker:
+/// `ET_EXEC` or `ET_DYN` (static-pie), at least one `PT_LOAD` segment, and no
+/// `PT_INTERP`. Glibc-dynamic and foreign-arch binaries do not qualify. Any
+/// parse failure or foreign format returns `Ok(false)`.
 fn is_static_linux_elf(path: &Path) -> std::io::Result<bool> {
     const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
     const CLASS_64: u8 = 2;
     const DATA_LITTLE_ENDIAN: u8 = 1;
+    const EV_CURRENT: u32 = 1;
+    const ET_EXEC: u16 = 2;
+    const ET_DYN: u16 = 3;
+    const PT_LOAD: u32 = 1;
     const PT_INTERP: u32 = 3;
     const MAX_PROGRAM_HEADERS: u16 = 256;
 
@@ -257,8 +281,16 @@ fn is_static_linux_elf(path: &Path) -> std::io::Result<bool> {
     if header[0..4] != ELF_MAGIC || header[4] != CLASS_64 || header[5] != DATA_LITTLE_ENDIAN {
         return Ok(false);
     }
+    let e_type = u16::from_le_bytes(header[0x10..0x12].try_into().expect("slice is 2 bytes"));
+    if e_type != ET_EXEC && e_type != ET_DYN {
+        return Ok(false);
+    }
     let e_machine = u16::from_le_bytes(header[0x12..0x14].try_into().expect("slice is 2 bytes"));
     if e_machine != HOST_ELF_MACHINE {
+        return Ok(false);
+    }
+    let e_version = u32::from_le_bytes(header[0x14..0x18].try_into().expect("slice is 4 bytes"));
+    if e_version != EV_CURRENT {
         return Ok(false);
     }
 
@@ -271,6 +303,7 @@ fn is_static_linux_elf(path: &Path) -> std::io::Result<bool> {
     }
 
     let file_len = file.metadata()?.len();
+    let mut has_load_segment = false;
     for i in 0..ph_count {
         let entry_offset = u64::from(i)
             .checked_mul(u64::from(ph_entry_size))
@@ -286,18 +319,21 @@ fn is_static_linux_elf(path: &Path) -> std::io::Result<bool> {
         if file.read_exact(&mut p_type).is_err() {
             return Ok(false);
         }
-        if u32::from_le_bytes(p_type) == PT_INTERP {
-            return Ok(false);
+        match u32::from_le_bytes(p_type) {
+            PT_INTERP => return Ok(false),
+            PT_LOAD => has_load_segment = true,
+            _ => {}
         }
     }
-    Ok(true)
+    Ok(has_load_segment)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Builds a minimal 64-bit LE ELF with the given program header types.
+    /// Builds a structurally valid static-pie 64-bit LE ELF (`ET_DYN`,
+    /// current version, host machine) with the given program header types.
     fn elf_with_program_headers(p_types: &[u32]) -> Vec<u8> {
         const HEADER_LEN: usize = 64;
         const PH_ENTRY_SIZE: u16 = 56;
@@ -305,7 +341,9 @@ mod tests {
         elf[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
         elf[4] = 2; // 64-bit
         elf[5] = 1; // little-endian
+        elf[0x10..0x12].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN
         elf[0x12..0x14].copy_from_slice(&HOST_ELF_MACHINE.to_le_bytes());
+        elf[0x14..0x18].copy_from_slice(&1u32.to_le_bytes()); // EV_CURRENT
         elf[0x20..0x28].copy_from_slice(&(HEADER_LEN as u64).to_le_bytes());
         elf[0x36..0x38].copy_from_slice(&PH_ENTRY_SIZE.to_le_bytes());
         elf[0x38..0x3a].copy_from_slice(&(p_types.len() as u16).to_le_bytes());
@@ -357,6 +395,7 @@ mod tests {
             cache.env,
             vec![("CARGO_HOME", "/mnt/cargo-home".to_string())]
         );
+        assert!(cache.sccache_bin.is_none());
         assert_eq!(cache.summary, "Container build cache: cargo registry");
     }
 
@@ -369,6 +408,10 @@ mod tests {
 
         assert!(root.path().join("sccache").is_file());
         assert!(root.path().join("sccache-cache").is_dir());
+        assert_eq!(
+            cache.sccache_bin.as_deref(),
+            Some(&*root.path().join("sccache"))
+        );
         let keys: Vec<&str> = cache.env.iter().map(|(k, _)| *k).collect();
         assert_eq!(
             keys,
@@ -434,16 +477,51 @@ mod tests {
     }
 
     #[test]
-    fn bind_dest_in_def_file_is_detected() {
-        assert!(references_bind_dest("%post\n    ls /mnt/data\n", &[]));
-        assert!(references_bind_dest(
-            "",
-            &["--bind".to_string(), "/data:/mnt".to_string()]
-        ));
-        assert!(!references_bind_dest(
-            "%post\n    cargo build --release\n",
-            &["--no-setgroups".to_string()]
-        ));
+    fn conflicting_build_configuration_is_detected() {
+        assert_eq!(
+            cache_conflict_marker("%post\n    ls /mnt/data\n", &[]),
+            Some("/mnt")
+        );
+        assert_eq!(
+            cache_conflict_marker("", &["--bind".to_string(), "/data:/mnt".to_string()]),
+            Some("/mnt")
+        );
+        assert_eq!(
+            cache_conflict_marker("curl https://sh.rustup.rs | sh", &[]),
+            Some("rustup")
+        );
+        for var in [
+            "CARGO_HOME",
+            "RUSTC_WRAPPER",
+            "SCCACHE_DIR",
+            "SCCACHE_SERVER_PORT",
+        ] {
+            assert_eq!(
+                cache_conflict_marker(&format!("%post\n    export {var}=/opt/custom\n"), &[]),
+                Some(var),
+                "def file setting {var} must disable the cache"
+            );
+        }
+        assert_eq!(
+            cache_conflict_marker(
+                "%post\n    cargo build --release\n",
+                &["--no-setgroups".to_string()]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn non_loadable_elf_is_rejected() {
+        // ET_NONE: structurally an ELF, but the kernel cannot execute it.
+        let mut elf = elf_with_program_headers(&[1]);
+        elf[0x10..0x12].copy_from_slice(&0u16.to_le_bytes());
+        let file = write_temp(&elf);
+        assert!(!is_static_linux_elf(file.path()).expect("readable"));
+
+        // No PT_LOAD segment: nothing for the kernel to map.
+        let file = write_temp(&elf_with_program_headers(&[2]));
+        assert!(!is_static_linux_elf(file.path()).expect("readable"));
     }
 
     #[test]

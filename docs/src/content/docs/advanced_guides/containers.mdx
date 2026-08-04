@@ -411,8 +411,9 @@ sccache's size limit (10 GiB by default), while `cargo-home/` grows with
 every dependency version ever built and is only reclaimed by deleting it.
 Because the directory is shared and writable, anything a `%post` writes
 there persists into later builds on the same machine, the same trust the
-build itself already runs with. On macOS, builds run inside the Lima VM,
-which the cache does not reach; builds behave as before.
+build itself already runs with; the sccache executable itself is mounted
+read-only. On macOS, builds run inside the Lima VM, which the cache does
+not reach, so macOS container builds are uncached.
 :::
 
 ## Extra runtime arguments
