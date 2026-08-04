@@ -370,6 +370,51 @@ Only parameters of type `"string"` can be referenced in mount paths. Numeric or 
 A literal blocked source (e.g., `/tmp`) is rejected at parse time. A source containing `${parameters:...}` is checked at runtime instead, against the resolved path.
 :::
 
+## Build caching
+
+Rust container builds on Linux reuse a shared cache across builds, without any
+per-node configuration. The daemon bind mounts `~/.peppy/cache/container_build`
+into the build at `/mnt` and points the `%post` toolchain at it:
+
+- The crates.io registry persists via `CARGO_HOME`, so dependencies are
+  downloaded once instead of on every build.
+- When a **statically linked** [sccache](https://github.com/mozilla/sccache)
+  is found on the daemon's PATH, it is copied into the cache, bind mounted
+  into the build, and activated via `RUSTC_WRAPPER`, so unchanged crates are
+  not recompiled. A dynamically linked sccache cannot run against the
+  container's libc and is skipped with a log message. The
+  [release tarballs](https://github.com/mozilla/sccache/releases) ship static
+  binaries.
+
+Caching is best effort: if any part of it is unavailable, the build runs
+exactly as it would without caching. Set `PEPPY_NO_CONTAINER_BUILD_CACHE=1`
+in the daemon's environment to disable caching entirely. That switch is
+also the escape hatch for the known incompatibility: a base image without
+`/mnt` fails the bind at build time.
+
+:::note
+The cache mounts at `/mnt` inside the build container (build-time binds
+cannot create new mount points, and `/mnt` exists in every standard base
+image). When a node's def file or `apptainer_build_extra_args` mention
+`/mnt`, or the def file mentions rustup (installing it in `%post` is
+incompatible with the `CARGO_HOME` override), caching is skipped
+automatically for that build.
+Only literal mentions are detected: a script invoked from `%post` that
+writes to `/mnt` without the def file naming it will write into the shared
+cache instead of the image.
+:::
+
+:::note
+The cache lives at `~/.peppy/cache/container_build` and is safe to delete
+at any time; the next build recreates it. The sccache half prunes itself to
+sccache's size limit (10 GiB by default), while `cargo-home/` grows with
+every dependency version ever built and is only reclaimed by deleting it.
+Because the directory is shared and writable, anything a `%post` writes
+there persists into later builds on the same machine, the same trust the
+build itself already runs with. On macOS, builds run inside the Lima VM,
+which the cache does not reach; builds behave as before.
+:::
+
 ## Extra runtime arguments
 
 You can pass additional command-line arguments directly to Apptainer or Lima using `apptainer_build_extra_args`, `apptainer_run_extra_args`, and `lima_shell_extra_args` in the `container` block inside `execution`.

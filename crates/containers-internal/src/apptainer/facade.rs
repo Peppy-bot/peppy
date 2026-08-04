@@ -405,6 +405,14 @@ fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
 }
 
 impl Apptainer {
+    /// Returns `true` when [`ApptainerCommand::apptainer_env`] variables reach
+    /// the container: the native backend passes them through the apptainer
+    /// process environment, while `limactl shell` does not forward host
+    /// process environment into the Lima guest.
+    pub fn supports_apptainer_env(&self) -> bool {
+        matches!(self.backend, Backend::Native { .. })
+    }
+
     /// Returns `true` if the Lima VM backend is already running and reachable.
     ///
     /// On Linux this always returns `true` (no VM needed). On macOS it checks
@@ -633,7 +641,7 @@ impl Apptainer {
     }
 
     pub fn version(&self) -> Result<String> {
-        let mut cmd = self.command(&["--version"], &[], None, None)?;
+        let mut cmd = self.command(&["--version"], &[], None, None, &[])?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
@@ -861,6 +869,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
             working_dir: None,
@@ -880,6 +889,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
             working_dir: None,
@@ -898,6 +908,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
             working_dir: None,
@@ -1011,6 +1022,7 @@ impl Apptainer {
         lima_shell_extra_args: &[String],
         guest_pgid_file: Option<&Path>,
         working_dir: Option<&Path>,
+        apptainer_env: &[(String, String)],
     ) -> Result<Command> {
         match &self.backend {
             Backend::Native {
@@ -1019,6 +1031,9 @@ impl Apptainer {
             } => {
                 let mut cmd = Command::new(apptainer_bin);
                 cmd.env(APPTAINER_TMPDIR_ENV, tmp_dir);
+                for (key, value) in apptainer_env {
+                    cmd.env(format!("APPTAINERENV_{key}"), value);
+                }
                 cmd.args(args);
                 if let Some(dir) = working_dir {
                     cmd.current_dir(dir);
@@ -1031,6 +1046,13 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
+                if !apptainer_env.is_empty() {
+                    tracing::warn!(
+                        "dropping {} APPTAINERENV_ variable(s): process environment \
+                         does not cross limactl shell into the Lima guest",
+                        apptainer_env.len()
+                    );
+                }
                 let guest_workdir = working_dir
                     .map(|dir| self.translate_path(dir))
                     .transpose()?;
@@ -1262,6 +1284,9 @@ pub struct ApptainerCommand<'a> {
     kind: CommandKind,
     flags: Vec<String>,
     bind_mounts: Vec<BindMount>,
+    /// Variables forwarded into the container via the `APPTAINERENV_` prefix.
+    /// See [`ApptainerCommand::apptainer_env`].
+    apptainer_env: Vec<(String, String)>,
     lima_shell_extra_args: Vec<String>,
     /// When set, run the guest command (Lima only) as a process-group leader that
     /// records its PGID to this guest-native path, so
@@ -1299,6 +1324,20 @@ impl<'a> ApptainerCommand<'a> {
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.flags.push("--env".to_string());
         self.flags.push(format!("{key}={value}"));
+        self
+    }
+
+    /// Forward an environment variable into the container by setting
+    /// `APPTAINERENV_{key}` on the apptainer process itself.
+    ///
+    /// Unlike [`env`](Self::env), this reaches a build's `%post` scriptlet,
+    /// which `apptainer build` offers no `--env` flag for. Native backend
+    /// only: process environment does not cross `limactl shell` into the Lima
+    /// guest, so callers must check [`Apptainer::supports_apptainer_env`]
+    /// before relying on it; on Lima the variable is dropped with a warning.
+    pub fn apptainer_env(mut self, key: &str, value: &str) -> Self {
+        self.apptainer_env
+            .push((key.to_string(), value.to_string()));
         self
     }
 
@@ -1428,6 +1467,7 @@ impl<'a> ApptainerCommand<'a> {
             &self.lima_shell_extra_args,
             self.cancel_pgid_path.as_deref(),
             self.working_dir.as_deref(),
+            &self.apptainer_env,
         )
     }
 

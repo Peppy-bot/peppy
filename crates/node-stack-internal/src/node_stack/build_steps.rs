@@ -13,6 +13,8 @@ use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output};
+use crate::node_stack::container_build_cache;
+use config::node::PeppygenLanguage;
 
 /// Validates that `node_tag` is safe to splice into a filename joined under
 /// the storage directory. Re-validates the raw `Manifest::tag` string before
@@ -95,6 +97,7 @@ pub(super) struct ContainerBuildInputs<'a> {
     pub def_file: &'a str,
     pub apptainer_build_extra_args: &'a [String],
     pub lima_shell_extra_args: &'a [String],
+    pub language: PeppygenLanguage,
     pub feedback_tx: &'a mpsc::UnboundedSender<FeedbackLine>,
     pub log_file: Arc<StdMutex<File>>,
     /// Needed to register the peppy data root as a Lima mount: `working_dir`
@@ -168,6 +171,33 @@ pub(super) async fn build_container_image(
     let output_path = inputs.working_dir.join(&sif_name);
     let def_path = inputs.working_dir.join(inputs.def_file);
 
+    // Cache preparation is filesystem work (def read, layout creation, an
+    // ELF inspection, potentially a multi-MB binary copy), so it runs on the
+    // blocking pool like the other build I/O above. A def file that cannot
+    // be read as UTF-8 skips caching outright, since the conflict scan
+    // cannot see what such a build references; a missing def file surfaces
+    // as an apptainer error below either way.
+    let build_cache = if apptainer.supports_apptainer_env() {
+        let peppy_dirs = inputs.peppy_dirs.clone();
+        let language = inputs.language;
+        let extra_args = inputs.apptainer_build_extra_args.to_vec();
+        let def_path = def_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let def_contents = std::fs::read_to_string(&def_path).ok()?;
+            container_build_cache::prepare(&peppy_dirs, language, &def_contents, &extra_args)
+        })
+        .await
+        .map_err(|e| format!("Build cache preparation task failed: {}", e))?
+    } else {
+        None
+    };
+    if let Some(cache) = &build_cache {
+        let _ = inputs.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: cache.summary.clone(),
+        });
+    }
+
     // On macOS the build runs inside a Lima VM, so SIGKILL'ing the host
     // `limactl shell` does not reach the guest `apptainer build` or its
     // `%post` children. The facade therefore runs the guest build as a
@@ -192,6 +222,16 @@ pub(super) async fn build_container_image(
         .working_dir(inputs.working_dir);
     if let Some(key) = &build_key {
         cmd_builder = cmd_builder.cancel_pgid(key);
+    }
+    if let Some(cache) = &build_cache {
+        cmd_builder = cmd_builder.bind(
+            &cache.host_dir.to_string_lossy(),
+            Some(container_build_cache::BIND_DEST),
+            None,
+        );
+        for (key, value) in &cache.env {
+            cmd_builder = cmd_builder.apptainer_env(key, value);
+        }
     }
     for arg in inputs.apptainer_build_extra_args {
         cmd_builder = cmd_builder.raw_flag(arg);
@@ -439,6 +479,7 @@ mod tests {
             def_file: "sensor.def",
             apptainer_build_extra_args: &[],
             lima_shell_extra_args: &[],
+            language: PeppygenLanguage::Rust,
             feedback_tx: &feedback_tx,
             log_file,
             peppy_dirs: &peppy_dirs,

@@ -181,6 +181,12 @@ impl PeppyDirs {
         self.root.join("cache")
     }
 
+    /// Shared build cache bind mounted into Rust container builds
+    /// (cargo registry and sccache artifacts).
+    pub fn container_build_cache_dir(&self) -> PathBuf {
+        self.cache_dir().join("container_build")
+    }
+
     /// Persistent Git checkouts shared across `node add` batches.
     /// Directories are keyed by `<slug>-<hash>` where the hash covers
     /// repo_url + commit, so one directory holds exactly one tree.

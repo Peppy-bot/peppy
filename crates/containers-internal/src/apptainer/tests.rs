@@ -154,6 +154,58 @@ fn test_build_command_builds_correct_args() {
 }
 
 #[test]
+fn test_apptainer_env_sets_process_env_on_native_build() {
+    let facade = native_facade();
+    assert!(facade.supports_apptainer_env());
+
+    let home = std::env::var("HOME").unwrap();
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+    let cmd = facade
+        .build(&output, &def)
+        .apptainer_env("RUSTC_WRAPPER", "/mnt/sccache");
+
+    let args = cmd.build_args().expect("build_args should succeed");
+    assert!(
+        args.iter().all(|a| !a.contains("RUSTC_WRAPPER")),
+        "apptainer_env must not appear in argv, got: {:?}",
+        args
+    );
+
+    let std_cmd = cmd.into_std_command().expect("command should assemble");
+    let env: Vec<_> = std_cmd.get_envs().collect();
+    assert!(
+        env.contains(&(
+            std::ffi::OsStr::new("APPTAINERENV_RUSTC_WRAPPER"),
+            Some(std::ffi::OsStr::new("/mnt/sccache"))
+        )),
+        "expected APPTAINERENV_RUSTC_WRAPPER in process env, got: {:?}",
+        env
+    );
+}
+
+#[test]
+fn test_apptainer_env_is_dropped_on_lima_build() {
+    let facade = lima_facade();
+    assert!(!facade.supports_apptainer_env());
+
+    let home = std::env::var("HOME").unwrap();
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+    let std_cmd = facade
+        .build(&output, &def)
+        .apptainer_env("RUSTC_WRAPPER", "/mnt/sccache")
+        .into_std_command()
+        .expect("command should assemble");
+    assert!(
+        std_cmd
+            .get_envs()
+            .all(|(key, _)| !key.to_string_lossy().starts_with("APPTAINERENV_")),
+        "Lima backend must not receive APPTAINERENV_ process env"
+    );
+}
+
+#[test]
 fn test_bind_flag_accumulates() {
     let facade = native_facade();
 
