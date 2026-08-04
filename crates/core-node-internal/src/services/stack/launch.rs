@@ -24,7 +24,7 @@ use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
     NodeBuildGoal, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, ObservationTarget,
-    PairTarget, RemotePeerPairing,
+    ObservationTargets, PairTarget, RemotePeerPairing,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -755,9 +755,12 @@ async fn start_node_instances(
         .observation()
         .register_planned(&local_observations);
 
+    // Accumulated per observer slot, in plan order: a slot with N members
+    // contributes N entries to one list, and that list becomes the slot's
+    // `ObservationTargets` below.
     let mut observations_by_instance: HashMap<
         &str,
-        std::collections::BTreeMap<String, core_node_api::encoding::ObservationTarget>,
+        std::collections::BTreeMap<String, Vec<core_node_api::encoding::ObservationTarget>>,
     > = HashMap::new();
     // Which daemons must hear about each source's lifecycle. Only the planner
     // can answer this: an observer claims no slot on its source and the source
@@ -786,14 +789,13 @@ async fn start_node_instances(
         observations_by_instance
             .entry(observation.observer_instance_id.as_str())
             .or_default()
-            .insert(
-                observation.observer_link_id.clone(),
-                ObservationTarget::new(
-                    observation.source.instance_id.clone(),
-                    observation.source_link_id.clone(),
-                    observation.source.core_node.clone(),
-                ),
-            );
+            .entry(observation.observer_link_id.clone())
+            .or_default()
+            .push(ObservationTarget::new(
+                observation.source.instance_id.clone(),
+                observation.source_link_id.clone(),
+                observation.source.core_node.clone(),
+            ));
     }
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
@@ -948,11 +950,11 @@ async fn start_node_instances(
             )
             .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default())
             .with_covered_pairs(covered_by_instance.remove(instance_id).unwrap_or_default())
-            .with_planned_observations(
+            .with_planned_observations(ObservationTargets::slots_from_plan(
                 observations_by_instance
                     .remove(instance_id)
                     .unwrap_or_default(),
-            )
+            ))
             .with_lifecycle_watchers(watchers_by_source.remove(instance_id).unwrap_or_default());
 
             let outcome = if local {

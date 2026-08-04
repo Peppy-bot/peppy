@@ -1,0 +1,23 @@
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "openarm_governor_control",
+    tag: "v1"
+  },
+  // Declares one topic, `governor_control`: a stamped on/off flag for the
+  // backbone's self-collision governor.
+  interfaces: {
+    topics: [
+      {
+        name: "governor_control",
+        // Re-published periodically and lossy: a dropped toggle cannot strand
+        // the backbone in the wrong mode, because the next tick corrects it.
+        qos_profile: "sensor_data",
+        message_format: {
+          stamp: "time",
+          collision_governor_enabled: "bool"
+        }
+      }
+    ]
+  }
+}

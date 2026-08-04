@@ -5,7 +5,8 @@ use super::serialization;
 use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use config::node::{ConsumedTopic, MessageFormat, NativeEmittedTopic};
+use crate::generator::types::PairTopicConsumerKind;
+use config::node::{Cardinality, ConsumedTopic, MessageFormat, NativeEmittedTopic};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
     format!("_{}_capnp", schema_info.file_stem)
@@ -320,35 +321,23 @@ pub fn build_peer_emitted_topic(
     Ok(builder.build())
 }
 
-/// Generates Python code for a pairing topic the counterpart role emits
-/// (consumed here): a `subscribe_peer`-backed subscription that follows the
-/// slot's live pin — silent while unpaired, only the paired peer while
-/// paired.
-pub fn build_peer_consumed_topic(
-    topic: &NativeEmittedTopic,
-    arguments: &MessageFormat,
-    schema_info: &PythonSchemaInfo,
-    peer: &crate::generator::types::PeerContext,
-) -> Result<String> {
-    build_pair_topic_consumer(
-        topic,
-        arguments,
-        schema_info,
-        peer,
-        PairTopicConsumerKind::Peer,
-    )
-}
-
-/// Emits the module-level slot constants plus `source()` for an observer topic
-/// module. An observer plays no role, so there is no `paired()`/`wait_paired()`.
+/// Emits the module-level slot constants plus the observer slot's source
+/// accessor. An observer plays no role, so there is no
+/// `paired()`/`wait_paired()`.
+///
+/// The accessor is cardinality-typed the way a producer slot's is: a `one` slot
+/// gets `source() -> Optional[ObservedSource]`, the multi cardinalities get
+/// `sources() -> List[ObservedSource]` in plan order. The docstring prose comes
+/// from `observed_sources_doc` so both language generators state the same
+/// guarantees.
 fn emit_observer_module_header(
     builder: &mut PythonCodeBuilder,
     topic_name: &str,
     qos: &str,
     observer: &crate::generator::types::PeerContext,
+    cardinality: Cardinality,
 ) {
     builder.add_import("import peppylib");
-    builder.add_import("from typing import Optional");
     builder.line(&format!("TOPIC_NAME = \"{topic_name}\""));
     builder.line(&format!("LINK_ID = \"{}\"", observer.link_id));
     builder.line(&format!("PAIRING_NAME = \"{}\"", observer.pairing_name));
@@ -356,43 +345,48 @@ fn emit_observer_module_header(
     builder.line(&format!("QOS = {qos}"));
     builder.blank_line();
 
-    builder
-        .line("def source(node_runner: peppylib.NodeRunner) -> Optional[peppylib.ObservedSource]:");
+    let (fn_name, return_type, accessor) = if cardinality.is_one() {
+        builder.add_import("from typing import Optional");
+        (
+            "source",
+            "Optional[peppylib.ObservedSource]",
+            "observation_slot",
+        )
+    } else {
+        builder.add_import("from typing import List");
+        (
+            "sources",
+            "List[peppylib.ObservedSource]",
+            "observation_slot_set",
+        )
+    };
+
+    let doc = crate::generator::types::observed_sources_doc(cardinality);
+    builder.line(&format!(
+        "def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"
+    ));
     builder.indent();
-    builder.line(
-        "\"\"\"The resolved source of this observer slot, or None before the daemon delivers it.\"\"\"",
-    );
-    builder.line("return node_runner.observation_slot(LINK_ID).source()");
+    builder.line(&format!("\"\"\"{}", doc.summary));
+    builder.blank_line();
+    for line in doc.body_lines() {
+        builder.line(line);
+    }
+    builder.line("\"\"\"");
+    builder.line(&format!(
+        "return node_runner.{accessor}(LINK_ID).{fn_name}()"
+    ));
     builder.dedent();
     builder.blank_line();
 }
 
-/// Generates Python code for a pairing topic an observed role emits, tapped
-/// passively: a `subscribe_observed`-backed subscription that follows the
-/// source instance's lifecycle. Yields `(producer, message)`; there is no
-/// publisher.
-pub fn build_observed_topic(
-    topic: &NativeEmittedTopic,
-    arguments: &MessageFormat,
-    schema_info: &PythonSchemaInfo,
-    observer: &crate::generator::types::PeerContext,
-) -> Result<String> {
-    build_pair_topic_consumer(
-        topic,
-        arguments,
-        schema_info,
-        observer,
-        PairTopicConsumerKind::Observed,
-    )
-}
-
-#[derive(Clone, Copy)]
-enum PairTopicConsumerKind {
-    Peer,
-    Observed,
-}
-
-fn build_pair_topic_consumer(
+/// Generates Python code for a consume-side pairing topic. A
+/// [`PairTopicConsumerKind::Peer`] slot gets a `subscribe_peer`-backed
+/// subscription that follows the slot's live pin (silent while unpaired, only
+/// the paired peer while paired); a [`PairTopicConsumerKind::Observed`] slot
+/// gets a `subscribe_observed`-backed one that follows each observed source
+/// instance's lifecycle and yields `(producer, message)`. An observer plays no
+/// role, so it has no publisher.
+pub fn build_pair_topic_consumer(
     topic: &NativeEmittedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,
@@ -435,12 +429,12 @@ fn build_pair_topic_consumer(
                 "subscribe_peer",
             )
         }
-        PairTopicConsumerKind::Observed => {
-            emit_observer_module_header(&mut builder, &topic.name, qos, peer);
+        PairTopicConsumerKind::Observed(cardinality) => {
+            emit_observer_module_header(&mut builder, &topic.name, qos, peer, cardinality);
             (
-                "A held subscription pinned to the observer slot's source: silent until the source is live and emitting; a live stream, not a mailbox.",
+                "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the member that published it.",
                 SubscriptionYield::TaggedPair,
-                "\"\"\"Subscribe to this observed pairing topic. Legal before the source is resolved or live: the subscription stays silent until the source emits.\"\"\"",
+                "\"\"\"Subscribe to this observed pairing topic. Legal before any source is resolved or live: the subscription stays silent until a member emits.\"\"\"",
                 "subscribe_observed",
             )
         }

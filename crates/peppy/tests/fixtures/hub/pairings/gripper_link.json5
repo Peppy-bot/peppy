@@ -1,0 +1,35 @@
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "gripper_link",
+    tag: "v1"
+  },
+  // The gripper twin of `joint_link`: a separate pairing rather than more
+  // topics on that one, because a limb can be teleoperated with no gripper at
+  // all and the two are paired independently.
+  roles: ["leader", "follower"],
+  topics: [
+    {
+      emitted_by: "leader",
+      name: "gripper_setpoints",
+      qos_profile: "sensor_data",
+      message_format: {
+        stamp: "time",
+        // 0.0 closed, 1.0 fully open.
+        opening: "f64"
+      }
+    },
+    {
+      emitted_by: "follower",
+      name: "gripper_states",
+      qos_profile: "sensor_data",
+      message_format: {
+        stamp: "time",
+        opening: "f64",
+        // Whether the jaws are loaded, which a panel shows rather than the
+        // commanded opening alone.
+        grasping: "bool"
+      }
+    }
+  ]
+}

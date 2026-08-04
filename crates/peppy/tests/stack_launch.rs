@@ -25,39 +25,20 @@ use super::common::test_node_target;
 use peppylib::core_node::transport::poll;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-fn write_node_config(
+/// The on-disk layout the daemon expects of a staged node, written once: the
+/// manifest, its codegen fingerprint, and the `git.hash` under the peppy output
+/// dir. Every helper below stages a node this way and differs only in how it
+/// produces `manifest`.
+fn install_node_manifest(
     nodes_directory: &Path,
     node_name: &str,
-    node_tag: &str,
     git_hash: &str,
-    run_cmd: &[&str],
+    manifest: &str,
 ) -> PathBuf {
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    let run_cmd_json5 = run_cmd
-        .iter()
-        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        &node_config_path,
-        r#"{
-                peppy_schema: "node/v1",
-                manifest: {
-                    name: "{node_name}",
-                    tag: "{node_tag}",
-                },
-                execution: {
-                    language: "rust",
-                    run_cmd: [{run_cmd_json5}]
-                }
-            }"#
-        .replace("{node_name}", node_name)
-        .replace("{node_tag}", node_tag)
-        .replace("{run_cmd_json5}", &run_cmd_json5),
-    )
-    .expect("failed to write node config");
+    fs::write(&node_config_path, manifest).expect("failed to write node config");
     config::fingerprint::create_codegen_fingerprint(
         &node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
@@ -67,6 +48,43 @@ fn write_node_config(
     fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
     fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
     node_dir
+}
+
+/// The `run_cmd` array body of a manifest, one JSON5 string per argument.
+fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
+    run_cmd
+        .iter()
+        .map(|arg| serde_json::to_string(arg.as_ref()).expect("run_cmd arg should serialize"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn write_node_config(
+    nodes_directory: &Path,
+    node_name: &str,
+    node_tag: &str,
+    git_hash: &str,
+    run_cmd: &[&str],
+) -> PathBuf {
+    let run_cmd_json5 = run_cmd_json5(run_cmd);
+    install_node_manifest(
+        nodes_directory,
+        node_name,
+        git_hash,
+        &format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "{node_name}",
+                    tag: "{node_tag}",
+                }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: [{run_cmd_json5}]
+                }}
+            }}"#
+        ),
+    )
 }
 
 /// Registers node directories in the daemon's node cache (`cache/nodes.json5`)
@@ -100,6 +118,56 @@ fn register_repo_caches(peppy_root: impl AsRef<Path>, nodes: &[(&str, &str, &Pat
         serde_json::to_string_pretty(&node_entries).expect("serialize nodes cache"),
     )
     .expect("failed to write nodes.json5");
+}
+
+/// Stages a checked-in hub fixture node into a temp nodes directory, ready for
+/// [`register_repo_caches`].
+///
+/// The fixture is parsed into a [`config::node::NodeConfig`], its `execution`
+/// block is replaced with the harness conventions, and the config is
+/// re-serialized, so the staged manifest carries the fixture's values but not
+/// its comments or formatting. `execution` is replaced because a fixture cannot
+/// name a run command that outlives the test (the keep-alive path is created
+/// per run) and these tests never build a container.
+fn stage_hub_fixture_node(
+    nodes_directory: &Path,
+    fixture_name: &str,
+    git_hash: &str,
+    run_cmd: &[String],
+) -> PathBuf {
+    let fixture_path = Path::new("tests/fixtures/hub/nodes")
+        .join(fixture_name)
+        .join(NODE_CONFIG_FILE);
+    let source = fs::read_to_string(&fixture_path).unwrap_or_else(|e| {
+        panic!(
+            "hub fixture {} should be readable: {e}",
+            fixture_path.display()
+        )
+    });
+    let mut node_config: config::node::NodeConfig =
+        serde_json5::from_str(&source).expect("hub fixture should parse as a node manifest");
+    node_config.execution.build_cmd = None;
+    node_config.execution.run_cmd = Some(run_cmd.to_vec());
+
+    install_node_manifest(
+        nodes_directory,
+        fixture_name,
+        git_hash,
+        &serde_json5::to_string(&node_config).expect("staged manifest should serialize"),
+    )
+}
+
+/// Copies checked-in hub pairing and contract documents into a repo directory,
+/// so a test can seed exactly the documents its fixtures reference.
+fn stage_hub_docs(repo_dir: &Path, pairings: &[&str], contracts: &[&str]) {
+    for (kind, names) in [("pairings", pairings), ("contracts", contracts)] {
+        for name in names {
+            let file = format!("{name}.json5");
+            let source = Path::new("tests/fixtures/hub").join(kind).join(&file);
+            fs::copy(&source, repo_dir.join(&file))
+                .unwrap_or_else(|e| panic!("hub doc {} should copy: {e}", source.display()));
+        }
+    }
 }
 
 fn read_daemon_git_hash(daemon_state_path: &Path) -> String {
@@ -764,14 +832,7 @@ fn write_node_config_for_helper(
     implements_json5: Option<&str>,
     interfaces_json5: Option<&str>,
 ) -> PathBuf {
-    let node_dir = nodes_directory.join(node_name);
-    fs::create_dir_all(&node_dir).expect("failed to create node directory");
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    let run_cmd_json5 = run_cmd
-        .iter()
-        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let run_cmd_json5 = run_cmd_json5(run_cmd);
     let manifest_extra = implements_json5
         .map(|implements| format!(",\n            implements: {implements}"))
         .unwrap_or_default()
@@ -794,16 +855,7 @@ fn write_node_config_for_helper(
             }}
         }}"#
     );
-    fs::write(&node_config_path, body).expect("failed to write node config");
-    config::fingerprint::create_codegen_fingerprint(
-        &node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
-    fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
-    node_dir
+    install_node_manifest(nodes_directory, node_name, git_hash, &body)
 }
 
 /// Regression for the launcher's `bindings` field actually wiring
@@ -2701,15 +2753,19 @@ async fn stack_launch_establishes_launcher_pairings() {
     }
 }
 
-/// An observer slot is delivered its source pin live. A recorder observing the
-/// `arm` role of `arm_link/v1` links to `arm_1` (a `robot_arm` whose own
-/// participant slot is deferred, so it boots unpaired but still publishes its
-/// role's topics). When the launch is up, the daemon's observation coordinator
-/// has pushed the source pin — `arm_1`'s producer-side `controller` slot, at a
-/// live generation — to the recorder's `observation_update` service. This is
-/// the observer analogue of `stack_launch_establishes_launcher_pairings`.
+/// An observer slot is delivered its member set live, at every cardinality. A
+/// recorder observing the `arm` role of `arm_link/v1` declares three slots: a
+/// `one` slot linked to `arm_1`, a `one_or_more` slot linked to
+/// `["arm_2", "arm_1"]`, and a `zero_or_more` slot the launcher omits entirely.
+/// The sources are `robot_arm` instances whose own participant slots are
+/// deferred, so they boot unpaired but still publish their role's topics. When
+/// the launch is up, the daemon's observation coordinator has pushed each slot's
+/// complete member set (in launcher order, at live generations) to the
+/// recorder's `observation_update` service, and the omitted slot holds the empty
+/// set. This is the observer analogue of
+/// `stack_launch_establishes_launcher_pairings`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stack_launch_delivers_observer_source_pin() {
+async fn stack_launch_delivers_observer_member_sets() {
     let serve = ServeCommandEmulation::with_zenoh()
         .await
         .expect("failed to create zenoh serve emulation");
@@ -2757,16 +2813,26 @@ async fn stack_launch_delivers_observer_source_pin() {
         &git_hash,
         &run_cmd,
         Some(
-            r#"{ pairing_observers: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }] }"#,
+            r#"{ pairing_observers: [
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "watched", cardinality: "one_or_more" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "spare", cardinality: "zero_or_more" }
+            ] }"#,
         ),
         None,
-        Some(r#"{ topics: { consumes: [{ link_id: "watch", name: "joint_states" }] } }"#),
+        Some(
+            r#"{ topics: { consumes: [
+                { link_id: "watch", name: "joint_states" },
+                { link_id: "watched", name: "joint_states" },
+                { link_id: "spare", name: "joint_states" }
+            ] } }"#,
+        ),
     );
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
     // Source instance services: ready/health/shutdown, no peer_update (its slot
     // is deferred, so it is never paired).
-    for (node_name, instance_id) in [("robot_arm", "arm_1")] {
+    for (node_name, instance_id) in [("robot_arm", "arm_1"), ("robot_arm", "arm_2")] {
         let _ready = listen_for_node_ready(
             &node_messenger,
             &core_node_name,
@@ -2818,12 +2884,17 @@ async fn stack_launch_delivers_observer_source_pin() {
     )
     .await
     .expect("shutdown service should start");
-    let (obs_tx, obs_rx) =
-        tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
-    let obs_slots = Arc::new(std::collections::BTreeMap::from([(
-        "watch".to_string(),
-        obs_tx,
-    )]));
+    // One watch channel per declared observer slot, exactly as a real node's
+    // processor seeds them.
+    let mut obs_senders = std::collections::BTreeMap::new();
+    let mut obs_receivers = std::collections::BTreeMap::new();
+    for link_id in ["watch", "watched", "spare"] {
+        let (tx, rx) =
+            tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
+        obs_senders.insert(link_id.to_string(), tx);
+        obs_receivers.insert(link_id, rx);
+    }
+    let obs_slots = Arc::new(obs_senders);
     peppylib::services::observation_update::listen_for_observation_update(
         &node_messenger,
         &core_node_name,
@@ -2840,13 +2911,16 @@ async fn stack_launch_delivers_observer_source_pin() {
             deployments: [
                 {
                     source: { name: "robot_arm:v1" },
-                    instances: [{ instance_id: "arm_1", defer_links: ["controller"] }]
+                    instances: [
+                        { instance_id: "arm_1", defer_links: ["controller"] },
+                        { instance_id: "arm_2", defer_links: ["controller"] }
+                    ]
                 },
                 {
                     source: { name: "recorder:v1" },
                     instances: [{
                         instance_id: "rec_1",
-                        links: { watch: "arm_1" }
+                        links: { watch: "arm_1", watched: ["arm_2", "arm_1"] }
                     }]
                 }
             ]
@@ -2874,25 +2948,49 @@ async fn stack_launch_delivers_observer_source_pin() {
     .execute(&ctx)
     .expect("launch with an observer should succeed");
 
-    // By the time launch returns, the recorder's observer slot is pinned to the
-    // source's producer-side `controller` slot at a live generation.
-    let state = obs_rx.borrow().clone();
-    let source = state
-        .source
-        .expect("rec_1's observer slot should have a resolved source");
-    assert_eq!(source.producer.instance_id, "arm_1");
-    assert_eq!(source.source_link_id, "controller");
-    assert!(state.source_live, "the source is Running, so it is live");
+    // By the time launch returns, every observer slot holds its complete member
+    // set, each member pinned to its source's producer-side `controller` slot at
+    // a live generation.
+    let slot_members = |link_id: &str| -> Vec<peppylib::messaging::ObservedMemberState> {
+        obs_receivers[link_id].borrow().members.clone()
+    };
+
+    let watch = slot_members("watch");
+    assert_eq!(watch.len(), 1, "a `one` slot holds exactly its one member");
+    assert_eq!(watch[0].source.producer.instance_id, "arm_1");
+    assert_eq!(watch[0].source.source_link_id, "controller");
+    assert!(watch[0].source_live, "the source is Running, so it is live");
     assert!(
-        state.source_generation >= 1,
+        watch[0].source_generation >= 1,
         "a live source carries a bumped incarnation generation, got {}",
-        state.source_generation
+        watch[0].source_generation
+    );
+
+    let watched = slot_members("watched");
+    assert_eq!(
+        watched
+            .iter()
+            .map(|member| member.source.producer.instance_id.as_str())
+            .collect::<Vec<_>>(),
+        ["arm_2", "arm_1"],
+        "a multi slot holds its members in launcher order, not sorted"
+    );
+    assert!(
+        watched.iter().all(|member| member.source_live
+            && member.source.source_link_id == "controller"
+            && member.source_generation >= 1),
+        "every member is pinned to its source's participant slot at a live generation: {watched:?}"
+    );
+
+    assert!(
+        slot_members("spare").is_empty(),
+        "a `zero_or_more` slot the launcher omits boots with an empty member set"
     );
 
     // Assertions are done; ending the keep-alive first lets each Stop observe
     // an already-exited process instead of waiting out the force-kill deadline.
     drop(instances);
-    for instance_id in ["rec_1", "arm_1"] {
+    for instance_id in ["rec_1", "arm_1", "arm_2"] {
         let _ = NodeCommand {
             command: NodeCommands::Stop {
                 instance_id: instance_id.to_string(),
@@ -3017,4 +3115,365 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
         msg.contains("local"),
         "the error should name the offending key: {msg}"
     );
+}
+
+/// The first real consumer of observer cardinality, end to end over the
+/// checked-in hub fixtures: a teleoperation panel whose four observer slots are
+/// all `zero_or_more`, so one launch exercises every shape the feature has.
+///
+/// The stack is a backbone, two paired arm limbs and one paired gripper limb.
+/// The commander links `observed_joints` to both followers (an ordered
+/// two-member set), `commanded_joints` to one leader (a one-member set),
+/// `observed_grippers` to the explicit empty set, and omits `commanded_grippers`
+/// entirely. Its `recorder` producer slot is `zero_or_more` and left unbound, so
+/// the same launch also covers the producer-side empty set the panel hides its
+/// recording controls behind.
+///
+/// What it proves that the narrower observer tests do not: the plan's order
+/// survives all the way to the node (member N is the deployment's Nth entry, so
+/// the panel can pair a readout card with its own Nth command slot), the two
+/// ways of writing "observes nothing" both arrive as an empty set, and one
+/// member going down moves only its own member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_serves_a_commander_panels_observer_slots() {
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // The pairing and contract documents the fixtures reference.
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    stage_hub_docs(
+        repo_dir.path(),
+        &["joint_link", "gripper_link"],
+        &["openarm_governor_control"],
+    );
+    super::common::seed_docs_repo(&serve, &ctx, repo_dir.path());
+
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let run_cmd = instances.keep_alive_argv();
+    // The commander snapshots its own boot config so the producer-side empty
+    // set can be read back from what the daemon actually assembled.
+    let dump_dir = tempfile::tempdir().expect("temp dump dir");
+    let commander_dump = dump_dir.path().join("commander.json5");
+    let commander_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            commander_dump.display(),
+            instances.keep_alive_script(),
+        ),
+    ];
+
+    // `lerobot_recorder` is staged but never instantiated: the commander's
+    // `recorder` slot is `zero_or_more`, so the deployment binds nothing to it,
+    // and the manifest still has to resolve.
+    let fixtures = [
+        "openarm_backbone",
+        "lerobot_recorder",
+        "openarm_joint_leader",
+        "openarm_joint_follower",
+        "openarm_gripper_leader",
+        "openarm_gripper_follower",
+    ];
+    let mut staged: Vec<(&str, &str, PathBuf)> = fixtures
+        .iter()
+        .map(|name| {
+            (
+                *name,
+                "v1",
+                stage_hub_fixture_node(nodes_dir.path(), name, &git_hash, &run_cmd),
+            )
+        })
+        .collect();
+    staged.push((
+        "openarm_commander",
+        "v1",
+        stage_hub_fixture_node(
+            nodes_dir.path(),
+            "openarm_commander",
+            &git_hash,
+            &commander_run_cmd,
+        ),
+    ));
+    register_repo_caches(
+        serve.temp_dir(),
+        &staged
+            .iter()
+            .map(|(name, tag, dir)| (*name, *tag, dir.as_path()))
+            .collect::<Vec<_>>(),
+    );
+
+    // Every instance's framework services, impersonated from the test process:
+    // the fixtures' run_cmd is a keep-alive shell, not a peppylib node.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let mut service_handles = Vec::new();
+    for (node_name, instance_id) in [
+        ("openarm_backbone", "backbone_inst"),
+        ("lerobot_recorder", "recorder_inst"),
+        ("openarm_joint_leader", "leader_1"),
+        ("openarm_joint_leader", "leader_2"),
+        ("openarm_joint_follower", "follower_1"),
+        ("openarm_joint_follower", "follower_2"),
+        ("openarm_gripper_leader", "grip_leader_1"),
+        ("openarm_gripper_follower", "grip_follower_1"),
+        ("openarm_commander", "commander_inst"),
+    ] {
+        let ready = listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("ready service should start");
+        let health = listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("health service should start");
+        let (shutdown, _) = listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("shutdown service should start");
+        service_handles.push((ready, health, shutdown));
+    }
+    // The limbs pair with each other, so each carries a `peer_update` endpoint.
+    let mut peer_handles = Vec::new();
+    for (node_name, instance_id) in [
+        ("openarm_joint_leader", "leader_1"),
+        ("openarm_joint_leader", "leader_2"),
+        ("openarm_joint_follower", "follower_1"),
+        ("openarm_joint_follower", "follower_2"),
+        ("openarm_gripper_leader", "grip_leader_1"),
+        ("openarm_gripper_follower", "grip_follower_1"),
+    ] {
+        let (tx, _rx) = tokio::sync::watch::channel(peppylib::messaging::PeerPinState::unpaired());
+        let slots = Arc::new(std::collections::BTreeMap::from([("limb".to_string(), tx)]));
+        peer_handles.push(
+            peppylib::services::peer_update::listen_for_peer_update(
+                &node_messenger,
+                &core_node_name,
+                instance_id,
+                test_node_target(node_name),
+                slots,
+            )
+            .await
+            .expect("peer_update service should start"),
+        );
+    }
+    // One observation watch per declared observer slot, as a real node's
+    // processor seeds them.
+    let mut obs_senders = std::collections::BTreeMap::new();
+    let mut obs_receivers = std::collections::BTreeMap::new();
+    for link_id in [
+        "observed_joints",
+        "commanded_joints",
+        "observed_grippers",
+        "commanded_grippers",
+    ] {
+        let (tx, rx) =
+            tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
+        obs_senders.insert(link_id.to_string(), tx);
+        obs_receivers.insert(link_id, rx);
+    }
+    let _obs_handle = peppylib::services::observation_update::listen_for_observation_update(
+        &node_messenger,
+        &core_node_name,
+        "commander_inst",
+        test_node_target("openarm_commander"),
+        Arc::new(obs_senders),
+    )
+    .await
+    .expect("observation_update service should start");
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { name: "openarm_backbone:v1" },
+                    instances: [{ instance_id: "backbone_inst" }]
+                },
+                {
+                    // Present in the stack but bound to nothing: the
+                    // commander's `recorder` slot is `zero_or_more`, and
+                    // omitting it must mean the empty set rather than
+                    // "bind whatever happens to be running".
+                    source: { name: "lerobot_recorder:v1" },
+                    instances: [{ instance_id: "recorder_inst" }]
+                },
+                {
+                    source: { name: "openarm_joint_leader:v1" },
+                    instances: [
+                        { instance_id: "leader_1", links: { limb: "follower_1" } },
+                        { instance_id: "leader_2", links: { limb: "follower_2" } }
+                    ]
+                },
+                {
+                    source: { name: "openarm_joint_follower:v1" },
+                    instances: [
+                        { instance_id: "follower_1" },
+                        { instance_id: "follower_2" }
+                    ]
+                },
+                {
+                    source: { name: "openarm_gripper_leader:v1" },
+                    instances: [{ instance_id: "grip_leader_1", links: { limb: "grip_follower_1" } }]
+                },
+                {
+                    source: { name: "openarm_gripper_follower:v1" },
+                    instances: [{ instance_id: "grip_follower_1" }]
+                },
+                {
+                    source: { name: "openarm_commander:v1" },
+                    instances: [{
+                        instance_id: "commander_inst",
+                        links: {
+                            backbone: "backbone_inst",
+                            // Two followers, in the order the panel reads them
+                            // back and pairs with its own command slots.
+                            observed_joints: ["follower_1", "follower_2"],
+                            commanded_joints: ["leader_1"],
+                            // The explicit empty set, next to the omitted
+                            // `commanded_grippers` and the omitted `recorder`.
+                            observed_grippers: []
+                        }
+                    }]
+                }
+            ]
+        }"#;
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(180),
+        },
+    }
+    .execute(&ctx)
+    .expect("launching the commander panel stack should succeed");
+
+    // The unbound `zero_or_more` producer slot reaches the node as an explicit
+    // empty set, so the panel's "is there a recorder?" branch is a set size and
+    // never a missing key.
+    let runtime_config: config::runtime::RuntimeConfig = serde_json5::from_str(
+        &fs::read_to_string(&commander_dump).expect("commander runtime config should be dumped"),
+    )
+    .expect("commander runtime config should parse");
+    let recorder = runtime_config
+        .node_instance
+        .slot_bindings
+        .get("recorder")
+        .expect("an unbound zero_or_more slot still materializes");
+    assert!(
+        recorder.is_empty(),
+        "the recorder slot binds nothing in this deployment: {recorder:?}"
+    );
+    assert_eq!(
+        runtime_config.node_instance.slot_bindings["backbone"]
+            .iter()
+            .map(|producer| producer.instance_id.as_str())
+            .collect::<Vec<_>>(),
+        ["backbone_inst"]
+    );
+
+    let slot_members = |link_id: &str| -> Vec<peppylib::messaging::ObservedMemberState> {
+        obs_receivers[link_id].borrow().members.clone()
+    };
+    let observed_instances = |link_id: &str| -> Vec<String> {
+        slot_members(link_id)
+            .iter()
+            .map(|member| member.source.producer.instance_id.clone())
+            .collect()
+    };
+
+    assert_eq!(
+        observed_instances("observed_joints"),
+        ["follower_1", "follower_2"],
+        "the panel reads its followers in the order the launcher wrote them"
+    );
+    assert_eq!(observed_instances("commanded_joints"), ["leader_1"]);
+    assert!(
+        slot_members("observed_joints")
+            .iter()
+            .chain(slot_members("commanded_joints").iter())
+            .all(|member| member.source_live && member.source.source_link_id == "limb"),
+        "every observed member is pinned to its source's participant slot and live"
+    );
+    for empty_slot in ["observed_grippers", "commanded_grippers"] {
+        assert!(
+            slot_members(empty_slot).is_empty(),
+            "`{empty_slot}` observes nothing, whether written as [] or omitted"
+        );
+    }
+
+    // One followed limb going down moves only its own member: the panel greys
+    // that readout card and keeps the rest live.
+    NodeCommand {
+        command: NodeCommands::Stop {
+            instance_id: "follower_2".to_string(),
+        },
+    }
+    .execute(&ctx)
+    .expect("stopping one observed follower should succeed");
+
+    let members = slot_members("observed_joints");
+    assert_eq!(
+        members
+            .iter()
+            .map(|member| member.source.producer.instance_id.as_str())
+            .collect::<Vec<_>>(),
+        ["follower_1", "follower_2"],
+        "a stopped source keeps its position in the set"
+    );
+    assert!(
+        members[0].source_live,
+        "the untouched member stays live: {:?}",
+        members[0]
+    );
+    assert!(
+        !members[1].source_live,
+        "the stopped member reports source_live=false: {:?}",
+        members[1]
+    );
+
+    drop(instances);
+    for instance_id in [
+        "commander_inst",
+        "recorder_inst",
+        "grip_follower_1",
+        "grip_leader_1",
+        "follower_1",
+        "leader_2",
+        "leader_1",
+        "backbone_inst",
+    ] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
 }

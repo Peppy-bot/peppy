@@ -4,7 +4,7 @@ use config::runtime::Name;
 use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
-    NodeRunResult, ObservationTarget, PairTarget, StackListRequest,
+    NodeRunResult, ObservationTarget, ObservationTargets, PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::core_node_name::CoreNodeName;
@@ -304,7 +304,7 @@ fn links_to_map(
 /// producer-binding slots resolved to concrete producer sets, the
 /// participant-pairing links extracted into the `PairTarget` map the daemon's
 /// `node_run` re-plans, and the observer links resolved into the
-/// `ObservationTarget` map the daemon registers with its observation
+/// `ObservationTargets` map the daemon registers with its observation
 /// coordinator. Carrying observations on the goal is what makes a lone
 /// `node run` observer receive its source pin exactly like a launcher would;
 /// without it the observer would boot validated but silent.
@@ -313,7 +313,7 @@ struct PreflightPlan {
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
     deferred_pairs: Vec<String>,
-    requested_observations: BTreeMap<String, ObservationTarget>,
+    requested_observations: BTreeMap<String, ObservationTargets>,
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via
@@ -608,26 +608,28 @@ async fn validate_links_against_stack(
         }
     }
 
-    // Extract the observer links into the `ObservationTarget` map the goal
-    // carries, keyed by the observer's own slot link_id. Only observations for
-    // THIS instance go on its goal (a preexisting instance's observers were
+    // Extract the observer links into the `ObservationTargets` map the goal
+    // carries, keyed by the observer's own slot link_id and holding that slot's
+    // whole member set in `--link` occurrence order. Only observations for THIS
+    // instance go on its goal (a preexisting instance's observers were
     // registered at its own start); the daemon re-stamps the source core_node,
     // so it is dropped here exactly as a pair target drops it.
-    let requested_observations: BTreeMap<String, ObservationTarget> = validated
+    let mut observation_members: BTreeMap<String, Vec<ObservationTarget>> = BTreeMap::new();
+    for observation in validated
         .planned_observations
         .iter()
         .filter(|obs| obs.observer_instance_id == target_instance_id)
-        .map(|obs| {
-            (
-                obs.observer_link_id.clone(),
-                ObservationTarget::new(
-                    &obs.source.instance_id,
-                    &obs.source_link_id,
-                    core_node_name,
-                ),
-            )
-        })
-        .collect();
+    {
+        observation_members
+            .entry(observation.observer_link_id.clone())
+            .or_default()
+            .push(ObservationTarget::new(
+                &observation.source.instance_id,
+                &observation.source_link_id,
+                core_node_name,
+            ));
+    }
+    let requested_observations = ObservationTargets::slots_from_plan(observation_members);
 
     Ok(Some(PreflightPlan {
         slot_bindings: validated
@@ -727,7 +729,7 @@ pub async fn run_instance_async(
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
     deferred_pairs: Vec<String>,
-    requested_observations: BTreeMap<String, ObservationTarget>,
+    requested_observations: BTreeMap<String, ObservationTargets>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id

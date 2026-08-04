@@ -346,23 +346,51 @@ pub struct ObservationTargetAmbiguous {
     pub candidate_link_ids: String,
 }
 
-/// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared observer
-/// slot (observer slots are always required) was neither linked to a source nor
-/// explicitly deferred. Mirror of [`PairingSlotUncovered`] for observers.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "instance `{instance_id}` declares observer slot `{link_id}` (observes role \
-     `{observed_role}` of pairing `{pairing_name}:{pairing_tag}`) with no source. Link it \
-     (launcher `links: {{ {link_id}: \"<source_instance>\" }}` / `--link {link_id}@<source_instance>`), \
-     or defer it deliberately (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
-)]
+/// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared `one` or
+/// `one_or_more` observer slot was neither linked to a source nor explicitly
+/// deferred. Mirror of [`PairingSlotUncovered`] for observers. A `zero_or_more`
+/// slot never raises this: omitting it IS its empty set.
+///
+/// `Display` is hand-written rather than derived because the launcher link shape
+/// it suggests follows the slot's cardinality, the way the binding errors'
+/// suggestions do.
+#[derive(Debug, Clone)]
 pub struct ObservationSlotUncovered {
     pub instance_id: String,
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
     pub observed_role: String,
+    pub cardinality: Cardinality,
 }
+
+impl std::fmt::Display for ObservationSlotUncovered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            instance_id,
+            link_id,
+            pairing_name,
+            pairing_tag,
+            observed_role,
+            cardinality,
+        } = self;
+        let link_shape = if cardinality.is_one() {
+            format!("links: {{ {link_id}: \"<source_instance>\" }}")
+        } else {
+            format!("links: {{ {link_id}: [\"<source_instance>\", ...] }}")
+        };
+        write!(
+            f,
+            "instance `{instance_id}` declares observer slot `{link_id}` (cardinality \
+             `{cardinality}`, observes role `{observed_role}` of pairing \
+             `{pairing_name}:{pairing_tag}`) with no source. Link it (launcher `{link_shape}` / \
+             `--link {link_id}@<source_instance>`), or defer it deliberately \
+             (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
+        )
+    }
+}
+
+impl std::error::Error for ObservationSlotUncovered {}
 
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
@@ -404,12 +432,13 @@ pub enum ParsingError {
     /// "unknown binding slot" / "dead pairing key" errors.
     #[error(transparent)]
     LinkUnknownSlot(Box<LinkUnknownSlot>),
-    /// A `links:` value on a pairing/observer slot arrived in array (or
-    /// repeated-flag) shape. Pairing and observer slots take exactly one
-    /// target (`<peer_instance>[/<link_id>]`), never a set.
+    /// A `links:` value on a participant pairing slot arrived in array (or
+    /// repeated-flag) shape. A pairing is strictly 1:1, so a participant slot
+    /// takes exactly one target (`<peer_instance>[/<link_id>]`), never a set.
     #[error(
-        "link `{link}` on instance `{owner_instance_id}` names a pairing or observer slot but \
-         its value is an array; those slots take a single `<instance>[/<link_id>]` target"
+        "link `{link}` on instance `{owner_instance_id}` names a participant pairing slot but \
+         its value is an array; a pairing is strictly 1:1, so the slot takes a single \
+         `<instance>[/<link_id>]` target"
     )]
     LinkTargetNotScalar {
         owner_instance_id: String,
@@ -512,12 +541,79 @@ pub enum ParsingError {
     ObservationTargetAmbiguous(Box<ObservationTargetAmbiguous>),
     #[error(transparent)]
     ObservationSlotUncovered(Box<ObservationSlotUncovered>),
+    /// A launch-file array value (of any length) on a `cardinality: "one"`
+    /// observer slot. An observer link's shape mirrors the slot's declared
+    /// cardinality exactly as a producer binding's does: a `one` slot takes a
+    /// single `<instance>[/<link_id>]` target.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is an array, but the observer slot's \
+         cardinality is `one`: link a single `<source_instance>[/<source_link_id>]` target, or \
+         declare `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the observer entry"
+    )]
+    ObservationArrayOnOneSlot {
+        owner_instance_id: String,
+        link: String,
+    },
+    /// A launch-file scalar value on a `one_or_more` / `zero_or_more` observer
+    /// slot. Multi-cardinality slots take an array of targets, even for a
+    /// single observed pairing.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is a scalar, but the observer slot's \
+         cardinality is `{cardinality}`: link an array \
+         (`{link}: [\"<source_instance>\", ...]`)"
+    )]
+    ObservationScalarOnMultiSlot {
+        owner_instance_id: String,
+        link: String,
+        cardinality: Cardinality,
+    },
+    /// An empty array on a `one_or_more` observer slot: the link entry exists
+    /// but its set does not meet the slot's minimum of one observed pairing.
+    /// (An empty array is a valid definition only for `zero_or_more`.)
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is an empty array, but the observer \
+         slot's cardinality is `one_or_more`: link at least one source, or declare \
+         `cardinality: \"zero_or_more\"` on the observer entry if observing nothing is \
+         meaningful"
+    )]
+    ObservationCardinalityUnmet {
+        owner_instance_id: String,
+        link: String,
+    },
+    /// Repeated `--link KEY@…` occurrences on a `cardinality: "one"` observer
+    /// slot. Flag repetition accumulates a multi slot's set and stays a hard
+    /// error on a `one` slot.
+    #[error(
+        "{target_count} `--link {link}@…` occurrences on instance `{owner_instance_id}`, but the \
+         observer slot's cardinality is `one`: pass exactly one, or declare \
+         `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the observer entry"
+    )]
+    ObservationSingleSlotMultipleTargets {
+        owner_instance_id: String,
+        link: String,
+        target_count: usize,
+    },
+    /// Two of an observer slot's targets resolved to the same observed pairing
+    /// (same source instance, same source-side slot). Caught after resolution
+    /// because distinct target strings can name one pairing: on a source with a
+    /// single observable slot, `"dual_1"` and `"dual_1/left_ctl"` are the same
+    /// member.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` observes `{source_instance_id}/\
+         {source_link_id}` twice: an observer slot observes each pairing once, so drop the \
+         repeated target"
+    )]
+    DuplicateObservationTarget {
+        owner_instance_id: String,
+        link: String,
+        source_instance_id: String,
+        source_link_id: String,
+    },
 
     /// A `defer_links` entry that is invalid. Structural reasons (the entry
     /// names no declared slot, or names a producer-binding slot, which cannot
-    /// be deferred) and stateful reasons (an `optional: true` participant slot
-    /// where deferring is redundant, or a slot that is also linked in the same
-    /// plan) both surface here with a specific `reason`.
+    /// be deferred) and the stateful reason (the slot is also linked in the
+    /// same plan) both surface here with a specific `reason`.
     #[error("defer_links entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}")]
     LinkDeferInvalid {
         owner_instance_id: String,

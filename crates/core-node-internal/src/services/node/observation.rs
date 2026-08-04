@@ -1,30 +1,39 @@
 //! The daemon's authority for observer-slot delivery: it holds the observer
-//! registry and pushes each observer its resolved source pin over the
-//! `observation_update` service, following the source instance's lifecycle.
+//! registry and pushes each observer slot its whole member set over the
+//! `observation_update` service, following each member source's lifecycle.
 //!
 //! Observation is not a registry commit like pairing, so there is nothing to
 //! reserve or revert: an observer passively taps a producer's role topics
 //! without joining the pairing and without claiming any slot. The coordinator
 //! only tracks who observes whom (so a source coming up can notify its
 //! observers) and a per-source incarnation generation (so an observer drops and
-//! redeclares its wire subscription when its source restarts). Delivery is
-//! best-effort: a push that fails is logged, never fatal, because an observer
-//! that misses its pin simply stays silent until the next lifecycle notify.
+//! redeclares one member's wire subscription when that member's source
+//! restarts). Delivery is best-effort: a push that fails is logged, never fatal,
+//! because an observer that misses an update simply stays on its last state
+//! until the next lifecycle notify.
+//!
+//! Delivery is per SLOT, never per member: a slot's update carries its complete
+//! ordered member set, so the node replaces the slot wholesale and the plan's
+//! order is the order it holds. One member's transition therefore re-sends its
+//! slot's whole set, each member stamped with its own current generation and
+//! liveness.
 //!
 //! Two counters ride each update, exactly as the wire type documents:
 //! `sequence` (strictly increasing, seeded from unix-millis at daemon start)
-//! rejects stale re-deliveries; `source_generation` advances only when the
-//! source's incarnation changes (it reaches Running again) and is the sole
-//! discriminator between old-source and new-source messages on the wire.
+//! rejects stale re-deliveries; a member's `source_generation` advances only
+//! when that source's incarnation changes (it reaches Running again) and is the
+//! sole discriminator between old-source and new-source messages on the wire.
 
-use core_node_api::encoding::ObservationTarget;
+use core_node_api::encoding::ObservationTargets;
 use daemon_config::launcher::PlannedObservation;
 use futures::future::join_all;
 use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use peppylib::encoding::observation_update::ObservationUpdateRequest;
-use peppylib::messaging::{OBSERVATION_UPDATE_SERVICE, ObservationPin, ProducerRef};
-use std::collections::BTreeMap;
+use peppylib::messaging::{
+    OBSERVATION_UPDATE_SERVICE, ObservationPin, ObservedMemberState, ProducerRef,
+};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
@@ -59,7 +68,8 @@ impl SourceKey {
     }
 }
 
-/// One observer slot's resolved source, as the daemon holds it.
+/// One member of one observer slot, as the daemon holds it: a slot with N
+/// members holds N records, in plan order.
 ///
 /// The source address is read from `pin.producer` rather than duplicated
 /// alongside it: the pin is what goes on the wire, so deriving the registry key
@@ -76,13 +86,22 @@ impl ObserverRecord {
     }
 }
 
+/// One observer slot: the instance that declares it and its own link_id. The
+/// unit of delivery, since a slot's update always carries its whole member set.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SlotKey {
+    observer_instance_id: String,
+    observer_link_id: String,
+}
+
 /// The observer registry. Observer records are the source of truth; source
 /// fan-out is derived from them in one pass when a lifecycle event arrives.
 #[derive(Default)]
 struct Registry {
-    /// observer instance id → its observer-slot records. Observers are always
-    /// local: delivery to an observer node stays on the daemon that owns it,
-    /// even when the source is remote.
+    /// observer instance id → its observer-slot records, in plan order (one per
+    /// member, so a multi-member slot appears several times). Observers are
+    /// always local: delivery to an observer node stays on the daemon that owns
+    /// it, even when the source is remote.
     by_observer: BTreeMap<String, Vec<ObserverRecord>>,
     /// source → its current incarnation generation. Advances only on the
     /// source reaching Running; never decreases (kept across the source's own
@@ -103,15 +122,28 @@ struct Registry {
     /// live for as long as anything still observed it, which is precisely
     /// after it went down. A local source needs no entry here: the node stack
     /// is the authority for instances this daemon runs.
-    remote_live: std::collections::BTreeSet<SourceKey>,
+    remote_live: BTreeSet<SourceKey>,
 }
 
+/// One slot's pending `observation_update`: its complete ordered member set,
+/// each member stamped with its own generation and liveness at assembly time.
 #[derive(Debug)]
 struct Delivery {
-    observer_instance_id: String,
-    record: ObserverRecord,
-    source_generation: u64,
-    source_live: bool,
+    slot: SlotKey,
+    members: Vec<ObservedMemberState>,
+}
+
+/// The event's own verdict about one source, which supersedes the generic
+/// liveness lookup while assembling that event's deliveries.
+///
+/// A lifecycle hook knows something the authorities do not yet agree on: the
+/// instance that just reached Running may not be in the stack's live set at the
+/// instant this runs, and the one going down may still be in it. Stamping the
+/// event's own source from the event itself is what keeps "came up" and "went
+/// down" from ever disagreeing with the transition that triggered them.
+struct LivenessVerdict<'a> {
+    source: &'a SourceKey,
+    live: bool,
 }
 
 pub struct ObservationCoordinator {
@@ -191,23 +223,25 @@ impl ObservationCoordinator {
     pub fn register_instance(
         &self,
         observer_instance_id: &str,
-        observations: &BTreeMap<String, ObservationTarget>,
+        observations: &BTreeMap<String, ObservationTargets>,
     ) {
         let mut registry = self.registry.lock().unwrap();
         // A re-run replaces its records rather than accumulating them.
         registry.by_observer.remove(observer_instance_id);
-        for (observer_link_id, target) in observations {
-            Self::insert_record(
-                &mut registry,
-                observer_instance_id,
-                ObserverRecord {
-                    observer_link_id: observer_link_id.clone(),
-                    pin: ObservationPin {
-                        producer: target.source.clone(),
-                        source_link_id: target.source_link_id.clone(),
+        for (observer_link_id, targets) in observations {
+            for target in targets {
+                Self::insert_record(
+                    &mut registry,
+                    observer_instance_id,
+                    ObserverRecord {
+                        observer_link_id: observer_link_id.clone(),
+                        pin: ObservationPin {
+                            producer: target.source.clone(),
+                            source_link_id: target.source_link_id.clone(),
+                        },
                     },
-                },
-            );
+                );
+            }
         }
     }
 
@@ -222,9 +256,10 @@ impl ObservationCoordinator {
     }
 
     /// An instance reached Running. If it is a source, its incarnation
-    /// generation advances and every live observer of it is re-delivered
-    /// (source live). If it is itself an observer, each of its records whose
-    /// source is currently live is delivered. Both can hold for one instance.
+    /// generation advances and every slot observing it is re-delivered whole.
+    /// If it is itself an observer, every slot it declares is delivered, so it
+    /// learns its member set even while some members are still down. Both can
+    /// hold for one instance.
     pub async fn on_instance_running(&self, instance_id: &str) {
         let source = SourceKey::new(self.updates.core_node_name(), instance_id);
         self.source_reached_running(&source, Some(instance_id))
@@ -280,84 +315,77 @@ impl ObservationCoordinator {
         // first, so this already held; making it unconditional makes the two
         // paths deliver identically regardless of start order.
         let is_local_source = source.core_node == self.updates.core_node_name();
-        let (source_deliveries, observer_deliveries) = {
+        let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
+        let deliveries = {
             let mut registry = self.registry.lock().unwrap();
-            let generation = {
+            {
                 let counter = registry
                     .source_generation
                     .entry(source.clone())
                     .or_insert(0);
                 *counter += 1;
-                *counter
-            };
+            }
             // A remote source has no local authority to ask, so its report of
             // reaching Running IS the record that it is up.
             if !is_local_source {
                 registry.remote_live.insert(source.clone());
             }
-            let source_deliveries =
-                Self::deliveries_for_source(&registry, source, generation, true);
-            let observer_deliveries: Vec<Delivery> = local_observer_instance
-                .and_then(|instance_id| {
-                    registry
-                        .by_observer
-                        .get(instance_id)
-                        .map(|records| (instance_id, records))
-                })
-                .into_iter()
-                .flat_map(|(instance_id, records)| {
-                    records.iter().cloned().map(|record| Delivery {
-                        source_generation: registry
-                            .source_generation
-                            .get(&record.source())
-                            .copied()
-                            .unwrap_or(0),
-                        observer_instance_id: instance_id.to_string(),
-                        record,
-                        source_live: true,
-                    })
-                })
-                .collect();
-            (source_deliveries, observer_deliveries)
-        };
-        let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
-        self.deliver_many(
-            source_deliveries
-                .into_iter()
-                .filter(|delivery| live_instances.contains(&delivery.observer_instance_id)),
-        )
-        .await;
 
-        // As an observer: deliver each record whose source is already live.
-        // A remote source's liveness cannot be read from the local stack, so it
-        // is taken from the last transition its own daemon reported.
-        self.deliver_many(
-            observer_deliveries
-                .into_iter()
-                .filter(|delivery| self.source_is_live(&delivery.record.source(), &live_instances)),
-        )
+            // Every slot observing this source, plus (when this instance is
+            // itself an observer) every slot it declares, so it learns its whole
+            // member set on the way up.
+            let mut slots = Self::slots_observing(&registry, source);
+            slots.extend(
+                local_observer_instance
+                    .into_iter()
+                    .flat_map(|instance_id| Self::slots_of_observer(&registry, instance_id)),
+            );
+
+            self.assemble_deliveries(
+                &registry,
+                slots,
+                &live_instances,
+                Some(LivenessVerdict { source, live: true }),
+            )
+        };
+        self.deliver_many(deliveries.into_iter().filter(|delivery| {
+            // The instance this hook fires for is up by definition: it committed
+            // to Running, which is why we are here. Reading its liveness off the
+            // stack instead would make its own slots' delivery depend on when
+            // the stack's live set happens to catch up.
+            local_observer_instance == Some(delivery.slot.observer_instance_id.as_str())
+                || live_instances.contains(&delivery.slot.observer_instance_id)
+        }))
         .await;
     }
 
     /// Whether a source is currently up, from whichever authority owns it: the
     /// local node stack for a local source, and the last notification its
-    /// owning daemon sent for a remote one.
+    /// owning daemon sent for a remote one. `verdict`, when it names this
+    /// source, is the triggering event's own answer and wins over both.
     fn source_is_live(
         &self,
+        registry: &Registry,
         source: &SourceKey,
-        live_local_instances: &std::collections::HashSet<String>,
+        live_local_instances: &HashSet<String>,
+        verdict: &Option<LivenessVerdict<'_>>,
     ) -> bool {
+        if let Some(verdict) = verdict
+            && verdict.source == source
+        {
+            return verdict.live;
+        }
         if source.core_node == self.updates.core_node_name() {
             return live_local_instances.contains(&source.instance_id);
         }
-        self.registry.lock().unwrap().remote_live.contains(source)
+        registry.remote_live.contains(source)
     }
 
-    /// An instance stopped or was removed. If it is a source, its live
-    /// observers are told the source went down (pin retained, `source_live`
-    /// false). If it is an observer, its records are dropped. The source's
-    /// generation is retained so a later restart is a strictly newer
-    /// incarnation.
+    /// An instance stopped or was removed. If it is a source, every slot
+    /// observing it is re-delivered with that member's `source_live` cleared
+    /// (its pin stays in the set, at its position). If it is an observer, its
+    /// records are dropped. The source's generation is retained so a later
+    /// restart is a strictly newer incarnation.
     pub async fn on_instance_down(&self, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
 
@@ -377,9 +405,20 @@ impl ObservationCoordinator {
     /// the local down path and the remote notification. Caller holds
     /// `op_lock`.
     async fn mark_source_down(&self, source: &SourceKey) {
+        let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
         let deliveries = {
             let mut registry = self.registry.lock().unwrap();
-            let deliveries = Self::source_down_deliveries_locked(&mut registry, source);
+            // Assembled before the cleanup below, so the down source's members
+            // still carry the generation they last ran under.
+            let deliveries = self.assemble_deliveries(
+                &registry,
+                Self::slots_observing(&registry, source),
+                &live_instances,
+                Some(LivenessVerdict {
+                    source,
+                    live: false,
+                }),
+            );
             // Unconditionally, unlike the generation: whether anything still
             // observes this source has no bearing on whether it is up. A
             // no-op for a local source, which never gets a marker.
@@ -387,27 +426,24 @@ impl ObservationCoordinator {
             Self::forget_unobserved_source_locked(&mut registry, source);
             deliveries
         };
-        let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
         self.deliver_many(
             deliveries
                 .into_iter()
-                .filter(|delivery| live_instances.contains(&delivery.observer_instance_id)),
+                .filter(|delivery| live_instances.contains(&delivery.slot.observer_instance_id)),
         )
         .await;
     }
 
-    /// Every update owed to `source`'s observers, stamped with `generation` and
-    /// whether the source is up.
+    /// Every slot with a member observing `source`.
     ///
-    /// One function because the up and down paths must reach exactly the same
-    /// observers: a "went down" addressed to fewer observers than the matching
+    /// One function for the up and down paths because they must reach exactly
+    /// the same slots: a "went down" addressed to fewer slots than the matching
     /// "came up" leaves the difference permanently stale.
-    fn deliveries_for_source(
-        registry: &Registry,
-        source: &SourceKey,
-        generation: u64,
-        source_live: bool,
-    ) -> Vec<Delivery> {
+    /// A set, not a list: one slot may observe a source through several of the
+    /// source's own participant slots, and it is still one delivery. Collecting
+    /// into a `BTreeSet` is what makes that true here and at every caller, so
+    /// unioning two of these needs no second deduplication.
+    fn slots_observing(registry: &Registry, source: &SourceKey) -> BTreeSet<SlotKey> {
         registry
             .by_observer
             .iter()
@@ -415,22 +451,69 @@ impl ObservationCoordinator {
                 records
                     .iter()
                     .filter(|record| &record.source() == source)
-                    .cloned()
-                    .map(move |record| Delivery {
+                    .map(move |record| SlotKey {
                         observer_instance_id: observer_id.clone(),
-                        record,
-                        source_generation: generation,
-                        source_live,
+                        observer_link_id: record.observer_link_id.clone(),
                     })
             })
             .collect()
     }
 
-    /// Every "source went down" update owed to this source's observers, with
-    /// the generation retained so a later restart is strictly newer.
-    fn source_down_deliveries_locked(registry: &mut Registry, source: &SourceKey) -> Vec<Delivery> {
-        let generation = registry.source_generation.get(source).copied().unwrap_or(0);
-        Self::deliveries_for_source(registry, source, generation, false)
+    /// Every slot one observer instance declares a member for.
+    fn slots_of_observer(registry: &Registry, observer_instance_id: &str) -> BTreeSet<SlotKey> {
+        registry
+            .by_observer
+            .get(observer_instance_id)
+            .into_iter()
+            .flatten()
+            .map(|record| SlotKey {
+                observer_instance_id: observer_instance_id.to_string(),
+                observer_link_id: record.observer_link_id.clone(),
+            })
+            .collect()
+    }
+
+    /// Materializes each slot's complete ordered member set, stamping every
+    /// member with its own current generation and liveness. Registry order is
+    /// plan order, so the set the node receives is the set the deployment
+    /// wrote.
+    fn assemble_deliveries(
+        &self,
+        registry: &Registry,
+        slots: BTreeSet<SlotKey>,
+        live_local_instances: &HashSet<String>,
+        verdict: Option<LivenessVerdict<'_>>,
+    ) -> Vec<Delivery> {
+        slots
+            .into_iter()
+            .map(|slot| {
+                let members = registry
+                    .by_observer
+                    .get(&slot.observer_instance_id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|record| record.observer_link_id == slot.observer_link_id)
+                    .map(|record| {
+                        let source = record.source();
+                        ObservedMemberState {
+                            source_generation: registry
+                                .source_generation
+                                .get(&source)
+                                .copied()
+                                .unwrap_or(0),
+                            source_live: self.source_is_live(
+                                registry,
+                                &source,
+                                live_local_instances,
+                                &verdict,
+                            ),
+                            source: record.pin.clone(),
+                        }
+                    })
+                    .collect();
+                Delivery { slot, members }
+            })
+            .collect()
     }
 
     /// Keeps a source generation only while at least one observer may
@@ -452,7 +535,7 @@ impl ObservationCoordinator {
         let mut by_observer: BTreeMap<String, Vec<Delivery>> = BTreeMap::new();
         for delivery in deliveries {
             by_observer
-                .entry(delivery.observer_instance_id.clone())
+                .entry(delivery.slot.observer_instance_id.clone())
                 .or_default()
                 .push(delivery);
         }
@@ -477,49 +560,34 @@ impl ObservationCoordinator {
         join_all(futures).await;
     }
 
-    /// One `observation_update` service call carrying the absolute source state
-    /// of `record.observer_link_id` on the observer instance. Best-effort: a
-    /// stale reply is success (a newer absolute state already landed), any
-    /// other failure is logged and swallowed.
+    /// One `observation_update` service call carrying the absolute state of one
+    /// observer slot: its complete ordered member set. Best-effort: a stale
+    /// reply is success (a newer absolute state already landed), any other
+    /// failure is logged and swallowed.
     async fn deliver(&self, target: &SlotUpdateTarget, delivery: &Delivery) {
-        if let Err(reason) = self
-            .send_observation_update(
-                target,
-                &delivery.record,
-                delivery.source_generation,
-                delivery.source_live,
-            )
-            .await
-        {
+        if let Err(reason) = self.send_observation_update(target, delivery).await {
             Self::warn_delivery_failure(delivery, &reason);
         }
     }
 
     fn warn_delivery_failure(delivery: &Delivery, reason: &str) {
-        let source = delivery.record.source();
         warn!(
-            "Best-effort observation delivery to '{}' slot `{}` (source '{}' on core node '{}') \
-             failed: {reason}",
-            delivery.observer_instance_id,
-            delivery.record.observer_link_id,
-            source.instance_id,
-            source.core_node
+            "Best-effort observation delivery to '{}' slot `{}` ({} member(s)) failed: {reason}",
+            delivery.slot.observer_instance_id,
+            delivery.slot.observer_link_id,
+            delivery.members.len(),
         );
     }
 
     async fn send_observation_update(
         &self,
         target: &SlotUpdateTarget,
-        record: &ObserverRecord,
-        source_generation: u64,
-        source_live: bool,
+        delivery: &Delivery,
     ) -> std::result::Result<(), String> {
         let request = ObservationUpdateRequest {
-            link_id: record.observer_link_id.clone(),
+            link_id: delivery.slot.observer_link_id.clone(),
             sequence: self.updates.next_sequence(),
-            source: Some(record.pin.clone()),
-            source_generation,
-            source_live,
+            members: delivery.members.clone(),
         };
         let payload = request.encode().map_err(|e| e.to_string())?;
 

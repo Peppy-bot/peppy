@@ -1,0 +1,29 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "openarm_gripper_leader",
+    tag: "v1",
+    depends_on: {
+      // One limb of a teleoperated pair, playing the `leader` role of
+      // `gripper_link/v1` through its single participant slot.
+      pairings: [
+        { name: "gripper_link", tag: "v1", role: "leader", link_id: "limb" }
+      ]
+    },
+    labels: ["leader"]
+  },
+  execution: {
+    language: "rust",
+    run_cmd: ["./bin/openarm_gripper_leader"]
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        { link_id: "limb", name: "gripper_setpoints" }
+      ],
+      consumes: [
+        { link_id: "limb", name: "gripper_states" }
+      ]
+    }
+  }
+}

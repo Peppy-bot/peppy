@@ -242,7 +242,7 @@ pub enum NodeCommands {
             requires = "run",
         )]
         links: Vec<(String, String)>,
-        /// Explicitly start with a required pairing/observer slot unresolved:
+        /// Explicitly start with a pairing/observer slot unresolved:
         /// `LINK_ID`. Repeatable. Only valid alongside `--run`.
         #[arg(
             long = "defer-link",
@@ -322,9 +322,9 @@ pub enum NodeCommands {
         /// multi-cardinality slot's set in flag order and is rejected on a
         /// `one` slot. For a pairing or observer link, TARGET is a peer/source
         /// `instance_id[/link_id]`, where the `/link_id` suffix disambiguates
-        /// when the target plays the role through several slots. A required
-        /// slot left unlinked aborts the run unless it is a `zero_or_more`
-        /// producer slot or an `optional` pairing slot.
+        /// when the target plays the role through several slots. A slot left
+        /// unlinked aborts the run unless it is a `zero_or_more` producer or
+        /// observer slot.
         #[arg(
             long = "link",
             value_delimiter = ',',
@@ -332,7 +332,7 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         links: Vec<(String, String)>,
-        /// Explicitly start with a required pairing/observer slot unresolved:
+        /// Explicitly start with a pairing/observer slot unresolved:
         /// `LINK_ID`. Repeatable. The instance boots with the slot silent (no
         /// wire traffic) until a later start resolves it — for a pairing, via
         /// `--link <peer_slot>@<this_instance>/<LINK_ID>` from the peer.

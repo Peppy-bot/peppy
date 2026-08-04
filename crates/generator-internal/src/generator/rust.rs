@@ -16,7 +16,8 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
+    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, non_empty_message_format,
+    scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -24,7 +25,7 @@ use crate::generator::naming::{
     to_camel_case,
 };
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService,
 };
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
@@ -665,12 +666,6 @@ impl SchemaInfo {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PairTopicConsumerKind {
-    Peer,
-    Observed,
-}
-
 impl RustGenerator {
     /// Shared consume-side scaffold for peer and observer pairing topics. The
     /// two modes differ only in their module header, subscription runtime, and
@@ -734,8 +729,8 @@ impl RustGenerator {
                 build_peer_topic_subscription(spec)?,
                 InterfaceKind::PeerConsumedTopic,
             ),
-            PairTopicConsumerKind::Observed => (
-                build_observed_module_header(topic.name.as_str(), peer),
+            PairTopicConsumerKind::Observed(cardinality) => (
+                build_observed_module_header(topic.name.as_str(), peer, cardinality),
                 build_observed_topic_subscription(spec)?,
                 InterfaceKind::ObservedTopic,
             ),
@@ -1596,8 +1591,13 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &crate::generator::types::PeerContext,
+        cardinality: Cardinality,
     ) -> Result<()> {
-        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
+        self.add_pair_topic_consumer(
+            topic,
+            observer,
+            PairTopicConsumerKind::Observed(cardinality),
+        )
     }
 
     fn add_consumed_action(

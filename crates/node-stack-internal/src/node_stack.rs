@@ -1526,7 +1526,6 @@ pub fn pairing_slot_view(
                 pairing_name: dep.name.as_str().to_string(),
                 pairing_tag: dep.tag.clone(),
                 role: dep.role.clone(),
-                optional: dep.optional,
                 binding,
             },
         );
