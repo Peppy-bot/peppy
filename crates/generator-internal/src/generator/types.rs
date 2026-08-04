@@ -268,6 +268,45 @@ impl DependencyContext {
     }
 }
 
+/// Pre-wrapped doc lines for an observer module's source accessor, the
+/// observation counterpart of [`DependencyContext::bound_producers_doc`] and
+/// shared verbatim by both language generators. The first line stands alone as
+/// the summary sentence.
+///
+/// It carries the one difference that matters against a bound producer set: an
+/// observed set is live, so nothing about its size holds for the node's
+/// lifetime and an empty read is legal at any instant.
+pub fn observed_sources_doc(cardinality: Cardinality) -> &'static [&'static str] {
+    match cardinality {
+        Cardinality::One => &[
+            "The pairing this module's observer slot observes.",
+            "`None` before the daemon has delivered the slot, and again if a",
+            "replan leaves it observing nothing. This slot declares cardinality",
+            "`one`: it observes at most one pairing, so the accessor is singular.",
+            "Purely local configuration state; there is no health-derived helper,",
+            "because a third node's health is not knowable here.",
+        ],
+        Cardinality::OneOrMore => &[
+            "Every pairing this module's observer slot observes, in plan order.",
+            "The set is live: the daemon replaces it whole whenever the plan's",
+            "observed pairings change, so it can differ between reads and is",
+            "empty before the first delivery. This slot declares cardinality",
+            "`one_or_more`: the plan bound at least one pairing to it.",
+            "Purely local configuration state; there is no health-derived helper,",
+            "because a third node's health is not knowable here.",
+        ],
+        Cardinality::ZeroOrMore => &[
+            "Every pairing this module's observer slot observes, in plan order.",
+            "The set is live: the daemon replaces it whole whenever the plan's",
+            "observed pairings change, so it can differ between reads. This slot",
+            "declares cardinality `zero_or_more`: the plan may have bound no",
+            "pairing at all, so the empty set is an expected steady state.",
+            "Purely local configuration state; there is no health-derived helper,",
+            "because a third node's health is not knowable here.",
+        ],
+    }
+}
+
 /// Describes a concrete subscriber/exposer interface that a deployment requires.
 ///
 /// Construct values through the [`DeploymentInterface`] constructors
@@ -327,6 +366,12 @@ pub enum InterfaceVariant {
     ObservedTopic {
         topic: NativeEmittedTopic,
         observer: PeerContext,
+        /// The observer slot's declared `cardinality`, which types the
+        /// generated accessor: `one` emits `source()`, the multi cardinalities
+        /// emit `sources()`. It rides beside `observer` rather than inside it
+        /// because [`PeerContext`] is shared with participant slots, which
+        /// carry no cardinality.
+        cardinality: Cardinality,
     },
 }
 
@@ -408,9 +453,17 @@ impl DeploymentInterface {
     }
 
     /// A pairing topic emitted by an observed role that this node taps as an
-    /// observer.
-    pub fn observed_topic(topic: NativeEmittedTopic, observer: PeerContext) -> Self {
-        Self::new(InterfaceVariant::ObservedTopic { topic, observer })
+    /// observer, at the observer slot's declared cardinality.
+    pub fn observed_topic(
+        topic: NativeEmittedTopic,
+        observer: PeerContext,
+        cardinality: Cardinality,
+    ) -> Self {
+        Self::new(InterfaceVariant::ObservedTopic {
+            topic,
+            observer,
+            cardinality,
+        })
     }
 
     pub fn interface(&self) -> &InterfaceVariant {
@@ -526,13 +579,15 @@ pub trait LanguageGenerator {
         peer: &PeerContext,
     ) -> Result<()>;
     /// A pairing topic an observed role emits, tapped passively: a
-    /// `subscribe_observed`-backed subscription that follows the source
-    /// instance's lifecycle. The module exposes `source()` and never a
-    /// publisher.
+    /// `subscribe_observed`-backed subscription that follows each observed
+    /// source instance's lifecycle. The module exposes the slot's sources and
+    /// never a publisher; `cardinality` decides whether that accessor is
+    /// singular (`source()`) or a set (`sources()`).
     fn add_observed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &PeerContext,
+        cardinality: Cardinality,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
@@ -577,9 +632,11 @@ impl DeploymentInterface {
             InterfaceVariant::PeerConsumedTopic { topic, peer } => {
                 backend.add_peer_consumed_topic(topic, peer)
             }
-            InterfaceVariant::ObservedTopic { topic, observer } => {
-                backend.add_observed_topic(topic, observer)
-            }
+            InterfaceVariant::ObservedTopic {
+                topic,
+                observer,
+                cardinality,
+            } => backend.add_observed_topic(topic, observer, *cardinality),
         }
     }
 }

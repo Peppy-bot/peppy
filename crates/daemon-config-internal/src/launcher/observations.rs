@@ -7,10 +7,14 @@
 //! the topics a participant emits for that role, without joining the 1:1
 //! pairing and without claiming any endpoint. So, unlike pairing, observation
 //! is neither exclusive nor two-sided: many observers may watch the same
-//! source, and the source is never coverage-checked for the observer. Every
-//! observer slot is required (the manifest forbids `optional` on an observer
-//! entry), so each must be linked to a source or explicitly deferred, or the
-//! plan is rejected (`ObservationSlotUncovered`).
+//! source, and the source is never coverage-checked for the observer.
+//!
+//! A slot observes as many pairings as its declared `cardinality` allows, and
+//! its link value's shape follows that cardinality exactly as a producer
+//! binding's does: `one` takes a single target, the multi cardinalities take an
+//! array. A `one` or `one_or_more` slot must be linked or explicitly deferred
+//! (`ObservationSlotUncovered` otherwise); omitting a `zero_or_more` slot IS its
+//! empty set.
 
 use super::types::Placements;
 use crate::error::{
@@ -19,10 +23,12 @@ use crate::error::{
 };
 use config::node::PairingObserverDependency;
 use config::runtime::ProducerRef;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use super::pairings::PairingValidationItem;
-use super::types::split_link_target;
+use super::types::{
+    CardinalityShapeViolation, LinkValue, check_cardinality_shape, split_link_target,
+};
 
 /// One validated observation, ready for the daemon to deliver to the observer
 /// once resolved. The observer subscribes fully pinned to
@@ -60,8 +66,9 @@ pub struct ValidatedObservations {
 ///
 /// Rules:
 /// 1. Only `links` keys naming one of this node's observer slots are processed;
-///    an observer entry whose value is an array is `LinkTargetNotScalar`
-///    (raised by `pairings`' scalar guard is not shared, so it is raised here).
+///    the value's shape must match the slot's declared cardinality
+///    (`ObservationArrayOnOneSlot` / `ObservationScalarOnMultiSlot` /
+///    `ObservationCardinalityUnmet` / `ObservationSingleSlotMultipleTargets`).
 /// 2. The source instance exists in the plan/stack (`UnknownInstanceId`).
 /// 3. The source declares exactly one participant slot playing the observed
 ///    `role` for the observer's pairing `(name, tag)`, or the link names one
@@ -71,8 +78,15 @@ pub struct ValidatedObservations {
 ///    such slot is a candidate regardless of who else observes it.
 /// 4. When both the observer slot and the resolved source slot pin a `sha256`,
 ///    the pins must match (`PairingSha256Mismatch`).
-/// 5. Coverage: every observer slot of every planned instance is linked or
-///    listed in `defer_links` (`ObservationSlotUncovered`).
+/// 5. No two of a slot's targets resolve to the same observed pairing
+///    (`DuplicateObservationTarget`).
+/// 6. Coverage: every `one` / `one_or_more` observer slot of every planned
+///    instance is linked or listed in `defer_links`
+///    (`ObservationSlotUncovered`), and no slot is both.
+///
+/// Rules 2-5 are all-or-nothing per slot: a slot with any failing member
+/// contributes no observation at all, so a partially-resolved member set can
+/// never reach the plan.
 pub fn validate_observations(
     items: &[PairingValidationItem<'_>],
     placements: &Placements,
@@ -101,16 +115,9 @@ pub fn validate_observations(
                 let Some(own_dep) = observers_by_link.get(key.as_str()).copied() else {
                     continue;
                 };
-                let Some(target) = value.as_scalar() else {
-                    out.errors.push(ParsingError::LinkTargetNotScalar {
-                        owner_instance_id: owner_id.to_string(),
-                        link: key.clone(),
-                    });
-                    continue;
-                };
-                match resolve_observation(owner_id, own_dep, key, target, &lookup, placements) {
-                    Ok(planned) => out.planned.push(planned),
-                    Err(error) => out.errors.push(error),
+                match resolve_observation_slot(owner_id, own_dep, key, value, &lookup, placements) {
+                    Ok(planned) => out.planned.extend(planned),
+                    Err(errors) => out.errors.extend(errors),
                 }
             }
 
@@ -119,6 +126,85 @@ pub fn validate_observations(
     }
 
     out
+}
+
+/// Resolves ONE observer slot's whole link value: the shape check (rule 1),
+/// then every target in declaration order (rules 2-4), then the duplicate-member
+/// check (rule 5). Returns the slot's member set in that same order, or every
+/// rule violation it collected; a slot that fails contributes nothing.
+fn resolve_observation_slot(
+    owner_id: &str,
+    own_dep: &PairingObserverDependency,
+    key: &str,
+    value: &LinkValue,
+    lookup: &BTreeMap<&str, &PairingValidationItem<'_>>,
+    placements: &Placements,
+) -> Result<Vec<PlannedObservation>, Vec<ParsingError>> {
+    if let Err(violation) = check_cardinality_shape(own_dep.cardinality, value) {
+        return Err(vec![shape_error(violation, owner_id, key)]);
+    }
+
+    let mut planned = Vec::with_capacity(value.targets().len());
+    let mut errors = Vec::new();
+    for target in value.targets() {
+        match resolve_observation(owner_id, own_dep, key, target, lookup, placements) {
+            Ok(observation) => planned.push(observation),
+            Err(error) => errors.push(error),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Distinct target strings can resolve to one pairing: on a source with a
+    // single observable slot, `dual_1` and `dual_1/left_ctl` are the same
+    // member. The raw strings were deduplicated at parse; this is the check
+    // that only resolution can make.
+    let mut seen = HashSet::with_capacity(planned.len());
+    if let Some(duplicate) = planned
+        .iter()
+        .find(|observation| !seen.insert((&observation.source, &observation.source_link_id)))
+    {
+        return Err(vec![ParsingError::DuplicateObservationTarget {
+            owner_instance_id: owner_id.to_string(),
+            link: key.to_string(),
+            source_instance_id: duplicate.source.instance_id.clone(),
+            source_link_id: duplicate.source_link_id.clone(),
+        }]);
+    }
+
+    Ok(planned)
+}
+
+/// Speaks a [`CardinalityShapeViolation`] in observer vocabulary, the way
+/// `bindings` speaks it in producer-binding vocabulary.
+fn shape_error(violation: CardinalityShapeViolation, owner_id: &str, key: &str) -> ParsingError {
+    let owner_instance_id = owner_id.to_string();
+    let link = key.to_string();
+    match violation {
+        CardinalityShapeViolation::ArrayOnOneSlot => ParsingError::ObservationArrayOnOneSlot {
+            owner_instance_id,
+            link,
+        },
+        CardinalityShapeViolation::ScalarOnMultiSlot { cardinality } => {
+            ParsingError::ObservationScalarOnMultiSlot {
+                owner_instance_id,
+                link,
+                cardinality,
+            }
+        }
+        CardinalityShapeViolation::Unmet => ParsingError::ObservationCardinalityUnmet {
+            owner_instance_id,
+            link,
+        },
+        CardinalityShapeViolation::SingleSlotMultipleTargets { target_count } => {
+            ParsingError::ObservationSingleSlotMultipleTargets {
+                owner_instance_id,
+                link,
+                target_count,
+            }
+        }
+    }
 }
 
 /// Resolves ONE observer `links` entry (rules 2-4). `own_dep` is guaranteed to
@@ -220,8 +306,11 @@ fn resolve_observation(
     })
 }
 
-/// Rule 5: every observer slot must be linked (a `links` entry) or deferred (a
-/// `defer_links` entry). Observer slots are always required.
+/// Rule 6: a `one` / `one_or_more` observer slot must be linked (a `links`
+/// entry) or deferred (a `defer_links` entry), and no slot may be both.
+/// Omitting a `zero_or_more` slot is how a deployment writes its empty set, so
+/// it needs no coverage; deferring it stays valid and says the same thing
+/// explicitly.
 fn validate_coverage(
     instance: &super::types::DeploymentInstance,
     item: &PairingValidationItem<'_>,
@@ -229,19 +318,29 @@ fn validate_coverage(
 ) {
     let owner_id = instance.instance_id.as_str();
     for observer in item.observer_deps {
-        let covered = instance.links.contains_key(&observer.link_id)
-            || instance.defer_links.contains(&observer.link_id);
-        if !covered {
-            errors.push(ParsingError::ObservationSlotUncovered(Box::new(
-                ObservationSlotUncovered {
-                    instance_id: owner_id.to_string(),
-                    link_id: observer.link_id.clone(),
-                    pairing_name: observer.name.as_str().to_string(),
-                    pairing_tag: observer.tag.clone(),
-                    observed_role: observer.role.clone(),
-                },
-            )));
+        let linked = instance.links.contains_key(&observer.link_id);
+        let deferred = instance.defer_links.contains(&observer.link_id);
+        if linked && deferred {
+            errors.push(ParsingError::LinkDeferInvalid {
+                owner_instance_id: owner_id.to_string(),
+                link_id: observer.link_id.clone(),
+                reason: "the slot is also linked in this plan".to_string(),
+            });
+            continue;
         }
+        if linked || deferred || observer.cardinality.allows_empty() {
+            continue;
+        }
+        errors.push(ParsingError::ObservationSlotUncovered(Box::new(
+            ObservationSlotUncovered {
+                instance_id: owner_id.to_string(),
+                link_id: observer.link_id.clone(),
+                pairing_name: observer.name.as_str().to_string(),
+                pairing_tag: observer.tag.clone(),
+                observed_role: observer.role.clone(),
+                cardinality: observer.cardinality,
+            },
+        )));
     }
 }
 
@@ -270,17 +369,41 @@ mod tests {
     /// A robot arm exposing the `arm` participant role of `arm_link/v1`.
     fn arm_deps() -> Vec<config::node::PairingParticipantDependency> {
         parse_pairing_deps(
-            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }]"#,
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]"#,
         )
     }
 
+    fn parse_observer_deps(json5: &str) -> Vec<PairingObserverDependency> {
+        serde_json5::from_str(json5).expect("observer deps fixture should parse")
+    }
+
     /// A recorder observing the `arm` role of `arm_link/v1` through slot
-    /// `observed_arm`.
+    /// `observed_arm`, at the given cardinality (omitted spelling `one`).
+    fn recorder_deps_with(cardinality: Option<&str>) -> Vec<PairingObserverDependency> {
+        let cardinality = match cardinality {
+            Some(spelling) => format!(r#", cardinality: "{spelling}""#),
+            None => String::new(),
+        };
+        parse_observer_deps(&format!(
+            r#"[{{ name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm"{cardinality} }}]"#
+        ))
+    }
+
+    /// The default `one` recorder, the shape most rules are stated on.
     fn recorder_deps() -> Vec<PairingObserverDependency> {
-        serde_json5::from_str(
-            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm" }]"#,
-        )
-        .expect("observer deps fixture should parse")
+        recorder_deps_with(None)
+    }
+
+    fn planned_sources(out: &ValidatedObservations) -> Vec<(&str, &str)> {
+        out.planned
+            .iter()
+            .map(|observation| {
+                (
+                    observation.source.instance_id.as_str(),
+                    observation.source_link_id.as_str(),
+                )
+            })
+            .collect()
     }
 
     /// A node declaring participant slots only (a potential observation source).
@@ -402,8 +525,8 @@ mod tests {
         let dual_instances = parse_instances(r#"[{ instance_id: "dual_1" }]"#);
         let dual_deps = parse_pairing_deps(
             r#"[
-                { name: "arm_link", tag: "v1", role: "arm", link_id: "left_ctl", optional: true },
-                { name: "arm_link", tag: "v1", role: "arm", link_id: "right_ctl", optional: true }
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "left_ctl" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "right_ctl" }
             ]"#,
         );
         let rec_instances =
@@ -457,13 +580,172 @@ mod tests {
         assert_eq!(out.planned.len(), 2, "observation is not exclusive");
     }
 
+    /// An observer link's shape mirrors the slot's declared cardinality
+    /// exactly as a producer binding's does, and the rejections are named in
+    /// observer vocabulary.
     #[test]
-    fn observer_value_as_array_is_rejected() {
+    fn observer_link_shape_must_match_the_slot_cardinality() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_deps = arm_deps();
+
+        // An array on a `one` slot, single-element included.
+        let one_deps = recorder_deps_with(None);
         let rec_instances =
             parse_instances(r#"[{ instance_id: "rec_1", links: { observed_arm: ["arm_1"] } }]"#);
-        let rec_deps = recorder_deps();
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &one_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::ObservationArrayOnOneSlot { .. })),
+            "an array on a `one` observer slot is rejected: {:?}",
+            out.errors
+        );
+
+        // A scalar on a multi slot.
+        for cardinality in ["one_or_more", "zero_or_more"] {
+            let multi_deps = recorder_deps_with(Some(cardinality));
+            let rec_instances =
+                parse_instances(r#"[{ instance_id: "rec_1", links: { observed_arm: "arm_1" } }]"#);
+            let items = vec![
+                item("robot_arm", &arm_instances, &arm_deps),
+                observer_item("recorder", &rec_instances, &multi_deps),
+            ];
+            let out = validate_observations(&items, &all_local());
+            assert!(
+                out.errors
+                    .iter()
+                    .any(|e| matches!(e, ParsingError::ObservationScalarOnMultiSlot { .. })),
+                "a scalar on a `{cardinality}` observer slot is rejected: {:?}",
+                out.errors
+            );
+        }
+
+        // An empty array on `one_or_more` (valid only on `zero_or_more`).
+        let one_or_more_deps = recorder_deps_with(Some("one_or_more"));
+        let rec_instances =
+            parse_instances(r#"[{ instance_id: "rec_1", links: { observed_arm: [] } }]"#);
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &one_or_more_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::ObservationCardinalityUnmet { .. })),
+            "an empty array on `one_or_more` is rejected: {:?}",
+            out.errors
+        );
+
+        let zero_or_more_deps = recorder_deps_with(Some("zero_or_more"));
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &zero_or_more_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(
+            out.errors.is_empty(),
+            "an empty array on `zero_or_more` is its empty set: {:?}",
+            out.errors
+        );
+        assert!(out.planned.is_empty());
+    }
+
+    /// Repeated `--link` occurrences accumulate a multi slot's member set and
+    /// stay a hard error on a `one` slot.
+    #[test]
+    fn repeated_link_flags_are_counted_against_the_cardinality() {
+        let arm_instances =
+            parse_instances(r#"[{ instance_id: "arm_1" }, { instance_id: "arm_2" }]"#);
+        let arm_deps = arm_deps();
+        // `--link` occurrences have no launch-file spelling, so the flag value
+        // is built the way the CLI builds it.
+        let flags = |targets: &[&str]| {
+            let mut instances = parse_instances(r#"[{ instance_id: "rec_1" }]"#);
+            instances[0].links.insert(
+                "observed_arm".to_string(),
+                LinkValue::Flags(
+                    super::super::types::LinkTargets::new(
+                        targets.iter().map(|target| target.to_string()).collect(),
+                    )
+                    .expect("distinct flag targets"),
+                ),
+            );
+            instances
+        };
+
+        let one_deps = recorder_deps_with(None);
+        let rec_instances = flags(&["arm_1", "arm_2"]);
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &one_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(
+            out.errors.iter().any(|e| matches!(
+                e,
+                ParsingError::ObservationSingleSlotMultipleTargets {
+                    target_count: 2,
+                    ..
+                }
+            )),
+            "two `--link` occurrences on a `one` slot are rejected: {:?}",
+            out.errors
+        );
+
+        let multi_deps = recorder_deps_with(Some("one_or_more"));
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &multi_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            planned_sources(&out),
+            [("arm_1", "controller"), ("arm_2", "controller")],
+            "flag order is the slot's member order"
+        );
+    }
+
+    /// A multi slot resolves every target, in the order the launcher wrote
+    /// them: that order reaches the node, so a deployment can pair member N
+    /// with its own Nth command slot.
+    #[test]
+    fn a_multi_slot_resolves_every_target_in_declaration_order() {
+        let arm_instances =
+            parse_instances(r#"[{ instance_id: "arm_1" }, { instance_id: "arm_2" }]"#);
+        let arm_deps = arm_deps();
+        let rec_instances = parse_instances(
+            r#"[{ instance_id: "rec_1", links: { observed_arm: ["arm_2", "arm_1"] } }]"#,
+        );
+        let rec_deps = recorder_deps_with(Some("one_or_more"));
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            planned_sources(&out),
+            [("arm_2", "controller"), ("arm_1", "controller")],
+            "launcher array order is not sorted away"
+        );
+    }
+
+    /// One failing member fails the whole slot: a partially-resolved member
+    /// set would silently observe fewer pairings than the deployment wrote.
+    #[test]
+    fn one_bad_member_drops_the_whole_slot() {
+        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
+        let arm_deps = arm_deps();
+        let rec_instances = parse_instances(
+            r#"[{ instance_id: "rec_1", links: { observed_arm: ["arm_1", "ghost_1"] } }]"#,
+        );
+        let rec_deps = recorder_deps_with(Some("one_or_more"));
         let items = vec![
             item("robot_arm", &arm_instances, &arm_deps),
             observer_item("recorder", &rec_instances, &rec_deps),
@@ -472,9 +754,187 @@ mod tests {
         assert!(
             out.errors
                 .iter()
-                .any(|e| matches!(e, ParsingError::LinkTargetNotScalar { .. })),
-            "an array value on an observer slot is rejected: {:?}",
+                .any(|e| matches!(e, ParsingError::UnknownInstanceId { .. })),
+            "expected UnknownInstanceId, got {:?}",
             out.errors
         );
+        assert!(
+            out.planned.is_empty(),
+            "the good member must not reach the plan on its own"
+        );
+    }
+
+    /// Distinct target strings can name one pairing, so duplicates are caught
+    /// after resolution rather than by comparing the raw strings.
+    #[test]
+    fn two_targets_resolving_to_one_pairing_are_rejected() {
+        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
+        let arm_deps = arm_deps();
+        let rec_instances = parse_instances(
+            r#"[{ instance_id: "rec_1", links: { observed_arm: ["arm_1", "arm_1/controller"] } }]"#,
+        );
+        let rec_deps = recorder_deps_with(Some("one_or_more"));
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        let error = out
+            .errors
+            .iter()
+            .find(|e| matches!(e, ParsingError::DuplicateObservationTarget { .. }))
+            .expect("expected DuplicateObservationTarget");
+        assert!(
+            error.to_string().contains("arm_1/controller"),
+            "the message names the repeated pairing: {error}"
+        );
+        assert!(out.planned.is_empty());
+    }
+
+    /// A source observed through two of ITS OWN participant slots is two
+    /// distinct members, not a duplicate.
+    #[test]
+    fn one_source_observed_through_two_of_its_slots_is_two_members() {
+        let dual_instances = parse_instances(r#"[{ instance_id: "dual_1" }]"#);
+        let dual_deps = parse_pairing_deps(
+            r#"[
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "left_ctl" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "right_ctl" }
+            ]"#,
+        );
+        let rec_instances = parse_instances(
+            r#"[{ instance_id: "rec_1", links: { observed_arm: ["dual_1/left_ctl", "dual_1/right_ctl"] } }]"#,
+        );
+        let rec_deps = recorder_deps_with(Some("one_or_more"));
+        let items = vec![
+            item("dual_arm", &dual_instances, &dual_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            planned_sources(&out),
+            [("dual_1", "left_ctl"), ("dual_1", "right_ctl")]
+        );
+    }
+
+    /// Coverage follows the cardinality: `one` and `one_or_more` must be
+    /// linked or deferred, while omitting `zero_or_more` IS its empty set.
+    #[test]
+    fn omitted_observer_slots_error_per_cardinality() {
+        for (cardinality, expect_uncovered) in [
+            (None, true),
+            (Some("one_or_more"), true),
+            (Some("zero_or_more"), false),
+        ] {
+            let rec_instances = parse_instances(r#"[{ instance_id: "rec_1" }]"#);
+            let rec_deps = recorder_deps_with(cardinality);
+            let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
+            let out = validate_observations(&items, &all_local());
+            let uncovered = out
+                .errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::ObservationSlotUncovered(_)));
+            assert_eq!(
+                uncovered, expect_uncovered,
+                "cardinality {cardinality:?}: unexpected coverage verdict, got {:?}",
+                out.errors
+            );
+        }
+    }
+
+    /// Deferring a `zero_or_more` slot says its empty set explicitly, and
+    /// stays valid.
+    #[test]
+    fn deferring_a_zero_or_more_slot_is_valid() {
+        let rec_instances =
+            parse_instances(r#"[{ instance_id: "rec_1", defer_links: ["observed_arm"] }]"#);
+        let rec_deps = recorder_deps_with(Some("zero_or_more"));
+        let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
+        let out = validate_observations(&items, &all_local());
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert!(out.planned.is_empty());
+    }
+
+    /// Linking and deferring one slot in the same plan is contradictory,
+    /// mirroring the participant rule.
+    #[test]
+    fn a_slot_that_is_both_linked_and_deferred_is_invalid() {
+        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
+        let arm_deps = arm_deps();
+        let rec_instances = parse_instances(
+            r#"[{ instance_id: "rec_1", links: { observed_arm: "arm_1" }, defer_links: ["observed_arm"] }]"#,
+        );
+        let rec_deps = recorder_deps();
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(
+            out.errors.iter().any(|e| matches!(
+                e,
+                ParsingError::LinkDeferInvalid { reason, .. } if reason.contains("also linked")
+            )),
+            "expected LinkDeferInvalid, got {:?}",
+            out.errors
+        );
+    }
+
+    /// The sha256 pin and the ambiguity rule are per member, not per slot.
+    #[test]
+    fn per_member_sha_and_ambiguity_rules_hold_on_a_multi_slot() {
+        let pinned_instances =
+            parse_instances(r#"[{ instance_id: "arm_1" }, { instance_id: "arm_2" }]"#);
+        let pinned_deps = parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", sha256: "bbb" }]"#,
+        );
+        let rec_instances = parse_instances(
+            r#"[{ instance_id: "rec_1", links: { observed_arm: ["arm_1", "arm_2"] } }]"#,
+        );
+        let rec_deps = parse_observer_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "observed_arm", cardinality: "one_or_more", sha256: "aaa" }]"#,
+        );
+        let items = vec![
+            item("robot_arm", &pinned_instances, &pinned_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert_eq!(
+            out.errors
+                .iter()
+                .filter(|e| matches!(e, ParsingError::PairingSha256Mismatch(_)))
+                .count(),
+            2,
+            "each mismatching member reports its own pin clash: {:?}",
+            out.errors
+        );
+
+        // Ambiguity is judged per member too: the pinned member resolves while
+        // the bare one does not.
+        let dual_instances = parse_instances(r#"[{ instance_id: "dual_1" }]"#);
+        let dual_deps = parse_pairing_deps(
+            r#"[
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "left_ctl" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "right_ctl" }
+            ]"#,
+        );
+        let rec_instances = parse_instances(
+            r#"[{ instance_id: "rec_1", links: { observed_arm: ["dual_1/left_ctl", "dual_1"] } }]"#,
+        );
+        let rec_deps = recorder_deps_with(Some("one_or_more"));
+        let items = vec![
+            item("dual_arm", &dual_instances, &dual_deps),
+            observer_item("recorder", &rec_instances, &rec_deps),
+        ];
+        let out = validate_observations(&items, &all_local());
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::ObservationTargetAmbiguous(_))),
+            "the unpinned member is still ambiguous: {:?}",
+            out.errors
+        );
+        assert!(out.planned.is_empty());
     }
 }

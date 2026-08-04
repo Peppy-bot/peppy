@@ -1,0 +1,51 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "lerobot_recorder",
+    tag: "v1",
+    labels: ["recorder"]
+  },
+  execution: {
+    language: "rust",
+    run_cmd: ["./bin/lerobot_recorder"]
+  },
+  interfaces: {
+    actions: {
+      exposes: [
+        {
+          // One dataset episode per goal: fired by the panel's record button,
+          // frame-count feedback while running, cancel = stop and save.
+          name: "record_episode",
+          goal_service: {
+            request_message_format: {
+              task_description: "string"
+            }
+          },
+          feedback_topic: {
+            message_format: {
+              frames_recorded: "u64"
+            }
+          },
+          result_service: {
+            response_message_format: {
+              episode_id: "u32",
+              frames_recorded: "u64"
+            }
+          }
+        }
+      ]
+    },
+    services: {
+      exposes: [
+        {
+          // The panel's Finish-session button: finalize and mirror the current
+          // dataset, then open a fresh session in place.
+          name: "finish_session",
+          response_message_format: {
+            episodes_recorded: "u32"
+          }
+        }
+      ]
+    }
+  }
+}

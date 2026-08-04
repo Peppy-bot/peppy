@@ -22,7 +22,7 @@ use super::types::{
 };
 use crate::error::Result;
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService,
 };
 use encoding::MessageFormatMapper;
@@ -131,7 +131,9 @@ impl PythonGenerator {
 #[derive(Clone, Copy)]
 enum PairTopicConsumerKind {
     Peer,
-    Observed,
+    /// An observer slot, carrying the cardinality that types its generated
+    /// source accessor. A participant slot has none: a pairing is 1:1.
+    Observed(Cardinality),
 }
 
 impl PythonGenerator {
@@ -156,8 +158,8 @@ impl PythonGenerator {
                 topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?,
                 InterfaceKind::PeerConsumedTopic,
             ),
-            PairTopicConsumerKind::Observed => (
-                topics::build_observed_topic(topic, &arguments, &schema_info, peer)?,
+            PairTopicConsumerKind::Observed(cardinality) => (
+                topics::build_observed_topic(topic, &arguments, &schema_info, peer, cardinality)?,
                 InterfaceKind::ObservedTopic,
             ),
         };
@@ -385,8 +387,13 @@ impl LanguageGenerator for PythonGenerator {
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &crate::generator::types::PeerContext,
+        cardinality: Cardinality,
     ) -> Result<()> {
-        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
+        self.add_pair_topic_consumer(
+            topic,
+            observer,
+            PairTopicConsumerKind::Observed(cardinality),
+        )
     }
 
     fn add_consumed_action(

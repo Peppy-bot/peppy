@@ -1,0 +1,98 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "openarm_backbone",
+    tag: "v1",
+    labels: ["backbone"]
+  },
+  execution: {
+    language: "rust",
+    run_cmd: ["./bin/openarm_backbone"]
+  },
+  interfaces: {
+    topics: {
+      // The proximity readout behind the panel's collision indicator. Lossy:
+      // it is a continuously re-published state, and the next sample corrects
+      // a dropped one.
+      emits: [
+        {
+          name: "collision_status",
+          qos_profile: "sensor_data",
+          message_format: {
+            stamp: "time",
+            // Smallest distance between any two links, in metres.
+            min_separation_m: "f64",
+            governor_engaged: "bool"
+          }
+        }
+      ]
+    },
+    actions: {
+      // The moves the operator panel fires. The backbone runs each one itself
+      // for the arm whose id matches `arm_id`, which is why the panel needs no
+      // per-arm dependency of its own.
+      exposes: [
+        {
+          // Joint-space move: the panel's "Send" button.
+          name: "move_arm_joints",
+          goal_service: {
+            request_message_format: {
+              arm_id: "u16",
+              positions: { $type: "array", $items: "f64", $length: 7 }
+            }
+          },
+          feedback_topic: {
+            message_format: {
+              positions: { $type: "array", $items: "f64", $length: 7 }
+            }
+          },
+          result_service: {
+            response_message_format: {
+              success: "bool",
+              error_msg: { $type: "string", $optional: true }
+            }
+          }
+        },
+        {
+          // Cartesian point-to-point: Execute-pose in the panel's Actions mode
+          // fires a planned straight-line move rather than jogging there.
+          name: "move_arm",
+          goal_service: {
+            request_message_format: {
+              arm_id: "u16",
+              target_pose: { $type: "array", $items: "f64", $length: 6 }
+            }
+          },
+          feedback_topic: {
+            message_format: {
+              remaining_distance_m: "f64"
+            }
+          },
+          result_service: {
+            response_message_format: {
+              success: "bool",
+              error_msg: { $type: "string", $optional: true }
+            }
+          }
+        },
+        {
+          // Gripper open/close as a discrete governed action (Actions mode),
+          // rather than the streamed opening used in Streaming mode.
+          name: "move_gripper",
+          goal_service: {
+            request_message_format: {
+              arm_id: "u16",
+              opening: "f64"
+            }
+          },
+          result_service: {
+            response_message_format: {
+              success: "bool",
+              error_msg: { $type: "string", $optional: true }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

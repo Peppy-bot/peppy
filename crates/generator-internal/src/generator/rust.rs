@@ -24,7 +24,7 @@ use crate::generator::naming::{
     to_camel_case,
 };
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService,
 };
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
@@ -668,7 +668,9 @@ impl SchemaInfo {
 #[derive(Clone, Copy)]
 enum PairTopicConsumerKind {
     Peer,
-    Observed,
+    /// An observer slot, carrying the cardinality that types its generated
+    /// source accessor. A participant slot has none: a pairing is 1:1.
+    Observed(Cardinality),
 }
 
 impl RustGenerator {
@@ -734,8 +736,8 @@ impl RustGenerator {
                 build_peer_topic_subscription(spec)?,
                 InterfaceKind::PeerConsumedTopic,
             ),
-            PairTopicConsumerKind::Observed => (
-                build_observed_module_header(topic.name.as_str(), peer),
+            PairTopicConsumerKind::Observed(cardinality) => (
+                build_observed_module_header(topic.name.as_str(), peer, cardinality),
                 build_observed_topic_subscription(spec)?,
                 InterfaceKind::ObservedTopic,
             ),
@@ -1596,8 +1598,13 @@ impl LanguageGenerator for RustGenerator {
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &crate::generator::types::PeerContext,
+        cardinality: Cardinality,
     ) -> Result<()> {
-        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
+        self.add_pair_topic_consumer(
+            topic,
+            observer,
+            PairTopicConsumerKind::Observed(cardinality),
+        )
     }
 
     fn add_consumed_action(

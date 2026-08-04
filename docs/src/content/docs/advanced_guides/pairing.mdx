@@ -102,7 +102,7 @@ The two directions are checked differently, and for the same reasons contracts a
 
 Naming a topic under `consumes` that this node's own role emits is an error, as is naming a topic that is absent from the document. Both are reported as one aggregated diff per slot, so a manifest with several wrong entries produces one readable report rather than a cascade.
 
-A slot is **required** by default: starting the instance without pairing it (or explicitly deferring it) fails loudly. Mark a slot `optional: true` to let the instance boot unpaired with no ceremony. Optionality governs whether the slot must be paired at launch, not what the node declares about it: an optional slot is coverage-checked identically.
+Every participant slot must be covered: starting the instance without pairing the slot, or without deferring it explicitly, fails loudly. A deployment that runs the node with a slot unpaired says so with `--defer-link`/`defer_links:`, so an unpaired slot is always something the deployment wrote down rather than something it forgot. Coverage is a launch-time question and has no bearing on what the node declares: a slot that boots deferred is interface-checked exactly like a paired one.
 
 ## Establishing pairs
 
@@ -292,10 +292,59 @@ The runtime guarantees mirror pairing's, with the lifecycle twist that defines a
 - **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whether or not `arm_1` is paired to anyone, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself.
 - **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
 - **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation; no message from a previous run of the source leaks across the restart.
-- **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a `source()` helper reporting the resolved source (or `None` before it resolves). There is no publisher and no `paired()`; an observer never talks back.
-- **Not shown in `peppy stack list`.** The `Instance pairings` table renders participant slots only; inspect an observer's link through its generated `source()` helper instead.
+- **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a helper reporting the pairings the slot observes. There is no publisher and no `paired()`; an observer never talks back.
+- **Not shown in `peppy stack list`.** The `Instance pairings` table renders participant slots only; inspect an observer's links through its generated source helper instead.
 
-The generated modules live alongside participant slots under `peppygen.paired_topics.<link_id>.<topic>` (Python) / `peppygen::paired_topics::<link_id>::<topic>` (Rust). Every observer slot is required (it has no `optional` form); cover it with a `--link`/`links:` entry or defer it explicitly with `--defer-link`/`defer_links:`, exactly like a required pairing slot.
+The generated modules live alongside participant slots under `peppygen.paired_topics.<link_id>.<topic>` (Python) / `peppygen::paired_topics::<link_id>::<topic>` (Rust).
+
+### Observing several pairings through one slot
+
+An observer slot carries a [`cardinality`](/advanced_guides/topics/#dependency-cardinality) the way a producer-binding slot does, so one slot can watch a whole fleet:
+
+| `cardinality` | Launcher `links:` value | Omitting the slot |
+|---|---|---|
+| `one` (the default) | a single target, `watch: "arm_1"` | rejected: link it or defer it |
+| `one_or_more` | an array, `watch: ["arm_1", "arm_2"]` | rejected: link it or defer it |
+| `zero_or_more` | an array, possibly empty | valid, and means the empty set |
+
+On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot. Deferring a `zero_or_more` slot is valid too, and says its empty set explicitly.
+
+The declared cardinality types the generated accessor, so flipping it surfaces at every call site rather than silently reading one member of many: a `one` slot exposes `source()` returning a single observed pairing, and the multi cardinalities expose `sources()` returning the whole set in plan order. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the member that published it.
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.paired_topics.watch import joint_states
+
+# `watch` is one_or_more: read the whole observed set, in plan order.
+for source in joint_states.sources(node_runner):
+    print(source.producer.instance_id, source.source_link_id)
+
+# One subscription covers every member; the producer tag says who sent what.
+subscription = await joint_states.subscribe(node_runner)
+async for producer, states in subscription:
+    print(producer.instance_id, states.positions)
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::paired_topics::watch::joint_states;
+
+// `watch` is one_or_more: read the whole observed set, in plan order.
+for source in joint_states::sources(&node_runner)? {
+    println!("{} {}", source.producer.instance_id, source.source_link_id);
+}
+
+// One subscription covers every member; the producer tag says who sent what.
+let mut subscription = joint_states::subscribe(&node_runner).await?;
+while let Some((producer, states)) = subscription.next().await? {
+    println!("{} {:?}", producer.instance_id, states.positions);
+}
+```
+  </TabItem>
+</Tabs>
+
+An observed set is **live**, which is the one way it differs from a bound producer set: the daemon replaces it whole whenever the plan's observed pairings change, so `sources()` can return a different set between reads and an empty read is legal at any instant. A member whose source is down stays in the set, at its position, so the slot's shape does not flicker with the fleet's health.
 
 ## Why topics only?
 

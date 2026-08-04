@@ -1333,8 +1333,8 @@ async fn process_node_run(
 
                     // Register this instance's own observer slots before the
                     // lifecycle notify below, so the `on_instance_running`
-                    // observer branch finds them and delivers each source pin
-                    // whose source is already live. Empty for a non-observer.
+                    // observer branch finds them and delivers each slot's whole
+                    // member set. Empty for a non-observer.
                     // This is the `node run` analogue of the launcher's
                     // `register_planned`, but additive: it merges one instance
                     // into the live registry instead of replacing the stack.
@@ -1346,10 +1346,11 @@ async fn process_node_run(
                     }
 
                     // The instance is Running: notify the observation
-                    // coordinator. If this instance is a source, every live
-                    // observer of it now receives its pin at a freshly bumped
-                    // generation; if it is itself an observer, it receives pins
-                    // for any source already up. Best-effort and independent of
+                    // coordinator. If this instance is a source, every slot
+                    // observing it is re-delivered whole at a freshly bumped
+                    // generation for that member; if it is itself an observer,
+                    // it receives every slot it declares, each member stamped
+                    // with its own liveness. Best-effort and independent of
                     // pairing, so it always runs (a source need not be paired).
                     ctx.action
                         .relationships

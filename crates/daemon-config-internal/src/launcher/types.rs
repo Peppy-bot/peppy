@@ -269,6 +269,66 @@ impl LinkValue {
     }
 }
 
+/// Why a [`LinkValue`] does not satisfy its slot's declared `cardinality`,
+/// shape-only and vocabulary-free: the caller turns it into the error variant
+/// its own slot kind speaks (producer binding or observation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardinalityShapeViolation {
+    /// A launch-file array value on a `one` slot, of any length.
+    ArrayOnOneSlot,
+    /// A launch-file scalar value on a multi slot.
+    ScalarOnMultiSlot {
+        cardinality: config::node::Cardinality,
+    },
+    /// An empty target set on a `one_or_more` slot.
+    Unmet,
+    /// Repeated flag occurrences on a `one` slot.
+    SingleSlotMultipleTargets { target_count: usize },
+}
+
+/// Does the link value's shape (launch file) or occurrence count (CLI flags)
+/// satisfy the slot's declared cardinality?
+///
+/// Launch-file shapes are strict (a scalar is only valid on a `one` slot and an
+/// array only on a multi slot), while flag occurrences carry no shape and are
+/// checked by count alone. CLI-built [`LinkValue::Flags`] is non-empty (zero
+/// occurrences is an omitted link, judged by each family's coverage rule), but
+/// an empty programmatic value on `one_or_more` is still rejected.
+///
+/// The one shape rule, shared by producer-binding slots and observer slots so a
+/// deployment writes `["a", "b"]` for the same reason on both.
+pub fn check_cardinality_shape(
+    cardinality: config::node::Cardinality,
+    value: &LinkValue,
+) -> Result<(), CardinalityShapeViolation> {
+    use config::node::Cardinality;
+    match (cardinality, value) {
+        (Cardinality::One, LinkValue::Scalar(_)) => Ok(()),
+        (Cardinality::One, LinkValue::Array(_)) => Err(CardinalityShapeViolation::ArrayOnOneSlot),
+        (Cardinality::One, LinkValue::Flags(targets)) => {
+            if targets.len() == 1 {
+                Ok(())
+            } else {
+                Err(CardinalityShapeViolation::SingleSlotMultipleTargets {
+                    target_count: targets.len(),
+                })
+            }
+        }
+        (Cardinality::OneOrMore | Cardinality::ZeroOrMore, LinkValue::Scalar(_)) => {
+            Err(CardinalityShapeViolation::ScalarOnMultiSlot { cardinality })
+        }
+        (Cardinality::OneOrMore, LinkValue::Array(targets) | LinkValue::Flags(targets))
+            if targets.is_empty() =>
+        {
+            Err(CardinalityShapeViolation::Unmet)
+        }
+        (
+            Cardinality::OneOrMore | Cardinality::ZeroOrMore,
+            LinkValue::Array(_) | LinkValue::Flags(_),
+        ) => Ok(()),
+    }
+}
+
 /// The target list of a [`LinkValue::Array`] / [`LinkValue::Flags`]
 /// value, duplicate-free by construction: every path that builds one (the
 /// launch-file value parser, CLI flag accumulation, programmatic plan
@@ -406,8 +466,10 @@ pub struct DeploymentInstance {
     ///     (`"<instance_id>"` or `"<instance_id>/<peer_link_id>"` to
     ///     disambiguate) — declaring the pair on ONE side covers both
     ///     endpoints' slots;
-    ///   - an observer slot takes a single source target
-    ///     (`"<source_instance>"` or `"<source_instance>/<source_link_id>"`).
+    ///   - an observer slot takes source targets
+    ///     (`"<source_instance>"` or `"<source_instance>/<source_link_id>"`),
+    ///     as a scalar or an array per its cardinality, exactly like a
+    ///     producer slot.
     ///
     /// The launch parser has no manifest knowledge, so shape is validated
     /// against slot kind at plan time; only shape-local rules (empty targets,

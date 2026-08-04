@@ -28,7 +28,9 @@ use config::node::{Cardinality, DependsOn, ImplementsEntry};
 use config::runtime::{BoundProducers, ProducerRef, SlotBindings};
 use std::collections::BTreeMap;
 
-use super::types::{DeploymentInstance, LinkValue};
+use super::types::{
+    CardinalityShapeViolation, DeploymentInstance, LinkValue, check_cardinality_shape,
+};
 
 /// Minimal view of one planned deployment needed for binding
 /// validation. Built by the launcher with borrowed references to avoid
@@ -238,56 +240,41 @@ pub fn validate_bindings(
     out
 }
 
-/// Rule 2: does the binding value's shape (launch file) or occurrence
-/// count (CLI flags) satisfy the slot's declared cardinality? Launch-file
-/// shapes are strict (a scalar is only valid on a `one` slot and an array
-/// only on a multi slot), while flag occurrences carry no shape and are
-/// checked by count alone. CLI-built `Flags` is non-empty (zero occurrences
-/// is an omitted binding, handled by rule 5), but the validator still rejects
-/// an empty programmatic value on `one_or_more`.
+/// Rule 2: does the binding value satisfy the slot's declared cardinality?
+/// The shape rule itself is [`check_cardinality_shape`], shared with observer
+/// slots; this only speaks it in producer-binding vocabulary.
 fn check_value_matches_cardinality(
     slot: &SlotMeta<'_>,
     value: &LinkValue,
     binding_key: &str,
     instance: &DeploymentInstance,
 ) -> Result<(), ParsingError> {
-    match (slot.cardinality, value) {
-        (Cardinality::One, LinkValue::Scalar(_)) => Ok(()),
-        (Cardinality::One, LinkValue::Array(_)) => Err(ParsingError::BindingArrayOnOneSlot {
-            owner_instance_id: instance.instance_id.to_string(),
-            binding: binding_key.to_string(),
-        }),
-        (Cardinality::One, LinkValue::Flags(targets)) => {
-            if targets.len() == 1 {
-                Ok(())
-            } else {
-                Err(ParsingError::BindingSingleSlotMultipleTargets {
-                    owner_instance_id: instance.instance_id.to_string(),
-                    binding: binding_key.to_string(),
-                    target_count: targets.len(),
-                })
+    let owner_instance_id = || instance.instance_id.to_string();
+    let binding = || binding_key.to_string();
+    check_cardinality_shape(slot.cardinality, value).map_err(|violation| match violation {
+        CardinalityShapeViolation::ArrayOnOneSlot => ParsingError::BindingArrayOnOneSlot {
+            owner_instance_id: owner_instance_id(),
+            binding: binding(),
+        },
+        CardinalityShapeViolation::ScalarOnMultiSlot { cardinality } => {
+            ParsingError::BindingScalarOnMultiSlot {
+                owner_instance_id: owner_instance_id(),
+                binding: binding(),
+                cardinality,
             }
         }
-        (Cardinality::OneOrMore | Cardinality::ZeroOrMore, LinkValue::Scalar(_)) => {
-            Err(ParsingError::BindingScalarOnMultiSlot {
-                owner_instance_id: instance.instance_id.to_string(),
-                binding: binding_key.to_string(),
-                cardinality: slot.cardinality,
-            })
+        CardinalityShapeViolation::Unmet => ParsingError::BindingCardinalityUnmet {
+            owner_instance_id: owner_instance_id(),
+            binding: binding(),
+        },
+        CardinalityShapeViolation::SingleSlotMultipleTargets { target_count } => {
+            ParsingError::BindingSingleSlotMultipleTargets {
+                owner_instance_id: owner_instance_id(),
+                binding: binding(),
+                target_count,
+            }
         }
-        (Cardinality::OneOrMore, LinkValue::Array(targets) | LinkValue::Flags(targets))
-            if targets.is_empty() =>
-        {
-            Err(ParsingError::BindingCardinalityUnmet {
-                owner_instance_id: instance.instance_id.to_string(),
-                binding: binding_key.to_string(),
-            })
-        }
-        (
-            Cardinality::OneOrMore | Cardinality::ZeroOrMore,
-            LinkValue::Array(_) | LinkValue::Flags(_),
-        ) => Ok(()),
-    }
+    })
 }
 
 /// Rule 3 conformance error for one bound target, picked by slot kind:

@@ -227,8 +227,20 @@ pub fn seed_pairing_repo(
     ctx: &Arc<AppContext>,
     repo_dir: &std::path::Path,
 ) {
-    use peppy::commands::Command;
     std::fs::write(repo_dir.join("arm_link.json5"), ARM_LINK_PAIRING).expect("write pairing doc");
+    seed_docs_repo(serve, ctx, repo_dir);
+}
+
+/// The general form of [`seed_pairing_repo`]: publishes whatever pairing and
+/// contract documents the caller already wrote into `repo_dir`, points the
+/// daemon at it as its single fs repo, and refreshes so every doc lands in the
+/// daemon's caches.
+pub fn seed_docs_repo(
+    serve: &ServeCommandEmulation,
+    ctx: &Arc<AppContext>,
+    repo_dir: &std::path::Path,
+) {
+    use peppy::commands::Command;
     publish_repo_index(repo_dir);
     let conf_dir = serve.temp_dir().join("conf");
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
@@ -242,7 +254,7 @@ pub fn seed_pairing_repo(
         command: peppy::commands::repo::RepoCommands::Refresh,
     }
     .execute(ctx)
-    .expect("repo refresh should discover the pairing doc");
+    .expect("repo refresh should discover the seeded documents");
 }
 
 pub fn setup() -> (

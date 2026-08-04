@@ -8,9 +8,9 @@
 //!     [`ParsingError::LinkUnknownSlot`];
 //!   - a `defer_links` entry that is structurally invalid (it names a
 //!     producer-binding slot, which cannot be deferred, or names no slot at
-//!     all) is [`ParsingError::LinkDeferInvalid`]. Stateful defer problems (an
-//!     optional participant slot, or a slot that is also linked in the same
-//!     plan) are judged by `pairings` / `observations`, which hold that state.
+//!     all) is [`ParsingError::LinkDeferInvalid`]. The stateful defer problem
+//!     (a slot that is also linked in the same plan) is judged by `pairings` /
+//!     `observations`, which hold that state.
 //!
 //! It reuses [`BindingValidationItem`] because that item already carries the
 //! full `depends_on` (all three families), so callers build no extra item type.
@@ -294,17 +294,23 @@ mod tests {
         );
     }
 
+    /// Every participant and observer slot is deferrable, at every observer
+    /// cardinality: this pass judges structure only, and the stateful rules
+    /// (also-linked, coverage) belong to `pairings` / `observations`.
     #[test]
     fn deferring_a_pairing_or_observer_slot_is_structurally_valid() {
-        let instances =
-            parse_instances(r#"[{ instance_id: "cons1", defer_links: ["arm", "watch"] }]"#);
+        let instances = parse_instances(
+            r#"[{ instance_id: "cons1", defer_links: ["arm", "watch", "watched_arms", "spare_arms"] }]"#,
+        );
         let depends_on = parse_depends_on(
             r#"{
                 pairings: [
                     { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
                 ],
                 pairing_observers: [
-                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "watched_arms", cardinality: "one_or_more" },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "spare_arms", cardinality: "zero_or_more" }
                 ]
             }"#,
         );

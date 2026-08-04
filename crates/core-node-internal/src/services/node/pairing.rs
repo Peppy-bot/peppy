@@ -639,26 +639,16 @@ pub fn plan_requested_pairs(
         .iter()
         .partition(|(_, target)| target.peer.core_node != local_core_node);
 
-    let is_optional = |link: &str| {
-        pairing_deps
-            .iter()
-            .any(|dependency| dependency.link_id == link && dependency.optional)
-    };
     let defer_like: Vec<String> = deferred
         .iter()
-        // Only a required (non-optional) participant slot needs a defer-like
-        // entry; observer slots are not participants.
-        .chain(covered.keys().filter(|link| !is_optional(link)))
+        // A covered slot will be paired by a later-starting instance of this
+        // same launch, so it satisfies the coverage rule the way a defer does.
+        .chain(covered.keys())
         // A remotely-paired slot IS paired, just not by anything this daemon
         // can see. It rides here for the same reason a covered slot does:
         // without it the coverage rule would report a slot uncovered that the
         // planner has already satisfied.
-        .chain(
-            remote_requested
-                .iter()
-                .map(|(link, _)| *link)
-                .filter(|link| !is_optional(link)),
-        )
+        .chain(remote_requested.iter().map(|(link, _)| *link))
         .cloned()
         .collect();
     let own_instances = vec![DeploymentInstance {
@@ -813,10 +803,9 @@ mod tests {
     use config::node::PairingParticipantDependency;
     use std::collections::BTreeMap;
 
-    fn dep(role: &str, link_id: &str, optional: bool) -> PairingParticipantDependency {
+    fn dep(role: &str, link_id: &str) -> PairingParticipantDependency {
         serde_json5::from_str(&format!(
-            r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}",
-                 optional: {optional} }}"#
+            r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}" }}"#
         ))
         .expect("valid pairing dependency")
     }
@@ -839,7 +828,7 @@ mod tests {
         vec![snapshot_node(
             "robot_arm",
             &["arm_1"],
-            &[dep("arm", "controller", true)],
+            &[dep("arm", "controller")],
         )]
     }
 
@@ -1066,7 +1055,7 @@ mod tests {
     /// on this one.
     #[test]
     fn a_peer_on_another_daemon_is_planned_from_the_coordinators_verdict() {
-        let deps = [dep("executor", "deliberation", false)];
+        let deps = [dep("executor", "deliberation")];
         let planned = plan(
             &[],
             "reflex_inst",
@@ -1095,10 +1084,7 @@ mod tests {
     /// fail on the very slot federation exists to support.
     #[test]
     fn a_remotely_paired_required_slot_satisfies_coverage() {
-        let deps = [
-            dep("executor", "deliberation", false),
-            dep("controller", "arm", false),
-        ];
+        let deps = [dep("executor", "deliberation"), dep("controller", "arm")];
         let planned = plan(
             &arm_snapshot(),
             "reflex_inst",
@@ -1129,7 +1115,7 @@ mod tests {
     /// rather than have the daemon guess which slot was meant.
     #[test]
     fn an_unpinned_remote_peer_slot_is_refused() {
-        let deps = [dep("executor", "deliberation", false)];
+        let deps = [dep("executor", "deliberation")];
         let error = plan(
             &[],
             "reflex_inst",
@@ -1145,7 +1131,7 @@ mod tests {
     /// trust: neither daemon can check it, so nothing downstream would.
     #[test]
     fn a_remote_peer_without_a_planner_verdict_is_refused() {
-        let deps = [dep("executor", "deliberation", false)];
+        let deps = [dep("executor", "deliberation")];
         let error = plan(
             &[],
             "reflex_inst",
@@ -1162,7 +1148,7 @@ mod tests {
 
     #[test]
     fn resolves_a_single_complementary_slot() {
-        let deps = [dep("controller", "arm", false)];
+        let deps = [dep("controller", "arm")];
         let planned = plan(
             &arm_snapshot(),
             "ctrl_1",
@@ -1183,7 +1169,7 @@ mod tests {
 
     #[test]
     fn explicit_peer_link_pin_resolves_and_wrong_pin_fails() {
-        let deps = [dep("controller", "arm", false)];
+        let deps = [dep("controller", "arm")];
         let planned = plan(
             &arm_snapshot(),
             "ctrl_1",
@@ -1209,22 +1195,16 @@ mod tests {
     }
 
     #[test]
-    fn uncovered_required_slot_names_the_exact_flags() {
-        let deps = [dep("controller", "arm", false)];
+    fn uncovered_slot_names_the_exact_flags() {
+        let deps = [dep("controller", "arm")];
         let err = plan(&arm_snapshot(), "ctrl_1", &deps, &BTreeMap::new(), &[])
-            .expect_err("required slot must be covered");
+            .expect_err("every declared slot must be covered");
         assert!(
             err.contains("arm") && err.contains("--link") && err.contains("--defer-link"),
             "error should name the slot and both flags: {err}"
         );
 
-        // Deferring it satisfies coverage; optional slots never need covering.
-        let deps_opt = [dep("controller", "arm", true)];
-        assert!(
-            plan(&arm_snapshot(), "ctrl_1", &deps_opt, &BTreeMap::new(), &[])
-                .expect("optional slot boots unpaired freely")
-                .is_empty()
-        );
+        // Deferring it satisfies coverage.
         assert!(
             plan(
                 &arm_snapshot(),
@@ -1261,21 +1241,18 @@ mod tests {
     }
 
     /// A covered slot — one a later-starting launch peer will claim —
-    /// satisfies the coverage rule whether the slot is required or
-    /// optional, while a covered key naming an unknown slot fails loudly.
+    /// satisfies the coverage rule, while a covered key naming an unknown slot
+    /// fails loudly.
     #[test]
     fn covered_slots_satisfy_coverage() {
+        let deps = [dep("controller", "arm")];
         let covered = requested(&[("arm", PairTarget::pinned("cmd_9", "left", TEST_CORE))]);
-        for optional in [false, true] {
-            let deps = [dep("controller", "arm", optional)];
-            assert!(
-                plan_covered(&deps, &covered)
-                    .expect("a covered slot passes the plan-phase re-check")
-                    .is_empty()
-            );
-        }
+        assert!(
+            plan_covered(&deps, &covered)
+                .expect("a covered slot passes the plan-phase re-check")
+                .is_empty()
+        );
 
-        let deps = [dep("controller", "arm", false)];
         let covered = requested(&[
             ("arm", PairTarget::pinned("cmd_9", "left", TEST_CORE)),
             ("ghost", PairTarget::pinned("cmd_9", "right", TEST_CORE)),
@@ -1285,27 +1262,12 @@ mod tests {
         assert!(err.contains("ghost"), "{err}");
     }
 
-    /// A user `--defer-link` on an OPTIONAL slot is now flagged by the
-    /// daemon too: launch-mechanism markers ride `covered_pairs`, so the
-    /// defer list carries only user intent and gets the same strict rule
-    /// as the CLI preflight and the launcher validator.
-    #[test]
-    fn user_defer_of_optional_slot_is_rejected() {
-        let deps_opt = [dep("controller", "arm", true)];
-        let err = plan(
-            &arm_snapshot(),
-            "ctrl_1",
-            &deps_opt,
-            &BTreeMap::new(),
-            &["arm".to_string()],
-        )
-        .expect_err("optional-slot defer is a user error on every surface");
-        assert!(err.contains("optional"), "{err}");
-    }
-
+    /// A `--link` key naming no declared participant slot is rejected here,
+    /// where the goal has already classified pairs: the launcher validator
+    /// deliberately steps over keys that are not participant slots.
     #[test]
     fn unknown_slot_and_request_defer_overlap_are_rejected() {
-        let deps = [dep("controller", "arm", true)];
+        let deps = [dep("controller", "arm")];
         let err = plan(
             &arm_snapshot(),
             "ctrl_1",
@@ -1335,11 +1297,11 @@ mod tests {
             "arm_commander",
             &["cmd_1"],
             &[
-                dep("controller", "left_arm", true),
-                dep("controller", "right_arm", true),
+                dep("controller", "left_arm"),
+                dep("controller", "right_arm"),
             ],
         )];
-        let deps = [dep("arm", "controller", false)];
+        let deps = [dep("arm", "controller")];
         let err = plan(
             &snapshot,
             "arm_1",
@@ -1362,9 +1324,9 @@ mod tests {
         let snapshot = vec![snapshot_node(
             "other_node",
             &["other_1"],
-            &[dep("controller", "arm", true)],
+            &[dep("controller", "arm")],
         )];
-        let deps = [dep("controller", "arm", false)];
+        let deps = [dep("controller", "arm")];
         let err = plan(
             &snapshot,
             "ctrl_1",
@@ -1404,7 +1366,7 @@ mod tests {
                 role: "controller".to_string(),
             },
         }];
-        let deps = [dep("controller", "arm", false)];
+        let deps = [dep("controller", "arm")];
         let err = plan_requested_pairs(
             &arm_snapshot(),
             &live,
@@ -1482,10 +1444,7 @@ mod tests {
     fn two_slots_cannot_claim_the_same_peer_slot() {
         // One available peer slot, two own slots both targeting it: the
         // second resolution must fail instead of double-claiming.
-        let deps = [
-            dep("controller", "left", false),
-            dep("controller", "right", false),
-        ];
+        let deps = [dep("controller", "left"), dep("controller", "right")];
         let err = plan(
             &arm_snapshot(),
             "cmd_1",
