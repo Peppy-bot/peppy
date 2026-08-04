@@ -29,7 +29,7 @@ use config::runtime::{BoundProducers, ProducerRef, SlotBindings};
 use std::collections::BTreeMap;
 
 use super::types::{
-    CardinalityShapeViolation, DeploymentInstance, LinkValue, check_cardinality_shape,
+    CardinalityShapeViolation, DeploymentInstance, Selection, check_cardinality_shape,
 };
 
 /// Minimal view of one planned deployment needed for binding
@@ -153,11 +153,17 @@ pub fn validate_bindings(
                 let Some(slot) = declared_slots.get(binding_key.as_str()).copied() else {
                     continue;
                 };
+                // A producer slot cannot be vacant (`validate_link_slots`
+                // rejects it, naming the empty spelling that slot does have),
+                // so nothing here has to answer what a vacancy binds.
+                let Some(selection) = value.selection() else {
+                    continue;
+                };
 
                 // Rule 2: the value's shape (or flag count) must match the
                 // slot's declared cardinality.
                 if let Err(shape_error) =
-                    check_value_matches_cardinality(&slot, value, binding_key, instance)
+                    check_value_matches_cardinality(&slot, selection, binding_key, instance)
                 {
                     out.errors.push(shape_error);
                     continue;
@@ -167,9 +173,9 @@ pub fn validate_bindings(
                 // (uniqueness holds by `LinkTargets` construction).
                 // All-or-nothing: a slot with any bad target reports each
                 // offender and resolves nothing.
-                let mut producers: Vec<ProducerRef> = Vec::with_capacity(value.targets().len());
+                let mut producers: Vec<ProducerRef> = Vec::with_capacity(selection.targets().len());
                 let mut slot_failed = false;
-                for target_id in value.targets() {
+                for target_id in selection.targets() {
                     let Some(target_item) = instance_to_item.get(target_id.as_str()) else {
                         out.errors.push(ParsingError::UnknownInstanceId {
                             owner_instance_id: instance.instance_id.to_string(),
@@ -240,18 +246,18 @@ pub fn validate_bindings(
     out
 }
 
-/// Rule 2: does the binding value satisfy the slot's declared cardinality?
+/// Rule 2: does the binding selection satisfy the slot's declared cardinality?
 /// The shape rule itself is [`check_cardinality_shape`], shared with observer
 /// slots; this only speaks it in producer-binding vocabulary.
 fn check_value_matches_cardinality(
     slot: &SlotMeta<'_>,
-    value: &LinkValue,
+    selection: &Selection,
     binding_key: &str,
     instance: &DeploymentInstance,
 ) -> Result<(), ParsingError> {
     let owner_instance_id = || instance.instance_id.to_string();
     let binding = || binding_key.to_string();
-    check_cardinality_shape(slot.cardinality, value).map_err(|violation| match violation {
+    check_cardinality_shape(slot.cardinality, selection).map_err(|violation| match violation {
         CardinalityShapeViolation::ArrayOnOneSlot => ParsingError::BindingArrayOnOneSlot {
             owner_instance_id: owner_instance_id(),
             binding: binding(),
@@ -506,11 +512,11 @@ mod tests {
 
     /// Test shorthand: a `Flags` binding value from unique literals, as
     /// the CLI's flag accumulation would build it.
-    fn flags(targets: &[&str]) -> LinkValue {
-        LinkValue::Flags(
+    fn flags(targets: &[&str]) -> super::super::types::LinkValue {
+        super::super::types::LinkValue::Bound(Selection::Flags(
             super::super::types::LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
                 .expect("test targets are unique"),
-        )
+        ))
     }
 
     #[test]
@@ -921,7 +927,7 @@ mod tests {
         );
     }
 
-    /// CLI flag occurrences (shape-less `LinkValue::Flags`) accumulate
+    /// CLI flag occurrences (shape-less `Selection::Flags`) accumulate
     /// on a multi slot in flag order and stay a hard error on a `one`
     /// slot; a single occurrence is valid everywhere it meets the minimum.
     #[test]

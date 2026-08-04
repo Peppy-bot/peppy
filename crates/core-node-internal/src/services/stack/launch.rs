@@ -805,13 +805,15 @@ async fn start_node_instances(
     // later endpoint carries the fully-pinned pair request; the earlier
     // endpoint's slot rides `covered_pairs`, naming that future peer, so
     // its own coverage re-check passes and its feedback states the plan.
-    // Only explicit `defer_links:` entries ride `deferred_pairs`.
+    // Only slots the launcher declared `{ vacant: "<why>" }` ride
+    // `vacant_pairs`.
     let mut start_index: HashMap<&str, usize> = HashMap::new();
     let mut requested_by_instance: HashMap<&str, std::collections::BTreeMap<String, PairTarget>> =
         HashMap::new();
     let mut covered_by_instance: HashMap<&str, std::collections::BTreeMap<String, PairTarget>> =
         HashMap::new();
-    let mut deferred_by_instance: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut vacant_by_instance: HashMap<&str, std::collections::BTreeMap<String, String>> =
+        HashMap::new();
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -827,18 +829,18 @@ async fn start_node_instances(
             .collect();
         for instance in &item.deployment.instances {
             start_index.insert(instance.instance_id.as_str(), start_index.len());
-            // Only participant slots ride the pair-specific goal field;
-            // observer defers were already validated by their own family.
-            deferred_by_instance
+            // Only participant slots ride the pair-specific goal field; an
+            // observer vacancy was already validated by its own family and
+            // produces no goal state, exactly as an observer link does.
+            vacant_by_instance
                 .entry(instance.instance_id.as_str())
                 .or_default()
-                .extend(
-                    instance
-                        .defer_links
-                        .iter()
-                        .filter(|link_id| participant_links.contains(link_id.as_str()))
-                        .cloned(),
-                );
+                .extend(instance.links.iter().filter_map(|(link_id, value)| {
+                    let reason = value.vacancy()?;
+                    participant_links
+                        .contains(link_id.as_str())
+                        .then(|| (link_id.clone(), reason.as_str().to_owned()))
+                }));
         }
     }
     for pairing in planned_pairings {
@@ -948,7 +950,7 @@ async fn start_node_instances(
                     .remove(instance_id)
                     .unwrap_or_default(),
             )
-            .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default())
+            .with_vacant_pairs(vacant_by_instance.remove(instance_id).unwrap_or_default())
             .with_covered_pairs(covered_by_instance.remove(instance_id).unwrap_or_default())
             .with_planned_observations(ObservationTargets::slots_from_plan(
                 observations_by_instance

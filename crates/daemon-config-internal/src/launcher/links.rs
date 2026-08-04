@@ -1,4 +1,4 @@
-//! Cross-family validation for the unified `links` map and `defer_links` list.
+//! Cross-family validation for the unified `links` map.
 //!
 //! The per-mechanism validators (`bindings`, `pairings`, `observations`) each
 //! own the keys that name their own slot kind and silently skip the rest. This
@@ -6,24 +6,25 @@
 //! the two rules that need the union of all families:
 //!   - a `links` key naming no declared slot in any family is
 //!     [`ParsingError::LinkUnknownSlot`];
-//!   - a `defer_links` entry that is structurally invalid (it names a
-//!     producer-binding slot, which cannot be deferred, or names no slot at
-//!     all) is [`ParsingError::LinkDeferInvalid`]. The stateful defer problem
-//!     (a slot that is also linked in the same plan) is judged by `pairings` /
-//!     `observations`, which hold that state.
+//!   - a `{ vacant: "<why>" }` value on a slot that has another spelling for
+//!     its empty state is [`ParsingError::LinkVacantInvalid`]. Vacancy is the
+//!     only way to write "empty" on a participant slot and on a `one` observer
+//!     slot; every other slot writes `[]` or omits the key, and one spelling
+//!     per fact is the point.
 //!
 //! It reuses [`BindingValidationItem`] because that item already carries the
 //! full `depends_on` (all three families), so callers build no extra item type.
 
 use super::types::Placements;
 use crate::error::{LinkUnknownSlot, ParsingError};
-use config::node::DependsOn;
+use config::node::{Cardinality, DependsOn};
 use std::collections::BTreeMap;
 
 use super::bindings::{BindingValidationItem, validate_bindings};
 use super::observations::{PlannedObservation, validate_observations};
 use super::pairings::{
-    AlreadyPairedSlots, PairingValidationItem, PlannedPairing, validate_pairings,
+    AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairing,
+    validate_pairings,
 };
 
 /// Fully resolved output of the unified link-validation pipeline.
@@ -43,6 +44,7 @@ pub fn validate_link_plan(
     binding_items: &[BindingValidationItem<'_>],
     pairing_items: &[PairingValidationItem<'_>],
     already_paired: &AlreadyPairedSlots,
+    externally_covered: &ExternallyCoveredSlots,
     placements: &Placements,
 ) -> ValidatedLinkPlan {
     let mut out = ValidatedLinkPlan {
@@ -60,7 +62,7 @@ pub fn validate_link_plan(
     }
     out.slot_bindings = bindings.slot_bindings;
 
-    let pairings = validate_pairings(pairing_items, already_paired);
+    let pairings = validate_pairings(pairing_items, already_paired, externally_covered);
     let observations = validate_observations(pairing_items, placements);
     out.errors.extend(pairings.errors);
     out.errors.extend(observations.errors);
@@ -71,7 +73,7 @@ pub fn validate_link_plan(
     out
 }
 
-/// Run the cross-family key/defer checks over the plan. Returns aggregated
+/// Run the cross-family key/vacancy checks over the plan. Returns aggregated
 /// errors only; the per-mechanism validators produce the resolved plans.
 pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingError> {
     let mut errors = Vec::new();
@@ -87,33 +89,24 @@ pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingEr
         for instance in item.instances {
             let owner_id = instance.instance_id.as_str();
 
-            for link in instance.links.keys() {
-                if slots.kind_of(link).is_none() {
+            for (link, value) in &instance.links {
+                let Some(kind) = slots.kind_of(link) else {
                     errors.push(ParsingError::LinkUnknownSlot(Box::new(LinkUnknownSlot {
                         owner_instance_id: owner_id.to_string(),
                         link: link.clone(),
                         declared_link_ids: slots.declared_csv(),
                     })));
-                }
-            }
-
-            for link_id in &instance.defer_links {
-                let reason = match slots.kind_of(link_id) {
-                    None => Some("no such link slot is declared".to_string()),
-                    Some(LinkSlotKind::Binding) => Some(
-                        "it names a producer-binding slot; only pairing or observer slots \
-                         can be deferred"
-                            .to_string(),
-                    ),
-                    // Participant / observer defers are structurally valid; any
-                    // remaining problem is stateful and judged elsewhere.
-                    Some(LinkSlotKind::Participant | LinkSlotKind::Observer) => None,
+                    continue;
                 };
-                if let Some(reason) = reason {
-                    errors.push(ParsingError::LinkDeferInvalid {
+                if value.vacancy().is_none() {
+                    continue;
+                }
+                if let Some(empty_spelling) = kind.empty_spelling_other_than_vacancy() {
+                    errors.push(ParsingError::LinkVacantInvalid {
                         owner_instance_id: owner_id.to_string(),
-                        link_id: link_id.clone(),
-                        reason,
+                        link_id: link.clone(),
+                        slot_kind: kind.describe(),
+                        empty_spelling,
                     });
                 }
             }
@@ -125,9 +118,47 @@ pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingEr
 
 #[derive(Clone, Copy)]
 enum LinkSlotKind {
-    Binding,
+    Binding(Cardinality),
     Participant,
-    Observer,
+    Observer(Cardinality),
+}
+
+impl LinkSlotKind {
+    /// How this slot writes "nothing here" when `{ vacant: "<why>" }` is not
+    /// its spelling, or `None` when vacancy IS the spelling.
+    ///
+    /// One spelling per fact: a participant slot and a `one` observer slot are
+    /// scalar-valued and have no empty shape, so vacancy is how they say it.
+    /// Every multi slot already writes `[]` (or omits the key), and a `one` /
+    /// `one_or_more` producer slot has no empty runtime state to write at all.
+    fn empty_spelling_other_than_vacancy(self) -> Option<String> {
+        let multi_slot_empty_set =
+            || Some("an empty array `[]`, or omitting the key entirely".to_string());
+        match self {
+            LinkSlotKind::Participant | LinkSlotKind::Observer(Cardinality::One) => None,
+            LinkSlotKind::Observer(Cardinality::ZeroOrMore)
+            | LinkSlotKind::Binding(Cardinality::ZeroOrMore) => multi_slot_empty_set(),
+            LinkSlotKind::Observer(Cardinality::OneOrMore) => {
+                Some("at least one source: a `one_or_more` slot has no empty state".to_string())
+            }
+            LinkSlotKind::Binding(Cardinality::One | Cardinality::OneOrMore) => {
+                Some("a bound producer: a required producer slot has no empty state".to_string())
+            }
+        }
+    }
+
+    /// The slot kind in the vocabulary its own error messages use.
+    fn describe(self) -> String {
+        match self {
+            LinkSlotKind::Binding(cardinality) => {
+                format!("producer-binding slot (cardinality `{cardinality}`)")
+            }
+            LinkSlotKind::Participant => "participant pairing slot".to_string(),
+            LinkSlotKind::Observer(cardinality) => {
+                format!("observer slot (cardinality `{cardinality}`)")
+            }
+        }
+    }
 }
 
 /// The declared link_ids of one node, tagged by family, for logarithmic lookup
@@ -139,24 +170,27 @@ struct DeclaredLinkSlots<'a> {
 impl<'a> From<&'a DependsOn> for DeclaredLinkSlots<'a> {
     fn from(depends_on: &'a DependsOn) -> Self {
         let mut by_id = BTreeMap::new();
-        for link_id in depends_on
+        for (link_id, cardinality) in depends_on
             .nodes
             .iter()
-            .map(|dependency| dependency.link_id.as_str())
+            .map(|dependency| (dependency.link_id.as_str(), dependency.cardinality))
             .chain(
                 depends_on
                     .contracts
                     .iter()
-                    .map(|dependency| dependency.link_id.as_str()),
+                    .map(|dependency| (dependency.link_id.as_str(), dependency.cardinality)),
             )
         {
-            by_id.insert(link_id, LinkSlotKind::Binding);
+            by_id.insert(link_id, LinkSlotKind::Binding(cardinality));
         }
         for dep in &depends_on.pairings {
             by_id.insert(dep.link_id.as_str(), LinkSlotKind::Participant);
         }
         for dep in &depends_on.pairing_observers {
-            by_id.insert(dep.link_id.as_str(), LinkSlotKind::Observer);
+            by_id.insert(
+                dep.link_id.as_str(),
+                LinkSlotKind::Observer(dep.cardinality),
+            );
         }
         Self { by_id }
     }
@@ -257,29 +291,50 @@ mod tests {
     }
 
     #[test]
-    fn deferring_a_binding_slot_is_invalid() {
+    fn a_vacant_producer_slot_is_rejected_with_its_own_empty_spelling() {
         let instances = parse_instances(
             r#"[{
                 instance_id: "cons1",
-                links: { main: "prod1" },
-                defer_links: ["main"]
+                links: {
+                    main: { vacant: "no camera on this rig" },
+                    extras: { vacant: "no camera on this rig" }
+                }
             }]"#,
         );
-        let depends_on =
-            parse_depends_on(r#"{ nodes: [{ name: "camera", tag: "v1", link_id: "main" }] }"#);
+        let depends_on = parse_depends_on(
+            r#"{
+                nodes: [
+                    { name: "camera", tag: "v1", link_id: "main" },
+                    { name: "camera", tag: "v1", link_id: "extras", cardinality: "zero_or_more" }
+                ]
+            }"#,
+        );
         let errors = validate_link_slots(&[item(&instances, Some(&depends_on))]);
+        let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages.len(),
+            2,
+            "both slots must be rejected: {messages:?}"
+        );
         assert!(
-            errors.iter().any(|e| matches!(
-                e,
-                ParsingError::LinkDeferInvalid { reason, .. } if reason.contains("producer-binding")
-            )),
-            "expected LinkDeferInvalid for a deferred binding slot: {errors:?}"
+            messages.iter().any(|m| m.contains("`main`")
+                && m.contains("producer-binding slot")
+                && m.contains("no empty state")),
+            "a required producer slot has no empty state to write: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("`extras`") && m.contains("empty array `[]`")),
+            "a zero_or_more producer slot already spells its empty set: {messages:?}"
         );
     }
 
     #[test]
-    fn deferring_an_unknown_slot_is_invalid() {
-        let instances = parse_instances(r#"[{ instance_id: "cons1", defer_links: ["ghost"] }]"#);
+    fn a_vacant_slot_naming_no_declared_slot_is_an_unknown_key() {
+        let instances = parse_instances(
+            r#"[{ instance_id: "cons1", links: { ghost: { vacant: "nothing here" } } }]"#,
+        );
         let depends_on = parse_depends_on(
             r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }] }"#,
         );
@@ -287,21 +342,17 @@ mod tests {
         assert!(
             errors.iter().any(|e| matches!(
                 e,
-                ParsingError::LinkDeferInvalid { link_id, reason, .. }
-                    if link_id == "ghost" && reason.contains("no such link slot")
+                ParsingError::LinkUnknownSlot(info) if info.link == "ghost"
             )),
-            "expected LinkDeferInvalid for an unknown deferred slot: {errors:?}"
+            "a vacancy on an undeclared slot is judged as any other unknown key: {errors:?}"
         );
     }
 
-    /// Every participant and observer slot is deferrable, at every observer
-    /// cardinality: this pass judges structure only, and the stateful rules
-    /// (also-linked, coverage) belong to `pairings` / `observations`.
+    /// The legality table, row by row: vacancy is how a participant slot and a
+    /// `one` observer slot say "empty", and every other slot has its own
+    /// spelling to be pointed at.
     #[test]
-    fn deferring_a_pairing_or_observer_slot_is_structurally_valid() {
-        let instances = parse_instances(
-            r#"[{ instance_id: "cons1", defer_links: ["arm", "watch", "watched_arms", "spare_arms"] }]"#,
-        );
+    fn vacancy_is_legal_only_where_it_is_the_only_empty_spelling() {
         let depends_on = parse_depends_on(
             r#"{
                 pairings: [
@@ -314,10 +365,29 @@ mod tests {
                 ]
             }"#,
         );
-        let errors = validate_link_slots(&[item(&instances, Some(&depends_on))]);
-        assert!(
-            errors.is_empty(),
-            "participant/observer defers are structurally valid here: {errors:?}"
-        );
+        for (link_id, expected_hint) in [
+            ("arm", None),
+            ("watch", None),
+            ("watched_arms", Some("at least one source")),
+            ("spare_arms", Some("empty array `[]`")),
+        ] {
+            let instances = parse_instances(&format!(
+                r#"[{{ instance_id: "cons1", links: {{ {link_id}: {{ vacant: "why not" }} }} }}]"#
+            ));
+            let errors = validate_link_slots(&[item(&instances, Some(&depends_on))]);
+            match expected_hint {
+                None => assert!(
+                    errors.is_empty(),
+                    "`{link_id}` has no other empty spelling, so vacancy is legal: {errors:?}"
+                ),
+                Some(hint) => {
+                    let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+                    assert!(
+                        messages.iter().any(|m| m.contains(hint)),
+                        "`{link_id}` should be pointed at `{hint}`: {messages:?}"
+                    );
+                }
+            }
+        }
     }
 }

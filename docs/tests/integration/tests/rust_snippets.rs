@@ -37,15 +37,18 @@ fn hello_world_param_and_hello_receiver() {
 
 // The paired duo from the "Pairing" guide. Each side declares one required
 // pairing slot of `arm_link/v1`. Running each node on its own (the other
-// absent entirely) with `--defer-link <slot>` proves the documented solo
-// boot: the slot starts unpaired and silent, and the node still launches.
+// absent entirely) with `--vacant-link <slot>=<why>` proves the documented
+// solo boot: the slot starts unpaired and silent, and the node still launches.
 
 #[test]
 fn pairing_robot_arm() {
     run_snippet_with_contract_repo(
         SNIPPETS_ROOT,
         "robot_arm",
-        &["--defer-link", "controller"],
+        &[
+            "--vacant-link",
+            "controller=docs snippet: this node boots solo",
+        ],
         PAIRINGS_ROOT,
     );
 }
@@ -55,7 +58,7 @@ fn pairing_arm_controller() {
     run_snippet_with_contract_repo(
         SNIPPETS_ROOT,
         "arm_controller",
-        &["--defer-link", "arm"],
+        &["--vacant-link", "arm=docs snippet: this node boots solo"],
         PAIRINGS_ROOT,
     );
 }

@@ -20,7 +20,8 @@ use config::runtime::Name;
 use core_node_api::encoding::PairCommitRequest;
 use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, DeploymentInstance, LinkValue, PairingValidationItem, validate_pairings,
+    AlreadyPairedSlots, DeploymentInstance, ExternallyCoveredSlots, LinkValue,
+    PairingValidationItem, Selection, VacantReason, validate_pairings,
 };
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
 use peppylib::MessengerHandle;
@@ -542,12 +543,13 @@ pub struct PairingRequest<'a> {
     pub pairing_deps: &'a [config::node::PairingParticipantDependency],
     /// `link_id -> peer target` from `--link` / a launch plan.
     pub requested: &'a std::collections::BTreeMap<String, PairTarget>,
-    /// Slots deliberately starting unpaired (`--defer-link` / the
-    /// launcher's `defer_links:`).
-    pub deferred: &'a [String],
+    /// Slots deliberately starting unpaired, each with the reason the
+    /// deployment wrote down (`--vacant-link <link_id>=<why>` / the launcher's
+    /// `links: { <link_id>: { vacant: "<why>" } }`).
+    pub vacant: &'a std::collections::BTreeMap<String, VacantReason>,
     /// Launch-mechanism markers: slots a later-starting instance of the
     /// same launch will claim ([`NodeRunGoal::covered_pairs`] — see its doc
-    /// for the covered-vs-deferred distinction).
+    /// for the covered-vs-vacant distinction).
     ///
     /// [`NodeRunGoal::covered_pairs`]: core_node_api::encoding::NodeRunGoal::covered_pairs
     pub covered: &'a std::collections::BTreeMap<String, PairTarget>,
@@ -556,7 +558,7 @@ pub struct PairingRequest<'a> {
 /// The daemon-side re-check of a `node_run` goal's pairing arguments — the
 /// trust-boundary twin of the CLI preflight and the launcher validator,
 /// sharing their [`validate_pairings`] core so the plan-phase rule set
-/// (declared-slot keys, request/defer overlap, required-slot coverage,
+/// (declared-slot keys, one-fate-per-slot, required-slot coverage,
 /// complementary-target resolution, exclusivity) exists exactly once. Runs
 /// BEFORE the instance is spawned so every violation fails loudly with
 /// nothing to unwind. Two daemon-specific wrinkles on top of the shared
@@ -566,8 +568,9 @@ pub struct PairingRequest<'a> {
 ///   instance is not in the stack yet, so the shared resolver would report
 ///   a misleading "unknown instance" instead of the real problem;
 /// - covered slots (the earlier endpoints of launch-planned pairs) satisfy
-///   the coverage rule like defers. A covered key naming an unknown slot is
-///   kept so the validator reports it.
+///   the coverage rule without being vacancies: they ride
+///   [`ExternallyCoveredSlots`] rather than the instance's own `links`. A
+///   covered key naming an unknown slot is kept so the validator reports it.
 ///
 /// `snapshot` and `live_pairs` are the stack's live instances and claimed
 /// slots ([`NodeStack::pairing_node_snapshots`] / [`NodeStack::live_pairs`]);
@@ -587,7 +590,7 @@ pub fn plan_requested_pairs(
         instance_id,
         pairing_deps,
         requested,
-        deferred,
+        vacant,
         covered,
     } = request;
     for (link_id, target) in requested {
@@ -599,7 +602,7 @@ pub fn plan_requested_pairs(
         }
     }
 
-    // Every requested / covered / deferred key must name one of this node's
+    // Every requested / covered / vacant key must name one of this node's
     // participant pairing slots. `validate_pairings` intentionally SKIPS keys
     // that are not participant slots (the unified `links` map lets producer and
     // observer keys share the namespace), so this boundary, where the goal has
@@ -609,11 +612,7 @@ pub fn plan_requested_pairs(
         .iter()
         .map(|dependency| dependency.link_id.as_str())
         .collect();
-    for link_id in requested
-        .keys()
-        .chain(covered.keys())
-        .chain(deferred.iter())
-    {
+    for link_id in requested.keys().chain(covered.keys()).chain(vacant.keys()) {
         if !participant_slots.contains(link_id.as_str()) {
             return Err(format!(
                 "pairing slot `{link_id}` on instance '{instance_id}' matches no declared \
@@ -627,6 +626,32 @@ pub fn plan_requested_pairs(
         }
     }
 
+    // One slot, one fate. The three maps answer the same question ("what
+    // happens to slot X"), so a goal that puts one slot in two of them is
+    // contradictory and is refused here rather than resolved by whichever
+    // entry the plan happens to read last. The launcher and the CLI cannot
+    // write this state at all; a goal arriving over the wire can.
+    for (link_id, other) in requested
+        .keys()
+        .map(|link_id| (link_id, "requested"))
+        .chain(covered.keys().map(|link_id| (link_id, "covered")))
+    {
+        if vacant.contains_key(link_id) {
+            return Err(format!(
+                "pairing slot `{link_id}` on instance '{instance_id}' is both {other} and \
+                 declared vacant; a slot has one fate"
+            ));
+        }
+    }
+    for link_id in requested.keys() {
+        if covered.contains_key(link_id) {
+            return Err(format!(
+                "pairing slot `{link_id}` on instance '{instance_id}' is both requested and \
+                 covered by a later instance; a slot has one fate"
+            ));
+        }
+    }
+
     // A peer on ANOTHER machine cannot go through the local validator: every
     // one of its rules reads the peer's manifest, and this daemon holds only
     // its own. The planner that dispatched this goal holds both and already
@@ -636,27 +661,36 @@ pub fn plan_requested_pairs(
         .iter()
         .partition(|(_, target)| target.peer.core_node != local_core_node);
 
-    let defer_like: Vec<String> = deferred
-        .iter()
-        // A covered slot will be paired by a later-starting instance of this
-        // same launch, so it satisfies the coverage rule the way a defer does.
-        .chain(covered.keys())
-        // A remotely-paired slot IS paired, just not by anything this daemon
-        // can see. It rides here for the same reason a covered slot does:
-        // without it the coverage rule would report a slot uncovered that the
-        // planner has already satisfied.
+    // Slots this daemon cannot see a pair for, although one exists or is
+    // coming. Neither is a vacancy, so neither is written as one: a covered
+    // slot will be paired by a later-starting instance of this same launch,
+    // and a remotely-requested slot IS paired, just not by anything in this
+    // snapshot. Both would otherwise be reported uncovered against a plan the
+    // coordinator already satisfied.
+    let externally_covered: ExternallyCoveredSlots = covered
+        .keys()
         .chain(remote_requested.iter().map(|(link, _)| *link))
-        .cloned()
+        .map(|link_id| (instance_id.to_string(), link_id.clone()))
         .collect();
     let own_instances = vec![DeploymentInstance {
         // Rendered into the validator's launcher target grammar
         // (`peer[/peer_link]`) as a scalar link value; lossless, since
-        // instance ids and link_ids are `/`-free names.
+        // instance ids and link_ids are `/`-free names. A vacancy carries the
+        // reason the goal declared, unchanged.
         links: local_requested
             .iter()
-            .map(|(link_id, target)| ((*link_id).clone(), LinkValue::Scalar(target.to_string())))
+            .map(|(link_id, target)| {
+                (
+                    (*link_id).clone(),
+                    LinkValue::Bound(Selection::Scalar(target.to_string())),
+                )
+            })
+            .chain(
+                vacant
+                    .iter()
+                    .map(|(link_id, reason)| (link_id.clone(), LinkValue::Vacant(reason.clone()))),
+            )
             .collect(),
-        defer_links: defer_like,
         ..DeploymentInstance::empty(
             Name::new(instance_id)
                 .map_err(|e| format!("invalid instance id `{instance_id}`: {e}"))?,
@@ -713,7 +747,7 @@ pub fn plan_requested_pairs(
         })
         .collect();
 
-    let validated = validate_pairings(&items, &already_paired);
+    let validated = validate_pairings(&items, &already_paired, &externally_covered);
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(|e| e.to_string()).collect();
         return Err(daemon_config::format_bulleted(&errors));
@@ -1013,8 +1047,9 @@ mod tests {
         instance_id: &str,
         deps: &[PairingParticipantDependency],
         req: &BTreeMap<String, PairTarget>,
-        deferred: &[String],
+        vacant: &[&str],
     ) -> std::result::Result<Vec<PlannedPair>, String> {
+        let vacant = vacant_slots(vacant);
         plan_requested_pairs(
             snapshot,
             &[],
@@ -1024,11 +1059,26 @@ mod tests {
                 instance_id,
                 pairing_deps: deps,
                 requested: req,
-                deferred,
+                vacant: &vacant,
                 covered: &BTreeMap::new(),
             },
             TEST_CORE,
         )
+    }
+
+    /// Test shorthand: slots declared vacant, each with a reason (the only
+    /// shape a vacancy has).
+    fn vacant_slots(link_ids: &[&str]) -> BTreeMap<String, VacantReason> {
+        link_ids
+            .iter()
+            .map(|link_id| {
+                (
+                    (*link_id).to_string(),
+                    VacantReason::new("test rig: this slot has no peer")
+                        .expect("a reason that says something"),
+                )
+            })
+            .collect()
     }
 
     // --- Pairs whose peer lives on another daemon ---
@@ -1197,21 +1247,15 @@ mod tests {
         let err = plan(&arm_snapshot(), "ctrl_1", &deps, &BTreeMap::new(), &[])
             .expect_err("every declared slot must be covered");
         assert!(
-            err.contains("arm") && err.contains("--link") && err.contains("--defer-link"),
+            err.contains("arm") && err.contains("--link") && err.contains("--vacant-link"),
             "error should name the slot and both flags: {err}"
         );
 
-        // Deferring it satisfies coverage.
+        // Declaring it vacant satisfies coverage.
         assert!(
-            plan(
-                &arm_snapshot(),
-                "ctrl_1",
-                &deps,
-                &BTreeMap::new(),
-                &["arm".to_string()],
-            )
-            .expect("deferred required slot passes coverage")
-            .is_empty()
+            plan(&arm_snapshot(), "ctrl_1", &deps, &BTreeMap::new(), &["arm"],)
+                .expect("a vacant required slot passes coverage")
+                .is_empty()
         );
     }
 
@@ -1230,7 +1274,7 @@ mod tests {
                 instance_id: "ctrl_1",
                 pairing_deps: deps,
                 requested: &BTreeMap::new(),
-                deferred: &[],
+                vacant: &BTreeMap::new(),
                 covered,
             },
             TEST_CORE,
@@ -1263,7 +1307,7 @@ mod tests {
     /// where the goal has already classified pairs: the launcher validator
     /// deliberately steps over keys that are not participant slots.
     #[test]
-    fn unknown_slot_and_request_defer_overlap_are_rejected() {
+    fn unknown_slot_and_request_vacant_overlap_are_rejected() {
         let deps = [dep("controller", "arm")];
         let err = plan(
             &arm_snapshot(),
@@ -1280,10 +1324,60 @@ mod tests {
             "ctrl_1",
             &deps,
             &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
-            &["arm".to_string()],
+            &["arm"],
         )
-        .expect_err("request+defer overlap rejected");
-        assert!(err.contains("also paired"), "{err}");
+        .expect_err("request+vacant overlap rejected");
+        assert!(err.contains("requested") && err.contains("vacant"), "{err}");
+    }
+
+    /// The three maps answer one question, so a goal that puts one slot in two
+    /// of them is refused rather than resolved by whichever entry is read
+    /// last. A launcher and the CLI cannot write this state; a goal arriving
+    /// over the wire can, and this is the boundary that says no.
+    #[test]
+    fn a_slot_with_two_fates_on_one_goal_is_rejected() {
+        let deps = [dep("controller", "arm")];
+        let arm_1 = || PairTarget::new("arm_1", TEST_CORE);
+
+        let err = plan_requested_pairs(
+            &arm_snapshot(),
+            &[],
+            &PairingRequest {
+                node_name: "new_node",
+                node_tag: "v1",
+                instance_id: "ctrl_1",
+                pairing_deps: &deps,
+                requested: &requested(&[("arm", arm_1())]),
+                vacant: &BTreeMap::new(),
+                covered: &requested(&[("arm", arm_1())]),
+            },
+            TEST_CORE,
+        )
+        .expect_err("requested + covered on one slot is contradictory");
+        assert!(
+            err.contains("requested") && err.contains("covered"),
+            "the error should name both fates: {err}"
+        );
+
+        let err = plan_requested_pairs(
+            &arm_snapshot(),
+            &[],
+            &PairingRequest {
+                node_name: "new_node",
+                node_tag: "v1",
+                instance_id: "ctrl_1",
+                pairing_deps: &deps,
+                requested: &BTreeMap::new(),
+                vacant: &vacant_slots(&["arm"]),
+                covered: &requested(&[("arm", arm_1())]),
+            },
+            TEST_CORE,
+        )
+        .expect_err("covered + vacant on one slot is contradictory");
+        assert!(
+            err.contains("covered") && err.contains("vacant"),
+            "the error should name both fates: {err}"
+        );
     }
 
     #[test]
@@ -1373,7 +1467,7 @@ mod tests {
                 instance_id: "ctrl_1",
                 pairing_deps: &deps,
                 requested: &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
-                deferred: &[],
+                vacant: &BTreeMap::new(),
                 covered: &BTreeMap::new(),
             },
             TEST_CORE,

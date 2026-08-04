@@ -231,7 +231,7 @@ async fn node_launch_command_succeed() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -488,7 +488,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -2575,7 +2575,8 @@ async fn stack_launch_rejects_unbound_slot() {
 }
 
 /// Launcher `pairings:` establish pairs at launch: the earlier-started
-/// endpoint boots deferred, the later one carries the request, and both
+/// endpoint boots with its slot covered, the later one carries the request,
+/// and both
 /// running instances receive their `peer_update` pins live. The dummy `sh`
 /// nodes expose ready/health/shutdown/peer_update from the test process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2758,7 +2759,8 @@ async fn stack_launch_establishes_launcher_pairings() {
 /// `one` slot linked to `arm_1`, a `one_or_more` slot linked to
 /// `["arm_2", "arm_1"]`, and a `zero_or_more` slot the launcher omits entirely.
 /// The sources are `robot_arm` instances whose own participant slots are
-/// deferred, so they boot unpaired but still publish their role's topics. When
+/// declared vacant, so they boot unpaired but still publish their role's
+/// topics. When
 /// the launch is up, the daemon's observation coordinator has pushed each slot's
 /// complete member set (in launcher order, at live generations) to the
 /// recorder's `observation_update` service, and the omitted slot holds the empty
@@ -2831,7 +2833,7 @@ async fn stack_launch_delivers_observer_member_sets() {
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
     // Source instance services: ready/health/shutdown, no peer_update (its slot
-    // is deferred, so it is never paired).
+    // is vacant, so it is never paired).
     for (node_name, instance_id) in [("robot_arm", "arm_1"), ("robot_arm", "arm_2")] {
         let _ready = listen_for_node_ready(
             &node_messenger,
@@ -2912,8 +2914,14 @@ async fn stack_launch_delivers_observer_member_sets() {
                 {
                     source: { name: "robot_arm:v1" },
                     instances: [
-                        { instance_id: "arm_1", defer_links: ["controller"] },
-                        { instance_id: "arm_2", defer_links: ["controller"] }
+                        {
+                            instance_id: "arm_1",
+                            links: { controller: { vacant: "watched only: nothing drives this arm" } }
+                        },
+                        {
+                            instance_id: "arm_2",
+                            links: { controller: { vacant: "watched only: nothing drives this arm" } }
+                        }
                     ]
                 },
                 {
@@ -3001,7 +3009,7 @@ async fn stack_launch_delivers_observer_member_sets() {
 }
 
 /// A required pairing slot with neither a `links:` entry (on either
-/// side) nor a `defer_links:` opt-out fails the launch at validation,
+/// side) nor a `{ vacant: "<why>" }` opt-out fails the launch at validation,
 /// before anything is added or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_uncovered_pairing_slot() {
@@ -3063,7 +3071,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     .expect_err("an uncovered required pairing slot must fail the launch");
     let msg = err.to_string();
     assert!(
-        msg.contains("controller") && (msg.contains("--link") || msg.contains("defer_links")),
+        msg.contains("controller") && (msg.contains("--link") || msg.contains("vacant")),
         "the failure should name the uncovered slot and the launcher keys: {msg}"
     );
 }
