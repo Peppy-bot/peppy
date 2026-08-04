@@ -57,6 +57,73 @@ fn repo_refresh_succeeds_after_adding_fs_repo() {
     );
 }
 
+/// A repository that cannot be read does not fail the command. The
+/// installer runs `repo refresh` as its last step, so a hub that is
+/// offline, or a repository root with no committed
+/// `peppy_repository.json5`, would otherwise end an install that had
+/// worked up to that point. The command reports what it could not read
+/// and leaves the user with a retry.
+#[test]
+fn repo_refresh_succeeds_when_a_repository_cannot_be_read() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+
+    let healthy = tempfile::tempdir().expect("temp node dir");
+    std::fs::write(
+        healthy.path().join("peppy.json5"),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "reachable_node", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["sleep", "1"] }
+        }"#,
+    )
+    .expect("write peppy.json5");
+    super::common::publish_repo_index(healthy.path());
+
+    // Never published an index, so the repository states nothing about
+    // what it holds.
+    let unpublished = tempfile::tempdir().expect("temp unpublished repo");
+    std::fs::write(
+        unpublished.path().join("peppy.json5"),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "unpublished_node", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["sleep", "1"] }
+        }"#,
+    )
+    .expect("write peppy.json5");
+
+    let conf_dir = serve.temp_dir().join("conf");
+    std::fs::create_dir_all(&conf_dir).expect("create conf dir");
+    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
+        { "id": 1, "type": "fs", "path": healthy.path().to_string_lossy() },
+        { "id": 2, "type": "fs", "path": unpublished.path().to_string_lossy() },
+        { "id": 3, "type": "fs", "path": serve.temp_dir().join("never_mounted").to_string_lossy() },
+    ]))
+    .expect("serialize repos");
+    std::fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+
+    let result = RepoCommand {
+        command: RepoCommands::Refresh,
+    }
+    .execute(&ctx);
+
+    assert!(
+        result.is_ok(),
+        "a repository that cannot be read must not fail the command: {:?}",
+        result.err()
+    );
+
+    // The repositories that did read are current: containment is only
+    // worth anything if the rest of the run still lands.
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(serve.temp_dir());
+    let cache = std::fs::read_to_string(core_node::nodes_repo_cache_path(&peppy_dirs))
+        .expect("the node cache should be published");
+    assert!(
+        cache.contains("reachable_node"),
+        "the readable repository still updated:\n{cache}"
+    );
+}
+
 /// A `pairing/v1` document in an fs repo is discovered by `repo refresh`
 /// and lands in the daemon's pairing cache file.
 #[test]
