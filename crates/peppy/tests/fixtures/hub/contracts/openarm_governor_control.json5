@@ -4,10 +4,8 @@
     name: "openarm_governor_control",
     tag: "v1"
   },
-  // Runtime on/off for the backbone's self-collision governor. A contract
-  // rather than a node dependency because whoever drives the governor is a UI
-  // decision: the operator panel implements it here, and a scripted routine
-  // could implement it instead without the backbone changing.
+  // Declares one topic, `governor_control`: a stamped on/off flag for the
+  // backbone's self-collision governor.
   interfaces: {
     topics: [
       {

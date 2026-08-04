@@ -11,9 +11,8 @@
   },
   interfaces: {
     topics: {
-      // The proximity readout behind the panel's collision indicator. Lossy:
-      // it is a continuously re-published state, and the next sample corrects
-      // a dropped one.
+      // A stamped collision-proximity sample, published under the lossy
+      // `sensor_data` QoS profile.
       emits: [
         {
           name: "collision_status",
@@ -28,9 +27,8 @@
       ]
     },
     actions: {
-      // The moves the operator panel fires. The backbone runs each one itself
-      // for the arm whose id matches `arm_id`, which is why the panel needs no
-      // per-arm dependency of its own.
+      // Each move action names its target arm with `arm_id` in the goal
+      // request.
       exposes: [
         {
           // Joint-space move: the panel's "Send" button.
@@ -54,8 +52,8 @@
           }
         },
         {
-          // Cartesian point-to-point: Execute-pose in the panel's Actions mode
-          // fires a planned straight-line move rather than jogging there.
+          // Cartesian move: a 6-element target pose in the request, remaining
+          // distance as feedback.
           name: "move_arm",
           goal_service: {
             request_message_format: {
@@ -76,8 +74,8 @@
           }
         },
         {
-          // Gripper open/close as a discrete governed action (Actions mode),
-          // rather than the streamed opening used in Streaming mode.
+          // Gripper move: a single `opening` value in the request, no feedback
+          // topic.
           name: "move_gripper",
           goal_service: {
             request_message_format: {

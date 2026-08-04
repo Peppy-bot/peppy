@@ -123,11 +123,12 @@ fn register_repo_caches(peppy_root: impl AsRef<Path>, nodes: &[(&str, &str, &Pat
 /// Stages a checked-in hub fixture node into a temp nodes directory, ready for
 /// [`register_repo_caches`].
 ///
-/// The manifest is the fixture's, verbatim: it is the shape under test and no
-/// test rewrites it. Only the `execution` block is swapped for the harness
-/// conventions, because a fixture cannot name a run command that outlives the
-/// test (the keep-alive path is created per run) and these tests never build a
-/// container.
+/// The fixture is parsed into a [`config::node::NodeConfig`], its `execution`
+/// block is replaced with the harness conventions, and the config is
+/// re-serialized, so the staged manifest carries the fixture's values but not
+/// its comments or formatting. `execution` is replaced because a fixture cannot
+/// name a run command that outlives the test (the keep-alive path is created
+/// per run) and these tests never build a container.
 fn stage_hub_fixture_node(
     nodes_directory: &Path,
     fixture_name: &str,

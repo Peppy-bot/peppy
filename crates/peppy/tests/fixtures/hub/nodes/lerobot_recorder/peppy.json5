@@ -13,8 +13,8 @@
     actions: {
       exposes: [
         {
-          // One dataset episode per goal: fired by the panel's record button,
-          // frame-count feedback while running, cancel = stop and save.
+          // One dataset episode per goal: a task description in the request, a
+          // running frame count as feedback, and the episode id in the result.
           name: "record_episode",
           goal_service: {
             request_message_format: {
@@ -38,8 +38,8 @@
     services: {
       exposes: [
         {
-          // The panel's Finish-session button: finalize and mirror the current
-          // dataset, then open a fresh session in place.
+          // Takes no request; the response carries the number of episodes
+          // recorded.
           name: "finish_session",
           response_message_format: {
             episodes_recorded: "u32"
