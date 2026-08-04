@@ -254,12 +254,15 @@ impl LinkValue {
         }
     }
 
-    /// The single target of a pairing/observer link, or `None` when the value
-    /// carries a set of targets. Pairing and observer slots take exactly one
-    /// `<instance>[/<link_id>]` target, so their validators call this to reject
-    /// a multi-target value up front. A launch-file scalar and a single CLI
-    /// `--link KEY@target` occurrence (a one-element [`LinkValue::Flags`]) both
-    /// count as one target; an array or a repeated flag does not.
+    /// The single target of a participant pairing link, or `None` when the
+    /// value carries a set of targets. A pairing is strictly 1:1, so a
+    /// participant slot takes exactly one `<instance>[/<link_id>]` target and
+    /// its validator calls this to reject a multi-target value up front.
+    /// Observer slots are sized by their `cardinality` instead and go through
+    /// [`check_cardinality_shape`]. A launch-file scalar and a
+    /// single CLI `--link KEY@target` occurrence (a one-element
+    /// [`LinkValue::Flags`]) both count as one target; an array or a repeated
+    /// flag does not.
     pub fn as_scalar(&self) -> Option<&str> {
         match self {
             LinkValue::Scalar(target) => Some(target),
@@ -480,12 +483,12 @@ pub struct DeploymentInstance {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub links: BTreeMap<String, LinkValue>,
-    /// Required pairing/observer slots deliberately left unresolved at launch.
-    /// Every required participant slot must be paired or listed here
-    /// (`PairingSlotUncovered` otherwise) and every observer slot must be
-    /// linked or listed here (`ObservationSlotUncovered` otherwise). Optional
-    /// participant slots need no entry, and producer-binding slots cannot be
-    /// deferred (`LinkDeferInvalid`).
+    /// Pairing/observer slots deliberately left unresolved at launch. Every
+    /// participant slot must be paired or listed here (`PairingSlotUncovered`
+    /// otherwise) and every observer slot must be linked or listed here
+    /// (`ObservationSlotUncovered` otherwise). A `zero_or_more` observer slot
+    /// observes nothing by default and needs no entry, and producer-binding
+    /// slots cannot be deferred (`LinkDeferInvalid`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defer_links: Vec<String>,
     /// Which declared core node link this instance is placed on, i.e. which

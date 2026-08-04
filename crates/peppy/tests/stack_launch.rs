@@ -25,39 +25,20 @@ use super::common::test_node_target;
 use peppylib::core_node::transport::poll;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
 
-fn write_node_config(
+/// The on-disk layout the daemon expects of a staged node, written once: the
+/// manifest, its codegen fingerprint, and the `git.hash` under the peppy output
+/// dir. Every helper below stages a node this way and differs only in how it
+/// produces `manifest`.
+fn install_node_manifest(
     nodes_directory: &Path,
     node_name: &str,
-    node_tag: &str,
     git_hash: &str,
-    run_cmd: &[&str],
+    manifest: &str,
 ) -> PathBuf {
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    let run_cmd_json5 = run_cmd
-        .iter()
-        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        &node_config_path,
-        r#"{
-                peppy_schema: "node/v1",
-                manifest: {
-                    name: "{node_name}",
-                    tag: "{node_tag}",
-                },
-                execution: {
-                    language: "rust",
-                    run_cmd: [{run_cmd_json5}]
-                }
-            }"#
-        .replace("{node_name}", node_name)
-        .replace("{node_tag}", node_tag)
-        .replace("{run_cmd_json5}", &run_cmd_json5),
-    )
-    .expect("failed to write node config");
+    fs::write(&node_config_path, manifest).expect("failed to write node config");
     config::fingerprint::create_codegen_fingerprint(
         &node_config_path,
         Path::new(PEPPYGEN_OUTPUT_PATH),
@@ -67,6 +48,43 @@ fn write_node_config(
     fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
     fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
     node_dir
+}
+
+/// The `run_cmd` array body of a manifest, one JSON5 string per argument.
+fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
+    run_cmd
+        .iter()
+        .map(|arg| serde_json::to_string(arg.as_ref()).expect("run_cmd arg should serialize"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn write_node_config(
+    nodes_directory: &Path,
+    node_name: &str,
+    node_tag: &str,
+    git_hash: &str,
+    run_cmd: &[&str],
+) -> PathBuf {
+    let run_cmd_json5 = run_cmd_json5(run_cmd);
+    install_node_manifest(
+        nodes_directory,
+        node_name,
+        git_hash,
+        &format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{
+                    name: "{node_name}",
+                    tag: "{node_tag}",
+                }},
+                execution: {{
+                    language: "rust",
+                    run_cmd: [{run_cmd_json5}]
+                }}
+            }}"#
+        ),
+    )
 }
 
 /// Registers node directories in the daemon's node cache (`cache/nodes.json5`)
@@ -130,22 +148,12 @@ fn stage_hub_fixture_node(
     node_config.execution.build_cmd = None;
     node_config.execution.run_cmd = Some(run_cmd.to_vec());
 
-    let node_dir = nodes_directory.join(fixture_name);
-    fs::create_dir_all(&node_dir).expect("failed to create node directory");
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    fs::write(
-        &node_config_path,
-        serde_json5::to_string(&node_config).expect("staged manifest should serialize"),
+    install_node_manifest(
+        nodes_directory,
+        fixture_name,
+        git_hash,
+        &serde_json5::to_string(&node_config).expect("staged manifest should serialize"),
     )
-    .expect("failed to write staged node config");
-    config::fingerprint::create_codegen_fingerprint(
-        &node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-    let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
-    fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
-    node_dir
 }
 
 /// Copies checked-in hub pairing and contract documents into a repo directory,
@@ -823,14 +831,7 @@ fn write_node_config_for_helper(
     implements_json5: Option<&str>,
     interfaces_json5: Option<&str>,
 ) -> PathBuf {
-    let node_dir = nodes_directory.join(node_name);
-    fs::create_dir_all(&node_dir).expect("failed to create node directory");
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    let run_cmd_json5 = run_cmd
-        .iter()
-        .map(|arg| serde_json::to_string(arg).expect("run_cmd arg should serialize"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let run_cmd_json5 = run_cmd_json5(run_cmd);
     let manifest_extra = implements_json5
         .map(|implements| format!(",\n            implements: {implements}"))
         .unwrap_or_default()
@@ -853,16 +854,7 @@ fn write_node_config_for_helper(
             }}
         }}"#
     );
-    fs::write(&node_config_path, body).expect("failed to write node config");
-    config::fingerprint::create_codegen_fingerprint(
-        &node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
-    fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
-    node_dir
+    install_node_manifest(nodes_directory, node_name, git_hash, &body)
 }
 
 /// Regression for the launcher's `bindings` field actually wiring

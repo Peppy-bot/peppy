@@ -950,20 +950,11 @@ async fn start_node_instances(
             )
             .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default())
             .with_covered_pairs(covered_by_instance.remove(instance_id).unwrap_or_default())
-            .with_planned_observations(
+            .with_planned_observations(ObservationTargets::slots_from_plan(
                 observations_by_instance
                     .remove(instance_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(link_id, targets)| {
-                        (
-                            link_id,
-                            ObservationTargets::try_from(targets)
-                                .expect("plan members are duplicate-free by validation"),
-                        )
-                    })
-                    .collect(),
-            )
+                    .unwrap_or_default(),
+            ))
             .with_lifecycle_watchers(watchers_by_source.remove(instance_id).unwrap_or_default());
 
             let outcome = if local {

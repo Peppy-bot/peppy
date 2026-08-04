@@ -99,6 +99,18 @@ impl PeerContext {
     }
 }
 
+/// Which slot kind consumes a pairing topic. Both language generators scaffold
+/// the two the same way and differ only in module header, subscription runtime,
+/// and artifact classification, so the discriminant lives here rather than once
+/// per generator.
+#[derive(Clone, Copy)]
+pub enum PairTopicConsumerKind {
+    Peer,
+    /// An observer slot, carrying the cardinality that types its generated
+    /// source accessor. A participant slot has none: a pairing is 1:1.
+    Observed(Cardinality),
+}
+
 /// Backstop for the pairing document's flat topic-name uniqueness rule:
 /// two peer artifacts must never land on the same `paired_topics/<link_id>/<topic>`
 /// module path. Shared by the Rust and Python generators so the invariant
@@ -276,34 +288,67 @@ impl DependencyContext {
 /// It carries the one difference that matters against a bound producer set: an
 /// observed set is live, so nothing about its size holds for the node's
 /// lifetime and an empty read is legal at any instant.
-pub fn observed_sources_doc(cardinality: Cardinality) -> &'static [&'static str] {
+pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
     match cardinality {
-        Cardinality::One => &[
-            "The pairing this module's observer slot observes.",
-            "`None` before the daemon has delivered the slot, and again if a",
-            "replan leaves it observing nothing. This slot declares cardinality",
-            "`one`: it observes at most one pairing, so the accessor is singular.",
-            "Purely local configuration state; there is no health-derived helper,",
-            "because a third node's health is not knowable here.",
-        ],
-        Cardinality::OneOrMore => &[
-            "Every pairing this module's observer slot observes, in plan order.",
-            "The set is live: the daemon replaces it whole whenever the plan's",
-            "observed pairings change, so it can differ between reads and is",
-            "empty before the first delivery. This slot declares cardinality",
-            "`one_or_more`: the plan bound at least one pairing to it.",
-            "Purely local configuration state; there is no health-derived helper,",
-            "because a third node's health is not knowable here.",
-        ],
-        Cardinality::ZeroOrMore => &[
-            "Every pairing this module's observer slot observes, in plan order.",
-            "The set is live: the daemon replaces it whole whenever the plan's",
-            "observed pairings change, so it can differ between reads. This slot",
-            "declares cardinality `zero_or_more`: the plan may have bound no",
-            "pairing at all, so the empty set is an expected steady state.",
-            "Purely local configuration state; there is no health-derived helper,",
-            "because a third node's health is not knowable here.",
-        ],
+        Cardinality::One => AccessorDoc {
+            summary: "The pairing this module's observer slot observes.",
+            body: &[
+                "`None` before the daemon has delivered the slot, and again if a",
+                "replan leaves it observing nothing. This slot declares cardinality",
+                "`one`: it observes at most one pairing, so the accessor is singular.",
+            ],
+        },
+        Cardinality::OneOrMore => AccessorDoc {
+            summary: "Every pairing this module's observer slot observes, in plan order.",
+            body: &[
+                "The set is live: the daemon replaces it whole whenever the plan's",
+                "observed pairings change, so it can differ between reads and is",
+                "empty before the first delivery. This slot declares cardinality",
+                "`one_or_more`: the plan bound at least one pairing to it.",
+            ],
+        },
+        Cardinality::ZeroOrMore => AccessorDoc {
+            summary: "Every pairing this module's observer slot observes, in plan order.",
+            body: &[
+                "The set is live: the daemon replaces it whole whenever the plan's",
+                "observed pairings change, so it can differ between reads. This slot",
+                "declares cardinality `zero_or_more`: the plan may have bound no",
+                "pairing at all, so the empty set is an expected steady state.",
+            ],
+        },
+    }
+}
+
+/// The prose of one generated accessor, with its summary sentence separated so
+/// each language applies its own convention: Python opens the docstring with
+/// `summary` and puts the rest after a blank line, Rust emits every line as one
+/// `///` block. Splitting it in the type is what keeps that convention out of
+/// the callers' indexing.
+pub struct AccessorDoc {
+    pub summary: &'static str,
+    /// The rest of the prose, without [`Self::CLOSING_NOTE`].
+    pub body: &'static [&'static str],
+}
+
+impl AccessorDoc {
+    /// The note every observer accessor's doc ends on, held once rather than
+    /// repeated per cardinality.
+    const CLOSING_NOTE: &'static [&'static str] = &[
+        "Purely local configuration state; there is no health-derived helper,",
+        "because a third node's health is not knowable here.",
+    ];
+
+    /// Everything after the summary, closing note included.
+    pub fn body_lines(&self) -> impl Iterator<Item = &'static str> {
+        self.body
+            .iter()
+            .copied()
+            .chain(Self::CLOSING_NOTE.iter().copied())
+    }
+
+    /// Every line in order, for a language with no summary-line convention.
+    pub fn lines(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.summary).chain(self.body_lines())
     }
 }
 

@@ -16,8 +16,8 @@ mod type_mapping;
 use super::naming::{resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
-    validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, non_empty_message_format,
+    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
 use crate::error::Result;
@@ -128,14 +128,6 @@ impl PythonGenerator {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PairTopicConsumerKind {
-    Peer,
-    /// An observer slot, carrying the cardinality that types its generated
-    /// source accessor. A participant slot has none: a pairing is 1:1.
-    Observed(Cardinality),
-}
-
 impl PythonGenerator {
     /// Shared schema registration and artifact plumbing for both kinds of
     /// consume-side pairing topic.
@@ -153,16 +145,11 @@ impl PythonGenerator {
             }
         })?;
         let schema_info = self.register_schema(&schema_key, &arguments)?;
-        let (code, artifact_kind) = match kind {
-            PairTopicConsumerKind::Peer => (
-                topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?,
-                InterfaceKind::PeerConsumedTopic,
-            ),
-            PairTopicConsumerKind::Observed(cardinality) => (
-                topics::build_observed_topic(topic, &arguments, &schema_info, peer, cardinality)?,
-                InterfaceKind::ObservedTopic,
-            ),
+        let artifact_kind = match kind {
+            PairTopicConsumerKind::Peer => InterfaceKind::PeerConsumedTopic,
+            PairTopicConsumerKind::Observed(_) => InterfaceKind::ObservedTopic,
         };
+        let code = topics::build_pair_topic_consumer(topic, &arguments, &schema_info, peer, kind)?;
 
         let module_path = peer.module_path_for(&topic.name);
         crate::generator::types::ensure_no_peer_collision(

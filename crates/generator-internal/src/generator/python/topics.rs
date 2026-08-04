@@ -5,6 +5,7 @@ use super::serialization;
 use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
+use crate::generator::types::PairTopicConsumerKind;
 use config::node::{Cardinality, ConsumedTopic, MessageFormat, NativeEmittedTopic};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
@@ -320,25 +321,6 @@ pub fn build_peer_emitted_topic(
     Ok(builder.build())
 }
 
-/// Generates Python code for a pairing topic the counterpart role emits
-/// (consumed here): a `subscribe_peer`-backed subscription that follows the
-/// slot's live pin — silent while unpaired, only the paired peer while
-/// paired.
-pub fn build_peer_consumed_topic(
-    topic: &NativeEmittedTopic,
-    arguments: &MessageFormat,
-    schema_info: &PythonSchemaInfo,
-    peer: &crate::generator::types::PeerContext,
-) -> Result<String> {
-    build_pair_topic_consumer(
-        topic,
-        arguments,
-        schema_info,
-        peer,
-        PairTopicConsumerKind::Peer,
-    )
-}
-
 /// Emits the module-level slot constants plus the observer slot's source
 /// accessor. An observer plays no role, so there is no
 /// `paired()`/`wait_paired()`.
@@ -384,9 +366,9 @@ fn emit_observer_module_header(
         "def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"
     ));
     builder.indent();
-    builder.line(&format!("\"\"\"{}", doc[0]));
+    builder.line(&format!("\"\"\"{}", doc.summary));
     builder.blank_line();
-    for line in &doc[1..] {
+    for line in doc.body_lines() {
         builder.line(line);
     }
     builder.line("\"\"\"");
@@ -397,35 +379,14 @@ fn emit_observer_module_header(
     builder.blank_line();
 }
 
-/// Generates Python code for a pairing topic an observed role emits, tapped
-/// passively: a `subscribe_observed`-backed subscription that follows each
-/// observed source instance's lifecycle. Yields `(producer, message)`; there is
-/// no publisher.
-pub fn build_observed_topic(
-    topic: &NativeEmittedTopic,
-    arguments: &MessageFormat,
-    schema_info: &PythonSchemaInfo,
-    observer: &crate::generator::types::PeerContext,
-    cardinality: Cardinality,
-) -> Result<String> {
-    build_pair_topic_consumer(
-        topic,
-        arguments,
-        schema_info,
-        observer,
-        PairTopicConsumerKind::Observed(cardinality),
-    )
-}
-
-#[derive(Clone, Copy)]
-enum PairTopicConsumerKind {
-    Peer,
-    /// An observer slot, carrying the cardinality that types its generated
-    /// source accessor. A participant slot has none: a pairing is 1:1.
-    Observed(Cardinality),
-}
-
-fn build_pair_topic_consumer(
+/// Generates Python code for a consume-side pairing topic. A
+/// [`PairTopicConsumerKind::Peer`] slot gets a `subscribe_peer`-backed
+/// subscription that follows the slot's live pin (silent while unpaired, only
+/// the paired peer while paired); a [`PairTopicConsumerKind::Observed`] slot
+/// gets a `subscribe_observed`-backed one that follows each observed source
+/// instance's lifecycle and yields `(producer, message)`. An observer plays no
+/// role, so it has no publisher.
+pub fn build_pair_topic_consumer(
     topic: &NativeEmittedTopic,
     arguments: &MessageFormat,
     schema_info: &PythonSchemaInfo,

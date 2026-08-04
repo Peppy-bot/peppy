@@ -340,8 +340,6 @@ impl ObservationCoordinator {
                     .into_iter()
                     .flat_map(|instance_id| Self::slots_of_observer(&registry, instance_id)),
             );
-            slots.sort();
-            slots.dedup();
 
             self.assemble_deliveries(
                 &registry,
@@ -441,8 +439,12 @@ impl ObservationCoordinator {
     /// One function for the up and down paths because they must reach exactly
     /// the same slots: a "went down" addressed to fewer slots than the matching
     /// "came up" leaves the difference permanently stale.
-    fn slots_observing(registry: &Registry, source: &SourceKey) -> Vec<SlotKey> {
-        let mut slots: Vec<SlotKey> = registry
+    /// A set, not a list: one slot may observe a source through several of the
+    /// source's own participant slots, and it is still one delivery. Collecting
+    /// into a `BTreeSet` is what makes that true here and at every caller, so
+    /// unioning two of these needs no second deduplication.
+    fn slots_observing(registry: &Registry, source: &SourceKey) -> BTreeSet<SlotKey> {
+        registry
             .by_observer
             .iter()
             .flat_map(|(observer_id, records)| {
@@ -454,17 +456,12 @@ impl ObservationCoordinator {
                         observer_link_id: record.observer_link_id.clone(),
                     })
             })
-            .collect();
-        // One slot may observe a source through several of the source's own
-        // participant slots; it is still one delivery.
-        slots.sort();
-        slots.dedup();
-        slots
+            .collect()
     }
 
     /// Every slot one observer instance declares a member for.
-    fn slots_of_observer(registry: &Registry, observer_instance_id: &str) -> Vec<SlotKey> {
-        let mut slots: Vec<SlotKey> = registry
+    fn slots_of_observer(registry: &Registry, observer_instance_id: &str) -> BTreeSet<SlotKey> {
+        registry
             .by_observer
             .get(observer_instance_id)
             .into_iter()
@@ -473,10 +470,7 @@ impl ObservationCoordinator {
                 observer_instance_id: observer_instance_id.to_string(),
                 observer_link_id: record.observer_link_id.clone(),
             })
-            .collect();
-        slots.sort();
-        slots.dedup();
-        slots
+            .collect()
     }
 
     /// Materializes each slot's complete ordered member set, stamping every
@@ -486,7 +480,7 @@ impl ObservationCoordinator {
     fn assemble_deliveries(
         &self,
         registry: &Registry,
-        slots: Vec<SlotKey>,
+        slots: BTreeSet<SlotKey>,
         live_local_instances: &HashSet<String>,
         verdict: Option<LivenessVerdict<'_>>,
     ) -> Vec<Delivery> {

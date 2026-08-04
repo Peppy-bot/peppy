@@ -247,7 +247,11 @@ pub fn build_observed_module_header(
     let link_id_literal = Literal::string(&observer.link_id);
     let pairing_name_literal = Literal::string(&observer.pairing_name);
     let pairing_tag_literal = Literal::string(&observer.pairing_tag);
-    let sources_doc = super::doc_attrs(crate::generator::types::observed_sources_doc(cardinality));
+    let sources_doc = super::doc_attrs(
+        &crate::generator::types::observed_sources_doc(cardinality)
+            .lines()
+            .collect::<Vec<_>>(),
+    );
 
     let sources_accessor = if cardinality.is_one() {
         quote! {

@@ -566,11 +566,8 @@ pub struct PairingRequest<'a> {
 ///   instance is not in the stack yet, so the shared resolver would report
 ///   a misleading "unknown instance" instead of the real problem;
 /// - covered slots (the earlier endpoints of launch-planned pairs) satisfy
-///   the coverage rule like defers, but optional covered slots are dropped
-///   before the validator: optional slots pass coverage on their own, and
-///   the validator rightly rejects optional entries in `defer_links` as
-///   a user error. A covered key naming an unknown slot is kept so the
-///   validator reports it.
+///   the coverage rule like defers. A covered key naming an unknown slot is
+///   kept so the validator reports it.
 ///
 /// `snapshot` and `live_pairs` are the stack's live instances and claimed
 /// slots ([`NodeStack::pairing_node_snapshots`] / [`NodeStack::live_pairs`]);

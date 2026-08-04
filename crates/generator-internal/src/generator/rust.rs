@@ -16,7 +16,8 @@ pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
+    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, non_empty_message_format,
+    scoped_schema_key,
 };
 use crate::error::{Error, Result};
 use crate::generator::naming::{
@@ -663,14 +664,6 @@ impl SchemaInfo {
         let struct_module_ident = Ident::new(&self.struct_module, Span::call_site());
         quote!(crate::capnp::#module_ident::#struct_module_ident::Reader)
     }
-}
-
-#[derive(Clone, Copy)]
-enum PairTopicConsumerKind {
-    Peer,
-    /// An observer slot, carrying the cardinality that types its generated
-    /// source accessor. A participant slot has none: a pairing is 1:1.
-    Observed(Cardinality),
 }
 
 impl RustGenerator {

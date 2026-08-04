@@ -629,16 +629,7 @@ async fn validate_links_against_stack(
                 core_node_name,
             ));
     }
-    let requested_observations: BTreeMap<String, ObservationTargets> = observation_members
-        .into_iter()
-        .map(|(link_id, targets)| {
-            (
-                link_id,
-                ObservationTargets::try_from(targets)
-                    .expect("plan members are duplicate-free by validation"),
-            )
-        })
-        .collect();
+    let requested_observations = ObservationTargets::slots_from_plan(observation_members);
 
     Ok(Some(PreflightPlan {
         slot_bindings: validated
