@@ -657,7 +657,7 @@ pub enum ParsingError {
     /// A deployment decides that a specific instance runs a slot empty; the
     /// node decides whether any deployment may.
     #[error(
-        "link `{link_id}` on instance `{owner_instance_id}` is a {slot_kind} and cannot be \
+        "link `{link_id}` on instance `{owner_instance_id}` is {slot_kind} and cannot be \
          vacant. {refusal}"
     )]
     LinkVacantInvalid {

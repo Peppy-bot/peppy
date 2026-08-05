@@ -175,20 +175,22 @@ impl LinkSlotKind {
         }
     }
 
-    /// The slot kind in the vocabulary its own error messages use.
+    /// The slot kind in the vocabulary its own error messages use, carrying its
+    /// own article so "an observer slot" reads correctly alongside "a producer
+    /// slot".
     fn describe(self) -> String {
         match self {
             LinkSlotKind::Binding(cardinality) => {
-                format!("producer-binding slot (cardinality `{cardinality}`)")
+                format!("a producer-binding slot (cardinality `{cardinality}`)")
             }
             LinkSlotKind::Participant { optional: false } => {
-                "required participant pairing slot".to_string()
+                "a required participant pairing slot".to_string()
             }
             LinkSlotKind::Participant { optional: true } => {
-                "optional participant pairing slot".to_string()
+                "an optional participant pairing slot".to_string()
             }
             LinkSlotKind::Observer(cardinality) => {
-                format!("observer slot (cardinality `{cardinality}`)")
+                format!("an observer slot (cardinality `{cardinality}`)")
             }
         }
     }

@@ -160,8 +160,8 @@ fn parse_vacant_link(raw: &str) -> Result<(String, VacantReason), String> {
         .map_err(|_| format!("invalid --vacant-link value '{raw}': expected SLOT=<why>"))?;
     pmi::Segment::try_from(link_id.as_str())
         .map_err(|e| format!("invalid --vacant-link SLOT '{link_id}': {e}"))?;
-    let reason = VacantReason::new(&reason)
-        .map_err(|e| format!("invalid --vacant-link '{raw}': {e}"))?;
+    let reason =
+        VacantReason::new(&reason).map_err(|e| format!("invalid --vacant-link '{raw}': {e}"))?;
     Ok((link_id, reason))
 }
 
