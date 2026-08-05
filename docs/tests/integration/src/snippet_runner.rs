@@ -1,11 +1,11 @@
 use crate::{peppy_binary, workspace_root};
 use config::node::NodeConfigParser;
-use peppy::test_support::ServeCommandEmulation;
+use peppy::test_support::{ServeCommandEmulation, wait_for_log};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 struct NodeSetup {
     /// Root of the emulated daemon's directory tree, exported to every peppy
@@ -80,32 +80,41 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     }
 }
 
-/// The lock guarding one snippet directory, created on first use.
+/// The lock guarding one snippet directory, created on first use and kept for
+/// the process's lifetime (hence the `&'static` through a leak).
 ///
 /// `peppy node sync` generates bindings INTO the snippet directory it runs in,
-/// and `node add .` then reads that directory, so two tests working on the same
-/// snippet must take turns. Tests share a snippet whenever they share a
+/// and `node add`, `node build` and `node run` then read that same directory,
+/// so two tests working on the same snippet must take turns for the whole
+/// sync-through-run span: a re-sync under a concurrent build would rewrite the
+/// generated sources mid-compile. Tests share a snippet whenever they share a
 /// producer (several consumer snippets reading one producer's topic) or drive
 /// one snippet through several deployments. The lock is per directory, so
-/// unrelated snippets still sync in parallel.
-fn snippet_dir_lock(node_dir: &Path) -> Arc<Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+/// unrelated snippets still run in parallel.
+fn snippet_dir_lock(node_dir: &Path) -> &'static Mutex<()> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
     let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut locks = locks.lock().unwrap_or_else(PoisonError::into_inner);
-    Arc::clone(locks.entry(node_dir.to_path_buf()).or_default())
+    locks
+        .entry(node_dir.to_path_buf())
+        .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
 }
 
+/// Syncs and adds the node, returning the snippet directory's guard so the
+/// caller can keep holding it through the build and run that read the synced
+/// directory.
 fn sync_and_add_node(
     peppy: &Path,
     daemon_root: &Path,
     node_dir: &Path,
     context: &str,
     extra_sync_args: &[&str],
-) {
-    // A test that panics mid-sync poisons this; the next test still has to run,
+) -> MutexGuard<'static, ()> {
+    // A test that panics mid-span poisons this; the next test still has to run,
     // and it starts by rewriting the same generated directory anyway.
-    let dir_lock = snippet_dir_lock(node_dir);
-    let _guard = dir_lock.lock().unwrap_or_else(PoisonError::into_inner);
+    let guard = snippet_dir_lock(node_dir)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
 
     let mut sync_cmd = vec!["node", "sync"];
     sync_cmd.extend_from_slice(extra_sync_args);
@@ -119,6 +128,8 @@ fn sync_and_add_node(
         &["node", "add", ".", "--force"],
     );
     assert_success(&add_output, &format!("peppy node add . for {context}"));
+
+    guard
 }
 
 /// Registers `contracts_root` (relative to the workspace) as a filesystem
@@ -204,7 +215,7 @@ pub fn run_snippet_with_deps_asserting_output(
             dep_config.manifest.name.as_str(),
             dep_config.manifest.tag
         );
-        sync_and_add_node(peppy, &setup.daemon_root, &dep_dir, dep, &[]);
+        let _dep_dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &dep_dir, dep, &[]);
         build_node(peppy, &setup.daemon_root, &dep_dir, &dep_ref);
         let dep_instance_id = format!("{dep}_1");
         let mut dep_run_cmd = vec![
@@ -220,7 +231,7 @@ pub fn run_snippet_with_deps_asserting_output(
     }
 
     // Now sync, add, and build the main node
-    sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
+    let _dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
     build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
     let instance_id = format!("{snippet_name}_1");
@@ -251,23 +262,13 @@ fn assert_run_log_contains(daemon_root: &Path, instance_id: &str, expected: &[&s
         .join("logs")
         .join("run")
         .join(format!("{instance_id}.log"));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut log = String::new();
-    while std::time::Instant::now() < deadline {
-        log = fs::read_to_string(&log_path).unwrap_or_default();
-        if expected.iter().all(|line| log.contains(line)) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    for line in expected {
+        wait_for_log(
+            || fs::read_to_string(&log_path).unwrap_or_default(),
+            line,
+            std::time::Duration::from_secs(30),
+        );
     }
-    let missing: Vec<&&str> = expected
-        .iter()
-        .filter(|line| !log.contains(**line))
-        .collect();
-    panic!(
-        "node output at {} never carried {missing:?}. Log:\n{log}",
-        log_path.display()
-    );
 }
 
 /// Run a snippet whose `depends_on` contract references (contract docs,
@@ -294,7 +295,7 @@ pub fn run_snippet_with_contract_repo(
 
     // `-r` lets the daemon resolve the contract deps from the repo cache
     // populated by the refresh above (no producer node is in the stack).
-    sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &["-r"]);
+    let _dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &["-r"]);
     build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
     let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];

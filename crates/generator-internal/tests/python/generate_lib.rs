@@ -804,16 +804,14 @@ fn generate_peppygen_python_lib_renders_optional_accessor_for_a_zero_or_one_cont
         .join("peppygen/consumed_topics/wrist_camera/video_stream.py");
     let rendered = fs::read_to_string(&leaf)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", leaf.display()));
-    for expected in [
-        "def bound_producer(node_runner: peppylib.NodeRunner) -> Optional[peppylib.ProducerRef]:",
-        "return node_runner.optional_bound_producer(\"wrist_camera\")",
-        "from typing import Optional",
-        "peppylib.SenderTarget.contract(",
-        "cardinality `zero_or_one`",
-    ] {
-        assert!(
-            rendered.contains(expected),
-            "generated leaf should contain `{expected}`:\n{rendered}"
-        );
-    }
+    config_test_support::assert_contains_all(
+        &rendered,
+        &[
+            "def bound_producer(node_runner: peppylib.NodeRunner) -> Optional[peppylib.ProducerRef]:",
+            "return node_runner.optional_bound_producer(\"wrist_camera\")",
+            "from typing import Optional",
+            "peppylib.SenderTarget.contract(",
+            "cardinality `zero_or_one`",
+        ],
+    );
 }

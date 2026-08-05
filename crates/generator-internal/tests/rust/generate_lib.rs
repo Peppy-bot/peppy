@@ -791,16 +791,14 @@ fn generate_peppygen_rust_lib_renders_optional_accessor_for_a_zero_or_one_contra
         .join("src/consumed_topics/wrist_camera/video_stream.rs");
     let rendered = fs::read_to_string(&leaf)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", leaf.display()));
-    for expected in [
-        "pub fn bound_producer(",
-        ") -> Option<&peppylib::messaging::ProducerRef>",
-        "optional_bound_producer(\"wrist_camera\")",
-        "SenderTarget::contract(",
-        "cardinality `zero_or_one`",
-    ] {
-        assert!(
-            rendered.contains(expected),
-            "generated leaf should contain `{expected}`:\n{rendered}"
-        );
-    }
+    config_test_support::assert_contains_all(
+        &rendered,
+        &[
+            "pub fn bound_producer(",
+            ") -> Option<&peppylib::messaging::ProducerRef>",
+            "optional_bound_producer(\"wrist_camera\")",
+            "SenderTarget::contract(",
+            "cardinality `zero_or_one`",
+        ],
+    );
 }

@@ -89,7 +89,7 @@ pub const RUST_STUB_EXECUTION: &str = r#"language: "rust",
 /// link_id the test's generator calls use.
 pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
     consumer_stub_node_config_with_execution(
-        SlotList::Nodes,
+        "nodes",
         dep_name,
         dep_tag,
         link_id,
@@ -108,30 +108,13 @@ pub fn multi_consumer_stub_node_config(
     cardinality: &str,
 ) -> String {
     consumer_stub_node_config_with_execution(
-        SlotList::Nodes,
+        "nodes",
         dep_name,
         dep_tag,
         link_id,
         Some(cardinality),
         RUST_STUB_EXECUTION,
     )
-}
-
-/// Which `depends_on` list a consumer stub declares its slot in. Node slots
-/// and contract slots size their bound sets identically, so the list name is
-/// the whole difference the fixture carries.
-pub enum SlotList {
-    Nodes,
-    Contracts,
-}
-
-impl SlotList {
-    fn key(&self) -> &'static str {
-        match self {
-            SlotList::Nodes => "nodes",
-            SlotList::Contracts => "contracts",
-        }
-    }
 }
 
 /// Contract-slot variant of [`multi_consumer_stub_node_config`]: the slot is
@@ -145,7 +128,7 @@ pub fn contract_consumer_stub_node_config(
     execution: &str,
 ) -> String {
     consumer_stub_node_config_with_execution(
-        SlotList::Contracts,
+        "contracts",
         contract_name,
         contract_tag,
         link_id,
@@ -157,12 +140,14 @@ pub fn contract_consumer_stub_node_config(
 /// Shared manifest template behind [`consumer_stub_node_config`],
 /// [`multi_consumer_stub_node_config`],
 /// [`contract_consumer_stub_node_config`] and
-/// [`python_consumer_stub_node_config`]. `slot_list` picks the `depends_on`
-/// list the slot is declared in, `execution` is the body of the `execution`
-/// block, and `cardinality` the slot's optional explicit declaration (`None`
-/// leaves the manifest's `one` default).
+/// [`python_consumer_stub_node_config`]. `slot_list` names the `depends_on`
+/// list the slot is declared in (`"nodes"` or `"contracts"`; node slots and
+/// contract slots size their bound sets identically, so the list name is the
+/// whole difference the fixture carries), `execution` is the body of the
+/// `execution` block, and `cardinality` the slot's optional explicit
+/// declaration (`None` leaves the manifest's `one` default).
 fn consumer_stub_node_config_with_execution(
-    slot_list: SlotList,
+    slot_list: &str,
     dep_name: &str,
     dep_tag: &str,
     link_id: &str,
@@ -172,7 +157,6 @@ fn consumer_stub_node_config_with_execution(
     let cardinality_field = cardinality
         .map(|cardinality| format!(r#", cardinality: "{cardinality}""#))
         .unwrap_or_default();
-    let slot_list = slot_list.key();
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -1073,7 +1057,7 @@ pub const PYTHON_STUB_EXECUTION: &str = r#"language: "python",
 /// Python-toolchain variant of [`consumer_stub_node_config`].
 pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
     consumer_stub_node_config_with_execution(
-        SlotList::Nodes,
+        "nodes",
         dep_name,
         dep_tag,
         link_id,

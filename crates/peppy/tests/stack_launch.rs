@@ -2465,6 +2465,10 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
     let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
     let contract_repo_dir = tempfile::tempdir().expect("failed to create temp contract repo");
     let bound_dump = dump_dir.path().join("bound.json5");
@@ -2486,14 +2490,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
         contract_name,
         contract_tag,
     );
-    super::common::publish_repo_index(contract_repo_dir.path());
-    let conf_dir = serve.temp_dir().join("conf");
-    fs::create_dir_all(&conf_dir).expect("create conf dir");
-    let repos_content = serde_json::to_string_pretty(&serde_json::json!([
-        { "id": 1, "type": "fs", "path": contract_repo_dir.path().to_string_lossy() }
-    ]))
-    .expect("serialize repos");
-    fs::write(conf_dir.join("repositories.json5"), repos_content).expect("write repos");
+    super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
 
     let producer_run_cmd = vec![
         "sh".to_string(),
@@ -2547,17 +2544,6 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
         None,
         None,
     );
-
-    let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
-            .with_daemon_state_file(serve.daemon_state_path()),
-    );
-
-    RepoCommand {
-        command: RepoCommands::Refresh,
-    }
-    .execute(&ctx)
-    .expect("repo refresh should populate contract cache");
 
     // The dummy `sh` subprocesses expose none of the framework services, so
     // impersonate them for all three instances.

@@ -207,23 +207,8 @@ impl std::fmt::Display for BindingSlotUnfulfilled {
             slot_tag,
             cardinality,
         } = self;
-        // A scalar slot binds a single producer; a `one_or_more` slot binds an
-        // array. Only `zero_or_one` may say "nothing here", and it says it with
-        // a vacancy.
-        let link_shape = if cardinality.is_scalar() {
-            format!("links: {{ {link_id}: \"<producer_instance_id>\" }}")
-        } else {
-            format!("links: {{ {link_id}: [\"<producer_instance_id>\", ...] }}")
-        };
-        let fix = match cardinality {
-            Cardinality::ZeroOrOne => format!("or {}", vacancy_hint(link_id)),
-            Cardinality::OneOrMore => format!(
-                "or, if it is meant to run empty, declare `cardinality: \"zero_or_more\"` on that \
-                 entry and then leave `{link_id}` out of `links:` (an omitted `zero_or_more` slot \
-                 is its own empty set)"
-            ),
-            _ => emptiable_hint(link_id, BINDING_EMPTIABLE_KEY),
-        };
+        let link_shape = link_shape_hint(link_id, "<producer_instance_id>", *cardinality);
+        let fix = uncovered_slot_fix(link_id, *cardinality, BINDING_EMPTIABLE_KEY);
         write!(
             f,
             "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
@@ -443,19 +428,8 @@ impl std::fmt::Display for ObservationSlotUncovered {
             observed_role,
             cardinality,
         } = self;
-        // A scalar slot takes a single source; a `one_or_more` slot takes an
-        // array. Only `zero_or_one` may say "nothing here", and it says it with
-        // a vacancy: `one` observes exactly one pairing and `one_or_more` at
-        // least one, so both take a source and nothing else.
-        let link_shape = if cardinality.is_scalar() {
-            format!("links: {{ {link_id}: \"<source_instance>\" }}")
-        } else {
-            format!("links: {{ {link_id}: [\"<source_instance>\", ...] }}")
-        };
-        let fix = match cardinality {
-            Cardinality::ZeroOrOne => format!("or {}", vacancy_hint(link_id)),
-            _ => emptiable_hint(link_id, OBSERVER_EMPTIABLE_KEY),
-        };
+        let link_shape = link_shape_hint(link_id, "<source_instance>", *cardinality);
+        let fix = uncovered_slot_fix(link_id, *cardinality, OBSERVER_EMPTIABLE_KEY);
         write!(
             f,
             "instance `{instance_id}` declares observer slot `{link_id}` (cardinality \
@@ -770,6 +744,39 @@ pub(crate) const OBSERVER_EMPTIABLE_KEY: &str =
 /// state as `[]` or an omitted key, so this key names the scalar case alone.
 pub(crate) const BINDING_EMPTIABLE_KEY: &str =
     "`cardinality: \"zero_or_one\"` on its `depends_on.nodes` / `depends_on.contracts` entry";
+
+/// The launcher `links:` shape that would fill a slot: a scalar slot takes a
+/// single id, a multi slot an array. Shared by [`BindingSlotUnfulfilled`] and
+/// [`ObservationSlotUncovered`] so the two surfaces cannot drift on the shape
+/// rule; `placeholder` names the id in each family's own vocabulary.
+fn link_shape_hint(link_id: &str, placeholder: &str, cardinality: Cardinality) -> String {
+    if cardinality.is_scalar() {
+        format!("links: {{ {link_id}: \"{placeholder}\" }}")
+    } else {
+        format!("links: {{ {link_id}: [\"{placeholder}\", ...] }}")
+    }
+}
+
+/// The remedy clause for an uncovered slot, chosen by its cardinality: a
+/// `zero_or_one` slot is offered the vacancy spelling, a `one` slot the
+/// manifest key that would earn it an empty state (`declare_emptiable`), and a
+/// `one_or_more` slot the cardinality whose empty state is an omitted key.
+/// Shared by [`BindingSlotUnfulfilled`] and [`ObservationSlotUncovered`] so
+/// the two surfaces cannot drift on which remedy fits which slot. A
+/// `zero_or_more` slot never raises either error (omission is its empty set);
+/// its arm only keeps the match exhaustive so a new cardinality variant must
+/// choose a remedy here.
+fn uncovered_slot_fix(link_id: &str, cardinality: Cardinality, declare_emptiable: &str) -> String {
+    match cardinality {
+        Cardinality::ZeroOrOne => format!("or {}", vacancy_hint(link_id)),
+        Cardinality::OneOrMore => format!(
+            "or, if it is meant to run empty, declare `cardinality: \"zero_or_more\"` on that \
+             entry and then leave `{link_id}` out of `links:` (an omitted `zero_or_more` slot \
+             is its own empty set)"
+        ),
+        Cardinality::One | Cardinality::ZeroOrMore => emptiable_hint(link_id, declare_emptiable),
+    }
+}
 
 fn vacancy_hint(link_id: &str) -> String {
     format!(
