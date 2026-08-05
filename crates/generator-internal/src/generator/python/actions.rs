@@ -560,7 +560,7 @@ pub fn build_consumed_action(
 
     builder.add_import("import peppylib");
     builder.add_import("from typing import Self");
-    crate::generator::python::services::emit_bound_producers_fn(&mut builder, dependency);
+    crate::generator::python::services::emit_bound_producer_accessor_fn(&mut builder, dependency);
     builder.blank_line();
 
     builder.line("class ActionHandle:");

@@ -513,7 +513,7 @@ pub fn build_consumed_topic(
     // the set changes.
     builder.add_import("import peppylib");
 
-    crate::generator::python::services::emit_bound_producers_fn(&mut builder, dependency);
+    crate::generator::python::services::emit_bound_producer_accessor_fn(&mut builder, dependency);
 
     builder.blank_line();
     emit_subscription_class(
@@ -542,9 +542,9 @@ on the yielded producer to follow a single member.",
     builder.line(&format!("{from_target},"));
     builder.line("topic_name,");
     // The slot's complete bound producer set: sized per the declared
-    // cardinality at launch, re-validated at node startup, possibly empty
-    // only for a zero_or_more slot (the subscription then yields nothing
-    // until shutdown).
+    // cardinality at launch, re-validated at node startup. It is empty on a
+    // zero_or_more slot bound to nothing and on a vacant zero_or_one slot,
+    // where the subscription yields nothing until shutdown.
     builder.line(&format!(
         "node_runner.bound_producers({:?}),",
         dependency.link_id

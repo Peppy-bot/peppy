@@ -347,7 +347,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 ### Calling a service
 
 The code generator creates a module for each consumed service under `peppygen.consumed_services` (Python) / `peppygen::consumed_services` (Rust).
-Use `poll` to send a request and wait for a response. The caller selects which bound producer handles the call by passing one explicit `target`, obtained from the slot's [cardinality](/advanced_guides/topics/#dependency-cardinality)-typed accessor: on a `one` slot `bound_producer()` returns the sole producer directly, on a `one_or_more` slot `bound_producers()` returns a never-empty set whose `first()` needs no unwrap, and on a `zero_or_more` slot it returns a possibly empty slice whose empty case the caller must handle. The explicit `target` parameter itself has the same shape for every cardinality. The candidates are fixed by the application bindings at launch, so by the time `poll` runs the route set is already validated.
+Use `poll` to send a request and wait for a response. The caller selects which bound producer handles the call by passing one explicit `target`, obtained from the slot's [cardinality](/advanced_guides/topics/#dependency-cardinality)-typed accessor: on a `one` slot `bound_producer()` returns the sole producer directly, on a `zero_or_one` slot it returns an `Option` the caller branches on first (a vacant slot has no target, so there is nothing to poll), on a `one_or_more` slot `bound_producers()` returns a never-empty set whose `first()` needs no unwrap, and on a `zero_or_more` slot it returns a possibly empty slice whose empty case the caller must handle. The explicit `target` parameter itself has the same shape for every cardinality. The candidates are fixed by the application bindings at launch, so by the time `poll` runs the route set is already validated.
 
 <Tabs>
   <TabItem label="Python">
@@ -586,7 +586,7 @@ Three contract statements follow from this manifest:
 
 1. `poll` on the nested `wrist_left_camera.<service>` (Python) / `wrist_left_camera::<service>` (Rust) module reaches `left_cam`.
 2. `poll` on the nested `wrist_right_camera.<service>` (Python) / `wrist_right_camera::<service>` (Rust) module reaches `right_cam`.
-3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared `one` / `one_or_more` slot must be bound): a service call has no wildcard fallback.
+3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (a declared slot is bound, or declared vacant where its cardinality is `zero_or_one`): a service call has no wildcard fallback.
 
 ### Why an explicit single target?
 
@@ -598,8 +598,8 @@ If the selected producer dies, the call surfaces `ServiceUnreachable` (a `Connec
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared `one` / `one_or_more` slot with no binding entry fails the launch before anything is spawned; a `zero_or_more` slot with no entry resolves to the empty set.
-2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi slot and are a hard error on a `one` slot.
+1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared `one` / `zero_or_one` / `one_or_more` slot with no `links` entry fails the launch before anything is spawned; a `zero_or_more` slot with no entry resolves to the empty set, and so does a `zero_or_one` slot the deployment declared vacant.
+2. **The value's shape must match the slot's cardinality.** A scalar slot (`one` or `zero_or_one`) takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi slot and are a hard error on a scalar slot.
 3. **Every target must satisfy the slot, checked per bound instance.** A target `instance_id` that deploys a different node than the slot expects (or one that does not implement the requested contract) is rejected.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
 5. **Bindings are stamped with the producer's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps each target producer instance's resolved `core_node` into the binding (equal to the launching daemon's only in the single-machine case), preserving application declaration order, so generated calls address exactly the selected producer and never match on `instance_id` alone.

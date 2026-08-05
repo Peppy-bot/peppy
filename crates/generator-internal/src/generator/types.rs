@@ -154,10 +154,10 @@ pub fn ensure_no_peer_collision(
 /// call sites splice processor bound-set lookups by `link_id`.
 /// `cardinality` picks the generated accessor shape so the launch-validated
 /// guarantee lives in the type: a `one` slot exposes `bound_producer()`
-/// returning the sole `&ProducerRef`, `one_or_more` exposes
-/// `bound_producers()` returning a never-empty `NonEmptyProducers`, and
-/// `zero_or_more` exposes `bound_producers()` returning a plain, possibly
-/// empty slice. Everything else is uniform across cardinalities: topics
+/// returning the sole `&ProducerRef`, `zero_or_one` the same name returning an
+/// `Option`, `one_or_more` exposes `bound_producers()` returning a never-empty
+/// `NonEmptyProducers`, and `zero_or_more` exposes `bound_producers()`
+/// returning a plain, possibly empty slice. Everything else is uniform across cardinalities: topics
 /// subscribe to the complete set, and services / actions take one
 /// explicit, membership-checked member of it.
 ///
@@ -224,14 +224,16 @@ impl DependencyContext {
     /// cardinality while the explicit `target` parameter stays uniform.
     pub fn target_selection_doc(&self) -> &'static [&'static str] {
         match self.cardinality {
-            // `zero_or_one` sizes an observed member set, and `depends_on`
-            // producer entries reject it at parse, so a producer slot never
-            // reaches here carrying it.
-            Cardinality::ZeroOrOne => unreachable!("{PRODUCER_ZERO_OR_ONE}"),
             Cardinality::One => &[
                 "This slot declares cardinality `one`: `target` is its sole bound",
                 "producer, returned by `bound_producer()`; the explicit parameter",
                 "keeps call sites uniform across cardinalities.",
+            ],
+            Cardinality::ZeroOrOne => &[
+                "This slot declares cardinality `zero_or_one`: `target` is the",
+                "producer `bound_producer()` returns while the slot is bound. A",
+                "vacant slot has no target at all, so the caller branches on that",
+                "accessor before it has a call to make.",
             ],
             Cardinality::OneOrMore => &[
                 "This slot declares cardinality `one_or_more`: `target` is a",
@@ -257,7 +259,6 @@ impl DependencyContext {
     /// `[0]` for Python).
     pub fn bound_producers_doc(&self) -> &'static [&'static str] {
         match self.cardinality {
-            Cardinality::ZeroOrOne => unreachable!("{PRODUCER_ZERO_OR_ONE}"),
             Cardinality::One => &[
                 "The producer bound to this module's slot.",
                 "The binding is fixed when the node starts (no live discovery; a",
@@ -265,6 +266,15 @@ impl DependencyContext {
                 "generated module referencing this slot. This slot declares",
                 "cardinality `one`: launch validation resolved exactly one producer,",
                 "so the accessor is singular and infallible.",
+            ],
+            Cardinality::ZeroOrOne => &[
+                "The producer bound to this module's slot, if any.",
+                "The binding is fixed when the node starts (no live discovery; a",
+                "producer disconnecting never rebinds it) and shared by every",
+                "generated module referencing this slot.",
+                "This slot declares cardinality `zero_or_one`: launch validation",
+                "resolved at most one producer, and nothing is bound wherever the",
+                "deployment wrote the slot vacant.",
             ],
             Cardinality::OneOrMore => &[
                 "The producer set bound to this module's slot, in declaration order.",
@@ -284,14 +294,6 @@ impl DependencyContext {
         }
     }
 }
-
-/// What a producer slot carrying `zero_or_one` would mean, if the manifest
-/// parser let one exist. It does not: `depends_on.nodes` and
-/// `depends_on.contracts` reject the spelling, so every producer-side match on
-/// [`config::node::Cardinality`] is total over the three variants it can see,
-/// and reaching this message means that bar was removed without its readers.
-pub(crate) const PRODUCER_ZERO_OR_ONE: &str = "`zero_or_one` sizes an observed member set and is rejected on `depends_on.nodes` and \
-     `depends_on.contracts`, so a producer-binding slot cannot carry it";
 
 /// Pre-wrapped doc lines for an observer module's source accessor, the
 /// observation counterpart of [`DependencyContext::bound_producers_doc`] and

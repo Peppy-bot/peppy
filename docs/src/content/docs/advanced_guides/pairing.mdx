@@ -326,7 +326,7 @@ An observer slot carries a [`cardinality`](/advanced_guides/topics/#dependency-c
 | `one_or_more` | an array, `watch: ["arm_1", "arm_2"]` | rejected: it has no empty state, so it takes at least one source |
 | `zero_or_more` | an array, possibly empty | valid, and means the empty set |
 
-Vacancy is only for the `zero_or_one` row, which is the observer counterpart of a participant slot's `optional: true`: the node declaring it is the node saying it runs fine watching nothing. A `one` slot observes exactly one pairing, a `one_or_more` slot has no empty state to write, and a `zero_or_more` slot already writes its empty set as `[]`. Only `zero_or_more` may be omitted, because it is the only one whose absence has no failure mode; every other slot needs an explicit line, which is what keeps a slot you forgot distinguishable from one you emptied on purpose.
+Among observer slots vacancy is only for the `zero_or_one` row, which is the observer counterpart of a participant slot's `optional: true`: the node declaring it is the node saying it runs fine watching nothing. A `one` slot observes exactly one pairing, a `one_or_more` slot has no empty state to write, and a `zero_or_more` slot already writes its empty set as `[]`. A producer-binding slot reads the same key the same way (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Only `zero_or_more` may be omitted, because it is the only one whose absence has no failure mode; every other slot needs an explicit line, which is what keeps a slot you forgot distinguishable from one you emptied on purpose.
 
 On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot.
 
@@ -390,7 +390,7 @@ Pairing and [contract implementation](/advanced_guides/contract_implementation/)
 |---|---|---|
 | Declaration model | The node enumerates what it uses in `interfaces.topics`; the document owns shape and QoS | The node enumerates what it uses in `interfaces`; the document owns shape and QoS |
 | Coverage | Produced side (`emits`) exact per slot, consumed side free | Produced side (`implements`) exact per slot, consumed side free |
-| Cardinality | Exactly 1:1 per slot, exclusive (no `cardinality` key); `optional: true` says the slot may also run with no peer | Declared per slot: exactly one by default, an application-selected set for `one_or_more` / `zero_or_more` |
+| Cardinality | Exactly 1:1 per slot, exclusive (no `cardinality` key); `optional: true` says the slot may also run with no peer | Declared per slot: exactly one by default, at most one for `zero_or_one`, an application-selected set for `one_or_more` / `zero_or_more` |
 | Directionality | Both directions in one contract (two roles) | One direction per contract |
 | Establishment | Declared once on either side (`--link arm@peer`), covering both endpoints, at instance start | Each consumer slot bound to its producer(s) (`--link slot@producer`), at instance start |
 | Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |

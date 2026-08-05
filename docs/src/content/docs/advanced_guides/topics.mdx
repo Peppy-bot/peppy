@@ -5,7 +5,13 @@ sidebar:
   order: 1
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+
+import optionalReceiverRustConfig from '../guides/snippets/rust/optional_receiver/peppy.json5?raw';
+import optionalReceiverRust from '../guides/snippets/rust/optional_receiver/src/main.rs?raw';
+
+import optionalReceiverPythonConfig from '../guides/snippets/python/optional_receiver/peppy.json5?raw';
+import optionalReceiverPython from '../guides/snippets/python/optional_receiver/src/optional_receiver/__main__.py?raw';
 
 Topics implement a **publish-subscribe** communication pattern between nodes.
 A node *emits* a topic to publish messages, and other nodes *consume* that topic to receive them.
@@ -398,6 +404,11 @@ Every generated consumed topic, service, and action module also exposes a bound-
 // replacing bound_producers() for that slot.
 pub fn bound_producer(node_runner: &crate::NodeRunner) -> &ProducerRef;
 
+// Generated for every consumed module of a `cardinality: "zero_or_one"` slot:
+// the same singular name returning an Option, `None` wherever the deployment
+// wrote the slot vacant.
+pub fn bound_producer(node_runner: &crate::NodeRunner) -> Option<&ProducerRef>;
+
 // Generated for every consumed module of a `cardinality: "one_or_more"` slot:
 // a never-empty ordered set whose first() is infallible.
 pub fn bound_producers(node_runner: &crate::NodeRunner) -> NonEmptyProducers<'_>;
@@ -408,7 +419,7 @@ pub fn bound_producers(node_runner: &crate::NodeRunner) -> NonEmptyProducers<'_>
 pub fn bound_producers(node_runner: &crate::NodeRunner) -> &[ProducerRef];
 ```
 
-Python mirrors the split by name and annotation: a `one` slot generates `bound_producer(node_runner) -> peppylib.ProducerRef`, and the multi cardinalities generate `bound_producers(node_runner) -> List[peppylib.ProducerRef]` (documented never-empty for `one_or_more`).
+Python mirrors the split by name and annotation: a `one` slot generates `bound_producer(node_runner) -> peppylib.ProducerRef`, a `zero_or_one` slot `bound_producer(node_runner) -> Optional[peppylib.ProducerRef]`, and the multi cardinalities generate `bound_producers(node_runner) -> List[peppylib.ProducerRef]` (documented never-empty for `one_or_more`).
 
 Every module sharing the slot's `link_id` returns the same set in the same order. The set is fixed when the node starts and is not live discovery: a producer disconnecting does not shrink it, trigger discovery, or cause automatic rebinding. A cardinality change is therefore visible at compile time in the consuming node: the accessor's type changes and every call site that relied on the old guarantee must be revisited. This is intended; a cardinality flip is a semantic change, not a rebinding.
 
@@ -550,8 +561,9 @@ fn main() -> Result<()> {
         // size of the bound set changes.
         // `one`: the subscription covers exactly one producer.
         // `one_or_more`: the merged subscription covers at least one producer.
-        // `zero_or_more`: the slot may be empty; the subscription then
-        // yields nothing until the node stops.
+        // `zero_or_one` written vacant, or `zero_or_more` bound to nothing:
+        // the slot is empty; the subscription then yields nothing until the
+        // node stops.
         let mut subscription = video_stream::subscribe(&node_runner).await?;
 
         let mut frames_per_camera: HashMap<ProducerRef, u64> = HashMap::new();
@@ -614,11 +626,11 @@ depends_on: {
 | Cardinality     | Valid unique targets | Slot kinds it is valid on | Omitted binding |
 | --------------- | -------------------- | ------------------------- | --------------- |
 | `one` / omitted | exactly 1            | producer, observer        | error           |
-| `zero_or_one`   | 0 or 1               | observer                  | error: link it, or write it `{ vacant: "<why>" }` |
+| `zero_or_one`   | 0 or 1               | producer, observer        | error: link it, or write it `{ vacant: "<why>" }` |
 | `one_or_more`   | 1 or more            | producer, observer        | error           |
 | `zero_or_more`  | 0 or more            | producer, observer        | empty set       |
 
-`zero_or_one` names an observed member set and is rejected on `depends_on.nodes` and `depends_on.contracts`: a producer slot binds its set once, when the node starts, and the accessor generated from the key is typed on that. It is the one observer cardinality a [vacancy](/guides/launch_files/#links-optional) is legal on, and its empty state is written rather than omitted, so a slot nobody mentioned stays an error.
+`zero_or_one` is the one cardinality a [vacancy](/guides/launch_files/#links-optional) is legal on, on a producer slot and an observer slot alike: its empty state is written rather than omitted, so a slot nobody mentioned stays an error and "this rig deliberately has none" stays distinguishable from "whoever wrote this launcher forgot it".
 
 The binding value's shape mirrors the slot's cardinality. A scalar slot (`one` or `zero_or_one`) takes a scalar string only, exactly as above. A `one_or_more` or `zero_or_more` slot takes an **array** of instance ids; for `zero_or_more` the empty array `[]` is a valid definition, equivalent to omitting the binding entirely:
 
@@ -628,15 +640,53 @@ links: {
 }
 ```
 
-Any other combination is an error: an array on a scalar slot (single-element arrays included), a scalar on a multi slot, and an empty array on a `one_or_more` slot (cardinality unmet). The CLI mirrors the array form by repetition, which accumulates on a multi slot and stays a hard error on a scalar slot; the empty set has no flag spelling, omission is it:
+Any other combination is an error: an array on a scalar slot (single-element arrays included), a scalar on a multi slot, and an empty array on a `one_or_more` slot (cardinality unmet). The CLI mirrors the array form by repetition, which accumulates on a multi slot and stays a hard error on a scalar slot. A `zero_or_more` slot's empty set has no flag spelling, omission is it; a `zero_or_one` slot's is `--vacant-link 'SLOT=<why>'`, because that one has to be said out loud:
 
 ```sh
 peppy node run --link camera@front_camera --link camera@rear_camera web_video_stream:v1
 ```
 
-Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances. On a producer-binding slot it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. An observer slot differs in exactly that respect: its member set is delivered live by the daemon rather than frozen at startup, so the planner checks the count and the node reads whatever the plan currently says. `depends_on.pairings` entries have no cardinality at all (a pairing is strictly 1:1, so there is no set to size; a `cardinality` key on a participant entry is a manifest error). A participant slot that may run with no peer says so with `optional: true` instead, and `zero_or_one` is its observer counterpart: both are the node's own statement that a deployment may leave the slot empty, and neither is valid on a producer slot, whose bound set is fixed at startup.
+Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances. On a producer-binding slot it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. An observer slot differs in exactly that respect: its member set is delivered live by the daemon rather than frozen at startup, so the planner checks the count and the node reads whatever the plan currently says. `depends_on.pairings` entries have no cardinality at all (a pairing is strictly 1:1, so there is no set to size; a `cardinality` key on a participant entry is a manifest error). A participant slot that may run with no peer says so with `optional: true` instead, and `zero_or_one` says the same thing for the two slot kinds that carry a `cardinality`: each is the node's own statement that a deployment may leave the slot empty, and the deployment still has to write down that it did.
 
-The consuming API is uniform across cardinalities in everything except the [bound-producer accessor](#receiving-messages): topics subscribe to the slot's complete bound set and yield the producing `ProducerRef` with every message, and [services](/advanced_guides/services/) and [actions](/advanced_guides/actions/) require the caller to select one explicit, membership-checked member of that set, whatever its size. The accessor itself is cardinality-typed: `one` generates the singular, infallible `bound_producer()`, `one_or_more` generates `bound_producers()` returning a never-empty set whose `first()` needs no unwrap, and `zero_or_more` generates `bound_producers()` returning a possibly empty slice, so the empty branch is forced by the type. For a `zero_or_more` slot bound to nothing, the subscription simply yields nothing until the node stops.
+The consuming API is uniform across cardinalities in everything except the [bound-producer accessor](#receiving-messages): topics subscribe to the slot's complete bound set and yield the producing `ProducerRef` with every message, and [services](/advanced_guides/services/) and [actions](/advanced_guides/actions/) require the caller to select one explicit, membership-checked member of that set, whatever its size. The accessor itself is cardinality-typed: `one` generates the singular, infallible `bound_producer()`, `zero_or_one` generates `bound_producer()` returning an `Option`, `one_or_more` generates `bound_producers()` returning a never-empty set whose `first()` needs no unwrap, and `zero_or_more` generates `bound_producers()` returning a possibly empty slice, so the empty branch is forced by the type. For an empty slot (a vacant `zero_or_one`, or a `zero_or_more` bound to nothing) the subscription simply yields nothing until the node stops.
+
+#### Worked example: a slot that may bind nothing
+
+A receiver whose `greeter` slot is declared `zero_or_one`: a rig that ships with a greeter links one, and a rig that ships without one says so. The manifest is the whole declaration:
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={optionalReceiverPythonConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={optionalReceiverRustConfig} lang="json5" title="peppy.json5" />
+  </TabItem>
+</Tabs>
+
+The generated accessor is scalar and answers with the two cases the cardinality allows, so the node reads its own wiring without a set to interpret:
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={optionalReceiverPython} lang="python" title="src/optional_receiver/__main__.py" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={optionalReceiverRust} lang="rust" title="src/main.rs" />
+  </TabItem>
+</Tabs>
+
+Both states are deployments of the same node. Bound:
+
+```sh
+peppy node run --link greeter@hello_world_param_1 optional_receiver:v1
+```
+
+Empty, with the reason recorded on the instance:
+
+```sh
+peppy node run --vacant-link 'greeter=this rig ships without a greeter' optional_receiver:v1
+```
+
+Leaving `greeter` out of the run entirely stays an error, which is what keeps the second command distinguishable from a launcher that forgot the slot.
 
 ### Per-message routing
 

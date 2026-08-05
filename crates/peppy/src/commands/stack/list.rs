@@ -572,7 +572,8 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 /// producer set in declaration order, each member rendered as
 /// `instance_id@core_node` (the full wire address every binding carries)
 /// and joined with commas. An empty set (a `zero_or_more` slot bound to
-/// nothing) renders as `(empty set)` so it never reads as a missing row.
+/// nothing, or a `zero_or_one` slot the deployment declared vacant) renders as
+/// `(empty set)` so it never reads as a missing row.
 fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
     if bound.is_empty() {
         return "(empty set)".to_string();

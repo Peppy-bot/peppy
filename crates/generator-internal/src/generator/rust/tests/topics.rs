@@ -460,28 +460,45 @@ fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
     );
 }
 
-/// The bound-producer accessor is cardinality-typed: a `one_or_more` slot
-/// generates `bound_producers()` returning the never-empty
-/// `NonEmptyProducers` view (infallible `first()`), and a `zero_or_more`
-/// slot the same name returning a plain, possibly empty slice. The
-/// accessor emission is shared by every consumed interface kind, so this
-/// topic-module test pins both multi shapes; `consumed_topic` below pins
-/// the singular `one` shape.
+/// The bound-producer accessor is cardinality-typed, name and return type
+/// together: a `zero_or_one` slot generates the singular `bound_producer()`
+/// returning an `Option`, a `one_or_more` slot `bound_producers()` returning
+/// the never-empty `NonEmptyProducers` view (infallible `first()`), and a
+/// `zero_or_more` slot the same plural name returning a plain, possibly empty
+/// slice. The accessor emission is shared by every consumed interface kind,
+/// so this topic-module test pins those three shapes; `consumed_topic` below
+/// pins the singular `one` shape.
 #[test]
 fn consumed_topic_accessor_is_cardinality_typed() {
     let cases = [
         (
+            config::node::Cardinality::ZeroOrOne,
+            "pub fn bound_producer(",
+            ") -> Option<&peppylib::messaging::ProducerRef>",
+            ".optional_bound_producer(\"cam_left\")",
+            "cardinality `zero_or_one`",
+            "pub fn bound_producers(",
+        ),
+        (
             config::node::Cardinality::OneOrMore,
+            "pub fn bound_producers(",
             ") -> peppylib::messaging::NonEmptyProducers<'_>",
             ".non_empty_bound_producers(\"cam_left\")",
+            "cardinality `one_or_more`",
+            "pub fn bound_producer(",
         ),
         (
             config::node::Cardinality::ZeroOrMore,
+            "pub fn bound_producers(",
             ") -> &[peppylib::messaging::ProducerRef]",
             ".bound_producers(\"cam_left\")",
+            "cardinality `zero_or_more`",
+            "pub fn bound_producer(",
         ),
     ];
-    for (cardinality, expected_signature, expected_splice) in cases {
+    for (cardinality, expected_fn, expected_signature, expected_splice, expected_doc, absent_fn) in
+        cases
+    {
         let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
         let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -499,14 +516,15 @@ fn consumed_topic_accessor_is_cardinality_typed() {
         assert_contains_all(
             &rendered,
             &[
-                "pub fn bound_producers(",
+                expected_fn,
                 expected_signature,
                 expected_splice,
+                expected_doc,
             ],
         );
         assert!(
-            !rendered.contains("pub fn bound_producer("),
-            "a {cardinality:?} slot must expose only the plural accessor; got: {rendered}"
+            !rendered.contains(absent_fn),
+            "a {cardinality:?} slot must expose only `{expected_fn}`; got: {rendered}"
         );
     }
 }

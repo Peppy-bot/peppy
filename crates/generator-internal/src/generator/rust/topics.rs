@@ -574,7 +574,7 @@ pub fn build_consumed_topic_subscription(
 
     let from_target_expr = consumed_to_target_expression(dependency);
     let bound_producers_expr = consumed_bound_producers_expression(dependency);
-    let bound_producers_fn = build_bound_producers_fn(dependency);
+    let bound_producer_accessor_fn = build_bound_producer_accessor_fn(dependency);
 
     let subscription_tokens = build_subscription_struct(
         quote! {
@@ -594,7 +594,8 @@ pub fn build_consumed_topic_subscription(
             /// node is shutting down and no queued message remains, and `Err(..)`
             /// if a received payload fails to deserialize; a decode error does not
             /// tear down the subscription or shrink the bound set. On an empty
-            /// `zero_or_more` set this pends until shutdown, then returns
+            /// set (a `zero_or_more` slot bound to nothing, or a vacant
+            /// `zero_or_one` slot) this pends until shutdown, then returns
             /// `Ok(None)`.
         },
         quote! {
@@ -607,7 +608,7 @@ pub fn build_consumed_topic_subscription(
     );
 
     Ok(quote! {
-        #bound_producers_fn
+        #bound_producer_accessor_fn
 
         #subscription_tokens
 
@@ -671,6 +672,7 @@ pub fn consumed_bound_producers_expression(
 /// and action module exposes. Its name and return type encode the slot's
 /// launch-validated cardinality instead of restating it in comments: `one`
 /// generates `bound_producer()` returning the sole producer directly,
+/// `zero_or_one` generates `bound_producer()` returning an `Option`,
 /// `one_or_more` generates `bound_producers()` returning a never-empty
 /// `NonEmptyProducers` whose `first()` is infallible, and `zero_or_more`
 /// generates `bound_producers()` returning a plain, possibly empty slice,
@@ -684,14 +686,11 @@ pub fn consumed_bound_producers_expression(
 /// here.
 ///
 /// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
-pub fn build_bound_producers_fn(
+pub fn build_bound_producer_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
     let (api_note, accessor) = match dependency.cardinality {
-        Cardinality::ZeroOrOne => {
-            unreachable!("{}", crate::generator::types::PRODUCER_ZERO_OR_ONE)
-        }
         Cardinality::One => (
             None,
             quote! {
@@ -699,6 +698,16 @@ pub fn build_bound_producers_fn(
                     node_runner: &crate::NodeRunner,
                 ) -> &peppylib::messaging::ProducerRef {
                     node_runner.processor().sole_bound_producer(#link_id_literal)
+                }
+            },
+        ),
+        Cardinality::ZeroOrOne => (
+            None,
+            quote! {
+                pub fn bound_producer(
+                    node_runner: &crate::NodeRunner,
+                ) -> Option<&peppylib::messaging::ProducerRef> {
+                    node_runner.processor().optional_bound_producer(#link_id_literal)
                 }
             },
         ),

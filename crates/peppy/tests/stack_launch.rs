@@ -2446,6 +2446,256 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     );
 }
 
+/// A `zero_or_one` producer slot through both of its states in one launch: two
+/// instances of one consumer whose `depends_on.contracts` slot is declared
+/// `cardinality: "zero_or_one"`, one linked to the implementing producer and
+/// one declared `{ vacant: "<why>" }`. Both reach Running, and each instance's
+/// own boot config says which state it is in: the bound instance carries the
+/// one-member set, the vacant one an explicit empty set. The vacancy reason is
+/// a launcher artifact and rides nowhere near the goal, which is exactly why
+/// the empty set has to be in `slot_bindings` rather than absent from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
+    // Instances must stay in the stack until the assertions below have read
+    // their dumps; a fixed `sleep` would make that a race against machine load.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let contract_repo_dir = tempfile::tempdir().expect("failed to create temp contract repo");
+    let bound_dump = dump_dir.path().join("bound.json5");
+    let vacant_dump = dump_dir.path().join("vacant.json5");
+
+    let contract_name = "depth_camera";
+    let contract_tag = "v1";
+    let producer_name = "depth_camera_driver";
+    let consumer_name = "wrist_consumer";
+    let node_tag = "v1";
+    let producer_instance_id = "wrist_cam_1";
+    let bound_instance_id = "cons_with_camera";
+    let vacant_instance_id = "cons_without_camera";
+    let link_id = "wrist_camera";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    write_contract_v1_doc(
+        &contract_repo_dir.path().join("depth_camera/peppy.json5"),
+        contract_name,
+        contract_tag,
+    );
+    super::common::seed_docs_repo(&serve, &ctx, contract_repo_dir.path());
+
+    let producer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        instances.keep_alive_script(),
+    ];
+    let producer_implements =
+        format!(r#"[{{ name: "{contract_name}", tag: "{contract_tag}", link_id: "cam_out" }}]"#);
+    let producer_interfaces = r#"{
+            topics: { emits: [{ link_id: "cam_out", name: "video_stream" }] }
+        }"#;
+    let producer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        producer_name,
+        node_tag,
+        &git_hash,
+        &producer_run_cmd,
+        None,
+        Some(&producer_implements),
+        Some(producer_interfaces),
+    );
+
+    // One consumer node, spawned twice. Each instance dumps the boot config it
+    // was handed to the path its own `env_vars` names, so the two runtime views
+    // are read from the instances themselves rather than from the planner.
+    let consumer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"$NODE_DUMP_PATH\" && {}",
+            instances.keep_alive_script(),
+        ),
+    ];
+    let consumer_depends_on = format!(
+        r#"{{
+            contracts: [{{
+                name: "{contract_name}",
+                tag: "{contract_tag}",
+                link_id: "{link_id}",
+                cardinality: "zero_or_one"
+            }}]
+        }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &consumer_run_cmd,
+        Some(&consumer_depends_on),
+        None,
+        None,
+    );
+
+    // The dummy `sh` subprocesses expose none of the framework services, so
+    // impersonate them for all three instances.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let mut service_guards = Vec::new();
+    for (node_name, instance_id) in [
+        (producer_name, producer_instance_id),
+        (consumer_name, bound_instance_id),
+        (consumer_name, vacant_instance_id),
+    ] {
+        let ready = listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("ready service should start");
+        let health = listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("health service should start");
+        let (shutdown, _) = listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("shutdown service should start");
+        service_guards.push((ready, health, shutdown));
+    }
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ name: "{producer_name}:{node_tag}" }},
+                    instances: [{{ instance_id: "{producer_instance_id}" }}]
+                }},
+                {{
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
+                    instances: [
+                        {{
+                            instance_id: "{bound_instance_id}",
+                            env_vars: {{ NODE_DUMP_PATH: "{bound_dump_path}" }},
+                            links: {{ {link_id}: "{producer_instance_id}" }}
+                        }},
+                        {{
+                            instance_id: "{vacant_instance_id}",
+                            env_vars: {{ NODE_DUMP_PATH: "{vacant_dump_path}" }},
+                            links: {{ {link_id}: {{ vacant: "this rig ships without a wrist camera" }} }}
+                        }}
+                    ]
+                }}
+            ]
+        }}"#,
+        bound_dump_path = bound_dump.display(),
+        vacant_dump_path = vacant_dump.display(),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    // After the refresh above: refresh rewrites nodes.json5, so these
+    // registrations must come later to survive.
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (producer_name, node_tag, &producer_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
+
+    StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("a launch mixing a bound and a vacant zero_or_one slot should succeed");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut bound_config: Option<config::runtime::RuntimeConfig> = None;
+    let mut vacant_config: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        for (dump, slot) in [
+            (&bound_dump, &mut bound_config),
+            (&vacant_dump, &mut vacant_config),
+        ] {
+            if slot.is_none()
+                && let Ok(content) = fs::read_to_string(dump)
+                && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+            {
+                *slot = Some(cfg);
+            }
+        }
+        if bound_config.is_some() && vacant_config.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    drop(instances);
+    for instance_id in [bound_instance_id, vacant_instance_id, producer_instance_id] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+
+    let bound_config = bound_config.unwrap_or_else(|| {
+        panic!(
+            "bound instance runtime config dump never appeared / parsed at {}",
+            bound_dump.display()
+        )
+    });
+    assert_eq!(
+        bound_config.node_instance.slot_bindings.get(link_id),
+        Some(&config::runtime::BoundProducers::from(
+            config::runtime::ProducerRef::new(&core_node_name, producer_instance_id),
+        )),
+        "the linked instance's `{link_id}` slot must carry the implementing producer's full \
+         wire address",
+    );
+
+    let vacant_config = vacant_config.unwrap_or_else(|| {
+        panic!(
+            "vacant instance runtime config dump never appeared / parsed at {}",
+            vacant_dump.display()
+        )
+    });
+    assert_eq!(
+        vacant_config.node_instance.slot_bindings.get(link_id),
+        Some(&config::runtime::BoundProducers::default()),
+        "the vacant instance's `{link_id}` slot must carry an EXPLICIT empty set: an absent \
+         entry is what node startup rejects, and it is what would make a forgotten slot \
+         indistinguishable from an emptied one",
+    );
+}
+
 /// Every declared `depends_on` slot must be bound: a launcher that omits a
 /// binding entry for a declared slot is rejected at the validation step —
 /// before anything is added or spawned — with an error naming the instance
