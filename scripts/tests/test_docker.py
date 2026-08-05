@@ -45,9 +45,9 @@ def _write_docker_config(tmp_path: Path, username: str, token: str = "tok") -> P
 
 
 def test_get_docker_hub_username_success(tmp_path: Path) -> None:
-    home = _write_docker_config(tmp_path, "tuatini")
+    home = _write_docker_config(tmp_path, "peppybot")
     with patch("functions.docker.Path.home", return_value=home):
-        assert _get_docker_hub_username() == "tuatini"
+        assert _get_docker_hub_username() == "peppybot"
 
 
 def test_get_docker_hub_username_no_config(tmp_path: Path) -> None:
@@ -81,8 +81,8 @@ def test_get_docker_hub_username_creds_store_fallback(tmp_path: Path) -> None:
     }
     (docker_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
     with patch("functions.docker.Path.home", return_value=tmp_path), \
-         patch("functions.docker._get_username_from_cred_store", return_value="tuatini") as mock_helper:
-        assert _get_docker_hub_username() == "tuatini"
+         patch("functions.docker._get_username_from_cred_store", return_value="peppybot") as mock_helper:
+        assert _get_docker_hub_username() == "peppybot"
     mock_helper.assert_called_once_with("osxkeychain")
 
 
@@ -103,9 +103,9 @@ def test_get_username_from_cred_store_success() -> None:
     with patch("functions.docker.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=json.dumps({"Username": "tuatini", "Secret": "tok"}),
+            stdout=json.dumps({"Username": "peppybot", "Secret": "tok"}),
         )
-        assert _get_username_from_cred_store("osxkeychain") == "tuatini"
+        assert _get_username_from_cred_store("osxkeychain") == "peppybot"
 
     cmd = mock_run.call_args[0][0]
     assert cmd == ["docker-credential-osxkeychain", "get"]

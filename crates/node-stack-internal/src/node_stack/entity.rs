@@ -469,7 +469,15 @@ impl NodeEntity {
     /// calling `NodeStack::remove_config`.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
-        let (node_name, node_tag, config_path, container_opt, build_cmd, build_generation) = {
+        let (
+            node_name,
+            node_tag,
+            config_path,
+            container_opt,
+            build_cmd,
+            language,
+            build_generation,
+        ) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_buildable() {
                 return Err(Error::InvalidStageTransition {
@@ -489,6 +497,7 @@ impl NodeEntity {
                 config_path.clone(),
                 guard.config.execution.container.clone(),
                 guard.config.execution.build_cmd.clone(),
+                guard.config.execution.language,
                 guard.generation,
             );
             // Atomic transition Added → Building under the same write lock as
@@ -524,6 +533,7 @@ impl NodeEntity {
                     def_file: &container.def_file,
                     apptainer_build_extra_args,
                     lima_shell_extra_args,
+                    language,
                     feedback_tx: ctx.feedback_tx,
                     log_file: Arc::clone(&ctx.log_file),
                     peppy_dirs: ctx.peppy_dirs,

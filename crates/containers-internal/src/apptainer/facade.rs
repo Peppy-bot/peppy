@@ -633,7 +633,7 @@ impl Apptainer {
     }
 
     pub fn version(&self) -> Result<String> {
-        let mut cmd = self.command(&["--version"], &[], None, None)?;
+        let mut cmd = self.command(&["--version"], &[], None, None, &[])?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let output = cmd.output().map_err(Error::from)?;
         if !output.status.success() {
@@ -861,6 +861,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
             working_dir: None,
@@ -880,6 +881,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
             working_dir: None,
@@ -898,6 +900,7 @@ impl Apptainer {
             },
             flags: Vec::new(),
             bind_mounts: Vec::new(),
+            apptainer_env: Vec::new(),
             lima_shell_extra_args: Vec::new(),
             cancel_pgid_path: None,
             working_dir: None,
@@ -1011,6 +1014,7 @@ impl Apptainer {
         lima_shell_extra_args: &[String],
         guest_pgid_file: Option<&Path>,
         working_dir: Option<&Path>,
+        apptainer_env: &[(String, String)],
     ) -> Result<Command> {
         match &self.backend {
             Backend::Native {
@@ -1019,6 +1023,9 @@ impl Apptainer {
             } => {
                 let mut cmd = Command::new(apptainer_bin);
                 cmd.env(APPTAINER_TMPDIR_ENV, tmp_dir);
+                for (key, value) in apptainer_env {
+                    cmd.env(format!("APPTAINERENV_{key}"), value);
+                }
                 cmd.args(args);
                 if let Some(dir) = working_dir {
                     cmd.current_dir(dir);
@@ -1031,6 +1038,27 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
+                // Host process environment does not cross `limactl shell`, so
+                // APPTAINERENV_ variables ride the guest argv instead: the
+                // guest `env` utility sets them and execs apptainer. Every
+                // wrapper below passes its tail through as positional
+                // parameters, so the pairs are never re-tokenized.
+                let (guest_bin, guest_args_owned): (&Path, Vec<String>) =
+                    if apptainer_env.is_empty() {
+                        (apptainer_bin, args.iter().map(|s| s.to_string()).collect())
+                    } else {
+                        let env_argv = apptainer_env
+                            .iter()
+                            .map(|(key, value)| format!("APPTAINERENV_{key}={value}"))
+                            .chain(std::iter::once(
+                                apptainer_bin.to_string_lossy().into_owned(),
+                            ))
+                            .chain(args.iter().map(|s| s.to_string()))
+                            .collect();
+                        (Path::new("env"), env_argv)
+                    };
+                let guest_args: Vec<&str> = guest_args_owned.iter().map(|s| s.as_str()).collect();
+
                 let guest_workdir = working_dir
                     .map(|dir| self.translate_path(dir))
                     .transpose()?;
@@ -1042,18 +1070,22 @@ impl Apptainer {
                 match (guest_pgid_file, guest_workdir.as_deref()) {
                     (Some(pgid_file), workdir) => {
                         cmd.args(lima::lima_guest_pgid_argv(
-                            apptainer_bin,
-                            args,
+                            guest_bin,
+                            &guest_args,
                             pgid_file,
                             workdir,
                         ));
                     }
                     (None, Some(workdir)) => {
-                        cmd.args(lima::lima_guest_workdir_argv(apptainer_bin, args, workdir));
+                        cmd.args(lima::lima_guest_workdir_argv(
+                            guest_bin,
+                            &guest_args,
+                            workdir,
+                        ));
                     }
                     (None, None) => {
-                        cmd.arg(apptainer_bin);
-                        cmd.args(args);
+                        cmd.arg(guest_bin);
+                        cmd.args(guest_args);
                     }
                 }
                 Ok(cmd)
@@ -1262,6 +1294,9 @@ pub struct ApptainerCommand<'a> {
     kind: CommandKind,
     flags: Vec<String>,
     bind_mounts: Vec<BindMount>,
+    /// Variables forwarded into the container via the `APPTAINERENV_` prefix.
+    /// See [`ApptainerCommand::apptainer_env`].
+    apptainer_env: Vec<(String, String)>,
     lima_shell_extra_args: Vec<String>,
     /// When set, run the guest command (Lima only) as a process-group leader that
     /// records its PGID to this guest-native path, so
@@ -1299,6 +1334,20 @@ impl<'a> ApptainerCommand<'a> {
     pub fn env(mut self, key: &str, value: &str) -> Self {
         self.flags.push("--env".to_string());
         self.flags.push(format!("{key}={value}"));
+        self
+    }
+
+    /// Forward an environment variable into the container by setting
+    /// `APPTAINERENV_{key}` in the apptainer process environment.
+    ///
+    /// Unlike [`env`](Self::env), this reaches a build's `%post` scriptlet,
+    /// which `apptainer build` offers no `--env` flag for. The native backend
+    /// sets it on the spawned process; the Lima backend prefixes the guest
+    /// command with `env APPTAINERENV_{key}={value}`, since host process
+    /// environment does not cross `limactl shell`.
+    pub fn apptainer_env(mut self, key: &str, value: &str) -> Self {
+        self.apptainer_env
+            .push((key.to_string(), value.to_string()));
         self
     }
 
@@ -1428,6 +1477,7 @@ impl<'a> ApptainerCommand<'a> {
             &self.lima_shell_extra_args,
             self.cancel_pgid_path.as_deref(),
             self.working_dir.as_deref(),
+            &self.apptainer_env,
         )
     }
 

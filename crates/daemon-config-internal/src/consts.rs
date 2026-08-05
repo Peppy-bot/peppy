@@ -14,10 +14,10 @@ pub const REPOSITORY_INDEX_FILE: &str = "peppy_repository.json5";
 pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 
 /// Default base container image for Rust nodes (Ubuntu 24.04 + Rust via rustup, build-essential).
-pub const DEFAULT_RUST_BASE_IMAGE: &str = "tuatini/peppy-rust-cargo-base:latest";
+pub const DEFAULT_RUST_BASE_IMAGE: &str = "peppybot/rust-cargo-base:latest";
 
 /// Default base container image for Python nodes (Ubuntu 24.04 + Python 3, uv).
-pub const DEFAULT_PYTHON_BASE_IMAGE: &str = "tuatini/peppy-python-uv-base:latest";
+pub const DEFAULT_PYTHON_BASE_IMAGE: &str = "peppybot/python-uv-base:latest";
 
 /// Default base container image for lightweight test containers (Google mirror, CI-friendly).
 pub const DEFAULT_ALPINE_BASE_IMAGE: &str = "mirror.gcr.io/library/alpine:3.20";
@@ -179,6 +179,12 @@ impl PeppyDirs {
     /// Cache directory for repo refresh results and other cached data.
     pub fn cache_dir(&self) -> PathBuf {
         self.root.join("cache")
+    }
+
+    /// Shared build cache bind mounted into Rust container builds
+    /// (cargo registry and sccache artifacts).
+    pub fn container_build_cache_dir(&self) -> PathBuf {
+        self.cache_dir().join("container_build")
     }
 
     /// Persistent Git checkouts shared across `node add` batches.

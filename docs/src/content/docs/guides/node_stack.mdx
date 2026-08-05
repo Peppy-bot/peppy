@@ -60,7 +60,7 @@ The format is `<node_name>:<tag>` for a node that is already part of the node st
     :::
 
     :::note
-    For faster Rust builds, install [sccache](https://github.com/mozilla/sccache#installation). When Peppy detects `sccache` on your system PATH and you have not set `RUSTC_WRAPPER` yourself, it automatically sets `RUSTC_WRAPPER=sccache` for Rust node builds, caching compilation artifacts across runs.
+    For faster Rust builds, install [sccache](https://github.com/mozilla/sccache#installation). When Peppy detects `sccache` on your system PATH and you have not set `RUSTC_WRAPPER` yourself, it automatically sets `RUSTC_WRAPPER=sccache` for process-node builds. Container builds on the peppy base images cache the cargo registry and sccache artifacts automatically, no installation needed; see [Build caching](/advanced_guides/containers/#build-caching).
     :::
   </TabItem>
 </Tabs>
