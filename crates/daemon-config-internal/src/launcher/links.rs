@@ -20,7 +20,10 @@
 //! full `depends_on` (all three families), so callers build no extra item type.
 
 use super::types::Placements;
-use crate::error::{LinkUnknownSlot, ParsingError, VacancyRefusal};
+use crate::error::{
+    LinkUnknownSlot, OBSERVER_EMPTIABLE_KEY, PARTICIPANT_EMPTIABLE_KEY, ParsingError,
+    VacancyRefusal,
+};
 use config::node::{Cardinality, DependsOn};
 use std::collections::BTreeMap;
 
@@ -143,7 +146,7 @@ impl LinkSlotKind {
     fn refuse_vacancy(self) -> Option<VacancyRefusal> {
         let multi_slot_empty_set = || {
             Some(VacancyRefusal::SpelledDifferently {
-                empty_spelling: "an empty array `[]`, or omitting the key entirely".to_string(),
+                empty_spelling: "an empty array `[]`, or omitting the key entirely",
             })
         };
         match self {
@@ -151,28 +154,23 @@ impl LinkSlotKind {
             | LinkSlotKind::Observer(Cardinality::ZeroOrOne) => None,
             LinkSlotKind::Participant { optional: false } => {
                 Some(VacancyRefusal::ManifestRequires {
-                    declare_optional: "`optional: true` on its `depends_on.pairings` entry"
-                        .to_string(),
+                    declare_optional: PARTICIPANT_EMPTIABLE_KEY,
                 })
             }
             LinkSlotKind::Observer(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
-                declare_optional: "`cardinality: \"zero_or_one\"` on its \
-                                   `depends_on.pairing_observers` entry"
-                    .to_string(),
+                declare_optional: OBSERVER_EMPTIABLE_KEY,
             }),
             LinkSlotKind::Observer(Cardinality::ZeroOrMore)
             | LinkSlotKind::Binding(Cardinality::ZeroOrMore) => multi_slot_empty_set(),
             LinkSlotKind::Observer(Cardinality::OneOrMore) => Some(VacancyRefusal::NoEmptyState {
                 requirement: "at least one source, or `cardinality: \"zero_or_more\"` on its \
-                              `depends_on.pairing_observers` entry"
-                    .to_string(),
+                              `depends_on.pairing_observers` entry",
             }),
             LinkSlotKind::Binding(
                 Cardinality::One | Cardinality::ZeroOrOne | Cardinality::OneOrMore,
             ) => Some(VacancyRefusal::NoEmptyState {
                 requirement: "a bound producer, because a producer slot binds its set once, when \
-                              the node starts"
-                    .to_string(),
+                              the node starts",
             }),
         }
     }

@@ -318,10 +318,7 @@ impl std::fmt::Display for PairingSlotUncovered {
         } else {
             (
                 "required",
-                emptiable_hint(
-                    link_id,
-                    "`optional: true` on its `depends_on.pairings` entry",
-                ),
+                emptiable_hint(link_id, PARTICIPANT_EMPTIABLE_KEY),
             )
         };
         write!(
@@ -420,10 +417,7 @@ impl std::fmt::Display for ObservationSlotUncovered {
         };
         let fix = match cardinality {
             Cardinality::ZeroOrOne => format!("or {}", vacancy_hint(link_id)),
-            _ => emptiable_hint(
-                link_id,
-                "`cardinality: \"zero_or_one\"` on its `depends_on.pairing_observers` entry",
-            ),
+            _ => emptiable_hint(link_id, OBSERVER_EMPTIABLE_KEY),
         };
         write!(
             f,
@@ -677,23 +671,24 @@ pub enum ParsingError {
 /// Why a slot refuses `{ vacant: "<why>" }`, and what to write instead. The
 /// three arms are three different facts with three different remedies: the node
 /// has not declared the slot emptiable, the slot has no empty state at all, or
-/// it has one and spells it another way.
+/// it has one and spells it another way. Every payload is prose fixed by the
+/// slot's kind, so the arms carry `&'static str`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VacancyRefusal {
     /// The manifest declares the slot required, so no deployment may empty it.
     ManifestRequires {
         /// The manifest key that would make the slot emptiable, named so the
         /// error offers the node-side remedy alongside the deployment-side one.
-        declare_optional: String,
+        declare_optional: &'static str,
     },
     /// The slot cannot be empty in any spelling, so the only remedy is to fill
     /// it (or to declare a cardinality with a floor of zero).
     NoEmptyState {
         /// What the slot takes instead, and why it has no empty state.
-        requirement: String,
+        requirement: &'static str,
     },
     /// The slot may be empty, but writes it another way.
-    SpelledDifferently { empty_spelling: String },
+    SpelledDifferently { empty_spelling: &'static str },
 }
 
 impl std::fmt::Display for VacancyRefusal {
@@ -717,6 +712,17 @@ impl std::fmt::Display for VacancyRefusal {
 /// by [`PairingSlotUncovered`] and [`ObservationSlotUncovered`] so the two
 /// surfaces cannot drift on the spelling of a feature whose whole point is
 /// that there is one spelling.
+/// The manifest key that declares a participant pairing slot emptiable, spelled
+/// once so the uncovered-slot remedy and [`VacancyRefusal::ManifestRequires`]
+/// cannot drift on it.
+pub(crate) const PARTICIPANT_EMPTIABLE_KEY: &str =
+    "`optional: true` on its `depends_on.pairings` entry";
+
+/// The manifest key that declares an observer slot emptiable, shared for the
+/// same reason as [`PARTICIPANT_EMPTIABLE_KEY`].
+pub(crate) const OBSERVER_EMPTIABLE_KEY: &str =
+    "`cardinality: \"zero_or_one\"` on its `depends_on.pairing_observers` entry";
+
 fn vacancy_hint(link_id: &str) -> String {
     format!(
         "leave it empty on purpose (`links: {{ {link_id}: {{ vacant: \"<why>\" }} }}` / \

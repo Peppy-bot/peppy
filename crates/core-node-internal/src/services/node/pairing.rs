@@ -608,17 +608,17 @@ pub fn plan_requested_pairs(
     // observer keys share the namespace), so this boundary, where the goal has
     // already classified pairs, is where a stray key is caught. This restores
     // the old dead-key rejection that the by-validator classification dropped.
-    let participant_slots: std::collections::BTreeSet<&str> = pairing_deps
+    let slot_is_optional: std::collections::BTreeMap<&str, bool> = pairing_deps
         .iter()
-        .map(|dependency| dependency.link_id.as_str())
+        .map(|dependency| (dependency.link_id.as_str(), dependency.optional))
         .collect();
     for link_id in requested.keys().chain(covered.keys()).chain(vacant.keys()) {
-        if !participant_slots.contains(link_id.as_str()) {
+        if !slot_is_optional.contains_key(link_id.as_str()) {
             return Err(format!(
                 "pairing slot `{link_id}` on instance '{instance_id}' matches no declared \
                  participant pairing slot; declared: [{}]",
-                participant_slots
-                    .iter()
+                slot_is_optional
+                    .keys()
                     .copied()
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -631,23 +631,25 @@ pub fn plan_requested_pairs(
     // contradictory and is refused here rather than resolved by whichever
     // entry the plan happens to read last. The launcher and the CLI cannot
     // write this state at all; a goal arriving over the wire can.
-    for (link_id, other) in requested
+    let mut fate_of: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    for (link_id, fate) in requested
         .keys()
-        .map(|link_id| (link_id, "requested"))
-        .chain(covered.keys().map(|link_id| (link_id, "covered")))
+        .map(|link_id| (link_id.as_str(), "requested"))
+        .chain(
+            covered
+                .keys()
+                .map(|link_id| (link_id.as_str(), "covered by a later instance")),
+        )
+        .chain(
+            vacant
+                .keys()
+                .map(|link_id| (link_id.as_str(), "declared vacant")),
+        )
     {
-        if vacant.contains_key(link_id) {
+        if let Some(prior) = fate_of.insert(link_id, fate) {
             return Err(format!(
-                "pairing slot `{link_id}` on instance '{instance_id}' is both {other} and \
-                 declared vacant; a slot has one fate"
-            ));
-        }
-    }
-    for link_id in requested.keys() {
-        if covered.contains_key(link_id) {
-            return Err(format!(
-                "pairing slot `{link_id}` on instance '{instance_id}' is both requested and \
-                 covered by a later instance; a slot has one fate"
+                "pairing slot `{link_id}` on instance '{instance_id}' is both {prior} and \
+                 {fate}; a slot has one fate"
             ));
         }
     }
@@ -658,10 +660,7 @@ pub fn plan_requested_pairs(
     // have to have come from either, so the node's statement about itself is
     // enforced where the goal lands rather than only where it was written.
     for link_id in vacant.keys() {
-        let required = pairing_deps
-            .iter()
-            .any(|dependency| dependency.link_id == *link_id && !dependency.optional);
-        if required {
+        if slot_is_optional.get(link_id.as_str()) == Some(&false) {
             return Err(format!(
                 "pairing slot `{link_id}` on instance '{instance_id}' is declared vacant, but \
                  node `{node_name}:{node_tag}` declares it required; pair it, or declare the slot \

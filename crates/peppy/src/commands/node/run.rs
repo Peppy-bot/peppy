@@ -554,18 +554,16 @@ async fn validate_links_against_stack(
         .iter()
         .map(|d| d.link_id.as_str())
         .collect();
-    let mut vacant_pairs: BTreeMap<String, String> = BTreeMap::new();
+    // A vacancy on a participant slot rides to the daemon as the reason it
+    // carries; observer vacancies produce no goal state, exactly as observer
+    // links do.
+    let vacant_pairs = daemon_config::launcher::participant_vacancies(links, &participant_link_ids);
     let mut requested_pairs: BTreeMap<String, PairTarget> = BTreeMap::new();
     for (link_id, value) in links {
         if !participant_link_ids.contains(link_id.as_str()) {
             continue;
         }
         let Some(selection) = value.selection() else {
-            // A vacancy on a participant slot rides to the daemon as the
-            // reason it carries; observer vacancies produce no goal state,
-            // exactly as observer links do.
-            let reason = value.vacancy().expect("a link value is bound or vacant");
-            vacant_pairs.insert(link_id.clone(), reason.as_str().to_owned());
             continue;
         };
         // Scalar-ness was already enforced by `validate_pairings`; a

@@ -20,5 +20,5 @@ pub use parse::PeppyLauncherParser;
 pub use types::{
     Deployment, DeploymentInstance, DeploymentSource, DuplicateLinkTarget, EmptyVacantReason,
     FrameworkOverrides, LinkTargets, LinkValue, PeppyLauncher, Placements, Selection, VacantReason,
-    split_link_target,
+    participant_vacancies, split_link_target,
 };

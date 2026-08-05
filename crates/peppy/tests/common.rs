@@ -104,6 +104,14 @@ pub fn node_run_command(
     links: Vec<(String, String)>,
     vacant_links: Vec<(String, String)>,
 ) -> peppy::commands::node::NodeCommand {
+    let vacant_links = vacant_links
+        .into_iter()
+        .map(|(link_id, reason)| {
+            let reason = daemon_config::launcher::VacantReason::new(&reason)
+                .expect("test reasons say something");
+            (link_id, reason)
+        })
+        .collect();
     peppy::commands::node::NodeCommand {
         command: peppy::commands::node::NodeCommands::Run {
             node_ref: None,

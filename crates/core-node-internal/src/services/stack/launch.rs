@@ -835,12 +835,10 @@ async fn start_node_instances(
             vacant_by_instance
                 .entry(instance.instance_id.as_str())
                 .or_default()
-                .extend(instance.links.iter().filter_map(|(link_id, value)| {
-                    let reason = value.vacancy()?;
-                    participant_links
-                        .contains(link_id.as_str())
-                        .then(|| (link_id.clone(), reason.as_str().to_owned()))
-                }));
+                .extend(daemon_config::launcher::participant_vacancies(
+                    &instance.links,
+                    &participant_links,
+                ));
         }
     }
     for pairing in planned_pairings {

@@ -154,13 +154,14 @@ pub(crate) fn parse_key_at_target(
 /// the reason the operator gives for it. Splits on the first `=` via
 /// [`parse_key_value_arg`], so a
 /// reason may itself contain `=`; SLOT is validated as a wire segment and the
-/// reason must say something.
-fn parse_vacant_link(raw: &str) -> Result<(String, String), String> {
+/// reason is parsed into a [`VacantReason`] here, once, at the flag boundary.
+fn parse_vacant_link(raw: &str) -> Result<(String, VacantReason), String> {
     let (link_id, reason) = parse_key_value_arg(raw)
         .map_err(|_| format!("invalid --vacant-link value '{raw}': expected SLOT=<why>"))?;
     pmi::Segment::try_from(link_id.as_str())
         .map_err(|e| format!("invalid --vacant-link SLOT '{link_id}': {e}"))?;
-    VacantReason::new(&reason).map_err(|e| format!("invalid --vacant-link '{raw}': {e}"))?;
+    let reason = VacantReason::new(&reason)
+        .map_err(|e| format!("invalid --vacant-link '{raw}': {e}"))?;
     Ok((link_id, reason))
 }
 
@@ -177,7 +178,7 @@ fn parse_vacant_link(raw: &str) -> Result<(String, String), String> {
 /// set, and a slot given both flags is rejected here: one key, one value.
 fn merge_link_flags(
     links: &[(String, String)],
-    vacant_links: &[(String, String)],
+    vacant_links: &[(String, VacantReason)],
 ) -> Result<BTreeMap<String, LinkValue>, String> {
     let mut accumulated: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, target) in links {
@@ -193,7 +194,6 @@ fn merge_link_flags(
         merged.insert(key, LinkValue::Bound(Selection::Flags(targets)));
     }
     for (link_id, reason) in vacant_links {
-        let reason = VacantReason::new(reason).map_err(|e| format!("`--vacant-link`: {e}"))?;
         let clash = match merged.get(link_id) {
             None => None,
             Some(LinkValue::Bound(_)) => Some(
@@ -207,7 +207,7 @@ fn merge_link_flags(
         if let Some(clash) = clash {
             return Err(format!("slot `{link_id}` {clash}"));
         }
-        merged.insert(link_id.clone(), LinkValue::Vacant(reason));
+        merged.insert(link_id.clone(), LinkValue::Vacant(reason.clone()));
     }
     Ok(merged)
 }
@@ -313,7 +313,7 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
             requires = "run",
         )]
-        vacant_links: Vec<(String, String)>,
+        vacant_links: Vec<(String, VacantReason)>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -410,7 +410,7 @@ pub enum NodeCommands {
             value_parser = parse_vacant_link,
             action = clap::ArgAction::Append,
         )]
-        vacant_links: Vec<(String, String)>,
+        vacant_links: Vec<(String, VacantReason)>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -611,6 +611,10 @@ impl Command for NodeCommand {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    fn vacant_reason(reason: &str) -> VacantReason {
+        VacantReason::new(reason).expect("test reasons say something")
+    }
 
     /// Tiny clap harness that wraps `NodeCommands` so we can exercise argument
     /// parsing for `peppy node add` in isolation.
@@ -1074,13 +1078,13 @@ mod tests {
     fn vacant_link_validates_the_slot_and_demands_a_reason() {
         assert_eq!(
             parse_vacant_link(" arm = monitor rig ").unwrap(),
-            ("arm".to_string(), "monitor rig".to_string())
+            ("arm".to_string(), vacant_reason("monitor rig"))
         );
         // The reason is free prose, so the first `=` separates and the rest
         // rides through untouched.
         assert_eq!(
             parse_vacant_link("arm=set a=b upstream").unwrap(),
-            ("arm".to_string(), "set a=b upstream".to_string())
+            ("arm".to_string(), vacant_reason("set a=b upstream"))
         );
         // SLOT must be a wire segment.
         assert!(parse_vacant_link("_=why").is_err());
@@ -1131,7 +1135,7 @@ mod tests {
                     vacant_links,
                     vec![(
                         "gripper".to_string(),
-                        "bench rig: no gripper, and a comma, in the reason".to_string()
+                        vacant_reason("bench rig: no gripper, and a comma, in the reason")
                     )]
                 );
             }
@@ -1190,7 +1194,7 @@ mod tests {
     fn a_slot_cannot_be_both_linked_and_vacant_on_the_command_line() {
         let err = merge_link_flags(
             &[("arm".to_string(), "arm_1".to_string())],
-            &[("arm".to_string(), "no arm here".to_string())],
+            &[("arm".to_string(), vacant_reason("no arm here"))],
         )
         .expect_err("one slot cannot take both flags");
         assert!(
@@ -1206,8 +1210,8 @@ mod tests {
         let err = merge_link_flags(
             &[],
             &[
-                ("arm".to_string(), "no arm here".to_string()),
-                ("arm".to_string(), "also no arm here".to_string()),
+                ("arm".to_string(), vacant_reason("no arm here")),
+                ("arm".to_string(), vacant_reason("also no arm here")),
             ],
         )
         .expect_err("one slot takes one reason");
@@ -1225,7 +1229,7 @@ mod tests {
             &[("arm".to_string(), "arm_1".to_string())],
             &[(
                 "gripper".to_string(),
-                "  no gripper on this rig  ".to_string(),
+                vacant_reason("  no gripper on this rig  "),
             )],
         )
         .expect("distinct slots merge");

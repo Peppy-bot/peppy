@@ -319,6 +319,25 @@ impl Selection {
     }
 }
 
+/// The `{ vacant: "<why>" }` entries of one instance's `links` map that name a
+/// participant pairing slot, in the `link_id -> reason` shape a node-run goal's
+/// `vacant_pairs` field carries. Observer vacancies are dropped: they are
+/// validated by their own family and produce no goal state, exactly as
+/// observer links do.
+pub fn participant_vacancies(
+    links: &BTreeMap<String, LinkValue>,
+    participant_link_ids: &std::collections::BTreeSet<&str>,
+) -> BTreeMap<String, String> {
+    links
+        .iter()
+        .filter(|(link_id, _)| participant_link_ids.contains(link_id.as_str()))
+        .filter_map(|(link_id, value)| {
+            let reason = value.vacancy()?;
+            Some((link_id.clone(), reason.as_str().to_owned()))
+        })
+        .collect()
+}
+
 /// Why a slot is deliberately left unresolved, in the deployment's own words.
 /// Non-empty once trimmed: a bare marker says only "not this one", and the
 /// point of writing a vacancy down is that a reader who has never seen the
