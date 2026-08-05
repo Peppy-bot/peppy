@@ -188,6 +188,20 @@ fn generated_observer_modules_compile_against_peppylib() {
     generator
         .add_observed_topic(&states, &observer, Cardinality::One)
         .unwrap();
+    // `zero_or_one` is scalar-shaped like `one`, so it generates the same
+    // singular accessor: what differs is whether a deployment may leave the
+    // slot empty, which `Option` already expresses.
+    generator
+        .add_observed_topic(
+            &states,
+            &PeerContext {
+                link_id: "maybe_observed_arm".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+            },
+            Cardinality::ZeroOrOne,
+        )
+        .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
         .build(&output_dir, &test_peppy_dirs(), Default::default())
@@ -230,12 +244,19 @@ fn generated_observer_modules_compile_against_peppylib() {
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use peppygen::paired_topics::observed_arm::joint_states;
+use peppygen::paired_topics::maybe_observed_arm::joint_states as maybe_joint_states;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         assert_eq!(joint_states::LINK_ID, "observed_arm");
         assert_eq!(joint_states::PAIRING_NAME, "arm_link");
         assert_eq!(joint_states::PAIRING_TAG, "v1");
+
+        // A `zero_or_one` slot reads through the same singular accessor: the
+        // binding below is the assertion, since a `sources() -> Vec<_>` shape
+        // would not typecheck against it.
+        let _vacant_source: Option<peppygen::ObservedSource> =
+            maybe_joint_states::source(&node_runner)?;
 
         // The resolved source is local configuration state, not a health probe.
         let source: Option<peppygen::ObservedSource> = joint_states::source(&node_runner)?;

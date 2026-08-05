@@ -325,9 +325,10 @@ pub fn build_peer_emitted_topic(
 /// accessor. An observer plays no role, so there is no
 /// `paired()`/`wait_paired()`.
 ///
-/// The accessor is cardinality-typed the way a producer slot's is: a `one` slot
-/// gets `source() -> Optional[ObservedSource]`, the multi cardinalities get
-/// `sources() -> List[ObservedSource]` in plan order. The docstring prose comes
+/// The accessor is cardinality-typed the way a producer slot's is: a scalar
+/// slot (`one` or `zero_or_one`) gets `source() -> Optional[ObservedSource]`,
+/// the multi cardinalities get `sources() -> List[ObservedSource]` in plan
+/// order. The docstring prose comes
 /// from `observed_sources_doc` so both language generators state the same
 /// guarantees.
 fn emit_observer_module_header(
@@ -345,7 +346,7 @@ fn emit_observer_module_header(
     builder.line(&format!("QOS = {qos}"));
     builder.blank_line();
 
-    let (fn_name, return_type, accessor) = if cardinality.is_one() {
+    let (fn_name, return_type, accessor) = if cardinality.is_scalar() {
         builder.add_import("from typing import Optional");
         (
             "source",

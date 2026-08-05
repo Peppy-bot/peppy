@@ -46,6 +46,9 @@ pub(crate) fn emit_bound_producers_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) {
     let (fn_name, return_type, api_note) = match dependency.cardinality {
+        Cardinality::ZeroOrOne => {
+            unreachable!("{}", crate::generator::types::PRODUCER_ZERO_OR_ONE)
+        }
         Cardinality::One => ("bound_producer", "peppylib.ProducerRef", None),
         Cardinality::OneOrMore => (
             "bound_producers",

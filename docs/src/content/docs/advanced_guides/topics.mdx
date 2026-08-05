@@ -611,13 +611,16 @@ depends_on: {
 }
 ```
 
-| Cardinality     | Valid unique targets | Omitted binding |
-| --------------- | -------------------- | --------------- |
-| `one` / omitted | exactly 1            | error           |
-| `one_or_more`   | 1 or more            | error           |
-| `zero_or_more`  | 0 or more            | empty set       |
+| Cardinality     | Valid unique targets | Slot kinds it is valid on | Omitted binding |
+| --------------- | -------------------- | ------------------------- | --------------- |
+| `one` / omitted | exactly 1            | producer, observer        | error           |
+| `zero_or_one`   | 0 or 1               | observer                  | error: link it, or write it `{ vacant: "<why>" }` |
+| `one_or_more`   | 1 or more            | producer, observer        | error           |
+| `zero_or_more`  | 0 or more            | producer, observer        | empty set       |
 
-The binding value's shape mirrors the slot's cardinality. A `one` slot takes a scalar string only, exactly as above. A `one_or_more` or `zero_or_more` slot takes an **array** of instance ids; for `zero_or_more` the empty array `[]` is a valid definition, equivalent to omitting the binding entirely:
+`zero_or_one` names an observed member set and is rejected on `depends_on.nodes` and `depends_on.contracts`: a producer slot binds its set once, when the node starts, and the accessor generated from the key is typed on that. It is the one observer cardinality a [vacancy](/guides/launch_files/#links-optional) is legal on, and its empty state is written rather than omitted, so a slot nobody mentioned stays an error.
+
+The binding value's shape mirrors the slot's cardinality. A scalar slot (`one` or `zero_or_one`) takes a scalar string only, exactly as above. A `one_or_more` or `zero_or_more` slot takes an **array** of instance ids; for `zero_or_more` the empty array `[]` is a valid definition, equivalent to omitting the binding entirely:
 
 ```json5
 links: {
@@ -625,13 +628,13 @@ links: {
 }
 ```
 
-Any other combination is an error: an array on a `one` slot (single-element arrays included), a scalar on a multi slot, and an empty array on a `one_or_more` slot (cardinality unmet). The CLI mirrors the array form by repetition, which accumulates on a multi slot and stays a hard error on a `one` slot; the empty set has no flag spelling, omission is it:
+Any other combination is an error: an array on a scalar slot (single-element arrays included), a scalar on a multi slot, and an empty array on a `one_or_more` slot (cardinality unmet). The CLI mirrors the array form by repetition, which accumulates on a multi slot and stays a hard error on a scalar slot; the empty set has no flag spelling, omission is it:
 
 ```sh
 peppy node run --link camera@front_camera --link camera@rear_camera web_video_stream:v1
 ```
 
-Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances. On a producer-binding slot it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. An observer slot differs in exactly that respect: its member set is delivered live by the daemon rather than frozen at startup, so the planner checks the count and the node reads whatever the plan currently says. `depends_on.pairings` entries have no cardinality at all (a pairing is strictly 1:1, so there is no set to size; a `cardinality` key on a participant entry is a manifest error).
+Cardinality applies to a consumer's dependency slot; it does not permit undeclared or unbound launched node instances. On a producer-binding slot it constrains the application-configured bound set **at startup**, not runtime availability: a producer disconnecting does not shrink the set, trigger discovery, or cause automatic rebinding. An observer slot differs in exactly that respect: its member set is delivered live by the daemon rather than frozen at startup, so the planner checks the count and the node reads whatever the plan currently says. `depends_on.pairings` entries have no cardinality at all (a pairing is strictly 1:1, so there is no set to size; a `cardinality` key on a participant entry is a manifest error). A participant slot that may run with no peer says so with `optional: true` instead, and `zero_or_one` is its observer counterpart: both are the node's own statement that a deployment may leave the slot empty, and neither is valid on a producer slot, whose bound set is fixed at startup.
 
 The consuming API is uniform across cardinalities in everything except the [bound-producer accessor](#receiving-messages): topics subscribe to the slot's complete bound set and yield the producing `ProducerRef` with every message, and [services](/advanced_guides/services/) and [actions](/advanced_guides/actions/) require the caller to select one explicit, membership-checked member of that set, whatever its size. The accessor itself is cardinality-typed: `one` generates the singular, infallible `bound_producer()`, `one_or_more` generates `bound_producers()` returning a never-empty set whose `first()` needs no unwrap, and `zero_or_more` generates `bound_producers()` returning a possibly empty slice, so the empty branch is forced by the type. For a `zero_or_more` slot bound to nothing, the subscription simply yields nothing until the node stops.
 

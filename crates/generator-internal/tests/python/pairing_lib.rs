@@ -147,9 +147,9 @@ print("peer modules imported")
 }
 
 /// The observer half of the same surface, and the cardinality typing that goes
-/// with it: a `one` slot exposes `source()`, a multi slot exposes `sources()`,
-/// and neither exposes a publisher or the participant pin helpers. `subscribe`
-/// keeps its shape at every cardinality.
+/// with it: a scalar slot (`one` or `zero_or_one`) exposes `source()`, a multi
+/// slot exposes `sources()`, and none exposes a publisher or the participant
+/// pin helpers. `subscribe` keeps its shape at every cardinality.
 #[test]
 fn generated_observer_modules_are_cardinality_typed() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
@@ -166,6 +166,17 @@ fn generated_observer_modules_are_cardinality_typed() {
                 pairing_tag: "v1".to_string(),
             },
             Cardinality::One,
+        )
+        .unwrap();
+    generator
+        .add_observed_topic(
+            &states,
+            &PeerContext {
+                link_id: "maybe_observed_arm".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+            },
+            Cardinality::ZeroOrOne,
         )
         .unwrap();
     generator
@@ -195,14 +206,19 @@ fn generated_observer_modules_are_cardinality_typed() {
     let check = r#"
 import inspect
 from peppygen.paired_topics.observed_arm import joint_states as sole
+from peppygen.paired_topics.maybe_observed_arm import joint_states as maybe
 from peppygen.paired_topics.observed_arms import joint_states as many
 
 assert sole.LINK_ID == "observed_arm"
+assert maybe.LINK_ID == "maybe_observed_arm"
 assert many.LINK_ID == "observed_arms"
 
-# A `one` slot observes at most one pairing, so its accessor is singular.
-assert callable(sole.source)
-assert not hasattr(sole, "sources")
+# Both scalar cardinalities observe at most one pairing, so both accessors are
+# singular; `zero_or_one` differs in whether the deployment may leave the slot
+# empty, which the accessor's `Optional` already covers.
+for module in (sole, maybe):
+    assert callable(module.source)
+    assert not hasattr(module, "sources")
 
 # A multi slot reads its whole member set. The name flip is what surfaces a
 # cardinality change at call sites.
@@ -210,8 +226,8 @@ assert callable(many.sources)
 assert not hasattr(many, "source")
 
 # An observer plays no role: no publisher, no participant pin helpers, at
-# either cardinality.
-for module in (sole, many):
+# any cardinality.
+for module in (sole, maybe, many):
     assert inspect.iscoroutinefunction(module.subscribe)
     assert inspect.isclass(module.Subscription)
     for absent in ("build_message", "declare_publisher", "paired", "wait_paired"):
