@@ -258,10 +258,12 @@ fn check_value_matches_cardinality(
     let owner_instance_id = || instance.instance_id.to_string();
     let binding = || binding_key.to_string();
     check_cardinality_shape(slot.cardinality, selection).map_err(|violation| match violation {
-        CardinalityShapeViolation::ArrayOnOneSlot => ParsingError::BindingArrayOnOneSlot {
-            owner_instance_id: owner_instance_id(),
-            binding: binding(),
-        },
+        CardinalityShapeViolation::ArrayOnScalarSlot { .. } => {
+            ParsingError::BindingArrayOnOneSlot {
+                owner_instance_id: owner_instance_id(),
+                binding: binding(),
+            }
+        }
         CardinalityShapeViolation::ScalarOnMultiSlot { cardinality } => {
             ParsingError::BindingScalarOnMultiSlot {
                 owner_instance_id: owner_instance_id(),
@@ -273,7 +275,7 @@ fn check_value_matches_cardinality(
             owner_instance_id: owner_instance_id(),
             binding: binding(),
         },
-        CardinalityShapeViolation::SingleSlotMultipleTargets { target_count } => {
+        CardinalityShapeViolation::SingleSlotMultipleTargets { target_count, .. } => {
             ParsingError::BindingSingleSlotMultipleTargets {
                 owner_instance_id: owner_instance_id(),
                 binding: binding(),

@@ -652,6 +652,24 @@ pub fn plan_requested_pairs(
         }
     }
 
+    // Only a slot the node's own manifest declares optional may boot with no
+    // peer. The launcher and the CLI check this before they build a goal, but
+    // this daemon holds the manifest and a goal arriving over the wire does not
+    // have to have come from either, so the node's statement about itself is
+    // enforced where the goal lands rather than only where it was written.
+    for link_id in vacant.keys() {
+        let required = pairing_deps
+            .iter()
+            .any(|dependency| dependency.link_id == *link_id && !dependency.optional);
+        if required {
+            return Err(format!(
+                "pairing slot `{link_id}` on instance '{instance_id}' is declared vacant, but \
+                 node `{node_name}:{node_tag}` declares it required; pair it, or declare the slot \
+                 `optional: true` in the node manifest"
+            ));
+        }
+    }
+
     // A peer on ANOTHER machine cannot go through the local validator: every
     // one of its rules reads the peer's manifest, and this daemon holds only
     // its own. The planner that dispatched this goal holds both and already
@@ -839,6 +857,15 @@ mod tests {
             r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}" }}"#
         ))
         .expect("valid pairing dependency")
+    }
+
+    /// The same slot, declared by a node that runs fine without a peer behind
+    /// it. Only this shape may be written vacant.
+    fn optional_dep(role: &str, link_id: &str) -> PairingParticipantDependency {
+        serde_json5::from_str(&format!(
+            r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", optional: true }}"#
+        ))
+        .expect("valid optional pairing dependency")
     }
 
     fn snapshot_node(
@@ -1241,21 +1268,64 @@ mod tests {
         assert!(err.contains("complementary"), "{err}");
     }
 
+    /// Every declared slot must be covered, and the remedies the error names
+    /// follow the manifest: a required slot is offered the pairing flag and the
+    /// manifest key, an optional one both flags.
     #[test]
     fn uncovered_slot_names_the_exact_flags() {
-        let deps = [dep("controller", "arm")];
-        let err = plan(&arm_snapshot(), "ctrl_1", &deps, &BTreeMap::new(), &[])
+        let required = [dep("controller", "arm")];
+        let err = plan(&arm_snapshot(), "ctrl_1", &required, &BTreeMap::new(), &[])
             .expect_err("every declared slot must be covered");
         assert!(
+            err.contains("arm") && err.contains("--link") && err.contains("`optional: true`"),
+            "a required slot names the pairing flag and the manifest key: {err}"
+        );
+        assert!(
+            err.contains("if it is meant to run empty, declare"),
+            "the vacancy must be offered only behind the manifest change, never as a \
+             standalone fix: {err}"
+        );
+
+        let optional = [optional_dep("controller", "arm")];
+        let err = plan(&arm_snapshot(), "ctrl_1", &optional, &BTreeMap::new(), &[])
+            .expect_err("an optional slot is vacatable, not exempt");
+        assert!(
             err.contains("arm") && err.contains("--link") && err.contains("--vacant-link"),
-            "error should name the slot and both flags: {err}"
+            "an optional slot names both flags: {err}"
         );
 
         // Declaring it vacant satisfies coverage.
         assert!(
-            plan(&arm_snapshot(), "ctrl_1", &deps, &BTreeMap::new(), &["arm"],)
-                .expect("a vacant required slot passes coverage")
-                .is_empty()
+            plan(
+                &arm_snapshot(),
+                "ctrl_1",
+                &optional,
+                &BTreeMap::new(),
+                &["arm"],
+            )
+            .expect("a vacant optional slot passes coverage")
+            .is_empty()
+        );
+    }
+
+    /// A goal is not the launcher: it can name a fate the launcher and the CLI
+    /// both refuse to write. The daemon holds the manifest, so it enforces the
+    /// node's own statement about itself where the goal lands.
+    #[test]
+    fn a_goal_cannot_vacate_a_slot_the_manifest_declares_required() {
+        let err = plan(
+            &arm_snapshot(),
+            "ctrl_1",
+            &[dep("controller", "arm")],
+            &BTreeMap::new(),
+            &["arm"],
+        )
+        .expect_err("a required slot cannot be vacated by any goal");
+        assert!(
+            err.contains("`arm`")
+                && err.contains("declares it required")
+                && err.contains("`optional: true`"),
+            "the refusal must name the slot, the manifest and the key that lifts it: {err}"
         );
     }
 

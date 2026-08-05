@@ -7,9 +7,10 @@
 //! A pair is strictly 1:1 between two complementary slots (slot = instance ×
 //! link_id): same pairing `(name, tag)`, opposite roles, both unclaimed.
 //! Declaring the pair on ONE side covers both endpoints' slots; declaring it
-//! from both sides is allowed but must agree. Every REQUIRED pairing slot of
-//! every planned instance must end up paired or explicitly declared vacant, or
-//! the plan is rejected (`PairingSlotUncovered`): no silent unpaired boots.
+//! from both sides is allowed but must agree. Every pairing slot of every
+//! planned instance must end up paired, or, where the node's manifest declares
+//! the slot `optional: true`, explicitly declared vacant; otherwise the plan is
+//! rejected (`PairingSlotUncovered`): no silent unpaired boots.
 
 use crate::error::{
     PairingConflict, PairingSha256Mismatch, PairingSlotAlreadyPaired, PairingSlotUncovered,
@@ -414,7 +415,10 @@ fn resolve_pair_declaration(
 
 /// Rule 7 of [`validate_pairings`], over every planned (non-preexisting)
 /// instance: each participant slot is paired in this plan, declared vacant, or
-/// covered outside this validator's view.
+/// covered outside this validator's view. An optional slot is not exempt, only
+/// vacatable: a slot with no `links` entry at all is uncovered whatever the
+/// manifest says, so forgetting one stays an error and the manifest flag only
+/// decides which remedies the error offers.
 fn validate_coverage(
     items: &[PairingValidationItem<'_>],
     claims: &BTreeMap<(String, String), (String, String)>,
@@ -440,6 +444,7 @@ fn validate_coverage(
                             pairing_name: dep.name.as_str().to_string(),
                             pairing_tag: dep.tag.clone(),
                             role: dep.role.clone(),
+                            optional: dep.optional,
                         },
                     )));
                 }
@@ -776,6 +781,10 @@ mod tests {
         assert_eq!(info.existing_peer, "ctrl_1:arm");
     }
 
+    /// A required slot's uncovered message offers a peer and the manifest key
+    /// that would let the slot run without one, never the vacancy spelling the
+    /// manifest forbids: an error must not advertise an escape hatch that would
+    /// be rejected the moment it is written.
     #[test]
     fn required_slot_uncovered_fails_loudly() {
         let ctrl_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
@@ -795,34 +804,60 @@ mod tests {
         assert_eq!(info.role, "controller");
         let msg = info.to_string();
         assert!(
-            msg.contains("--link arm@"),
+            msg.contains("required pairing slot") && msg.contains("--link arm@"),
             "message should show the fix: {msg}"
         );
         assert!(
-            msg.contains("--vacant-link 'arm=<why>'"),
-            "message should show how to declare it vacant: {msg}"
+            msg.contains("`optional: true`"),
+            "message should name the manifest key that waives the peer: {msg}"
+        );
+        assert!(
+            msg.contains("if it is meant to run empty, declare"),
+            "the vacancy must be offered only behind the manifest change, never as a \
+             standalone fix: {msg}"
         );
     }
 
-    /// A participant slot's fate is one entry in one map, so "paired AND
-    /// deliberately empty" has no spelling: the launch file that tries is
-    /// rejected as it parses.
+    /// An optional slot is vacatable, not exempt: forgetting it is the same
+    /// error, and only its remedy list differs.
     #[test]
-    fn a_slot_cannot_be_both_paired_and_vacant_in_one_launch_file() {
-        let err = serde_json5::from_str::<Vec<DeploymentInstance>>(
-            r#"[{
-                instance_id: "ctrl_1",
-                links: {
-                    arm: "arm_1",
-                    arm: { vacant: "no arm on this bench" }
-                }
-            }]"#,
-        )
-        .expect_err("one slot cannot hold two values");
-        assert!(
-            err.to_string().contains("arm"),
-            "the duplicate key should be named: {err}"
+    fn optional_slot_is_uncovered_when_forgotten_and_covered_when_vacated() {
+        let optional_deps = parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", optional: true }]"#,
         );
+
+        let forgotten = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
+        let out = validate(
+            &[item("arm_controller", &forgotten, &optional_deps)],
+            &BTreeMap::new(),
+        );
+        let info = out
+            .errors
+            .iter()
+            .find_map(|e| match e {
+                ParsingError::PairingSlotUncovered(info) => Some(info),
+                _ => None,
+            })
+            .expect("a forgotten optional slot is still uncovered");
+        let msg = info.to_string();
+        assert!(
+            msg.contains("optional pairing slot") && msg.contains("--vacant-link 'arm=<why>'"),
+            "an optional slot's message offers both remedies: {msg}"
+        );
+
+        let vacated = parse_instances(
+            r#"[{ instance_id: "ctrl_1", links: { arm: { vacant: "monitor rig: nothing to command" } } }]"#,
+        );
+        let out = validate(
+            &[item("arm_controller", &vacated, &optional_deps)],
+            &BTreeMap::new(),
+        );
+        assert!(
+            out.errors.is_empty(),
+            "a vacated optional slot is covered: {:?}",
+            out.errors
+        );
+        assert!(out.planned.is_empty(), "a vacancy claims no peer");
     }
 
     /// A vacant participant slot covers itself, claims nothing, and plans no

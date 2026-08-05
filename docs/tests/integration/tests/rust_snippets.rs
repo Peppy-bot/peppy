@@ -35,10 +35,11 @@ fn hello_world_param_and_hello_receiver() {
     );
 }
 
-// The paired duo from the "Pairing" guide. Each side declares one required
-// pairing slot of `arm_link/v1`. Running each node on its own (the other
-// absent entirely) with `--vacant-link <slot>=<why>` proves the documented
-// solo boot: the slot starts unpaired and silent, and the node still launches.
+// The paired duo from the "Pairing" guide. Each side declares one pairing slot
+// of `arm_link/v1`, declared `optional: true` because each node runs on its
+// own. Running each node with the other absent entirely, under
+// `--vacant-link <slot>=<why>`, proves the documented solo boot: the slot
+// starts unpaired and silent, and the node still launches.
 
 #[test]
 fn pairing_robot_arm() {

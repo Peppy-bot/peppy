@@ -6,8 +6,10 @@
     depends_on: {
       pairings: [
         // The complementary slot: this node plays the `controller` role of
-        // the same contract, and its slot points at one arm.
-        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
+        // the same contract, and its slot points at one arm. `optional: true`
+        // says it also runs with no arm behind the slot, so a deployment may
+        // write the slot vacant.
+        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm", optional: true },
       ],
     },
   },

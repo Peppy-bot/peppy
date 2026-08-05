@@ -234,11 +234,13 @@ pub enum LinkValue {
     Bound(Selection),
     /// `leader_left_arm: { vacant: "monitor rig: nothing commands this
     /// backbone" }`: the slot boots unresolved on purpose, and the deployment
-    /// says why. Legal on a participant pairing slot and on a `cardinality:
-    /// "one"` observer slot, which have no other spelling for an empty slot;
-    /// every other slot kind writes its emptiness as `[]` or an omitted key,
-    /// and [`crate::launcher::links::validate_link_slots`] rejects a vacancy
-    /// there.
+    /// says why. Legal only where the node's own manifest declares the slot
+    /// emptiable: `optional: true` on a participant pairing slot, or
+    /// `cardinality: "zero_or_one"` on an observer slot. A slot the manifest
+    /// declares required cannot be vacated at all, and a multi-cardinality slot
+    /// writes its emptiness as `[]` or an omitted key;
+    /// [`crate::launcher::links::validate_link_slots`] rejects a vacancy on
+    /// either.
     Vacant(VacantReason),
 }
 
@@ -372,16 +374,21 @@ impl std::error::Error for EmptyVacantReason {}
 /// its own slot kind speaks (producer binding or observation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CardinalityShapeViolation {
-    /// A launch-file array value on a `one` slot, of any length.
-    ArrayOnOneSlot,
+    /// A launch-file array value on a scalar slot, of any length.
+    ArrayOnScalarSlot {
+        cardinality: config::node::Cardinality,
+    },
     /// A launch-file scalar value on a multi slot.
     ScalarOnMultiSlot {
         cardinality: config::node::Cardinality,
     },
     /// An empty target set on a `one_or_more` slot.
     Unmet,
-    /// Repeated flag occurrences on a `one` slot.
-    SingleSlotMultipleTargets { target_count: usize },
+    /// Repeated flag occurrences on a scalar slot.
+    SingleSlotMultipleTargets {
+        cardinality: config::node::Cardinality,
+        target_count: usize,
+    },
 }
 
 /// Does the selection's shape (launch file) or occurrence count (CLI flags)
@@ -406,13 +413,20 @@ pub fn check_cardinality_shape(
 ) -> Result<(), CardinalityShapeViolation> {
     use config::node::Cardinality;
     match (cardinality, selection) {
-        (Cardinality::One, Selection::Scalar(_)) => Ok(()),
-        (Cardinality::One, Selection::Array(_)) => Err(CardinalityShapeViolation::ArrayOnOneSlot),
-        (Cardinality::One, Selection::Flags(targets)) => {
+        // `zero_or_one` is scalar-shaped like `one`: the floor between them is
+        // a coverage question (an empty `zero_or_one` slot is written vacant,
+        // and this function never sees a vacancy), not a shape one, so a
+        // present selection is sized identically on both.
+        (Cardinality::One | Cardinality::ZeroOrOne, Selection::Scalar(_)) => Ok(()),
+        (Cardinality::One | Cardinality::ZeroOrOne, Selection::Array(_)) => {
+            Err(CardinalityShapeViolation::ArrayOnScalarSlot { cardinality })
+        }
+        (Cardinality::One | Cardinality::ZeroOrOne, Selection::Flags(targets)) => {
             if targets.len() == 1 {
                 Ok(())
             } else {
                 Err(CardinalityShapeViolation::SingleSlotMultipleTargets {
+                    cardinality,
                     target_count: targets.len(),
                 })
             }
@@ -612,10 +626,12 @@ pub struct DeploymentInstance {
     ///     as a scalar or an array per its cardinality, exactly like a
     ///     producer slot.
     ///
-    /// A participant or `one` observer slot that starts unresolved on purpose
-    /// says so in this same map, as `{ vacant: "<why>" }`: the fate of every
-    /// declared slot is one entry here, and forgetting a slot is an absence
-    /// rather than a value.
+    /// A slot that starts unresolved on purpose says so in this same map, as
+    /// `{ vacant: "<why>" }`: the fate of every declared slot is one entry
+    /// here, and forgetting a slot is an absence rather than a value. Only a
+    /// slot the node's manifest declares emptiable (`optional: true` on a
+    /// participant, `cardinality: "zero_or_one"` on an observer) may take that
+    /// value.
     ///
     /// The launch parser has no manifest knowledge, so shape is validated
     /// against slot kind at plan time; only shape-local rules (empty targets,

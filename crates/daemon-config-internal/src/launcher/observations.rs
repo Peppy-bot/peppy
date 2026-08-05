@@ -10,11 +10,12 @@
 //!
 //! A slot observes as many pairings as its declared `cardinality` allows, and
 //! its link value's shape follows that cardinality exactly as a producer
-//! binding's does: `one` takes a single target, the multi cardinalities take an
-//! array. A `one` or `one_or_more` slot must carry a `links` entry
-//! (`ObservationSlotUncovered` otherwise), and a `one` slot may spend that
-//! entry on `{ vacant: "<why>" }`; omitting a `zero_or_more` slot IS its empty
-//! set.
+//! binding's does: a scalar slot (`one` or `zero_or_one`) takes a single
+//! target, the multi cardinalities take an array. Every slot but a
+//! `zero_or_more` one must carry a `links` entry (`ObservationSlotUncovered`
+//! otherwise), and a `zero_or_one` slot, the one the node's manifest declares
+//! emptiable, may spend that entry on `{ vacant: "<why>" }`; omitting a
+//! `zero_or_more` slot IS its empty set.
 
 use super::types::Placements;
 use crate::error::{
@@ -67,7 +68,7 @@ pub struct ValidatedObservations {
 /// Rules:
 /// 1. Only `links` keys naming one of this node's observer slots are processed;
 ///    the value's shape must match the slot's declared cardinality
-///    (`ObservationArrayOnOneSlot` / `ObservationScalarOnMultiSlot` /
+///    (`ObservationArrayOnScalarSlot` / `ObservationScalarOnMultiSlot` /
 ///    `ObservationCardinalityUnmet` / `ObservationSingleSlotMultipleTargets`).
 /// 2. The source instance exists in the plan/stack (`UnknownInstanceId`).
 /// 3. The source declares exactly one participant slot playing the observed
@@ -80,9 +81,9 @@ pub struct ValidatedObservations {
 ///    the pins must match (`PairingSha256Mismatch`).
 /// 5. No two of a slot's targets resolve to the same observed pairing
 ///    (`DuplicateObservationTarget`).
-/// 6. Coverage: every `one` / `one_or_more` observer slot of every planned
-///    instance carries a `links` entry, naming sources or (on a `one` slot)
-///    declaring it vacant (`ObservationSlotUncovered` otherwise).
+/// 6. Coverage: every observer slot but a `zero_or_more` one, on every planned
+///    instance, carries a `links` entry, naming sources or (on a `zero_or_one`
+///    slot) declaring it vacant (`ObservationSlotUncovered` otherwise).
 ///
 /// Rules 2-5 are all-or-nothing per slot: a slot with any failing member
 /// contributes no observation at all, so a partially-resolved member set can
@@ -189,10 +190,13 @@ fn shape_error(violation: CardinalityShapeViolation, owner_id: &str, key: &str) 
     let owner_instance_id = owner_id.to_string();
     let link = key.to_string();
     match violation {
-        CardinalityShapeViolation::ArrayOnOneSlot => ParsingError::ObservationArrayOnOneSlot {
-            owner_instance_id,
-            link,
-        },
+        CardinalityShapeViolation::ArrayOnScalarSlot { cardinality } => {
+            ParsingError::ObservationArrayOnScalarSlot {
+                owner_instance_id,
+                link,
+                cardinality,
+            }
+        }
         CardinalityShapeViolation::ScalarOnMultiSlot { cardinality } => {
             ParsingError::ObservationScalarOnMultiSlot {
                 owner_instance_id,
@@ -204,13 +208,15 @@ fn shape_error(violation: CardinalityShapeViolation, owner_id: &str, key: &str) 
             owner_instance_id,
             link,
         },
-        CardinalityShapeViolation::SingleSlotMultipleTargets { target_count } => {
-            ParsingError::ObservationSingleSlotMultipleTargets {
-                owner_instance_id,
-                link,
-                target_count,
-            }
-        }
+        CardinalityShapeViolation::SingleSlotMultipleTargets {
+            cardinality,
+            target_count,
+        } => ParsingError::ObservationSingleSlotMultipleTargets {
+            owner_instance_id,
+            link,
+            cardinality,
+            target_count,
+        },
     }
 }
 
@@ -313,13 +319,15 @@ fn resolve_observation(
     })
 }
 
-/// Rule 6: a `one` / `one_or_more` observer slot must carry a `links` entry,
-/// whether that entry names sources or declares the slot vacant. Omitting a
-/// `zero_or_more` slot is how a deployment writes its empty set, so it needs
-/// no coverage.
+/// Rule 6: every observer slot but a `zero_or_more` one must carry a `links`
+/// entry, whether that entry names sources or declares the slot vacant.
+/// Omitting a `zero_or_more` slot is how a deployment writes its empty set, so
+/// it needs no coverage; every other slot needs an explicit line, which is what
+/// keeps "forgot" distinguishable from "decided".
 ///
-/// A vacancy covers a `one` slot ONLY. A `one_or_more` slot has no empty
-/// state, so a vacancy there covers nothing here and is separately rejected by
+/// A vacancy covers a `zero_or_one` slot ONLY, because that is the one observer
+/// cardinality the node's manifest declares emptiable. On any other slot a
+/// vacancy covers nothing here and is separately rejected by
 /// `validate_link_slots` with the reason; judging it independently is what
 /// keeps the generated "the plan bound at least one pairing to it" docstring
 /// true no matter which validator runs first.
@@ -331,7 +339,10 @@ fn validate_coverage(
     let owner_id = instance.instance_id.as_str();
     for observer in item.observer_deps {
         let covered = match instance.links.get(&observer.link_id) {
-            Some(value) => value.selection().is_some() || observer.cardinality.is_one(),
+            Some(value) => {
+                value.selection().is_some()
+                    || observer.cardinality == config::node::Cardinality::ZeroOrOne
+            }
             None => false,
         };
         if covered || observer.cardinality.allows_empty() {
@@ -464,6 +475,9 @@ mod tests {
         assert_eq!(obs.source_link_id, "controller");
     }
 
+    /// A `one` slot must observe exactly one pairing, so its uncovered message
+    /// offers a source and the manifest key that would let it observe none, and
+    /// never the vacancy spelling its manifest has not enabled.
     #[test]
     fn observer_without_source_is_uncovered() {
         let rec_instances = parse_instances(r#"[{ instance_id: "rec_1" }]"#);
@@ -481,28 +495,58 @@ mod tests {
         assert_eq!(info.instance_id, "rec_1");
         assert_eq!(info.link_id, "observed_arm");
         assert_eq!(info.observed_role, "arm");
+        let message = info.to_string();
         assert!(
-            info.to_string()
-                .contains("--vacant-link 'observed_arm=<why>'"),
-            "message should show how to declare it vacant: {info}"
+            message.contains("cardinality: \"zero_or_one\""),
+            "message should name the manifest key that lets it observe nothing: {message}"
+        );
+        assert!(
+            message.contains("if it is meant to run empty, declare"),
+            "the vacancy must be offered only behind the manifest change, never as a \
+             standalone fix: {message}"
         );
     }
 
-    /// A `one` observer slot is scalar-valued and has no empty shape, so a
-    /// vacancy is how a deployment says it watches nothing.
+    /// A `zero_or_one` slot is the one observer cardinality a node declares
+    /// emptiable, so a vacancy covers it and the uncovered message offers the
+    /// spelling.
     #[test]
-    fn a_vacant_one_observer_is_covered() {
-        let rec_instances = parse_instances(
+    fn a_vacant_zero_or_one_observer_is_covered() {
+        let rec_deps = recorder_deps_with(Some("zero_or_one"));
+
+        let vacant = parse_instances(
             r#"[{
                 instance_id: "rec_1",
                 links: { observed_arm: { vacant: "bench rig: no arm to watch" } }
             }]"#,
         );
-        let rec_deps = recorder_deps();
-        let items = vec![observer_item("recorder", &rec_instances, &rec_deps)];
-        let out = validate_observations(&items, &all_local());
+        let out = validate_observations(
+            &[observer_item("recorder", &vacant, &rec_deps)],
+            &all_local(),
+        );
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert!(out.planned.is_empty());
+
+        // Omitting the slot is still uncovered: only a written vacancy empties
+        // it, which is what keeps "forgot" distinguishable from "decided".
+        let omitted = parse_instances(r#"[{ instance_id: "rec_1" }]"#);
+        let out = validate_observations(
+            &[observer_item("recorder", &omitted, &rec_deps)],
+            &all_local(),
+        );
+        let info = out
+            .errors
+            .iter()
+            .find_map(|e| match e {
+                ParsingError::ObservationSlotUncovered(info) => Some(info),
+                _ => None,
+            })
+            .expect("an omitted zero_or_one slot is uncovered");
+        assert!(
+            info.to_string()
+                .contains("--vacant-link 'observed_arm=<why>'"),
+            "message should show how to declare it vacant: {info}"
+        );
     }
 
     #[test]
@@ -613,7 +657,7 @@ mod tests {
         assert!(
             out.errors
                 .iter()
-                .any(|e| matches!(e, ParsingError::ObservationArrayOnOneSlot { .. })),
+                .any(|e| matches!(e, ParsingError::ObservationArrayOnScalarSlot { .. })),
             "an array on a `one` observer slot is rejected: {:?}",
             out.errors
         );
@@ -831,13 +875,15 @@ mod tests {
         );
     }
 
-    /// Coverage follows the cardinality: `one` and `one_or_more` must be
-    /// linked or declared vacant, while omitting `zero_or_more` IS its empty
-    /// set.
+    /// Coverage follows the cardinality: every slot but `zero_or_more` needs an
+    /// explicit `links` entry, while omitting `zero_or_more` IS its empty set.
+    /// A `zero_or_one` slot is no exception: it may be emptied, but only by
+    /// writing the vacancy down, so omitting it is still uncovered.
     #[test]
     fn omitted_observer_slots_error_per_cardinality() {
         for (cardinality, expect_uncovered) in [
             (None, true),
+            (Some("zero_or_one"), true),
             (Some("one_or_more"), true),
             (Some("zero_or_more"), false),
         ] {
@@ -893,27 +939,6 @@ mod tests {
                 .any(|e| matches!(e, ParsingError::ObservationSlotUncovered(_))),
             "a vacancy must not cover a `one_or_more` slot: {:?}",
             out.errors
-        );
-    }
-
-    /// Linking a slot and declaring it vacant are one key holding one value,
-    /// so the contradiction is unwritable: a launch file naming a slot twice
-    /// is rejected as it parses, before any validator sees it.
-    #[test]
-    fn a_slot_cannot_be_both_linked_and_vacant_in_one_launch_file() {
-        let err = serde_json5::from_str::<Vec<DeploymentInstance>>(
-            r#"[{
-                instance_id: "rec_1",
-                links: {
-                    observed_arm: "arm_1",
-                    observed_arm: { vacant: "nothing to watch" }
-                }
-            }]"#,
-        )
-        .expect_err("one slot cannot hold two values");
-        assert!(
-            err.to_string().contains("observed_arm"),
-            "the duplicate key should be named: {err}"
         );
     }
 

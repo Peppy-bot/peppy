@@ -38,7 +38,9 @@ use super::common::{
 };
 
 /// The observer: watches the `arm` role of `arm_link/v1` through observer slot
-/// `watch`, consuming the topic that role emits. Emits nothing.
+/// `watch`, consuming the topic that role emits. Emits nothing. The slot is
+/// `zero_or_one`, the node's own statement that it runs fine observing nothing,
+/// which is what lets a deployment write the slot vacant.
 fn observer_config(instances: &InstanceLifetime) -> String {
     let run_cmd = instances.keep_alive_run_cmd();
     format!(
@@ -49,7 +51,7 @@ fn observer_config(instances: &InstanceLifetime) -> String {
             tag: "v1",
             depends_on: {{
                 pairing_observers: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }}
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }}
                 ]
             }}
         }},
@@ -109,7 +111,7 @@ fn killable_source_config(pidfile: &Path, instances: &InstanceLifetime) -> Strin
             tag: "v1",
             depends_on: {{
                 pairings: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }}
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }}
                 ]
             }}
         }},

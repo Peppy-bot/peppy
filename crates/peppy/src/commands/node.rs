@@ -148,9 +148,11 @@ pub(crate) fn parse_key_at_target(
     Ok((key.to_owned(), value.to_owned()))
 }
 
-/// Parses a `--vacant-link SLOT=<why>` argument: a pairing or `one` observer
-/// slot deliberately left unresolved at launch, plus the reason the operator
-/// gives for it. Splits on the first `=` via [`parse_key_value_arg`], so a
+/// Parses a `--vacant-link SLOT=<why>` argument: a slot the node's manifest
+/// declares emptiable (`optional: true` on a participant, `cardinality:
+/// "zero_or_one"` on an observer), left unresolved at launch on purpose, plus
+/// the reason the operator gives for it. Splits on the first `=` via
+/// [`parse_key_value_arg`], so a
 /// reason may itself contain `=`; SLOT is validated as a wire segment and the
 /// reason must say something.
 fn parse_vacant_link(raw: &str) -> Result<(String, String), String> {
@@ -297,8 +299,10 @@ pub enum NodeCommands {
             requires = "run",
         )]
         links: Vec<(String, String)>,
-        /// Explicitly start with a pairing or `one` observer slot unresolved,
-        /// saying why: `SLOT=<why>`. Repeatable. The reason is free prose (no
+        /// Explicitly start with a slot unresolved, saying why: `SLOT=<why>`.
+        /// Valid on a slot the node's manifest declares emptiable
+        /// (`optional: true` on a participant, `cardinality: "zero_or_one"` on
+        /// an observer). Repeatable. The reason is free prose (no
         /// comma splitting) and travels with the instance, so an operator
         /// reading the running stack sees the same sentence. Only valid
         /// alongside `--run`.
@@ -391,8 +395,10 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         links: Vec<(String, String)>,
-        /// Explicitly start with a pairing or `one` observer slot unresolved,
-        /// saying why: `SLOT=<why>`. Repeatable. The reason is free prose (no
+        /// Explicitly start with a slot unresolved, saying why: `SLOT=<why>`.
+        /// Valid on a slot the node's manifest declares emptiable
+        /// (`optional: true` on a participant, `cardinality: "zero_or_one"` on
+        /// an observer). Repeatable. The reason is free prose (no
         /// comma splitting) and travels with the instance, so an operator
         /// reading the running stack sees the same sentence. The instance boots
         /// with the slot silent (no wire traffic) until a later start resolves
