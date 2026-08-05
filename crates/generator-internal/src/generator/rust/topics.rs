@@ -574,7 +574,7 @@ pub fn build_consumed_topic_subscription(
 
     let from_target_expr = consumed_to_target_expression(dependency);
     let bound_producers_expr = consumed_bound_producers_expression(dependency);
-    let bound_producers_fn = build_bound_producers_fn(dependency);
+    let bound_producer_accessor_fn = build_bound_producer_accessor_fn(dependency);
 
     let subscription_tokens = build_subscription_struct(
         quote! {
@@ -608,7 +608,7 @@ pub fn build_consumed_topic_subscription(
     );
 
     Ok(quote! {
-        #bound_producers_fn
+        #bound_producer_accessor_fn
 
         #subscription_tokens
 
@@ -686,7 +686,7 @@ pub fn consumed_bound_producers_expression(
 /// here.
 ///
 /// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
-pub fn build_bound_producers_fn(
+pub fn build_bound_producer_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);

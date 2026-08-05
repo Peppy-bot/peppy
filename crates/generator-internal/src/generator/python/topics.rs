@@ -513,7 +513,7 @@ pub fn build_consumed_topic(
     // the set changes.
     builder.add_import("import peppylib");
 
-    crate::generator::python::services::emit_bound_producers_fn(&mut builder, dependency);
+    crate::generator::python::services::emit_bound_producer_accessor_fn(&mut builder, dependency);
 
     builder.blank_line();
     emit_subscription_class(

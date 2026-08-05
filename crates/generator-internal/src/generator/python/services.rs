@@ -43,7 +43,7 @@ pub(crate) fn sender_target_python_expr(
 /// state the same guarantees; only the Python-API tail sentence is added
 /// here. Callers need `import peppylib`, which every consumed module
 /// already adds.
-pub(crate) fn emit_bound_producers_fn(
+pub(crate) fn emit_bound_producer_accessor_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
@@ -360,7 +360,7 @@ pub fn build_consumed_service(
         " -> None"
     };
 
-    emit_bound_producers_fn(&mut builder, dependency);
+    emit_bound_producer_accessor_fn(&mut builder, dependency);
 
     let signature = if has_request {
         format!(
