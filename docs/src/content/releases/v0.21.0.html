@@ -1,0 +1,62 @@
+<entry>
+  <title>v0.21.0</title>
+  <id>https://docs.peppy.bot/releases/v0-21-0/</id>
+  <updated>2026-08-03T00:00:00Z</updated>
+
+  <summary>Federated launches span machines, repositories resolve through a committed index, and launchers pin registry sources.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.21.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Federated launches span machines, repositories resolve through a committed index, and launchers pin registry sources.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on August 3, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Repository entries now resolve through a committed repository index rather than being resolved ad hoc, and every cache entry is pinned to a git commit; generate and commit the index with the new &lt;code&gt;peppy repo index&lt;/code&gt; command, whose &lt;code&gt;--check&lt;/code&gt; mode verifies the committed index is up to date.&lt;/li&gt;
+&lt;li&gt;Launcher deployment sources are restricted to &lt;code&gt;name:tag&lt;/code&gt; registry references that resolve to node pins, and retired source keys are refused with a migration message, so update your launcher files to reference nodes by registry &lt;code&gt;name:tag&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Federation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A federated launch now spans multiple machines through cross-machine dispatch.&lt;/li&gt;
+&lt;li&gt;The launcher places and preflights federated core node links across machines.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy reset&lt;/code&gt; rediscovers federated reset targets from the federation instead of from local memory.&lt;/li&gt;
+&lt;li&gt;Cross-daemon pairing peers are stamped with their own core node in display reads.&lt;/li&gt;
+&lt;li&gt;Filesystem-backed repositories cannot participate in federation.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Pairing and dependencies&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;depends_on&lt;/code&gt; gains a fourth peer-coupling level, &lt;code&gt;pairing_observers&lt;/code&gt;, across the daemon and launcher.&lt;/li&gt;
+&lt;li&gt;The surviving instance of a pair still receives the dissolution notice after its partner has already stopped.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Launcher and launch&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Launcher files accept per-instance &lt;code&gt;env_vars&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;The launch summary lists every machine's node log files.&lt;/li&gt;
+&lt;li&gt;A coordinator's next launch takes over its own stale reservation through a lease instead of being blocked by it.&lt;/li&gt;
+&lt;li&gt;The caller's environment stays on the caller's machine, so peer builds no longer inherit it.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Containers&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Each peer prepares its own container bind mounts, and relative container mount sources are forwarded to Lima as absolute paths.&lt;/li&gt;
+&lt;li&gt;Restarts that would kill running containers are refused, and container bind sources are prepared before a participant slice takeover.&lt;/li&gt;
+&lt;li&gt;Apptainer SIF images are FUSE-mounted instead of extracted, with squashfuse bundled alongside apptainer.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Repositories&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy repo refresh&lt;/code&gt; caches its checkout for reuse, prunes orphaned checkouts, applies filesystem exclusions before reading declared items, and skips re-pushing stack entries whose manifest is unchanged.&lt;/li&gt;
+&lt;li&gt;Repository resolution failures are reported and contained instead of guessed, with clearer failure reports.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Messaging and code generation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The Rust and Python generators handle &lt;code&gt;$optional&lt;/code&gt; scalars and payload-less feedback topics consistently.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Documentation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The documentation is aligned with the current commands, outputs, and behavior.&lt;/li&gt;
+&lt;li&gt;Federation coordination guidance and the producer-link example are clarified, with the example showing separate per-node manifests.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>

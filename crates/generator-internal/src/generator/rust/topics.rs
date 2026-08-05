@@ -235,9 +235,9 @@ pub fn build_peer_module_header(
 /// module, but it exposes the slot's observed sources instead of the peer
 /// helpers. An observer plays no role, so there is no `paired()`/`wait_paired()`.
 ///
-/// The accessor is cardinality-typed the way a producer slot's is: a `one` slot
-/// gets `source() -> Option<ObservedSource>`, the multi cardinalities get
-/// `sources() -> Vec<ObservedSource>` in plan order.
+/// The accessor is cardinality-typed the way a producer slot's is: a scalar
+/// slot (`one` or `zero_or_one`) gets `source() -> Option<ObservedSource>`, the
+/// multi cardinalities get `sources() -> Vec<ObservedSource>` in plan order.
 pub fn build_observed_module_header(
     topic_name: &str,
     observer: &crate::generator::types::PeerContext,
@@ -253,7 +253,7 @@ pub fn build_observed_module_header(
             .collect::<Vec<_>>(),
     );
 
-    let sources_accessor = if cardinality.is_one() {
+    let sources_accessor = if cardinality.is_scalar() {
         quote! {
             #( #sources_doc )*
             pub fn source(
@@ -689,6 +689,9 @@ pub fn build_bound_producers_fn(
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
     let (api_note, accessor) = match dependency.cardinality {
+        Cardinality::ZeroOrOne => {
+            unreachable!("{}", crate::generator::types::PRODUCER_ZERO_OR_ONE)
+        }
         Cardinality::One => (
             None,
             quote! {

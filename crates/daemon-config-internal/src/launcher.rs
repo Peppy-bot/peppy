@@ -13,11 +13,12 @@ pub use bindings::{BindingValidationItem, ValidatedBindings, validate_bindings};
 pub use links::{ValidatedLinkPlan, validate_link_plan, validate_link_slots};
 pub use observations::{PlannedObservation, ValidatedObservations, validate_observations};
 pub use pairings::{
-    AlreadyPairedSlots, PairingValidationItem, PlannedPairEndpoint, PlannedPairing,
-    ValidatedPairings, validate_pairings,
+    AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairEndpoint,
+    PlannedPairing, ValidatedPairings, validate_pairings,
 };
 pub use parse::PeppyLauncherParser;
 pub use types::{
-    Deployment, DeploymentInstance, DeploymentSource, DuplicateLinkTarget, FrameworkOverrides,
-    LinkTargets, LinkValue, PeppyLauncher, Placements, split_link_target,
+    Deployment, DeploymentInstance, DeploymentSource, DuplicateLinkTarget, EmptyVacantReason,
+    FrameworkOverrides, LinkTargets, LinkValue, PeppyLauncher, Placements, Selection, VacantReason,
+    participant_vacancies, split_link_target,
 };

@@ -231,7 +231,7 @@ async fn node_launch_command_succeed() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -488,7 +488,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -2575,7 +2575,8 @@ async fn stack_launch_rejects_unbound_slot() {
 }
 
 /// Launcher `pairings:` establish pairs at launch: the earlier-started
-/// endpoint boots deferred, the later one carries the request, and both
+/// endpoint boots with its slot covered, the later one carries the request,
+/// and both
 /// running instances receive their `peer_update` pins live. The dummy `sh`
 /// nodes expose ready/health/shutdown/peer_update from the test process.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2753,12 +2754,205 @@ async fn stack_launch_establishes_launcher_pairings() {
     }
 }
 
+/// Vacancy is per instance, which is the whole reason it lives in the
+/// launcher rather than the manifest: one node with one `optional: true` slot,
+/// two instances of it in one deployment, one paired and one vacant. Both boot,
+/// and only the paired one ends up with a pin, so a slot's manifest optionality
+/// is a permission rather than a fate the node carries into every deployment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let run_cmd = instances.keep_alive_argv();
+    // One arm manifest, whose `controller` slot the node itself declares
+    // optional: some rigs drive the arm, some only watch it.
+    let arm_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "robot_arm",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }] }"#,
+        ),
+        None,
+        Some(
+            r#"{ topics: {
+                emits: [{ link_id: "controller", name: "joint_states" }],
+                consumes: [{ link_id: "controller", name: "joint_commands" }]
+            } }"#,
+        ),
+    );
+    let ctrl_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "arm_controller",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }] }"#,
+        ),
+        None,
+        Some(
+            r#"{ topics: {
+                emits: [{ link_id: "arm", name: "joint_commands" }],
+                consumes: [{ link_id: "arm", name: "joint_states" }]
+            } }"#,
+        ),
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let mut watches = Vec::new();
+    for (node_name, instance_id, link_id) in [
+        ("robot_arm", "arm_governed", "controller"),
+        ("robot_arm", "arm_watched", "controller"),
+        ("arm_controller", "ctrl_1", "arm"),
+    ] {
+        let _ready = listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("ready service should start");
+        let _health = listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("health service should start");
+        let (_shutdown, _) = listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("shutdown service should start");
+        let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerPinState::unpaired());
+        let slots = Arc::new(std::collections::BTreeMap::from([(
+            link_id.to_string(),
+            tx,
+        )]));
+        peppylib::services::peer_update::listen_for_peer_update(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+            slots,
+        )
+        .await
+        .expect("peer_update service should start");
+        watches.push(rx);
+    }
+
+    // Two instances of one node choosing different fates for the same slot:
+    // `arm_governed` is claimed reciprocally by the controller's link, and
+    // `arm_watched` says in its own words that nothing drives it.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { name: "robot_arm:v1" },
+                    instances: [
+                        { instance_id: "arm_governed" },
+                        {
+                            instance_id: "arm_watched",
+                            links: { controller: { vacant: "monitor rig: nothing commands this arm" } }
+                        }
+                    ]
+                },
+                {
+                    source: { name: "arm_controller:v1" },
+                    instances: [{
+                        instance_id: "ctrl_1",
+                        links: { arm: "arm_governed" }
+                    }]
+                }
+            ]
+        }"#;
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            ("robot_arm", "v1", &arm_path),
+            ("arm_controller", "v1", &ctrl_path),
+        ],
+    );
+
+    StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("one instance paired and one vacant is a valid launch");
+
+    let governed = watches[0].borrow().clone();
+    let pin = governed
+        .pin
+        .expect("the governed instance's slot should be pinned");
+    assert_eq!(pin.producer.instance_id, "ctrl_1");
+    assert_eq!(pin.peer_link_id, "arm");
+
+    let watched = watches[1].borrow().clone();
+    assert!(
+        watched.pin.is_none(),
+        "the vacant instance's slot must stay unpaired: {:?}",
+        watched.pin
+    );
+
+    let controller = watches[2].borrow().clone();
+    let pin = controller
+        .pin
+        .expect("the controller's slot should be pinned");
+    assert_eq!(
+        pin.producer.instance_id, "arm_governed",
+        "the controller pairs the instance it named, not its vacant sibling"
+    );
+
+    drop(instances);
+    for instance_id in ["ctrl_1", "arm_watched", "arm_governed"] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+}
+
 /// An observer slot is delivered its member set live, at every cardinality. A
 /// recorder observing the `arm` role of `arm_link/v1` declares three slots: a
 /// `one` slot linked to `arm_1`, a `one_or_more` slot linked to
 /// `["arm_2", "arm_1"]`, and a `zero_or_more` slot the launcher omits entirely.
 /// The sources are `robot_arm` instances whose own participant slots are
-/// deferred, so they boot unpaired but still publish their role's topics. When
+/// declared vacant, so they boot unpaired but still publish their role's
+/// topics. When
 /// the launch is up, the daemon's observation coordinator has pushed each slot's
 /// complete member set (in launcher order, at live generations) to the
 /// recorder's `observation_update` service, and the omitted slot holds the empty
@@ -2786,7 +2980,8 @@ async fn stack_launch_delivers_observer_member_sets() {
     // leaving the daemon to wait out its force-kill deadline once per instance.
     let instances = peppy::test_support::InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
-    // The source plays the `arm` role through its participant slot `controller`.
+    // The source plays the `arm` role through its participant slot `controller`,
+    // declared optional so a watched-only deployment may write it vacant.
     let arm_path = write_node_config_for_helper(
         nodes_dir.path(),
         "robot_arm",
@@ -2794,7 +2989,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         &git_hash,
         &run_cmd,
         Some(
-            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }] }"#,
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }] }"#,
         ),
         None,
         Some(
@@ -2831,7 +3026,7 @@ async fn stack_launch_delivers_observer_member_sets() {
 
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
     // Source instance services: ready/health/shutdown, no peer_update (its slot
-    // is deferred, so it is never paired).
+    // is vacant, so it is never paired).
     for (node_name, instance_id) in [("robot_arm", "arm_1"), ("robot_arm", "arm_2")] {
         let _ready = listen_for_node_ready(
             &node_messenger,
@@ -2912,8 +3107,14 @@ async fn stack_launch_delivers_observer_member_sets() {
                 {
                     source: { name: "robot_arm:v1" },
                     instances: [
-                        { instance_id: "arm_1", defer_links: ["controller"] },
-                        { instance_id: "arm_2", defer_links: ["controller"] }
+                        {
+                            instance_id: "arm_1",
+                            links: { controller: { vacant: "watched only: nothing drives this arm" } }
+                        },
+                        {
+                            instance_id: "arm_2",
+                            links: { controller: { vacant: "watched only: nothing drives this arm" } }
+                        }
                     ]
                 },
                 {
@@ -3001,7 +3202,7 @@ async fn stack_launch_delivers_observer_member_sets() {
 }
 
 /// A required pairing slot with neither a `links:` entry (on either
-/// side) nor a `defer_links:` opt-out fails the launch at validation,
+/// side) nor a `{ vacant: "<why>" }` opt-out fails the launch at validation,
 /// before anything is added or spawned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stack_launch_rejects_uncovered_pairing_slot() {
@@ -3063,8 +3264,13 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     .expect_err("an uncovered required pairing slot must fail the launch");
     let msg = err.to_string();
     assert!(
-        msg.contains("controller") && (msg.contains("--link") || msg.contains("defer_links")),
-        "the failure should name the uncovered slot and the launcher keys: {msg}"
+        msg.contains("controller") && msg.contains("--link") && msg.contains("`optional: true`"),
+        "the failure should name the uncovered slot, the pairing key and the manifest key: {msg}"
+    );
+    assert!(
+        msg.contains("if it is meant to run empty, declare"),
+        "the vacancy must be offered only behind the manifest change, never as a standalone \
+         fix: {msg}"
     );
 }
 
