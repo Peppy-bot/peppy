@@ -24,20 +24,20 @@ rstest = "0.26"
 
 # Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
 # `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
-# path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
-# crate follows the repo's default branch (`main`); the resolved revision is
+# path references outside its own tree. Every crate names the same branch, the
+# one carrying the `zero_or_one` producer cardinality; the resolved revision is
 # recorded in Cargo.lock and moved forward with `cargo update`. `config` and
 # `peppylib` are renamed via `package` (their crate names are `peppy-config-model`
 # and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
 # directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
 # `git_fixtures`) are added at each use site with `{ workspace = true, features = [...] }`.
-config = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppy-config-model" }
-peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppylib-rs" }
-pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+config = { git = "https://github.com/Peppy-bot/public-peppy-libs", branch = "sordid-turkey", package = "peppy-config-model" }
+peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", branch = "sordid-turkey", package = "peppylib-rs" }
+pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs", branch = "sordid-turkey" }
+core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs", branch = "sordid-turkey" }
+json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs", branch = "sordid-turkey" }
+config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs", branch = "sordid-turkey" }
+build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs", branch = "sordid-turkey" }
 
 # Internal workspace crates (members under `crates/`). Centralized here so each
 # member references them with `{ workspace = true }` instead of repeating a
