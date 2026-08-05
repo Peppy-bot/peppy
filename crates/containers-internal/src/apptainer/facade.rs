@@ -405,14 +405,6 @@ fn check_userns_prerequisites(apptainer_dir: &Path) -> Result<()> {
 }
 
 impl Apptainer {
-    /// Returns `true` when [`ApptainerCommand::apptainer_env`] variables reach
-    /// the container: the native backend passes them through the apptainer
-    /// process environment, while `limactl shell` does not forward host
-    /// process environment into the Lima guest.
-    pub fn supports_apptainer_env(&self) -> bool {
-        matches!(self.backend, Backend::Native { .. })
-    }
-
     /// Returns `true` if the Lima VM backend is already running and reachable.
     ///
     /// On Linux this always returns `true` (no VM needed). On macOS it checks
@@ -1046,13 +1038,27 @@ impl Apptainer {
                 lima_home,
                 ..
             } => {
-                if !apptainer_env.is_empty() {
-                    tracing::warn!(
-                        "dropping {} APPTAINERENV_ variable(s): process environment \
-                         does not cross limactl shell into the Lima guest",
-                        apptainer_env.len()
-                    );
-                }
+                // Host process environment does not cross `limactl shell`, so
+                // APPTAINERENV_ variables ride the guest argv instead: the
+                // guest `env` utility sets them and execs apptainer. Every
+                // wrapper below passes its tail through as positional
+                // parameters, so the pairs are never re-tokenized.
+                let (guest_bin, guest_args_owned): (&Path, Vec<String>) =
+                    if apptainer_env.is_empty() {
+                        (apptainer_bin, args.iter().map(|s| s.to_string()).collect())
+                    } else {
+                        let env_argv = apptainer_env
+                            .iter()
+                            .map(|(key, value)| format!("APPTAINERENV_{key}={value}"))
+                            .chain(std::iter::once(
+                                apptainer_bin.to_string_lossy().into_owned(),
+                            ))
+                            .chain(args.iter().map(|s| s.to_string()))
+                            .collect();
+                        (Path::new("env"), env_argv)
+                    };
+                let guest_args: Vec<&str> = guest_args_owned.iter().map(|s| s.as_str()).collect();
+
                 let guest_workdir = working_dir
                     .map(|dir| self.translate_path(dir))
                     .transpose()?;
@@ -1064,18 +1070,22 @@ impl Apptainer {
                 match (guest_pgid_file, guest_workdir.as_deref()) {
                     (Some(pgid_file), workdir) => {
                         cmd.args(lima::lima_guest_pgid_argv(
-                            apptainer_bin,
-                            args,
+                            guest_bin,
+                            &guest_args,
                             pgid_file,
                             workdir,
                         ));
                     }
                     (None, Some(workdir)) => {
-                        cmd.args(lima::lima_guest_workdir_argv(apptainer_bin, args, workdir));
+                        cmd.args(lima::lima_guest_workdir_argv(
+                            guest_bin,
+                            &guest_args,
+                            workdir,
+                        ));
                     }
                     (None, None) => {
-                        cmd.arg(apptainer_bin);
-                        cmd.args(args);
+                        cmd.arg(guest_bin);
+                        cmd.args(guest_args);
                     }
                 }
                 Ok(cmd)
@@ -1328,13 +1338,13 @@ impl<'a> ApptainerCommand<'a> {
     }
 
     /// Forward an environment variable into the container by setting
-    /// `APPTAINERENV_{key}` on the apptainer process itself.
+    /// `APPTAINERENV_{key}` in the apptainer process environment.
     ///
     /// Unlike [`env`](Self::env), this reaches a build's `%post` scriptlet,
-    /// which `apptainer build` offers no `--env` flag for. Native backend
-    /// only: process environment does not cross `limactl shell` into the Lima
-    /// guest, so callers must check [`Apptainer::supports_apptainer_env`]
-    /// before relying on it; on Lima the variable is dropped with a warning.
+    /// which `apptainer build` offers no `--env` flag for. The native backend
+    /// sets it on the spawned process; the Lima backend prefixes the guest
+    /// command with `env APPTAINERENV_{key}={value}`, since host process
+    /// environment does not cross `limactl shell`.
     pub fn apptainer_env(mut self, key: &str, value: &str) -> Self {
         self.apptainer_env
             .push((key.to_string(), value.to_string()));

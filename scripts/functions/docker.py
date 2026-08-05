@@ -11,7 +11,7 @@ from pathlib import Path
 from .cli import ReleaseError, console, need_cmd, prompt, run_with_error_handling
 
 
-DOCKER_HUB_ACCOUNT = "tuatini"
+DOCKER_HUB_ACCOUNT = "peppybot"
 DOCKER_PLATFORMS: list[str] = ["linux/amd64", "linux/arm64"]
 BUILDX_BUILDER_NAME = "peppy-multiplatform"
 
@@ -29,12 +29,12 @@ BASE_IMAGES: list[BaseImage] = [
     BaseImage(
         name="python-uv",
         dockerfile_dir="python_uv",
-        repo=f"{DOCKER_HUB_ACCOUNT}/peppy-python-uv-base",
+        repo=f"{DOCKER_HUB_ACCOUNT}/python-uv-base",
     ),
     BaseImage(
         name="rust-cargo",
         dockerfile_dir="rust_cargo",
-        repo=f"{DOCKER_HUB_ACCOUNT}/peppy-rust-cargo-base",
+        repo=f"{DOCKER_HUB_ACCOUNT}/rust-cargo-base",
     ),
 ]
 

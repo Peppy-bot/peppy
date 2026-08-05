@@ -172,12 +172,12 @@ pub(super) async fn build_container_image(
     let def_path = inputs.working_dir.join(inputs.def_file);
 
     // Cache preparation is filesystem work (def read, layout creation, an
-    // ELF inspection, potentially a multi-MB binary copy), so it runs on the
+    // ELF inspection, potentially a binary download), so it runs on the
     // blocking pool like the other build I/O above. A def file that cannot
     // be read as UTF-8 skips caching outright, since the conflict scan
     // cannot see what such a build references; a missing def file surfaces
     // as an apptainer error below either way.
-    let build_cache = if apptainer.supports_apptainer_env() {
+    let build_cache = {
         let peppy_dirs = inputs.peppy_dirs.clone();
         let language = inputs.language;
         let extra_args = inputs.apptainer_build_extra_args.to_vec();
@@ -188,8 +188,6 @@ pub(super) async fn build_container_image(
         })
         .await
         .map_err(|e| format!("Build cache preparation task failed: {}", e))?
-    } else {
-        None
     };
     if let Some(cache) = &build_cache {
         let _ = inputs.feedback_tx.send(FeedbackLine {
@@ -229,15 +227,6 @@ pub(super) async fn build_container_image(
             Some(container_build_cache::BIND_DEST),
             None,
         );
-        // Nested over the directory bind so the executable that later builds
-        // run cannot be replaced from inside `%post`.
-        if let Some(sccache_bin) = &cache.sccache_bin {
-            cmd_builder = cmd_builder.bind(
-                &sccache_bin.to_string_lossy(),
-                Some(&container_build_cache::sccache_bin_dest()),
-                Some("ro"),
-            );
-        }
         for (key, value) in &cache.env {
             cmd_builder = cmd_builder.apptainer_env(key, value);
         }
