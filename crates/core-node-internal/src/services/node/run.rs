@@ -16,6 +16,7 @@ use core_node_api::InstanceState;
 use core_node_api::encoding::{NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult};
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
+use daemon_config::launcher::VacantReason;
 use daemon_config::peppy_config::PeppyConfig;
 use futures::FutureExt;
 use node_stack::{self, EntityHandle, NodeEntity, NodeStack};
@@ -798,7 +799,7 @@ async fn process_node_run(
         tag,
         env_vars,
         requested_pairs,
-        deferred_pairs,
+        vacant_pairs,
         covered_pairs,
         planned_observations,
         manifest_sha256,
@@ -898,12 +899,30 @@ async fn process_node_run(
         .as_ref()
         .map(|d| d.pairings.as_slice())
         .unwrap_or_default();
+    // The goal carries each vacancy's reason as text; this is where it becomes
+    // the domain type the validator and the feedback line both speak.
+    let vacant_reasons = match vacant_pairs
+        .iter()
+        .map(|(link_id, reason)| {
+            VacantReason::new(reason)
+                .map(|reason| (link_id.clone(), reason))
+                .map_err(|e| format!("pairing slot `{link_id}`: {e}"))
+        })
+        .collect::<std::result::Result<std::collections::BTreeMap<_, _>, String>>()
+    {
+        Ok(reasons) => reasons,
+        Err(msg) => {
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+    };
+
     // Snapshot + claims are read under two short read locks, and only when
     // this run involves pairing at all; the registry re-validates at
     // reserve time, so plan-phase staleness is safe.
     let planned_pairs = if pairing_deps.is_empty()
         && requested_pairs.is_empty()
-        && deferred_pairs.is_empty()
+        && vacant_pairs.is_empty()
         && covered_pairs.is_empty()
     {
         Vec::new()
@@ -916,7 +935,7 @@ async fn process_node_run(
             instance_id: instance_id_str,
             pairing_deps,
             requested: &requested_pairs,
-            deferred: &deferred_pairs,
+            vacant: &vacant_reasons,
             covered: &covered_pairs,
         };
         match plan_requested_pairs(&snapshot, &live_pairs, &request, &ctx.action.core_node_name) {
@@ -927,14 +946,10 @@ async fn process_node_run(
             }
         }
     };
-    for link_id in &deferred_pairs {
+    for (link_id, reason) in &vacant_reasons {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
-            line: format!(
-                "pairing slot `{link_id}` deferred: instance starts unpaired; establish \
-                 the pair later by starting a peer instance with `{instance_id_str}/{link_id}` \
-                 as its pair target"
-            ),
+            line: vacant_slot_feedback(instance_id_str, link_id, reason),
         });
     }
     for (link_id, peer) in &covered_pairs {
@@ -2023,9 +2038,39 @@ fn spawn_exit_watcher(p: ExitWatcherParams) {
     });
 }
 
+/// What an operator watching the run sees for a slot the deployment left
+/// empty on purpose: the slot, the reason it was given, and how a peer claims
+/// it later. The reason travels on the goal precisely so this line can say it;
+/// without it the operator would be told a slot is unpaired and left to guess
+/// whether that was intended.
+fn vacant_slot_feedback(instance_id: &str, link_id: &str, reason: &VacantReason) -> String {
+    format!(
+        "pairing slot `{link_id}` vacant ({reason}): instance starts unpaired; establish the \
+         pair later by starting a peer instance with `{instance_id}/{link_id}` as its pair target"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reason the deployment wrote down reaches the operator verbatim,
+    /// which is the whole reason it rides the goal rather than staying in the
+    /// launch file.
+    #[test]
+    fn vacant_feedback_repeats_the_deployment_s_own_reason() {
+        let reason = VacantReason::new("monitor rig: nothing commands this backbone")
+            .expect("a reason that says something");
+        let line = vacant_slot_feedback("backbone_monitor", "leader_left_arm", &reason);
+        assert!(
+            line.contains("`leader_left_arm` vacant (monitor rig: nothing commands this backbone)"),
+            "the slot and its reason must both appear: {line}"
+        );
+        assert!(
+            line.contains("`backbone_monitor/leader_left_arm`"),
+            "the line must show how a peer claims the slot later: {line}"
+        );
+    }
 
     fn runtime_config_for_test() -> RuntimeConfig {
         let instance_id = config::runtime::Name::new("camera_front").unwrap();

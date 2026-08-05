@@ -224,6 +224,10 @@ impl DependencyContext {
     /// cardinality while the explicit `target` parameter stays uniform.
     pub fn target_selection_doc(&self) -> &'static [&'static str] {
         match self.cardinality {
+            // `zero_or_one` sizes an observed member set, and `depends_on`
+            // producer entries reject it at parse, so a producer slot never
+            // reaches here carrying it.
+            Cardinality::ZeroOrOne => unreachable!("{PRODUCER_ZERO_OR_ONE}"),
             Cardinality::One => &[
                 "This slot declares cardinality `one`: `target` is its sole bound",
                 "producer, returned by `bound_producer()`; the explicit parameter",
@@ -253,6 +257,7 @@ impl DependencyContext {
     /// `[0]` for Python).
     pub fn bound_producers_doc(&self) -> &'static [&'static str] {
         match self.cardinality {
+            Cardinality::ZeroOrOne => unreachable!("{PRODUCER_ZERO_OR_ONE}"),
             Cardinality::One => &[
                 "The producer bound to this module's slot.",
                 "The binding is fixed when the node starts (no live discovery; a",
@@ -280,6 +285,14 @@ impl DependencyContext {
     }
 }
 
+/// What a producer slot carrying `zero_or_one` would mean, if the manifest
+/// parser let one exist. It does not: `depends_on.nodes` and
+/// `depends_on.contracts` reject the spelling, so every producer-side match on
+/// [`config::node::Cardinality`] is total over the three variants it can see,
+/// and reaching this message means that bar was removed without its readers.
+pub(crate) const PRODUCER_ZERO_OR_ONE: &str = "`zero_or_one` sizes an observed member set and is rejected on `depends_on.nodes` and \
+     `depends_on.contracts`, so a producer-binding slot cannot carry it";
+
 /// Pre-wrapped doc lines for an observer module's source accessor, the
 /// observation counterpart of [`DependencyContext::bound_producers_doc`] and
 /// shared verbatim by both language generators. The first line stands alone as
@@ -296,6 +309,15 @@ pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
                 "`None` before the daemon has delivered the slot, and again if a",
                 "replan leaves it observing nothing. This slot declares cardinality",
                 "`one`: it observes at most one pairing, so the accessor is singular.",
+            ],
+        },
+        Cardinality::ZeroOrOne => AccessorDoc {
+            summary: "The pairing this module's observer slot observes, if any.",
+            body: &[
+                "`None` before the daemon has delivered the slot, and again if a",
+                "replan leaves it observing nothing. This slot declares cardinality",
+                "`zero_or_one`: the deployment bound at most one pairing to it, and",
+                "`None` is the steady state wherever it left the slot vacant.",
             ],
         },
         Cardinality::OneOrMore => AccessorDoc {

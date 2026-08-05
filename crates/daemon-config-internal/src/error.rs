@@ -284,22 +284,54 @@ pub struct PairingSha256Mismatch {
     pub pairing_tag: String,
 }
 
-/// Payload for [`ParsingError::PairingSlotUncovered`]. A required pairing
-/// slot was neither paired nor explicitly deferred.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "instance `{instance_id}` declares required pairing slot `{link_id}` (pairing \
-     `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
-     `links: {{ {link_id}: \"<peer_instance>\" }}` / `--link {link_id}@<peer_instance>`), \
-     or defer it deliberately (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
-)]
+/// Payload for [`ParsingError::PairingSlotUncovered`]. A declared pairing slot
+/// was neither paired nor declared vacant. Forgetting a slot is an error
+/// whether or not the manifest declares it optional: an optional slot may run
+/// empty, but only where the deployment says so.
+///
+/// `Display` is hand-written rather than derived because the remedies it offers
+/// follow `optional`: only a slot the manifest declares optional may be
+/// vacated, so only its message names the vacancy spelling.
+#[derive(Debug, Clone)]
 pub struct PairingSlotUncovered {
     pub instance_id: String,
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
     pub role: String,
+    /// Whether the node's manifest declares this slot `optional: true`.
+    pub optional: bool,
 }
+
+impl std::fmt::Display for PairingSlotUncovered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            instance_id,
+            link_id,
+            pairing_name,
+            pairing_tag,
+            role,
+            optional,
+        } = self;
+        let (kind, fix) = if *optional {
+            ("optional", format!("or {}", vacancy_hint(link_id)))
+        } else {
+            (
+                "required",
+                emptiable_hint(link_id, PARTICIPANT_EMPTIABLE_KEY),
+            )
+        };
+        write!(
+            f,
+            "instance `{instance_id}` declares {kind} pairing slot `{link_id}` (pairing \
+             `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
+             `links: {{ {link_id}: \"<peer_instance>\" }}` / \
+             `--link {link_id}@<peer_instance>`), {fix}"
+        )
+    }
+}
+
+impl std::error::Error for PairingSlotUncovered {}
 
 /// Payload for [`ParsingError::ObservationTargetNotObservable`]. The observer
 /// slot's source instance declares no participant slot playing the observed
@@ -346,10 +378,10 @@ pub struct ObservationTargetAmbiguous {
     pub candidate_link_ids: String,
 }
 
-/// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared `one` or
-/// `one_or_more` observer slot was neither linked to a source nor explicitly
-/// deferred. Mirror of [`PairingSlotUncovered`] for observers. A `zero_or_more`
-/// slot never raises this: omitting it IS its empty set.
+/// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared `one`,
+/// `zero_or_one` or `one_or_more` observer slot was neither linked to a source
+/// nor declared vacant. Mirror of [`PairingSlotUncovered`] for observers. A
+/// `zero_or_more` slot never raises this: omitting it IS its empty set.
 ///
 /// `Display` is hand-written rather than derived because the launcher link shape
 /// it suggests follows the slot's cardinality, the way the binding errors'
@@ -374,18 +406,25 @@ impl std::fmt::Display for ObservationSlotUncovered {
             observed_role,
             cardinality,
         } = self;
-        let link_shape = if cardinality.is_one() {
+        // A scalar slot takes a single source; a `one_or_more` slot takes an
+        // array. Only `zero_or_one` may say "nothing here", and it says it with
+        // a vacancy: `one` observes exactly one pairing and `one_or_more` at
+        // least one, so both take a source and nothing else.
+        let link_shape = if cardinality.is_scalar() {
             format!("links: {{ {link_id}: \"<source_instance>\" }}")
         } else {
             format!("links: {{ {link_id}: [\"<source_instance>\", ...] }}")
+        };
+        let fix = match cardinality {
+            Cardinality::ZeroOrOne => format!("or {}", vacancy_hint(link_id)),
+            _ => emptiable_hint(link_id, OBSERVER_EMPTIABLE_KEY),
         };
         write!(
             f,
             "instance `{instance_id}` declares observer slot `{link_id}` (cardinality \
              `{cardinality}`, observes role `{observed_role}` of pairing \
              `{pairing_name}:{pairing_tag}`) with no source. Link it (launcher `{link_shape}` / \
-             `--link {link_id}@<source_instance>`), or defer it deliberately \
-             (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
+             `--link {link_id}@<source_instance>`), {fix}"
         )
     }
 }
@@ -547,12 +586,14 @@ pub enum ParsingError {
     /// single `<instance>[/<link_id>]` target.
     #[error(
         "link `{link}` on instance `{owner_instance_id}` is an array, but the observer slot's \
-         cardinality is `one`: link a single `<source_instance>[/<source_link_id>]` target, or \
-         declare `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the observer entry"
+         cardinality is `{cardinality}`: link a single `<source_instance>[/<source_link_id>]` \
+         target, or declare `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the observer \
+         entry"
     )]
-    ObservationArrayOnOneSlot {
+    ObservationArrayOnScalarSlot {
         owner_instance_id: String,
         link: String,
+        cardinality: Cardinality,
     },
     /// A launch-file scalar value on a `one_or_more` / `zero_or_more` observer
     /// slot. Multi-cardinality slots take an array of targets, even for a
@@ -580,17 +621,18 @@ pub enum ParsingError {
         owner_instance_id: String,
         link: String,
     },
-    /// Repeated `--link KEY@…` occurrences on a `cardinality: "one"` observer
-    /// slot. Flag repetition accumulates a multi slot's set and stays a hard
-    /// error on a `one` slot.
+    /// Repeated `--link KEY@…` occurrences on a scalar observer slot. Flag
+    /// repetition accumulates a multi slot's set and stays a hard error on a
+    /// `one` or `zero_or_one` slot.
     #[error(
         "{target_count} `--link {link}@…` occurrences on instance `{owner_instance_id}`, but the \
-         observer slot's cardinality is `one`: pass exactly one, or declare \
+         observer slot's cardinality is `{cardinality}`: pass exactly one, or declare \
          `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the observer entry"
     )]
     ObservationSingleSlotMultipleTargets {
         owner_instance_id: String,
         link: String,
+        cardinality: Cardinality,
         target_count: usize,
     },
     /// Two of an observer slot's targets resolved to the same observed pairing
@@ -610,16 +652,93 @@ pub enum ParsingError {
         source_link_id: String,
     },
 
-    /// A `defer_links` entry that is invalid. Structural reasons (the entry
-    /// names no declared slot, or names a producer-binding slot, which cannot
-    /// be deferred) and the stateful reason (the slot is also linked in the
-    /// same plan) both surface here with a specific `reason`.
-    #[error("defer_links entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}")]
-    LinkDeferInvalid {
+    /// A `{ vacant: "<why>" }` value on a slot whose manifest does not declare
+    /// it emptiable, or one that already has a spelling for its empty state.
+    /// A deployment decides that a specific instance runs a slot empty; the
+    /// node decides whether any deployment may.
+    #[error(
+        "link `{link_id}` on instance `{owner_instance_id}` is {slot_kind} and cannot be \
+         vacant. {refusal}"
+    )]
+    LinkVacantInvalid {
         owner_instance_id: String,
         link_id: String,
-        reason: String,
+        slot_kind: String,
+        refusal: VacancyRefusal,
     },
+}
+
+/// Why a slot refuses `{ vacant: "<why>" }`, and what to write instead. The
+/// three arms are three different facts with three different remedies: the node
+/// has not declared the slot emptiable, the slot has no empty state at all, or
+/// it has one and spells it another way. Every payload is prose fixed by the
+/// slot's kind, so the arms carry `&'static str`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VacancyRefusal {
+    /// The manifest declares the slot required, so no deployment may empty it.
+    ManifestRequires {
+        /// The manifest key that would make the slot emptiable, named so the
+        /// error offers the node-side remedy alongside the deployment-side one.
+        declare_optional: &'static str,
+    },
+    /// The slot cannot be empty in any spelling, so the only remedy is to fill
+    /// it (or to declare a cardinality with a floor of zero).
+    NoEmptyState {
+        /// What the slot takes instead, and why it has no empty state.
+        requirement: &'static str,
+    },
+    /// The slot may be empty, but writes it another way.
+    SpelledDifferently { empty_spelling: &'static str },
+}
+
+impl std::fmt::Display for VacancyRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VacancyRefusal::ManifestRequires { declare_optional } => write!(
+                f,
+                "The node manifest declares it required: link it, or declare {declare_optional}"
+            ),
+            VacancyRefusal::NoEmptyState { requirement } => {
+                write!(f, "It has no empty state: it takes {requirement}")
+            }
+            VacancyRefusal::SpelledDifferently { empty_spelling } => {
+                write!(f, "Its empty state is {empty_spelling}")
+            }
+        }
+    }
+}
+
+/// How a coverage failure tells the reader to write the vacancy down, shared
+/// by [`PairingSlotUncovered`] and [`ObservationSlotUncovered`] so the two
+/// surfaces cannot drift on the spelling of a feature whose whole point is
+/// that there is one spelling.
+/// The manifest key that declares a participant pairing slot emptiable, spelled
+/// once so the uncovered-slot remedy and [`VacancyRefusal::ManifestRequires`]
+/// cannot drift on it.
+pub(crate) const PARTICIPANT_EMPTIABLE_KEY: &str =
+    "`optional: true` on its `depends_on.pairings` entry";
+
+/// The manifest key that declares an observer slot emptiable, shared for the
+/// same reason as [`PARTICIPANT_EMPTIABLE_KEY`].
+pub(crate) const OBSERVER_EMPTIABLE_KEY: &str =
+    "`cardinality: \"zero_or_one\"` on its `depends_on.pairing_observers` entry";
+
+fn vacancy_hint(link_id: &str) -> String {
+    format!(
+        "leave it empty on purpose (`links: {{ {link_id}: {{ vacant: \"<why>\" }} }}` / \
+         `--vacant-link '{link_id}=<why>'`)"
+    )
+}
+
+/// The remedy for an uncovered slot whose node has not declared it emptiable.
+/// It names BOTH steps, because the manifest key alone leaves the slot just as
+/// uncovered: an emptiable slot still needs the deployment to write the vacancy
+/// down. `declare_emptiable` names the key for this slot kind.
+fn emptiable_hint(link_id: &str, declare_emptiable: &str) -> String {
+    format!(
+        "or, if it is meant to run empty, declare {declare_emptiable} and then {vacancy}",
+        vacancy = vacancy_hint(link_id)
+    )
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

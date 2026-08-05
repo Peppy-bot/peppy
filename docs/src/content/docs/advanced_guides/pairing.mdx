@@ -102,7 +102,11 @@ The two directions are checked differently, and for the same reasons contracts a
 
 Naming a topic under `consumes` that this node's own role emits is an error, as is naming a topic that is absent from the document. Both are reported as one aggregated diff per slot, so a manifest with several wrong entries produces one readable report rather than a cascade.
 
-Every participant slot must be covered: starting the instance without pairing the slot, or without deferring it explicitly, fails loudly. A deployment that runs the node with a slot unpaired says so with `--defer-link`/`defer_links:`, so an unpaired slot is always something the deployment wrote down rather than something it forgot. Coverage is a launch-time question and has no bearing on what the node declares: a slot that boots deferred is interface-checked exactly like a paired one.
+Every participant slot must be covered: starting the instance without pairing the slot, or without declaring it vacant, fails loudly. A deployment that runs the node with a slot unpaired says so with `--vacant-link 'SLOT=<why>'` / `links: { <slot>: { vacant: "<why>" } }`, and the reason is required, so an unpaired slot is always something the deployment wrote down, with its rationale, rather than something it forgot.
+
+Whether a slot *may* be vacated at all is the node's own call, made once in its manifest with `optional: true` on the `depends_on.pairings` entry. That is the deployment-independent half of the statement: a reader of the node can tell which of its slots run without a peer without sweeping every launcher, and a slot that must never boot unpaired cannot be waived by any deployment. The manifest says "may be empty", the deployment says "is empty here, because", and a slot nobody mentioned is uncovered either way. A vacancy on a required slot is refused with the manifest key that would lift the bar.
+
+Coverage is a launch-time question and has no bearing on what the node declares through the slot: a slot that boots vacant is interface-checked exactly like a paired one.
 
 ## Establishing pairs
 
@@ -113,24 +117,36 @@ peppy repo refresh
 peppy node add -s ./robot_arm        # sync interfaces, then add to the stack
 peppy node add -s ./arm_controller
 
-# The first instance has no peer yet, so its required slot must be
-# explicitly deferred; it boots with the slot silent.
-peppy node run --instance-id arm_1 robot_arm:v1 --defer-link controller
+# The first instance has no peer yet. Its manifest declares the slot
+# `optional: true`, so this deployment may declare it vacant; it boots with
+# the slot silent.
+peppy node run --instance-id arm_1 robot_arm:v1 \
+  --vacant-link 'controller=the commander starts after this arm'
 
 # The second instance pairs its `arm` slot with arm_1 at start.
 peppy node run --instance-id ctrl_1 arm_controller:v1 --link arm@arm_1
 ```
 
-The `--link` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the running peer instance, and (only when the peer declares several complementary slots of the same pairing) which of the peer's slots to claim. Running a node whose required slot is neither `--link`ed nor `--defer-link`ed is a hard error naming the missing slot and both flags:
+The `--link` value is `LINK_ID@PEER_INSTANCE[/PEER_LINK]`: your slot, the running peer instance, and (only when the peer declares several complementary slots of the same pairing) which of the peer's slots to claim. The `--vacant-link` value is `SLOT=<why>`, split on the first `=`, so the reason may itself contain `=` and needs no escaping. Running a node whose slot is neither `--link`ed nor `--vacant-link`ed is a hard error naming the missing slot, and the remedies it offers follow the manifest. An optional slot's error names both:
 
 ```sh
 $ peppy node run arm_controller:v1
-Error: instance `brave-lovelace-4821` declares required pairing slot `arm` (pairing `arm_link:v1`,
+Error: instance `brave-lovelace-4821` declares optional pairing slot `arm` (pairing `arm_link:v1`,
 role `controller`) with no pair. Pair it (launcher `links: { arm: "<peer_instance>" }` /
-`--link arm@<peer_instance>`), or defer it deliberately (`defer_links: ["arm"]` / `--defer-link arm`)
+`--link arm@<peer_instance>`), or leave it empty on purpose
+(`links: { arm: { vacant: "<why>" } }` / `--vacant-link 'arm=<why>'`)
 ```
 
-In a launcher, the pair is declared once, on either instance, with `links:`; a slot left intentionally unpaired goes in `defer_links:`:
+A required slot's error names only the pairing, and points at the manifest for the rest, so it never advertises an escape hatch the node forbids:
+
+```sh
+Error: instance `brave-lovelace-4821` declares required pairing slot `arm` (pairing `arm_link:v1`,
+role `controller`) with no pair. Pair it (launcher `links: { arm: "<peer_instance>" }` /
+`--link arm@<peer_instance>`), or declare the slot `optional: true` in the node manifest if it is
+meant to run without a peer
+```
+
+In a launcher, the pair is declared once, on either instance, with `links:`; a slot left intentionally unpaired takes a `{ vacant: "<why>" }` value in that same map:
 
 ```json5 title="peppy_launcher.json5"
 {
@@ -248,8 +264,10 @@ interfaces: {
 ```sh
 peppy node add -s ./two_arm_commander
 
-peppy node run --instance-id arm_l robot_arm:v1 --defer-link controller
-peppy node run --instance-id arm_r robot_arm:v1 --defer-link controller
+peppy node run --instance-id arm_l robot_arm:v1 \
+  --vacant-link 'controller=the commander starts after both arms'
+peppy node run --instance-id arm_r robot_arm:v1 \
+  --vacant-link 'controller=the commander starts after both arms'
 peppy node run --instance-id cmd_1 two_arm_commander:v1 \
   --link left_arm@arm_l --link right_arm@arm_r
 ```
@@ -303,13 +321,16 @@ An observer slot carries a [`cardinality`](/advanced_guides/topics/#dependency-c
 
 | `cardinality` | Launcher `links:` value | Omitting the slot |
 |---|---|---|
-| `one` (the default) | a single target, `watch: "arm_1"` | rejected: link it or defer it |
-| `one_or_more` | an array, `watch: ["arm_1", "arm_2"]` | rejected: link it or defer it |
+| `one` (the default) | a single target, `watch: "arm_1"` | rejected: it observes exactly one pairing, so it takes a source |
+| `zero_or_one` | a single target, or `{ vacant: "<why>" }` | rejected: link it or declare it vacant |
+| `one_or_more` | an array, `watch: ["arm_1", "arm_2"]` | rejected: it has no empty state, so it takes at least one source |
 | `zero_or_more` | an array, possibly empty | valid, and means the empty set |
 
-On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot. Deferring a `zero_or_more` slot is valid too, and says its empty set explicitly.
+Vacancy is only for the `zero_or_one` row, which is the observer counterpart of a participant slot's `optional: true`: the node declaring it is the node saying it runs fine watching nothing. A `one` slot observes exactly one pairing, a `one_or_more` slot has no empty state to write, and a `zero_or_more` slot already writes its empty set as `[]`. Only `zero_or_more` may be omitted, because it is the only one whose absence has no failure mode; every other slot needs an explicit line, which is what keeps a slot you forgot distinguishable from one you emptied on purpose.
 
-The declared cardinality types the generated accessor, so flipping it surfaces at every call site rather than silently reading one member of many: a `one` slot exposes `source()` returning a single observed pairing, and the multi cardinalities expose `sources()` returning the whole set in plan order. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the member that published it.
+On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot.
+
+The declared cardinality types the generated accessor, so flipping it surfaces at every call site rather than silently reading one member of many: a scalar slot (`one` or `zero_or_one`) exposes `source()` returning a single observed pairing, and the multi cardinalities expose `sources()` returning the whole set in plan order. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the member that published it.
 
 <Tabs>
   <TabItem label="Python">
@@ -369,7 +390,7 @@ Pairing and [contract implementation](/advanced_guides/contract_implementation/)
 |---|---|---|
 | Declaration model | The node enumerates what it uses in `interfaces.topics`; the document owns shape and QoS | The node enumerates what it uses in `interfaces`; the document owns shape and QoS |
 | Coverage | Produced side (`emits`) exact per slot, consumed side free | Produced side (`implements`) exact per slot, consumed side free |
-| Cardinality | Exactly 1:1 per slot, exclusive (no `cardinality` key) | Declared per slot: exactly one by default, an application-selected set for `one_or_more` / `zero_or_more` |
+| Cardinality | Exactly 1:1 per slot, exclusive (no `cardinality` key); `optional: true` says the slot may also run with no peer | Declared per slot: exactly one by default, an application-selected set for `one_or_more` / `zero_or_more` |
 | Directionality | Both directions in one contract (two roles) | One direction per contract |
 | Establishment | Declared once on either side (`--link arm@peer`), covering both endpoints, at instance start | Each consumer slot bound to its producer(s) (`--link slot@producer`), at instance start |
 | Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |

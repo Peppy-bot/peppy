@@ -10,11 +10,13 @@ mod stop;
 mod sync;
 mod types;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{ArgGroup, Subcommand};
 use config::node::Toolchain;
+use daemon_config::launcher::{LinkTargets, LinkValue, Selection, VacantReason};
 use tracing::info;
 
 use super::Command;
@@ -146,13 +148,68 @@ pub(crate) fn parse_key_at_target(
     Ok((key.to_owned(), value.to_owned()))
 }
 
-/// Parses a `--defer-link` argument: a single pairing/observer slot `link_id`
-/// deliberately left unresolved at launch, validated as a wire segment.
-fn parse_defer_link(raw: &str) -> Result<String, String> {
-    let link_id = raw.trim();
-    pmi::Segment::try_from(link_id)
-        .map_err(|e| format!("invalid --defer-link LINK_ID '{link_id}': {e}"))?;
-    Ok(link_id.to_string())
+/// Parses a `--vacant-link SLOT=<why>` argument: a slot the node's manifest
+/// declares emptiable (`optional: true` on a participant, `cardinality:
+/// "zero_or_one"` on an observer), left unresolved at launch on purpose, plus
+/// the reason the operator gives for it. Splits on the first `=` via
+/// [`parse_key_value_arg`], so a
+/// reason may itself contain `=`; SLOT is validated as a wire segment and the
+/// reason is parsed into a [`VacantReason`] here, once, at the flag boundary.
+fn parse_vacant_link(raw: &str) -> Result<(String, VacantReason), String> {
+    let (link_id, reason) = parse_key_value_arg(raw)
+        .map_err(|_| format!("invalid --vacant-link value '{raw}': expected SLOT=<why>"))?;
+    pmi::Segment::try_from(link_id.as_str())
+        .map_err(|e| format!("invalid --vacant-link SLOT '{link_id}': {e}"))?;
+    let reason =
+        VacantReason::new(&reason).map_err(|e| format!("invalid --vacant-link '{raw}': {e}"))?;
+    Ok((link_id, reason))
+}
+
+/// The `--link` and `--vacant-link` flags of one run, merged into the single
+/// `links` map every validator downstream reads: the same map a launch file's
+/// `links:` parses into, built here at the flag boundary so nothing below has
+/// to join two containers to learn a slot's fate.
+///
+/// Repeating a `--link KEY` mirrors the launcher's array form: it accumulates
+/// the slot's bound set, and `validate_bindings` checks the count against the
+/// slot's declared cardinality (more than one target on a `cardinality: "one"`
+/// slot fails there). Repeating the exact same `KEY@TARGET` pair is a hard
+/// error, rejected by `LinkTargets` like every other path that builds a bound
+/// set, and a slot given both flags is rejected here: one key, one value.
+fn merge_link_flags(
+    links: &[(String, String)],
+    vacant_links: &[(String, VacantReason)],
+) -> Result<BTreeMap<String, LinkValue>, String> {
+    let mut accumulated: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (key, target) in links {
+        accumulated
+            .entry(key.clone())
+            .or_default()
+            .push(target.clone());
+    }
+    let mut merged: BTreeMap<String, LinkValue> = BTreeMap::new();
+    for (key, targets) in accumulated {
+        let targets = LinkTargets::new(targets)
+            .map_err(|err| format!("`--link {key}@{target}`: {err}", target = err.target))?;
+        merged.insert(key, LinkValue::Bound(Selection::Flags(targets)));
+    }
+    for (link_id, reason) in vacant_links {
+        let clash = match merged.get(link_id) {
+            None => None,
+            Some(LinkValue::Bound(_)) => Some(
+                "is both linked and declared vacant: a slot is wired to a target or \
+                 deliberately left empty, not both",
+            ),
+            Some(LinkValue::Vacant(_)) => {
+                Some("is declared vacant twice: one slot takes one reason")
+            }
+        };
+        if let Some(clash) = clash {
+            return Err(format!("slot `{link_id}` {clash}"));
+        }
+        merged.insert(link_id.clone(), LinkValue::Vacant(reason.clone()));
+    }
+    Ok(merged)
 }
 
 #[derive(Subcommand)]
@@ -242,15 +299,21 @@ pub enum NodeCommands {
             requires = "run",
         )]
         links: Vec<(String, String)>,
-        /// Explicitly start with a pairing/observer slot unresolved:
-        /// `LINK_ID`. Repeatable. Only valid alongside `--run`.
+        /// Explicitly start with a slot unresolved, saying why: `SLOT=<why>`.
+        /// Valid on a slot the node's manifest declares emptiable
+        /// (`optional: true` on a participant, `cardinality: "zero_or_one"` on
+        /// an observer). Repeatable. The reason is free prose (no
+        /// comma splitting) and travels with the instance, so an operator
+        /// reading the running stack sees the same sentence. Only valid
+        /// alongside `--run`.
         #[arg(
-            long = "defer-link",
-            value_parser = parse_defer_link,
+            long = "vacant-link",
+            value_name = "SLOT=<why>",
+            value_parser = parse_vacant_link,
             action = clap::ArgAction::Append,
             requires = "run",
         )]
-        defer_links: Vec<String>,
+        vacant_links: Vec<(String, VacantReason)>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -332,16 +395,22 @@ pub enum NodeCommands {
             action = clap::ArgAction::Append,
         )]
         links: Vec<(String, String)>,
-        /// Explicitly start with a pairing/observer slot unresolved:
-        /// `LINK_ID`. Repeatable. The instance boots with the slot silent (no
-        /// wire traffic) until a later start resolves it — for a pairing, via
-        /// `--link <peer_slot>@<this_instance>/<LINK_ID>` from the peer.
+        /// Explicitly start with a slot unresolved, saying why: `SLOT=<why>`.
+        /// Valid on a slot the node's manifest declares emptiable
+        /// (`optional: true` on a participant, `cardinality: "zero_or_one"` on
+        /// an observer). Repeatable. The reason is free prose (no
+        /// comma splitting) and travels with the instance, so an operator
+        /// reading the running stack sees the same sentence. The instance boots
+        /// with the slot silent (no wire traffic) until a later start resolves
+        /// it: for a pairing, via `--link <peer_slot>@<this_instance>/<SLOT>`
+        /// from the peer.
         #[arg(
-            long = "defer-link",
-            value_parser = parse_defer_link,
+            long = "vacant-link",
+            value_name = "SLOT=<why>",
+            value_parser = parse_vacant_link,
             action = clap::ArgAction::Append,
         )]
-        defer_links: Vec<String>,
+        vacant_links: Vec<(String, VacantReason)>,
         /// Idle timeout in seconds; resets whenever output is received
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         idle_timeout: u64,
@@ -414,13 +483,13 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 links,
-                defer_links,
+                vacant_links,
                 idle_timeout,
                 max_timeout,
                 force,
             } => {
                 // `requires = "run"` on `args`, `instance_id`, `links`, and
-                // `defer_links` means we can only land here with
+                // `vacant_links` means we can only land here with
                 // `run == false` when all of them are empty; the run-only
                 // fields therefore have a single legal home: inside
                 // `Some(RunAfterAddOptions)`.
@@ -428,8 +497,8 @@ impl Command for NodeCommand {
                     Some(add::RunAfterAddOptions {
                         args,
                         instance_id,
-                        links,
-                        defer_links,
+                        links: merge_link_flags(&links, &vacant_links)
+                            .map_err(CommandError::ExecutionFailed)?,
                     })
                 } else {
                     None
@@ -491,7 +560,7 @@ impl Command for NodeCommand {
                 args,
                 instance_id,
                 links,
-                defer_links,
+                vacant_links,
                 idle_timeout,
                 max_timeout,
                 build,
@@ -510,8 +579,8 @@ impl Command for NodeCommand {
                     tag,
                     args,
                     instance_id,
-                    links,
-                    defer_links,
+                    merge_link_flags(&links, &vacant_links)
+                        .map_err(CommandError::ExecutionFailed)?,
                     timeouts,
                     build,
                 )
@@ -542,6 +611,10 @@ impl Command for NodeCommand {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    fn vacant_reason(reason: &str) -> VacantReason {
+        VacantReason::new(reason).expect("test reasons say something")
+    }
 
     /// Tiny clap harness that wraps `NodeCommands` so we can exercise argument
     /// parsing for `peppy node add` in isolation.
@@ -969,7 +1042,7 @@ mod tests {
         assert!(msg.contains("KEY@TARGET"), "msg: {msg}");
     }
 
-    // ── --link (pairing/observer form) / --defer-link ────────────────────
+    // ── --link (pairing/observer form) / --vacant-link ───────────────────
 
     #[test]
     fn link_kv_parses_plain_and_pinned_targets() {
@@ -1002,27 +1075,52 @@ mod tests {
     }
 
     #[test]
-    fn defer_link_validates_the_link_id_as_a_wire_segment() {
-        assert_eq!(parse_defer_link(" arm ").unwrap(), "arm");
-        assert!(parse_defer_link("_").is_err());
-        assert!(parse_defer_link("a/b").is_err());
+    fn vacant_link_validates_the_slot_and_demands_a_reason() {
+        assert_eq!(
+            parse_vacant_link(" arm = monitor rig ").unwrap(),
+            ("arm".to_string(), vacant_reason("monitor rig"))
+        );
+        // The reason is free prose, so the first `=` separates and the rest
+        // rides through untouched.
+        assert_eq!(
+            parse_vacant_link("arm=set a=b upstream").unwrap(),
+            ("arm".to_string(), vacant_reason("set a=b upstream"))
+        );
+        // SLOT must be a wire segment.
+        assert!(parse_vacant_link("_=why").is_err());
+        assert!(parse_vacant_link("a/b=why").is_err());
+        // A vacancy without a reason says only "not this one".
+        assert!(
+            parse_vacant_link("arm=")
+                .unwrap_err()
+                .contains("needs a reason")
+        );
+        assert!(
+            parse_vacant_link("arm=   ")
+                .unwrap_err()
+                .contains("needs a reason")
+        );
+        // No `=` at all.
+        assert!(parse_vacant_link("arm").unwrap_err().contains("SLOT=<why>"));
     }
 
     #[test]
-    fn run_accepts_repeated_link_and_defer_link_flags() {
+    fn run_accepts_repeated_link_and_vacant_link_flags() {
         let cli = try_parse_run(&[
             "commander:v1",
             "--link",
             "left@arm_1",
             "--link",
             "right@arm_2/controller",
-            "--defer-link",
-            "gripper",
+            "--vacant-link",
+            "gripper=bench rig: no gripper, and a comma, in the reason",
         ])
         .expect("link flags should parse");
         match cli.command {
             NodeCommands::Run {
-                links, defer_links, ..
+                links,
+                vacant_links,
+                ..
             } => {
                 assert_eq!(
                     links,
@@ -1031,10 +1129,118 @@ mod tests {
                         ("right".to_string(), "arm_2/controller".to_string()),
                     ]
                 );
-                assert_eq!(defer_links, vec!["gripper".to_string()]);
+                // A reason is prose: the comma stays in it rather than
+                // splitting the flag the way `--link` values split.
+                assert_eq!(
+                    vacant_links,
+                    vec![(
+                        "gripper".to_string(),
+                        vacant_reason("bench rig: no gripper, and a comma, in the reason")
+                    )]
+                );
             }
             _ => panic!("expected Run variant"),
         }
+    }
+
+    /// Repeated `--link KEY` occurrences accumulate the slot's target set in
+    /// flag order (the check against the slot kind and cardinality happens
+    /// later in the validators); only the exact same `KEY@TARGET` pair twice
+    /// is a hard error here. A repeated key on a pairing/observer slot
+    /// survives this stage and is rejected downstream as a multi-target value.
+    #[test]
+    fn repeated_link_keys_accumulate_and_exact_duplicates_are_rejected() {
+        let flags = |targets: &[&str]| {
+            LinkValue::Bound(Selection::Flags(
+                LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
+                    .expect("test targets are unique"),
+            ))
+        };
+        let link = |key: &str, target: &str| (key.to_string(), target.to_string());
+
+        let map = merge_link_flags(&[link("arm", "arm_1"), link("grip", "grip_1")], &[])
+            .expect("distinct keys should collect");
+        assert_eq!(map.get("arm"), Some(&flags(&["arm_1"])));
+        assert_eq!(map.get("grip"), Some(&flags(&["grip_1"])));
+
+        // Different targets on one key accumulate in flag occurrence order.
+        let map = merge_link_flags(
+            &[
+                link("cameras", "rear_camera"),
+                link("cameras", "front_camera"),
+            ],
+            &[],
+        )
+        .expect("repeated keys accumulate");
+        assert_eq!(
+            map.get("cameras"),
+            Some(&flags(&["rear_camera", "front_camera"])),
+            "flag occurrence order must be preserved"
+        );
+
+        // The exact same KEY@TARGET pair twice is a hard error.
+        let err = merge_link_flags(&[link("arm", "arm_1"), link("arm", "arm_1")], &[])
+            .expect_err("duplicate link rejected");
+        assert!(
+            err.contains("--link arm@arm_1") && err.contains("once"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// One key, one value: the flags merge into the same map a launch file
+    /// parses into, so a slot given both flags is a collision at the boundary
+    /// rather than a contradiction some later validator has to notice.
+    #[test]
+    fn a_slot_cannot_be_both_linked_and_vacant_on_the_command_line() {
+        let err = merge_link_flags(
+            &[("arm".to_string(), "arm_1".to_string())],
+            &[("arm".to_string(), vacant_reason("no arm here"))],
+        )
+        .expect_err("one slot cannot take both flags");
+        assert!(
+            err.contains("`arm`") && err.contains("both linked and declared vacant"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Repeating `--vacant-link` on one slot is the same collision, and says
+    /// so in its own words rather than claiming the slot was linked.
+    #[test]
+    fn a_slot_cannot_be_declared_vacant_twice() {
+        let err = merge_link_flags(
+            &[],
+            &[
+                ("arm".to_string(), vacant_reason("no arm here")),
+                ("arm".to_string(), vacant_reason("also no arm here")),
+            ],
+        )
+        .expect_err("one slot takes one reason");
+        assert!(
+            err.contains("`arm`") && err.contains("declared vacant twice"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A vacancy becomes a `links` entry like any other, so downstream sees
+    /// one map holding every slot's fate.
+    #[test]
+    fn vacant_flags_join_the_same_links_map() {
+        let map = merge_link_flags(
+            &[("arm".to_string(), "arm_1".to_string())],
+            &[(
+                "gripper".to_string(),
+                vacant_reason("  no gripper on this rig  "),
+            )],
+        )
+        .expect("distinct slots merge");
+        assert_eq!(
+            map.get("gripper")
+                .and_then(LinkValue::vacancy)
+                .map(VacantReason::as_str),
+            Some("no gripper on this rig"),
+            "the reason is trimmed as it becomes a value"
+        );
+        assert!(map.get("arm").and_then(LinkValue::selection).is_some());
     }
 
     /// Links are applied at instance start, so `--link` without `--run` on
@@ -1045,9 +1251,9 @@ mod tests {
             .err()
             .expect("--link without --run must be rejected");
         assert!(err.to_string().contains("--run"), "msg: {err}");
-        let err = try_parse_add(&[".", "--defer-link", "arm"])
+        let err = try_parse_add(&[".", "--vacant-link", "arm=no arm here"])
             .err()
-            .expect("--defer-link without --run must be rejected");
+            .expect("--vacant-link without --run must be rejected");
         assert!(err.to_string().contains("--run"), "msg: {err}");
     }
 }
