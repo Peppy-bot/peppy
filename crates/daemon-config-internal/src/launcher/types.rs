@@ -97,8 +97,12 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                     // Only the instance part of a target names a deployed
                     // instance; a pairing/observer target's optional
                     // `/<link_id>` suffix selects a slot on that instance and
-                    // is resolved (against the manifest) at plan time.
-                    for target in value.targets() {
+                    // is resolved (against the manifest) at plan time. A vacant
+                    // slot selects nothing, so it names no instance to check.
+                    let Some(selection) = value.selection() else {
+                        continue;
+                    };
+                    for target in selection.targets() {
                         let (target_instance, _link_suffix) = split_link_target(target);
                         if !known_ids.contains(target_instance) {
                             let err = StructuredError::UnknownInstanceId {
@@ -209,15 +213,39 @@ impl DeploymentInstance {
             env_vars: BTreeMap::new(),
             framework: FrameworkOverrides::default(),
             links: BTreeMap::new(),
-            defer_links: Vec::new(),
             core_node: None,
         }
     }
 }
 
-/// One `links:` value: the target(s) selected for a declared slot,
-/// remembering the shape they arrived in. Every launcher link kind (a
-/// producer binding, a pairing, or an observer) shares this value type.
+/// One `links:` value: either a binding to real targets, or a deliberate
+/// non-binding carrying the reason the slot stays empty. Every launcher link
+/// kind (a producer binding, a pairing, or an observer) shares this value
+/// type, so the fate of a declared slot is one entry in one map.
+///
+/// Vacancy is NOT a binding, so it is a variant of this enum rather than a
+/// fourth shape inside [`Selection`]: a consumer that wants targets must
+/// first hold a [`Selection`], and no validation order can let a vacancy
+/// answer for a target set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkValue {
+    /// `arm: "arm_1"` / `cameras: ["front", "rear"]`: the slot's selected
+    /// targets.
+    Bound(Selection),
+    /// `leader_left_arm: { vacant: "monitor rig: nothing commands this
+    /// backbone" }`: the slot boots unresolved on purpose, and the deployment
+    /// says why. Legal only where the node's own manifest declares the slot
+    /// emptiable: `optional: true` on a participant pairing slot, or
+    /// `cardinality: "zero_or_one"` on an observer slot or a producer-binding
+    /// slot. A slot the manifest declares required cannot be vacated at all,
+    /// and a multi-cardinality slot writes its emptiness as `[]` or an omitted
+    /// key; [`crate::launcher::links::validate_link_slots`] rejects a vacancy
+    /// on either.
+    Vacant(VacantReason),
+}
+
+/// The target(s) selected for a declared slot, remembering the shape they
+/// arrived in.
 ///
 /// A producer binding's shape mirrors its slot's declared cardinality, but
 /// the launch parser has no manifest knowledge, so both launch-file shapes
@@ -227,7 +255,7 @@ impl DeploymentInstance {
 /// targets, duplicate targets within one array, malformed `/` grammar) still
 /// fail at parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinkValue {
+pub enum Selection {
     /// `camera: "front_camera"` / `arm: "arm_1/controller"`: the launch-file
     /// scalar shape. Valid on a `cardinality: "one"` producer slot and on
     /// every pairing/observer slot (whose single target may carry a
@@ -246,30 +274,199 @@ pub enum LinkValue {
 }
 
 impl LinkValue {
-    /// The target ids in declaration order, shape-erased.
-    pub fn targets(&self) -> &[String] {
+    /// The slot's selected targets, or `None` when the slot is vacant.
+    pub fn selection(&self) -> Option<&Selection> {
         match self {
-            LinkValue::Scalar(target) => std::slice::from_ref(target),
-            LinkValue::Array(targets) | LinkValue::Flags(targets) => targets.as_slice(),
+            LinkValue::Bound(selection) => Some(selection),
+            LinkValue::Vacant(_) => None,
         }
     }
 
-    /// The single target of a pairing/observer link, or `None` when the value
-    /// carries a set of targets. Pairing and observer slots take exactly one
-    /// `<instance>[/<link_id>]` target, so their validators call this to reject
-    /// a multi-target value up front. A launch-file scalar and a single CLI
-    /// `--link KEY@target` occurrence (a one-element [`LinkValue::Flags`]) both
-    /// count as one target; an array or a repeated flag does not.
-    pub fn as_scalar(&self) -> Option<&str> {
+    /// Why this slot deliberately binds nothing, or `None` when it binds
+    /// targets.
+    pub fn vacancy(&self) -> Option<&VacantReason> {
         match self {
-            LinkValue::Scalar(target) => Some(target),
-            LinkValue::Flags(targets) if targets.len() == 1 => Some(&targets.as_slice()[0]),
-            LinkValue::Array(_) | LinkValue::Flags(_) => None,
+            LinkValue::Vacant(reason) => Some(reason),
+            LinkValue::Bound(_) => None,
         }
     }
 }
 
-/// The target list of a [`LinkValue::Array`] / [`LinkValue::Flags`]
+impl Selection {
+    /// The target ids in declaration order, shape-erased.
+    pub fn targets(&self) -> &[String] {
+        match self {
+            Selection::Scalar(target) => std::slice::from_ref(target),
+            Selection::Array(targets) | Selection::Flags(targets) => targets.as_slice(),
+        }
+    }
+
+    /// The single target of a participant pairing link, or `None` when the
+    /// selection carries a set of targets. A pairing is strictly 1:1, so a
+    /// participant slot takes exactly one `<instance>[/<link_id>]` target and
+    /// its validator calls this to reject a multi-target value up front.
+    /// Observer slots are sized by their `cardinality` instead and go through
+    /// [`check_cardinality_shape`]. A launch-file scalar and a
+    /// single CLI `--link KEY@target` occurrence (a one-element
+    /// [`Selection::Flags`]) both count as one target; an array or a repeated
+    /// flag does not.
+    pub fn as_scalar(&self) -> Option<&str> {
+        match self {
+            Selection::Scalar(target) => Some(target),
+            Selection::Flags(targets) if targets.len() == 1 => Some(&targets.as_slice()[0]),
+            Selection::Array(_) | Selection::Flags(_) => None,
+        }
+    }
+}
+
+/// The `{ vacant: "<why>" }` entries of one instance's `links` map that name a
+/// participant pairing slot, in the `link_id -> reason` shape a node-run goal's
+/// `vacant_pairs` field carries. Observer and producer vacancies are dropped:
+/// each is validated by its own family and neither produces a vacancy record on
+/// the goal. A vacant producer slot's goal-side artifact is the explicit empty
+/// set its `slot_bindings` entry carries, not a reason the daemon forwards.
+pub fn participant_vacancies(
+    links: &BTreeMap<String, LinkValue>,
+    participant_link_ids: &std::collections::BTreeSet<&str>,
+) -> BTreeMap<String, String> {
+    links
+        .iter()
+        .filter(|(link_id, _)| participant_link_ids.contains(link_id.as_str()))
+        .filter_map(|(link_id, value)| {
+            let reason = value.vacancy()?;
+            Some((link_id.clone(), reason.as_str().to_owned()))
+        })
+        .collect()
+}
+
+/// Why a slot is deliberately left unresolved, in the deployment's own words.
+/// Non-empty once trimmed: a bare marker says only "not this one", and the
+/// point of writing a vacancy down is that a reader who has never seen the
+/// schema can tell what it says. Every path that builds one (the launch-file
+/// value parser, the CLI's `--vacant-link`, the daemon's goal decoder) funnels
+/// through [`VacantReason::new`], so a reasonless vacancy is unrepresentable
+/// rather than re-checked at each boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct VacantReason(String);
+
+impl VacantReason {
+    /// Parses a raw reason, trimming surrounding whitespace and rejecting one
+    /// that says nothing.
+    pub fn new(reason: &str) -> Result<Self, EmptyVacantReason> {
+        let trimmed = reason.trim();
+        if trimmed.is_empty() {
+            return Err(EmptyVacantReason);
+        }
+        Ok(Self(trimmed.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VacantReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Error from [`VacantReason::new`]. Boundaries prefix it with their own
+/// surface context (the link key at launch-file parse, the flag value on the
+/// CLI); the rule sentence itself is stated only here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptyVacantReason;
+
+impl std::fmt::Display for EmptyVacantReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a vacancy needs a reason: say why the slot stays empty, e.g. \
+             `{ vacant: \"monitor rig: nothing commands this backbone\" }`",
+        )
+    }
+}
+
+impl std::error::Error for EmptyVacantReason {}
+
+/// Why a [`Selection`] does not satisfy its slot's declared `cardinality`,
+/// shape-only and vocabulary-free: the caller turns it into the error variant
+/// its own slot kind speaks (producer binding or observation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardinalityShapeViolation {
+    /// A launch-file array value on a scalar slot, of any length.
+    ArrayOnScalarSlot {
+        cardinality: config::node::Cardinality,
+    },
+    /// A launch-file scalar value on a multi slot.
+    ScalarOnMultiSlot {
+        cardinality: config::node::Cardinality,
+    },
+    /// An empty target set on a `one_or_more` slot.
+    Unmet,
+    /// Repeated flag occurrences on a scalar slot.
+    SingleSlotMultipleTargets {
+        cardinality: config::node::Cardinality,
+        target_count: usize,
+    },
+}
+
+/// Does the selection's shape (launch file) or occurrence count (CLI flags)
+/// satisfy the slot's declared cardinality?
+///
+/// Launch-file shapes are strict (a scalar is only valid on a `one` slot and an
+/// array only on a multi slot), while flag occurrences carry no shape and are
+/// checked by count alone. CLI-built [`Selection::Flags`] is non-empty (zero
+/// occurrences is an omitted link, judged by each family's coverage rule), but
+/// an empty programmatic value on `one_or_more` is still rejected.
+///
+/// Takes a [`Selection`] rather than a [`LinkValue`] because a vacant slot
+/// selects nothing and has no shape to size: whether it may be vacant at all is
+/// the legality question [`crate::launcher::links::validate_link_slots`]
+/// answers, before any of this.
+///
+/// The one shape rule, shared by producer-binding slots and observer slots so a
+/// deployment writes `["a", "b"]` for the same reason on both.
+pub fn check_cardinality_shape(
+    cardinality: config::node::Cardinality,
+    selection: &Selection,
+) -> Result<(), CardinalityShapeViolation> {
+    use config::node::Cardinality;
+    match (cardinality, selection) {
+        // `zero_or_one` is scalar-shaped like `one`: the floor between them is
+        // a coverage question (an empty `zero_or_one` slot is written vacant,
+        // and this function never sees a vacancy), not a shape one, so a
+        // present selection is sized identically on both.
+        (Cardinality::One | Cardinality::ZeroOrOne, Selection::Scalar(_)) => Ok(()),
+        (Cardinality::One | Cardinality::ZeroOrOne, Selection::Array(_)) => {
+            Err(CardinalityShapeViolation::ArrayOnScalarSlot { cardinality })
+        }
+        (Cardinality::One | Cardinality::ZeroOrOne, Selection::Flags(targets)) => {
+            if targets.len() == 1 {
+                Ok(())
+            } else {
+                Err(CardinalityShapeViolation::SingleSlotMultipleTargets {
+                    cardinality,
+                    target_count: targets.len(),
+                })
+            }
+        }
+        (Cardinality::OneOrMore | Cardinality::ZeroOrMore, Selection::Scalar(_)) => {
+            Err(CardinalityShapeViolation::ScalarOnMultiSlot { cardinality })
+        }
+        (Cardinality::OneOrMore, Selection::Array(targets) | Selection::Flags(targets))
+            if targets.is_empty() =>
+        {
+            Err(CardinalityShapeViolation::Unmet)
+        }
+        (
+            Cardinality::OneOrMore | Cardinality::ZeroOrMore,
+            Selection::Array(_) | Selection::Flags(_),
+        ) => Ok(()),
+    }
+}
+
+/// The target list of a [`Selection::Array`] / [`Selection::Flags`]
 /// value, duplicate-free by construction: every path that builds one (the
 /// launch-file value parser, CLI flag accumulation, programmatic plan
 /// building) funnels through [`LinkTargets::new`], so a slot's bound
@@ -330,18 +527,30 @@ impl std::fmt::Display for DuplicateLinkTarget {
 
 impl std::error::Error for DuplicateLinkTarget {}
 
-/// Serializes back to the launch-file shapes: `Scalar` as a string,
-/// `Array` as an array. `Flags` also serializes as an array; it exists
-/// only on CLI-built plans, which are never round-tripped through a launch
-/// file, and the array form is its closest document equivalent.
+/// The `vacant` key, the launch-file grammar's only object-valued link.
+const VACANT_KEY: &str = "vacant";
+
+/// Serializes back to the launch-file shapes: `Scalar` as a string, `Array` as
+/// an array, `Vacant` as `{ vacant: "<reason>" }`. `Flags` also serializes as
+/// an array; it exists only on CLI-built plans, which are never round-tripped
+/// through a launch file, and the array form is its closest document
+/// equivalent.
 impl Serialize for LinkValue {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         match self {
-            LinkValue::Scalar(target) => serializer.serialize_str(target),
-            LinkValue::Array(targets) | LinkValue::Flags(targets) => targets.serialize(serializer),
+            LinkValue::Bound(Selection::Scalar(target)) => serializer.serialize_str(target),
+            LinkValue::Bound(Selection::Array(targets) | Selection::Flags(targets)) => {
+                targets.serialize(serializer)
+            }
+            LinkValue::Vacant(reason) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(VACANT_KEY, reason)?;
+                map.end()
+            }
         }
     }
 }
@@ -357,12 +566,14 @@ impl<'de> Deserialize<'de> for LinkValue {
             type Value = LinkValue;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter
-                    .write_str("a target instance_id string or an array of instance_id strings")
+                formatter.write_str(
+                    "a target instance_id string, an array of instance_id strings, or \
+                     { vacant: \"<why>\" }",
+                )
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(LinkValue::Scalar(v.to_string()))
+                Ok(LinkValue::Bound(Selection::Scalar(v.to_string())))
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -374,7 +585,31 @@ impl<'de> Deserialize<'de> for LinkValue {
                     targets.push(target);
                 }
                 let targets = LinkTargets::new(targets).map_err(de::Error::custom)?;
-                Ok(LinkValue::Array(targets))
+                Ok(LinkValue::Bound(Selection::Array(targets)))
+            }
+
+            /// `{ vacant: "<why>" }` and nothing else: exactly one key, named
+            /// `vacant`, holding a reason that says something.
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut reason: Option<VacantReason> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key != VACANT_KEY {
+                        return Err(de::Error::custom(format!(
+                            "unknown link key `{key}`: an object link value is \
+                             `{{ {VACANT_KEY}: \"<why>\" }}` and takes no other key"
+                        )));
+                    }
+                    if reason.is_some() {
+                        return Err(de::Error::duplicate_field(VACANT_KEY));
+                    }
+                    let raw = map.next_value::<String>()?;
+                    reason = Some(VacantReason::new(&raw).map_err(de::Error::custom)?);
+                }
+                let reason = reason.ok_or_else(|| de::Error::missing_field(VACANT_KEY))?;
+                Ok(LinkValue::Vacant(reason))
             }
         }
 
@@ -406,26 +641,28 @@ pub struct DeploymentInstance {
     ///     (`"<instance_id>"` or `"<instance_id>/<peer_link_id>"` to
     ///     disambiguate) — declaring the pair on ONE side covers both
     ///     endpoints' slots;
-    ///   - an observer slot takes a single source target
-    ///     (`"<source_instance>"` or `"<source_instance>/<source_link_id>"`).
+    ///   - an observer slot takes source targets
+    ///     (`"<source_instance>"` or `"<source_instance>/<source_link_id>"`),
+    ///     as a scalar or an array per its cardinality, exactly like a
+    ///     producer slot.
+    ///
+    /// A slot that starts unresolved on purpose says so in this same map, as
+    /// `{ vacant: "<why>" }`: the fate of every declared slot is one entry
+    /// here, and forgetting a slot is an absence rather than a value. Only a
+    /// slot the node's manifest declares emptiable (`optional: true` on a
+    /// participant, `cardinality: "zero_or_one"` on an observer or a producer
+    /// slot) may take that value.
     ///
     /// The launch parser has no manifest knowledge, so shape is validated
     /// against slot kind at plan time; only shape-local rules (empty targets,
-    /// duplicates within one array, malformed `/` grammar) fail at parse.
+    /// duplicates within one array, malformed `/` grammar, a vacancy with no
+    /// reason) fail at parse.
     #[serde(
         default,
         deserialize_with = "deserialize_links",
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub links: BTreeMap<String, LinkValue>,
-    /// Required pairing/observer slots deliberately left unresolved at launch.
-    /// Every required participant slot must be paired or listed here
-    /// (`PairingSlotUncovered` otherwise) and every observer slot must be
-    /// linked or listed here (`ObservationSlotUncovered` otherwise). Optional
-    /// participant slots need no entry, and producer-binding slots cannot be
-    /// deferred (`LinkDeferInvalid`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub defer_links: Vec<String>,
     /// Which declared core node link this instance is placed on, i.e. which
     /// machine it runs on once `--place` has bound that link to a real core
     /// node.
@@ -467,7 +704,14 @@ where
         .map_err(de::Error::custom)?;
     let mut out = BTreeMap::new();
     for (key, value) in entries {
-        for target in value.targets() {
+        // A vacant slot selects no targets, so the target rules below have
+        // nothing to judge; its own rule (a reason that says something) was
+        // enforced as the value parsed.
+        let Some(selection) = value.selection() else {
+            out.insert(key, value);
+            continue;
+        };
+        for target in selection.targets() {
             if target.trim().is_empty() {
                 return Err(de::Error::custom(format!(
                     "link target for key `{key}` cannot be empty"
@@ -578,10 +822,19 @@ mod tests {
 
     /// Test shorthand: an `Array` binding value from unique literals.
     fn array(targets: &[&str]) -> LinkValue {
-        LinkValue::Array(
+        LinkValue::Bound(Selection::Array(
             LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
                 .expect("test targets are unique"),
-        )
+        ))
+    }
+
+    /// Test shorthand: the single target of a bound scalar link.
+    fn scalar_target<'a>(instance: &'a DeploymentInstance, link_id: &str) -> Option<&'a str> {
+        instance
+            .links
+            .get(link_id)
+            .and_then(LinkValue::selection)
+            .and_then(Selection::as_scalar)
     }
 
     /// The each-producer-once rule lives in `LinkTargets::new`, the one
@@ -739,7 +992,9 @@ mod tests {
         assert_eq!(backbone.links.len(), 3);
         assert_eq!(
             backbone.links.get("torso_camera"),
-            Some(&LinkValue::Scalar("cam_torso".to_string()))
+            Some(&LinkValue::Bound(Selection::Scalar(
+                "cam_torso".to_string()
+            )))
         );
     }
 
@@ -762,7 +1017,9 @@ mod tests {
             serde_json5::from_str(json5).expect("both shapes should parse");
         assert_eq!(
             instance.links.get("main"),
-            Some(&LinkValue::Scalar("camera_inst".to_string()))
+            Some(&LinkValue::Bound(Selection::Scalar(
+                "camera_inst".to_string()
+            )))
         );
         assert_eq!(
             instance.links.get("arm_states"),
@@ -888,11 +1145,15 @@ mod tests {
             serde_json5::from_str(json5).expect("duplicate binding targets should now be accepted");
         assert_eq!(
             instance.links.get("a"),
-            Some(&LinkValue::Scalar("cam_torso".to_string()))
+            Some(&LinkValue::Bound(Selection::Scalar(
+                "cam_torso".to_string()
+            )))
         );
         assert_eq!(
             instance.links.get("b"),
-            Some(&LinkValue::Scalar("cam_torso".to_string()))
+            Some(&LinkValue::Bound(Selection::Scalar(
+                "cam_torso".to_string()
+            )))
         );
     }
 
@@ -941,11 +1202,79 @@ mod tests {
         assert_eq!(link, "_");
     }
 
-    /// The `pairings` map parses, resolves against siblings, and supports
-    /// the `/<peer_link_id>` disambiguation suffix; `defer_links` rides
-    /// alongside.
+    /// An object link value is `{ vacant: "<why>" }` and nothing else. Every
+    /// near miss is its own message, because "your object is wrong" would send
+    /// the author looking in the wrong place.
     #[test]
-    fn links_and_defer_links_parse() {
+    fn only_a_reasoned_vacancy_parses_as_an_object_link_value() {
+        for (json5, expected) in [
+            (r#"{ vacant: "" }"#, "a vacancy needs a reason"),
+            (r#"{ vacant: "   " }"#, "a vacancy needs a reason"),
+            (r#"{ vacant: 12 }"#, "invalid type"),
+            (r#"{ vacant: null }"#, "invalid type"),
+            (r#"{ vacant: ["a"] }"#, "invalid type"),
+            (r#"{ vacant: { nested: 1 } }"#, "invalid type"),
+            (r#"{}"#, "missing field `vacant`"),
+            (r#"{ nope: "x" }"#, "unknown link key `nope`"),
+            (r#"{ vacant: "x", extra: 1 }"#, "unknown link key `extra`"),
+        ] {
+            let err = serde_json5::from_str::<LinkValue>(json5)
+                .expect_err(&format!("`{json5}` must not parse"));
+            assert!(
+                err.to_string().contains(expected),
+                "`{json5}` should say `{expected}`, said: {err}"
+            );
+        }
+
+        let value: LinkValue = serde_json5::from_str(r#"{ vacant: "  spaced out  " }"#)
+            .expect("a reason that says something parses");
+        assert_eq!(
+            value.vacancy().map(VacantReason::as_str),
+            Some("spaced out"),
+            "surrounding whitespace is trimmed as the reason parses"
+        );
+    }
+
+    /// A parsed vacancy serializes back to the shape it was written in, so a
+    /// launcher that round-trips through the parser is still the same file.
+    #[test]
+    fn a_vacancy_round_trips_through_serialization() {
+        let value: LinkValue =
+            serde_json5::from_str(r#"{ vacant: "monitor rig: nothing commands this backbone" }"#)
+                .expect("vacancy parses");
+        let rendered = serde_json::to_string(&value).expect("vacancy serializes");
+        assert_eq!(
+            rendered,
+            r#"{"vacant":"monitor rig: nothing commands this backbone"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<LinkValue>(&rendered).expect("round trip parses"),
+            value
+        );
+    }
+
+    /// One slot, one value: a `links` map naming the same slot twice is
+    /// rejected as it parses, which is what makes "linked AND vacant"
+    /// unwritable rather than resolved by insertion order.
+    #[test]
+    fn a_links_map_cannot_name_one_slot_twice() {
+        let err = serde_json5::from_str::<DeploymentInstance>(
+            r#"{
+                instance_id: "ctrl_1",
+                links: { arm: "arm_1", arm: { vacant: "no arm here" } }
+            }"#,
+        )
+        .expect_err("one slot cannot hold two values");
+        assert!(
+            err.to_string().contains("arm"),
+            "the duplicate key should be named: {err}"
+        );
+    }
+
+    /// Every `links` value shape parses, resolves against siblings, and
+    /// supports the `/<peer_link_id>` disambiguation suffix.
+    #[test]
+    fn links_parse_every_value_shape() {
         let json5 = r#"{
             peppy_schema: "launcher/v1",
             deployments: [
@@ -957,19 +1286,32 @@ mod tests {
                     source: { name: "arm_controller:v1" },
                     instances: [{
                         instance_id: "ctrl_1",
-                        links: { arm: "arm_1" },
-                        defer_links: ["spare"]
+                        links: {
+                            arm: "arm_1",
+                            spare: { vacant: "bench rig: only one arm on this bench" },
+                            watched: ["arm_1"]
+                        }
                     }]
                 }
             ]
         }"#;
         let launcher: PeppyLauncher = serde_json5::from_str(json5).expect("launcher should parse");
         let ctrl = &launcher.deployments[1].instances[0];
+        assert_eq!(scalar_target(ctrl, "arm"), Some("arm_1"));
         assert_eq!(
-            ctrl.links.get("arm").and_then(LinkValue::as_scalar),
-            Some("arm_1")
+            ctrl.links
+                .get("spare")
+                .and_then(LinkValue::vacancy)
+                .map(VacantReason::as_str),
+            Some("bench rig: only one arm on this bench")
         );
-        assert_eq!(ctrl.defer_links, vec!["spare".to_string()]);
+        assert_eq!(
+            ctrl.links
+                .get("watched")
+                .and_then(LinkValue::selection)
+                .map(Selection::targets),
+            Some(["arm_1".to_string()].as_slice())
+        );
 
         // The peer-slot suffix parses and still resolves the instance part.
         let json5 = r#"{
@@ -991,10 +1333,7 @@ mod tests {
         let launcher: PeppyLauncher =
             serde_json5::from_str(json5).expect("suffixed pairing should parse");
         let ctrl = &launcher.deployments[1].instances[0];
-        assert_eq!(
-            ctrl.links.get("arm").and_then(LinkValue::as_scalar),
-            Some("arm_1/controller")
-        );
+        assert_eq!(scalar_target(ctrl, "arm"), Some("arm_1/controller"));
         assert_eq!(
             split_link_target("arm_1/controller"),
             ("arm_1", Some("controller"))

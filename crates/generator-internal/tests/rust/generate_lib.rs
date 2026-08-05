@@ -729,3 +729,76 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         consumer_peppygen_dir.display()
     );
 }
+
+/// A `zero_or_one` slot declared under `depends_on.contracts` reaches the
+/// generated crate through the whole-lib path: the leaf lands under the
+/// slot's `link_id`, addresses its producer with `SenderTarget::contract`,
+/// and exposes the scalar `bound_producer()` accessor returning an `Option`,
+/// which is the accessor a slot with a floor of zero has. Cardinality is per
+/// slot, not per slot kind, so a contract slot renders the same accessor a
+/// `depends_on.nodes` slot would.
+#[test]
+fn generate_peppygen_rust_lib_renders_optional_accessor_for_a_zero_or_one_contract_slot() {
+    const CONTRACT_NAME: &str = "depth_camera";
+    const LINK_ID: &str = "wrist_camera";
+
+    let consumer_dir =
+        TempDir::new_in(crate::helpers::test_tmp_root()).expect("failed to create temp directory");
+    let consumer_node_dir = consumer_dir.path();
+    fs::write(
+        consumer_node_dir.join(NODE_CONFIG_FILE),
+        helpers::contract_consumer_stub_node_config(
+            CONTRACT_NAME,
+            "v1",
+            LINK_ID,
+            "zero_or_one",
+            helpers::RUST_STUB_EXECUTION,
+        ),
+    )
+    .expect("failed to write consumer peppy.json5");
+
+    let consumed_topic: ConsumedTopic = serde_json5::from_str(&format!(
+        r#"{{ link_id: "{LINK_ID}", name: "video_stream" }}"#
+    ))
+    .expect("failed to parse consumed topic");
+    let consumed_format: MessageFormat =
+        serde_json5::from_str(r#"{ width: "u32" }"#).expect("failed to parse topic format");
+
+    let interfaces = vec![DeploymentInterface::new(InterfaceVariant::ConsumedTopic {
+        topic: consumed_topic,
+        message_format: consumed_format,
+        dependency: generator::DependencyContext::contract(
+            CONTRACT_NAME,
+            "v1",
+            LINK_ID,
+            config::node::Cardinality::ZeroOrOne,
+        ),
+    })];
+
+    generate_peppygen_lib(
+        PeppygenLanguage::Rust,
+        consumer_node_dir,
+        interfaces,
+        "test-hash",
+        &helpers::test_peppy_dirs(),
+        Default::default(),
+        None,
+    )
+    .expect("failed to generate peppygen lib for consumer node");
+
+    let leaf = consumer_node_dir
+        .join(PEPPYGEN_OUTPUT_PATH)
+        .join("src/consumed_topics/wrist_camera/video_stream.rs");
+    let rendered = fs::read_to_string(&leaf)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", leaf.display()));
+    config_test_support::assert_contains_all(
+        &rendered,
+        &[
+            "pub fn bound_producer(",
+            ") -> Option<&peppylib::messaging::ProducerRef>",
+            "optional_bound_producer(\"wrist_camera\")",
+            "SenderTarget::contract(",
+            "cardinality `zero_or_one`",
+        ],
+    );
+}

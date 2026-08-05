@@ -232,16 +232,46 @@ pub fn build_peer_module_header(
 }
 
 /// Header for an observer topic module: same slot-identity consts as a peer
-/// module, but it exposes the resolved `source()` instead of the peer helpers.
-/// An observer plays no role, so there is no `paired()`/`wait_paired()`.
+/// module, but it exposes the slot's observed sources instead of the peer
+/// helpers. An observer plays no role, so there is no `paired()`/`wait_paired()`.
+///
+/// The accessor is cardinality-typed the way a producer slot's is: a scalar
+/// slot (`one` or `zero_or_one`) gets `source() -> Option<ObservedSource>`, the
+/// multi cardinalities get `sources() -> Vec<ObservedSource>` in plan order.
 pub fn build_observed_module_header(
     topic_name: &str,
     observer: &crate::generator::types::PeerContext,
+    cardinality: Cardinality,
 ) -> TokenStream {
     let topic_literal = Literal::string(topic_name);
     let link_id_literal = Literal::string(&observer.link_id);
     let pairing_name_literal = Literal::string(&observer.pairing_name);
     let pairing_tag_literal = Literal::string(&observer.pairing_tag);
+    let sources_doc = super::doc_attrs(
+        &crate::generator::types::observed_sources_doc(cardinality)
+            .lines()
+            .collect::<Vec<_>>(),
+    );
+
+    let sources_accessor = if cardinality.is_scalar() {
+        quote! {
+            #( #sources_doc )*
+            pub fn source(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<Option<peppylib::messaging::ObservedSource>> {
+                Ok(node_runner.observation_slot(LINK_ID)?.source())
+            }
+        }
+    } else {
+        quote! {
+            #( #sources_doc )*
+            pub fn sources(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<Vec<peppylib::messaging::ObservedSource>> {
+                Ok(node_runner.observation_slot_set(LINK_ID)?.sources())
+            }
+        }
+    };
 
     quote! {
         pub const TOPIC_NAME: &str = #topic_literal;
@@ -250,14 +280,7 @@ pub fn build_observed_module_header(
         pub const PAIRING_NAME: &str = #pairing_name_literal;
         pub const PAIRING_TAG: &str = #pairing_tag_literal;
 
-        /// The resolved source of this observer slot, or `None` before the
-        /// daemon has delivered it. Purely local configuration state; there is
-        /// no health-derived helper (a third node's health is not knowable).
-        pub fn source(
-            node_runner: &crate::NodeRunner,
-        ) -> crate::Result<Option<peppylib::messaging::ObservedSource>> {
-            Ok(node_runner.observation_slot(LINK_ID)?.source())
-        }
+        #sources_accessor
     }
 }
 
@@ -400,21 +423,23 @@ fn build_pair_topic_subscription(
         ),
         PairTopicSubscriptionKind::Observed => (
             quote! {
-                /// A held subscription to an observed pairing topic. Yields nothing
-                /// while the source is unresolved or not emitting; while the source
-                /// is live, only its messages surface (triple wire pin +
+                /// A held subscription to an observed pairing topic, fanned in
+                /// across every member of the slot's observed set. Yields nothing
+                /// while the set is empty or no member is emitting; only observed
+                /// members' messages surface (triple wire pin +
                 /// generation-tagged delivery check). A pairing is a live stream,
                 /// not a mailbox: messages published before observation are never
                 /// delivered.
             },
             quote!(peppylib::runtime::ObservedTopicSubscription),
             quote! {
-                /// Awaits the next message from the currently observed source.
+                /// Awaits the next message from any currently observed source.
                 ///
                 /// Returns `Ok(Some((producer, message)))` for each message,
                 /// `Ok(None)` once the runtime shuts down, and `Err(..)` if a
-                /// received payload fails to deserialize. `producer` is always the
-                /// observed source instance.
+                /// received payload fails to deserialize. `producer` is the
+                /// observed member that published it, which is how a multi-member
+                /// slot tells its sources apart.
             },
             quote! {
                 let Some((producer, message)) = self.inner.on_next_message().await else {
@@ -549,7 +574,7 @@ pub fn build_consumed_topic_subscription(
 
     let from_target_expr = consumed_to_target_expression(dependency);
     let bound_producers_expr = consumed_bound_producers_expression(dependency);
-    let bound_producers_fn = build_bound_producers_fn(dependency);
+    let bound_producer_accessor_fn = build_bound_producer_accessor_fn(dependency);
 
     let subscription_tokens = build_subscription_struct(
         quote! {
@@ -569,7 +594,8 @@ pub fn build_consumed_topic_subscription(
             /// node is shutting down and no queued message remains, and `Err(..)`
             /// if a received payload fails to deserialize; a decode error does not
             /// tear down the subscription or shrink the bound set. On an empty
-            /// `zero_or_more` set this pends until shutdown, then returns
+            /// set (a `zero_or_more` slot bound to nothing, or a vacant
+            /// `zero_or_one` slot) this pends until shutdown, then returns
             /// `Ok(None)`.
         },
         quote! {
@@ -582,7 +608,7 @@ pub fn build_consumed_topic_subscription(
     );
 
     Ok(quote! {
-        #bound_producers_fn
+        #bound_producer_accessor_fn
 
         #subscription_tokens
 
@@ -646,6 +672,7 @@ pub fn consumed_bound_producers_expression(
 /// and action module exposes. Its name and return type encode the slot's
 /// launch-validated cardinality instead of restating it in comments: `one`
 /// generates `bound_producer()` returning the sole producer directly,
+/// `zero_or_one` generates `bound_producer()` returning an `Option`,
 /// `one_or_more` generates `bound_producers()` returning a never-empty
 /// `NonEmptyProducers` whose `first()` is infallible, and `zero_or_more`
 /// generates `bound_producers()` returning a plain, possibly empty slice,
@@ -659,7 +686,7 @@ pub fn consumed_bound_producers_expression(
 /// here.
 ///
 /// [`DependencyContext::bound_producers_doc`]: crate::generator::types::DependencyContext::bound_producers_doc
-pub fn build_bound_producers_fn(
+pub fn build_bound_producer_accessor_fn(
     dependency: &crate::generator::types::DependencyContext,
 ) -> TokenStream {
     let link_id_literal = Literal::string(&dependency.link_id);
@@ -671,6 +698,16 @@ pub fn build_bound_producers_fn(
                     node_runner: &crate::NodeRunner,
                 ) -> &peppylib::messaging::ProducerRef {
                     node_runner.processor().sole_bound_producer(#link_id_literal)
+                }
+            },
+        ),
+        Cardinality::ZeroOrOne => (
+            None,
+            quote! {
+                pub fn bound_producer(
+                    node_runner: &crate::NodeRunner,
+                ) -> Option<&peppylib::messaging::ProducerRef> {
+                    node_runner.processor().optional_bound_producer(#link_id_literal)
                 }
             },
         ),

@@ -1,0 +1,96 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "openarm_backbone",
+    tag: "v1",
+    labels: ["backbone"]
+  },
+  execution: {
+    language: "rust",
+    run_cmd: ["./bin/openarm_backbone"]
+  },
+  interfaces: {
+    topics: {
+      // A stamped collision-proximity sample, published under the lossy
+      // `sensor_data` QoS profile.
+      emits: [
+        {
+          name: "collision_status",
+          qos_profile: "sensor_data",
+          message_format: {
+            stamp: "time",
+            // Smallest distance between any two links, in metres.
+            min_separation_m: "f64",
+            governor_engaged: "bool"
+          }
+        }
+      ]
+    },
+    actions: {
+      // Each move action names its target arm with `arm_id` in the goal
+      // request.
+      exposes: [
+        {
+          // Joint-space move: the panel's "Send" button.
+          name: "move_arm_joints",
+          goal_service: {
+            request_message_format: {
+              arm_id: "u16",
+              positions: { $type: "array", $items: "f64", $length: 7 }
+            }
+          },
+          feedback_topic: {
+            message_format: {
+              positions: { $type: "array", $items: "f64", $length: 7 }
+            }
+          },
+          result_service: {
+            response_message_format: {
+              success: "bool",
+              error_msg: { $type: "string", $optional: true }
+            }
+          }
+        },
+        {
+          // Cartesian move: a 6-element target pose in the request, remaining
+          // distance as feedback.
+          name: "move_arm",
+          goal_service: {
+            request_message_format: {
+              arm_id: "u16",
+              target_pose: { $type: "array", $items: "f64", $length: 6 }
+            }
+          },
+          feedback_topic: {
+            message_format: {
+              remaining_distance_m: "f64"
+            }
+          },
+          result_service: {
+            response_message_format: {
+              success: "bool",
+              error_msg: { $type: "string", $optional: true }
+            }
+          }
+        },
+        {
+          // Gripper move: a single `opening` value in the request, no feedback
+          // topic.
+          name: "move_gripper",
+          goal_service: {
+            request_message_format: {
+              arm_id: "u16",
+              opening: "f64"
+            }
+          },
+          result_service: {
+            response_message_format: {
+              success: "bool",
+              error_msg: { $type: "string", $optional: true }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

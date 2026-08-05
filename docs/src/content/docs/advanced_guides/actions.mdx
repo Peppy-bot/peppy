@@ -563,7 +563,7 @@ fn main() -> Result<()> {
   </TabItem>
 </Tabs>
 
-`fire_goal` requires the caller to pass one explicit target for every [cardinality](/advanced_guides/topics/#dependency-cardinality), including the default `one`; obtain it from the slot's cardinality-typed accessor (the singular, infallible `bound_producer()` on a `one` slot, `bound_producers()` on the multi cardinalities, never empty for `one_or_more`). The target must belong to the slot's own set; anything else fails with a runtime error before the goal reaches the wire. Firing a goal at every bound producer of a multi-cardinality slot is a plain loop over `bound_producers()`; each returned handle drives its own feedback stream, cancel, and result, exactly as a single goal does.
+`fire_goal` requires the caller to pass one explicit target for every [cardinality](/advanced_guides/topics/#dependency-cardinality), including the default `one`; obtain it from the slot's cardinality-typed accessor (the singular, infallible `bound_producer()` on a `one` slot, the same name returning an `Option` on a `zero_or_one` slot, where a vacant slot has no target to fire at and the caller branches on that first, and `bound_producers()` on the multi cardinalities, never empty for `one_or_more`). The target must belong to the slot's own set; anything else fails with a runtime error before the goal reaches the wire. Firing a goal at every bound producer of a multi-cardinality slot is a plain loop over `bound_producers()`; each returned handle drives its own feedback stream, cancel, and result, exactly as a single goal does.
 
 `fire_goal` returns an `ActionHandle`. Its `accepted` flag and optional rejection `reason` are decoded from the framework goal ack, and, when the action declares a `response_message_format`, its `data` field holds the declared goal response (absent when a rejection carried no payload). The handle retains the selected target: goal submission, feedback, result retrieval, and cancellation all stay pinned to that same producer; no stage uses a wildcard, fallback producer, discovery, or automatic retargeting. The handle is what you use for subsequent feedback, result, and cancel calls. You can fire multiple goals concurrently, and each returns its own handle, so the server can drive them in parallel.
 
@@ -773,7 +773,7 @@ Three contract statements follow from this manifest:
 
 1. `fire_goal` on the nested `wrist_left_camera.<action>` (Python) / `wrist_left_camera::<action>` (Rust) module reaches `left_cam`.
 2. `fire_goal` on the nested `wrist_right_camera.<action>` (Python) / `wrist_right_camera::<action>` (Rust) module reaches `right_cam`.
-3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (every declared `one` / `one_or_more` slot must have a binding): a goal cycle has no wildcard fallback.
+3. If the `wrist_right_camera` binding line were removed, validation would reject the launch (a declared slot has a binding, or a written vacancy where its cardinality is `zero_or_one`): a goal cycle has no wildcard fallback.
 
 ### Why an explicit single target?
 
@@ -783,8 +783,8 @@ Without a pinned target, a goal request would be broadcast to every matching pro
 
 The launcher validator runs these checks before the stack starts:
 
-1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared `one` / `one_or_more` slot with no binding entry fails the launch before anything is spawned; a `zero_or_more` slot with no entry resolves to the empty set.
-2. **The value's shape must match the slot's cardinality.** A `one` slot takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi-slot and are a hard error on a `one` slot.
+1. **Every `KEY` must name a declared slot, and every declared slot must resolve.** A binding whose `KEY` matches no `depends_on` `link_id` is rejected; there are no free-form keys. A declared `one` / `zero_or_one` / `one_or_more` slot with no `links` entry fails the launch before anything is spawned; a `zero_or_more` slot with no entry resolves to the empty set, and so does a `zero_or_one` slot the deployment declared vacant.
+2. **The value's shape must match the slot's cardinality.** A scalar slot (`one` or `zero_or_one`) takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi-slot and are a hard error on a scalar slot.
 3. **Every target must satisfy the slot, checked per bound instance.** A target `instance_id` that deploys a different node than the slot expects (or one that does not implement the requested contract) is rejected.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
 5. **Bindings are stamped with the producer's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps each target producer instance's resolved `core_node` into the binding (equal to the launching daemon's only in the single-machine case), preserving application declaration order, so generated calls address exactly the selected producer and never match on `instance_id` alone.

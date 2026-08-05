@@ -111,13 +111,19 @@ A failure is scoped to the repository that caused it. The repositories that read
 
 A repository that fails **keeps the entries it last published**. Nothing disappears out from under a launcher that references it, and the machine keeps launching everything it could launch before. `peppy repo list` marks those entries as retained, with the date they were read.
 
-The run itself still fails, and names every repository that failed in one message, so you fix everything after one run rather than running repeatedly:
+The run itself still succeeds. A repository that could not be read is a state to report, not a reason to stop: everything the run could do, it did. It names every repository that failed in one message, so you fix everything after one run rather than running repeatedly, and ends by pointing you back at the retry:
 
 ```text
+Repository refresh complete. 26 node(s), 4 launcher(s), 8 contract(s), 2 pairing(s) found.
 2 of the configured repositories could not be updated. Every other repository was updated normally.
   - repository 1000 (https://github.com/Peppy-bot/nodes-hub.git (ref: main)) contradicts itself [conflict]: duplicate key `v1`: already declared at uvc_camera_video_reconstruction/python/peppy.json5, declared again at uvc_camera_video_reconstruction/rust/peppy.json5. Kept 18 entries from its last successful read
   - repository 1003 (https://github.com/Peppy-bot/contracts-hub.git (ref: main)) could not be read [unreachable]: failed to connect to github.com. Kept 8 entries from its last successful read
+Run `peppy repo refresh` again to pick those repositories up.
 ```
+
+This is also what lets the [installer](/guides/installation/) finish on a machine whose network is flaky. Its last step is a refresh, so a hub that happens to be unreachable used to end an install that had otherwise worked. Now the install completes, tells you which repositories it could not read, and leaves you the same retry.
+
+Only a refresh that could not run at all fails: a `repositories.json5` that does not parse or that lists the same `id` twice, or caches that cannot be written. Nothing was read in that case, so there is nothing to contain.
 
 Two kinds of failure are reported, and the distinction matters because they send you to different places:
 

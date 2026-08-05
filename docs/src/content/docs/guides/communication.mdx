@@ -229,7 +229,7 @@ Log file: /home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log
 Started node instance 'vigorous-buck-8117' (pid: 77190)
 ```
 
-A producer slot left without a `--link` is an error: every declared producer slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns. (Pairing slots differ: an `optional` one needs no link, and a required pairing or observer slot can be started unresolved with `--defer-link`.)
+A producer slot left without a `--link` is an error: every declared producer slot must be bound (unless its cardinality is `zero_or_more`), and the run is rejected before the node spawns. A slot whose manifest declares `cardinality: "zero_or_one"` may instead be started unresolved with `--vacant-link 'SLOT=<why>'`, saying why it runs empty. (Pairing and observer slots follow the same shape: a participant slot the node's manifest declares `optional: true`, and a `zero_or_one` observer slot, take the same flag, and a `zero_or_more` observer slot needs no link at all.)
 
 When you start the node, you can see a path to the logs. In my case: `/home/ubuntu/.peppy/logs/run/vigorous-buck-8117.log`.
 If we open it up:

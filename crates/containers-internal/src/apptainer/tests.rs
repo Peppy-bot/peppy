@@ -154,6 +154,71 @@ fn test_build_command_builds_correct_args() {
 }
 
 #[test]
+fn test_apptainer_env_sets_process_env_on_native_build() {
+    let facade = native_facade();
+
+    let home = std::env::var("HOME").unwrap();
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+    let cmd = facade
+        .build(&output, &def)
+        .apptainer_env("RUSTC_WRAPPER", "/peppy-cache/sccache");
+
+    let args = cmd.build_args().expect("build_args should succeed");
+    assert!(
+        args.iter().all(|a| !a.contains("RUSTC_WRAPPER")),
+        "apptainer_env must not appear in argv, got: {:?}",
+        args
+    );
+
+    let std_cmd = cmd.into_std_command().expect("command should assemble");
+    let env: Vec<_> = std_cmd.get_envs().collect();
+    assert!(
+        env.contains(&(
+            std::ffi::OsStr::new("APPTAINERENV_RUSTC_WRAPPER"),
+            Some(std::ffi::OsStr::new("/peppy-cache/sccache"))
+        )),
+        "expected APPTAINERENV_RUSTC_WRAPPER in process env, got: {:?}",
+        env
+    );
+}
+
+#[test]
+fn test_apptainer_env_rides_the_guest_argv_on_lima_build() {
+    let facade = lima_facade();
+
+    let home = std::env::var("HOME").unwrap();
+    let output = PathBuf::from(&home).join("test/output.sif");
+    let def = PathBuf::from(&home).join("test/def.def");
+    let std_cmd = facade
+        .build(&output, &def)
+        .apptainer_env("RUSTC_WRAPPER", "/peppy-cache/sccache")
+        .into_std_command()
+        .expect("command should assemble");
+
+    let args: Vec<String> = std_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let env_pos = args
+        .iter()
+        .position(|a| a == "env")
+        .expect("guest argv must invoke env");
+    assert_eq!(
+        args[env_pos + 1],
+        "APPTAINERENV_RUSTC_WRAPPER=/peppy-cache/sccache",
+        "env must set the APPTAINERENV_ pair before execing apptainer, got: {:?}",
+        args
+    );
+    assert!(
+        std_cmd
+            .get_envs()
+            .all(|(key, _)| !key.to_string_lossy().starts_with("APPTAINERENV_")),
+        "process env on limactl does not reach the guest and must stay unset"
+    );
+}
+
+#[test]
 fn test_bind_flag_accumulates() {
     let facade = native_facade();
 

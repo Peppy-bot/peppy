@@ -1,0 +1,37 @@
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "joint_link",
+    tag: "v1"
+  },
+  // One teleoperated arm limb: the leader arm an operator backdrives, and the
+  // follower arm that tracks it. A pairing rather than two producer links
+  // because each side holds a pinned view of exactly one counterpart, and
+  // because the two directions are one conversation.
+  roles: ["leader", "follower"],
+  topics: [
+    {
+      emitted_by: "leader",
+      name: "joint_setpoints",
+      // Streamed at the leader's own rate: a follower that misses one sample
+      // wants the next one, not a replay of the last.
+      qos_profile: "sensor_data",
+      message_format: {
+        stamp: "time",
+        positions: { $type: "array", $items: "f64", $length: 7 }
+      }
+    },
+    {
+      emitted_by: "follower",
+      name: "joint_states",
+      qos_profile: "sensor_data",
+      message_format: {
+        stamp: "time",
+        positions: { $type: "array", $items: "f64", $length: 7 },
+        // Whether the follower is currently tracking its leader, so a panel
+        // watching this side can tell a held pose from a live one.
+        tracking: "bool"
+      }
+    }
+  ]
+}

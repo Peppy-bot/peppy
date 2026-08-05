@@ -50,9 +50,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "android_system_properties"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
+checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
 dependencies = [
  "libc",
 ]
@@ -573,7 +573,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#f3f14ade3c0c21d95ae98d1e5df61fa2416f399c"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#ca05f12ab1b9fd70335353af160a5d5c00e84583"
 dependencies = [
  "sha2",
 ]
@@ -765,7 +765,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#f3f14ade3c0c21d95ae98d1e5df61fa2416f399c"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#ca05f12ab1b9fd70335353af160a5d5c00e84583"
 dependencies = [
  "askama",
  "git2",
@@ -909,7 +909,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#f3f14ade3c0c21d95ae98d1e5df61fa2416f399c"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#ca05f12ab1b9fd70335353af160a5d5c00e84583"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -1431,9 +1431,9 @@ dependencies = [
 
 [[package]]
 name = "fancy-regex"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1e1dacd0d2082dfcf1351c4bdd566bbe89a2b263235a2b50058f1e130a47277"
+checksum = "476de73bddf2ef8490aa4ee8f1cf40b430bf1d56c48c22080e5186952cd580e6"
 dependencies = [
  "bit-set",
  "regex-automata",
@@ -1855,9 +1855,9 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "globset"
-version = "0.4.19"
+version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e47d37d2ae4464254884b60ab7071be2b876a9c35b696bd018ddcc76847309cd"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
 dependencies = [
  "aho-corasick",
  "bstr",
@@ -2358,9 +2358,9 @@ dependencies = [
 
 [[package]]
 name = "ignore"
-version = "0.4.32"
+version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b17771570a2b94107741a7b033f19132c2eee21d59d21b24d2ced26500bd66e"
+checksum = "00b69833ed729dc5aa7d19541d96d6cf8e9137194207a04916d658e43168402f"
 dependencies = [
  "crossbeam-deque",
  "globset",
@@ -2581,7 +2581,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#f3f14ade3c0c21d95ae98d1e5df61fa2416f399c"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#ca05f12ab1b9fd70335353af160a5d5c00e84583"
 dependencies = [
  "serde",
  "serde_json",
@@ -2589,9 +2589,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.49.3"
+version = "0.49.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "508004a5500f2e1f68af048f70feea2de86d35ab115d85716530860822aef397"
+checksum = "8da60094fc1968bbd091e2cfa004415cb7b19e25e592376e66a64aa832bb6039"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2620,18 +2620,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.49.3"
+version = "0.49.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a8b30cafa78358ae6cd1494a7d6410b89530e28bf567f862c869c667e900d9f"
+checksum = "36539f34ef9e5da418433fbbf7294522d8f930ecf6a540ccd1ec6481c9ff9056"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.49.3"
+version = "0.49.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5526bd381d230af94908d07e6835a33fd82a465e12f5f1e9c81f5c2aa23b3c21"
+checksum = "8bc513dfee68c6fe29498451df95a32951ea227801b476f4a1f236433986c891"
 dependencies = [
  "ahash",
  "bytecount",
@@ -3179,9 +3179,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "open"
-version = "5.4.0"
+version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0b3d059e795d52b8a72fef45658620edd4d9c359b338564aa14391ffa511ed5"
+checksum = "f9cfef937e9c486488c7e3d949ae31c0f1d06bdacd75b99c086cb35356e30408"
 dependencies = [
  "is-wsl",
  "libc",
@@ -3372,7 +3372,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#f3f14ade3c0c21d95ae98d1e5df61fa2416f399c"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#ca05f12ab1b9fd70335353af160a5d5c00e84583"
 dependencies = [
  "capnp",
  "clap",
@@ -3395,7 +3395,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#f3f14ade3c0c21d95ae98d1e5df61fa2416f399c"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#ca05f12ab1b9fd70335353af160a5d5c00e84583"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3590,7 +3590,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#f3f14ade3c0c21d95ae98d1e5df61fa2416f399c"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#ca05f12ab1b9fd70335353af160a5d5c00e84583"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3984,9 +3984,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.49.3"
+version = "0.49.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7af3eb523cce0df0af3c30d624b829b2dabd233172b5bc2615fcd03ceae8f746"
+checksum = "05915176d843da9ec5c925e5e2631be9aa61b27430acfdd562e79cae8f559725"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -4013,9 +4013,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.16"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
 dependencies = [
  "aho-corasick",
  "memchr",

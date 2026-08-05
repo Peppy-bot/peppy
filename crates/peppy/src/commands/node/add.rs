@@ -4,6 +4,8 @@ use core_node_api::encoding::{
     NodeAddFeedback, NodeAddGoal, NodeAddGoalResponse, NodeAddResult, NodeInfoRequest,
     NodeInfoResponse, NodeSource,
 };
+use daemon_config::launcher::LinkValue;
+use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
@@ -30,14 +32,12 @@ use peppylib::core_node::transport::{poll, send_goal};
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
-    /// `--link KEY@TARGET` entries, unifying producer bindings, pairings, and
-    /// observer sources under one flag. Classified by slot kind and validated
-    /// by the same launcher rules that gate `peppy node run` via
-    /// [`validate_and_run_instance`].
-    pub links: Vec<(String, String)>,
-    /// `--defer-link LINK_ID` pairing/observer slots explicitly left
-    /// unresolved at launch.
-    pub defer_links: Vec<String>,
+    /// The `--link KEY@TARGET` and `--vacant-link SLOT=<why>` flags merged
+    /// into one slot map, unifying producer bindings, pairings, observer
+    /// sources and deliberate vacancies under one container. Classified by
+    /// slot kind and validated by the same launcher rules that gate
+    /// `peppy node run` via [`validate_and_run_instance`].
+    pub links: BTreeMap<String, LinkValue>,
 }
 
 /// Parameters for adding a node.
@@ -255,7 +255,6 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &run_options.args,
         run_options.instance_id,
         &run_options.links,
-        &run_options.defer_links,
         &timeouts,
     )
     .await?;

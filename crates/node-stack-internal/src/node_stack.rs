@@ -1,5 +1,6 @@
 pub mod add_steps;
 mod build_steps;
+mod container_build_cache;
 mod entity;
 mod pairing;
 mod run_steps;
@@ -1526,7 +1527,6 @@ pub fn pairing_slot_view(
                 pairing_name: dep.name.as_str().to_string(),
                 pairing_tag: dep.tag.clone(),
                 role: dep.role.clone(),
-                optional: dep.optional,
                 binding,
             },
         );

@@ -164,7 +164,21 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     counts.contracts,
                     counts.pairings,
                 ),
-                Ok(Ok(counts)) => RepoRefreshResult::failure(failure_report(&counts.failures)),
+                // A repository that could not be read does not fail the
+                // run. The refresh did everything it could: it published
+                // the caches, every other repository is current, and this
+                // one still serves what it last published. Reporting that
+                // as a failure takes down whatever ran the refresh, which
+                // on a fresh install is the installer itself, over a hub
+                // that was briefly unreachable. The report names them so
+                // the caller can say so and offer the retry.
+                Ok(Ok(counts)) => RepoRefreshResult::success_with_failure_report(
+                    counts.nodes,
+                    counts.launchers,
+                    counts.contracts,
+                    counts.pairings,
+                    failure_report(&counts.failures),
+                ),
                 Ok(Err(e)) => {
                     warn!("Repo refresh failed: {}", e);
                     RepoRefreshResult::failure(e.to_string())

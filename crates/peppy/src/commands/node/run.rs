@@ -4,13 +4,13 @@ use config::runtime::Name;
 use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::{
     NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
-    NodeRunResult, ObservationTarget, PairTarget, StackListRequest,
+    NodeRunResult, ObservationTarget, ObservationTargets, PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::launcher::{
-    BindingValidationItem, DeploymentInstance, LinkTargets, LinkValue, PairingValidationItem,
-    Placements, split_link_target, validate_link_plan,
+    BindingValidationItem, DeploymentInstance, LinkValue, PairingValidationItem, Placements,
+    split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
 use peppylib::MessengerHandle;
@@ -267,44 +267,11 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
-/// `--link KEY@VALUE` entries as a map of `KEY` (a declared slot link_id)
-/// to its accumulated producer targets, in flag occurrence order. Repeating
-/// a `KEY` mirrors the launcher's array form: it accumulates the slot's
-/// bound set, and `validate_bindings` checks the count against the slot's
-/// declared cardinality (more than one target on a `cardinality: "one"`
-/// slot fails there). Repeating the exact same `KEY@VALUE` pair is a hard
-/// error, rejected by [`LinkTargets`] like every other path that builds
-/// a bound set.
-fn links_to_map(
-    links: &[(String, String)],
-    instance_id: &str,
-) -> Result<BTreeMap<String, LinkValue>> {
-    let mut accumulated: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (key, value) in links {
-        accumulated
-            .entry(key.clone())
-            .or_default()
-            .push(value.clone());
-    }
-    accumulated
-        .into_iter()
-        .map(|(key, targets)| {
-            let targets = LinkTargets::new(targets).map_err(|err| {
-                Error::ExecutionFailed(format!(
-                    "`--link {key}@{target}` on instance `{instance_id}`: {err}",
-                    target = err.target
-                ))
-            })?;
-            Ok((key, LinkValue::Flags(targets)))
-        })
-        .collect()
-}
-
 /// The resolved preflight plan for one instance's `--link` flags: the
 /// producer-binding slots resolved to concrete producer sets, the
 /// participant-pairing links extracted into the `PairTarget` map the daemon's
 /// `node_run` re-plans, and the observer links resolved into the
-/// `ObservationTarget` map the daemon registers with its observation
+/// `ObservationTargets` map the daemon registers with its observation
 /// coordinator. Carrying observations on the goal is what makes a lone
 /// `node run` observer receive its source pin exactly like a launcher would;
 /// without it the observer would boot validated but silent.
@@ -312,8 +279,8 @@ fn links_to_map(
 struct PreflightPlan {
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
-    deferred_pairs: Vec<String>,
-    requested_observations: BTreeMap<String, ObservationTarget>,
+    vacant_pairs: BTreeMap<String, String>,
+    requested_observations: BTreeMap<String, ObservationTargets>,
 }
 
 /// Pre-flight bind validation. Snapshots the running stack via
@@ -348,7 +315,6 @@ async fn validate_links_against_stack(
     target_tag: &str,
     target_instance_id: &str,
     links: &BTreeMap<String, LinkValue>,
-    defer_links: &[String],
 ) -> Result<Option<PreflightPlan>> {
     let stack_response = poll(
         &StackListRequest::new(),
@@ -506,7 +472,6 @@ async fn validate_links_against_stack(
     // group.
     let synthetic_instances = vec![DeploymentInstance {
         links: links.clone(),
-        defer_links: defer_links.to_vec(),
         ..DeploymentInstance::empty(
             Name::new(target_instance_id.to_owned()).map_err(|e| Error::PeppyConfig(e.into()))?,
         )
@@ -564,6 +529,9 @@ async fn validate_links_against_stack(
         &items,
         &pairing_items,
         &already_paired,
+        // A `node run` preflight sees the whole stack it validates against, so
+        // nothing is covered outside the validator's view.
+        &daemon_config::launcher::ExternallyCoveredSlots::new(),
         // `node run` targets one daemon, so every instance it can see is on it.
         &Placements::all_on(CoreNodeName::new(core_node_name).map_err(|reason| {
             Error::ExecutionFailed(format!(
@@ -586,19 +554,22 @@ async fn validate_links_against_stack(
         .iter()
         .map(|d| d.link_id.as_str())
         .collect();
-    let deferred_pairs = defer_links
-        .iter()
-        .filter(|link_id| participant_link_ids.contains(link_id.as_str()))
-        .cloned()
-        .collect();
+    // A vacancy on a participant slot rides to the daemon as the reason it
+    // carries; observer vacancies produce no goal state, exactly as observer
+    // links do, and a producer vacancy rides as the empty set its resolved
+    // `slot_bindings` entry carries rather than as a reason.
+    let vacant_pairs = daemon_config::launcher::participant_vacancies(links, &participant_link_ids);
     let mut requested_pairs: BTreeMap<String, PairTarget> = BTreeMap::new();
     for (link_id, value) in links {
         if !participant_link_ids.contains(link_id.as_str()) {
             continue;
         }
+        let Some(selection) = value.selection() else {
+            continue;
+        };
         // Scalar-ness was already enforced by `validate_pairings`; a
         // participant link that survived it is a single target.
-        if let Some(target) = value.as_scalar() {
+        if let Some(target) = selection.as_scalar() {
             let (peer_instance, peer_link) = split_link_target(target);
             let pair_target = match peer_link {
                 Some(link) => PairTarget::pinned(peer_instance, link, core_node_name),
@@ -608,26 +579,28 @@ async fn validate_links_against_stack(
         }
     }
 
-    // Extract the observer links into the `ObservationTarget` map the goal
-    // carries, keyed by the observer's own slot link_id. Only observations for
-    // THIS instance go on its goal (a preexisting instance's observers were
+    // Extract the observer links into the `ObservationTargets` map the goal
+    // carries, keyed by the observer's own slot link_id and holding that slot's
+    // whole member set in `--link` occurrence order. Only observations for THIS
+    // instance go on its goal (a preexisting instance's observers were
     // registered at its own start); the daemon re-stamps the source core_node,
     // so it is dropped here exactly as a pair target drops it.
-    let requested_observations: BTreeMap<String, ObservationTarget> = validated
+    let mut observation_members: BTreeMap<String, Vec<ObservationTarget>> = BTreeMap::new();
+    for observation in validated
         .planned_observations
         .iter()
         .filter(|obs| obs.observer_instance_id == target_instance_id)
-        .map(|obs| {
-            (
-                obs.observer_link_id.clone(),
-                ObservationTarget::new(
-                    &obs.source.instance_id,
-                    &obs.source_link_id,
-                    core_node_name,
-                ),
-            )
-        })
-        .collect();
+    {
+        observation_members
+            .entry(observation.observer_link_id.clone())
+            .or_default()
+            .push(ObservationTarget::new(
+                &observation.source.instance_id,
+                &observation.source_link_id,
+                core_node_name,
+            ));
+    }
+    let requested_observations = ObservationTargets::slots_from_plan(observation_members);
 
     Ok(Some(PreflightPlan {
         slot_bindings: validated
@@ -635,7 +608,7 @@ async fn validate_links_against_stack(
             .remove(target_instance_id)
             .unwrap_or_default(),
         requested_pairs,
-        deferred_pairs,
+        vacant_pairs,
         requested_observations,
     }))
 }
@@ -660,12 +633,11 @@ pub async fn validate_and_run_instance(
     tag: &str,
     args: &[(String, String)],
     instance_id: Option<String>,
-    links: &[(String, String)],
-    defer_links: &[String],
+    links: &BTreeMap<String, LinkValue>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
-    let links_map = links_to_map(links, &prelaunch_instance_id)?;
+
     // A `None` plan means the preflight could not reach the daemon. We cannot
     // classify links without the target's manifest, so nothing is pre-resolved
     // and the goal carries no pairs. In practice this path is inert: a daemon
@@ -677,8 +649,7 @@ pub async fn validate_and_run_instance(
         node_name,
         tag,
         &prelaunch_instance_id,
-        &links_map,
-        defer_links,
+        links,
     )
     .await
     {
@@ -700,7 +671,7 @@ pub async fn validate_and_run_instance(
         Some(prelaunch_instance_id),
         plan.slot_bindings,
         plan.requested_pairs,
-        plan.deferred_pairs,
+        plan.vacant_pairs,
         plan.requested_observations,
         timeouts,
     )
@@ -726,8 +697,8 @@ pub async fn run_instance_async(
     instance_id: Option<String>,
     slot_bindings: config::runtime::SlotBindings,
     requested_pairs: BTreeMap<String, PairTarget>,
-    deferred_pairs: Vec<String>,
-    requested_observations: BTreeMap<String, ObservationTarget>,
+    vacant_pairs: BTreeMap<String, String>,
+    requested_observations: BTreeMap<String, ObservationTargets>,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -773,7 +744,7 @@ pub async fn run_instance_async(
     )
     .with_env_vars(caller_env_overrides())
     .with_requested_pairs(requested_pairs)
-    .with_deferred_pairs(deferred_pairs)
+    .with_vacant_pairs(vacant_pairs)
     .with_planned_observations(requested_observations);
     let mut action_handle = send_goal(
         &start_goal,
@@ -813,8 +784,7 @@ pub fn run_node(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    links: Vec<(String, String)>,
-    defer_links: Vec<String>,
+    links: BTreeMap<String, LinkValue>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -825,7 +795,6 @@ pub fn run_node(
         args,
         instance_id,
         links,
-        defer_links,
         timeouts,
         build,
     ))
@@ -838,8 +807,7 @@ async fn run_node_async(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
-    links: Vec<(String, String)>,
-    defer_links: Vec<String>,
+    links: BTreeMap<String, LinkValue>,
     timeouts: TimeoutConfig,
     build: bool,
 ) -> Result<()> {
@@ -923,7 +891,6 @@ async fn run_node_async(
         &args,
         instance_id,
         &links,
-        &defer_links,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
@@ -934,14 +901,6 @@ async fn run_node_async(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Test shorthand: the `Flags` value accumulated from unique targets.
-    fn flags(targets: &[&str]) -> LinkValue {
-        LinkValue::Flags(
-            LinkTargets::new(targets.iter().map(|t| t.to_string()).collect())
-                .expect("test targets are unique"),
-        )
-    }
 
     #[test]
     fn parse_bool_values() {
@@ -977,47 +936,6 @@ mod tests {
         assert_eq!(
             parse_value("foo=bar"),
             AnyType::String("foo=bar".to_string())
-        );
-    }
-
-    /// Repeated `--link KEY` occurrences accumulate the slot's target set in
-    /// flag order (the check against the slot kind and cardinality happens
-    /// later in the validators); only the exact same `KEY@VALUE` pair twice is
-    /// a hard error here. A repeated key on a pairing/observer slot survives
-    /// this stage and is rejected downstream as a multi-target value, which is
-    /// why uniqueness is no longer enforced at map construction.
-    #[test]
-    fn repeated_link_keys_accumulate_and_exact_duplicates_are_rejected() {
-        let distinct = vec![
-            ("arm".to_string(), "arm_1".to_string()),
-            ("grip".to_string(), "grip_1".to_string()),
-        ];
-        let map = links_to_map(&distinct, "ctrl_1").expect("distinct keys should collect");
-        assert_eq!(map.get("arm"), Some(&flags(&["arm_1"])));
-        assert_eq!(map.get("grip"), Some(&flags(&["grip_1"])));
-
-        // Different targets on one key accumulate in flag occurrence order.
-        let accumulated = vec![
-            ("cameras".to_string(), "rear_camera".to_string()),
-            ("cameras".to_string(), "front_camera".to_string()),
-        ];
-        let map = links_to_map(&accumulated, "ctrl_1").expect("repeated keys accumulate");
-        assert_eq!(
-            map.get("cameras"),
-            Some(&flags(&["rear_camera", "front_camera"])),
-            "flag occurrence order must be preserved"
-        );
-
-        // The exact same KEY@VALUE pair twice is a hard error.
-        let duplicated = vec![
-            ("arm".to_string(), "arm_1".to_string()),
-            ("arm".to_string(), "arm_1".to_string()),
-        ];
-        let err = links_to_map(&duplicated, "ctrl_1").expect_err("duplicate link rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--link arm@arm_1") && msg.contains("once"),
-            "unexpected error: {msg}"
         );
     }
 

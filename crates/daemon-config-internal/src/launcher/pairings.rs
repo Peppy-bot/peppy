@@ -1,16 +1,16 @@
 //! Plan-phase validation for the participant-slot entries of the launcher's
-//! per-instance `links` map and its `defer_links` field (and the CLI's
-//! `--link` / `--defer-link`, which feed the same validator through the
-//! daemon). Producer-binding and observer entries of the same `links` map are
-//! owned by `bindings` / `observations`; this validator steps over them.
+//! per-instance `links` map (and the CLI's `--link` / `--vacant-link`, which
+//! feed the same validator through the daemon). Producer-binding and observer
+//! entries of the same `links` map are owned by `bindings` / `observations`;
+//! this validator steps over them.
 //!
 //! A pair is strictly 1:1 between two complementary slots (slot = instance ×
 //! link_id): same pairing `(name, tag)`, opposite roles, both unclaimed.
 //! Declaring the pair on ONE side covers both endpoints' slots; declaring it
-//! from both sides is allowed but must agree. Every REQUIRED pairing slot of
-//! every planned instance must end up paired or explicitly deferred, or the
-//! plan is rejected (`PairingSlotUncovered`) — no silent unpaired boots.
-//! `optional: true` slots are exempt: they boot unpaired without ceremony.
+//! from both sides is allowed but must agree. Every pairing slot of every
+//! planned instance must end up paired, or, where the node's manifest declares
+//! the slot `optional: true`, explicitly declared vacant; otherwise the plan is
+//! rejected (`PairingSlotUncovered`): no silent unpaired boots.
 
 use crate::error::{
     PairingConflict, PairingSha256Mismatch, PairingSlotAlreadyPaired, PairingSlotUncovered,
@@ -76,6 +76,21 @@ pub struct ValidatedPairings {
 /// peer label for error messages.
 pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
 
+/// `(instance_id, link_id)` slots this validator must treat as covered
+/// although it can see no pair for them, because something outside its view
+/// holds the other half.
+///
+/// Empty on the launcher and CLI paths, which see the whole plan. The daemon's
+/// plan-phase check populates it: a slot a LATER-starting instance of the same
+/// launch will claim, and a slot already paired to a peer on another machine,
+/// are both paired facts that this daemon's snapshot cannot show. Neither is a
+/// vacancy, so neither is written as one.
+///
+/// Keyed by `(instance_id, link_id)` like [`AlreadyPairedSlots`] and the
+/// in-plan claim map, so external coverage granted to one instance can never
+/// leak to a sibling deploying the same node.
+pub type ExternallyCoveredSlots = std::collections::BTreeSet<(String, String)>;
+
 /// Run all pairing validator rules over the plan.
 ///
 /// Rules:
@@ -93,15 +108,14 @@ pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
 /// 5. Both-sides declarations must agree (`PairingConflict`).
 /// 6. When both endpoints pin a `sha256` for the pairing document, the pins
 ///    must match (`PairingSha256Mismatch`).
-/// 7. Coverage: every required participant slot of every planned instance is
-///    paired or listed in `defer_links` (`PairingSlotUncovered`); a
-///    `defer_links` entry naming a participant slot that is also paired, or an
-///    optional slot (those boot unpaired without ceremony), is
-///    `LinkDeferInvalid`. Defers naming a non-participant slot are left to
-///    `validate_observations` / `validate_link_slots`.
+/// 7. Coverage: every participant slot of every planned instance is paired,
+///    declared vacant (`links: { <link_id>: { vacant: "<why>" } }`), or listed
+///    in `externally_covered` (`PairingSlotUncovered` otherwise). Whether a
+///    slot may be vacant at all is `validate_link_slots`'s call.
 pub fn validate_pairings(
     items: &[PairingValidationItem<'_>],
     already_paired: &AlreadyPairedSlots,
+    externally_covered: &ExternallyCoveredSlots,
 ) -> ValidatedPairings {
     let mut out = ValidatedPairings::default();
 
@@ -142,7 +156,13 @@ pub fn validate_pairings(
                 let Some(own_dep) = participants_by_link.get(key.as_str()).copied() else {
                     continue;
                 };
-                let Some(target) = value.as_scalar() else {
+                // A vacant slot claims nothing: it is the deployment saying
+                // this slot has no peer, and `validate_coverage` reads it
+                // there rather than here.
+                let Some(selection) = value.selection() else {
+                    continue;
+                };
+                let Some(target) = selection.as_scalar() else {
                     out.errors.push(ParsingError::LinkTargetNotScalar {
                         owner_instance_id: instance.instance_id.to_string(),
                         link: key.clone(),
@@ -178,7 +198,7 @@ pub fn validate_pairings(
         }
     }
 
-    validate_coverage_and_defers(items, &claims, &mut out.errors);
+    validate_coverage(items, &claims, externally_covered, &mut out.errors);
 
     out
 }
@@ -394,47 +414,28 @@ fn resolve_pair_declaration(
 }
 
 /// Rule 7 of [`validate_pairings`], over every planned (non-preexisting)
-/// instance: each required slot must be paired or deferred, and each
-/// `defer_links` entry must name a known, non-optional slot that is not
-/// also paired in the same plan.
-fn validate_coverage_and_defers(
+/// instance: each participant slot is paired in this plan, declared vacant, or
+/// covered outside this validator's view. An optional slot is not exempt, only
+/// vacatable: a slot with no `links` entry at all is uncovered whatever the
+/// manifest says, so forgetting one stays an error and the manifest flag only
+/// decides which remedies the error offers.
+fn validate_coverage(
     items: &[PairingValidationItem<'_>],
     claims: &BTreeMap<(String, String), (String, String)>,
+    externally_covered: &ExternallyCoveredSlots,
     errors: &mut Vec<ParsingError>,
 ) {
     for item in items.iter().filter(|i| !i.preexisting) {
         for instance in item.instances {
             let owner_id = instance.instance_id.as_str();
-            for link_id in &instance.defer_links {
-                // Only participant-slot defers are this validator's concern.
-                // An observer-slot defer is validated by `validate_observations`
-                // and a defer naming a producer-binding or unknown slot by
-                // `validate_link_slots`; skip both here so each defer is judged
-                // exactly once.
-                let Some(dep) = item.pairing_deps.iter().find(|d| &d.link_id == link_id) else {
-                    continue;
-                };
-                let reason = if claims.contains_key(&(owner_id.to_string(), link_id.clone())) {
-                    Some("the slot is also paired in this plan".to_string())
-                } else if dep.optional {
-                    Some("the slot is optional and boots unpaired without deferral".to_string())
-                } else {
-                    None
-                };
-                if let Some(reason) = reason {
-                    errors.push(ParsingError::LinkDeferInvalid {
-                        owner_instance_id: owner_id.to_string(),
-                        link_id: link_id.clone(),
-                        reason,
-                    });
-                }
-            }
             for dep in item.pairing_deps {
-                if dep.optional {
-                    continue;
-                }
-                let covered = claims.contains_key(&(owner_id.to_string(), dep.link_id.clone()))
-                    || instance.defer_links.contains(&dep.link_id);
+                let slot = (owner_id.to_string(), dep.link_id.clone());
+                let covered = claims.contains_key(&slot)
+                    || externally_covered.contains(&slot)
+                    || instance
+                        .links
+                        .get(&dep.link_id)
+                        .is_some_and(|value| value.vacancy().is_some());
                 if !covered {
                     errors.push(ParsingError::PairingSlotUncovered(Box::new(
                         PairingSlotUncovered {
@@ -443,6 +444,7 @@ fn validate_coverage_and_defers(
                             pairing_name: dep.name.as_str().to_string(),
                             pairing_tag: dep.tag.clone(),
                             role: dep.role.clone(),
+                            optional: dep.optional,
                         },
                     )));
                 }
@@ -463,16 +465,26 @@ mod tests {
         serde_json5::from_str(json5).expect("pairing deps fixture should parse")
     }
 
-    fn arm_deps(optional: bool) -> Vec<PairingParticipantDependency> {
-        parse_pairing_deps(&format!(
-            r#"[{{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: {optional} }}]"#
-        ))
+    fn arm_deps() -> Vec<PairingParticipantDependency> {
+        parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }]"#,
+        )
     }
 
     fn controller_deps() -> Vec<PairingParticipantDependency> {
         parse_pairing_deps(
             r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }]"#,
         )
+    }
+
+    /// Every launcher/CLI plan holds both endpoints of every pair, so these
+    /// tests never have slots covered outside the validator's view; the
+    /// daemon's plan-phase check is the one caller that does.
+    fn validate(
+        items: &[PairingValidationItem<'_>],
+        already_paired: &AlreadyPairedSlots,
+    ) -> ValidatedPairings {
+        validate_pairings(items, already_paired, &ExternallyCoveredSlots::new())
     }
 
     fn item<'a>(
@@ -504,7 +516,7 @@ mod tests {
     #[test]
     fn one_sided_declaration_pairs_both_slots() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
@@ -512,7 +524,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
         let pair = &out.planned[0];
@@ -529,7 +541,7 @@ mod tests {
     fn both_sides_declared_and_agreeing_dedupes_to_one_pair() {
         let arm_instances =
             parse_instances(r#"[{ instance_id: "arm_1", links: { controller: "ctrl_1" } }]"#);
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
@@ -537,7 +549,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1, "agreeing pair must dedupe");
     }
@@ -550,7 +562,7 @@ mod tests {
                 { instance_id: "arm_2" }
             ]"#,
         );
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances = parse_instances(
             r#"[
                 { instance_id: "ctrl_1", links: { arm: "arm_1" } },
@@ -562,7 +574,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(
             out.errors
                 .iter()
@@ -579,7 +591,7 @@ mod tests {
     #[test]
     fn non_participant_key_is_skipped() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { ghost_slot: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
@@ -587,7 +599,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(
             out.errors
                 .iter()
@@ -610,7 +622,7 @@ mod tests {
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "ghost" } }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(
             out.errors
                 .iter()
@@ -632,7 +644,7 @@ mod tests {
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
             item("other_controller", &other_ctrl_instances, &other_ctrl_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         let info = out
             .errors
             .iter()
@@ -648,12 +660,21 @@ mod tests {
 
     #[test]
     fn ambiguous_target_requires_peer_link_disambiguation() {
-        // A dual-role node with two complementary 'arm' slots.
-        let dual_arm_instances = parse_instances(r#"[{ instance_id: "dual_1" }]"#);
+        // A dual-role node with two complementary 'arm' slots. Neither is paired
+        // in this half, so both are declared vacant to keep the plan covered.
+        let dual_arm_instances = parse_instances(
+            r#"[{
+                instance_id: "dual_1",
+                links: {
+                    left_ctl: { vacant: "this half is unwired in the fixture" },
+                    right_ctl: { vacant: "this half is unwired in the fixture" }
+                }
+            }]"#,
+        );
         let dual_arm_deps = parse_pairing_deps(
             r#"[
-                { name: "arm_link", tag: "v1", role: "arm", link_id: "left_ctl", optional: true },
-                { name: "arm_link", tag: "v1", role: "arm", link_id: "right_ctl", optional: true }
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "left_ctl" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "right_ctl" }
             ]"#,
         );
         let ctrl_instances =
@@ -663,7 +684,7 @@ mod tests {
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
             item("dual_arm", &dual_arm_instances, &dual_arm_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         let info = out
             .errors
             .iter()
@@ -678,14 +699,21 @@ mod tests {
             "hint should mention the disambiguation syntax: {info}"
         );
 
-        // Explicit disambiguation resolves it.
+        // Explicit disambiguation resolves it: the pinned slot is paired, and
+        // only the other one stays deliberately empty.
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "dual_1/left_ctl" } }]"#);
+        let dual_arm_instances = parse_instances(
+            r#"[{
+                instance_id: "dual_1",
+                links: { right_ctl: { vacant: "only the left half is wired here" } }
+            }]"#,
+        );
         let items = vec![
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
             item("dual_arm", &dual_arm_instances, &dual_arm_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
         assert_eq!(out.planned[0].b.link_id, "left_ctl");
@@ -694,7 +722,7 @@ mod tests {
     #[test]
     fn in_plan_exclusivity_rejects_second_claim_on_same_slot() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances = parse_instances(
             r#"[
                 { instance_id: "ctrl_1", links: { arm: "arm_1" } },
@@ -706,7 +734,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         // ctrl_1 wins (deterministic order); ctrl_2's claim collides with
         // the in-plan pair and is reported as a conflict naming it.
         assert_eq!(out.planned.len(), 1);
@@ -725,7 +753,7 @@ mod tests {
         // arm_1 is running and its slot is already paired (e.g. to a live
         // controller); a new controller naming it explicitly must be told.
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_2", links: { arm: "arm_1/controller" } }]"#);
         let ctrl_pairing_deps = controller_deps();
@@ -739,7 +767,7 @@ mod tests {
         )]
         .into_iter()
         .collect();
-        let out = validate_pairings(&items, &already);
+        let out = validate(&items, &already);
         let info = out
             .errors
             .iter()
@@ -753,12 +781,16 @@ mod tests {
         assert_eq!(info.existing_peer, "ctrl_1:arm");
     }
 
+    /// A required slot's uncovered message offers a peer and the manifest key
+    /// that would let the slot run without one, never the vacancy spelling the
+    /// manifest forbids: an error must not advertise an escape hatch that would
+    /// be rejected the moment it is written.
     #[test]
     fn required_slot_uncovered_fails_loudly() {
         let ctrl_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         let info = out
             .errors
             .iter()
@@ -772,81 +804,163 @@ mod tests {
         assert_eq!(info.role, "controller");
         let msg = info.to_string();
         assert!(
-            msg.contains("--link arm@"),
+            msg.contains("required pairing slot") && msg.contains("--link arm@"),
             "message should show the fix: {msg}"
         );
         assert!(
-            msg.contains("--defer-link arm"),
-            "message should show the defer: {msg}"
+            msg.contains("`optional: true`"),
+            "message should name the manifest key that waives the peer: {msg}"
+        );
+        assert!(
+            msg.contains("if it is meant to run empty, declare"),
+            "the vacancy must be offered only behind the manifest change, never as a \
+             standalone fix: {msg}"
         );
     }
 
+    /// An optional slot is vacatable, not exempt: forgetting it is the same
+    /// error, and only its remedy list differs.
     #[test]
-    fn optional_slot_needs_no_coverage() {
-        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        let arm_pairing_deps = arm_deps(true);
-        let items = vec![item("robot_arm", &arm_instances, &arm_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
-        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+    fn optional_slot_is_uncovered_when_forgotten_and_covered_when_vacated() {
+        let optional_deps = parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", optional: true }]"#,
+        );
+
+        let forgotten = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
+        let out = validate(
+            &[item("arm_controller", &forgotten, &optional_deps)],
+            &BTreeMap::new(),
+        );
+        let info = out
+            .errors
+            .iter()
+            .find_map(|e| match e {
+                ParsingError::PairingSlotUncovered(info) => Some(info),
+                _ => None,
+            })
+            .expect("a forgotten optional slot is still uncovered");
+        let msg = info.to_string();
+        assert!(
+            msg.contains("optional pairing slot") && msg.contains("--vacant-link 'arm=<why>'"),
+            "an optional slot's message offers both remedies: {msg}"
+        );
+
+        let vacated = parse_instances(
+            r#"[{ instance_id: "ctrl_1", links: { arm: { vacant: "monitor rig: nothing to command" } } }]"#,
+        );
+        let out = validate(
+            &[item("arm_controller", &vacated, &optional_deps)],
+            &BTreeMap::new(),
+        );
+        assert!(
+            out.errors.is_empty(),
+            "a vacated optional slot is covered: {:?}",
+            out.errors
+        );
+        assert!(out.planned.is_empty(), "a vacancy claims no peer");
     }
 
+    /// A vacant participant slot covers itself, claims nothing, and plans no
+    /// pair.
     #[test]
-    fn deferred_required_slot_is_covered() {
-        let ctrl_instances =
-            parse_instances(r#"[{ instance_id: "ctrl_1", defer_links: ["arm"] }]"#);
+    fn a_vacant_required_slot_is_covered() {
+        let ctrl_instances = parse_instances(
+            r#"[{
+                instance_id: "ctrl_1",
+                links: { arm: { vacant: "bench rig: no arm wired to this panel" } }
+            }]"#,
+        );
         let ctrl_pairing_deps = controller_deps();
         let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert!(out.planned.is_empty());
     }
 
-    /// Participant-slot defers with a stateful problem surface as
-    /// `LinkDeferInvalid`: deferring an optional slot is redundant, and
-    /// deferring a slot that is also paired in the same plan is contradictory.
-    /// (Structural problems — a defer naming an unknown or producer-binding
-    /// slot — are `validate_link_slots`'s concern, not this validator's.)
+    /// Two instances of ONE node in one deployment, one paired and one
+    /// vacant: the fate of a slot is per instance, which is the whole reason
+    /// it is written in the launcher rather than the manifest.
     #[test]
-    fn defer_on_optional_or_paired_slot_is_invalid() {
-        let arm_instances =
-            parse_instances(r#"[{ instance_id: "arm_1", defer_links: ["controller"] }]"#);
-        let arm_pairing_deps = arm_deps(true); // optional slot: deferring is redundant
-        let items = vec![item("robot_arm", &arm_instances, &arm_pairing_deps)];
-        let out = validate_pairings(&items, &BTreeMap::new());
-        assert!(
-            out.errors
-                .iter()
-                .any(|e| matches!(e, ParsingError::LinkDeferInvalid { .. })),
-            "expected LinkDeferInvalid for optional slot, got {:?}",
-            out.errors
-        );
-
+    fn sibling_instances_of_one_node_choose_their_own_slot_fates() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances = parse_instances(
-            r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" }, defer_links: ["arm"] }]"#,
+            r#"[
+                { instance_id: "governed_ctl", links: { arm: "arm_1" } },
+                {
+                    instance_id: "monitor_ctl",
+                    links: { arm: { vacant: "monitor rig: nothing commands this panel" } }
+                }
+            ]"#,
         );
         let ctrl_pairing_deps = controller_deps();
         let items = vec![
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(out.planned.len(), 1, "only the paired sibling plans a pair");
+        assert_eq!(out.planned[0].a.instance_id, "governed_ctl");
+        assert_eq!(out.planned[0].b.instance_id, "arm_1");
+    }
+
+    /// A slot the validator cannot see a pair for, but whose other half the
+    /// caller holds, is covered without being a vacancy: the daemon's
+    /// plan-phase check is the caller that knows this.
+    #[test]
+    fn an_externally_covered_slot_is_covered_without_being_vacant() {
+        let ctrl_instances = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
+        let ctrl_pairing_deps = controller_deps();
+        let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
+
+        let out = validate(&items, &BTreeMap::new());
         assert!(
-            out.errors.iter().any(|e| matches!(
-                e,
-                ParsingError::LinkDeferInvalid { reason, .. } if reason.contains("also paired")
-            )),
-            "expected LinkDeferInvalid for paired+deferred slot, got {:?}",
+            out.errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::PairingSlotUncovered(_))),
+            "without external coverage the slot is uncovered: {:?}",
             out.errors
         );
+
+        let externally_covered: ExternallyCoveredSlots =
+            [("ctrl_1".to_string(), "arm".to_string())]
+                .into_iter()
+                .collect();
+        let out = validate_pairings(&items, &BTreeMap::new(), &externally_covered);
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert!(out.planned.is_empty());
+    }
+
+    /// External coverage is per SLOT, not per node: a sibling instance of the
+    /// same node does not inherit it.
+    #[test]
+    fn external_coverage_does_not_leak_to_a_sibling_instance() {
+        let ctrl_instances =
+            parse_instances(r#"[{ instance_id: "ctrl_1" }, { instance_id: "ctrl_2" }]"#);
+        let ctrl_pairing_deps = controller_deps();
+        let items = vec![item("arm_controller", &ctrl_instances, &ctrl_pairing_deps)];
+        let externally_covered: ExternallyCoveredSlots =
+            [("ctrl_1".to_string(), "arm".to_string())]
+                .into_iter()
+                .collect();
+        let out = validate_pairings(&items, &BTreeMap::new(), &externally_covered);
+        let uncovered: Vec<&str> = out
+            .errors
+            .iter()
+            .filter_map(|e| match e {
+                ParsingError::PairingSlotUncovered(info) => Some(info.instance_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(uncovered, ["ctrl_2"]);
     }
 
     #[test]
     fn sha256_mismatch_between_pinned_sides_is_rejected() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = parse_pairing_deps(
-            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true, sha256: "aaa" }]"#,
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", sha256: "aaa" }]"#,
         );
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
@@ -857,7 +971,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         let info = out
             .errors
             .iter()
@@ -874,7 +988,7 @@ mod tests {
     fn one_sided_sha_pin_is_accepted() {
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
         let arm_pairing_deps = parse_pairing_deps(
-            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true, sha256: "aaa" }]"#,
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", sha256: "aaa" }]"#,
         );
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
@@ -883,7 +997,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
     }
 
@@ -895,7 +1009,7 @@ mod tests {
                 { instance_id: "right_arm_inst" }
             ]"#,
         );
-        let arm_pairing_deps = arm_deps(true);
+        let arm_pairing_deps = arm_deps();
         let commander_instances = parse_instances(
             r#"[{
                 instance_id: "commander",
@@ -912,7 +1026,7 @@ mod tests {
             item("robot_arm", &arm_instances, &arm_pairing_deps),
             item("two_arm_commander", &commander_instances, &commander_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 2);
         let left = out
@@ -931,13 +1045,11 @@ mod tests {
 
     #[test]
     fn preexisting_instances_are_valid_targets_but_not_coverage_checked() {
-        // arm_1 runs already (its optional slot unpaired); ctrl_1 launches
-        // with a pair naming it. ctrl_1's required slot is covered by its
-        // own claim; arm_1 is never coverage-checked.
+        // arm_1 runs already; ctrl_1 launches with a pair naming it. ctrl_1's
+        // slot is covered by its own claim, and arm_1's slot must not be
+        // coverage-checked at all (it was covered at arm_1's own launch).
         let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
-        // Even a REQUIRED slot on the preexisting instance must not
-        // trigger coverage (it was covered at its own launch).
-        let arm_pairing_deps = arm_deps(false);
+        let arm_pairing_deps = arm_deps();
         let ctrl_instances =
             parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "arm_1" } }]"#);
         let ctrl_pairing_deps = controller_deps();
@@ -945,7 +1057,7 @@ mod tests {
             preexisting("robot_arm", &arm_instances, &arm_pairing_deps),
             item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
         ];
-        let out = validate_pairings(&items, &BTreeMap::new());
+        let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
     }

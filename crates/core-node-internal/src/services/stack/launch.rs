@@ -24,7 +24,7 @@ use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult, NodeAddGoal, NodeAddLogEntry,
     NodeBuildGoal, NodeBuildLogEntry, NodeRunGoal, NodeRunLogEntry, NodeSource, ObservationTarget,
-    PairTarget, RemotePeerPairing,
+    ObservationTargets, PairTarget, RemotePeerPairing,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -755,9 +755,12 @@ async fn start_node_instances(
         .observation()
         .register_planned(&local_observations);
 
+    // Accumulated per observer slot, in plan order: a slot with N members
+    // contributes N entries to one list, and that list becomes the slot's
+    // `ObservationTargets` below.
     let mut observations_by_instance: HashMap<
         &str,
-        std::collections::BTreeMap<String, core_node_api::encoding::ObservationTarget>,
+        std::collections::BTreeMap<String, Vec<core_node_api::encoding::ObservationTarget>>,
     > = HashMap::new();
     // Which daemons must hear about each source's lifecycle. Only the planner
     // can answer this: an observer claims no slot on its source and the source
@@ -786,14 +789,13 @@ async fn start_node_instances(
         observations_by_instance
             .entry(observation.observer_instance_id.as_str())
             .or_default()
-            .insert(
-                observation.observer_link_id.clone(),
-                ObservationTarget::new(
-                    observation.source.instance_id.clone(),
-                    observation.source_link_id.clone(),
-                    observation.source.core_node.clone(),
-                ),
-            );
+            .entry(observation.observer_link_id.clone())
+            .or_default()
+            .push(ObservationTarget::new(
+                observation.source.instance_id.clone(),
+                observation.source_link_id.clone(),
+                observation.source.core_node.clone(),
+            ));
     }
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
@@ -803,13 +805,15 @@ async fn start_node_instances(
     // later endpoint carries the fully-pinned pair request; the earlier
     // endpoint's slot rides `covered_pairs`, naming that future peer, so
     // its own coverage re-check passes and its feedback states the plan.
-    // Only explicit `defer_links:` entries ride `deferred_pairs`.
+    // Only slots the launcher declared `{ vacant: "<why>" }` ride
+    // `vacant_pairs`.
     let mut start_index: HashMap<&str, usize> = HashMap::new();
     let mut requested_by_instance: HashMap<&str, std::collections::BTreeMap<String, PairTarget>> =
         HashMap::new();
     let mut covered_by_instance: HashMap<&str, std::collections::BTreeMap<String, PairTarget>> =
         HashMap::new();
-    let mut deferred_by_instance: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut vacant_by_instance: HashMap<&str, std::collections::BTreeMap<String, String>> =
+        HashMap::new();
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -825,18 +829,16 @@ async fn start_node_instances(
             .collect();
         for instance in &item.deployment.instances {
             start_index.insert(instance.instance_id.as_str(), start_index.len());
-            // Only participant slots ride the pair-specific goal field;
-            // observer defers were already validated by their own family.
-            deferred_by_instance
+            // Only participant slots ride the pair-specific goal field; an
+            // observer vacancy was already validated by its own family and
+            // produces no goal state, exactly as an observer link does.
+            vacant_by_instance
                 .entry(instance.instance_id.as_str())
                 .or_default()
-                .extend(
-                    instance
-                        .defer_links
-                        .iter()
-                        .filter(|link_id| participant_links.contains(link_id.as_str()))
-                        .cloned(),
-                );
+                .extend(daemon_config::launcher::participant_vacancies(
+                    &instance.links,
+                    &participant_links,
+                ));
         }
     }
     for pairing in planned_pairings {
@@ -946,13 +948,13 @@ async fn start_node_instances(
                     .remove(instance_id)
                     .unwrap_or_default(),
             )
-            .with_deferred_pairs(deferred_by_instance.remove(instance_id).unwrap_or_default())
+            .with_vacant_pairs(vacant_by_instance.remove(instance_id).unwrap_or_default())
             .with_covered_pairs(covered_by_instance.remove(instance_id).unwrap_or_default())
-            .with_planned_observations(
+            .with_planned_observations(ObservationTargets::slots_from_plan(
                 observations_by_instance
                     .remove(instance_id)
                     .unwrap_or_default(),
-            )
+            ))
             .with_lifecycle_watchers(watchers_by_source.remove(instance_id).unwrap_or_default());
 
             let outcome = if local {

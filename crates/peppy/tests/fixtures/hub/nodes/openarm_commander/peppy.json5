@@ -1,0 +1,80 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "openarm_commander",
+    tag: "v1",
+    implements: [
+      // Runtime on/off for the backbone's self-collision governor, driven by
+      // the UI.
+      { name: "openarm_governor_control", tag: "v1", link_id: "governor" }
+    ],
+    depends_on: {
+      nodes: [
+        // The backbone: the move actions the panel fires (move_arm_joints is
+        // the "Send" button) and the collision_status feed behind the
+        // proximity readout. Bound to the backbone instance in the launcher.
+        { name: "openarm_backbone", tag: "v1", link_id: "backbone" },
+        // The dataset recorder behind the panel's record button.
+        // zero_or_more: a deployment without a recorder leaves the slot
+        // unbound and the panel hides the recording controls.
+        { name: "lerobot_recorder", tag: "v1", link_id: "recorder", cardinality: "zero_or_more" }
+      ],
+      pairing_observers: [
+        // One slot per pairing kind and side; the launcher binds 0..N pairs.
+        // The panel reads whatever the deployment gave it, in the order the
+        // deployment wrote, and shows one readout card per member.
+        { name: "joint_link", tag: "v1", role: "follower", link_id: "observed_joints", cardinality: "zero_or_more" },
+        { name: "joint_link", tag: "v1", role: "leader", link_id: "commanded_joints", cardinality: "zero_or_more" },
+        { name: "gripper_link", tag: "v1", role: "follower", link_id: "observed_grippers", cardinality: "zero_or_more" },
+        { name: "gripper_link", tag: "v1", role: "leader", link_id: "commanded_grippers", cardinality: "zero_or_more" }
+      ]
+    },
+    labels: ["commander"]
+  },
+  execution: {
+    language: "rust",
+    run_cmd: ["./bin/openarm_commander"]
+  },
+  interfaces: {
+    services: {
+      consumes: [
+        // The panel's Finish-session button: the recorder finalizes and
+        // mirrors the current dataset and opens a fresh session in place.
+        { link_id: "recorder", name: "finish_session" }
+      ]
+    },
+    actions: {
+      // Goals fired by the operator land on the backbone, which runs the move
+      // itself for the arm whose id matches arm_id.
+      consumes: [
+        { link_id: "backbone", name: "move_arm_joints" },
+        // Cartesian point-to-point: Execute-pose in the panel's Actions mode
+        // fires the backbone's planned straight-line move rather than jogging
+        // there.
+        { link_id: "backbone", name: "move_arm" },
+        // Gripper open/close as a discrete governed action (Actions mode),
+        // rather than the streamed opening used in Streaming mode.
+        { link_id: "backbone", name: "move_gripper" },
+        // One dataset episode per goal: fired by the panel's record button,
+        // frame-count feedback while running, cancel = stop and save.
+        { link_id: "recorder", name: "record_episode" }
+      ]
+    },
+    topics: {
+      // The governor control is re-published periodically (lossy QoS) so a
+      // dropped toggle cannot strand the backbone.
+      emits: [
+        { link_id: "governor", name: "governor_control" }
+      ],
+      consumes: [
+        { link_id: "backbone", name: "collision_status" },
+        // The observed pairings' back-channels: each observer slot consumes
+        // what its observed role emits, tagged per message with the source.
+        { link_id: "observed_joints", name: "joint_states" },
+        { link_id: "commanded_joints", name: "joint_setpoints" },
+        { link_id: "observed_grippers", name: "gripper_states" },
+        { link_id: "commanded_grippers", name: "gripper_setpoints" }
+      ]
+    }
+  }
+}

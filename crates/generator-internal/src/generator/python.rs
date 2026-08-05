@@ -16,13 +16,13 @@ mod type_mapping;
 use super::naming::{resolve_schema_file_stem, to_camel_case};
 use super::types::{
     CapnpSchema, ConsumedActionMessage, ContractOrigin, DependencyContext, InterfaceArtifact,
-    InterfaceKind, LanguageGenerator, non_empty_message_format, scoped_schema_key,
-    validate_fixed_length_array_items, validate_generated_type_name_collisions,
+    InterfaceKind, LanguageGenerator, PairTopicConsumerKind, non_empty_message_format,
+    scoped_schema_key, validate_fixed_length_array_items, validate_generated_type_name_collisions,
     validate_message_format_field_names,
 };
 use crate::error::Result;
 use config::node::{
-    ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
     NativeExposedAction, NativeExposedService,
 };
 use encoding::MessageFormatMapper;
@@ -128,12 +128,6 @@ impl PythonGenerator {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PairTopicConsumerKind {
-    Peer,
-    Observed,
-}
-
 impl PythonGenerator {
     /// Shared schema registration and artifact plumbing for both kinds of
     /// consume-side pairing topic.
@@ -151,16 +145,11 @@ impl PythonGenerator {
             }
         })?;
         let schema_info = self.register_schema(&schema_key, &arguments)?;
-        let (code, artifact_kind) = match kind {
-            PairTopicConsumerKind::Peer => (
-                topics::build_peer_consumed_topic(topic, &arguments, &schema_info, peer)?,
-                InterfaceKind::PeerConsumedTopic,
-            ),
-            PairTopicConsumerKind::Observed => (
-                topics::build_observed_topic(topic, &arguments, &schema_info, peer)?,
-                InterfaceKind::ObservedTopic,
-            ),
+        let artifact_kind = match kind {
+            PairTopicConsumerKind::Peer => InterfaceKind::PeerConsumedTopic,
+            PairTopicConsumerKind::Observed(_) => InterfaceKind::ObservedTopic,
         };
+        let code = topics::build_pair_topic_consumer(topic, &arguments, &schema_info, peer, kind)?;
 
         let module_path = peer.module_path_for(&topic.name);
         crate::generator::types::ensure_no_peer_collision(
@@ -385,8 +374,13 @@ impl LanguageGenerator for PythonGenerator {
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &crate::generator::types::PeerContext,
+        cardinality: Cardinality,
     ) -> Result<()> {
-        self.add_pair_topic_consumer(topic, observer, PairTopicConsumerKind::Observed)
+        self.add_pair_topic_consumer(
+            topic,
+            observer,
+            PairTopicConsumerKind::Observed(cardinality),
+        )
     }
 
     fn add_consumed_action(

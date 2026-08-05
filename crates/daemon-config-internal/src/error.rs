@@ -179,17 +179,15 @@ pub struct LinkUnknownSlot {
 }
 
 /// Payload for [`ParsingError::BindingSlotUnfulfilled`]. A declared
-/// `depends_on` slot of cardinality `one` or `one_or_more` with no binding
-/// entry. Only a `zero_or_more` slot may be left unbound (its empty set is
-/// a valid value); there is no wildcard fallback for the others.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
-     `{slot_name}:{slot_tag}`, cardinality `{cardinality}`) unfulfilled: every \
-     declared depends_on slot except `zero_or_more` must be bound; add a \
-     `links:` entry for `{link_id}` (or `--link {link_id}@<producer_instance_id>`, \
-     repeatable on a multi slot) or remove the dependency from the node manifest"
-)]
+/// `depends_on` slot of cardinality `one`, `zero_or_one` or `one_or_more`
+/// with no `links` entry. Only a `zero_or_more` slot may be left out (its
+/// empty set is a valid value); there is no wildcard fallback for the others,
+/// and a `zero_or_one` slot that runs empty says so with a written vacancy.
+///
+/// `Display` is hand-written rather than derived because both the launcher
+/// link shape it suggests and the remedy it offers follow the slot's
+/// cardinality, exactly as [`ObservationSlotUncovered`]'s do.
+#[derive(Debug, Clone)]
 pub struct BindingSlotUnfulfilled {
     pub owner_instance_id: String,
     pub link_id: String,
@@ -198,6 +196,30 @@ pub struct BindingSlotUnfulfilled {
     pub slot_tag: String,
     pub cardinality: Cardinality,
 }
+
+impl std::fmt::Display for BindingSlotUnfulfilled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            owner_instance_id,
+            link_id,
+            slot_kind,
+            slot_name,
+            slot_tag,
+            cardinality,
+        } = self;
+        let link_shape = link_shape_hint(link_id, "<producer_instance_id>", *cardinality);
+        let fix = uncovered_slot_fix(link_id, *cardinality, BINDING_EMPTIABLE_KEY);
+        write!(
+            f,
+            "instance `{owner_instance_id}` leaves slot `{link_id}` ({slot_kind} \
+             `{slot_name}:{slot_tag}`, cardinality `{cardinality}`) unfulfilled. Bind it \
+             (launcher `{link_shape}` / `--link {link_id}@<producer_instance_id>`, repeatable on \
+             a multi slot), {fix}, or remove the dependency from the node manifest"
+        )
+    }
+}
+
+impl std::error::Error for BindingSlotUnfulfilled {}
 
 /// Payload for [`ParsingError::PairingTargetNotComplementary`]. The target
 /// instance declares no unclaimed pairing slot with the same `(name, tag)`
@@ -284,22 +306,54 @@ pub struct PairingSha256Mismatch {
     pub pairing_tag: String,
 }
 
-/// Payload for [`ParsingError::PairingSlotUncovered`]. A required pairing
-/// slot was neither paired nor explicitly deferred.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "instance `{instance_id}` declares required pairing slot `{link_id}` (pairing \
-     `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
-     `links: {{ {link_id}: \"<peer_instance>\" }}` / `--link {link_id}@<peer_instance>`), \
-     or defer it deliberately (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
-)]
+/// Payload for [`ParsingError::PairingSlotUncovered`]. A declared pairing slot
+/// was neither paired nor declared vacant. Forgetting a slot is an error
+/// whether or not the manifest declares it optional: an optional slot may run
+/// empty, but only where the deployment says so.
+///
+/// `Display` is hand-written rather than derived because the remedies it offers
+/// follow `optional`: only a slot the manifest declares optional may be
+/// vacated, so only its message names the vacancy spelling.
+#[derive(Debug, Clone)]
 pub struct PairingSlotUncovered {
     pub instance_id: String,
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
     pub role: String,
+    /// Whether the node's manifest declares this slot `optional: true`.
+    pub optional: bool,
 }
+
+impl std::fmt::Display for PairingSlotUncovered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            instance_id,
+            link_id,
+            pairing_name,
+            pairing_tag,
+            role,
+            optional,
+        } = self;
+        let (kind, fix) = if *optional {
+            ("optional", format!("or {}", vacancy_hint(link_id)))
+        } else {
+            (
+                "required",
+                emptiable_hint(link_id, PARTICIPANT_EMPTIABLE_KEY),
+            )
+        };
+        write!(
+            f,
+            "instance `{instance_id}` declares {kind} pairing slot `{link_id}` (pairing \
+             `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
+             `links: {{ {link_id}: \"<peer_instance>\" }}` / \
+             `--link {link_id}@<peer_instance>`), {fix}"
+        )
+    }
+}
+
+impl std::error::Error for PairingSlotUncovered {}
 
 /// Payload for [`ParsingError::ObservationTargetNotObservable`]. The observer
 /// slot's source instance declares no participant slot playing the observed
@@ -346,23 +400,47 @@ pub struct ObservationTargetAmbiguous {
     pub candidate_link_ids: String,
 }
 
-/// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared observer
-/// slot (observer slots are always required) was neither linked to a source nor
-/// explicitly deferred. Mirror of [`PairingSlotUncovered`] for observers.
-#[derive(Debug, Clone, Error)]
-#[error(
-    "instance `{instance_id}` declares observer slot `{link_id}` (observes role \
-     `{observed_role}` of pairing `{pairing_name}:{pairing_tag}`) with no source. Link it \
-     (launcher `links: {{ {link_id}: \"<source_instance>\" }}` / `--link {link_id}@<source_instance>`), \
-     or defer it deliberately (`defer_links: [\"{link_id}\"]` / `--defer-link {link_id}`)"
-)]
+/// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared `one`,
+/// `zero_or_one` or `one_or_more` observer slot was neither linked to a source
+/// nor declared vacant. Mirror of [`PairingSlotUncovered`] for observers. A
+/// `zero_or_more` slot never raises this: omitting it IS its empty set.
+///
+/// `Display` is hand-written rather than derived because the launcher link shape
+/// it suggests follows the slot's cardinality, the way the binding errors'
+/// suggestions do.
+#[derive(Debug, Clone)]
 pub struct ObservationSlotUncovered {
     pub instance_id: String,
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
     pub observed_role: String,
+    pub cardinality: Cardinality,
 }
+
+impl std::fmt::Display for ObservationSlotUncovered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            instance_id,
+            link_id,
+            pairing_name,
+            pairing_tag,
+            observed_role,
+            cardinality,
+        } = self;
+        let link_shape = link_shape_hint(link_id, "<source_instance>", *cardinality);
+        let fix = uncovered_slot_fix(link_id, *cardinality, OBSERVER_EMPTIABLE_KEY);
+        write!(
+            f,
+            "instance `{instance_id}` declares observer slot `{link_id}` (cardinality \
+             `{cardinality}`, observes role `{observed_role}` of pairing \
+             `{pairing_name}:{pairing_tag}`) with no source. Link it (launcher `{link_shape}` / \
+             `--link {link_id}@<source_instance>`), {fix}"
+        )
+    }
+}
+
+impl std::error::Error for ObservationSlotUncovered {}
 
 #[derive(Debug, Error, Clone)]
 pub enum ParsingError {
@@ -404,36 +482,39 @@ pub enum ParsingError {
     /// "unknown binding slot" / "dead pairing key" errors.
     #[error(transparent)]
     LinkUnknownSlot(Box<LinkUnknownSlot>),
-    /// A `links:` value on a pairing/observer slot arrived in array (or
-    /// repeated-flag) shape. Pairing and observer slots take exactly one
-    /// target (`<peer_instance>[/<link_id>]`), never a set.
+    /// A `links:` value on a participant pairing slot arrived in array (or
+    /// repeated-flag) shape. A pairing is strictly 1:1, so a participant slot
+    /// takes exactly one target (`<peer_instance>[/<link_id>]`), never a set.
     #[error(
-        "link `{link}` on instance `{owner_instance_id}` names a pairing or observer slot but \
-         its value is an array; those slots take a single `<instance>[/<link_id>]` target"
+        "link `{link}` on instance `{owner_instance_id}` names a participant pairing slot but \
+         its value is an array; a pairing is strictly 1:1, so the slot takes a single \
+         `<instance>[/<link_id>]` target"
     )]
     LinkTargetNotScalar {
         owner_instance_id: String,
         link: String,
     },
-    /// A declared `one` / `one_or_more` slot with no binding entry. Only a
-    /// `zero_or_more` slot may be left unbound; there is no wildcard
-    /// fallback for the others. Boxed for the same `result_large_err`
-    /// reason as the other binding variants.
+    /// A declared `one` / `zero_or_one` / `one_or_more` slot with no `links`
+    /// entry. Only a `zero_or_more` slot may be left out; there is no
+    /// wildcard fallback for the others. Boxed for the same
+    /// `result_large_err` reason as the other binding variants.
     #[error(transparent)]
     BindingSlotUnfulfilled(Box<BindingSlotUnfulfilled>),
     /// A launch-file array value (of any length, single-element and empty
-    /// included) on a `cardinality: "one"` slot. The binding value's shape
-    /// mirrors the slot's declared cardinality: a `one` slot takes a scalar
-    /// string only.
+    /// included) on a scalar slot (`one` or `zero_or_one`). The binding
+    /// value's shape mirrors the slot's declared cardinality: a scalar slot
+    /// takes a scalar string only.
     #[error(
         "binding `{binding}` on instance `{owner_instance_id}` is an array, but the slot's \
-         cardinality is `one`: bind a scalar (`{binding}: \"<producer_instance_id>\"`), or \
-         declare `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the dependency to \
-         accept a producer array"
+         cardinality is `{cardinality}`: bind a scalar \
+         (`{binding}: \"<producer_instance_id>\"`), or declare \
+         `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the dependency to accept a \
+         producer array"
     )]
-    BindingArrayOnOneSlot {
+    BindingArrayOnScalarSlot {
         owner_instance_id: String,
         binding: String,
+        cardinality: Cardinality,
     },
     /// A launch-file scalar value on a `one_or_more` / `zero_or_more` slot.
     /// Multi-cardinality slots take an array of instance ids, even for a
@@ -460,17 +541,18 @@ pub enum ParsingError {
         owner_instance_id: String,
         binding: String,
     },
-    /// Repeated `--link KEY@…` occurrences on a `cardinality: "one"` slot.
-    /// Flag repetition accumulates a multi slot's set and stays a hard
-    /// error on a `one` slot.
+    /// Repeated `--link KEY@…` occurrences on a scalar slot (`one` or
+    /// `zero_or_one`). Flag repetition accumulates a multi slot's set and
+    /// stays a hard error on a scalar one.
     #[error(
         "{target_count} `--link {binding}@…` occurrences on instance `{owner_instance_id}`, \
-         but the slot's cardinality is `one`: pass exactly one, or declare \
+         but the slot's cardinality is `{cardinality}`: pass exactly one, or declare \
          `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the dependency"
     )]
     BindingSingleSlotMultipleTargets {
         owner_instance_id: String,
         binding: String,
+        cardinality: Cardinality,
         target_count: usize,
     },
     /// Boxed payload so this variant does not grow `ParsingError` past the
@@ -512,18 +594,206 @@ pub enum ParsingError {
     ObservationTargetAmbiguous(Box<ObservationTargetAmbiguous>),
     #[error(transparent)]
     ObservationSlotUncovered(Box<ObservationSlotUncovered>),
+    /// A launch-file array value (of any length) on a `cardinality: "one"`
+    /// observer slot. An observer link's shape mirrors the slot's declared
+    /// cardinality exactly as a producer binding's does: a `one` slot takes a
+    /// single `<instance>[/<link_id>]` target.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is an array, but the observer slot's \
+         cardinality is `{cardinality}`: link a single `<source_instance>[/<source_link_id>]` \
+         target, or declare `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the observer \
+         entry"
+    )]
+    ObservationArrayOnScalarSlot {
+        owner_instance_id: String,
+        link: String,
+        cardinality: Cardinality,
+    },
+    /// A launch-file scalar value on a `one_or_more` / `zero_or_more` observer
+    /// slot. Multi-cardinality slots take an array of targets, even for a
+    /// single observed pairing.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is a scalar, but the observer slot's \
+         cardinality is `{cardinality}`: link an array \
+         (`{link}: [\"<source_instance>\", ...]`)"
+    )]
+    ObservationScalarOnMultiSlot {
+        owner_instance_id: String,
+        link: String,
+        cardinality: Cardinality,
+    },
+    /// An empty array on a `one_or_more` observer slot: the link entry exists
+    /// but its set does not meet the slot's minimum of one observed pairing.
+    /// (An empty array is a valid definition only for `zero_or_more`.)
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is an empty array, but the observer \
+         slot's cardinality is `one_or_more`: link at least one source, or declare \
+         `cardinality: \"zero_or_more\"` on the observer entry if observing nothing is \
+         meaningful"
+    )]
+    ObservationCardinalityUnmet {
+        owner_instance_id: String,
+        link: String,
+    },
+    /// Repeated `--link KEY@…` occurrences on a scalar observer slot. Flag
+    /// repetition accumulates a multi slot's set and stays a hard error on a
+    /// `one` or `zero_or_one` slot.
+    #[error(
+        "{target_count} `--link {link}@…` occurrences on instance `{owner_instance_id}`, but the \
+         observer slot's cardinality is `{cardinality}`: pass exactly one, or declare \
+         `cardinality: \"one_or_more\"` / `\"zero_or_more\"` on the observer entry"
+    )]
+    ObservationSingleSlotMultipleTargets {
+        owner_instance_id: String,
+        link: String,
+        cardinality: Cardinality,
+        target_count: usize,
+    },
+    /// Two of an observer slot's targets resolved to the same observed pairing
+    /// (same source instance, same source-side slot). Caught after resolution
+    /// because distinct target strings can name one pairing: on a source with a
+    /// single observable slot, `"dual_1"` and `"dual_1/left_ctl"` are the same
+    /// member.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` observes `{source_instance_id}/\
+         {source_link_id}` twice: an observer slot observes each pairing once, so drop the \
+         repeated target"
+    )]
+    DuplicateObservationTarget {
+        owner_instance_id: String,
+        link: String,
+        source_instance_id: String,
+        source_link_id: String,
+    },
 
-    /// A `defer_links` entry that is invalid. Structural reasons (the entry
-    /// names no declared slot, or names a producer-binding slot, which cannot
-    /// be deferred) and stateful reasons (an `optional: true` participant slot
-    /// where deferring is redundant, or a slot that is also linked in the same
-    /// plan) both surface here with a specific `reason`.
-    #[error("defer_links entry `{link_id}` on instance `{owner_instance_id}` is invalid: {reason}")]
-    LinkDeferInvalid {
+    /// A `{ vacant: "<why>" }` value on a slot whose manifest does not declare
+    /// it emptiable, or one that already has a spelling for its empty state.
+    /// A deployment decides that a specific instance runs a slot empty; the
+    /// node decides whether any deployment may.
+    #[error(
+        "link `{link_id}` on instance `{owner_instance_id}` is {slot_kind} and cannot be \
+         vacant. {refusal}"
+    )]
+    LinkVacantInvalid {
         owner_instance_id: String,
         link_id: String,
-        reason: String,
+        slot_kind: String,
+        refusal: VacancyRefusal,
     },
+}
+
+/// Why a slot refuses `{ vacant: "<why>" }`, and what to write instead. The
+/// three arms are three different facts with three different remedies: the node
+/// has not declared the slot emptiable, the slot has no empty state at all, or
+/// it has one and spells it another way. Every payload is prose fixed by the
+/// slot's kind, so the arms carry `&'static str`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VacancyRefusal {
+    /// The manifest declares the slot required, so no deployment may empty it.
+    ManifestRequires {
+        /// The manifest key that would make the slot emptiable, named so the
+        /// error offers the node-side remedy alongside the deployment-side one.
+        declare_optional: &'static str,
+    },
+    /// The slot cannot be empty in any spelling, so the only remedy is to fill
+    /// it (or to declare a cardinality with a floor of zero).
+    NoEmptyState {
+        /// What the slot takes instead, and why it has no empty state.
+        requirement: &'static str,
+    },
+    /// The slot may be empty, but writes it another way.
+    SpelledDifferently { empty_spelling: &'static str },
+}
+
+impl std::fmt::Display for VacancyRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VacancyRefusal::ManifestRequires { declare_optional } => write!(
+                f,
+                "The node manifest declares it required: link it, or declare {declare_optional}"
+            ),
+            VacancyRefusal::NoEmptyState { requirement } => {
+                write!(f, "It has no empty state: it takes {requirement}")
+            }
+            VacancyRefusal::SpelledDifferently { empty_spelling } => {
+                write!(f, "Its empty state is {empty_spelling}")
+            }
+        }
+    }
+}
+
+/// How a coverage failure tells the reader to write the vacancy down, shared
+/// by [`PairingSlotUncovered`] and [`ObservationSlotUncovered`] so the two
+/// surfaces cannot drift on the spelling of a feature whose whole point is
+/// that there is one spelling.
+/// The manifest key that declares a participant pairing slot emptiable, spelled
+/// once so the uncovered-slot remedy and [`VacancyRefusal::ManifestRequires`]
+/// cannot drift on it.
+pub(crate) const PARTICIPANT_EMPTIABLE_KEY: &str =
+    "`optional: true` on its `depends_on.pairings` entry";
+
+/// The manifest key that declares an observer slot emptiable, shared for the
+/// same reason as [`PARTICIPANT_EMPTIABLE_KEY`].
+pub(crate) const OBSERVER_EMPTIABLE_KEY: &str =
+    "`cardinality: \"zero_or_one\"` on its `depends_on.pairing_observers` entry";
+
+/// The manifest key that declares a producer-binding slot emptiable at a
+/// ceiling of one, shared for the same reason as
+/// [`PARTICIPANT_EMPTIABLE_KEY`]. A slot that may bind any number of
+/// producers says `cardinality: "zero_or_more"` instead and spells its empty
+/// state as `[]` or an omitted key, so this key names the scalar case alone.
+pub(crate) const BINDING_EMPTIABLE_KEY: &str =
+    "`cardinality: \"zero_or_one\"` on its `depends_on.nodes` / `depends_on.contracts` entry";
+
+/// The launcher `links:` shape that would fill a slot: a scalar slot takes a
+/// single id, a multi slot an array. Shared by [`BindingSlotUnfulfilled`] and
+/// [`ObservationSlotUncovered`] so the two surfaces cannot drift on the shape
+/// rule; `placeholder` names the id in each family's own vocabulary.
+fn link_shape_hint(link_id: &str, placeholder: &str, cardinality: Cardinality) -> String {
+    if cardinality.is_scalar() {
+        format!("links: {{ {link_id}: \"{placeholder}\" }}")
+    } else {
+        format!("links: {{ {link_id}: [\"{placeholder}\", ...] }}")
+    }
+}
+
+/// The remedy clause for an uncovered slot, chosen by its cardinality: a
+/// `zero_or_one` slot is offered the vacancy spelling, a `one` slot the
+/// manifest key that would earn it an empty state (`declare_emptiable`), and a
+/// `one_or_more` slot the cardinality whose empty state is an omitted key.
+/// Shared by [`BindingSlotUnfulfilled`] and [`ObservationSlotUncovered`] so
+/// the two surfaces cannot drift on which remedy fits which slot. A
+/// `zero_or_more` slot never raises either error (omission is its empty set);
+/// its arm only keeps the match exhaustive so a new cardinality variant must
+/// choose a remedy here.
+fn uncovered_slot_fix(link_id: &str, cardinality: Cardinality, declare_emptiable: &str) -> String {
+    match cardinality {
+        Cardinality::ZeroOrOne => format!("or {}", vacancy_hint(link_id)),
+        Cardinality::OneOrMore => format!(
+            "or, if it is meant to run empty, declare `cardinality: \"zero_or_more\"` on that \
+             entry and then leave `{link_id}` out of `links:` (an omitted `zero_or_more` slot \
+             is its own empty set)"
+        ),
+        Cardinality::One | Cardinality::ZeroOrMore => emptiable_hint(link_id, declare_emptiable),
+    }
+}
+
+fn vacancy_hint(link_id: &str) -> String {
+    format!(
+        "leave it empty on purpose (`links: {{ {link_id}: {{ vacant: \"<why>\" }} }}` / \
+         `--vacant-link '{link_id}=<why>'`)"
+    )
+}
+
+/// The remedy for an uncovered slot whose node has not declared it emptiable.
+/// It names BOTH steps, because the manifest key alone leaves the slot just as
+/// uncovered: an emptiable slot still needs the deployment to write the vacancy
+/// down. `declare_emptiable` names the key for this slot kind.
+fn emptiable_hint(link_id: &str, declare_emptiable: &str) -> String {
+    format!(
+        "or, if it is meant to run empty, declare {declare_emptiable} and then {vacancy}",
+        vacancy = vacancy_hint(link_id)
+    )
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

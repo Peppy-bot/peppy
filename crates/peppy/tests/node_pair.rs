@@ -58,7 +58,9 @@ fn node_config(
                 tag: "v1",
                 depends_on: {{
                     pairings: [
-                        {{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}" }}
+                        // Optional: both sides of this fixture boot solo before
+                        // the other exists, so a run may write the slot vacant.
+                        {{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", optional: true }}
                     ]
                 }}
             }},
@@ -166,16 +168,18 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     );
 
     // ── Coverage is enforced loudly ─────────────────────────────────────
+    // Optional means vacatable, not exempt: a slot with neither flag is still
+    // uncovered, and its message offers both remedies.
     let err = node_run_command("arm_0", "robot_arm", Vec::new(), Vec::new())
         .execute(&ctx)
-        .expect_err("a required pairing slot without --link/--defer-link must fail");
+        .expect_err("a pairing slot without --link/--vacant-link must fail");
     let msg = err.to_string();
     assert!(
-        msg.contains("controller") && msg.contains("--link") && msg.contains("--defer-link"),
+        msg.contains("controller") && msg.contains("--link") && msg.contains("--vacant-link"),
         "coverage failure should name the slot and both flags: {msg}"
     );
 
-    // ── Deferred boot: the arm starts unpaired ──────────────────────────
+    // ── Vacant boot: the arm starts unpaired ────────────────────────────
     let mut arm_rx = emulate_instance_services(
         &messenger,
         &core_node_name,
@@ -189,13 +193,16 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "arm_1",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&ctx)
-    .expect("run with --defer-link should succeed");
+    .expect("run with --vacant-link should succeed");
     assert!(
         arm_rx.borrow().pin.is_none(),
-        "a deferred slot must boot unpaired"
+        "a slot declared vacant must boot unpaired"
     );
 
     // ── Establish: the controller pairs at start ────────────────────────

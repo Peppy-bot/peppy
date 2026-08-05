@@ -99,6 +99,18 @@ impl PeerContext {
     }
 }
 
+/// Which slot kind consumes a pairing topic. Both language generators scaffold
+/// the two the same way and differ only in module header, subscription runtime,
+/// and artifact classification, so the discriminant lives here rather than once
+/// per generator.
+#[derive(Clone, Copy)]
+pub enum PairTopicConsumerKind {
+    Peer,
+    /// An observer slot, carrying the cardinality that types its generated
+    /// source accessor. A participant slot has none: a pairing is 1:1.
+    Observed(Cardinality),
+}
+
 /// Backstop for the pairing document's flat topic-name uniqueness rule:
 /// two peer artifacts must never land on the same `paired_topics/<link_id>/<topic>`
 /// module path. Shared by the Rust and Python generators so the invariant
@@ -142,10 +154,10 @@ pub fn ensure_no_peer_collision(
 /// call sites splice processor bound-set lookups by `link_id`.
 /// `cardinality` picks the generated accessor shape so the launch-validated
 /// guarantee lives in the type: a `one` slot exposes `bound_producer()`
-/// returning the sole `&ProducerRef`, `one_or_more` exposes
-/// `bound_producers()` returning a never-empty `NonEmptyProducers`, and
-/// `zero_or_more` exposes `bound_producers()` returning a plain, possibly
-/// empty slice. Everything else is uniform across cardinalities: topics
+/// returning the sole `&ProducerRef`, `zero_or_one` the same name returning an
+/// `Option`, `one_or_more` exposes `bound_producers()` returning a never-empty
+/// `NonEmptyProducers`, and `zero_or_more` exposes `bound_producers()`
+/// returning a plain, possibly empty slice. Everything else is uniform across cardinalities: topics
 /// subscribe to the complete set, and services / actions take one
 /// explicit, membership-checked member of it.
 ///
@@ -217,6 +229,12 @@ impl DependencyContext {
                 "producer, returned by `bound_producer()`; the explicit parameter",
                 "keeps call sites uniform across cardinalities.",
             ],
+            Cardinality::ZeroOrOne => &[
+                "This slot declares cardinality `zero_or_one`: `target` is the",
+                "producer `bound_producer()` returns while the slot is bound. A",
+                "vacant slot has no target at all, so the caller branches on that",
+                "accessor before it has a call to make.",
+            ],
             Cardinality::OneOrMore => &[
                 "This slot declares cardinality `one_or_more`: `target` is a",
                 "caller-selected member of the never-empty `bound_producers()`",
@@ -249,6 +267,15 @@ impl DependencyContext {
                 "cardinality `one`: launch validation resolved exactly one producer,",
                 "so the accessor is singular and infallible.",
             ],
+            Cardinality::ZeroOrOne => &[
+                "The producer bound to this module's slot, if any.",
+                "The binding is fixed when the node starts (no live discovery; a",
+                "producer disconnecting never rebinds it) and shared by every",
+                "generated module referencing this slot.",
+                "This slot declares cardinality `zero_or_one`: launch validation",
+                "resolved at most one producer, and nothing is bound wherever the",
+                "deployment wrote the slot vacant.",
+            ],
             Cardinality::OneOrMore => &[
                 "The producer set bound to this module's slot, in declaration order.",
                 "The set is fixed when the node starts (no live discovery; a producer",
@@ -265,6 +292,87 @@ impl DependencyContext {
                 "handle the empty case.",
             ],
         }
+    }
+}
+
+/// Pre-wrapped doc lines for an observer module's source accessor, the
+/// observation counterpart of [`DependencyContext::bound_producers_doc`] and
+/// shared verbatim by both language generators. The first line stands alone as
+/// the summary sentence.
+///
+/// It carries the one difference that matters against a bound producer set: an
+/// observed set is live, so nothing about its size holds for the node's
+/// lifetime and an empty read is legal at any instant.
+pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
+    match cardinality {
+        Cardinality::One => AccessorDoc {
+            summary: "The pairing this module's observer slot observes.",
+            body: &[
+                "`None` before the daemon has delivered the slot, and again if a",
+                "replan leaves it observing nothing. This slot declares cardinality",
+                "`one`: it observes at most one pairing, so the accessor is singular.",
+            ],
+        },
+        Cardinality::ZeroOrOne => AccessorDoc {
+            summary: "The pairing this module's observer slot observes, if any.",
+            body: &[
+                "`None` before the daemon has delivered the slot, and again if a",
+                "replan leaves it observing nothing. This slot declares cardinality",
+                "`zero_or_one`: the deployment bound at most one pairing to it, and",
+                "`None` is the steady state wherever it left the slot vacant.",
+            ],
+        },
+        Cardinality::OneOrMore => AccessorDoc {
+            summary: "Every pairing this module's observer slot observes, in plan order.",
+            body: &[
+                "The set is live: the daemon replaces it whole whenever the plan's",
+                "observed pairings change, so it can differ between reads and is",
+                "empty before the first delivery. This slot declares cardinality",
+                "`one_or_more`: the plan bound at least one pairing to it.",
+            ],
+        },
+        Cardinality::ZeroOrMore => AccessorDoc {
+            summary: "Every pairing this module's observer slot observes, in plan order.",
+            body: &[
+                "The set is live: the daemon replaces it whole whenever the plan's",
+                "observed pairings change, so it can differ between reads. This slot",
+                "declares cardinality `zero_or_more`: the plan may have bound no",
+                "pairing at all, so the empty set is an expected steady state.",
+            ],
+        },
+    }
+}
+
+/// The prose of one generated accessor, with its summary sentence separated so
+/// each language applies its own convention: Python opens the docstring with
+/// `summary` and puts the rest after a blank line, Rust emits every line as one
+/// `///` block. Splitting it in the type is what keeps that convention out of
+/// the callers' indexing.
+pub struct AccessorDoc {
+    pub summary: &'static str,
+    /// The rest of the prose, without [`Self::CLOSING_NOTE`].
+    pub body: &'static [&'static str],
+}
+
+impl AccessorDoc {
+    /// The note every observer accessor's doc ends on, held once rather than
+    /// repeated per cardinality.
+    const CLOSING_NOTE: &'static [&'static str] = &[
+        "Purely local configuration state; there is no health-derived helper,",
+        "because a third node's health is not knowable here.",
+    ];
+
+    /// Everything after the summary, closing note included.
+    pub fn body_lines(&self) -> impl Iterator<Item = &'static str> {
+        self.body
+            .iter()
+            .copied()
+            .chain(Self::CLOSING_NOTE.iter().copied())
+    }
+
+    /// Every line in order, for a language with no summary-line convention.
+    pub fn lines(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.summary).chain(self.body_lines())
     }
 }
 
@@ -327,6 +435,12 @@ pub enum InterfaceVariant {
     ObservedTopic {
         topic: NativeEmittedTopic,
         observer: PeerContext,
+        /// The observer slot's declared `cardinality`, which types the
+        /// generated accessor: `one` emits `source()`, the multi cardinalities
+        /// emit `sources()`. It rides beside `observer` rather than inside it
+        /// because [`PeerContext`] is shared with participant slots, which
+        /// carry no cardinality.
+        cardinality: Cardinality,
     },
 }
 
@@ -408,9 +522,17 @@ impl DeploymentInterface {
     }
 
     /// A pairing topic emitted by an observed role that this node taps as an
-    /// observer.
-    pub fn observed_topic(topic: NativeEmittedTopic, observer: PeerContext) -> Self {
-        Self::new(InterfaceVariant::ObservedTopic { topic, observer })
+    /// observer, at the observer slot's declared cardinality.
+    pub fn observed_topic(
+        topic: NativeEmittedTopic,
+        observer: PeerContext,
+        cardinality: Cardinality,
+    ) -> Self {
+        Self::new(InterfaceVariant::ObservedTopic {
+            topic,
+            observer,
+            cardinality,
+        })
     }
 
     pub fn interface(&self) -> &InterfaceVariant {
@@ -526,13 +648,15 @@ pub trait LanguageGenerator {
         peer: &PeerContext,
     ) -> Result<()>;
     /// A pairing topic an observed role emits, tapped passively: a
-    /// `subscribe_observed`-backed subscription that follows the source
-    /// instance's lifecycle. The module exposes `source()` and never a
-    /// publisher.
+    /// `subscribe_observed`-backed subscription that follows each observed
+    /// source instance's lifecycle. The module exposes the slot's sources and
+    /// never a publisher; `cardinality` decides whether that accessor is
+    /// singular (`source()`) or a set (`sources()`).
     fn add_observed_topic(
         &mut self,
         topic: &NativeEmittedTopic,
         observer: &PeerContext,
+        cardinality: Cardinality,
     ) -> Result<()>;
     /// Finalizes the builder and return a path to the library
     fn build(
@@ -577,9 +701,11 @@ impl DeploymentInterface {
             InterfaceVariant::PeerConsumedTopic { topic, peer } => {
                 backend.add_peer_consumed_topic(topic, peer)
             }
-            InterfaceVariant::ObservedTopic { topic, observer } => {
-                backend.add_observed_topic(topic, observer)
-            }
+            InterfaceVariant::ObservedTopic {
+                topic,
+                observer,
+                cardinality,
+            } => backend.add_observed_topic(topic, observer, *cardinality),
         }
     }
 }

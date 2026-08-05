@@ -1,9 +1,11 @@
 use crate::{peppy_binary, workspace_root};
 use config::node::NodeConfigParser;
-use peppy::test_support::ServeCommandEmulation;
+use peppy::test_support::{ServeCommandEmulation, wait_for_log};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 struct NodeSetup {
     /// Root of the emulated daemon's directory tree, exported to every peppy
@@ -78,13 +80,42 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     }
 }
 
+/// The lock guarding one snippet directory, created on first use and kept for
+/// the process's lifetime (hence the `&'static` through a leak).
+///
+/// `peppy node sync` generates bindings INTO the snippet directory it runs in,
+/// and `node add`, `node build` and `node run` then read that same directory,
+/// so two tests working on the same snippet must take turns for the whole
+/// sync-through-run span: a re-sync under a concurrent build would rewrite the
+/// generated sources mid-compile. Tests share a snippet whenever they share a
+/// producer (several consumer snippets reading one producer's topic) or drive
+/// one snippet through several deployments. The lock is per directory, so
+/// unrelated snippets still run in parallel.
+fn snippet_dir_lock(node_dir: &Path) -> &'static Mutex<()> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap_or_else(PoisonError::into_inner);
+    locks
+        .entry(node_dir.to_path_buf())
+        .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
+}
+
+/// Syncs and adds the node, returning the snippet directory's guard so the
+/// caller can keep holding it through the build and run that read the synced
+/// directory.
 fn sync_and_add_node(
     peppy: &Path,
     daemon_root: &Path,
     node_dir: &Path,
     context: &str,
     extra_sync_args: &[&str],
-) {
+) -> MutexGuard<'static, ()> {
+    // A test that panics mid-span poisons this; the next test still has to run,
+    // and it starts by rewriting the same generated directory anyway.
+    let guard = snippet_dir_lock(node_dir)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+
     let mut sync_cmd = vec!["node", "sync"];
     sync_cmd.extend_from_slice(extra_sync_args);
     let sync_output = peppy_output(peppy, daemon_root, node_dir, &sync_cmd);
@@ -97,6 +128,8 @@ fn sync_and_add_node(
         &["node", "add", ".", "--force"],
     );
     assert_success(&add_output, &format!("peppy node add . for {context}"));
+
+    guard
 }
 
 /// Registers `contracts_root` (relative to the workspace) as a filesystem
@@ -147,6 +180,24 @@ pub fn run_snippet_with_deps(
     start_args: &[&str],
     deps: &[(&str, &[&str])],
 ) {
+    run_snippet_with_deps_asserting_output(snippets_root, snippet_name, start_args, deps, &[]);
+}
+
+/// [`run_snippet_with_deps`] plus an assertion on what the snippet printed.
+///
+/// The main node runs under the deterministic instance id `<snippet_name>_1`,
+/// so its stdout is readable at `<PEPPY_HOME>/logs/run/<instance_id>.log` once
+/// the run returns. Every entry in `expected_output` must appear there. A
+/// snippet whose printed lines depend on what the runtime handed it (a scalar
+/// slot's `Option`, say) is then checked against what the run actually wired,
+/// not just against the exit status.
+pub fn run_snippet_with_deps_asserting_output(
+    snippets_root: &str,
+    snippet_name: &str,
+    start_args: &[&str],
+    deps: &[(&str, &[&str])],
+    expected_output: &[&str],
+) {
     let peppy = peppy_binary();
     let node_dir = snippet_dir(snippets_root, snippet_name);
 
@@ -164,7 +215,7 @@ pub fn run_snippet_with_deps(
             dep_config.manifest.name.as_str(),
             dep_config.manifest.tag
         );
-        sync_and_add_node(peppy, &setup.daemon_root, &dep_dir, dep, &[]);
+        let _dep_dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &dep_dir, dep, &[]);
         build_node(peppy, &setup.daemon_root, &dep_dir, &dep_ref);
         let dep_instance_id = format!("{dep}_1");
         let mut dep_run_cmd = vec![
@@ -180,14 +231,44 @@ pub fn run_snippet_with_deps(
     }
 
     // Now sync, add, and build the main node
-    sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
+    let _dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
     build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
-    let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];
+    let instance_id = format!("{snippet_name}_1");
+    let mut run_cmd = vec![
+        "node",
+        "run",
+        setup.node_ref.as_str(),
+        "--instance-id",
+        instance_id.as_str(),
+    ];
     run_cmd.extend_from_slice(start_args);
 
     let start_output = peppy_output(peppy, &setup.daemon_root, &node_dir, &run_cmd);
     assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
+
+    if !expected_output.is_empty() {
+        assert_run_log_contains(&setup.daemon_root, &instance_id, expected_output);
+    }
+}
+
+/// Wait for the run log of `instance_id` to carry every substring in
+/// `expected`, then return. The node prints from its setup, which completes
+/// before it answers the health check `peppy node run` waits on, so the lines
+/// are already produced by the time this is called; the wait covers only the
+/// daemon draining the node's stdout pipe into the log file.
+fn assert_run_log_contains(daemon_root: &Path, instance_id: &str, expected: &[&str]) {
+    let log_path = daemon_root
+        .join("logs")
+        .join("run")
+        .join(format!("{instance_id}.log"));
+    for line in expected {
+        wait_for_log(
+            || fs::read_to_string(&log_path).unwrap_or_default(),
+            line,
+            std::time::Duration::from_secs(30),
+        );
+    }
 }
 
 /// Run a snippet whose `depends_on` contract references (contract docs,
@@ -196,8 +277,9 @@ pub fn run_snippet_with_deps(
 /// workspace-relative directory of `contract/v1` / `pairing/v1` documents;
 /// it is registered as an fs repo and refreshed, then the snippet is synced
 /// with `-r`, added, built, and launched with `start_args`. The pairing
-/// snippets launch solo with `--defer-link <slot>`: a required slot boots
-/// unpaired when explicitly deferred, with no peer present.
+/// snippets launch solo with `--vacant-link <slot>=<why>`: a slot the manifest
+/// declares `optional: true` boots unpaired when the run declares it vacant,
+/// with no peer present.
 pub fn run_snippet_with_contract_repo(
     snippets_root: &str,
     snippet_name: &str,
@@ -213,7 +295,7 @@ pub fn run_snippet_with_contract_repo(
 
     // `-r` lets the daemon resolve the contract deps from the repo cache
     // populated by the refresh above (no producer node is in the stack).
-    sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &["-r"]);
+    let _dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &["-r"]);
     build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
     let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];

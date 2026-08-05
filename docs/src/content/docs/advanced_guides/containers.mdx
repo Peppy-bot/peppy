@@ -157,7 +157,7 @@ Here is what `peppy node init --container` generates:
   <TabItem label="Python">
     ```apptainer title="apptainer.def"
     Bootstrap: docker
-    From: tuatini/peppy-python-uv-base:latest
+    From: peppybot/python-uv-base:latest
 
     %labels
         Name my_node
@@ -187,7 +187,7 @@ Here is what `peppy node init --container` generates:
   <TabItem label="Rust">
     ```apptainer title="apptainer.def"
     Bootstrap: docker
-    From: tuatini/peppy-rust-cargo-base:latest
+    From: peppybot/rust-cargo-base:latest
 
     %labels
         Name my_node
@@ -368,6 +368,50 @@ Only parameters of type `"string"` can be referenced in mount paths. Numeric or 
 
 :::note
 A literal blocked source (e.g., `/tmp`) is rejected at parse time. A source containing `${parameters:...}` is checked at runtime instead, against the resolved path.
+:::
+
+## Build caching
+
+Rust container builds reuse a shared cache across builds, without any
+per-node configuration. The daemon bind mounts `~/.peppy/cache/container_build`
+into the build at `/peppy-cache` and points the `%post` toolchain at it:
+
+- The crates.io registry persists via `CARGO_HOME`, so dependencies are
+  downloaded once instead of on every build.
+- [sccache](https://github.com/mozilla/sccache) caches rustc invocations via
+  `RUSTC_WRAPPER`, so unchanged crates are not recompiled. The executable
+  ships inside `peppybot/rust-cargo-base`, so nothing needs to be installed
+  on the host, on Linux or macOS; the wrapper is activated only for defs
+  that bootstrap from that image.
+
+:::caution
+Caching requires a `/peppy-cache` directory in the base image: build-time
+binds cannot create their destination. The peppy base images
+(`peppybot/rust-cargo-base`, `peppybot/python-uv-base`) ship it, and the daemon
+enables caching automatically when a def file bootstraps from one of them.
+Any other base image must create the directory itself (`RUN mkdir
+/peppy-cache` in its Dockerfile) and the def file must mention
+`/peppy-cache` to opt in; such builds get registry caching, and sccache
+additionally requires the image to provide the executable on its PATH.
+:::
+
+Caching is best effort: if any part of it is unavailable, the build runs
+exactly as it would without caching. Set `PEPPY_NO_CONTAINER_BUILD_CACHE=1`
+in the daemon's environment to disable caching entirely. When the def file
+mentions rustup (installing it in `%post` is incompatible with the
+`CARGO_HOME` override) or sets one of the managed variables itself, caching
+is skipped automatically for that build.
+
+:::note
+The cache lives at `~/.peppy/cache/container_build` and is safe to delete
+at any time; the next build recreates it. The sccache half prunes itself to
+sccache's size limit (10 GiB by default), while `cargo-home/` grows with
+every dependency version ever built and is only reclaimed by deleting it.
+Because the directory is shared and writable, anything a `%post` writes
+there persists into later builds on the same machine, the same trust the
+build itself already runs with. On macOS, builds run inside the Lima VM:
+the cache directory is bind mounted through it and the environment rides
+the guest command, so container builds cache the same way as on Linux.
 :::
 
 ## Extra runtime arguments

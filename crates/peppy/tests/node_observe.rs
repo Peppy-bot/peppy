@@ -26,7 +26,7 @@ use peppy::commands::stack::{StackCommand, StackCommands};
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 use peppylib::MessengerHandle;
-use peppylib::messaging::ObservationState;
+use peppylib::messaging::{ObservationState, ObservedMemberState};
 use peppylib::services::observation_update::listen_for_observation_update;
 use peppylib::services::shutdown::listen_for_shutdown;
 use tokio::sync::watch;
@@ -38,7 +38,9 @@ use super::common::{
 };
 
 /// The observer: watches the `arm` role of `arm_link/v1` through observer slot
-/// `watch`, consuming the topic that role emits. Emits nothing.
+/// `watch`, consuming the topic that role emits. Emits nothing. The slot is
+/// `zero_or_one`, the node's own statement that it runs fine observing nothing,
+/// which is what lets a deployment write the slot vacant.
 fn observer_config(instances: &InstanceLifetime) -> String {
     let run_cmd = instances.keep_alive_run_cmd();
     format!(
@@ -49,7 +51,34 @@ fn observer_config(instances: &InstanceLifetime) -> String {
             tag: "v1",
             depends_on: {{
                 pairing_observers: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch" }}
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }}
+                ]
+            }}
+        }},
+        interfaces: {{
+            topics: {{
+                consumes: [{{ link_id: "watch", name: "joint_states" }}]
+            }}
+        }},
+        execution: {{ language: "rust", run_cmd: {run_cmd} }}
+    }}"#
+    )
+}
+
+/// A fleet observer: watches the same `arm` role through ONE `one_or_more`
+/// slot, so `--link` repetition accumulates its member set instead of being a
+/// hard error.
+fn fleet_observer_config(instances: &InstanceLifetime) -> String {
+    let run_cmd = instances.keep_alive_run_cmd();
+    format!(
+        r#"{{
+        peppy_schema: "node/v1",
+        manifest: {{
+            name: "fleet_recorder",
+            tag: "v1",
+            depends_on: {{
+                pairing_observers: [
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "one_or_more" }}
                 ]
             }}
         }},
@@ -65,7 +94,8 @@ fn observer_config(instances: &InstanceLifetime) -> String {
 
 /// The source: plays the `arm` role of `arm_link/v1` through participant slot
 /// `controller`, emitting that role's `joint_states`. It boots standalone by
-/// deferring its own participant slot (it is observed, never paired here).
+/// declaring its own participant slot vacant (it is observed, never paired
+/// here).
 ///
 /// Its `run_cmd` records its own pid to `pidfile` before waiting, so a
 /// cooperatively-emulated shutdown can kill the exact process (see
@@ -81,7 +111,7 @@ fn killable_source_config(pidfile: &Path, instances: &InstanceLifetime) -> Strin
             tag: "v1",
             depends_on: {{
                 pairings: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }}
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }}
                 ]
             }}
         }},
@@ -160,6 +190,16 @@ async fn emulate_observer_services(
     rx
 }
 
+/// The slot's sole member. Most of these tests drive a `cardinality: "one"`
+/// slot, whose state is either empty (undelivered) or exactly one member; any
+/// other size would be the version-skew shape the node runtime refuses.
+fn sole_member(state: &ObservationState, context: &str) -> ObservedMemberState {
+    match state.members.as_slice() {
+        [sole] => sole.clone(),
+        members => panic!("{context}: expected one member, got {}", members.len()),
+    }
+}
+
 /// A running daemon with the source and observer nodes added (not yet run), plus
 /// the handles a test needs to drive `node run`/`stop`/`remove`. The temp dirs
 /// and the serve emulation are held so nothing is torn down mid-test.
@@ -226,7 +266,8 @@ async fn setup() -> Fixture {
     }
 }
 
-/// Runs the source (deferring its participant slot so it boots standalone) then
+/// Runs the source (its participant slot declared vacant so it boots
+/// standalone) then
 /// the observer with `--link watch@arm_1`, and returns the observer's state
 /// watch already advanced past the initial live delivery.
 async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
@@ -242,10 +283,13 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
         "arm_1",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&fx.ctx)
-    .expect("source run (participant slot deferred) should succeed");
+    .expect("source run (participant slot vacant) should succeed");
 
     let mut obs_rx = emulate_observer_services(
         &fx.messenger,
@@ -267,22 +311,20 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     // FIX #1: the lone `node run` observer received its source pin live, at a
     // bumped incarnation generation, exactly as a launcher observer would.
     let state = obs_rx.borrow_and_update().clone();
-    let pin = state
-        .source
-        .expect("rec_1's observer slot should have a resolved source after node run");
-    assert_eq!(pin.producer.instance_id, "arm_1");
+    let member = sole_member(&state, "rec_1's observer slot after node run");
+    assert_eq!(member.source.producer.instance_id, "arm_1");
     // The daemon re-stamps the source's core_node from its own name (the wire
     // carries only the instance id). Asserting it guards the routing-critical
     // half of register_instance's ProducerRef: a wrong core_node still delivers
     // a pin but pins the subscription to a non-existent address, the exact
     // "booted validated but silent" failure this path exists to prevent.
-    assert_eq!(pin.producer.core_node, fx.core_node_name);
-    assert_eq!(pin.source_link_id, "controller");
-    assert!(state.source_live, "the source is Running, so it is live");
+    assert_eq!(member.source.producer.core_node, fx.core_node_name);
+    assert_eq!(member.source.source_link_id, "controller");
+    assert!(member.source_live, "the source is Running, so it is live");
     assert!(
-        state.source_generation >= 1,
+        member.source_generation >= 1,
         "a live source carries a bumped incarnation generation, got {}",
-        state.source_generation
+        member.source_generation
     );
     obs_rx
 }
@@ -294,34 +336,31 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
     let fx = setup().await;
 
     // Coverage is enforced loudly on the observer's own slot: no `--link` and no
-    // `--defer-link` fails at preflight, naming the slot and the opt-out flag.
+    // `--vacant-link` fails at preflight, naming the slot and the opt-out flag.
     let err = node_run_command("rec_1", "recorder", Vec::new(), Vec::new())
         .execute(&fx.ctx)
-        .expect_err("a required observer slot without --link/--defer-link must fail");
+        .expect_err("a required observer slot without --link/--vacant-link must fail");
     let msg = err.to_string();
     assert!(
-        msg.contains("watch") && msg.contains("--defer-link"),
+        msg.contains("watch") && msg.contains("--vacant-link"),
         "coverage failure should name the observer slot and its opt-out: {msg}"
     );
 
-    // An observer defer belongs only to observation coverage. It must not ride
+    // An observer vacancy belongs only to observation coverage. It must not ride
     // the pair-specific goal field and be rejected later as a non-participant
     // pairing slot.
-    emulate_startup_services(
-        &fx.messenger,
-        &fx.core_node_name,
-        "recorder",
-        "rec_deferred",
-    )
-    .await;
+    emulate_startup_services(&fx.messenger, &fx.core_node_name, "recorder", "rec_vacant").await;
     node_run_command(
-        "rec_deferred",
+        "rec_vacant",
         "recorder",
         Vec::new(),
-        vec!["watch".to_string()],
+        vec![(
+            "watch".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&fx.ctx)
-    .expect("an observer slot deferred with --defer-link should boot");
+    .expect("an observer slot declared vacant with --vacant-link should boot");
 
     let mut obs_rx = run_source_then_observer(&fx).await;
 
@@ -338,13 +377,153 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
     .expect("node stop should succeed");
 
     let state = obs_rx.borrow_and_update().clone();
+    let member = sole_member(&state, "rec_1's observer slot after the source stopped");
     assert!(
-        !state.source_live,
+        !member.source_live,
         "a stopped source must live-notify its observer source_live=false"
     );
+    assert_eq!(
+        member.source.producer.instance_id, "arm_1",
+        "the member stays listed on stop so the observer keeps its subscription declared"
+    );
+}
+
+/// A `one_or_more` observer slot on the `node run` path: repeating `--link`
+/// accumulates the slot's member set in flag order, and each member then
+/// follows its OWN source's lifecycle. Stopping one source flips only that
+/// member's `source_live`, and restarting it bumps only that member's
+/// generation, which is what makes a per-member wire subscription redeclare
+/// without disturbing its neighbours.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_multi_member_observer_tracks_each_source_independently() {
+    let fx = setup().await;
+    let fleet_dir = tempfile::tempdir().expect("fleet observer node dir");
+    add_built_node(
+        &fx.ctx,
+        fleet_dir.path(),
+        &fleet_observer_config(&fx._instances),
+    );
+
+    // Both sources are instances of the same node, started in sequence, so each
+    // spawn rewrites the shared pidfile and a stop always kills the live one.
+    for instance_id in ["arm_1", "arm_2"] {
+        emulate_cooperative_source(
+            &fx.messenger,
+            &fx.core_node_name,
+            "robot_arm",
+            instance_id,
+            fx.source_pidfile.clone(),
+        )
+        .await;
+        node_run_command(
+            instance_id,
+            "robot_arm",
+            Vec::new(),
+            vec![(
+                "controller".to_string(),
+                "test rig: this slot has no peer".to_string(),
+            )],
+        )
+        .execute(&fx.ctx)
+        .expect("source run (participant slot vacant) should succeed");
+    }
+
+    let mut obs_rx = emulate_observer_services(
+        &fx.messenger,
+        &fx.core_node_name,
+        "fleet_recorder",
+        "fleet_1",
+        "watch",
+    )
+    .await;
+    node_run_command(
+        "fleet_1",
+        "fleet_recorder",
+        vec![
+            ("watch".to_string(), "arm_2".to_string()),
+            ("watch".to_string(), "arm_1".to_string()),
+        ],
+        Vec::new(),
+    )
+    .execute(&fx.ctx)
+    .expect("repeated --link on a one_or_more observer slot should succeed");
+
+    let instance_ids = |state: &ObservationState| -> Vec<String> {
+        state
+            .members
+            .iter()
+            .map(|member| member.source.producer.instance_id.clone())
+            .collect()
+    };
+
+    let state = obs_rx.borrow_and_update().clone();
+    assert_eq!(
+        instance_ids(&state),
+        ["arm_2", "arm_1"],
+        "the slot holds both members, in `--link` occurrence order"
+    );
     assert!(
-        state.source.is_some(),
-        "the source pin is retained on stop so the observer keeps its subscription declared"
+        state.members.iter().all(|member| member.source_live
+            && member.source.source_link_id == "controller"
+            && member.source.producer.core_node == fx.core_node_name),
+        "every member is pinned to its own live source: {:?}",
+        state.members
+    );
+    let arm_2_generation = state.members[0].source_generation;
+
+    // Stopping one source touches only its own member.
+    NodeCommand {
+        command: NodeCommands::Stop {
+            instance_id: "arm_2".to_string(),
+        },
+    }
+    .execute(&fx.ctx)
+    .expect("node stop should succeed");
+
+    let state = obs_rx.borrow_and_update().clone();
+    assert_eq!(
+        instance_ids(&state),
+        ["arm_2", "arm_1"],
+        "a stopped source stays listed, at its own position"
+    );
+    assert!(
+        !state.members[0].source_live,
+        "the stopped source's member must report source_live=false"
+    );
+    assert!(
+        state.members[1].source_live,
+        "its neighbour is untouched: {:?}",
+        state.members[1]
+    );
+
+    // Restarting it bumps only its own incarnation generation.
+    let arm_1_generation = state.members[1].source_generation;
+    node_run_command(
+        "arm_2",
+        "robot_arm",
+        Vec::new(),
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
+    )
+    .execute(&fx.ctx)
+    .expect("source re-run should succeed");
+
+    let state = obs_rx.borrow_and_update().clone();
+    assert_eq!(instance_ids(&state), ["arm_2", "arm_1"]);
+    assert!(
+        state.members[0].source_live,
+        "the restarted source's member is live again"
+    );
+    assert!(
+        state.members[0].source_generation > arm_2_generation,
+        "a restart is a strictly newer incarnation: {} must exceed {arm_2_generation}",
+        state.members[0].source_generation
+    );
+    assert_eq!(
+        state.members[1].source_generation, arm_1_generation,
+        "the untouched neighbour keeps its generation, so its wire subscription survives"
     );
 }
 
@@ -367,13 +546,14 @@ async fn node_remove_source_notifies_running_observer() {
     .expect("node remove --stop-instances should succeed");
 
     let state = obs_rx.borrow_and_update().clone();
+    let member = sole_member(&state, "rec_1's observer slot after the source was removed");
     assert!(
-        !state.source_live,
+        !member.source_live,
         "removing the observed source must live-notify the observer source_live=false"
     );
-    assert!(
-        state.source.is_some(),
-        "the source pin is retained on remove so the observer keeps its subscription declared"
+    assert_eq!(
+        member.source.producer.instance_id, "arm_1",
+        "the member stays listed on remove so the observer keeps its subscription declared"
     );
 }
 
@@ -430,7 +610,10 @@ async fn service_reset_clears_the_observation_registry() {
         "arm_1",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&ctx)
     .expect("source run should succeed");
@@ -452,7 +635,10 @@ async fn service_reset_clears_the_observation_registry() {
         "arm_1",
         "robot_arm",
         Vec::new(),
-        vec!["controller".to_string()],
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
     )
     .execute(&ctx)
     .expect("source re-run after reset should succeed");
@@ -474,12 +660,10 @@ async fn service_reset_clears_the_observation_registry() {
     .expect("fresh observer run after reset should succeed");
 
     let state = obs_rx.borrow_and_update().clone();
-    let pin = state
-        .source
-        .expect("rec_2 should resolve its source after reset");
-    assert_eq!(pin.producer.instance_id, "arm_1");
+    let member = sole_member(&state, "rec_2's observer slot after reset");
+    assert_eq!(member.source.producer.instance_id, "arm_1");
     assert_eq!(
-        state.source_generation, 1,
+        member.source_generation, 1,
         "service reset must clear the observation registry, so the re-run source \
          is a clean incarnation at generation 1, not a stale carry-over"
     );

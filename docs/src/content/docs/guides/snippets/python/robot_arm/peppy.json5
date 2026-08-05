@@ -8,7 +8,10 @@
         // One pairing slot: this node plays the `arm` role of arm_link/v1.
         // The slot's link_id names the OTHER end from this node's point of
         // view; while paired, exactly one controller instance sits behind it.
-        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" },
+        // `optional: true` says this node runs fine with nobody commanding it,
+        // so a deployment may write the slot vacant; without it, every
+        // deployment must pair the slot.
+        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true },
       ],
     },
   },

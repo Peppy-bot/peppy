@@ -30,32 +30,56 @@ pub(crate) fn sender_target_python_expr(
 
 /// Emits the module-level bound-producer accessor every consumed topic,
 /// service, and action module exposes. Mirroring the Rust codegen, the
-/// accessor encodes the slot's launch-validated cardinality: `one`
-/// generates the singular `bound_producer()` returning the sole
-/// `ProducerRef` directly, while `one_or_more` / `zero_or_more` generate
-/// `bound_producers()` returning the ordered list (documented never-empty
-/// or possibly-empty respectively; Python has no non-empty list type, so
-/// the name flip is what surfaces a cardinality change at call sites).
-/// The docstring prose comes from
+/// accessor encodes the slot's launch-validated cardinality: `one` generates
+/// the singular `bound_producer()` returning the sole `ProducerRef` directly,
+/// `zero_or_one` the same name returning an `Optional`, while `one_or_more` /
+/// `zero_or_more` generate `bound_producers()` returning the ordered list
+/// (documented never-empty or possibly-empty respectively; Python has no
+/// non-empty list type, so the name flip is what surfaces a cardinality
+/// change at call sites). The emitted name and the `NodeRunner` method it
+/// calls are separate: the two scalar cardinalities share one emitted name
+/// over two runtime accessors. The docstring prose comes from
 /// `DependencyContext::bound_producers_doc` so both language generators
 /// state the same guarantees; only the Python-API tail sentence is added
 /// here. Callers need `import peppylib`, which every consumed module
 /// already adds.
-pub(crate) fn emit_bound_producers_fn(
+pub(crate) fn emit_bound_producer_accessor_fn(
     builder: &mut PythonCodeBuilder,
     dependency: &crate::generator::types::DependencyContext,
 ) {
-    let (fn_name, return_type, api_note) = match dependency.cardinality {
-        Cardinality::One => ("bound_producer", "peppylib.ProducerRef", None),
-        Cardinality::OneOrMore => (
-            "bound_producers",
-            "List[peppylib.ProducerRef]",
-            Some("`[0]` is always valid."),
-        ),
-        Cardinality::ZeroOrMore => ("bound_producers", "List[peppylib.ProducerRef]", None),
-    };
-    if !dependency.cardinality.is_one() {
-        builder.add_import("from typing import List");
+    let (fn_name, runtime_method, return_type, typing_import, api_note) =
+        match dependency.cardinality {
+            Cardinality::One => (
+                "bound_producer",
+                "bound_producer",
+                "peppylib.ProducerRef",
+                None,
+                None,
+            ),
+            Cardinality::ZeroOrOne => (
+                "bound_producer",
+                "optional_bound_producer",
+                "Optional[peppylib.ProducerRef]",
+                Some("from typing import Optional"),
+                None,
+            ),
+            Cardinality::OneOrMore => (
+                "bound_producers",
+                "bound_producers",
+                "List[peppylib.ProducerRef]",
+                Some("from typing import List"),
+                Some("`[0]` is always valid."),
+            ),
+            Cardinality::ZeroOrMore => (
+                "bound_producers",
+                "bound_producers",
+                "List[peppylib.ProducerRef]",
+                Some("from typing import List"),
+                None,
+            ),
+        };
+    if let Some(import) = typing_import {
+        builder.add_import(import);
     }
 
     let doc = dependency.bound_producers_doc();
@@ -74,7 +98,7 @@ pub(crate) fn emit_bound_producers_fn(
     }
     builder.line("\"\"\"");
     builder.line(&format!(
-        "return node_runner.{fn_name}({:?})",
+        "return node_runner.{runtime_method}({:?})",
         dependency.link_id
     ));
     builder.dedent();
@@ -336,7 +360,7 @@ pub fn build_consumed_service(
         " -> None"
     };
 
-    emit_bound_producers_fn(&mut builder, dependency);
+    emit_bound_producer_accessor_fn(&mut builder, dependency);
 
     let signature = if has_request {
         format!(

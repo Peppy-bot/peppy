@@ -1,4 +1,5 @@
 use config::node::Toolchain;
+use daemon_config::launcher::VacantReason;
 use peppy::test_support::{InstanceLifetime, LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,7 +89,7 @@ async fn node_run_command_succeeds() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -160,7 +161,7 @@ async fn node_run_command_succeeds() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -317,7 +318,7 @@ async fn node_run_command_with_args_succeeds() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -395,7 +396,7 @@ async fn node_run_command_with_args_succeeds() {
             args,
             instance_id: Some(instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -521,7 +522,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -593,7 +594,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
             args: Vec::new(),
             instance_id: Some(custom_instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -711,7 +712,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -778,7 +779,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -888,7 +889,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -954,7 +955,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
 
             idle_timeout: 60,
             max_timeout: 3600,
@@ -999,24 +1000,30 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
 }
 
 /// Hand-crafts a peppy.json5 declaring `depends_on.nodes` against
-/// `(producer_name, "v1")` with one entry per supplied `link_id`. The
+/// `(producer_name, "v1")` with one entry per supplied slot, each carrying its
+/// own explicit `cardinality` (`None` leaves the manifest's `one` default). The
 /// consumer carries no interfaces and a no-op `run_cmd`, so the
 /// daemon's dependency-spec validator is happy with the dep being
 /// declared but never actually consumed. Returns the path to the
 /// consumer directory ready to feed into `NodeCommands::Add`.
-fn write_consumer_with_depends_on(
+fn write_consumer_with_slots(
     work_dir: &std::path::Path,
     consumer_name: &str,
     producer_name: &str,
-    link_ids: &[&str],
+    slots: &[(&str, Option<&str>)],
     instances: &InstanceLifetime,
 ) -> std::path::PathBuf {
     let consumer_dir = work_dir.join(consumer_name);
     std::fs::create_dir_all(&consumer_dir).expect("create consumer dir");
-    let entries = link_ids
+    let entries = slots
         .iter()
-        .map(|lid| {
-            format!(r#"            {{ name: "{producer_name}", tag: "v1", link_id: "{lid}" }}"#)
+        .map(|(lid, cardinality)| {
+            let cardinality = cardinality
+                .map(|c| format!(r#", cardinality: "{c}""#))
+                .unwrap_or_default();
+            format!(
+                r#"            {{ name: "{producer_name}", tag: "v1", link_id: "{lid}"{cardinality} }}"#
+            )
         })
         .collect::<Vec<_>>()
         .join(",\n");
@@ -1083,7 +1090,7 @@ async fn add_built_producer(
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1101,8 +1108,30 @@ async fn add_built_consumer_with_pins(
     link_ids: &[&str],
     instances: &InstanceLifetime,
 ) {
+    let slots: Vec<(&str, Option<&str>)> = link_ids.iter().map(|lid| (*lid, None)).collect();
+    add_built_consumer_with_slots(
+        node_ctx,
+        work_dir,
+        consumer_name,
+        producer_name,
+        &slots,
+        instances,
+    )
+    .await;
+}
+
+/// [`add_built_consumer_with_pins`] over slots that carry their own declared
+/// cardinality.
+async fn add_built_consumer_with_slots(
+    node_ctx: &Arc<AppContext>,
+    work_dir: &std::path::Path,
+    consumer_name: &str,
+    producer_name: &str,
+    slots: &[(&str, Option<&str>)],
+    instances: &InstanceLifetime,
+) {
     let consumer_dir =
-        write_consumer_with_depends_on(work_dir, consumer_name, producer_name, link_ids, instances);
+        write_consumer_with_slots(work_dir, consumer_name, producer_name, slots, instances);
     NodeCommand {
         command: NodeCommands::Add {
             source: Some(consumer_dir.display().to_string()),
@@ -1113,7 +1142,7 @@ async fn add_built_consumer_with_pins(
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -1206,7 +1235,7 @@ async fn node_run_rejects_unbound_slots() {
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1282,7 +1311,7 @@ async fn node_run_bind_rejects_dead_key() {
             args: Vec::new(),
             instance_id: Some(producer_instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1299,7 +1328,7 @@ async fn node_run_bind_rejects_dead_key() {
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
             links: vec![("ghost".to_string(), producer_instance_id.to_string())],
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1377,7 +1406,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 links: Vec::new(),
-                defer_links: Vec::new(),
+                vacant_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1408,7 +1437,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
 
     NodeCommand {
         command: NodeCommands::Run {
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1487,7 +1516,7 @@ async fn node_run_bind_rejects_target_mismatch() {
             args: Vec::new(),
             instance_id: Some(wrong_instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1504,7 +1533,7 @@ async fn node_run_bind_rejects_target_mismatch() {
             args: Vec::new(),
             instance_id: Some(consumer_instance_id.to_string()),
             links: vec![("wrist_left".to_string(), wrong_instance_id.to_string())],
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1596,7 +1625,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 links: Vec::new(),
-                defer_links: Vec::new(),
+                vacant_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1615,7 +1644,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1652,7 +1681,7 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
             args: Vec::new(),
             instance_id: Some(producer_extra_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1752,7 +1781,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 links: Vec::new(),
-                defer_links: Vec::new(),
+                vacant_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1771,7 +1800,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_a_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1800,7 +1829,7 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
             args: Vec::new(),
             instance_id: Some(consumer_b_instance_id.to_string()),
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1885,7 +1914,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
                 args: Vec::new(),
                 instance_id: Some(instance_id.to_string()),
                 links: Vec::new(),
-                defer_links: Vec::new(),
+                vacant_links: Vec::new(),
                 idle_timeout: 60,
                 max_timeout: 3600,
                 build: false,
@@ -1905,7 +1934,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1936,7 +1965,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1967,7 +1996,7 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
             args: Vec::new(),
             instance_id: Some(consumer_inst_3_bad.to_string()),
             links: vec![("wrist_left".to_string(), consumer_inst_1.to_string())],
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -1985,5 +2014,166 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     assert!(
         !msg.contains(consumer_inst_2),
         "error must not implicate the already-running consumer instances. Got: {msg}"
+    );
+}
+
+/// A `zero_or_one` producer slot's own coverage rule at the CLI boundary. The
+/// consumer declares `main_camera` (`one`) and `wrist_camera`
+/// (`zero_or_one`), and the preflight answers each way of covering, or failing
+/// to cover, the scalar slots:
+///   - `--vacant-link` on the `zero_or_one` slot is legal, and the run starts;
+///   - `--vacant-link` on the `one` slot is refused, naming the manifest key
+///     that would earn the empty state;
+///   - a repeated `--link` on the `zero_or_one` slot is the scalar shape
+///     error, naming the slot's own cardinality rather than assuming `one`;
+///   - omitting the slot is unfulfilled, and its message offers both covering
+///     moves.
+/// Every refusal happens before any spawn side-effect, so one live producer
+/// and one consumer node cover the whole table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let producer_name = "test_optional_slot_producer";
+    let consumer_name = "test_optional_slot_consumer";
+    let producer_instance_id = "cam_a";
+    let spare_producer_instance_id = "cam_b";
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let instances = InstanceLifetime::new();
+    add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
+    add_built_consumer_with_slots(
+        &node_ctx,
+        work_dir.path(),
+        consumer_name,
+        producer_name,
+        &[("main_camera", None), ("wrist_camera", Some("zero_or_one"))],
+        &instances,
+    )
+    .await;
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let mut producer_guards = Vec::new();
+    for instance_id in [producer_instance_id, spare_producer_instance_id] {
+        producer_guards.push(
+            install_node_services(&node_messenger, &core_node_name, producer_name, instance_id)
+                .await,
+        );
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(producer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                links: Vec::new(),
+                vacant_links: Vec::new(),
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+        .expect("producer run should succeed");
+    }
+
+    let vacant_link = |link_id: &str| {
+        vec![(
+            link_id.to_string(),
+            VacantReason::new("this rig ships without a wrist camera").expect("non-empty reason"),
+        )]
+    };
+    let run_consumer = |instance_id: &str,
+                        links: Vec<(String, String)>,
+                        vacant_links: Vec<(String, VacantReason)>| {
+        NodeCommand {
+            command: NodeCommands::Run {
+                node_ref: None,
+                node_name: Some(consumer_name.to_string()),
+                tag: Some("v1".to_string()),
+                args: Vec::new(),
+                instance_id: Some(instance_id.to_string()),
+                links,
+                vacant_links,
+                idle_timeout: 60,
+                max_timeout: 3600,
+                build: false,
+            },
+        }
+        .execute(&node_ctx)
+    };
+    let main_bound = || vec![("main_camera".to_string(), producer_instance_id.to_string())];
+
+    // 1. The vacancy is legal on the `zero_or_one` slot, so the instance runs.
+    let accepted_instance_id = "consumer_vacant";
+    let _consumer_svcs = install_node_services(
+        &node_messenger,
+        &core_node_name,
+        consumer_name,
+        accepted_instance_id,
+    )
+    .await;
+    run_consumer(
+        accepted_instance_id,
+        main_bound(),
+        vacant_link("wrist_camera"),
+    )
+    .expect("a vacancy on a zero_or_one producer slot should be accepted");
+
+    // 2. The same flag on the `one` slot names the manifest key that would
+    //    give that slot an empty state.
+    let msg = run_consumer(
+        "consumer_vacant_one",
+        vec![("wrist_camera".to_string(), producer_instance_id.to_string())],
+        vacant_link("main_camera"),
+    )
+    .expect_err("a vacancy on a `one` producer slot must be refused")
+    .to_string();
+    assert!(
+        msg.contains("`main_camera`")
+            && msg.contains("producer-binding slot")
+            && msg.contains("declares it required")
+            && msg.contains(r#"cardinality: "zero_or_one""#),
+        "the refusal must name the slot, its kind, and the manifest key that lifts the bar. \
+         Got: {msg}"
+    );
+
+    // 3. A `zero_or_one` slot takes one target, and the count error names its
+    //    own cardinality.
+    let mut repeated = main_bound();
+    repeated.push(("wrist_camera".to_string(), producer_instance_id.to_string()));
+    repeated.push((
+        "wrist_camera".to_string(),
+        spare_producer_instance_id.to_string(),
+    ));
+    let msg = run_consumer("consumer_repeated", repeated, Vec::new())
+        .expect_err("two --link occurrences on a zero_or_one slot must be refused")
+        .to_string();
+    assert!(
+        msg.contains("wrist_camera") && msg.contains("zero_or_one") && msg.contains('2'),
+        "the count error must name the slot, its cardinality, and the occurrence count. \
+         Got: {msg}"
+    );
+
+    // 4. Omitting the slot is unfulfilled either way, and the message offers
+    //    both moves that would cover it.
+    let msg = run_consumer("consumer_omitted", main_bound(), Vec::new())
+        .expect_err("an omitted zero_or_one slot must be refused")
+        .to_string();
+    assert!(
+        msg.contains("leaves slot `wrist_camera`")
+            && msg.contains("--link wrist_camera@<producer_instance_id>")
+            && msg.contains("--vacant-link 'wrist_camera=<why>'"),
+        "an unfulfilled zero_or_one slot must offer both the binding and the vacancy. \
+         Got: {msg}"
     );
 }

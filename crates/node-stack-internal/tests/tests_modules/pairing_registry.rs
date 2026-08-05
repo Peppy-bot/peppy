@@ -25,7 +25,7 @@ fn robot_arm_config() -> config::node::NodeConfig {
                 tag: "v1",
                 depends_on: {
                     pairings: [
-                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }
+                        { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" }
                     ]
                 }
             },
@@ -367,7 +367,6 @@ async fn serialized_graph_overlays_pairing_slots() {
     let slot = arm_slots.get("controller").expect("declared slot surfaces");
     assert_eq!(slot.pairing_name, "arm_link");
     assert_eq!(slot.role, "arm");
-    assert!(slot.optional);
     assert_eq!(slot.binding, PairingSlotBinding::Unpaired);
 
     // Paired: the binding carries the peer's full address + slot link_id.
@@ -383,7 +382,6 @@ async fn serialized_graph_overlays_pairing_slots() {
         .expect("controller in graph");
     let ctrl_slots = &ctrl_node.instances[0].pairing_slots;
     let slot = ctrl_slots.get("arm").expect("declared slot surfaces");
-    assert!(!slot.optional);
     let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding else {
         panic!("expected Paired, got {:?}", slot.binding);
     };

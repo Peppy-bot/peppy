@@ -6,7 +6,7 @@
 //! subscription) resolves against the installed peppylib.
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::node::NativeEmittedTopic;
+use config::node::{Cardinality, NativeEmittedTopic};
 use generator::LanguageGenerator;
 use generator::PeerContext;
 use std::fs;
@@ -141,6 +141,107 @@ print("peer modules imported")
     assert!(
         output.status.success(),
         "importing generated peer modules failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The observer half of the same surface, and the cardinality typing that goes
+/// with it: a scalar slot (`one` or `zero_or_one`) exposes `source()`, a multi
+/// slot exposes `sources()`, and none exposes a publisher or the participant
+/// pin helpers. `subscribe` keeps its shape at every cardinality.
+#[test]
+fn generated_observer_modules_are_cardinality_typed() {
+    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
+
+    let (mut generator, output_dir, user_node, peppy_node_config_path) =
+        init_test_env::<generator::PythonGenerator>(&temp_dir, STUB_PYTHON_NODE_CONFIG);
+    generator
+        .add_observed_topic(
+            &states,
+            &PeerContext {
+                link_id: "observed_arm".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+            },
+            Cardinality::One,
+        )
+        .unwrap();
+    generator
+        .add_observed_topic(
+            &states,
+            &PeerContext {
+                link_id: "maybe_observed_arm".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+            },
+            Cardinality::ZeroOrOne,
+        )
+        .unwrap();
+    generator
+        .add_observed_topic(
+            &states,
+            &PeerContext {
+                link_id: "observed_arms".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+            },
+            Cardinality::OneOrMore,
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator
+        .build(&output_dir, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    init_python_user_node(&user_node);
+    init_python_project_venv(&user_node);
+
+    let check = r#"
+import inspect
+from peppygen.paired_topics.observed_arm import joint_states as sole
+from peppygen.paired_topics.maybe_observed_arm import joint_states as maybe
+from peppygen.paired_topics.observed_arms import joint_states as many
+
+assert sole.LINK_ID == "observed_arm"
+assert maybe.LINK_ID == "maybe_observed_arm"
+assert many.LINK_ID == "observed_arms"
+
+# Both scalar cardinalities observe at most one pairing, so both accessors are
+# singular; `zero_or_one` differs in whether the deployment may leave the slot
+# empty, which the accessor's `Optional` already covers.
+for module in (sole, maybe):
+    assert callable(module.source)
+    assert not hasattr(module, "sources")
+
+# A multi slot reads its whole member set. The name flip is what surfaces a
+# cardinality change at call sites.
+assert callable(many.sources)
+assert not hasattr(many, "source")
+
+# An observer plays no role: no publisher, no participant pin helpers, at
+# any cardinality.
+for module in (sole, maybe, many):
+    assert inspect.iscoroutinefunction(module.subscribe)
+    assert inspect.isclass(module.Subscription)
+    for absent in ("build_message", "declare_publisher", "paired", "wait_paired"):
+        assert not hasattr(module, absent), absent
+print("observer modules imported")
+"#;
+    let output = std::process::Command::new(user_node.join(".venv/bin/python"))
+        .args(["-c", check])
+        .current_dir(&user_node)
+        .output()
+        .expect("failed to run venv python");
+    assert!(
+        output.status.success(),
+        "importing generated observer modules failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

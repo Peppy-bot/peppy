@@ -87,7 +87,7 @@ pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
@@ -102,8 +102,16 @@ pub fn node_run_command(
     instance_id: &str,
     node: &str,
     links: Vec<(String, String)>,
-    defer_links: Vec<String>,
+    vacant_links: Vec<(String, String)>,
 ) -> peppy::commands::node::NodeCommand {
+    let vacant_links = vacant_links
+        .into_iter()
+        .map(|(link_id, reason)| {
+            let reason = daemon_config::launcher::VacantReason::new(&reason)
+                .expect("test reasons say something");
+            (link_id, reason)
+        })
+        .collect();
     peppy::commands::node::NodeCommand {
         command: peppy::commands::node::NodeCommands::Run {
             node_ref: None,
@@ -112,7 +120,7 @@ pub fn node_run_command(
             args: Vec::new(),
             instance_id: Some(instance_id.to_string()),
             links,
-            defer_links,
+            vacant_links,
             idle_timeout: 60,
             max_timeout: 3600,
             build: false,
@@ -227,8 +235,20 @@ pub fn seed_pairing_repo(
     ctx: &Arc<AppContext>,
     repo_dir: &std::path::Path,
 ) {
-    use peppy::commands::Command;
     std::fs::write(repo_dir.join("arm_link.json5"), ARM_LINK_PAIRING).expect("write pairing doc");
+    seed_docs_repo(serve, ctx, repo_dir);
+}
+
+/// The general form of [`seed_pairing_repo`]: publishes whatever pairing and
+/// contract documents the caller already wrote into `repo_dir`, points the
+/// daemon at it as its single fs repo, and refreshes so every doc lands in the
+/// daemon's caches.
+pub fn seed_docs_repo(
+    serve: &ServeCommandEmulation,
+    ctx: &Arc<AppContext>,
+    repo_dir: &std::path::Path,
+) {
+    use peppy::commands::Command;
     publish_repo_index(repo_dir);
     let conf_dir = serve.temp_dir().join("conf");
     std::fs::create_dir_all(&conf_dir).expect("create conf dir");
@@ -242,7 +262,7 @@ pub fn seed_pairing_repo(
         command: peppy::commands::repo::RepoCommands::Refresh,
     }
     .execute(ctx)
-    .expect("repo refresh should discover the pairing doc");
+    .expect("repo refresh should discover the seeded documents");
 }
 
 pub fn setup() -> (

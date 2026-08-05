@@ -403,6 +403,9 @@ pub(super) async fn validate_and_order_dependencies(
         &binding_items,
         &pairing_items,
         &daemon_config::launcher::AlreadyPairedSlots::new(),
+        // A launch plan holds every endpoint, so nothing is covered outside
+        // the validator's view.
+        &daemon_config::launcher::ExternallyCoveredSlots::new(),
         placements,
     );
     if !validated.errors.is_empty() {

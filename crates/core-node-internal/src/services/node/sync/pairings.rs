@@ -374,6 +374,7 @@ fn collect_observer_slot(
         out.push(generator::DeploymentInterface::observed_topic(
             native_topic(topic),
             context.clone(),
+            observer.cardinality,
         ));
     }
 
@@ -859,10 +860,11 @@ mod tests {
         );
     }
 
-    /// `optional` governs whether the slot must be paired at launch, not what
-    /// the node declares about it.
+    /// Whether a slot ends up paired at launch has no bearing on what the node
+    /// must declare about it: the role's topics are covered or the manifest is
+    /// wrong.
     #[test]
-    fn optional_slot_is_coverage_checked_identically() {
+    fn a_participant_slot_declaring_no_interfaces_is_coverage_checked() {
         let tmp = TempDir::new().unwrap();
         let entry = seed_pairing(tmp.path(), "arm_link", "v1", ARM_LINK_BODY);
         let (_c, dirs) = make_peppy_dirs_with_cache(&[entry]);
@@ -870,13 +872,13 @@ mod tests {
             r#"{
                 name: "robot_arm", tag: "v1",
                 depends_on: { pairings: [
-                    { name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "controller" },
                 ] }
             }"#,
         );
         let mismatches = coverage(
             collect(&m, &config::node::Interfaces::default(), &dirs)
-                .expect_err("an optional slot still needs exact emit coverage"),
+                .expect_err("a declared slot needs exact emit coverage"),
         );
         assert_eq!(mismatches[0].missing_emits, vec!["joint_states"]);
     }

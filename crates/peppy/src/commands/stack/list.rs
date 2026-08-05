@@ -483,8 +483,7 @@ fn render_pairings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
 /// (the `@core_node` suffix matches the bindings table's `instance@node`
 /// producer style), `link_id ⇌ (unpaired) [role r of pairing:tag]` while
 /// not; the role makes an unpaired row self-describing when composing a
-/// `--link` for it, and an `optional: true` slot is labelled
-/// `(unpaired, optional)` so it never reads as a missing required peer.
+/// `--link` for it.
 fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Vec<String> {
     instance
         .pairing_slots
@@ -502,17 +501,10 @@ fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Ve
                     slot.pairing_name,
                     slot.pairing_tag,
                 ),
-                PairingSlotBinding::Unpaired => {
-                    let state = if slot.optional {
-                        "(unpaired, optional)"
-                    } else {
-                        "(unpaired)"
-                    };
-                    format!(
-                        "{link} ⇌ {state} [role {} of {}:{}]",
-                        slot.role, slot.pairing_name, slot.pairing_tag,
-                    )
-                }
+                PairingSlotBinding::Unpaired => format!(
+                    "{link} ⇌ (unpaired) [role {} of {}:{}]",
+                    slot.role, slot.pairing_name, slot.pairing_tag,
+                ),
             }
         })
         .collect()
@@ -580,7 +572,8 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 /// producer set in declaration order, each member rendered as
 /// `instance_id@core_node` (the full wire address every binding carries)
 /// and joined with commas. An empty set (a `zero_or_more` slot bound to
-/// nothing) renders as `(empty set)` so it never reads as a missing row.
+/// nothing, or a `zero_or_one` slot the deployment declared vacant) renders as
+/// `(empty set)` so it never reads as a missing row.
 fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
     if bound.is_empty() {
         return "(empty set)".to_string();
@@ -1347,7 +1340,6 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "arm".to_string(),
-                optional: false,
                 binding: config::runtime::PairingSlotBinding::Paired {
                     peer: ProducerRef::new("core_a", "ctrl_1"),
                     peer_link_id: "arm".to_string(),
@@ -1366,17 +1358,6 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
-                optional: false,
-                binding: config::runtime::PairingSlotBinding::Unpaired,
-            },
-        );
-        ctrl.instances[0].pairing_slots.insert(
-            "spare".to_string(),
-            core_node_api::SerializedPairingSlot {
-                pairing_name: "arm_link".to_string(),
-                pairing_tag: "v1".to_string(),
-                role: "controller".to_string(),
-                optional: true,
                 binding: config::runtime::PairingSlotBinding::Unpaired,
             },
         );
@@ -1394,11 +1375,7 @@ mod tests {
         );
         assert!(
             out.contains("arm ⇌ (unpaired) [role controller of arm_link:v1]"),
-            "required unpaired row should carry the role and contract:\n{out}"
-        );
-        assert!(
-            out.contains("spare ⇌ (unpaired, optional) [role controller of arm_link:v1]"),
-            "optional unpaired row should be labelled distinctly:\n{out}"
+            "an unpaired row should carry the role and contract:\n{out}"
         );
     }
 
@@ -1507,7 +1484,6 @@ mod tests {
                 pairing_name: "臂链".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "控制器".to_string(),
-                optional: false,
                 binding: config::runtime::PairingSlotBinding::Paired {
                     peer: ProducerRef::new("core_a", "机械臂-1"),
                     peer_link_id: "控制".to_string(),

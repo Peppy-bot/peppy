@@ -112,7 +112,7 @@ async fn service_reset_command_resets_node_stack() {
             args: Vec::new(),
             instance_id: None,
             links: Vec::new(),
-            defer_links: Vec::new(),
+            vacant_links: Vec::new(),
             idle_timeout: 60,
             max_timeout: 3600,
             force: false,
