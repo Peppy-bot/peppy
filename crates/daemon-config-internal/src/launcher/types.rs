@@ -236,11 +236,11 @@ pub enum LinkValue {
     /// backbone" }`: the slot boots unresolved on purpose, and the deployment
     /// says why. Legal only where the node's own manifest declares the slot
     /// emptiable: `optional: true` on a participant pairing slot, or
-    /// `cardinality: "zero_or_one"` on an observer slot. A slot the manifest
-    /// declares required cannot be vacated at all, and a multi-cardinality slot
-    /// writes its emptiness as `[]` or an omitted key;
-    /// [`crate::launcher::links::validate_link_slots`] rejects a vacancy on
-    /// either.
+    /// `cardinality: "zero_or_one"` on an observer slot or a producer-binding
+    /// slot. A slot the manifest declares required cannot be vacated at all,
+    /// and a multi-cardinality slot writes its emptiness as `[]` or an omitted
+    /// key; [`crate::launcher::links::validate_link_slots`] rejects a vacancy
+    /// on either.
     Vacant(VacantReason),
 }
 
@@ -321,9 +321,10 @@ impl Selection {
 
 /// The `{ vacant: "<why>" }` entries of one instance's `links` map that name a
 /// participant pairing slot, in the `link_id -> reason` shape a node-run goal's
-/// `vacant_pairs` field carries. Observer vacancies are dropped: they are
-/// validated by their own family and produce no goal state, exactly as
-/// observer links do.
+/// `vacant_pairs` field carries. Observer and producer vacancies are dropped:
+/// each is validated by its own family and neither produces a vacancy record on
+/// the goal. A vacant producer slot's goal-side artifact is the explicit empty
+/// set its `slot_bindings` entry carries, not a reason the daemon forwards.
 pub fn participant_vacancies(
     links: &BTreeMap<String, LinkValue>,
     participant_link_ids: &std::collections::BTreeSet<&str>,
@@ -649,8 +650,8 @@ pub struct DeploymentInstance {
     /// `{ vacant: "<why>" }`: the fate of every declared slot is one entry
     /// here, and forgetting a slot is an absence rather than a value. Only a
     /// slot the node's manifest declares emptiable (`optional: true` on a
-    /// participant, `cardinality: "zero_or_one"` on an observer) may take that
-    /// value.
+    /// participant, `cardinality: "zero_or_one"` on an observer or a producer
+    /// slot) may take that value.
     ///
     /// The launch parser has no manifest knowledge, so shape is validated
     /// against slot kind at plan time; only shape-local rules (empty targets,

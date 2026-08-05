@@ -1,5 +1,6 @@
 use docs_integration_tests::snippet_runner::{
     run_snippet, run_snippet_with_contract_repo, run_snippet_with_deps,
+    run_snippet_with_deps_asserting_output,
 };
 
 const SNIPPETS_ROOT: &str = "docs/src/content/docs/guides/snippets/rust";
@@ -61,5 +62,41 @@ fn pairing_arm_controller() {
         "arm_controller",
         &["--vacant-link", "arm=docs snippet: this node boots solo"],
         PAIRINGS_ROOT,
+    );
+}
+
+// The cardinality guide's `zero_or_one` producer slot, driven through both of
+// its states. The snippet's `greeter` slot declares
+// `cardinality: "zero_or_one"`, so its generated accessor is an `Option`,
+// and the node prints which of the two it got: the run log is therefore the
+// node's own report of what the deployment wired.
+
+#[test]
+fn optional_receiver_bound_to_a_producer() {
+    run_snippet_with_deps_asserting_output(
+        SNIPPETS_ROOT,
+        "optional_receiver",
+        &["--link", "greeter@hello_world_param_1"],
+        &[("hello_world_param", &["name=planet"])],
+        &["greeter bound: hello_world_param_1"],
+    );
+}
+
+#[test]
+fn optional_receiver_declared_vacant() {
+    run_snippet_with_deps_asserting_output(
+        SNIPPETS_ROOT,
+        "optional_receiver",
+        &[
+            "--vacant-link",
+            "greeter=docs snippet: this rig ships without a greeter",
+        ],
+        // The producer is in the stack (a `depends_on.nodes` slot resolves its
+        // interfaces from the producer's manifest at sync time, bound or not)
+        // and running. This instance still declares the slot empty, which is
+        // the point: emptiness is the deployment's decision, not an accident of
+        // what happens to be up.
+        &[("hello_world_param", &["name=planet"])],
+        &["no greeter bound"],
     );
 }

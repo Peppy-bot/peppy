@@ -1,0 +1,29 @@
+
+# Peppy-specific files
+.peppy
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# Virtual environment
+.env/
+.venv/
+.pixi/
+
+
+# Editor-specific files
+.vscode/
+.idea/
+
+# Operating System files
+**/.DS_Store
+**/.Thumbs.db
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log

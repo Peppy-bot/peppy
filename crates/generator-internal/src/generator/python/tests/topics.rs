@@ -465,27 +465,56 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
 }
 
 /// The bound-producer accessor is cardinality-typed, mirroring the Rust
-/// codegen: `one_or_more` and `zero_or_more` slots generate the plural
+/// codegen: a `zero_or_one` slot generates the singular `bound_producer()`
+/// returning an `Optional` (and imports `Optional`, not `List`), while
+/// `one_or_more` and `zero_or_more` slots generate the plural
 /// `bound_producers()` list accessor (documented never-empty or
-/// possibly-empty respectively), never the singular `bound_producer()`
-/// that `one` slots get. The accessor emission is shared by every consumed
-/// interface kind, so this topic-module test pins both multi shapes;
-/// `consumed_topic` below pins the singular `one` shape.
+/// possibly-empty respectively). The emitted name and the `NodeRunner`
+/// method it calls part ways on a `zero_or_one` slot, which is what this
+/// test pins on the splice line. The accessor emission is shared by every
+/// consumed interface kind, so this topic-module test pins those three
+/// shapes; `consumed_topic` below pins the singular `one` shape.
 #[test]
 fn consumed_topic_accessor_is_cardinality_typed() {
     let cases = [
         (
+            config::node::Cardinality::ZeroOrOne,
+            "def bound_producer(node_runner: peppylib.NodeRunner) -> Optional[peppylib.ProducerRef]:",
+            "return node_runner.optional_bound_producer(\"cam_left\")",
+            "from typing import Optional",
+            "This slot declares cardinality `zero_or_one`:",
+            "deployment wrote the slot vacant.",
+            "def bound_producers(",
+        ),
+        (
             config::node::Cardinality::OneOrMore,
+            "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
+            "return node_runner.bound_producers(\"cam_left\")",
+            "from typing import List",
             "This slot declares cardinality `one_or_more`:",
             "`[0]` is always valid.",
+            "def bound_producer(",
         ),
         (
             config::node::Cardinality::ZeroOrMore,
+            "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
+            "return node_runner.bound_producers(\"cam_left\")",
+            "from typing import List",
             "This slot declares cardinality `zero_or_more`:",
             "handle the empty case.",
+            "def bound_producer(",
         ),
     ];
-    for (cardinality, expected_cardinality_doc, expected_emptiness_doc) in cases {
+    for (
+        cardinality,
+        expected_signature,
+        expected_splice,
+        expected_import,
+        expected_cardinality_doc,
+        expected_emptiness_doc,
+        absent_fn,
+    ) in cases
+    {
         let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
         let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
 
@@ -503,15 +532,16 @@ fn consumed_topic_accessor_is_cardinality_typed() {
         assert_contains_all(
             &rendered,
             &[
-                "def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:",
-                "return node_runner.bound_producers(\"cam_left\")",
+                expected_signature,
+                expected_splice,
+                expected_import,
                 expected_cardinality_doc,
                 expected_emptiness_doc,
             ],
         );
         assert!(
-            !rendered.contains("def bound_producer("),
-            "a {cardinality:?} slot must expose only the plural accessor; got:\n{rendered}"
+            !rendered.contains(absent_fn),
+            "a {cardinality:?} slot must expose only `{expected_signature}`; got:\n{rendered}"
         );
     }
 }

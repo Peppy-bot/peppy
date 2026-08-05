@@ -1,0 +1,38 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "optional_receiver",
+    tag: "v1",
+    depends_on: {
+      nodes: [
+        {
+          name: "hello_world_param",
+          tag: "v1",
+          link_id: "greeter",
+          cardinality: "zero_or_one",
+        },
+      ]
+    },
+  },
+  interfaces: {
+    topics: {
+      consumes: [
+        {
+          link_id: "greeter",
+          name: "message_stream",
+        }
+      ],
+    }
+  },
+  execution: {
+    language: "rust",
+    build_cmd: [
+      "cargo",
+      "build",
+      "--release"
+    ],
+    run_cmd: [
+      "./target/release/optional_receiver"
+    ]
+  },
+}

@@ -556,7 +556,8 @@ async fn validate_links_against_stack(
         .collect();
     // A vacancy on a participant slot rides to the daemon as the reason it
     // carries; observer vacancies produce no goal state, exactly as observer
-    // links do.
+    // links do, and a producer vacancy rides as the empty set its resolved
+    // `slot_bindings` entry carries rather than as a reason.
     let vacant_pairs = daemon_config::launcher::participant_vacancies(links, &participant_link_ids);
     let mut requested_pairs: BTreeMap<String, PairTarget> = BTreeMap::new();
     for (link_id, value) in links {

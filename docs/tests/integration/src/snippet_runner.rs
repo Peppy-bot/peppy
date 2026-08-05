@@ -1,9 +1,11 @@
 use crate::{peppy_binary, workspace_root};
 use config::node::NodeConfigParser;
 use peppy::test_support::ServeCommandEmulation;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 struct NodeSetup {
     /// Root of the emulated daemon's directory tree, exported to every peppy
@@ -78,6 +80,21 @@ fn setup_env(peppy: &Path, node_dir: &Path) -> NodeSetup {
     }
 }
 
+/// The lock guarding one snippet directory, created on first use.
+///
+/// `peppy node sync` generates bindings INTO the snippet directory it runs in,
+/// and `node add .` then reads that directory, so two tests working on the same
+/// snippet must take turns. Tests share a snippet whenever they share a
+/// producer (several consumer snippets reading one producer's topic) or drive
+/// one snippet through several deployments. The lock is per directory, so
+/// unrelated snippets still sync in parallel.
+fn snippet_dir_lock(node_dir: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(locks.entry(node_dir.to_path_buf()).or_default())
+}
+
 fn sync_and_add_node(
     peppy: &Path,
     daemon_root: &Path,
@@ -85,6 +102,11 @@ fn sync_and_add_node(
     context: &str,
     extra_sync_args: &[&str],
 ) {
+    // A test that panics mid-sync poisons this; the next test still has to run,
+    // and it starts by rewriting the same generated directory anyway.
+    let dir_lock = snippet_dir_lock(node_dir);
+    let _guard = dir_lock.lock().unwrap_or_else(PoisonError::into_inner);
+
     let mut sync_cmd = vec!["node", "sync"];
     sync_cmd.extend_from_slice(extra_sync_args);
     let sync_output = peppy_output(peppy, daemon_root, node_dir, &sync_cmd);
@@ -147,6 +169,24 @@ pub fn run_snippet_with_deps(
     start_args: &[&str],
     deps: &[(&str, &[&str])],
 ) {
+    run_snippet_with_deps_asserting_output(snippets_root, snippet_name, start_args, deps, &[]);
+}
+
+/// [`run_snippet_with_deps`] plus an assertion on what the snippet printed.
+///
+/// The main node runs under the deterministic instance id `<snippet_name>_1`,
+/// so its stdout is readable at `<PEPPY_HOME>/logs/run/<instance_id>.log` once
+/// the run returns. Every entry in `expected_output` must appear there. A
+/// snippet whose printed lines depend on what the runtime handed it (a scalar
+/// slot's `Option`, say) is then checked against what the run actually wired,
+/// not just against the exit status.
+pub fn run_snippet_with_deps_asserting_output(
+    snippets_root: &str,
+    snippet_name: &str,
+    start_args: &[&str],
+    deps: &[(&str, &[&str])],
+    expected_output: &[&str],
+) {
     let peppy = peppy_binary();
     let node_dir = snippet_dir(snippets_root, snippet_name);
 
@@ -183,11 +223,51 @@ pub fn run_snippet_with_deps(
     sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
     build_node(peppy, &setup.daemon_root, &node_dir, &setup.node_ref);
 
-    let mut run_cmd = vec!["node", "run", setup.node_ref.as_str()];
+    let instance_id = format!("{snippet_name}_1");
+    let mut run_cmd = vec![
+        "node",
+        "run",
+        setup.node_ref.as_str(),
+        "--instance-id",
+        instance_id.as_str(),
+    ];
     run_cmd.extend_from_slice(start_args);
 
     let start_output = peppy_output(peppy, &setup.daemon_root, &node_dir, &run_cmd);
     assert_success(&start_output, &format!("peppy node run {}", setup.node_ref));
+
+    if !expected_output.is_empty() {
+        assert_run_log_contains(&setup.daemon_root, &instance_id, expected_output);
+    }
+}
+
+/// Wait for the run log of `instance_id` to carry every substring in
+/// `expected`, then return. The node prints from its setup, which completes
+/// before it answers the health check `peppy node run` waits on, so the lines
+/// are already produced by the time this is called; the wait covers only the
+/// daemon draining the node's stdout pipe into the log file.
+fn assert_run_log_contains(daemon_root: &Path, instance_id: &str, expected: &[&str]) {
+    let log_path = daemon_root
+        .join("logs")
+        .join("run")
+        .join(format!("{instance_id}.log"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut log = String::new();
+    while std::time::Instant::now() < deadline {
+        log = fs::read_to_string(&log_path).unwrap_or_default();
+        if expected.iter().all(|line| log.contains(line)) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let missing: Vec<&&str> = expected
+        .iter()
+        .filter(|line| !log.contains(**line))
+        .collect();
+    panic!(
+        "node output at {} never carried {missing:?}. Log:\n{log}",
+        log_path.display()
+    );
 }
 
 /// Run a snippet whose `depends_on` contract references (contract docs,

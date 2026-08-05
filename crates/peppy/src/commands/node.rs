@@ -150,7 +150,8 @@ pub(crate) fn parse_key_at_target(
 
 /// Parses a `--vacant-link SLOT=<why>` argument: a slot the node's manifest
 /// declares emptiable (`optional: true` on a participant, `cardinality:
-/// "zero_or_one"` on an observer), left unresolved at launch on purpose, plus
+/// "zero_or_one"` on an observer or a producer slot), left unresolved at launch
+/// on purpose, plus
 /// the reason the operator gives for it. Splits on the first `=` via
 /// [`parse_key_value_arg`], so a
 /// reason may itself contain `=`; SLOT is validated as a wire segment and the
@@ -286,8 +287,8 @@ pub enum NodeCommands {
         /// source `instance_id[/source_link_id]`). Repeatable across slots
         /// (`--link a@p1 --link b@p2`) or comma-separated (`--link a@p1,b@p2`);
         /// repeating a KEY accumulates a producer binding's set on a
-        /// multi-cardinality slot (and is rejected on a `one` slot or on a
-        /// pairing/observer slot). Only valid alongside `--run`: without a
+        /// multi-cardinality slot (and is rejected on a scalar `one` /
+        /// `zero_or_one` slot or on a pairing/observer slot). Only valid alongside `--run`: without a
         /// chained run there is no instance to apply the links to, so
         /// `requires = "run"` rejects the combination at parse time. Validation
         /// is shared with `peppy node run`; see `validate_and_run_instance`.
@@ -302,7 +303,7 @@ pub enum NodeCommands {
         /// Explicitly start with a slot unresolved, saying why: `SLOT=<why>`.
         /// Valid on a slot the node's manifest declares emptiable
         /// (`optional: true` on a participant, `cardinality: "zero_or_one"` on
-        /// an observer). Repeatable. The reason is free prose (no
+        /// an observer or a producer slot). Repeatable. The reason is free prose (no
         /// comma splitting) and travels with the instance, so an operator
         /// reading the running stack sees the same sentence. Only valid
         /// alongside `--run`.
@@ -383,7 +384,7 @@ pub enum NodeCommands {
         /// repeatable across slots (`--link a@p1 --link b@p2`) or
         /// comma-separated (`--link a@p1,b@p2`); repeating a KEY accumulates a
         /// multi-cardinality slot's set in flag order and is rejected on a
-        /// `one` slot. For a pairing or observer link, TARGET is a peer/source
+        /// scalar `one` / `zero_or_one` slot. For a pairing or observer link, TARGET is a peer/source
         /// `instance_id[/link_id]`, where the `/link_id` suffix disambiguates
         /// when the target plays the role through several slots. A slot left
         /// unlinked aborts the run unless it is a `zero_or_more` producer or
@@ -398,7 +399,7 @@ pub enum NodeCommands {
         /// Explicitly start with a slot unresolved, saying why: `SLOT=<why>`.
         /// Valid on a slot the node's manifest declares emptiable
         /// (`optional: true` on a participant, `cardinality: "zero_or_one"` on
-        /// an observer). Repeatable. The reason is free prose (no
+        /// an observer or a producer slot). Repeatable. The reason is free prose (no
         /// comma splitting) and travels with the instance, so an operator
         /// reading the running stack sees the same sentence. The instance boots
         /// with the slot silent (no wire traffic) until a later start resolves

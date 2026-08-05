@@ -79,7 +79,7 @@ pub fn apply_topology(
 }
 
 /// The `execution` block body of every Rust consumer stub.
-const RUST_STUB_EXECUTION: &str = r#"language: "rust",
+pub const RUST_STUB_EXECUTION: &str = r#"language: "rust",
     run_cmd: ["./target/release/generated_node"]"#;
 
 /// Consumer-side variant of [`STUB_NODE_CONFIG`]: declares one
@@ -88,12 +88,19 @@ const RUST_STUB_EXECUTION: &str = r#"language: "rust",
 /// would stay silent). `link_id` must match the `DependencyContext`
 /// link_id the test's generator calls use.
 pub fn consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
-    consumer_stub_node_config_with_execution(dep_name, dep_tag, link_id, None, RUST_STUB_EXECUTION)
+    consumer_stub_node_config_with_execution(
+        SlotList::Nodes,
+        dep_name,
+        dep_tag,
+        link_id,
+        None,
+        RUST_STUB_EXECUTION,
+    )
 }
 
 /// Variant of [`consumer_stub_node_config`] whose slot declares an
-/// explicit `cardinality`, so the runtime validates a multi-producer
-/// bound set (`bind_slot_many`) instead of the default exactly-one rule.
+/// explicit `cardinality`, so the runtime validates the bound set against
+/// that cardinality instead of the default exactly-one rule.
 pub fn multi_consumer_stub_node_config(
     dep_name: &str,
     dep_tag: &str,
@@ -101,6 +108,7 @@ pub fn multi_consumer_stub_node_config(
     cardinality: &str,
 ) -> String {
     consumer_stub_node_config_with_execution(
+        SlotList::Nodes,
         dep_name,
         dep_tag,
         link_id,
@@ -109,13 +117,52 @@ pub fn multi_consumer_stub_node_config(
     )
 }
 
+/// Which `depends_on` list a consumer stub declares its slot in. Node slots
+/// and contract slots size their bound sets identically, so the list name is
+/// the whole difference the fixture carries.
+pub enum SlotList {
+    Nodes,
+    Contracts,
+}
+
+impl SlotList {
+    fn key(&self) -> &'static str {
+        match self {
+            SlotList::Nodes => "nodes",
+            SlotList::Contracts => "contracts",
+        }
+    }
+}
+
+/// Contract-slot variant of [`multi_consumer_stub_node_config`]: the slot is
+/// declared under `depends_on.contracts`, so the generated modules address
+/// their producers through `SenderTarget::contract`.
+pub fn contract_consumer_stub_node_config(
+    contract_name: &str,
+    contract_tag: &str,
+    link_id: &str,
+    cardinality: &str,
+    execution: &str,
+) -> String {
+    consumer_stub_node_config_with_execution(
+        SlotList::Contracts,
+        contract_name,
+        contract_tag,
+        link_id,
+        Some(cardinality),
+        execution,
+    )
+}
+
 /// Shared manifest template behind [`consumer_stub_node_config`],
-/// [`multi_consumer_stub_node_config`], and
-/// [`python_consumer_stub_node_config`]. `execution` is the body of the
-/// `execution` block and `cardinality` the slot's optional explicit
-/// declaration (`None` leaves the manifest's `one` default), the only
-/// per-caller parts.
+/// [`multi_consumer_stub_node_config`],
+/// [`contract_consumer_stub_node_config`] and
+/// [`python_consumer_stub_node_config`]. `slot_list` picks the `depends_on`
+/// list the slot is declared in, `execution` is the body of the `execution`
+/// block, and `cardinality` the slot's optional explicit declaration (`None`
+/// leaves the manifest's `one` default).
 fn consumer_stub_node_config_with_execution(
+    slot_list: SlotList,
     dep_name: &str,
     dep_tag: &str,
     link_id: &str,
@@ -125,6 +172,7 @@ fn consumer_stub_node_config_with_execution(
     let cardinality_field = cardinality
         .map(|cardinality| format!(r#", cardinality: "{cardinality}""#))
         .unwrap_or_default();
+    let slot_list = slot_list.key();
     format!(
         r#"{{
   peppy_schema: "node/v1",
@@ -132,7 +180,7 @@ fn consumer_stub_node_config_with_execution(
     name: "generated_node",
     tag: "v1",
     depends_on: {{
-      nodes: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}"{cardinality_field} }}]
+      {slot_list}: [{{ name: "{dep_name}", tag: "{dep_tag}", link_id: "{link_id}"{cardinality_field} }}]
     }}
   }},
   execution: {{
@@ -1018,15 +1066,19 @@ pub const STUB_PYTHON_NODE_CONFIG: &str = r#"{
 }
 "#;
 
+/// The `execution` block body of every Python consumer stub.
+pub const PYTHON_STUB_EXECUTION: &str = r#"language: "python",
+    run_cmd: ["uv", "run", "python", "main.py"]"#;
+
 /// Python-toolchain variant of [`consumer_stub_node_config`].
 pub fn python_consumer_stub_node_config(dep_name: &str, dep_tag: &str, link_id: &str) -> String {
     consumer_stub_node_config_with_execution(
+        SlotList::Nodes,
         dep_name,
         dep_tag,
         link_id,
         None,
-        r#"language: "python",
-    run_cmd: ["uv", "run", "python", "main.py"]"#,
+        PYTHON_STUB_EXECUTION,
     )
 }
 
