@@ -329,6 +329,126 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     obs_rx
 }
 
+/// An observer whose process copies the boot config it received, then keeps
+/// alive like every other emulated node. `PEPPY_RUNTIME_CONFIG` names the
+/// config file, so the copy is byte-for-byte what a real peppylib node
+/// parses; copy-then-rename makes the dump appear atomically, so the test's
+/// poll can never read a truncated file.
+fn config_dumping_observer_config(dump: &Path, instances: &InstanceLifetime) -> String {
+    let keep_alive = instances.keep_alive_script();
+    format!(
+        r#"{{
+        peppy_schema: "node/v1",
+        manifest: {{
+            name: "probe_recorder",
+            tag: "v1",
+            depends_on: {{
+                pairing_observers: [
+                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }}
+                ]
+            }}
+        }},
+        interfaces: {{
+            topics: {{
+                consumes: [{{ link_id: "watch", name: "joint_states" }}]
+            }}
+        }},
+        execution: {{ language: "rust", run_cmd: ["sh", "-c", "cp \"$PEPPY_RUNTIME_CONFIG\" '{dump}.part' && mv '{dump}.part' '{dump}'; {keep_alive}"] }}
+    }}"#,
+        dump = dump.display()
+    )
+}
+
+/// The spawn-time membership seed. A node's setup runs strictly before the
+/// on-Running delivery the FIX #1 tests assert, so the boot config itself
+/// must carry each observer slot's planned member set: it is what lets a
+/// node discover the robot's shape during setup instead of settle-polling a
+/// live set it cannot distinguish from "bound to nothing". The seed's
+/// stamping matches the live delivery's (same source pin, a real generation,
+/// liveness at spawn), so the first `observation_update` replaces it without
+/// redeclaring anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observer_boot_config_seeds_membership_at_spawn() {
+    let fx = setup().await;
+
+    // A live source first, so the seed has a real incarnation to stamp.
+    emulate_cooperative_source(
+        &fx.messenger,
+        &fx.core_node_name,
+        "robot_arm",
+        "arm_1",
+        fx.source_pidfile.clone(),
+    )
+    .await;
+    node_run_command(
+        "arm_1",
+        "robot_arm",
+        Vec::new(),
+        vec![(
+            "controller".to_string(),
+            "test rig: this slot has no peer".to_string(),
+        )],
+    )
+    .execute(&fx.ctx)
+    .expect("source run (participant slot vacant) should succeed");
+
+    let dump_dir = tempfile::tempdir().expect("dump dir");
+    let dump = dump_dir.path().join("boot_config.json5");
+    let probe_dir = tempfile::tempdir().expect("probe node dir");
+    add_built_node(
+        &fx.ctx,
+        probe_dir.path(),
+        &config_dumping_observer_config(&dump, &fx._instances),
+    );
+    emulate_observer_services(
+        &fx.messenger,
+        &fx.core_node_name,
+        "probe_recorder",
+        "probe_1",
+        "watch",
+    )
+    .await;
+    node_run_command(
+        "probe_1",
+        "probe_recorder",
+        vec![("watch".to_string(), "arm_1".to_string())],
+        Vec::new(),
+    )
+    .execute(&fx.ctx)
+    .expect("observer run with --link should succeed");
+
+    // The child writes the dump as its first instruction; give it a moment.
+    let mut raw = String::new();
+    for _ in 0..100 {
+        raw = std::fs::read_to_string(&dump).unwrap_or_default();
+        if !raw.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(!raw.is_empty(), "the spawned observer never dumped its boot config");
+
+    let boot: config::runtime::RuntimeConfig =
+        serde_json5::from_str(&raw).expect("the boot config a node receives must parse");
+    let members = boot
+        .node_instance
+        .observation_seeds
+        .get("watch")
+        .expect("the linked observer slot must be seeded");
+    let [member] = members.as_slice() else {
+        panic!("expected exactly one seeded member, got {}", members.len());
+    };
+    assert_eq!(member.source.instance_id, "arm_1");
+    assert_eq!(member.source.core_node, fx.core_node_name);
+    assert_eq!(member.source_link_id, "controller");
+    assert!(member.source_live, "the source is Running at spawn time");
+    assert!(
+        member.source_generation >= 1,
+        "a live source seeds its real incarnation, got {}",
+        member.source_generation
+    );
+}
+
 /// Fix #1 (delivery on the CLI path) + fix #2 (a `node stop` of the source runs
 /// the teardown seam and live-notifies the observer).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

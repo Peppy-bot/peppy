@@ -309,7 +309,7 @@ The runtime guarantees mirror pairing's, with the lifecycle twist that defines a
 
 - **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whether or not `arm_1` is paired to anyone, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself.
 - **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
-- **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation; no message from a previous run of the source leaks across the restart.
+- **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation: the drop discards everything its subscription buffered before the switch, so no buffered message from a previous run of the source leaks into the new stream. The switch happens when the daemon's lifecycle notify records the new incarnation and delivers it, which follows the restart by the notify latency; isolation is enforced at that boundary, not by wall-clock simultaneity with the restart.
 - **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a helper reporting the pairings the slot observes. There is no publisher and no `paired()`; an observer never talks back.
 - **Not shown in `peppy stack list`.** The `Instance pairings` table renders participant slots only; inspect an observer's links through its generated source helper instead.
 
@@ -370,7 +370,7 @@ while let Some((source, states)) = subscription.next().await? {
   </TabItem>
 </Tabs>
 
-An observed set is **live**, which is the one way it differs from a bound producer set: the daemon replaces it whole whenever the plan's observed pairings change, so `sources()` can return a different set between reads and an empty read is legal at any instant. A member whose source is down stays in the set, at its position, so the slot's shape does not flicker with the fleet's health.
+An observed set is **seeded at spawn and live after**. The boot config the daemon hands the process carries every declared slot's planned member set, stamped with each source's incarnation and liveness at that moment, so `sources()` answers the deployment's membership from the node's first instruction, setup included: a node can discover the robot's shape before it starts serving. After that the set is live, which is the one way it differs from a bound producer set: the daemon replaces it whole whenever the plan's observed pairings change, so `sources()` can return a different set between reads, and an empty read means the plan observes nothing through that slot. A member whose source is down (or has not started yet) stays in the set, at its position, so the slot's shape does not flicker with the fleet's health.
 
 ## Why topics only?
 

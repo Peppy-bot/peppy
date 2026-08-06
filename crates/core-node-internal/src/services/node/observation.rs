@@ -260,6 +260,51 @@ impl ObservationCoordinator {
             .push(record);
     }
 
+    /// The boot seed for one spawning observer instance: each planned slot's
+    /// complete member set, stamped through the same [`Self::stamp_source`]
+    /// rule as a live update. Rides the instance's boot config, so the node's
+    /// `sources()` answers the plan's membership from its first instruction
+    /// (setup included) instead of waiting for the on-Running delivery, which
+    /// then normally repeats this state and replaces it without redeclaring
+    /// anything. A source that has not run yet seeds `live: false` at
+    /// generation 0: membership is launch-time configuration, liveness is not.
+    ///
+    /// The on-Running delivery is best-effort; if it is lost, the node keeps
+    /// this seed until the next lifecycle event re-delivers. Messages still
+    /// flow either way (subscriptions key on the wire address; the generation
+    /// only keys redeclares), so a lost delivery costs staleness-filter
+    /// precision across a concurrent source restart, not data.
+    pub fn seed_for_spawn(
+        &self,
+        observations: &BTreeMap<String, ObservationTargets>,
+    ) -> config::runtime::ObservationSeeds {
+        let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
+        let registry = self.registry.lock().unwrap();
+        observations
+            .iter()
+            .map(|(link_id, targets)| {
+                let members = targets
+                    .into_iter()
+                    .map(|target| {
+                        let source = SourceKey::from_producer(&target.source);
+                        let (source_generation, source_live) =
+                            self.stamp_source(&registry, &source, &live_instances, &None);
+                        config::runtime::ObservationSeedMember {
+                            source: config::runtime::ProducerRef::new(
+                                &target.source.core_node,
+                                &target.source.instance_id,
+                            ),
+                            source_link_id: target.source_link_id.clone(),
+                            source_generation,
+                            source_live,
+                        }
+                    })
+                    .collect();
+                (link_id.clone(), members)
+            })
+            .collect()
+    }
+
     /// An instance reached Running. If it is a source, its incarnation
     /// generation advances and every slot observing it is re-delivered whole.
     /// If it is itself an observer, every slot it declares is delivered, so it
@@ -362,6 +407,30 @@ impl ObservationCoordinator {
                 || live_instances.contains(&delivery.slot.observer_instance_id)
         }))
         .await;
+    }
+
+    /// One source's `(generation, liveness)` stamp. The single stamping rule
+    /// for live deliveries and spawn seeds, so the two cannot drift.
+    ///
+    /// Generation and liveness come from different authorities (the registry
+    /// and the node stack), which can momentarily disagree: a source can
+    /// commit to Running before its transition notify records the
+    /// incarnation. An unrecorded incarnation therefore stamps down, so the
+    /// pair can never claim a live source that has not run; the notify that
+    /// records it re-delivers the true state moments later. The mirror-image
+    /// window (a restart exposing the previous generation as live) is
+    /// likewise transient and healed by the same notify.
+    fn stamp_source(
+        &self,
+        registry: &Registry,
+        source: &SourceKey,
+        live_local_instances: &HashSet<String>,
+        verdict: &Option<LivenessVerdict<'_>>,
+    ) -> (u64, bool) {
+        let generation = registry.source_generation.get(source).copied().unwrap_or(0);
+        let live = generation > 0
+            && self.source_is_live(registry, source, live_local_instances, verdict);
+        (generation, live)
     }
 
     /// Whether a source is currently up, from whichever authority owns it: the
@@ -500,18 +569,11 @@ impl ObservationCoordinator {
                     .filter(|record| record.observer_link_id == slot.observer_link_id)
                     .map(|record| {
                         let source = record.source();
+                        let (source_generation, source_live) =
+                            self.stamp_source(registry, &source, live_local_instances, &verdict);
                         ObservedMemberState {
-                            source_generation: registry
-                                .source_generation
-                                .get(&source)
-                                .copied()
-                                .unwrap_or(0),
-                            source_live: self.source_is_live(
-                                registry,
-                                &source,
-                                live_local_instances,
-                                &verdict,
-                            ),
+                            source_generation,
+                            source_live,
                             source: record.pin.clone(),
                         }
                     })

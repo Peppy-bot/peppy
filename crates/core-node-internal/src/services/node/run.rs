@@ -1088,6 +1088,20 @@ async fn process_node_run(
         launch_config.messaging_host = gateway.to_string();
     }
 
+    // Seed the boot config with each observer slot's planned member set,
+    // stamped with current source generations and liveness. Observer
+    // membership is otherwise delivered only after the instance reaches
+    // Running, which its setup runs strictly before, so without the seed a
+    // setup-time read sees every slot empty with nothing to distinguish "not
+    // delivered yet" from "bound to nothing".
+    if !planned_observations.is_empty() {
+        launch_config.node_instance.observation_seeds = ctx
+            .action
+            .relationships
+            .observation()
+            .seed_for_spawn(&planned_observations);
+    }
+
     // Serialize once, after every mutation (synthesized defaults, topology + buffer
     // sizes, and the gateway rewrite), so the spawned process receives the
     // fully-resolved runtime config. The inbound `runtime_config_json5` from the
