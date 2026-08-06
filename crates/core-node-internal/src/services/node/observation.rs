@@ -31,7 +31,7 @@ use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use peppylib::encoding::observation_update::ObservationUpdateRequest;
 use peppylib::messaging::{
-    OBSERVATION_UPDATE_SERVICE, ObservationPin, ObservedMemberState, ProducerRef,
+    OBSERVATION_UPDATE_SERVICE, ObservedMemberState, ObservedSource, ProducerRef,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -49,6 +49,11 @@ const OBSERVATION_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
 /// instances, so the pair is the identity: keying the registry on the instance
 /// id alone would let a local `wrist_cam_inst` and a remote one share an
 /// incarnation counter and cross-deliver each other's pins.
+///
+/// Deliberately coarser than the [`ObservedSource`] it is derived from, which
+/// also carries the producer-side link_id: an incarnation counter belongs to
+/// the source instance, so an instance observed through two of its own pairing
+/// slots must advance one counter, not two.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SourceKey {
     core_node: String,
@@ -77,7 +82,7 @@ impl SourceKey {
 #[derive(Debug, Clone)]
 struct ObserverRecord {
     observer_link_id: String,
-    pin: ObservationPin,
+    pin: ObservedSource,
 }
 
 impl ObserverRecord {
@@ -197,7 +202,7 @@ impl ObservationCoordinator {
                 &obs.observer_instance_id,
                 ObserverRecord {
                     observer_link_id: obs.observer_link_id.clone(),
-                    pin: ObservationPin {
+                    pin: ObservedSource {
                         producer: obs.source.clone(),
                         source_link_id: obs.source_link_id.clone(),
                     },
@@ -235,7 +240,7 @@ impl ObservationCoordinator {
                     observer_instance_id,
                     ObserverRecord {
                         observer_link_id: observer_link_id.clone(),
-                        pin: ObservationPin {
+                        pin: ObservedSource {
                             producer: target.source.clone(),
                             source_link_id: target.source_link_id.clone(),
                         },

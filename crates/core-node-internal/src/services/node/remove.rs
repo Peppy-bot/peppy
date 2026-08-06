@@ -91,7 +91,7 @@ async fn handle_node_remove_request_inner(
     relationships: &RelationshipCoordinators,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     let request = NodeRemoveRequest::decode(payload.as_ref())?;
 

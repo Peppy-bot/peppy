@@ -213,7 +213,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
             match tokio::time::timeout_at(wake_at, handle.on_next_feedback()).await {
                 Ok(Ok(message)) => {
                     last_activity = tokio::time::Instant::now();
-                    if let Some(line) = G::decode_feedback_line(message.payload().as_ref()) {
+                    if let Some(line) = G::decode_feedback_line(message.payload_bytes().as_ref()) {
                         publish_stdout(ctx, format!("[{core_node}] {line}"), G::STEP).await;
                     }
                 }

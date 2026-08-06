@@ -53,11 +53,11 @@ async def control_loop(node_runner: NodeRunner):
 
         if received is None:
             break  # subscription closed
-        producer, state = received
+        peer, state = received
 
-        # `producer` is always the paired arm's identity.
+        # `peer` is always the paired arm's identity.
         print(
-            f"state from {producer.core_node}/{producer.instance_id}: "
+            f"state from {peer.producer.core_node}/{peer.producer.instance_id}: "
             f"positions={state.positions}"
         )
 

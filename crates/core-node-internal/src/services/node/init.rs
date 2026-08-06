@@ -56,7 +56,7 @@ fn handle_node_init_request_inner(
     peppy_dirs: &PeppyDirs,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     let request = NodeInitRequest::decode(payload.as_ref())?;
     let toolchain = request.toolchain;

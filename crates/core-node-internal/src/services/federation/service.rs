@@ -122,7 +122,7 @@ async fn reserve_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
-    let decoded = ParticipantReserveRequest::decode(request.message().payload().as_ref())?;
+    let decoded = ParticipantReserveRequest::decode(request.message().payload_bytes().as_ref())?;
 
     debug!(
         "Received `participant_reserve` for launch `{}` from coordinator `{}`",
@@ -324,7 +324,7 @@ async fn slice_begin_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
-    let decoded = ParticipantSliceBeginRequest::decode(request.message().payload().as_ref())?;
+    let decoded = ParticipantSliceBeginRequest::decode(request.message().payload_bytes().as_ref())?;
 
     let Some((held_launch, coordinator)) = context.ownership.held_reservation() else {
         return ParticipantSliceBeginResponse::refused(format!(
@@ -392,7 +392,7 @@ async fn pair_commit_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
-    let decoded = PairCommitRequest::decode(request.message().payload().as_ref())?;
+    let decoded = PairCommitRequest::decode(request.message().payload_bytes().as_ref())?;
 
     debug!(
         "Received `pair_commit` for `{}`:`{}` with `{}` on `{}`",
@@ -418,7 +418,7 @@ async fn release_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
-    let decoded = ParticipantReleaseRequest::decode(request.message().payload().as_ref())?;
+    let decoded = ParticipantReleaseRequest::decode(request.message().payload_bytes().as_ref())?;
 
     let response = if context.ownership.release(&decoded.launch_id) {
         debug!("Released reservation for launch `{}`", decoded.launch_id);
@@ -448,7 +448,7 @@ async fn notify_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
-    let decoded = RelationshipNotification::decode(request.message().payload().as_ref())?;
+    let decoded = RelationshipNotification::decode(request.message().payload_bytes().as_ref())?;
 
     debug!(
         "Received `relationship_notify` for `{}` on `{}`: {:?}",

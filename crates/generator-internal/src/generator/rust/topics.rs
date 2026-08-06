@@ -2,6 +2,7 @@ use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
+use crate::generator::types::SubscriptionTag;
 use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile};
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
@@ -364,6 +365,21 @@ enum PairTopicSubscriptionKind {
     Observed,
 }
 
+impl SubscriptionTag {
+    /// The tag's Rust type, spliced into `next()`'s return type.
+    fn ty(self) -> TokenStream {
+        match self {
+            Self::Producer => quote!(peppylib::messaging::ProducerRef),
+            Self::Peer => quote!(peppylib::messaging::PeerInfo),
+            Self::ObservedSource => quote!(peppylib::messaging::ObservedSource),
+        }
+    }
+
+    fn binding_ident(self) -> Ident {
+        Ident::new(self.binding(), proc_macro2::Span::call_site())
+    }
+}
+
 fn build_pair_topic_subscription(
     spec: PeerTopicSubscriptionSpec<'_>,
     kind: PairTopicSubscriptionKind,
@@ -387,7 +403,7 @@ fn build_pair_topic_subscription(
         struct_prefix,
     )?;
 
-    let (struct_doc, inner_type, next_doc, recv_tokens, subscribe_doc, subscribe_fn) = match kind {
+    let (struct_doc, inner_type, next_doc, tag, subscribe_doc, subscribe_fn) = match kind {
         PairTopicSubscriptionKind::Peer => (
             quote! {
                 /// A held subscription to this pairing topic. Yields nothing while
@@ -400,20 +416,14 @@ fn build_pair_topic_subscription(
             quote! {
                 /// Awaits the next message from the currently paired peer.
                 ///
-                /// Returns `Ok(Some((producer, message)))` for each message,
+                /// Returns `Ok(Some((peer, message)))` for each message,
                 /// `Ok(None)` once the runtime shuts down, and `Err(..)` if a
-                /// received payload fails to deserialize. `producer` is always
-                /// the paired peer's identity.
+                /// received payload fails to deserialize. `peer` is the paired
+                /// peer's identity, its wire address plus the link_id of its
+                /// complementary slot: the same `PeerInfo` that `paired()`
+                /// returns.
             },
-            quote! {
-                let Some(message) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
-                let producer = peppylib::messaging::ProducerRef::new(
-                    message.core_node(),
-                    message.instance_id(),
-                );
-            },
+            SubscriptionTag::Peer,
             quote! {
                 /// Subscribes to this pairing topic and returns a held
                 /// `Subscription` that follows the slot's live pin. Legal while
@@ -435,17 +445,16 @@ fn build_pair_topic_subscription(
             quote! {
                 /// Awaits the next message from any currently observed source.
                 ///
-                /// Returns `Ok(Some((producer, message)))` for each message,
+                /// Returns `Ok(Some((source, message)))` for each message,
                 /// `Ok(None)` once the runtime shuts down, and `Err(..)` if a
-                /// received payload fails to deserialize. `producer` is the
-                /// observed member that published it, which is how a multi-member
-                /// slot tells its sources apart.
+                /// received payload fails to deserialize. `source` is the
+                /// observed pairing that published it, the producer's wire
+                /// address plus the producer-side link_id: the same
+                /// `ObservedSource` the slot's accessors enumerate, so a
+                /// multi-member slot tells its sources apart even when several
+                /// members share one instance.
             },
-            quote! {
-                let Some((producer, message)) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
-            },
+            SubscriptionTag::ObservedSource,
             quote! {
                 /// Subscribes to this observed pairing topic and returns a held
                 /// `Subscription` pinned to the observer slot's source. Legal before
@@ -459,7 +468,7 @@ fn build_pair_topic_subscription(
         struct_doc,
         inner_type,
         next_doc,
-        recv_tokens,
+        tag,
         helper_fn_ident,
         args_struct_ident,
     );
@@ -489,19 +498,22 @@ fn build_pair_topic_subscription(
 }
 
 /// The held-`Subscription` struct plus its `next()` impl, shared by the
-/// bound-set and peer consumer modules: same decode contract, differing in
-/// the inner subscription type, how `(producer, message)` is received from
-/// it (`recv_tokens`, statements that bind `producer` and `message` or
-/// early-return `Ok(None)`), and the doc text (passed as `quote!`d `///`
-/// blocks so the generated docs stay per-module).
+/// bound-set, peer, and observer consumer modules: same decode contract and
+/// same receive step (every inner subscription yields a `(tag, message)`
+/// pair), differing in the inner subscription type, the identity tag `next()`
+/// yields (`tag`, which fixes the tag's type and binding name), and the doc
+/// text (passed as `quote!`d `///` blocks so the generated docs stay
+/// per-module).
 fn build_subscription_struct(
     struct_doc: TokenStream,
     inner_type: TokenStream,
     next_doc: TokenStream,
-    recv_tokens: TokenStream,
+    tag: SubscriptionTag,
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
 ) -> TokenStream {
+    let tag_ty = tag.ty();
+    let tag_binding = tag.binding_ident();
     quote! {
         #struct_doc
         pub struct Subscription {
@@ -515,12 +527,14 @@ fn build_subscription_struct(
             #[allow(clippy::should_implement_trait)]
             pub async fn next(
                 &mut self,
-            ) -> crate::Result<Option<(peppylib::messaging::ProducerRef, #args_struct_ident)>> {
-                #recv_tokens
+            ) -> crate::Result<Option<(#tag_ty, #args_struct_ident)>> {
+                let Some((#tag_binding, message)) = self.inner.on_next_message().await else {
+                    return Ok(None);
+                };
 
-                let payload = message.payload();
+                let payload = message.payload_bytes();
                 let message = #helper_fn_ident(payload.as_ref())?;
-                Ok(Some((producer, message)))
+                Ok(Some((#tag_binding, message)))
             }
         }
     }
@@ -598,11 +612,7 @@ pub fn build_consumed_topic_subscription(
             /// `zero_or_one` slot) this pends until shutdown, then returns
             /// `Ok(None)`.
         },
-        quote! {
-            let Some((producer, message)) = self.inner.on_next_message().await else {
-                return Ok(None);
-            };
-        },
+        SubscriptionTag::Producer,
         helper_fn_ident,
         args_struct_ident,
     );

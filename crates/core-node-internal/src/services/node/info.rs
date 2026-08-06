@@ -106,7 +106,7 @@ async fn handle_node_info_request_inner(
     peppy_dirs: PeppyDirs,
 ) -> std::result::Result<Payload, InfoError> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     let request = NodeInfoRequest::decode(payload.as_ref()).map_err(|e| format!("{}", e))?;
 

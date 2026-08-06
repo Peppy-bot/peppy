@@ -195,7 +195,7 @@ pub async fn listen_for_datastore_remove(
 }
 
 fn handle_store_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
-    let request = DatastoreStoreRequest::decode(context.message().payload().as_ref())?;
+    let request = DatastoreStoreRequest::decode(context.message().payload_bytes().as_ref())?;
     let last_modified_by = context.message().instance_id().to_owned();
 
     debug!(
@@ -217,7 +217,7 @@ fn handle_store_request(store: &Datastore, context: &ServiceRequestContext) -> R
 }
 
 fn handle_get_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
-    let request = DatastoreGetRequest::decode(context.message().payload().as_ref())?;
+    let request = DatastoreGetRequest::decode(context.message().payload_bytes().as_ref())?;
 
     debug!(
         "Received datastore get request from {} for key {:?}",
@@ -237,7 +237,7 @@ fn handle_get_request(store: &Datastore, context: &ServiceRequestContext) -> Res
 
 fn handle_list_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
     // Decode to validate the (empty) request shape before answering.
-    DatastoreListRequest::decode(context.message().payload().as_ref())?;
+    DatastoreListRequest::decode(context.message().payload_bytes().as_ref())?;
 
     let entries = store.list();
 
@@ -253,7 +253,7 @@ fn handle_list_request(store: &Datastore, context: &ServiceRequestContext) -> Re
 }
 
 fn handle_remove_request(store: &Datastore, context: &ServiceRequestContext) -> Result<Payload> {
-    let request = DatastoreRemoveRequest::decode(context.message().payload().as_ref())?;
+    let request = DatastoreRemoveRequest::decode(context.message().payload_bytes().as_ref())?;
 
     let removed = store.remove(request.key.as_str());
 

@@ -110,7 +110,7 @@ async def adopt_subgoals(node_runner: NodeRunner, state: Situation) -> None:
         received = await subscription.next()
         if received is None:
             break
-        _producer, message = received
+        _peer, message = received
         state.adopt(message.subgoal_id)
         print(
             f"[reactive_policy] adopted subgoal {message.subgoal_id} "
