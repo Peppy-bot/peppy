@@ -124,7 +124,7 @@ async fn handle_stack_reset_request_inner(
     ownership: &crate::services::federation::SliceOwnership,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     let _request = StackResetRequest::decode(payload.as_ref())?;
 

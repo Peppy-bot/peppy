@@ -159,7 +159,7 @@ fn handle_repo_exclude_request_inner(
     peppy_dirs: &PeppyDirs,
 ) -> Result<(RepoExcludeResponse, bool)> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     let request = RepoExcludeRequest::decode(payload.as_ref())?;
 

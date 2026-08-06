@@ -100,7 +100,7 @@ async fn handle_node_stop_request_inner(
     relationships: &RelationshipCoordinators,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     let request = NodeStopRequest::decode(payload.as_ref())?;
 

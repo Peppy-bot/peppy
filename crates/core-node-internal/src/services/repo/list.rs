@@ -68,7 +68,7 @@ fn handle_repo_list_request_inner(
     context: &ServiceRequestContext,
     peppy_dirs: &PeppyDirs,
 ) -> Result<Payload> {
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
     let _request = RepoListRequest::decode(payload.as_ref())?;
 
     let repos = match read_or_create_repos(peppy_dirs) {
