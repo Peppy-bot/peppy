@@ -2,6 +2,7 @@ use super::deserialization::build_deserialize_fn;
 use super::serialization::{MessageEncodingSpec, build_serialize_payload};
 use super::services::deserialize_fields_from_format;
 use crate::error::Result;
+use crate::generator::types::SubscriptionTag;
 use config::node::{Cardinality, ConsumedTopic, NativeEmittedTopic, QoSProfile};
 use encoding::{CapnpSchemaArtifacts, FunctionParam};
 use proc_macro2::{Ident, Literal, TokenStream};
@@ -364,20 +365,8 @@ enum PairTopicSubscriptionKind {
     Observed,
 }
 
-/// The per-message identity tag a held subscription's `next()` yields
-/// alongside the decoded message: each module kind tags with its slot
-/// accessor's own identity type.
-#[derive(Clone, Copy)]
-enum SubscriptionTag {
-    /// `(ProducerRef, message)`: bound-set consumer modules.
-    Producer,
-    /// `(PeerInfo, message)`: peer pairing modules.
-    Peer,
-    /// `(ObservedSource, message)`: observer modules.
-    ObservedSource,
-}
-
 impl SubscriptionTag {
+    /// The tag's Rust type, spliced into `next()`'s return type.
     fn ty(self) -> TokenStream {
         match self {
             Self::Producer => quote!(peppylib::messaging::ProducerRef),
@@ -386,13 +375,8 @@ impl SubscriptionTag {
         }
     }
 
-    fn binding(self) -> Ident {
-        let name = match self {
-            Self::Producer => "producer",
-            Self::Peer => "peer",
-            Self::ObservedSource => "source",
-        };
-        Ident::new(name, proc_macro2::Span::call_site())
+    fn binding_ident(self) -> Ident {
+        Ident::new(self.binding(), proc_macro2::Span::call_site())
     }
 }
 
@@ -419,7 +403,7 @@ fn build_pair_topic_subscription(
         struct_prefix,
     )?;
 
-    let (struct_doc, inner_type, next_doc, recv_tokens, subscribe_doc, subscribe_fn) = match kind {
+    let (struct_doc, inner_type, next_doc, tag, subscribe_doc, subscribe_fn) = match kind {
         PairTopicSubscriptionKind::Peer => (
             quote! {
                 /// A held subscription to this pairing topic. Yields nothing while
@@ -439,11 +423,7 @@ fn build_pair_topic_subscription(
                 /// complementary slot: the same `PeerInfo` that `paired()`
                 /// returns.
             },
-            quote! {
-                let Some((peer, message)) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
-            },
+            SubscriptionTag::Peer,
             quote! {
                 /// Subscribes to this pairing topic and returns a held
                 /// `Subscription` that follows the slot's live pin. Legal while
@@ -474,11 +454,7 @@ fn build_pair_topic_subscription(
                 /// multi-member slot tells its sources apart even when several
                 /// members share one instance.
             },
-            quote! {
-                let Some((source, message)) = self.inner.on_next_message().await else {
-                    return Ok(None);
-                };
-            },
+            SubscriptionTag::ObservedSource,
             quote! {
                 /// Subscribes to this observed pairing topic and returns a held
                 /// `Subscription` pinned to the observer slot's source. Legal before
@@ -488,15 +464,10 @@ fn build_pair_topic_subscription(
             quote!(peppylib::runtime::subscribe_observed),
         ),
     };
-    let tag = match kind {
-        PairTopicSubscriptionKind::Peer => SubscriptionTag::Peer,
-        PairTopicSubscriptionKind::Observed => SubscriptionTag::ObservedSource,
-    };
     let subscription_tokens = build_subscription_struct(
         struct_doc,
         inner_type,
         next_doc,
-        recv_tokens,
         tag,
         helper_fn_ident,
         args_struct_ident,
@@ -527,23 +498,22 @@ fn build_pair_topic_subscription(
 }
 
 /// The held-`Subscription` struct plus its `next()` impl, shared by the
-/// bound-set, peer, and observer consumer modules: same decode contract,
-/// differing in the inner subscription type, the identity tag `next()` yields
-/// (`tag`, which fixes the tag's type and binding name), how the tagged pair
-/// is received from the inner subscription (`recv_tokens`, statements that
-/// bind the tag and `message` or early-return `Ok(None)`), and the doc text
-/// (passed as `quote!`d `///` blocks so the generated docs stay per-module).
+/// bound-set, peer, and observer consumer modules: same decode contract and
+/// same receive step (every inner subscription yields a `(tag, message)`
+/// pair), differing in the inner subscription type, the identity tag `next()`
+/// yields (`tag`, which fixes the tag's type and binding name), and the doc
+/// text (passed as `quote!`d `///` blocks so the generated docs stay
+/// per-module).
 fn build_subscription_struct(
     struct_doc: TokenStream,
     inner_type: TokenStream,
     next_doc: TokenStream,
-    recv_tokens: TokenStream,
     tag: SubscriptionTag,
     helper_fn_ident: &Ident,
     args_struct_ident: &Ident,
 ) -> TokenStream {
     let tag_ty = tag.ty();
-    let tag_binding = tag.binding();
+    let tag_binding = tag.binding_ident();
     quote! {
         #struct_doc
         pub struct Subscription {
@@ -558,7 +528,9 @@ fn build_subscription_struct(
             pub async fn next(
                 &mut self,
             ) -> crate::Result<Option<(#tag_ty, #args_struct_ident)>> {
-                #recv_tokens
+                let Some((#tag_binding, message)) = self.inner.on_next_message().await else {
+                    return Ok(None);
+                };
 
                 let payload = message.payload();
                 let message = #helper_fn_ident(payload.as_ref())?;
@@ -639,11 +611,6 @@ pub fn build_consumed_topic_subscription(
             /// set (a `zero_or_more` slot bound to nothing, or a vacant
             /// `zero_or_one` slot) this pends until shutdown, then returns
             /// `Ok(None)`.
-        },
-        quote! {
-            let Some((producer, message)) = self.inner.on_next_message().await else {
-                return Ok(None);
-            };
         },
         SubscriptionTag::Producer,
         helper_fn_ident,

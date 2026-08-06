@@ -5,7 +5,7 @@ use super::serialization;
 use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use crate::generator::types::PairTopicConsumerKind;
+use crate::generator::types::{PairTopicConsumerKind, SubscriptionTag};
 use config::node::{Cardinality, ConsumedTopic, MessageFormat, NativeEmittedTopic};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
@@ -91,34 +91,12 @@ fn emit_build_message_fn(
     builder.blank_line();
 }
 
-/// The per-message identity tag a held-`Subscription`'s `next()` yields
-/// alongside the decoded message: each module kind tags with its slot
-/// accessor's own identity type, received pre-tagged from the inner
-/// subscription.
-pub(crate) enum SubscriptionTag {
-    /// `(peppylib.ProducerRef, message)`: bound-set consumer modules.
-    Producer,
-    /// `(peppylib.PeerInfo, message)`: peer pairing modules.
-    Peer,
-    /// `(peppylib.ObservedSource, message)`: observer modules.
-    ObservedSource,
-}
-
-impl SubscriptionTag {
-    fn annotation(&self) -> &'static str {
-        match self {
-            Self::Producer => "peppylib.ProducerRef",
-            Self::Peer => "peppylib.PeerInfo",
-            Self::ObservedSource => "peppylib.ObservedSource",
-        }
-    }
-
-    fn binding(&self) -> &'static str {
-        match self {
-            Self::Producer => "producer",
-            Self::Peer => "peer",
-            Self::ObservedSource => "source",
-        }
+/// The tag's Python type annotation, spliced into `next()`'s signature.
+fn tag_annotation(tag: SubscriptionTag) -> &'static str {
+    match tag {
+        SubscriptionTag::Producer => "peppylib.ProducerRef",
+        SubscriptionTag::Peer => "peppylib.PeerInfo",
+        SubscriptionTag::ObservedSource => "peppylib.ObservedSource",
     }
 }
 
@@ -127,7 +105,7 @@ impl SubscriptionTag {
 /// `next()` mirrors the Rust `Subscription::next`: a `(tag, message)` tuple,
 /// or `None` once the subscription has closed.
 fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str, tag: SubscriptionTag) {
-    let annotation = tag.annotation();
+    let annotation = tag_annotation(tag);
     let binding = tag.binding();
     builder.line("class Subscription:");
     builder.indent();
@@ -397,7 +375,7 @@ fn emit_observer_module_header(
 /// subscription that follows the slot's live pin (silent while unpaired, only
 /// the paired peer while paired); a [`PairTopicConsumerKind::Observed`] slot
 /// gets a `subscribe_observed`-backed one that follows each observed source
-/// instance's lifecycle and yields `(producer, message)`. An observer plays no
+/// instance's lifecycle and yields `(source, message)`. An observer plays no
 /// role, so it has no publisher.
 pub fn build_pair_topic_consumer(
     topic: &NativeEmittedTopic,
