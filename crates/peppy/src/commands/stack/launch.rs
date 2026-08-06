@@ -457,8 +457,8 @@ async fn launch_async(
         match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
-                let payload = msg.payload();
-                if let Ok(feedback) = LaunchFeedback::decode(&payload) {
+                let payload = msg.payload_bytes();
+                if let Ok(feedback) = LaunchFeedback::decode(payload.as_ref()) {
                     handle_feedback(
                         &feedback,
                         &mut scrolling_output,

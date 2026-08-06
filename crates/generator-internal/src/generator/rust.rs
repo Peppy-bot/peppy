@@ -538,7 +538,7 @@ impl RustGenerator {
                     timeout,
                 )
                 .await?;
-                let state = match peppylib::messaging::decode_cancel_ack(response.payload().as_ref())? {
+                let state = match peppylib::messaging::decode_cancel_ack(response.payload_bytes().as_ref())? {
                     peppylib::messaging::CancelState::Signalled => #state_ident::Signalled,
                     peppylib::messaging::CancelState::AlreadyTerminal => #state_ident::AlreadyTerminal,
                     peppylib::messaging::CancelState::Unknown => #state_ident::Unknown,
@@ -638,7 +638,7 @@ impl RustGenerator {
                 &mut self,
             ) -> crate::Result<#struct_ident> {
                 let feedback = self.inner.on_next_feedback().await?;
-                let payload = feedback.payload();
+                let payload = feedback.payload_bytes();
                 #helper_fn_ident(payload.as_ref())
             }
         };
@@ -1432,8 +1432,8 @@ impl LanguageGenerator for RustGenerator {
                     .add_metadata_struct(response_struct_ident.clone(), Some(&response_data_ident));
 
                 let response_tokens = quote! {
-                    let payload = response_message.payload();
-                    let response_data = deserialize_response(&payload)?;
+                    let payload = response_message.payload_bytes();
+                    let response_data = deserialize_response(payload.as_ref())?;
                     Ok(#response_struct_ident {
                         instance_id: response_message.instance_id().to_string(),
                         core_node: response_message.core_node().to_string(),

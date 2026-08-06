@@ -5,7 +5,7 @@ use super::serialization;
 use super::services::sender_target_python_expr;
 use super::type_mapping::{collect_fields_from_format, qos_profile_python, uses_optional};
 use crate::error::Result;
-use crate::generator::types::PairTopicConsumerKind;
+use crate::generator::types::{PairTopicConsumerKind, SubscriptionTag};
 use config::node::{Cardinality, ConsumedTopic, MessageFormat, NativeEmittedTopic};
 
 pub(crate) fn capnp_loader_fn_name(schema_info: &PythonSchemaInfo) -> String {
@@ -91,24 +91,22 @@ fn emit_build_message_fn(
     builder.blank_line();
 }
 
-/// How the held-`Subscription` class receives its next `(producer,
-/// message)` pair: a bound-set subscription yields the pair pre-tagged by
-/// the source that delivered it, while a peer subscription yields the raw
-/// message alone and the producer is read off its headers.
-pub(crate) enum SubscriptionYield {
-    TaggedPair,
-    RawMessage,
+/// The tag's Python type annotation, spliced into `next()`'s signature.
+fn tag_annotation(tag: SubscriptionTag) -> &'static str {
+    match tag {
+        SubscriptionTag::Producer => "peppylib.ProducerRef",
+        SubscriptionTag::Peer => "peppylib.PeerInfo",
+        SubscriptionTag::ObservedSource => "peppylib.ObservedSource",
+    }
 }
 
-/// Emits the held-`Subscription` class shared by the bound-set and peer
-/// consumer modules; the docstring and the receive step differ. `next()`
-/// mirrors the Rust `Subscription::next`: a `(producer, message)` tuple, or
-/// `None` once the subscription has closed.
-fn emit_subscription_class(
-    builder: &mut PythonCodeBuilder,
-    docstring: &str,
-    yields: SubscriptionYield,
-) {
+/// Emits the held-`Subscription` class shared by the bound-set, peer, and
+/// observer consumer modules; the docstring and the identity tag differ.
+/// `next()` mirrors the Rust `Subscription::next`: a `(tag, message)` tuple,
+/// or `None` once the subscription has closed.
+fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str, tag: SubscriptionTag) {
+    let annotation = tag_annotation(tag);
+    let binding = tag.binding();
     builder.line("class Subscription:");
     builder.indent();
     builder.line(&format!("\"\"\"{docstring}\"\"\""));
@@ -118,28 +116,18 @@ fn emit_subscription_class(
     builder.line("self._inner = inner");
     builder.dedent();
     builder.blank_line();
-    builder.line("async def next(self) -> Optional[Tuple[peppylib.ProducerRef, Message]]:");
+    builder.line(&format!(
+        "async def next(self) -> Optional[Tuple[{annotation}, Message]]:"
+    ));
     builder.indent();
-    match yields {
-        SubscriptionYield::TaggedPair => {
-            builder.line("item = await self._inner.on_next_message()");
-            builder.line("if item is None:");
-            builder.indent();
-            builder.line("return None");
-            builder.dedent();
-            builder.line("producer, raw_message = item");
-        }
-        SubscriptionYield::RawMessage => {
-            builder.line("raw_message = await self._inner.on_next_message()");
-            builder.line("if raw_message is None:");
-            builder.indent();
-            builder.line("return None");
-            builder.dedent();
-            builder.line("producer = raw_message.producer");
-        }
-    }
+    builder.line("item = await self._inner.on_next_message()");
+    builder.line("if item is None:");
+    builder.indent();
+    builder.line("return None");
+    builder.dedent();
+    builder.line(&format!("{binding}, raw_message = item"));
     builder.line("message = _deserialize_payload(raw_message.payload)");
-    builder.line("return producer, message");
+    builder.line(&format!("return {binding}, message"));
     builder.dedent();
     builder.blank_line();
     builder.line("def __aiter__(self) -> \"Subscription\":");
@@ -147,7 +135,9 @@ fn emit_subscription_class(
     builder.line("return self");
     builder.dedent();
     builder.blank_line();
-    builder.line("async def __anext__(self) -> Tuple[peppylib.ProducerRef, Message]:");
+    builder.line(&format!(
+        "async def __anext__(self) -> Tuple[{annotation}, Message]:"
+    ));
     builder.indent();
     builder.line("result = await self.next()");
     builder.line("if result is None:");
@@ -385,7 +375,7 @@ fn emit_observer_module_header(
 /// subscription that follows the slot's live pin (silent while unpaired, only
 /// the paired peer while paired); a [`PairTopicConsumerKind::Observed`] slot
 /// gets a `subscribe_observed`-backed one that follows each observed source
-/// instance's lifecycle and yields `(producer, message)`. An observer plays no
+/// instance's lifecycle and yields `(source, message)`. An observer plays no
 /// role, so it has no publisher.
 pub fn build_pair_topic_consumer(
     topic: &NativeEmittedTopic,
@@ -420,12 +410,12 @@ pub fn build_pair_topic_consumer(
     );
 
     let qos = qos_profile_python(&topic.qos_profile);
-    let (subscription_doc, subscription_yield, subscribe_doc, subscribe_method) = match kind {
+    let (subscription_doc, subscription_tag, subscribe_doc, subscribe_method) = match kind {
         PairTopicConsumerKind::Peer => {
             emit_peer_module_header(&mut builder, &topic.name, qos, peer);
             (
-                "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired.",
-                SubscriptionYield::RawMessage,
+                "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired. Each message is tagged with the PeerInfo of the paired peer, the same identity paired() returns.",
+                SubscriptionTag::Peer,
                 "\"\"\"Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.\"\"\"",
                 "subscribe_peer",
             )
@@ -433,15 +423,15 @@ pub fn build_pair_topic_consumer(
         PairTopicConsumerKind::Observed(cardinality) => {
             emit_observer_module_header(&mut builder, &topic.name, qos, peer, cardinality);
             (
-                "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the member that published it.",
-                SubscriptionYield::TaggedPair,
+                "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance.",
+                SubscriptionTag::ObservedSource,
                 "\"\"\"Subscribe to this observed pairing topic. Legal before any source is resolved or live: the subscription stays silent until a member emits.\"\"\"",
                 "subscribe_observed",
             )
         }
     };
 
-    emit_subscription_class(&mut builder, subscription_doc, subscription_yield);
+    emit_subscription_class(&mut builder, subscription_doc, subscription_tag);
 
     builder.blank_line();
     builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
@@ -522,7 +512,7 @@ pub fn build_consumed_topic(
 Per-producer order is preserved (no total order across producers), ready \
 producers are merged fairly, and the bound set is fixed at startup; filter \
 on the yielded producer to follow a single member.",
-        SubscriptionYield::TaggedPair,
+        SubscriptionTag::Producer,
     );
 
     builder.blank_line();

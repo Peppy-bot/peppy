@@ -55,7 +55,7 @@ fn handle_repo_add_request_inner(
     peppy_dirs: &PeppyDirs,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     let request = RepoAddRequest::decode(payload.as_ref())?;
 

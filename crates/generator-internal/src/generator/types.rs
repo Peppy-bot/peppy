@@ -111,6 +111,33 @@ pub enum PairTopicConsumerKind {
     Observed(Cardinality),
 }
 
+/// The per-message identity tag a held `Subscription`'s `next()` yields
+/// alongside the decoded message: each module kind tags with its slot
+/// accessor's own identity type, received pre-tagged from the inner
+/// subscription. Which kind tags with which identity, and the name the
+/// generated code binds it to, is the same fact in both languages, so it lives
+/// here; each generator renders only the type name in its own syntax.
+#[derive(Clone, Copy)]
+pub enum SubscriptionTag {
+    /// `(ProducerRef, message)`: bound-set consumer modules.
+    Producer,
+    /// `(PeerInfo, message)`: peer pairing modules.
+    Peer,
+    /// `(ObservedSource, message)`: observer modules.
+    ObservedSource,
+}
+
+impl SubscriptionTag {
+    /// The name the generated `next()` binds the tag to.
+    pub fn binding(self) -> &'static str {
+        match self {
+            Self::Producer => "producer",
+            Self::Peer => "peer",
+            Self::ObservedSource => "source",
+        }
+    }
+}
+
 /// Backstop for the pairing document's flat topic-name uniqueness rule:
 /// two peer artifacts must never land on the same `paired_topics/<link_id>/<topic>`
 /// module path. Shared by the Rust and Python generators so the invariant

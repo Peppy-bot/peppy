@@ -136,7 +136,7 @@ pub(crate) async fn poll_action_to_completion<R>(
         match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
-                on_feedback(&msg.payload(), scrolling_output);
+                on_feedback(msg.payload_bytes().as_ref(), scrolling_output);
             }
             Ok(Err(_)) => break, // end-of-stream: the goal has completed
             Err(_) => {}         // drain slice elapsed; re-check timeouts and keep draining

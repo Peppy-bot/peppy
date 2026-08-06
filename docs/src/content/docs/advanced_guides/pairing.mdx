@@ -330,7 +330,7 @@ Among observer slots vacancy is only for the `zero_or_one` row, which is the obs
 
 On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot.
 
-The declared cardinality types the generated accessor, so flipping it surfaces at every call site rather than silently reading one member of many: a scalar slot (`one` or `zero_or_one`) exposes `source()` returning a single observed pairing, and the multi cardinalities expose `sources()` returning the whole set in plan order. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the member that published it.
+The declared cardinality types the generated accessor, so flipping it surfaces at every call site rather than silently reading one member of many: a scalar slot (`one` or `zero_or_one`) exposes `source()` returning a single observed pairing, and the multi cardinalities expose `sources()` returning the whole set in plan order. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the `ObservedSource` that published it: the producer's wire address plus the producer-side link_id, the same identity the accessors enumerate, so members stay distinct even when several observe the same instance.
 
 <Tabs>
   <TabItem label="Python">
@@ -341,10 +341,11 @@ from peppygen.paired_topics.watch import joint_states
 for source in joint_states.sources(node_runner):
     print(source.producer.instance_id, source.source_link_id)
 
-# One subscription covers every member; the producer tag says who sent what.
+# One subscription covers every member; the source tag says which pairing
+# sent what, even when members share one instance.
 subscription = await joint_states.subscribe(node_runner)
-async for producer, states in subscription:
-    print(producer.instance_id, states.positions)
+async for source, states in subscription:
+    print(source.producer.instance_id, source.source_link_id, states.positions)
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -356,10 +357,14 @@ for source in joint_states::sources(&node_runner)? {
     println!("{} {}", source.producer.instance_id, source.source_link_id);
 }
 
-// One subscription covers every member; the producer tag says who sent what.
+// One subscription covers every member; the source tag says which pairing
+// sent what, even when members share one instance.
 let mut subscription = joint_states::subscribe(&node_runner).await?;
-while let Some((producer, states)) = subscription.next().await? {
-    println!("{} {:?}", producer.instance_id, states.positions);
+while let Some((source, states)) = subscription.next().await? {
+    println!(
+        "{} {} {:?}",
+        source.producer.instance_id, source.source_link_id, states.positions
+    );
 }
 ```
   </TabItem>
@@ -393,7 +398,7 @@ Pairing and [contract implementation](/advanced_guides/contract_implementation/)
 | Cardinality | Exactly 1:1 per slot, exclusive (no `cardinality` key); `optional: true` says the slot may also run with no peer | Declared per slot: exactly one by default, at most one for `zero_or_one`, an application-selected set for `one_or_more` / `zero_or_more` |
 | Directionality | Both directions in one contract (two roles) | One direction per contract |
 | Establishment | Declared once on either side (`--link arm@peer`), covering both endpoints, at instance start | Each consumer slot bound to its producer(s) (`--link slot@producer`), at instance start |
-| Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get | Per-message `ProducerRef`; the consumer tells producers apart itself |
+| Peer identity | The slot *is* the identity; the runtime guarantees whose messages you get, and each message rides with the peer's `PeerInfo` | Per-message `ProducerRef`; the consumer tells producers apart itself |
 | Lifecycle | Pair dissolves on death; survivor's slot goes silent until re-paired | Producers come and go freely |
 | Natural fit | Control loops, teleoperation, any "these two specific instances belong together" relationship | Telemetry, monitoring, swappable sources (dedicated slots or one multi-cardinality slot) |
 

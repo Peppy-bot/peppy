@@ -55,7 +55,7 @@ fn handle_health_request_inner(
     start_time: Instant,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload();
+    let payload = context.message().payload_bytes();
 
     HealthRequest::decode(payload.as_ref())?;
 

@@ -50,11 +50,11 @@ async def handle_commands(node_runner: NodeRunner):
 
         if received is None:
             break  # subscription closed
-        producer, command = received
+        peer, command = received
 
-        # `producer` is always the paired controller's identity.
+        # `peer` is always the paired controller's identity.
         print(
-            f"command from {producer.core_node}/{producer.instance_id}: "
+            f"command from {peer.producer.core_node}/{peer.producer.instance_id}: "
             f"target={command.target_positions} max_vel={command.max_velocity}"
         )
 

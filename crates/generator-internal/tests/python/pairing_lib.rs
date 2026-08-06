@@ -232,6 +232,12 @@ for module in (sole, maybe, many):
     assert inspect.isclass(module.Subscription)
     for absent in ("build_message", "declare_publisher", "paired", "wait_paired"):
         assert not hasattr(module, absent), absent
+
+# next() tags every message with the ObservedSource that published it, the
+# same identity the slot accessors enumerate, at every cardinality.
+for module in (sole, maybe, many):
+    return_annotation = str(module.Subscription.next.__annotations__["return"])
+    assert "ObservedSource" in return_annotation, return_annotation
 print("observer modules imported")
 "#;
     let output = std::process::Command::new(user_node.join(".venv/bin/python"))

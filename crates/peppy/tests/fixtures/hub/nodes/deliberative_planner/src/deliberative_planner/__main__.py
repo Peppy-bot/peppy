@@ -69,7 +69,7 @@ async def watch_executor(node_runner: NodeRunner, scene: Scene) -> None:
         received = await subscription.next()
         if received is None:
             break
-        _producer, message = received
+        _peer, message = received
         scene.executor_positions = list(message.joint_positions)
         scene.adopted_subgoal_id = message.active_subgoal_id
         if message.escalated:

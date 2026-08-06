@@ -938,7 +938,7 @@ async fn poll_producer_offset(
         )
         .await;
         let Ok(reply) = reply else { continue };
-        let Ok(decoded) = ClockOffsetResponse::decode(reply.payload().as_ref()) else {
+        let Ok(decoded) = ClockOffsetResponse::decode(reply.payload_bytes().as_ref()) else {
             continue;
         };
         let sample = (decoded.offset_ns, decoded.round_trip_delay_ns);

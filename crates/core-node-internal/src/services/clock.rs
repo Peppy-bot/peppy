@@ -118,7 +118,7 @@ fn handle_clock_request_inner(
     context: &ServiceRequestContext,
     server_recv_time: u64,
 ) -> Result<Payload> {
-    let request = ClockRequest::decode(context.message().payload().as_ref())?;
+    let request = ClockRequest::decode(context.message().payload_bytes().as_ref())?;
 
     debug!(
         "Received clock request from {}, t0={}",
@@ -338,7 +338,7 @@ pub async fn subscribe_external_clock(
                     None => break,
                 },
             };
-            match ClockTick::decode(message.payload().as_ref()) {
+            match ClockTick::decode(message.payload_bytes().as_ref()) {
                 Ok(tick) => {
                     // `0` is reserved as "not ready"; a simulator publishing
                     // a literal zero would be a bug, and clamping it to 1 is a

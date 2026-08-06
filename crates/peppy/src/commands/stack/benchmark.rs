@@ -131,7 +131,7 @@ async fn benchmark_async(
         match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
-                if let Ok(feedback) = StackBenchmarkFeedback::decode(&msg.payload()) {
+                if let Ok(feedback) = StackBenchmarkFeedback::decode(msg.payload_bytes().as_ref()) {
                     scrolling.add_line(&feedback.line);
                 }
             }
