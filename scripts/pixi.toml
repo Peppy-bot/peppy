@@ -22,6 +22,14 @@ pytest = "*"
 pytest-xdist = "*"
 respx = "*"
 
+# CPython ignores .pth files that carry the macOS UF_HIDDEN flag, and pixi sets that
+# flag on everything it writes under .pixi. The editable install ships its path in
+# such a .pth, so on macOS the workspace root never reaches sys.path and every console
+# script dies with "No module named 'functions'". Putting the root on PYTHONPATH makes
+# the imports independent of whether the .pth is honoured.
+[activation.env]
+PYTHONPATH = "$PIXI_PROJECT_ROOT"
+
 [tasks]
 build-release = "build-release"
 build-base-images = "build-base-images"
