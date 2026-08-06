@@ -32,7 +32,7 @@ async def record(params: Parameters, node_runner: NodeRunner) -> None:
         received = await subscription.next()
         if received is None:
             break
-        producer, message = received
+        source, message = received
 
         captured += 1
         if message.escalated:
@@ -41,7 +41,8 @@ async def record(params: Parameters, node_runner: NodeRunner) -> None:
         if captured == 1:
             print(
                 f"[episode_recorder] observing execution on "
-                f"{producer.core_node}/{producer.instance_id}",
+                f"{source.producer.core_node}/{source.producer.instance_id} "
+                f"via {source.source_link_id}",
                 flush=True,
             )
         elif captured % params.report_every == 0:

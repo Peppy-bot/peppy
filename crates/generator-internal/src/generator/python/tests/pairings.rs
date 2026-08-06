@@ -4,7 +4,7 @@
 //! binding-slot involvement.
 
 use super::*;
-use config::node::NativeEmittedTopic;
+use config::node::{Cardinality, NativeEmittedTopic};
 
 const JOINT_STATES: &str = r#"
 {
@@ -87,6 +87,10 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
         "PAIRING_TAG,",
         "TOPIC_NAME,",
         "class Subscription:",
+        // The tagged pair: the same PeerInfo that paired() returns.
+        "async def next(self) -> Optional[Tuple[peppylib.PeerInfo, Message]]:",
+        "peer, raw_message = item",
+        "return peer, message",
         "async def wait_paired(",
         "_deserialize_payload",
     ] {
@@ -95,6 +99,44 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
     assert!(
         !code.contains("bound_producer") && !code.contains("TopicMessenger.subscribe("),
         "peer subscriptions must ride subscribe_peer, not the binding-slot path:\n{code}"
+    );
+    assert!(
+        !code.contains("ProducerRef"),
+        "a peer module tags every message with PeerInfo:\n{code}"
+    );
+}
+
+#[test]
+fn observed_consumed_topic_yields_observed_source_tagged_pairs() {
+    let topic = parse_topic(JOINT_STATES);
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_observed_topic(&topic, &peer_context(), Cardinality::ZeroOrMore)
+        .unwrap();
+    let artifacts = generator.into_artifacts();
+    assert_eq!(artifacts.len(), 1);
+    let artifact = &artifacts[0];
+    assert_eq!(artifact.kind, InterfaceKind::ObservedTopic);
+
+    let code = &artifact.code_output;
+    for needle in [
+        "node_runner.subscribe_observed(",
+        "class Subscription:",
+        // The tagged pair: the full member identity, so members sharing one
+        // instance stay distinct.
+        "async def next(self) -> Optional[Tuple[peppylib.ObservedSource, Message]]:",
+        "source, raw_message = item",
+        "return source, message",
+        "async def __anext__(self) -> Tuple[peppylib.ObservedSource, Message]:",
+        // The multi-cardinality slot accessor speaks the same type.
+        "def sources(",
+        "_deserialize_payload",
+    ] {
+        assert!(code.contains(needle), "missing `{needle}` in:\n{code}");
+    }
+    assert!(
+        !code.contains("ProducerRef"),
+        "an observer module tags every message with ObservedSource:\n{code}"
     );
 }
 

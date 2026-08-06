@@ -4,7 +4,7 @@
 //! any binding-slot involvement.
 
 use super::*;
-use config::node::NativeEmittedTopic;
+use config::node::{Cardinality, NativeEmittedTopic};
 
 const JOINT_COMMANDS: &str = r#"
 {
@@ -102,10 +102,12 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
             "PAIRING_NAME",
             "PAIRING_TAG",
             "TOPIC_NAME",
-            // The held-subscription surface, yielding (producer, Message).
+            // The held-subscription surface, yielding (peer, Message).
             "pub struct Subscription",
-            "peppylib::runtime::PeerSubscription",
-            "peppylib::messaging::ProducerRef",
+            "inner: peppylib::runtime::PeerSubscription",
+            "-> crate::Result<Option<(peppylib::messaging::PeerInfo, Message)>>",
+            "let Some((peer, message)) = self.inner.on_next_message().await",
+            "Ok(Some((peer, message)))",
             "pub async fn wait_paired(",
         ],
     );
@@ -118,6 +120,52 @@ fn peer_consumed_topic_wraps_subscribe_peer_without_binding_slots() {
             && !rendered.contains("TopicMessenger::subscribe(")
             && !rendered.contains("bound_producer"),
         "peer subscriptions must ride subscribe_peer, not the binding-slot path:\n{rendered}"
+    );
+    // The tag is the slot accessor's identity type, never a bare ProducerRef.
+    assert!(
+        !rendered.contains("ProducerRef"),
+        "a peer module tags every message with PeerInfo:\n{rendered}"
+    );
+}
+
+#[test]
+fn observed_consumed_topic_yields_observed_source_tagged_pairs() {
+    let topic = parse_topic(JOINT_COMMANDS);
+    let mut generator = RustGenerator::new();
+    generator
+        .add_observed_topic(&topic, &peer_context(), Cardinality::ZeroOrMore)
+        .unwrap();
+    let artifacts = generator.into_artifacts();
+    assert_eq!(artifacts.len(), 1);
+    let artifact = &artifacts[0];
+    assert_eq!(artifact.kind, InterfaceKind::ObservedTopic);
+    assert_eq!(
+        artifact.module_path,
+        vec!["arm".to_string(), "joint_commands".to_string()]
+    );
+
+    let rendered = &artifact.code_output;
+    assert_contains_all(
+        rendered,
+        &[
+            // The subscribe_observed seam with the slot consts spliced.
+            "peppylib::runtime::subscribe_observed(",
+            "inner: peppylib::runtime::ObservedTopicSubscription",
+            // The held-subscription surface, yielding (source, Message):
+            // the full member identity, so members sharing one instance
+            // stay distinct.
+            "pub struct Subscription",
+            "-> crate::Result<Option<(peppylib::messaging::ObservedSource, Message)>>",
+            "let Some((source, message)) = self.inner.on_next_message().await",
+            "Ok(Some((source, message)))",
+            // The multi-cardinality slot accessor speaks the same type.
+            "pub fn sources(",
+        ],
+    );
+    // The tag is the slot accessor's identity type, never a bare ProducerRef.
+    assert!(
+        !rendered.contains("ProducerRef"),
+        "an observer module tags every message with ObservedSource:\n{rendered}"
     );
 }
 

@@ -139,12 +139,14 @@ fn main() -> Result<()> {
             let payload = joint_commands::build_message([0.0, 0.5, 1.0], 0.25)?;
             publisher.publish(payload).await?;
 
-            if let Some((producer, states)) = subscription.next().await? {
+            // Every message rides with the same PeerInfo `paired()` reports.
+            if let Some((peer, states)) = subscription.next().await? {
                 println!(
-                    "{} joints from {}/{}",
+                    "{} joints from {}/{} (their slot: {})",
                     states.positions.len(),
-                    producer.core_node,
-                    producer.instance_id
+                    peer.producer.core_node,
+                    peer.producer.instance_id,
+                    peer.peer_link_id
                 );
             }
         }
@@ -262,13 +264,16 @@ fn main() -> Result<()> {
         let source: Option<peppygen::ObservedSource> = joint_states::source(&node_runner)?;
         if source.is_none() {
             // A held observer subscription is legal before the source resolves.
+            // Every message rides with the same ObservedSource `source()`
+            // reports.
             let mut subscription = joint_states::subscribe(&node_runner).await?;
-            if let Some((producer, states)) = subscription.next().await? {
+            if let Some((source, states)) = subscription.next().await? {
                 println!(
-                    "{} joints from {}/{}",
+                    "{} joints from {}/{} via {}",
                     states.positions.len(),
-                    producer.core_node,
-                    producer.instance_id
+                    source.producer.core_node,
+                    source.producer.instance_id,
+                    source.source_link_id
                 );
             }
         }
@@ -324,17 +329,24 @@ fn main() -> Result<()> {
         let sources: Vec<peppygen::ObservedSource> = joint_states::sources(&node_runner)?;
         println!("observing {} arms", sources.len());
 
-        // One subscription fans in across every member; the producer tag is
-        // what tells the members apart.
+        // One subscription fans in across every member; the source tag (the
+        // producer's wire address plus the producer-side link_id) is what
+        // tells the members apart, even when members share one instance, so
+        // it keys per-member demux maps directly.
+        let mut states_seen: std::collections::HashMap<peppygen::ObservedSource, usize> =
+            std::collections::HashMap::new();
         let mut subscription = joint_states::subscribe(&node_runner).await?;
-        if let Some((producer, states)) = subscription.next().await? {
+        if let Some((source, states)) = subscription.next().await? {
             println!(
-                "{} joints from {}/{}",
+                "{} joints from {}/{} via {}",
                 states.positions.len(),
-                producer.core_node,
-                producer.instance_id
+                source.producer.core_node,
+                source.producer.instance_id,
+                source.source_link_id
             );
+            *states_seen.entry(source).or_default() += 1;
         }
+        println!("heard from {} distinct sources", states_seen.len());
         Ok(())
     })
 }

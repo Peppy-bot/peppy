@@ -40,7 +40,7 @@ fn main() -> Result<()> {
             }
 
             loop {
-                let (producer, state) = match subscription.next().await {
+                let (peer, state) = match subscription.next().await {
                     Ok(Some(received)) => received,
                     Ok(None) => break,
                     Err(e) => {
@@ -49,10 +49,10 @@ fn main() -> Result<()> {
                     }
                 };
 
-                // `producer` is always the paired arm's identity.
+                // `peer` is always the paired arm's identity.
                 println!(
                     "state from {}/{}: positions={:?}",
-                    producer.core_node, producer.instance_id, state.positions
+                    peer.producer.core_node, peer.producer.instance_id, state.positions
                 );
 
                 // Compute the next target from the reported state, then command it.

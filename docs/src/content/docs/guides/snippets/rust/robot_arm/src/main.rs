@@ -42,7 +42,7 @@ fn main() -> Result<()> {
             }
 
             loop {
-                let (producer, command) = match subscription.next().await {
+                let (peer, command) = match subscription.next().await {
                     Ok(Some(received)) => received,
                     Ok(None) => break,
                     Err(e) => {
@@ -51,11 +51,11 @@ fn main() -> Result<()> {
                     }
                 };
 
-                // `producer` is always the paired controller's identity.
+                // `peer` is always the paired controller's identity.
                 println!(
                     "command from {}/{}: target={:?} max_vel={}",
-                    producer.core_node,
-                    producer.instance_id,
+                    peer.producer.core_node,
+                    peer.producer.instance_id,
                     command.target_positions,
                     command.max_velocity
                 );
