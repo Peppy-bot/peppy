@@ -532,7 +532,7 @@ fn build_subscription_struct(
                     return Ok(None);
                 };
 
-                let payload = message.payload();
+                let payload = message.payload_bytes();
                 let message = #helper_fn_ident(payload.as_ref())?;
                 Ok(Some((#tag_binding, message)))
             }

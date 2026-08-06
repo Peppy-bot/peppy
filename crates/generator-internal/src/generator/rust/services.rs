@@ -296,10 +296,10 @@ pub fn build_exposed_service_method(
         // instance_from_request_context without use_service_name_const (preserves
         // existing generated code shape).
         if has_payload || (instance_from_request_context && !use_service_name_const) {
-            call_preamble.push(quote!(let payload = message.payload();));
+            call_preamble.push(quote!(let payload = message.payload_bytes();));
         }
     } else if has_payload {
-        call_preamble.push(quote!(let payload = #request_context_ident.message().payload();));
+        call_preamble.push(quote!(let payload = #request_context_ident.message().payload_bytes();));
     }
 
     if has_payload {
