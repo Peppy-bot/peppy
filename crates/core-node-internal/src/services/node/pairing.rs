@@ -26,7 +26,7 @@ use daemon_config::launcher::{
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
-use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerPin, ProducerRef};
+use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerInfo, ProducerRef};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -205,7 +205,7 @@ impl PairingCoordinator {
                 {
                     continue;
                 }
-                let pin = PeerPin {
+                let pin = PeerInfo {
                     // The peer's OWN core node, not this daemon's: a pin names
                     // where the peer actually runs, and for a cross-daemon pair
                     // those differ.
@@ -340,7 +340,7 @@ impl PairingCoordinator {
             .pair_slot_with_remote(&local, &remote, &remote_meta)
             .map_err(|e| e.to_string())?;
 
-        let pin = PeerPin {
+        let pin = PeerInfo {
             producer: request.peer.clone(),
             peer_link_id: request.peer_link_id.clone(),
         };
@@ -443,7 +443,7 @@ impl PairingCoordinator {
     async fn send_peer_update(
         &self,
         slot: &SlotAddr,
-        pin: Option<PeerPin>,
+        pin: Option<PeerInfo>,
     ) -> std::result::Result<(), String> {
         let request = PeerUpdateRequest {
             link_id: slot.link_id.clone(),
