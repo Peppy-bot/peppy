@@ -330,15 +330,20 @@ Among observer slots vacancy is only for the `zero_or_one` row, which is the obs
 
 On the CLI the array becomes repetition: `--link watch@arm_1 --link watch@arm_2`. Either way the order you write is the order the node reads back, so a deployment can associate the Nth observed pairing with its own Nth command slot.
 
-The declared cardinality types the generated accessor, so flipping it surfaces at every call site rather than silently reading one member of many: a scalar slot (`one` or `zero_or_one`) exposes `source()` returning a single observed pairing, and the multi cardinalities expose `sources()` returning the whole set in plan order. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the `ObservedSource` that published it: the producer's wire address plus the producer-side link_id, the same identity the accessors enumerate, so members stay distinct even when several observe the same instance.
+The declared cardinality types the generated accessor, name and return type together, so flipping it surfaces at every call site rather than silently reading one member of many, or an empty set the plan said could not happen. A `one` slot exposes `source()` returning the observed pairing directly, with no absent case to handle. A `zero_or_one` slot exposes the same singular `source()` returning `Optional[ObservedSource]` in Python and `Option<ObservedSource>` in Rust, empty wherever the deployment wrote the slot vacant. A `one_or_more` slot exposes `sources()` returning a set that is never empty, so its head needs no unwrap: in Rust that is a `NonEmptyObservedSources` whose `first()` is infallible, and in Python a `List` documented never-empty, since Python has no non-empty list type and the name flip is what surfaces the change. A `zero_or_more` slot exposes `sources()` returning a plain, possibly empty list in plan order, so the empty branch exists exactly where a deployment can produce one.
+
+`subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the `ObservedSource` that published it: the producer's wire address plus the producer-side link_id, the same identity the accessors enumerate, so members stay distinct even when several observe the same instance.
 
 <Tabs>
   <TabItem label="Python">
 ```python
 from peppygen.paired_topics.watch import joint_states
 
-# `watch` is one_or_more: read the whole observed set, in plan order.
-for source in joint_states.sources(node_runner):
+# `watch` is one_or_more: read the whole observed set, in plan order. The
+# set is never empty at that cardinality, so `[0]` is always valid.
+sources = joint_states.sources(node_runner)
+print("lead arm:", sources[0].producer.instance_id)
+for source in sources:
     print(source.producer.instance_id, source.source_link_id)
 
 # One subscription covers every member; the source tag says which pairing
@@ -352,8 +357,11 @@ async for source, states in subscription:
 ```rust
 use peppygen::paired_topics::watch::joint_states;
 
-// `watch` is one_or_more: read the whole observed set, in plan order.
-for source in joint_states::sources(&node_runner)? {
+// `watch` is one_or_more: read the whole observed set, in plan order. The
+// set is never empty at that cardinality, so `first()` needs no unwrap.
+let sources = joint_states::sources(&node_runner)?;
+println!("lead arm: {}", sources.first().producer.instance_id);
+for source in &sources {
     println!("{} {}", source.producer.instance_id, source.source_link_id);
 }
 
@@ -370,7 +378,9 @@ while let Some((source, states)) = subscription.next().await? {
   </TabItem>
 </Tabs>
 
-An observed set is **seeded at spawn and live after**. The boot config the daemon hands the process carries every declared slot's planned member set, stamped with each source's incarnation and liveness at that moment, so `sources()` answers the deployment's membership from the node's first instruction, setup included: a node can discover the robot's shape before it starts serving. After that the set is live, which is the one way it differs from a bound producer set: the daemon replaces it whole whenever the plan's observed pairings change, so `sources()` can return a different set between reads, and an empty read means the plan observes nothing through that slot. A member whose source is down (or has not started yet) stays in the set, at its position, so the slot's shape does not flicker with the fleet's health.
+An observed set is **seeded at spawn and live after**. The boot config the daemon hands the process carries every declared slot's planned member set, stamped with each source's incarnation and liveness at that moment, so `sources()` answers the deployment's membership from the node's first instruction, setup included: a node can discover the robot's shape before it starts serving. After that the set is live, which is the one way it differs from a bound producer set: the daemon replaces it whole whenever the plan's observed pairings change, so `sources()` can return a different set between reads. A member whose source is down (or has not started yet) stays in the set, at its position, so the slot's shape does not flicker with the fleet's health.
+
+What is live is what the set says about each member, not how many members it has. The launcher sizes a slot at plan time and the node re-checks that size against its seed before `setup` runs, so each cardinality's floor holds on every read: only `zero_or_one` and `zero_or_more` ever read empty, and an empty read there means the plan observes nothing through that slot. That is what lets the accessor be typed instead of handing every caller a set to re-check.
 
 ## Why topics only?
 

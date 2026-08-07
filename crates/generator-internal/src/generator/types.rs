@@ -327,44 +327,52 @@ impl DependencyContext {
 /// shared verbatim by both language generators. The first line stands alone as
 /// the summary sentence.
 ///
-/// It carries the one difference that matters against a bound producer set: an
-/// observed set is live, so nothing about its size holds for the node's
-/// lifetime and an empty read is legal at any instant.
+/// It carries the one difference that matters against a bound producer set: the
+/// daemon owns an observed set live, so each member's incarnation and liveness
+/// move under the reader. The set's size does not: the launcher sizes the slot
+/// at plan time and node startup re-checks its seed against the same rule, so
+/// the slot's declared floor holds on every read, which is what lets the
+/// accessor be typed.
+///
+/// The `one_or_more` prose deliberately stops mid-sentence ("so"): each
+/// generator passes its own API-specific tail (`first()` for Rust, `[0]` for
+/// Python) to [`AccessorDoc::lines`].
 pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
     match cardinality {
         Cardinality::One => AccessorDoc {
             summary: "The pairing this module's observer slot observes.",
             body: &[
-                "`None` before the daemon has delivered the slot, and again if a",
-                "replan leaves it observing nothing. This slot declares cardinality",
-                "`one`: it observes at most one pairing, so the accessor is singular.",
+                "The daemon keeps the member's incarnation and liveness current, and a",
+                "source that is down stays observed. This slot declares cardinality `one`:",
+                "the plan binds exactly one pairing to it, so the accessor is singular and",
+                "has no absent case to answer.",
             ],
         },
         Cardinality::ZeroOrOne => AccessorDoc {
             summary: "The pairing this module's observer slot observes, if any.",
             body: &[
-                "`None` before the daemon has delivered the slot, and again if a",
-                "replan leaves it observing nothing. This slot declares cardinality",
-                "`zero_or_one`: the deployment bound at most one pairing to it, and",
-                "`None` is the steady state wherever it left the slot vacant.",
+                "The daemon keeps the member's incarnation and liveness current, and a",
+                "source that is down stays observed. This slot declares",
+                "cardinality `zero_or_one`: the deployment binds at most one pairing to",
+                "it, and `None` is the steady state wherever it wrote the slot vacant.",
             ],
         },
         Cardinality::OneOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
             body: &[
-                "The set is live: the daemon replaces it whole whenever the plan's",
-                "observed pairings change, so it can differ between reads and is",
-                "empty before the first delivery. This slot declares cardinality",
-                "`one_or_more`: the plan bound at least one pairing to it.",
+                "The daemon keeps each member's incarnation and liveness current, and a",
+                "member whose source is down stays in the set, at its position. This slot",
+                "declares cardinality `one_or_more`: the plan binds at least one pairing",
+                "to it, so the set is never empty and",
             ],
         },
         Cardinality::ZeroOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
             body: &[
-                "The set is live: the daemon replaces it whole whenever the plan's",
-                "observed pairings change, so it can differ between reads. This slot",
-                "declares cardinality `zero_or_more`: the plan may have bound no",
-                "pairing at all, so the empty set is an expected steady state.",
+                "The daemon keeps each member's incarnation and liveness current, and a",
+                "member whose source is down stays in the set, at its position. This slot",
+                "declares cardinality `zero_or_more`: the plan may bind no pairing at",
+                "all, so the empty set is an expected steady state.",
             ],
         },
     }
@@ -389,17 +397,23 @@ impl AccessorDoc {
         "because a third node's health is not knowable here.",
     ];
 
-    /// Everything after the summary, closing note included.
-    pub fn body_lines(&self) -> impl Iterator<Item = &'static str> {
+    /// Everything after the summary: the cardinality's prose, then the caller's
+    /// own API tail sentence where its cardinality has one, then the closing
+    /// note. The tail is a parameter rather than a field because it names one
+    /// language's API (`first()` in Rust, `[0]` in Python) while this type is
+    /// shared verbatim by both generators, and it sits ahead of the closing note
+    /// because it finishes the cardinality's sentence.
+    pub fn body_lines(&self, api_note: Option<&'static str>) -> impl Iterator<Item = &'static str> {
         self.body
             .iter()
             .copied()
+            .chain(api_note)
             .chain(Self::CLOSING_NOTE.iter().copied())
     }
 
     /// Every line in order, for a language with no summary-line convention.
-    pub fn lines(&self) -> impl Iterator<Item = &'static str> {
-        std::iter::once(self.summary).chain(self.body_lines())
+    pub fn lines(&self, api_note: Option<&'static str>) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.summary).chain(self.body_lines(api_note))
     }
 }
 

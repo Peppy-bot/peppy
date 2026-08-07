@@ -3451,6 +3451,242 @@ async fn stack_launch_delivers_observer_member_sets() {
     }
 }
 
+/// A launched observer's boot config carries its slots' member sets, whether the
+/// plan placed the observer on this daemon or on a peer. The recorder here is
+/// local, which is the case that has no second delivery to fall back on: a
+/// floored slot (`one` / `one_or_more`) rejects an empty seed at node
+/// construction, so an unseeded local observer cannot start at all. Dumping the
+/// `PEPPY_RUNTIME_CONFIG` the daemon handed the process is the boundary that
+/// shows the seed, since `stack_launch_delivers_observer_member_sets` asserts the
+/// post-Running delivery instead and would pass with no seed written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_seeds_a_local_observers_boot_config() {
+    let serve = ServeCommandEmulation::with_zenoh()
+        .await
+        .expect("failed to create zenoh serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let recorder_dump = dump_dir.path().join("recorder.json5");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    super::common::seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let run_cmd = instances.keep_alive_argv();
+    let arm_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "robot_arm",
+        "v1",
+        &git_hash,
+        &run_cmd,
+        Some(
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }] }"#,
+        ),
+        None,
+        Some(
+            r#"{ topics: {
+                emits: [{ link_id: "controller", name: "joint_states" }],
+                consumes: [{ link_id: "controller", name: "joint_commands" }]
+            } }"#,
+        ),
+    );
+    // The recorder snapshots its own `PEPPY_RUNTIME_CONFIG` before settling into
+    // the keep-alive, so the test reads the exact boot config the daemon wrote.
+    let recorder_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            recorder_dump.display(),
+            instances.keep_alive_script(),
+        ),
+    ];
+    let recorder_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        "recorder",
+        "v1",
+        &git_hash,
+        &recorder_run_cmd,
+        Some(
+            r#"{ pairing_observers: [
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "watched", cardinality: "one_or_more" },
+                { name: "arm_link", tag: "v1", role: "arm", link_id: "spare", cardinality: "zero_or_more" }
+            ] }"#,
+        ),
+        None,
+        Some(
+            r#"{ topics: { consumes: [
+                { link_id: "watch", name: "joint_states" },
+                { link_id: "watched", name: "joint_states" },
+                { link_id: "spare", name: "joint_states" }
+            ] } }"#,
+        ),
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    for (node_name, instance_id) in [
+        ("robot_arm", "arm_1"),
+        ("robot_arm", "arm_2"),
+        ("recorder", "rec_1"),
+    ] {
+        let _ready = listen_for_node_ready(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("ready service should start");
+        let _health = listen_for_node_health(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("health service should start");
+        let (_shutdown, _) = listen_for_shutdown(
+            &node_messenger,
+            &core_node_name,
+            instance_id,
+            test_node_target(node_name),
+        )
+        .await
+        .expect("shutdown service should start");
+    }
+    // The post-Running delivery is best-effort, but leaving it unanswered would
+    // make the launch wait out the coordinator's timeout for nothing.
+    let mut obs_senders = std::collections::BTreeMap::new();
+    for link_id in ["watch", "watched", "spare"] {
+        let (tx, _rx) =
+            tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
+        obs_senders.insert(link_id.to_string(), tx);
+    }
+    peppylib::services::observation_update::listen_for_observation_update(
+        &node_messenger,
+        &core_node_name,
+        "rec_1",
+        test_node_target("recorder"),
+        Arc::new(obs_senders),
+    )
+    .await
+    .expect("observation_update service should start");
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {
+                    source: { name: "robot_arm:v1" },
+                    instances: [
+                        {
+                            instance_id: "arm_1",
+                            links: { controller: { vacant: "watched only: nothing drives this arm" } }
+                        },
+                        {
+                            instance_id: "arm_2",
+                            links: { controller: { vacant: "watched only: nothing drives this arm" } }
+                        }
+                    ]
+                },
+                {
+                    source: { name: "recorder:v1" },
+                    instances: [{
+                        instance_id: "rec_1",
+                        links: { watch: "arm_1", watched: ["arm_2", "arm_1"] }
+                    }]
+                }
+            ]
+        }"#;
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            ("robot_arm", "v1", &arm_path),
+            ("recorder", "v1", &recorder_path),
+        ],
+    );
+
+    StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("launch with a local observer should succeed");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut boot: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if let Ok(content) = fs::read_to_string(&recorder_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            boot = Some(cfg);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    drop(instances);
+    for instance_id in ["rec_1", "arm_1", "arm_2"] {
+        let _ = NodeCommand {
+            command: NodeCommands::Stop {
+                instance_id: instance_id.to_string(),
+            },
+        }
+        .execute(&ctx);
+    }
+
+    let boot = boot.unwrap_or_else(|| {
+        panic!(
+            "recorder runtime config dump never appeared / parsed at {}",
+            recorder_dump.display()
+        )
+    });
+    let seeds = &boot.node_instance.observation_seeds;
+
+    let watch = seeds
+        .get("watch")
+        .expect("a `one` slot must be seeded, or the node cannot construct");
+    let [member] = watch.as_slice() else {
+        panic!("a `one` slot seeds exactly one member, got {}", watch.len());
+    };
+    assert_eq!(member.source.instance_id, "arm_1");
+    assert_eq!(member.source.core_node, core_node_name);
+    assert_eq!(member.source_link_id, "controller");
+
+    let watched = seeds
+        .get("watched")
+        .expect("a `one_or_more` slot must be seeded too");
+    assert_eq!(
+        watched
+            .iter()
+            .map(|member| member.source.instance_id.as_str())
+            .collect::<Vec<_>>(),
+        ["arm_2", "arm_1"],
+        "a multi slot seeds its members in launcher order, not sorted"
+    );
+
+    assert!(
+        !seeds.contains_key("spare"),
+        "a `zero_or_more` slot the launcher omits has nothing to seed: {seeds:?}"
+    );
+}
+
 /// A required pairing slot with neither a `links:` entry (on either
 /// side) nor a `{ vacant: "<why>" }` opt-out fails the launch at validation,
 /// before anything is added or spawned.

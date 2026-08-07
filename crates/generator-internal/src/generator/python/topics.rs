@@ -315,12 +315,18 @@ pub fn build_peer_emitted_topic(
 /// accessor. An observer plays no role, so there is no
 /// `paired()`/`wait_paired()`.
 ///
-/// The accessor is cardinality-typed the way a producer slot's is: a scalar
-/// slot (`one` or `zero_or_one`) gets `source() -> Optional[ObservedSource]`,
-/// the multi cardinalities get `sources() -> List[ObservedSource]` in plan
-/// order. The docstring prose comes
-/// from `observed_sources_doc` so both language generators state the same
-/// guarantees.
+/// The accessor is cardinality-typed the way a producer slot's is: `one` gets
+/// `source() -> peppylib.ObservedSource`, `zero_or_one` gets
+/// `source() -> Optional[ObservedSource]`, and both multi cardinalities get
+/// `sources() -> List[ObservedSource]` in plan order. Python has no non-empty
+/// list type, so the name flip is what surfaces a change between the scalar and
+/// multi halves, and `one_or_more` states its never-empty guarantee in the
+/// docstring rather than the annotation, exactly as `bound_producers` does.
+///
+/// Like the bound-producer accessor, the emitted name and the runtime method it
+/// calls are separate: the two scalar cardinalities share one emitted name over
+/// two runtime methods. The docstring prose comes from `observed_sources_doc` so
+/// both language generators state the same guarantees.
 fn emit_observer_module_header(
     builder: &mut PythonCodeBuilder,
     topic_name: &str,
@@ -336,20 +342,45 @@ fn emit_observer_module_header(
     builder.line(&format!("QOS = {qos}"));
     builder.blank_line();
 
-    let (fn_name, return_type, accessor) = if cardinality.is_scalar() {
-        builder.add_import("from typing import Optional");
-        (
+    let (fn_name, runtime_method, return_type, typing_import, api_note) = match cardinality {
+        Cardinality::One => (
+            "source",
+            "sole_source",
+            "peppylib.ObservedSource",
+            None,
+            None,
+        ),
+        Cardinality::ZeroOrOne => (
+            "source",
             "source",
             "Optional[peppylib.ObservedSource]",
-            "observation_slot",
-        )
-    } else {
-        builder.add_import("from typing import List");
-        (
+            Some("from typing import Optional"),
+            None,
+        ),
+        Cardinality::OneOrMore => (
+            "sources",
             "sources",
             "List[peppylib.ObservedSource]",
-            "observation_slot_set",
-        )
+            Some("from typing import List"),
+            Some("`[0]` is always valid."),
+        ),
+        Cardinality::ZeroOrMore => (
+            "sources",
+            "sources",
+            "List[peppylib.ObservedSource]",
+            Some("from typing import List"),
+            None,
+        ),
+    };
+    if let Some(import) = typing_import {
+        builder.add_import(import);
+    }
+    // The handle split IS the scalar/multi split: the two scalar cardinalities
+    // read an `ObservationSlot`, the two multi ones an `ObservationSlotSet`.
+    let handle = if cardinality.is_scalar() {
+        "observation_slot"
+    } else {
+        "observation_slot_set"
     };
 
     let doc = crate::generator::types::observed_sources_doc(cardinality);
@@ -359,12 +390,12 @@ fn emit_observer_module_header(
     builder.indent();
     builder.line(&format!("\"\"\"{}", doc.summary));
     builder.blank_line();
-    for line in doc.body_lines() {
+    for line in doc.body_lines(api_note) {
         builder.line(line);
     }
     builder.line("\"\"\"");
     builder.line(&format!(
-        "return node_runner.{accessor}(LINK_ID).{fn_name}()"
+        "return node_runner.{handle}(LINK_ID).{runtime_method}()"
     ));
     builder.dedent();
     builder.blank_line();

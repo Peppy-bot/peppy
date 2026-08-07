@@ -426,7 +426,10 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(!raw.is_empty(), "the spawned observer never dumped its boot config");
+    assert!(
+        !raw.is_empty(),
+        "the spawned observer never dumped its boot config"
+    );
 
     let boot: config::runtime::RuntimeConfig =
         serde_json5::from_str(&raw).expect("the boot config a node receives must parse");

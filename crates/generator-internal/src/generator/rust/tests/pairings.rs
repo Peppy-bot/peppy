@@ -169,6 +169,85 @@ fn observed_consumed_topic_yields_observed_source_tagged_pairs() {
     );
 }
 
+/// An observer slot's accessor is typed against its cardinality the same four
+/// ways a producer slot's is: `one` hands the pairing back directly, so there is
+/// no `Option` to unwrap; `zero_or_one` keeps the singular name and answers an
+/// `Option`, the vacancy the deployment may write; `one_or_more` flips to the
+/// plural name and returns the never-empty `NonEmptyObservedSources` view
+/// (infallible `first()`); and `zero_or_more` keeps that plural name and returns
+/// a plain, possibly empty `Vec`. The name flip marks the scalar/multi split and
+/// the return type marks the floor, so changing either surfaces at every call
+/// site rather than silently.
+#[test]
+fn observed_topic_accessor_is_cardinality_typed() {
+    let cases = [
+        (
+            Cardinality::One,
+            "pub fn source(",
+            ") -> crate::Result<peppylib::messaging::ObservedSource>",
+            ".sole_source()",
+            "cardinality `one`",
+            "pub fn sources(",
+        ),
+        (
+            Cardinality::ZeroOrOne,
+            "pub fn source(",
+            ") -> crate::Result<Option<peppylib::messaging::ObservedSource>>",
+            ".source()",
+            "cardinality `zero_or_one`",
+            "pub fn sources(",
+        ),
+        (
+            Cardinality::OneOrMore,
+            "pub fn sources(",
+            ") -> crate::Result<peppylib::messaging::NonEmptyObservedSources>",
+            ".non_empty_sources()",
+            "cardinality `one_or_more`",
+            "pub fn source(",
+        ),
+        (
+            Cardinality::ZeroOrMore,
+            "pub fn sources(",
+            ") -> crate::Result<Vec<peppylib::messaging::ObservedSource>>",
+            ".sources()",
+            "cardinality `zero_or_more`",
+            "pub fn source(",
+        ),
+    ];
+    for (cardinality, expected_fn, expected_signature, expected_splice, expected_doc, absent_fn) in
+        cases
+    {
+        let topic = parse_topic(JOINT_COMMANDS);
+        let mut generator = RustGenerator::new();
+        generator
+            .add_observed_topic(&topic, &peer_context(), cardinality)
+            .unwrap();
+        let artifacts = generator.into_artifacts();
+        let rendered = &artifacts[0].code_output;
+
+        assert_contains_all(
+            rendered,
+            &[
+                expected_fn,
+                expected_signature,
+                expected_splice,
+                expected_doc,
+            ],
+        );
+        assert!(
+            !rendered.contains(absent_fn),
+            "a {cardinality:?} slot must expose only `{expected_fn}`; got: {rendered}"
+        );
+        // Only the floored multi cardinality carries the Rust-API tail that
+        // finishes its doc sentence.
+        assert_eq!(
+            rendered.contains("`first()` is infallible."),
+            cardinality == Cardinality::OneOrMore,
+            "the never-empty note belongs to `one_or_more` alone; got: {rendered}"
+        );
+    }
+}
+
 #[test]
 fn peer_consumed_topic_requires_a_message_format() {
     let topic: NativeEmittedTopic =
