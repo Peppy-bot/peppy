@@ -745,12 +745,13 @@ async fn start_node_instances(
     // the `planned_observations` riding its own `node_run` goal: an observation
     // is a fact about the observing daemon's subscriptions, so it has to be
     // recorded where the observer actually runs.
-    let (local_observations, remote_observations): (Vec<_>, Vec<_>) = planned_observations
+    let local_observations: Vec<_> = planned_observations
         .iter()
-        .cloned()
-        .partition(|observation| {
+        .filter(|observation| {
             placements.of(observation.observer_instance_id.as_str()) == ctx.bound_core_node
-        });
+        })
+        .cloned()
+        .collect();
     ctx.relationships
         .observation()
         .register_planned(&local_observations);
@@ -785,7 +786,14 @@ async fn start_node_instances(
         }
     }
 
-    for observation in &remote_observations {
+    // Every observer's own slots ride its `node_run` goal, wherever the plan
+    // placed it. A peer daemon needs them to register the observation at all; a
+    // local observer is already registered above, and re-registering it merges
+    // the same records back over themselves. Both need them for the goal map's
+    // other job: stamping the spawning instance's boot config with each slot's
+    // member set, which is what lets a node read its observed membership during
+    // setup instead of waiting for the delivery that follows Running.
+    for observation in planned_observations {
         observations_by_instance
             .entry(observation.observer_instance_id.as_str())
             .or_default()

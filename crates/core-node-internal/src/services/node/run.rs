@@ -1094,18 +1094,17 @@ async fn process_node_run(
     // Running, which its setup runs strictly before, so without the seed a
     // setup-time read sees every slot empty with nothing to distinguish "not
     // delivered yet" from "bound to nothing".
-    if !planned_observations.is_empty() {
-        launch_config.node_instance.observation_seeds = ctx
-            .action
-            .relationships
-            .observation()
-            .seed_for_spawn(&planned_observations);
-    }
+    launch_config.node_instance.observation_seeds = ctx
+        .action
+        .relationships
+        .observation()
+        .seed_for_spawn(&planned_observations);
 
     // Serialize once, after every mutation (synthesized defaults, topology + buffer
-    // sizes, and the gateway rewrite), so the spawned process receives the
-    // fully-resolved runtime config. The inbound `runtime_config_json5` from the
-    // goal still reflects the pre-defaulting state.
+    // sizes, the gateway rewrite, and the observation seeds), so the spawned
+    // process receives the fully-resolved runtime config. Only `launch_config` is
+    // serialized: `runtime_config` stays in its pre-defaulting state, which is what
+    // the rest of this function goes on reading.
     let runtime_config_json5 = match serde_json5::to_string(&launch_config) {
         Ok(json) => json,
         Err(e) => {

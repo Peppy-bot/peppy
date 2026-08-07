@@ -150,6 +150,11 @@ print("peer modules imported")
 /// with it: a scalar slot (`one` or `zero_or_one`) exposes `source()`, a multi
 /// slot exposes `sources()`, and none exposes a publisher or the participant
 /// pin helpers. `subscribe` keeps its shape at every cardinality.
+///
+/// In Python the annotation carries what the name cannot. The two scalar
+/// cardinalities share the `source` name and differ by `Optional`; the two multi
+/// ones share both the name and `List[...]`, because Python has no non-empty
+/// list type, so `one_or_more` states its guarantee in the docstring instead.
 #[test]
 fn generated_observer_modules_are_cardinality_typed() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
@@ -190,6 +195,17 @@ fn generated_observer_modules_are_cardinality_typed() {
             Cardinality::OneOrMore,
         )
         .unwrap();
+    generator
+        .add_observed_topic(
+            &states,
+            &PeerContext {
+                link_id: "spare_arms".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+            },
+            Cardinality::ZeroOrMore,
+        )
+        .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
         .build(&output_dir, &test_peppy_dirs(), Default::default())
@@ -205,29 +221,51 @@ fn generated_observer_modules_are_cardinality_typed() {
 
     let check = r#"
 import inspect
+from typing import List, Optional
+
+import peppylib
 from peppygen.paired_topics.observed_arm import joint_states as sole
 from peppygen.paired_topics.maybe_observed_arm import joint_states as maybe
 from peppygen.paired_topics.observed_arms import joint_states as many
+from peppygen.paired_topics.spare_arms import joint_states as spare
 
 assert sole.LINK_ID == "observed_arm"
 assert maybe.LINK_ID == "maybe_observed_arm"
 assert many.LINK_ID == "observed_arms"
+assert spare.LINK_ID == "spare_arms"
 
 # Both scalar cardinalities observe at most one pairing, so both accessors are
-# singular; `zero_or_one` differs in whether the deployment may leave the slot
-# empty, which the accessor's `Optional` already covers.
+# singular and share the name.
 for module in (sole, maybe):
     assert callable(module.source)
     assert not hasattr(module, "sources")
 
-# A multi slot reads its whole member set. The name flip is what surfaces a
-# cardinality change at call sites.
-assert callable(many.sources)
-assert not hasattr(many, "source")
+# A multi slot reads its whole member set. The name flip is what surfaces the
+# scalar/multi change at call sites.
+for module in (many, spare):
+    assert callable(module.sources)
+    assert not hasattr(module, "source")
+
+# Within each half the annotation carries the floor. `one` always observes a
+# pairing, so its accessor is not Optional; `zero_or_one` is the one a
+# deployment may leave vacant, so its accessor is. The annotations evaluate at
+# import, so these compare the resolved objects rather than their spelling.
+sole_return = sole.source.__annotations__["return"]
+maybe_return = maybe.source.__annotations__["return"]
+assert sole_return is peppylib.ObservedSource, sole_return
+assert maybe_return == Optional[peppylib.ObservedSource], maybe_return
+
+# Both multi cardinalities annotate `List[...]`: Python cannot spell a non-empty
+# list, so `one_or_more` states the guarantee in its docstring instead.
+for module in (many, spare):
+    many_return = module.sources.__annotations__["return"]
+    assert many_return == List[peppylib.ObservedSource], many_return
+assert "`[0]` is always valid." in many.sources.__doc__
+assert "`[0]` is always valid." not in spare.sources.__doc__
 
 # An observer plays no role: no publisher, no participant pin helpers, at
 # any cardinality.
-for module in (sole, maybe, many):
+for module in (sole, maybe, many, spare):
     assert inspect.iscoroutinefunction(module.subscribe)
     assert inspect.isclass(module.Subscription)
     for absent in ("build_message", "declare_publisher", "paired", "wait_paired"):
@@ -235,7 +273,7 @@ for module in (sole, maybe, many):
 
 # next() tags every message with the ObservedSource that published it, the
 # same identity the slot accessors enumerate, at every cardinality.
-for module in (sole, maybe, many):
+for module in (sole, maybe, many, spare):
     return_annotation = str(module.Subscription.next.__annotations__["return"])
     assert "ObservedSource" in return_annotation, return_annotation
 print("observer modules imported")

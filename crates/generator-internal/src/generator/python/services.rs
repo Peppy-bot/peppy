@@ -68,7 +68,7 @@ pub(crate) fn emit_bound_producer_accessor_fn(
                 "bound_producers",
                 "List[peppylib.ProducerRef]",
                 Some("from typing import List"),
-                Some("`[0]` is always valid."),
+                Some(crate::generator::types::DocLanguage::Python.never_empty_tail()),
             ),
             Cardinality::ZeroOrMore => (
                 "bound_producers",

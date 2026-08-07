@@ -191,8 +191,8 @@ fn generated_observer_modules_compile_against_peppylib() {
         .add_observed_topic(&states, &observer, Cardinality::One)
         .unwrap();
     // `zero_or_one` is scalar-shaped like `one`, so it generates the same
-    // singular accessor: what differs is whether a deployment may leave the
-    // slot empty, which `Option` already expresses.
+    // singular accessor name, but a different return type: it is the one scalar
+    // cardinality a deployment may leave empty, so it alone answers an `Option`.
     generator
         .add_observed_topic(
             &states,
@@ -254,28 +254,32 @@ fn main() -> Result<()> {
         assert_eq!(joint_states::PAIRING_NAME, "arm_link");
         assert_eq!(joint_states::PAIRING_TAG, "v1");
 
-        // A `zero_or_one` slot reads through the same singular accessor: the
-        // binding below is the assertion, since a `sources() -> Vec<_>` shape
-        // would not typecheck against it.
+        // A `zero_or_one` slot is the one the deployment may leave vacant, so it
+        // is the one whose accessor answers an `Option`. Each binding below is
+        // the assertion: the other cardinality's shape would not typecheck
+        // against it.
         let _vacant_source: Option<peppygen::ObservedSource> =
             maybe_joint_states::source(&node_runner)?;
 
-        // The resolved source is local configuration state, not a health probe.
-        let source: Option<peppygen::ObservedSource> = joint_states::source(&node_runner)?;
-        if source.is_none() {
-            // A held observer subscription is legal before the source resolves.
-            // Every message rides with the same ObservedSource `source()`
-            // reports.
-            let mut subscription = joint_states::subscribe(&node_runner).await?;
-            if let Some((source, states)) = subscription.next().await? {
-                println!(
-                    "{} joints from {}/{} via {}",
-                    states.positions.len(),
-                    source.producer.core_node,
-                    source.producer.instance_id,
-                    source.source_link_id
-                );
-            }
+        // A `one` slot always observes a pairing, so it hands the member back
+        // directly and there is no absent case to branch on. The resolved source
+        // is local configuration state, not a health probe.
+        let source: peppygen::ObservedSource = joint_states::source(&node_runner)?;
+        println!(
+            "observing {}/{} via {}",
+            source.producer.core_node, source.producer.instance_id, source.source_link_id
+        );
+
+        // Every message rides with the same ObservedSource `source()` reports.
+        let mut subscription = joint_states::subscribe(&node_runner).await?;
+        if let Some((source, states)) = subscription.next().await? {
+            println!(
+                "{} joints from {}/{} via {}",
+                states.positions.len(),
+                source.producer.core_node,
+                source.producer.instance_id,
+                source.source_link_id
+            );
         }
         Ok(())
     })
@@ -286,11 +290,14 @@ fn main() -> Result<()> {
     compile_project(&user_node);
 }
 
-/// The multi-cardinality half of the observer surface: a `one_or_more` slot
-/// generates `sources()` returning the whole member set instead of `source()`,
-/// while `subscribe` keeps its shape and fans in across every member. Flipping
-/// a slot's cardinality therefore breaks call sites at compile time rather than
-/// silently reading one member of many.
+/// The multi-cardinality half of the observer surface: both multi cardinalities
+/// generate `sources()` returning the whole member set instead of `source()`,
+/// and they part ways on the floor. A `one_or_more` slot returns the never-empty
+/// set, whose `first()` needs no unwrap; a `zero_or_more` slot returns a plain
+/// `Vec` the caller must handle empty. `subscribe` keeps its shape either way
+/// and fans in across every member. Flipping a slot's cardinality therefore
+/// breaks call sites at compile time rather than silently reading one member of
+/// many, or an empty set the plan said could not happen.
 #[test]
 fn generated_multi_observer_modules_compile_against_peppylib() {
     let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
@@ -303,6 +310,17 @@ fn generated_multi_observer_modules_compile_against_peppylib() {
             &states,
             &commander_observer_context(),
             Cardinality::OneOrMore,
+        )
+        .unwrap();
+    generator
+        .add_observed_topic(
+            &states,
+            &PeerContext {
+                link_id: "spare_arms".to_string(),
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+            },
+            Cardinality::ZeroOrMore,
         )
         .unwrap();
     let output_config = copy_config_to_output(&user_node, &output_dir);
@@ -320,14 +338,28 @@ fn generated_multi_observer_modules_compile_against_peppylib() {
 use peppygen::NodeBuilder;
 use peppygen::Result;
 use peppygen::paired_topics::observed_arms::joint_states;
+use peppygen::paired_topics::spare_arms::joint_states as spare_joint_states;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         assert_eq!(joint_states::LINK_ID, "observed_arms");
 
-        // A multi slot reads its whole member set, in plan order.
-        let sources: Vec<peppygen::ObservedSource> = joint_states::sources(&node_runner)?;
-        println!("observing {} arms", sources.len());
+        // A multi slot reads its whole member set, in plan order. A
+        // `one_or_more` slot's set is never empty, so `first()` hands back a
+        // member rather than an Option and the loop needs no empty branch.
+        let sources = joint_states::sources(&node_runner)?;
+        let lead: &peppygen::ObservedSource = sources.first();
+        println!("observing {} arms, led by {}", sources.len(), lead.producer.instance_id);
+        for source in &sources {
+            println!("  member {}", source.producer.instance_id);
+        }
+
+        // A `zero_or_more` slot keeps the plural name and returns a plain Vec:
+        // the plan may have bound nothing, so the empty case is the caller's to
+        // handle. The binding is the assertion, since the never-empty shape
+        // would not typecheck against it.
+        let spares: Vec<peppygen::ObservedSource> = spare_joint_states::sources(&node_runner)?;
+        println!("{} spare arms observed", spares.len());
 
         // One subscription fans in across every member; the source tag (the
         // producer's wire address plus the producer-side link_id) is what

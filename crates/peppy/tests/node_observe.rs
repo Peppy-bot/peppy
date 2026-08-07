@@ -37,17 +37,21 @@ use super::common::{
     add_built_node, emulate_startup_services, node_run_command, seed_pairing_repo, test_node_target,
 };
 
-/// The observer: watches the `arm` role of `arm_link/v1` through observer slot
-/// `watch`, consuming the topic that role emits. Emits nothing. The slot is
+/// An observer manifest named `name`, running `run_cmd` (a json5 array): it
+/// watches the `arm` role of `arm_link/v1` through observer slot `watch`,
+/// consuming the topic that role emits, and emits nothing. The slot is
 /// `zero_or_one`, the node's own statement that it runs fine observing nothing,
 /// which is what lets a deployment write the slot vacant.
-fn observer_config(instances: &InstanceLifetime) -> String {
-    let run_cmd = instances.keep_alive_run_cmd();
+///
+/// Parameterized because a test that inspects what the spawned process received
+/// needs its own node name and its own `run_cmd`, and nothing else about the
+/// manifest changes.
+fn observer_config_named(name: &str, run_cmd: &str) -> String {
     format!(
         r#"{{
         peppy_schema: "node/v1",
         manifest: {{
-            name: "recorder",
+            name: "{name}",
             tag: "v1",
             depends_on: {{
                 pairing_observers: [
@@ -63,6 +67,12 @@ fn observer_config(instances: &InstanceLifetime) -> String {
         execution: {{ language: "rust", run_cmd: {run_cmd} }}
     }}"#
     )
+}
+
+/// The plain observer every test but the boot-config probe uses: keeps alive
+/// and does nothing else.
+fn observer_config(instances: &InstanceLifetime) -> String {
+    observer_config_named("recorder", &instances.keep_alive_run_cmd())
 }
 
 /// A fleet observer: watches the same `arm` role through ONE `one_or_more`
@@ -266,11 +276,10 @@ async fn setup() -> Fixture {
     }
 }
 
-/// Runs the source (its participant slot declared vacant so it boots
-/// standalone) then
-/// the observer with `--link watch@arm_1`, and returns the observer's state
-/// watch already advanced past the initial live delivery.
-async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
+/// Brings `arm_1` up as a Running source, its participant slot declared vacant
+/// so it boots standalone. Every observer test needs a live source before the
+/// observer, so the pin (or seed) it reads has a real incarnation to name.
+async fn run_source(fx: &Fixture) {
     emulate_cooperative_source(
         &fx.messenger,
         &fx.core_node_name,
@@ -290,6 +299,12 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     )
     .execute(&fx.ctx)
     .expect("source run (participant slot vacant) should succeed");
+}
+
+/// Runs the source then the observer with `--link watch@arm_1`, and returns the
+/// observer's state watch already advanced past the initial live delivery.
+async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationState> {
+    run_source(fx).await;
 
     let mut obs_rx = emulate_observer_services(
         &fx.messenger,
@@ -336,26 +351,12 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
 /// poll can never read a truncated file.
 fn config_dumping_observer_config(dump: &Path, instances: &InstanceLifetime) -> String {
     let keep_alive = instances.keep_alive_script();
-    format!(
-        r#"{{
-        peppy_schema: "node/v1",
-        manifest: {{
-            name: "probe_recorder",
-            tag: "v1",
-            depends_on: {{
-                pairing_observers: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "watch", cardinality: "zero_or_one" }}
-                ]
-            }}
-        }},
-        interfaces: {{
-            topics: {{
-                consumes: [{{ link_id: "watch", name: "joint_states" }}]
-            }}
-        }},
-        execution: {{ language: "rust", run_cmd: ["sh", "-c", "cp \"$PEPPY_RUNTIME_CONFIG\" '{dump}.part' && mv '{dump}.part' '{dump}'; {keep_alive}"] }}
-    }}"#,
-        dump = dump.display()
+    observer_config_named(
+        "probe_recorder",
+        &format!(
+            r#"["sh", "-c", "cp \"$PEPPY_RUNTIME_CONFIG\" '{dump}.part' && mv '{dump}.part' '{dump}'; {keep_alive}"]"#,
+            dump = dump.display()
+        ),
     )
 }
 
@@ -372,25 +373,7 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
     let fx = setup().await;
 
     // A live source first, so the seed has a real incarnation to stamp.
-    emulate_cooperative_source(
-        &fx.messenger,
-        &fx.core_node_name,
-        "robot_arm",
-        "arm_1",
-        fx.source_pidfile.clone(),
-    )
-    .await;
-    node_run_command(
-        "arm_1",
-        "robot_arm",
-        Vec::new(),
-        vec![(
-            "controller".to_string(),
-            "test rig: this slot has no peer".to_string(),
-        )],
-    )
-    .execute(&fx.ctx)
-    .expect("source run (participant slot vacant) should succeed");
+    run_source(&fx).await;
 
     let dump_dir = tempfile::tempdir().expect("dump dir");
     let dump = dump_dir.path().join("boot_config.json5");
@@ -426,7 +409,10 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(!raw.is_empty(), "the spawned observer never dumped its boot config");
+    assert!(
+        !raw.is_empty(),
+        "the spawned observer never dumped its boot config"
+    );
 
     let boot: config::runtime::RuntimeConfig =
         serde_json5::from_str(&raw).expect("the boot config a node receives must parse");
