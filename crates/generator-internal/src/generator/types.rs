@@ -334,10 +334,12 @@ impl DependencyContext {
 /// the slot's declared floor holds on every read, which is what lets the
 /// accessor be typed.
 ///
-/// The `one_or_more` prose deliberately stops mid-sentence ("so"): each
-/// generator passes its own API-specific tail (`first()` for Rust, `[0]` for
-/// Python) to [`AccessorDoc::lines`].
-pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
+/// The `one_or_more` prose deliberately stops mid-sentence ("so"): the clause
+/// that finishes it names one language's API, so it comes from `language`
+/// rather than from the shared body. Taking the language here, at construction,
+/// is what keeps a floored accessor from being emitted with the sentence
+/// unfinished.
+pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> AccessorDoc {
     match cardinality {
         Cardinality::One => AccessorDoc {
             summary: "The pairing this module's observer slot observes.",
@@ -347,6 +349,7 @@ pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
                 "the plan binds exactly one pairing to it, so the accessor is singular and",
                 "has no absent case to answer.",
             ],
+            api_note: None,
         },
         Cardinality::ZeroOrOne => AccessorDoc {
             summary: "The pairing this module's observer slot observes, if any.",
@@ -356,6 +359,7 @@ pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
                 "cardinality `zero_or_one`: the deployment binds at most one pairing to",
                 "it, and `None` is the steady state wherever it wrote the slot vacant.",
             ],
+            api_note: None,
         },
         Cardinality::OneOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
@@ -365,6 +369,7 @@ pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
                 "declares cardinality `one_or_more`: the plan binds at least one pairing",
                 "to it, so the set is never empty and",
             ],
+            api_note: Some(language.never_empty_tail()),
         },
         Cardinality::ZeroOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
@@ -374,7 +379,30 @@ pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
                 "declares cardinality `zero_or_more`: the plan may bind no pairing at",
                 "all, so the empty set is an expected steady state.",
             ],
+            api_note: None,
         },
+    }
+}
+
+/// The generated language a doc sentence is being written for. Every accessor
+/// doc is otherwise shared verbatim by both generators; this names the one
+/// place they cannot be, which is where the prose has to spell an API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocLanguage {
+    Rust,
+    Python,
+}
+
+impl DocLanguage {
+    /// The clause finishing a floored set's never-empty sentence, in this
+    /// language's own terms. Shared by the observer accessor and the
+    /// bound-producer accessor, which make the same guarantee about the same
+    /// kind of set and so should word it identically.
+    pub fn never_empty_tail(self) -> &'static str {
+        match self {
+            DocLanguage::Rust => "`first()` is infallible.",
+            DocLanguage::Python => "`[0]` is always valid.",
+        }
     }
 }
 
@@ -385,8 +413,13 @@ pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
 /// the callers' indexing.
 pub struct AccessorDoc {
     pub summary: &'static str,
-    /// The rest of the prose, without [`Self::CLOSING_NOTE`].
+    /// The rest of the prose, without [`Self::api_note`] or
+    /// [`Self::CLOSING_NOTE`].
     pub body: &'static [&'static str],
+    /// The language-specific clause finishing [`Self::body`]'s last sentence,
+    /// where the cardinality leaves one open. Resolved when the doc is built,
+    /// so reading it cannot drop it.
+    pub api_note: Option<&'static str>,
 }
 
 impl AccessorDoc {
@@ -397,23 +430,20 @@ impl AccessorDoc {
         "because a third node's health is not knowable here.",
     ];
 
-    /// Everything after the summary: the cardinality's prose, then the caller's
-    /// own API tail sentence where its cardinality has one, then the closing
-    /// note. The tail is a parameter rather than a field because it names one
-    /// language's API (`first()` in Rust, `[0]` in Python) while this type is
-    /// shared verbatim by both generators, and it sits ahead of the closing note
-    /// because it finishes the cardinality's sentence.
-    pub fn body_lines(&self, api_note: Option<&'static str>) -> impl Iterator<Item = &'static str> {
+    /// Everything after the summary: the cardinality's prose, then its API tail
+    /// sentence where it has one, then the closing note. The tail sits ahead of
+    /// the closing note because it finishes the cardinality's sentence.
+    pub fn body_lines(&self) -> impl Iterator<Item = &'static str> {
         self.body
             .iter()
             .copied()
-            .chain(api_note)
+            .chain(self.api_note)
             .chain(Self::CLOSING_NOTE.iter().copied())
     }
 
     /// Every line in order, for a language with no summary-line convention.
-    pub fn lines(&self, api_note: Option<&'static str>) -> impl Iterator<Item = &'static str> {
-        std::iter::once(self.summary).chain(self.body_lines(api_note))
+    pub fn lines(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.summary).chain(self.body_lines())
     }
 }
 

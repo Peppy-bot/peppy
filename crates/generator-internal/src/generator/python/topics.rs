@@ -342,34 +342,22 @@ fn emit_observer_module_header(
     builder.line(&format!("QOS = {qos}"));
     builder.blank_line();
 
-    let (fn_name, runtime_method, return_type, typing_import, api_note) = match cardinality {
-        Cardinality::One => (
-            "source",
-            "sole_source",
-            "peppylib.ObservedSource",
-            None,
-            None,
-        ),
+    let (fn_name, runtime_method, return_type, typing_import) = match cardinality {
+        Cardinality::One => ("source", "sole_source", "peppylib.ObservedSource", None),
         Cardinality::ZeroOrOne => (
             "source",
             "source",
             "Optional[peppylib.ObservedSource]",
             Some("from typing import Optional"),
-            None,
         ),
-        Cardinality::OneOrMore => (
+        // One arm for both multi cardinalities, because Python cannot spell a
+        // non-empty list: the signatures are identical and the never-empty
+        // guarantee of `one_or_more` lives in the docstring below.
+        Cardinality::OneOrMore | Cardinality::ZeroOrMore => (
             "sources",
             "sources",
             "List[peppylib.ObservedSource]",
             Some("from typing import List"),
-            Some("`[0]` is always valid."),
-        ),
-        Cardinality::ZeroOrMore => (
-            "sources",
-            "sources",
-            "List[peppylib.ObservedSource]",
-            Some("from typing import List"),
-            None,
         ),
     };
     if let Some(import) = typing_import {
@@ -383,14 +371,17 @@ fn emit_observer_module_header(
         "observation_slot_set"
     };
 
-    let doc = crate::generator::types::observed_sources_doc(cardinality);
+    let doc = crate::generator::types::observed_sources_doc(
+        cardinality,
+        crate::generator::types::DocLanguage::Python,
+    );
     builder.line(&format!(
         "def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"
     ));
     builder.indent();
     builder.line(&format!("\"\"\"{}", doc.summary));
     builder.blank_line();
-    for line in doc.body_lines(api_note) {
+    for line in doc.body_lines() {
         builder.line(line);
     }
     builder.line("\"\"\"");

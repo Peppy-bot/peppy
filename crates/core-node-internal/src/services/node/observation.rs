@@ -278,6 +278,12 @@ impl ObservationCoordinator {
         &self,
         observations: &BTreeMap<String, ObservationTargets>,
     ) -> config::runtime::ObservationSeeds {
+        // A non-observer spawn has nothing to stamp, and the live-instance scan
+        // below is not free. Owned here rather than at the call site so every
+        // caller gets the cheap path without knowing this.
+        if observations.is_empty() {
+            return config::runtime::ObservationSeeds::new();
+        }
         let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
         let registry = self.registry.lock().unwrap();
         observations
@@ -290,10 +296,7 @@ impl ObservationCoordinator {
                         let (source_generation, source_live) =
                             self.stamp_source(&registry, &source, &live_instances, &None);
                         config::runtime::ObservationSeedMember {
-                            source: config::runtime::ProducerRef::new(
-                                &target.source.core_node,
-                                &target.source.instance_id,
-                            ),
+                            source: target.source.clone(),
                             source_link_id: target.source_link_id.clone(),
                             source_generation,
                             source_live,
