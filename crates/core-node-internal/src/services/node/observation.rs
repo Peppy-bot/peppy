@@ -428,8 +428,8 @@ impl ObservationCoordinator {
         verdict: &Option<LivenessVerdict<'_>>,
     ) -> (u64, bool) {
         let generation = registry.source_generation.get(source).copied().unwrap_or(0);
-        let live = generation > 0
-            && self.source_is_live(registry, source, live_local_instances, verdict);
+        let live =
+            generation > 0 && self.source_is_live(registry, source, live_local_instances, verdict);
         (generation, live)
     }
 
@@ -667,5 +667,132 @@ impl ObservationCoordinator {
                 "observation_update rejected",
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_node_api::encoding::ObservationTarget;
+    use pmi::{Messenger, MessengerAdapter, MockAdapter};
+
+    /// Minimal root manifest for a stack whose root instance doubles as the
+    /// observed source.
+    const ROOT_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "core_a", tag: "v1" },
+        interfaces: {},
+        execution: {
+            language: "rust",
+            parameters: {},
+            build_cmd: ["true"],
+            run_cmd: ["true"],
+        },
+    }"#;
+
+    const SOURCE_INSTANCE: &str = "arm_1";
+    const OBSERVER_INSTANCE: &str = "obs_1";
+
+    /// A coordinator over a stack whose root instance is `arm_1`, Running
+    /// from construction, with `obs_1` registered to observe it. The stack
+    /// (liveness authority) reports the source live the whole time, while
+    /// the incarnation counter starts unrecorded: exactly the two-authority
+    /// disagreement `stamp_source` must never surface as a torn stamp.
+    fn coordinator_observing_the_root(temp_dir: &tempfile::TempDir) -> ObservationCoordinator {
+        let root_config = config::node::NodeConfigParser::from_content(ROOT_CONFIG)
+            .expect("test root config parses");
+        let stack = Arc::new(NodeStack::new(
+            root_config,
+            Some(config::runtime::Name::new(SOURCE_INSTANCE).expect("valid test instance id")),
+            temp_dir.path(),
+        ));
+        let messenger = MessengerHandle::from_shared(Arc::new(tokio::sync::Mutex::new(
+            Messenger::new(MessengerAdapter::Mock(MockAdapter::default())),
+        )));
+        let coordinator = ObservationCoordinator::new(stack, messenger, "core_a", "core_root_inst");
+        coordinator.register_instance(OBSERVER_INSTANCE, &planned_observations());
+        coordinator
+    }
+
+    fn planned_observations() -> BTreeMap<String, ObservationTargets> {
+        ObservationTargets::slots_from_plan(
+            [(
+                "sole_arm".to_string(),
+                vec![ObservationTarget {
+                    source: ProducerRef::new("core_a", SOURCE_INSTANCE),
+                    source_link_id: "controller".to_string(),
+                }],
+            )]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    /// The seed-stamping invariants under a concurrent source lifecycle: an
+    /// observer spawning while its source restarts in a loop. Generation and
+    /// liveness come from different authorities (the registry and the node
+    /// stack), so this hammers the window between them and asserts what a
+    /// seed is never allowed to say, on every interleaving reached:
+    ///
+    /// - membership is always exactly the registered plan;
+    /// - no member ever claims a live source that has not run
+    ///   (`generation == 0 && live`), the invariant `stamp_source` clamps;
+    /// - a member's generation never decreases between successive seeds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_source_lifecycle_never_produces_a_torn_seed_stamp() {
+        const RESTARTS: u64 = 200;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let coordinator = Arc::new(coordinator_observing_the_root(&temp_dir));
+
+        let lifecycle = {
+            let coordinator = Arc::clone(&coordinator);
+            tokio::spawn(async move {
+                for _ in 0..RESTARTS {
+                    coordinator.on_instance_running(SOURCE_INSTANCE).await;
+                    coordinator.on_instance_down(SOURCE_INSTANCE).await;
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        // A fixed budget of concurrent spawns rather than a wait-for-the-other
+        // loop, so both sides run to completion and every interleaving the
+        // scheduler reaches is asserted the same way.
+        let observations = planned_observations();
+        let mut last_generation = 0u64;
+        for _ in 0..RESTARTS {
+            let seeds = coordinator.seed_for_spawn(&observations);
+            let members = seeds
+                .get("sole_arm")
+                .expect("the registered slot is always seeded");
+            assert_eq!(members.len(), 1, "membership is the plan, always");
+            let member = &members[0];
+            assert_eq!(member.source.instance_id, SOURCE_INSTANCE);
+            assert_eq!(member.source_link_id, "controller");
+            assert!(
+                !(member.source_generation == 0 && member.source_live),
+                "a seed claimed a live source that has not run"
+            );
+            assert!(
+                member.source_generation >= last_generation,
+                "a member's generation went backwards: {} -> {}",
+                last_generation,
+                member.source_generation
+            );
+            last_generation = member.source_generation;
+            tokio::task::yield_now().await;
+        }
+        lifecycle.await.expect("lifecycle task");
+
+        // Quiesced: the counter recorded every Running transition, and the
+        // registrations survived the churn.
+        let final_seed = coordinator.seed_for_spawn(&observations);
+        assert_eq!(final_seed.get("sole_arm").expect("slot seeded").len(), 1);
+        assert_eq!(
+            final_seed.get("sole_arm").expect("slot seeded")[0].source_generation,
+            RESTARTS,
+            "every Running transition advances the incarnation exactly once"
+        );
     }
 }
