@@ -49,6 +49,7 @@ async fn sim_clock_service_serves_external_tick_after_publish() {
         &started.caller_handle,
         &started.core_node_name,
         CALLER_INSTANCE_ID,
+        std::num::NonZeroU64::MIN,
         common::core_node_target(&started.core_node_name),
         None,
         TopicId::Clock.name(),

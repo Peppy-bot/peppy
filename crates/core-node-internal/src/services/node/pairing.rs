@@ -32,6 +32,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 use super::common::SlotUpdateClient;
+use super::incarnation::{IncarnationLedger, SourceKey};
 
 /// How long a single `peer_update` delivery may take before the operation is
 /// treated as failed and reverted. The service is pre-setup (registered
@@ -48,17 +49,23 @@ const PAIR_COMMIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct PairingCoordinator {
     updates: SlotUpdateClient,
+    /// The shared per-source incarnation authority, read when a pin is
+    /// stamped: a delivered pin carries the peer's current incarnation so
+    /// the receiving node's subscription addresses exactly the run that is
+    /// (or is about to be) publishing.
+    incarnations: Arc<IncarnationLedger>,
     /// Serializes every pairing operation end-to-end (registry commit AND
     /// delivery), so reverts can trust that no other operation interleaved.
     op_lock: tokio::sync::Mutex<()>,
 }
 
 impl PairingCoordinator {
-    pub fn new(
+    pub(crate) fn new(
         node_stack: Arc<NodeStack>,
         messenger: MessengerHandle,
         core_node_name: impl Into<String>,
         caller_instance_id: impl Into<String>,
+        incarnations: Arc<IncarnationLedger>,
     ) -> Self {
         Self {
             updates: SlotUpdateClient::new(
@@ -67,6 +74,7 @@ impl PairingCoordinator {
                 core_node_name,
                 caller_instance_id,
             ),
+            incarnations,
             op_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -211,6 +219,15 @@ impl PairingCoordinator {
                     // those differ.
                     producer: ProducerRef::new(peer.slot.core_node.clone(), &peer.slot.instance_id),
                     peer_link_id: peer.slot.link_id.clone(),
+                    // Local peers stamp authoritatively (this daemon allocated
+                    // the number at their spawn); a remote peer stamps this
+                    // daemon's mirror, which is zero or stale until that peer's
+                    // own start re-delivers this pin through `pair_commit` with
+                    // the authoritative value.
+                    peer_incarnation: self.incarnations.current(&SourceKey::new(
+                        peer.slot.core_node.as_str(),
+                        peer.slot.instance_id.as_str(),
+                    )),
                 };
                 self.send_peer_update(&endpoint.slot, Some(pin)).await
             } else {
@@ -302,6 +319,13 @@ impl PairingCoordinator {
             peer: ProducerRef::new(&peer.slot.core_node, &peer.slot.instance_id),
             peer_link_id: peer.slot.link_id.clone(),
             peer_role: peer.role.clone(),
+            // The peer endpoint lives on THIS daemon (a cross-daemon pair
+            // always has one local half, and this call announces it), so the
+            // ledger answers authoritatively.
+            peer_incarnation: self.incarnations.current(&SourceKey::new(
+                peer.slot.core_node.as_str(),
+                peer.slot.instance_id.as_str(),
+            )),
         };
         let response = peppylib::core_node::transport::poll(
             &request,
@@ -340,9 +364,17 @@ impl PairingCoordinator {
             .pair_slot_with_remote(&local, &remote, &remote_meta)
             .map_err(|e| e.to_string())?;
 
+        // The sender allocated the peer's incarnation, so its report is
+        // authoritative; warming the mirror also keeps a later locally
+        // stamped pin (a re-delivery from this side) from rolling back.
+        self.incarnations.record_reported(
+            &SourceKey::from_producer(&request.peer),
+            request.peer_incarnation,
+        );
         let pin = PeerInfo {
             producer: request.peer.clone(),
             peer_link_id: request.peer_link_id.clone(),
+            peer_incarnation: request.peer_incarnation,
         };
         if let Err(reason) = self.send_peer_update(&local, Some(pin)).await {
             // Undo the commit before answering: a pair this daemon recorded but
@@ -1012,6 +1044,7 @@ mod tests {
             peer: ProducerRef::new("core_b", "planner_inst"),
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
+            peer_incarnation: 1,
         };
 
         let (local, remote, meta) =
@@ -1051,6 +1084,7 @@ mod tests {
             peer: ProducerRef::new("core_b", "planner_inst"),
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
+            peer_incarnation: 1,
         };
 
         let error = PairingCoordinator::slots_from_commit_request(&request, TEST_CORE)

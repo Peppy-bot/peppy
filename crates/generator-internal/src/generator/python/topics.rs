@@ -210,6 +210,7 @@ pub fn build_emitted_topic(
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.incarnation(),");
     builder.line(&format!("{target_expr},"));
     builder.line("TOPIC_NAME,");
     builder.line("QOS,");
@@ -300,6 +301,7 @@ pub fn build_peer_emitted_topic(
     builder.line("node_runner.messenger(),");
     builder.line("node_runner.bound_core_node(),");
     builder.line("node_runner.bound_instance_id(),");
+    builder.line("node_runner.incarnation(),");
     builder.line("peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),");
     builder.line("TOPIC_NAME,");
     builder.line("QOS,");

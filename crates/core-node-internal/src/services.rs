@@ -536,6 +536,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 Arc::clone(&self.slice_ownership),
+                Arc::clone(ctx.relationships.incarnations()),
             )
             .boxed(),
             ServiceId::ParticipantReserve => federation::listen_for_participant_reserve(
@@ -558,6 +559,11 @@ impl CoreNode {
             )
             .boxed(),
             ServiceId::RelationshipNotify => federation::listen_for_relationship_notify(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
+            ServiceId::IncarnationQuery => federation::listen_for_incarnation_query(
                 self.federation_context(ctx),
                 self.node_name(),
             )
@@ -596,6 +602,7 @@ impl CoreNode {
                 Arc::clone(&self.node_stack),
                 self.peppy_dirs.clone(),
                 self.node_startup_timeout,
+                Arc::clone(ctx.relationships.incarnations()),
             )
             .boxed(),
             ServiceId::NodeStop => node::listen_for_node_stop(
@@ -847,11 +854,13 @@ impl CoreNode {
         } else {
             Arc::new(WallClockSource)
         };
+        let incarnations = Arc::new(node::incarnation::IncarnationLedger::default());
         let pairing = Arc::new(node::PairingCoordinator::new(
             Arc::clone(&self.node_stack),
             self.messenger.clone(),
             core_node_name,
             self.instance_id(),
+            Arc::clone(&incarnations),
         ));
         let relationships = node::RelationshipCoordinators::new(
             Arc::clone(&pairing),
@@ -860,6 +869,7 @@ impl CoreNode {
                 self.messenger.clone(),
                 core_node_name,
                 self.instance_id(),
+                Arc::clone(&incarnations),
             )),
             Arc::new(node::RelationshipNotifier::new(
                 self.messenger.clone(),
@@ -867,6 +877,7 @@ impl CoreNode {
                 self.instance_id(),
                 pairing,
             )),
+            incarnations,
         );
         let ctx = ListenerCtx {
             core_node_name,

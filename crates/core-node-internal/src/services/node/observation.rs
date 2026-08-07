@@ -5,12 +5,13 @@
 //! Observation is not a registry commit like pairing, so there is nothing to
 //! reserve or revert: an observer passively taps a producer's role topics
 //! without joining the pairing and without claiming any slot. The coordinator
-//! only tracks who observes whom (so a source coming up can notify its
-//! observers) and a per-source incarnation generation (so an observer drops and
-//! redeclares one member's wire subscription when that member's source
-//! restarts). Delivery is best-effort: a push that fails is logged, never fatal,
-//! because an observer that misses an update simply stays on its last state
-//! until the next lifecycle notify.
+//! tracks who observes whom (so a source coming up can notify its observers)
+//! and reads each source's incarnation from the shared
+//! [`IncarnationLedger`] (so an observer drops and redeclares one member's
+//! wire subscription onto the new incarnation's keyexpr when that member's
+//! source restarts). Delivery is best-effort: a push that fails is logged,
+//! never fatal, because an observer that misses an update simply stays on
+//! its last state until the next lifecycle notify.
 //!
 //! Delivery is per SLOT, never per member: a slot's update carries its complete
 //! ordered member set, so the node replaces the slot wholesale and the plan's
@@ -20,9 +21,11 @@
 //!
 //! Two counters ride each update, exactly as the wire type documents:
 //! `sequence` (strictly increasing, seeded from unix-millis at daemon start)
-//! rejects stale re-deliveries; a member's `source_generation` advances only
-//! when that source's incarnation changes (it reaches Running again) and is the
-//! sole discriminator between old-source and new-source messages on the wire.
+//! rejects stale re-deliveries; a member's `source_incarnation` is the
+//! number that source's current run publishes under (allocated at its spawn
+//! by its owning daemon), and pinning it in the member's wire subscription
+//! is what makes old-run and new-run messages, byte-identical otherwise,
+//! structurally distinct.
 
 use core_node_api::encoding::ObservationTargets;
 use daemon_config::launcher::PlannedObservation;
@@ -31,7 +34,7 @@ use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use peppylib::encoding::observation_update::ObservationUpdateRequest;
 use peppylib::messaging::{
-    OBSERVATION_UPDATE_SERVICE, ObservedMemberState, ObservedSource, ProducerRef,
+    OBSERVATION_UPDATE_SERVICE, ObservedMemberState, ObservedSource,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -39,39 +42,12 @@ use std::time::Duration;
 use tracing::warn;
 
 use super::common::{SlotUpdateClient, SlotUpdateTarget};
+use super::incarnation::{IncarnationLedger, SourceKey};
 
 /// How long a single `observation_update` delivery may take before it is
 /// treated as failed. The service is pre-setup (registered before the node's
 /// ready signal), so a healthy observer answers promptly.
 const OBSERVATION_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// A source instance's full address. Two daemons can host same-named
-/// instances, so the pair is the identity: keying the registry on the instance
-/// id alone would let a local `wrist_cam_inst` and a remote one share an
-/// incarnation counter and cross-deliver each other's pins.
-///
-/// Deliberately coarser than the [`ObservedSource`] it is derived from, which
-/// also carries the producer-side link_id: an incarnation counter belongs to
-/// the source instance, so an instance observed through two of its own pairing
-/// slots must advance one counter, not two.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct SourceKey {
-    core_node: String,
-    instance_id: String,
-}
-
-impl SourceKey {
-    fn new(core_node: impl Into<String>, instance_id: impl Into<String>) -> Self {
-        Self {
-            core_node: core_node.into(),
-            instance_id: instance_id.into(),
-        }
-    }
-
-    fn from_producer(producer: &ProducerRef) -> Self {
-        Self::new(&producer.core_node, &producer.instance_id)
-    }
-}
 
 /// One member of one observer slot, as the daemon holds it: a slot with N
 /// members holds N records, in plan order.
@@ -108,25 +84,16 @@ struct Registry {
     /// always local: delivery to an observer node stays on the daemon that owns
     /// it, even when the source is remote.
     by_observer: BTreeMap<String, Vec<ObserverRecord>>,
-    /// source → its current incarnation generation. Advances only on the
-    /// source reaching Running; never decreases (kept across the source's own
-    /// down/up so a restart is a strictly newer generation).
-    ///
-    /// A remote source's transitions arrive as notifications from its own
-    /// daemon and feed exactly this counter, which is what makes an observer
-    /// drop and redeclare across a remote restart the same way it does across
-    /// a local one.
-    source_generation: BTreeMap<SourceKey, u64>,
     /// Sources on OTHER daemons currently reported up.
     ///
-    /// Tracked separately from [`Self::source_generation`] because the two
-    /// answer different questions: the generation is an incarnation counter
-    /// that is deliberately RETAINED across a source's own down/up (so a
-    /// restart is strictly newer), while this is the up/down state itself.
-    /// Reading liveness off the retained generation reported a remote source
-    /// live for as long as anything still observed it, which is precisely
-    /// after it went down. A local source needs no entry here: the node stack
-    /// is the authority for instances this daemon runs.
+    /// Tracked separately from the incarnation ledger because the two answer
+    /// different questions: the incarnation is deliberately RETAINED across a
+    /// source's own down/up (so a restart is strictly newer), while this is
+    /// the up/down state itself. Reading liveness off the retained
+    /// incarnation would report a remote source live for as long as anything
+    /// still observed it, which is precisely after it went down. A local
+    /// source needs no entry here: the node stack is the authority for
+    /// instances this daemon runs.
     remote_live: BTreeSet<SourceKey>,
 }
 
@@ -153,18 +120,23 @@ struct LivenessVerdict<'a> {
 
 pub struct ObservationCoordinator {
     updates: SlotUpdateClient,
-    /// Serializes lifecycle notifications so a source's generation bump and its
-    /// fan-out delivery cannot interleave with a concurrent notify.
+    /// The shared per-source incarnation authority. Read-only here: local
+    /// numbers are allocated on the spawn path, remote ones recorded from
+    /// notifications and query answers, both outside this coordinator.
+    incarnations: Arc<IncarnationLedger>,
+    /// Serializes lifecycle notifications so one event's fan-out delivery
+    /// cannot interleave with a concurrent notify.
     op_lock: tokio::sync::Mutex<()>,
     registry: std::sync::Mutex<Registry>,
 }
 
 impl ObservationCoordinator {
-    pub fn new(
+    pub(crate) fn new(
         node_stack: Arc<NodeStack>,
         messenger: MessengerHandle,
         core_node_name: impl Into<String>,
         caller_instance_id: impl Into<String>,
+        incarnations: Arc<IncarnationLedger>,
     ) -> Self {
         Self {
             updates: SlotUpdateClient::new(
@@ -173,6 +145,7 @@ impl ObservationCoordinator {
                 core_node_name,
                 caller_instance_id,
             ),
+            incarnations,
             op_lock: tokio::sync::Mutex::new(()),
             registry: std::sync::Mutex::new(Registry::default()),
         }
@@ -184,6 +157,11 @@ impl ObservationCoordinator {
     /// instance ids inherits stale observations and a source coming back up
     /// would deliver a pin the user never linked this time. `stack launch` does
     /// not need it because [`register_planned`] already replaces the registry.
+    ///
+    /// The incarnation ledger deliberately survives: a fresh stack reusing an
+    /// instance id must publish under a strictly newer incarnation, or a
+    /// subscription pinned to the previous stack's run could match the new
+    /// one.
     pub fn clear(&self) {
         *self.registry.lock().unwrap() = Registry::default();
     }
@@ -287,7 +265,7 @@ impl ObservationCoordinator {
                     .into_iter()
                     .map(|target| {
                         let source = SourceKey::from_producer(&target.source);
-                        let (source_generation, source_live) =
+                        let (source_incarnation, source_live) =
                             self.stamp_source(&registry, &source, &live_instances, &None);
                         config::runtime::ObservationSeedMember {
                             source: config::runtime::ProducerRef::new(
@@ -295,7 +273,7 @@ impl ObservationCoordinator {
                                 &target.source.instance_id,
                             ),
                             source_link_id: target.source_link_id.clone(),
-                            source_generation,
+                            source_incarnation,
                             source_live,
                         }
                     })
@@ -305,37 +283,96 @@ impl ObservationCoordinator {
             .collect()
     }
 
-    /// An instance reached Running. If it is a source, its incarnation
-    /// generation advances and every slot observing it is re-delivered whole.
-    /// If it is itself an observer, every slot it declares is delivered, so it
-    /// learns its member set even while some members are still down. Both can
-    /// hold for one instance.
+    /// Fetches authoritative incarnations for every REMOTE source in
+    /// `observations` from the daemons that own them, before the seeds are
+    /// stamped. Notifications only flow on lifecycle transitions, so a remote
+    /// source that was already Running when this observer spawns (and may
+    /// never restart) would otherwise seed at whatever the mirror last heard,
+    /// possibly zero, leaving the member structurally deaf.
+    ///
+    /// Queried unconditionally rather than only on a zero mirror: the answer
+    /// is authoritative and the ledger converges on the maximum, so a stale
+    /// mirror (a lost notification) is healed here too. Best-effort per
+    /// daemon: an unreachable owner is logged and its sources seed from the
+    /// mirror, healing on their next lifecycle notify.
+    pub async fn refresh_remote_incarnations(
+        &self,
+        observations: &BTreeMap<String, ObservationTargets>,
+    ) {
+        let mut by_core_node: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for target in observations.values().flatten() {
+            if target.source.core_node != self.updates.core_node_name() {
+                by_core_node
+                    .entry(target.source.core_node.clone())
+                    .or_default()
+                    .insert(target.source.instance_id.clone());
+            }
+        }
+        for (core_node, instance_ids) in by_core_node {
+            let request = core_node_api::encoding::IncarnationQueryRequest {
+                instance_ids: instance_ids.into_iter().collect(),
+            };
+            let response = peppylib::core_node::transport::poll(
+                &request,
+                self.updates.messenger(),
+                self.updates.core_node_name(),
+                self.updates.caller_instance_id(),
+                &core_node,
+                OBSERVATION_UPDATE_TIMEOUT,
+            )
+            .await;
+            match response {
+                Ok(answer) => {
+                    for entry in answer.entries {
+                        self.incarnations.record_reported(
+                            &SourceKey::new(&core_node, &entry.instance_id),
+                            entry.incarnation,
+                        );
+                    }
+                }
+                Err(e) => warn!(
+                    "could not query `{core_node}` for source incarnations ({e}); its sources                      seed from this daemon's mirror until their next lifecycle notify"
+                ),
+            }
+        }
+    }
+
+    /// An instance reached Running. If it is a source, every slot observing
+    /// it is re-delivered whole, stamped with the incarnation the spawn path
+    /// allocated. If it is itself an observer, every slot it declares is
+    /// delivered, so it learns its member set even while some members are
+    /// still down. Both can hold for one instance.
     pub async fn on_instance_running(&self, instance_id: &str) {
         let source = SourceKey::new(self.updates.core_node_name(), instance_id);
         self.source_reached_running(&source, Some(instance_id))
             .await;
     }
 
-    /// A source on ANOTHER daemon reached Running, as reported by that daemon.
+    /// A source on ANOTHER daemon reached Running under `incarnation`, as
+    /// reported by the daemon that allocated that number.
     ///
-    /// An observing daemon cannot see a remote source's lifecycle: the
-    /// incarnation counter is what makes an observer drop and redeclare its
-    /// subscription across a source restart, and locally it only advances from
-    /// local lifecycle events. Feeding the notification into the same fan-out
-    /// is what makes a remote restart indistinguishable from a local one to
-    /// the observer node.
+    /// An observing daemon cannot see a remote source's lifecycle: recording
+    /// the reported incarnation is what makes an observer drop and redeclare
+    /// its subscription onto the new run's keyexpr across a remote restart,
+    /// exactly as it does across a local one.
     ///
-    /// Idempotent in the sense that matters: a duplicate notification advances
-    /// the generation again and redelivers, which the observer treats as a
-    /// newer absolute state and converges on.
-    pub async fn remote_source_reached_running(&self, core_node: &str, instance_id: &str) {
-        self.source_reached_running(&SourceKey::new(core_node, instance_id), None)
-            .await;
+    /// Idempotent by construction: the ledger converges on the maximum
+    /// reported value, so a duplicate or reordered notification redelivers
+    /// the same state rather than inventing a newer incarnation.
+    pub async fn remote_source_reached_running(
+        &self,
+        core_node: &str,
+        instance_id: &str,
+        incarnation: u64,
+    ) {
+        let source = SourceKey::new(core_node, instance_id);
+        self.incarnations.record_reported(&source, incarnation);
+        self.source_reached_running(&source, None).await;
     }
 
     /// A source on another daemon stopped or died. Its observers are told the
-    /// source went down; the generation is retained so a later restart is a
-    /// strictly newer incarnation, exactly as for a local source.
+    /// source went down; its incarnation is retained so a later restart is a
+    /// strictly newer one, exactly as for a local source.
     pub async fn remote_source_stopped(&self, core_node: &str, instance_id: &str) {
         let _guard = self.op_lock.lock().await;
         self.mark_source_down(&SourceKey::new(core_node, instance_id))
@@ -354,27 +391,17 @@ impl ObservationCoordinator {
     ) {
         let _guard = self.op_lock.lock().await;
 
-        // As a source: every time an instance reaches Running is a new
-        // incarnation, so advance its generation unconditionally, the documented
-        // "incarnation counter" semantics. Bumping even when no observer is
-        // registered yet is what lets a source that started BEFORE its observer
-        // (the `node run` ordering, where the source is an already-live instance
-        // and the observer registers itself later) still hand that observer a
-        // generation >= 1, distinct from the boot sentinel 0, when the observer
-        // comes up and reads it. Under `stack launch` observers are registered
-        // first, so this already held; making it unconditional makes the two
-        // paths deliver identically regardless of start order.
+        // The incarnation itself is NOT advanced here: a local source's
+        // number was allocated on its spawn path (strictly before the
+        // process could publish anything), and a remote source's arrives
+        // with the notification. Running is when observers are told, not
+        // when the number is minted, so a delivery lost between spawn and
+        // this hook can never leave an observer pinned to a number no
+        // publisher stamps.
         let is_local_source = source.core_node == self.updates.core_node_name();
         let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
         let deliveries = {
             let mut registry = self.registry.lock().unwrap();
-            {
-                let counter = registry
-                    .source_generation
-                    .entry(source.clone())
-                    .or_insert(0);
-                *counter += 1;
-            }
             // A remote source has no local authority to ask, so its report of
             // reaching Running IS the record that it is up.
             if !is_local_source {
@@ -409,17 +436,17 @@ impl ObservationCoordinator {
         .await;
     }
 
-    /// One source's `(generation, liveness)` stamp. The single stamping rule
+    /// One source's `(incarnation, liveness)` stamp. The single stamping rule
     /// for live deliveries and spawn seeds, so the two cannot drift.
     ///
-    /// Generation and liveness come from different authorities (the registry
-    /// and the node stack), which can momentarily disagree: a source can
-    /// commit to Running before its transition notify records the
-    /// incarnation. An unrecorded incarnation therefore stamps down, so the
-    /// pair can never claim a live source that has not run; the notify that
-    /// records it re-delivers the true state moments later. The mirror-image
-    /// window (a restart exposing the previous generation as live) is
-    /// likewise transient and healed by the same notify.
+    /// Incarnation and liveness come from different authorities (the ledger
+    /// and the node stack), which can momentarily disagree: a remote source
+    /// can be reported up before its incarnation report lands. An unrecorded
+    /// incarnation therefore stamps down, so the pair can never claim a live
+    /// source that has not run; the notify that records it re-delivers the
+    /// true state moments later. The mirror-image window (a restart exposing
+    /// the previous incarnation as live) is likewise transient and healed by
+    /// the same notify.
     fn stamp_source(
         &self,
         registry: &Registry,
@@ -427,10 +454,10 @@ impl ObservationCoordinator {
         live_local_instances: &HashSet<String>,
         verdict: &Option<LivenessVerdict<'_>>,
     ) -> (u64, bool) {
-        let generation = registry.source_generation.get(source).copied().unwrap_or(0);
-        let live = generation > 0
+        let incarnation = self.incarnations.current(source);
+        let live = incarnation > 0
             && self.source_is_live(registry, source, live_local_instances, verdict);
-        (generation, live)
+        (incarnation, live)
     }
 
     /// Whether a source is currently up, from whichever authority owns it: the
@@ -483,7 +510,7 @@ impl ObservationCoordinator {
         let deliveries = {
             let mut registry = self.registry.lock().unwrap();
             // Assembled before the cleanup below, so the down source's members
-            // still carry the generation they last ran under.
+            // still carry the incarnation they last ran under.
             let deliveries = self.assemble_deliveries(
                 &registry,
                 Self::slots_observing(&registry, source),
@@ -493,11 +520,12 @@ impl ObservationCoordinator {
                     live: false,
                 }),
             );
-            // Unconditionally, unlike the generation: whether anything still
-            // observes this source has no bearing on whether it is up. A
-            // no-op for a local source, which never gets a marker.
+            // Whether anything still observes this source has no bearing on
+            // whether it is up. A no-op for a local source, which never gets
+            // a marker. The incarnation ledger is deliberately NOT touched:
+            // retaining the number is what makes the source's next run
+            // strictly newer.
             registry.remote_live.remove(source);
-            Self::forget_unobserved_source_locked(&mut registry, source);
             deliveries
         };
         self.deliver_many(
@@ -569,10 +597,10 @@ impl ObservationCoordinator {
                     .filter(|record| record.observer_link_id == slot.observer_link_id)
                     .map(|record| {
                         let source = record.source();
-                        let (source_generation, source_live) =
+                        let (source_incarnation, source_live) =
                             self.stamp_source(registry, &source, live_local_instances, &verdict);
                         ObservedMemberState {
-                            source_generation,
+                            source_incarnation,
                             source_live,
                             source: record.pin.clone(),
                         }
@@ -581,19 +609,6 @@ impl ObservationCoordinator {
                 Delivery { slot, members }
             })
             .collect()
-    }
-
-    /// Keeps a source generation only while at least one observer may
-    /// reconnect to it. This bounds the registry on churny daemons.
-    fn forget_unobserved_source_locked(registry: &mut Registry, source: &SourceKey) {
-        let still_observed = registry
-            .by_observer
-            .values()
-            .flatten()
-            .any(|record| &record.source() == source);
-        if !still_observed {
-            registry.source_generation.remove(source);
-        }
     }
 
     /// Delivers independent absolute-state updates concurrently. Entity labels

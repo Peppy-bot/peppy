@@ -8,6 +8,7 @@ mod env;
 mod feedback;
 pub(crate) mod gate;
 mod git_utils;
+pub(crate) mod incarnation;
 mod info;
 mod init;
 mod logging;
@@ -110,6 +111,7 @@ pub(crate) struct RelationshipCoordinators {
     pairing: Arc<PairingCoordinator>,
     observation: Arc<ObservationCoordinator>,
     notifier: Arc<RelationshipNotifier>,
+    incarnations: Arc<incarnation::IncarnationLedger>,
 }
 
 impl RelationshipCoordinators {
@@ -117,11 +119,13 @@ impl RelationshipCoordinators {
         pairing: Arc<PairingCoordinator>,
         observation: Arc<ObservationCoordinator>,
         notifier: Arc<RelationshipNotifier>,
+        incarnations: Arc<incarnation::IncarnationLedger>,
     ) -> Self {
         Self {
             pairing,
             observation,
             notifier,
+            incarnations,
         }
     }
 
@@ -135,6 +139,10 @@ impl RelationshipCoordinators {
 
     pub(crate) fn notifier(&self) -> &Arc<RelationshipNotifier> {
         &self.notifier
+    }
+
+    pub(crate) fn incarnations(&self) -> &Arc<incarnation::IncarnationLedger> {
+        &self.incarnations
     }
 
     /// Tears down every cross-instance relationship held by `instance_id`.

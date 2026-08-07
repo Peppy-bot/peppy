@@ -3401,7 +3401,7 @@ async fn stack_launch_delivers_observer_member_sets() {
 
     // By the time launch returns, every observer slot holds its complete member
     // set, each member pinned to its source's producer-side `controller` slot at
-    // a live generation.
+    // a live incarnation.
     let slot_members = |link_id: &str| -> Vec<peppylib::messaging::ObservedMemberState> {
         obs_receivers[link_id].borrow().members.clone()
     };
@@ -3412,9 +3412,9 @@ async fn stack_launch_delivers_observer_member_sets() {
     assert_eq!(watch[0].source.source_link_id, "controller");
     assert!(watch[0].source_live, "the source is Running, so it is live");
     assert!(
-        watch[0].source_generation >= 1,
-        "a live source carries a bumped incarnation generation, got {}",
-        watch[0].source_generation
+        watch[0].source_incarnation >= 1,
+        "a live source carries a bumped incarnation incarnation, got {}",
+        watch[0].source_incarnation
     );
 
     let watched = slot_members("watched");
@@ -3429,8 +3429,8 @@ async fn stack_launch_delivers_observer_member_sets() {
     assert!(
         watched.iter().all(|member| member.source_live
             && member.source.source_link_id == "controller"
-            && member.source_generation >= 1),
-        "every member is pinned to its source's participant slot at a live generation: {watched:?}"
+            && member.source_incarnation >= 1),
+        "every member is pinned to its source's participant slot at a live incarnation: {watched:?}"
     );
 
     assert!(

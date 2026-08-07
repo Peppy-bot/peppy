@@ -142,12 +142,15 @@ impl RelationshipNotifier {
             .set(instance_id, core_nodes, &self.core_node_name);
     }
 
-    /// Reports that `instance_id` reached Running under a fresh incarnation.
+    /// Reports that `instance_id` reached Running under `incarnation`, the
+    /// number this daemon allocated at its spawn.
     ///
-    /// This is what makes a remote observer drop and redeclare its
-    /// subscription across a source restart, exactly as a local one does.
-    pub(crate) async fn announce_running(&self, instance_id: &str) {
-        self.announce(instance_id, RelationshipEvent::ReachedRunning)
+    /// Carrying the value (rather than letting receivers count events) is
+    /// what makes a remote observer's re-pinned subscription address exactly
+    /// the keyexpr this run publishes under, and it makes duplicates truly
+    /// idempotent: receivers converge on the reported number.
+    pub(crate) async fn announce_running(&self, instance_id: &str, incarnation: u64) {
+        self.announce(instance_id, RelationshipEvent::ReachedRunning { incarnation })
             .await;
     }
 
@@ -188,7 +191,7 @@ impl RelationshipNotifier {
                         "could not tell `{core_node}` that `{instance_id}` {} ({e}); that \
                          daemon's view of this instance is stale until its next update",
                         match event {
-                            RelationshipEvent::ReachedRunning => "reached Running",
+                            RelationshipEvent::ReachedRunning { .. } => "reached Running",
                             RelationshipEvent::Stopped => "stopped",
                         }
                     );

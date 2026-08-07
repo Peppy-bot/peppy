@@ -116,12 +116,14 @@ pub fn build_topic_publisher(
             let as_topic = #topic_literal;
             let as_instance_id = node_runner.processor().bound_instance_id();
             let with_core_node = node_runner.processor().bound_core_node();
+            let as_incarnation = node_runner.processor().incarnation();
             let as_target = #target_expr;
 
             let publisher = peppylib::TopicMessenger::declare_publisher(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
+                as_incarnation,
                 as_target,
                 None,
                 as_topic,
@@ -324,12 +326,14 @@ pub fn build_peer_topic_publisher(
             let qos = #qos_tokens;
             let as_instance_id = node_runner.processor().bound_instance_id();
             let with_core_node = node_runner.processor().bound_core_node();
+            let as_incarnation = node_runner.processor().incarnation();
             let as_target = peppylib::messaging::SenderTarget::pairing(PAIRING_NAME, PAIRING_TAG)?;
 
             let publisher = peppylib::TopicMessenger::declare_publisher(
                 node_runner.messenger(),
                 with_core_node,
                 as_instance_id,
+                as_incarnation,
                 as_target,
                 Some(LINK_ID),
                 TOPIC_NAME,

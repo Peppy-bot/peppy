@@ -189,6 +189,10 @@ async fn declare_sensor_publisher(
         messenger,
         core_node_name,
         instance_id,
+        // A daemon's instance_id is already per-boot unique, so its infra
+        // topics need no incarnation discrimination and their subscribers
+        // wildcard the segment; the constant satisfies the publish shape.
+        std::num::NonZeroU64::MIN,
         SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
         None,
         topic,

@@ -15,7 +15,7 @@ use node_stack::NodeStack;
 /// Names of the nodes that `(name, tag)` directly depends on.
 pub fn dependency_names(stack: &NodeStack, name: &str, tag: &str) -> Vec<String> {
     stack
-        .to_serialized_graph()
+        .to_serialized_graph(&|_, _| 0)
         .edges
         .iter()
         .filter(|edge| edge.via_contract.is_none())
@@ -27,7 +27,7 @@ pub fn dependency_names(stack: &NodeStack, name: &str, tag: &str) -> Vec<String>
 /// `(name, tag)` pairs of the nodes that `(name, tag)` directly depends on.
 pub fn dependency_name_tags(stack: &NodeStack, name: &str, tag: &str) -> Vec<(String, String)> {
     stack
-        .to_serialized_graph()
+        .to_serialized_graph(&|_, _| 0)
         .edges
         .iter()
         .filter(|edge| edge.via_contract.is_none())
@@ -39,7 +39,7 @@ pub fn dependency_name_tags(stack: &NodeStack, name: &str, tag: &str) -> Vec<(St
 /// Names of the nodes that directly depend on `(name, tag)`.
 pub fn dependent_names(stack: &NodeStack, name: &str, tag: &str) -> Vec<String> {
     stack
-        .to_serialized_graph()
+        .to_serialized_graph(&|_, _| 0)
         .edges
         .iter()
         .filter(|edge| edge.via_contract.is_none())

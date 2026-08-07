@@ -361,7 +361,7 @@ async fn serialized_graph_overlays_pairing_slots() {
     .await;
 
     // Unpaired: both slots surface with Unpaired bindings + manifest metadata.
-    let graph = stack.to_serialized_graph();
+    let graph = stack.to_serialized_graph(&|_, _| 0);
     let arm_node = graph.find_node("robot_arm", "v1").expect("arm in graph");
     let arm_slots = &arm_node.instances[0].pairing_slots;
     let slot = arm_slots.get("controller").expect("declared slot surfaces");
@@ -376,13 +376,13 @@ async fn serialized_graph_overlays_pairing_slots() {
             &SlotAddr::new(TEST_CORE_NODE, "arm_1", "controller"),
         )
         .expect("pair");
-    let graph = stack.to_serialized_graph();
+    let graph = stack.to_serialized_graph(&|_, _| 0);
     let ctrl_node = graph
         .find_node("arm_controller", "v1")
         .expect("controller in graph");
     let ctrl_slots = &ctrl_node.instances[0].pairing_slots;
     let slot = ctrl_slots.get("arm").expect("declared slot surfaces");
-    let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding else {
+    let PairingSlotBinding::Paired { peer, peer_link_id, .. } = &slot.binding else {
         panic!("expected Paired, got {:?}", slot.binding);
     };
     assert_eq!(peer.instance_id, "arm_1");
@@ -414,13 +414,13 @@ async fn serialized_graph_stamps_a_remote_peer_with_its_own_core_node() {
         .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
         .expect("the coordinator's verdict authorizes the far half");
 
-    let graph = stack.to_serialized_graph();
+    let graph = stack.to_serialized_graph(&|_, _| 0);
     let arm_node = graph.find_node("robot_arm", "v1").expect("arm in graph");
     let slot = arm_node.instances[0]
         .pairing_slots
         .get("controller")
         .expect("declared slot surfaces");
-    let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding else {
+    let PairingSlotBinding::Paired { peer, peer_link_id, .. } = &slot.binding else {
         panic!("expected Paired, got {:?}", slot.binding);
     };
     assert_eq!(peer.instance_id, "ctrl_remote");
@@ -451,7 +451,7 @@ fn pairings_are_dag_invisible() {
         .push_config(robot_arm_config(), false, PathBuf::from("/tmp/arm.json5"))
         .expect("push arm");
 
-    let graph = stack.to_serialized_graph();
+    let graph = stack.to_serialized_graph(&|_, _| 0);
     let between_pair_nodes = graph.edges.iter().any(|e| {
         let names = [e.from.name.as_str(), e.to.name.as_str()];
         names.contains(&"robot_arm") && names.contains(&"arm_controller")

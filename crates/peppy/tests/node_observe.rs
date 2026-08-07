@@ -309,7 +309,7 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     .expect("observer run with --link should succeed");
 
     // FIX #1: the lone `node run` observer received its source pin live, at a
-    // bumped incarnation generation, exactly as a launcher observer would.
+    // bumped incarnation incarnation, exactly as a launcher observer would.
     let state = obs_rx.borrow_and_update().clone();
     let member = sole_member(&state, "rec_1's observer slot after node run");
     assert_eq!(member.source.producer.instance_id, "arm_1");
@@ -322,9 +322,9 @@ async fn run_source_then_observer(fx: &Fixture) -> watch::Receiver<ObservationSt
     assert_eq!(member.source.source_link_id, "controller");
     assert!(member.source_live, "the source is Running, so it is live");
     assert!(
-        member.source_generation >= 1,
-        "a live source carries a bumped incarnation generation, got {}",
-        member.source_generation
+        member.source_incarnation >= 1,
+        "a live source carries a bumped incarnation incarnation, got {}",
+        member.source_incarnation
     );
     obs_rx
 }
@@ -364,7 +364,7 @@ fn config_dumping_observer_config(dump: &Path, instances: &InstanceLifetime) -> 
 /// must carry each observer slot's planned member set: it is what lets a
 /// node discover the robot's shape during setup instead of settle-polling a
 /// live set it cannot distinguish from "bound to nothing". The seed's
-/// stamping matches the live delivery's (same source pin, a real generation,
+/// stamping matches the live delivery's (same source pin, a real incarnation,
 /// liveness at spawn), so the first `observation_update` replaces it without
 /// redeclaring anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -443,9 +443,9 @@ async fn observer_boot_config_seeds_membership_at_spawn() {
     assert_eq!(member.source_link_id, "controller");
     assert!(member.source_live, "the source is Running at spawn time");
     assert!(
-        member.source_generation >= 1,
+        member.source_incarnation >= 1,
         "a live source seeds its real incarnation, got {}",
-        member.source_generation
+        member.source_incarnation
     );
 }
 
@@ -512,7 +512,7 @@ async fn node_run_observer_receives_source_pin_and_stop_notifies() {
 /// accumulates the slot's member set in flag order, and each member then
 /// follows its OWN source's lifecycle. Stopping one source flips only that
 /// member's `source_live`, and restarting it bumps only that member's
-/// generation, which is what makes a per-member wire subscription redeclare
+/// incarnation, which is what makes a per-member wire subscription redeclare
 /// without disturbing its neighbours.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_multi_member_observer_tracks_each_source_independently() {
@@ -589,7 +589,7 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
         "every member is pinned to its own live source: {:?}",
         state.members
     );
-    let arm_2_generation = state.members[0].source_generation;
+    let arm_2_generation = state.members[0].source_incarnation;
 
     // Stopping one source touches only its own member.
     NodeCommand {
@@ -616,8 +616,8 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
         state.members[1]
     );
 
-    // Restarting it bumps only its own incarnation generation.
-    let arm_1_generation = state.members[1].source_generation;
+    // Restarting it bumps only its own incarnation incarnation.
+    let arm_1_generation = state.members[1].source_incarnation;
     node_run_command(
         "arm_2",
         "robot_arm",
@@ -637,13 +637,13 @@ async fn node_run_multi_member_observer_tracks_each_source_independently() {
         "the restarted source's member is live again"
     );
     assert!(
-        state.members[0].source_generation > arm_2_generation,
+        state.members[0].source_incarnation > arm_2_generation,
         "a restart is a strictly newer incarnation: {} must exceed {arm_2_generation}",
-        state.members[0].source_generation
+        state.members[0].source_incarnation
     );
     assert_eq!(
-        state.members[1].source_generation, arm_1_generation,
-        "the untouched neighbour keeps its generation, so its wire subscription survives"
+        state.members[1].source_incarnation, arm_1_generation,
+        "the untouched neighbour keeps its incarnation, so its wire subscription survives"
     );
 }
 
@@ -681,13 +681,13 @@ async fn node_remove_source_notifies_running_observer() {
 /// instance (bypassing the per-instance seam, since mark_stopping makes the exit
 /// watchers bail), so it must clear the observation registry the same way
 /// `node_stack.reset()` clears the pairing registry. If it did not, the source's
-/// incarnation generation would survive the reset and a re-run of the same
-/// source id would resume from a stale generation instead of a clean one.
+/// incarnation incarnation would survive the reset and a re-run of the same
+/// source id would resume from a stale incarnation instead of a clean one.
 ///
 /// The source is still RUNNING at reset time (so the registry is genuinely
 /// non-empty and only reset's clear can empty it), but its shutdown service kills
 /// the process on request, so the reset tears it down at once instead of waiting
-/// out `force_kill_deadline`. The assertion is on the generation value, not on
+/// out `force_kill_deadline`. The assertion is on the incarnation value, not on
 /// any timing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn service_reset_clears_the_observation_registry() {
@@ -715,7 +715,7 @@ async fn service_reset_clears_the_observation_registry() {
     let arm_dir = tempfile::tempdir().expect("source node dir");
 
     // Phase 1: run the source so it reaches Running and bumps its incarnation
-    // generation to 1. It stays running (killable on cooperative shutdown) until
+    // incarnation to 1. It stays running (killable on cooperative shutdown) until
     // the reset below.
     add_built_node(&ctx, arm_dir.path(), &arm_config);
     emulate_cooperative_source(
@@ -763,9 +763,9 @@ async fn service_reset_clears_the_observation_registry() {
     .execute(&ctx)
     .expect("source re-run after reset should succeed");
 
-    // A fresh observer links to the re-run source and reads its generation. Had
-    // reset left the registry stale, arm_1 would resume at generation 2; a
-    // cleared registry makes it a clean first incarnation at generation 1.
+    // A fresh observer links to the re-run source and reads its incarnation. Had
+    // reset left the registry stale, arm_1 would resume at incarnation 2; a
+    // cleared registry makes it a clean first incarnation at incarnation 1.
     let obs_dir = tempfile::tempdir().expect("observer node dir");
     add_built_node(&ctx, obs_dir.path(), &observer_config(&instances));
     let mut obs_rx =
@@ -783,8 +783,8 @@ async fn service_reset_clears_the_observation_registry() {
     let member = sole_member(&state, "rec_2's observer slot after reset");
     assert_eq!(member.source.producer.instance_id, "arm_1");
     assert_eq!(
-        member.source_generation, 1,
+        member.source_incarnation, 1,
         "service reset must clear the observation registry, so the re-run source \
-         is a clean incarnation at generation 1, not a stale carry-over"
+         is a clean incarnation at incarnation 1, not a stale carry-over"
     );
 }

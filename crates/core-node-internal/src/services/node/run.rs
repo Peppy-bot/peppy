@@ -1088,13 +1088,30 @@ async fn process_node_run(
         launch_config.messaging_host = gateway.to_string();
     }
 
+    // Mint this run's incarnation before anything reads it: the spawned
+    // process publishes every topic under this number (the trailing keyexpr
+    // segment), so it must be in the boot config, and it must exist before
+    // any observer of this instance is seeded or notified.
+    launch_config.node_instance.incarnation = ctx
+        .action
+        .relationships
+        .incarnations()
+        .allocate_local(launch_config.bound_core_node.as_str(), instance_id_str);
+
     // Seed the boot config with each observer slot's planned member set,
-    // stamped with current source generations and liveness. Observer
+    // stamped with current source incarnations and liveness. Observer
     // membership is otherwise delivered only after the instance reaches
     // Running, which its setup runs strictly before, so without the seed a
     // setup-time read sees every slot empty with nothing to distinguish "not
-    // delivered yet" from "bound to nothing".
+    // delivered yet" from "bound to nothing". Remote sources are refreshed
+    // from their owning daemons first: an already-running remote source may
+    // never produce another lifecycle notify to heal a stale mirror.
     if !planned_observations.is_empty() {
+        ctx.action
+            .relationships
+            .observation()
+            .refresh_remote_incarnations(&planned_observations)
+            .await;
         launch_config.node_instance.observation_seeds = ctx
             .action
             .relationships
@@ -1376,11 +1393,12 @@ async fn process_node_run(
 
                     // The instance is Running: notify the observation
                     // coordinator. If this instance is a source, every slot
-                    // observing it is re-delivered whole at a freshly bumped
-                    // generation for that member; if it is itself an observer,
-                    // it receives every slot it declares, each member stamped
-                    // with its own liveness. Best-effort and independent of
-                    // pairing, so it always runs (a source need not be paired).
+                    // observing it is re-delivered whole, stamped with the
+                    // incarnation the spawn path allocated; if it is itself an
+                    // observer, it receives every slot it declares, each member
+                    // stamped with its own liveness. Best-effort and
+                    // independent of pairing, so it always runs (a source need
+                    // not be paired).
                     ctx.action
                         .relationships
                         .observation()
@@ -1400,7 +1418,10 @@ async fn process_node_run(
                     ctx.action
                         .relationships
                         .notifier()
-                        .announce_running(instance_id_str)
+                        .announce_running(
+                            instance_id_str,
+                            launch_config.node_instance.incarnation.get(),
+                        )
                         .await;
 
                     // The instance is Running: deliver every reserved pin

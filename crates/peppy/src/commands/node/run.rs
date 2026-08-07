@@ -390,7 +390,10 @@ async fn validate_links_against_stack(
         };
         for inst in &info.instances {
             for (link_id, slot) in &inst.pairing_slots {
-                if let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding {
+                if let PairingSlotBinding::Paired {
+                    peer, peer_link_id, ..
+                } = &slot.binding
+                {
                     already_paired.insert(
                         (inst.instance_id.clone(), link_id.clone()),
                         format!("{}:{}", peer.instance_id, peer_link_id),

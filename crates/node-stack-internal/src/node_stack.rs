@@ -863,7 +863,12 @@ impl NodeStackInner {
     }
 
     /// Returns a serializable representation of the graph.
-    fn to_serialized_graph(&self) -> SerializedNodeGraph {
+    /// `peer_incarnation_of` resolves each paired peer's current incarnation
+    /// for the pairing-slot overlay; see [`pairing_slot_view`].
+    fn to_serialized_graph(
+        &self,
+        peer_incarnation_of: &dyn Fn(&str, &str) -> u64,
+    ) -> SerializedNodeGraph {
         let core_node = self.root_key.name.clone();
         // The node list and the edge endpoints must serialize each entity
         // identically. Both go through this closure so the two views cannot
@@ -909,6 +914,7 @@ impl NodeStackInner {
                     &instance.instance_id,
                     &deps.pairings,
                     &live_pairs,
+                    peer_incarnation_of,
                 );
             }
         }
@@ -1268,9 +1274,14 @@ impl NodeStack {
     }
 
     /// Returns a serializable representation of the graph.
-    pub fn to_serialized_graph(&self) -> SerializedNodeGraph {
+    /// `peer_incarnation_of` resolves each paired peer's current incarnation
+    /// for the pairing-slot overlay; see [`pairing_slot_view`].
+    pub fn to_serialized_graph(
+        &self,
+        peer_incarnation_of: &dyn Fn(&str, &str) -> u64,
+    ) -> SerializedNodeGraph {
         let guard = self.shared.read();
-        guard.to_serialized_graph()
+        guard.to_serialized_graph(peer_incarnation_of)
     }
 
     // ── Pairing ──────────────────────────────────────────────────────────
@@ -1500,12 +1511,16 @@ pub struct PairingNodeSnapshot {
 /// `node_info` handler so the join rule stays in one place. `core_node`
 /// addresses the LOCAL slot being viewed; the peer's `ProducerRef` is
 /// stamped from the pair's recorded endpoint address, which names another
-/// daemon when the pair crosses machines.
+/// daemon when the pair crosses machines. `peer_incarnation_of` answers the
+/// peer's current incarnation from the daemon's ledger (this crate holds no
+/// incarnation state), so the view reports the same number the delivered
+/// pin carries.
 pub fn pairing_slot_view(
     core_node: &str,
     instance_id: &str,
     deps: &[config::node::PairingParticipantDependency],
     live_pairs: &[Pairing],
+    peer_incarnation_of: &dyn Fn(&str, &str) -> u64,
 ) -> std::collections::BTreeMap<String, SerializedPairingSlot> {
     let mut out = std::collections::BTreeMap::new();
     for dep in deps {
@@ -1519,6 +1534,10 @@ pub fn pairing_slot_view(
                     peer.slot.instance_id.as_str(),
                 ),
                 peer_link_id: peer.slot.link_id.clone(),
+                peer_incarnation: peer_incarnation_of(
+                    peer.slot.core_node.as_str(),
+                    peer.slot.instance_id.as_str(),
+                ),
             })
             .unwrap_or(config::runtime::PairingSlotBinding::Unpaired);
         out.insert(

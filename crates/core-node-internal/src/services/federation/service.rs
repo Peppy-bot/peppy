@@ -19,10 +19,10 @@ use crate::services::node::RelationshipCoordinators;
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantReleaseRequest,
-    ParticipantReserveRequest, ParticipantReserveResponse, ParticipantSliceBeginRequest,
-    ParticipantSliceBeginResponse, RelationshipEvent, RelationshipNotification,
-    RelationshipNotificationAck,
+    FederationVerdict, IncarnationEntry, IncarnationQueryRequest, IncarnationQueryResponse,
+    LaunchIdentity, PairCommitRequest, ParticipantReleaseRequest, ParticipantReserveRequest,
+    ParticipantReserveResponse, ParticipantSliceBeginRequest, ParticipantSliceBeginResponse,
+    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
 };
 use core_node_api::names;
 use daemon_config::repository::DeploymentPins;
@@ -116,6 +116,11 @@ federation_endpoint!(
     listen_for_relationship_notify,
     ServiceId::RelationshipNotify,
     notify_inner
+);
+federation_endpoint!(
+    listen_for_incarnation_query,
+    ServiceId::IncarnationQuery,
+    incarnation_query_inner
 );
 
 async fn reserve_inner(
@@ -456,17 +461,19 @@ async fn notify_inner(
     );
 
     match decoded.event {
-        // A fresh incarnation of a remote source. Feeds the same fan-out a
-        // local source's lifecycle event feeds, so an observer drops and
-        // redeclares its subscription across a remote restart exactly as it
-        // does across a local one.
-        RelationshipEvent::ReachedRunning => {
+        // A fresh incarnation of a remote source, reported with the number
+        // its owner allocated. Feeds the same fan-out a local source's
+        // lifecycle event feeds, so an observer drops and redeclares its
+        // subscription onto the new run's keyexpr across a remote restart
+        // exactly as it does across a local one.
+        RelationshipEvent::ReachedRunning { incarnation } => {
             context
                 .relationships
                 .observation()
                 .remote_source_reached_running(
                     &decoded.instance.core_node,
                     &decoded.instance.instance_id,
+                    incarnation,
                 )
                 .await;
         }
@@ -491,6 +498,32 @@ async fn notify_inner(
     }
 
     RelationshipNotificationAck::new()
+        .encode()
+        .map_err(Into::into)
+}
+
+/// Answers another daemon's incarnation query for instances this daemon
+/// owns. Authoritative: this daemon allocated every number it reports, and a
+/// never-spawned instance reports zero, which the asker treats as "never
+/// ran" exactly as its own ledger would.
+async fn incarnation_query_inner(
+    request: &ServiceRequestContext,
+    context: &FederationServiceContext,
+) -> Result<Payload> {
+    let decoded = IncarnationQueryRequest::decode(request.message().payload_bytes().as_ref())?;
+    let ledger = context.relationships.incarnations();
+    let entries = decoded
+        .instance_ids
+        .iter()
+        .map(|instance_id| IncarnationEntry {
+            instance_id: instance_id.clone(),
+            incarnation: ledger.current(&crate::services::node::incarnation::SourceKey::new(
+                context.core_node_name.as_str(),
+                instance_id.as_str(),
+            )),
+        })
+        .collect();
+    IncarnationQueryResponse { entries }
         .encode()
         .map_err(Into::into)
 }

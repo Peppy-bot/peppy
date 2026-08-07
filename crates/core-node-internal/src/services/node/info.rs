@@ -13,6 +13,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn listen_for_node_info(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -21,6 +22,7 @@ pub async fn listen_for_node_info(
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
     timeout: Duration,
+    incarnations: Arc<super::incarnation::IncarnationLedger>,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -38,6 +40,7 @@ pub async fn listen_for_node_info(
                     context,
                     Arc::clone(&node_stack),
                     peppy_dirs.clone(),
+                    Arc::clone(&incarnations),
                     timeout,
                 )
             })
@@ -73,13 +76,14 @@ async fn handle_node_info_request(
     context: ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    incarnations: Arc<super::incarnation::IncarnationLedger>,
     timeout: Duration,
 ) -> PeppyResult<Payload> {
     let sender_instance_id = context.message().instance_id().to_string();
 
     match tokio::time::timeout(
         timeout,
-        handle_node_info_request_inner(&context, node_stack, peppy_dirs),
+        handle_node_info_request_inner(&context, node_stack, peppy_dirs, &incarnations),
     )
     .await
     {
@@ -104,6 +108,7 @@ async fn handle_node_info_request_inner(
     context: &ServiceRequestContext,
     node_stack: Arc<NodeStack>,
     peppy_dirs: PeppyDirs,
+    incarnations: &super::incarnation::IncarnationLedger,
 ) -> std::result::Result<Payload, InfoError> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
@@ -165,6 +170,12 @@ async fn handle_node_info_request_inner(
                     id,
                     pairing_deps,
                     &live_pairs,
+                    &|peer_core, peer_instance| {
+                        incarnations.current(&super::incarnation::SourceKey::new(
+                            peer_core,
+                            peer_instance,
+                        ))
+                    },
                 ),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));

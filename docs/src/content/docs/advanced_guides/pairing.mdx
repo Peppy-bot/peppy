@@ -211,6 +211,7 @@ The key behavioral guarantees, all handled by the runtime with no application co
 - **Only the paired peer.** A subscription delivers messages from the paired peer instance and nothing else: not from other instances of the same node, not from implementing third parties. The slot *is* the identity; there is no payload-level demultiplexing (`arm_id` fields and the like) to write.
 - **A pairing is a live stream, not a mailbox.** Messages published before the pair was established are never delivered.
 - **Re-pinning is seamless.** When the daemon re-pairs a surviving slot to a new peer, the held subscription switches over internally; no stale messages from the old peer leak through.
+- **Incarnation-isolated.** A delivered pin carries the peer's incarnation, the daemon-allocated number every run publishes under as the trailing segment of its topic key expressions, and the slot's wire subscription pins it. A restarted peer is re-paired under a strictly newer incarnation, so a message from its previous run differs on a literal key segment and can never reach the re-pinned subscription.
 
 ## Lifecycle: death, failover, exclusivity
 
@@ -309,7 +310,7 @@ The runtime guarantees mirror pairing's, with the lifecycle twist that defines a
 
 - **Follows the source, not a pair.** The observer receives `arm_1`'s emissions whether or not `arm_1` is paired to anyone, and it is unaffected when `arm_1` re-pairs to a different controller. It is pinned to the source instance itself.
 - **Many observers, one source.** Observation is not exclusive: any number of recorders can watch the same arm at once, and none of them affects the pair.
-- **Incarnation-isolated.** If the source instance restarts, the observer transparently drops the old stream and picks up the new incarnation: the drop discards everything its subscription buffered before the switch, so no buffered message from a previous run of the source leaks into the new stream. The switch happens when the daemon's lifecycle notify records the new incarnation and delivers it, which follows the restart by the notify latency; isolation is enforced at that boundary, not by wall-clock simultaneity with the restart.
+- **Incarnation-isolated.** Every run of an instance publishes under a daemon-allocated incarnation number, carried as the trailing segment of its topic key expressions, and an observer's wire subscription pins the incarnation named in its member pin. Cross-run leakage is therefore structurally impossible: a message from a previous run of the source differs from the current run on a literal key segment and can never match a subscription pinned to the new incarnation. When the source restarts, the observer hears a clean gap until the daemon's lifecycle notify delivers the new incarnation and the subscription redeclares onto the new run's key; the gap spans the notify latency, and nothing from the old run can fill it.
 - **Read-only.** The generated module for an observer topic exposes the same subscription surface as a consumed topic, plus a helper reporting the pairings the slot observes. There is no publisher and no `paired()`; an observer never talks back.
 - **Not shown in `peppy stack list`.** The `Instance pairings` table renders participant slots only; inspect an observer's links through its generated source helper instead.
 

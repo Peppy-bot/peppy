@@ -491,7 +491,9 @@ fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Ve
         .map(|(link_id, slot)| {
             let link = paint(colorize, BINDING_COLOR, link_id);
             match &slot.binding {
-                PairingSlotBinding::Paired { peer, peer_link_id } => format!(
+                PairingSlotBinding::Paired {
+                    peer, peer_link_id, ..
+                } => format!(
                     "{link} ⇌ {} ({}:{})",
                     paint(
                         colorize,
@@ -1343,6 +1345,7 @@ mod tests {
                 binding: config::runtime::PairingSlotBinding::Paired {
                     peer: ProducerRef::new("core_a", "ctrl_1"),
                     peer_link_id: "arm".to_string(),
+                    peer_incarnation: 2,
                 },
             },
         );
@@ -1487,6 +1490,7 @@ mod tests {
                 binding: config::runtime::PairingSlotBinding::Paired {
                     peer: ProducerRef::new("core_a", "机械臂-1"),
                     peer_link_id: "控制".to_string(),
+                    peer_incarnation: 2,
                 },
             },
         );

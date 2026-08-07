@@ -20,6 +20,7 @@ pub async fn listen_for_stack_list(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     ownership: Arc<crate::services::federation::SliceOwnership>,
+    incarnations: Arc<crate::services::node::incarnation::IncarnationLedger>,
 ) -> Result<JoinHandle<Result<()>>> {
     let mut endpoint = ServiceMessenger::listen(
         messenger,
@@ -44,6 +45,7 @@ pub async fn listen_for_stack_list(
                     core_node.clone(),
                     instance_id.clone(),
                     Arc::clone(&ownership),
+                    Arc::clone(&incarnations),
                 )
             })
             .await
@@ -59,10 +61,18 @@ async fn handle_stack_list_request(
     core_node: String,
     instance_id: String,
     ownership: Arc<crate::services::federation::SliceOwnership>,
+    incarnations: Arc<crate::services::node::incarnation::IncarnationLedger>,
 ) -> PeppyResult<Payload> {
     into_service_response(
         &context,
-        handle_node_list_request_inner(&context, node_stack, core_node, instance_id, &ownership),
+        handle_node_list_request_inner(
+            &context,
+            node_stack,
+            core_node,
+            instance_id,
+            &ownership,
+            &incarnations,
+        ),
     )
 }
 
@@ -72,6 +82,7 @@ fn handle_node_list_request_inner(
     core_node: String,
     instance_id: String,
     ownership: &crate::services::federation::SliceOwnership,
+    incarnations: &crate::services::node::incarnation::IncarnationLedger,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
     let payload = context.message().payload_bytes();
@@ -82,7 +93,12 @@ fn handle_node_list_request_inner(
 
     // `to_serialized_graph` carries each instance's last health-monitor result,
     // so `stack list` reports health without a separate `node_health` round-trip.
-    let serialized_graph = node_stack.to_serialized_graph();
+    let serialized_graph = node_stack.to_serialized_graph(&|peer_core, peer_instance| {
+        incarnations.current(&crate::services::node::incarnation::SourceKey::new(
+            peer_core,
+            peer_instance,
+        ))
+    });
     let graph_json = serde_json::to_string(&serialized_graph).unwrap_or_else(|_| "{}".to_string());
     // The slice names the launch it belongs to. That is what makes it
     // self-describing, and therefore what lets a coordinator rediscover its
