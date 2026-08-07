@@ -126,7 +126,7 @@ Parameters are not the only thing a launch resolves. A node that declares [pairi
 | Builder | Stands in for |
 |---|---|
 | `with_peer_pin` | the daemon's `--pair` delivery for a `depends_on.pairings` slot |
-| `with_bound_producer` | one `--bind` occurrence, or one launcher `links:` entry, for a `depends_on.nodes` / `depends_on.contracts` slot |
+| `with_bound_producer` | one `--link` occurrence, or one launcher `links:` entry, for a `depends_on.nodes` / `depends_on.contracts` slot |
 | `with_vacant_producer_slot` | a launcher writing a producer-binding slot `{ vacant: "<why>" }` |
 | `with_observed_source` | one member of the set the daemon stamps into an observer slot at spawn |
 
@@ -157,7 +157,7 @@ let standalone_config = StandaloneConfig::new()
   </TabItem>
 </Tabs>
 
-Repeat calls for the same `link_id` accumulate in call order, exactly as repeated `--bind` and `--link` flags do, so the Nth call is the Nth member the node reads back.
+Repeat calls for the same `link_id` accumulate in call order, exactly as repeated `--link` flags do, so the Nth call is the Nth member the node reads back.
 
 Each slot's seeded set has to satisfy the slot's declared [cardinality](/advanced_guides/topics/#dependency-cardinality) at startup, which is the rule launch validation applies at plan time: exactly one for `one`, at most one for `zero_or_one`, at least one for `one_or_more`, any number for `zero_or_more`. So a slot whose cardinality has a floor of one must be seeded, and the node refuses to start otherwise rather than running a slot its own manifest says cannot be empty. The two zero-floor cardinalities may be left out entirely: an unseeded observer slot observes nothing, and an unseeded `zero_or_more` producer-binding slot binds nothing. A `zero_or_one` producer-binding slot is the one case that needs a word either way, because omitting it is how you forget it: `with_vacant_producer_slot` is the standalone spelling of a deployment writing the slot vacant.
 

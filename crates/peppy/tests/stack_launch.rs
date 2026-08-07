@@ -3196,14 +3196,15 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     }
 }
 
-/// An observer slot gets its member set twice over, at every cardinality: once
+/// An observer slot the deployment wrote gets its member set twice over: once
 /// in the boot config the daemon hands the process at spawn, and again live
 /// after the instance reaches Running. A recorder observing the `arm` role of
 /// `arm_link/v1` declares three slots: a `one` slot linked to `arm_1`, a
 /// `one_or_more` slot linked to `["arm_2", "arm_1"]`, and a `zero_or_more` slot
-/// the launcher omits entirely. The sources are `robot_arm` instances whose own
-/// participant slots are declared vacant, so they boot unpaired but still
-/// publish their role's topics.
+/// the launcher omits entirely — the one slot with nothing to seed and nothing
+/// to deliver, asserted empty on both boundaries rather than populated. The
+/// sources are `robot_arm` instances whose own participant slots are declared
+/// vacant, so they boot unpaired but still publish their role's topics.
 ///
 /// One launch shows both boundaries, because they are independent: the recorder
 /// snapshots its own `PEPPY_RUNTIME_CONFIG` before settling into the keep-alive

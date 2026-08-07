@@ -1102,8 +1102,9 @@ async fn process_node_run(
 
     // Serialize once, after every mutation (synthesized defaults, topology + buffer
     // sizes, the gateway rewrite, and the observation seeds), so the spawned
-    // process receives the fully-resolved runtime config. The inbound `runtime_config_json5` from the
-    // goal still reflects the pre-defaulting state.
+    // process receives the fully-resolved runtime config. Only `launch_config` is
+    // serialized: `runtime_config` stays in its pre-defaulting state, which is what
+    // the rest of this function goes on reading.
     let runtime_config_json5 = match serde_json5::to_string(&launch_config) {
         Ok(json) => json,
         Err(e) => {
