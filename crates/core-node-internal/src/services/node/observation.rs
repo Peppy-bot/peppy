@@ -260,6 +260,54 @@ impl ObservationCoordinator {
             .push(record);
     }
 
+    /// The boot seed for one spawning observer instance: each planned slot's
+    /// complete member set, stamped through the same [`Self::stamp_source`]
+    /// rule as a live update. Rides the instance's boot config, so the node's
+    /// `sources()` answers the plan's membership from its first instruction
+    /// (setup included) instead of waiting for the on-Running delivery, which
+    /// then normally repeats this state and replaces it without redeclaring
+    /// anything. A source that has not run yet seeds `live: false` at
+    /// generation 0: membership is launch-time configuration, liveness is not.
+    ///
+    /// The on-Running delivery is best-effort; if it is lost, the node keeps
+    /// this seed until the next lifecycle event re-delivers. Messages still
+    /// flow either way (subscriptions key on the wire address; the generation
+    /// only keys redeclares), so a lost delivery costs staleness-filter
+    /// precision across a concurrent source restart, not data.
+    pub fn seed_for_spawn(
+        &self,
+        observations: &BTreeMap<String, ObservationTargets>,
+    ) -> config::runtime::ObservationSeeds {
+        // A non-observer spawn has nothing to stamp, and the live-instance scan
+        // below is not free. Owned here rather than at the call site so every
+        // caller gets the cheap path without knowing this.
+        if observations.is_empty() {
+            return config::runtime::ObservationSeeds::new();
+        }
+        let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
+        let registry = self.registry.lock().unwrap();
+        observations
+            .iter()
+            .map(|(link_id, targets)| {
+                let members = targets
+                    .into_iter()
+                    .map(|target| {
+                        let source = SourceKey::from_producer(&target.source);
+                        let (source_generation, source_live) =
+                            self.stamp_source(&registry, &source, &live_instances, &None);
+                        config::runtime::ObservationSeedMember {
+                            source: target.source.clone(),
+                            source_link_id: target.source_link_id.clone(),
+                            source_generation,
+                            source_live,
+                        }
+                    })
+                    .collect();
+                (link_id.clone(), members)
+            })
+            .collect()
+    }
+
     /// An instance reached Running. If it is a source, its incarnation
     /// generation advances and every slot observing it is re-delivered whole.
     /// If it is itself an observer, every slot it declares is delivered, so it
@@ -362,6 +410,30 @@ impl ObservationCoordinator {
                 || live_instances.contains(&delivery.slot.observer_instance_id)
         }))
         .await;
+    }
+
+    /// One source's `(generation, liveness)` stamp. The single stamping rule
+    /// for live deliveries and spawn seeds, so the two cannot drift.
+    ///
+    /// Generation and liveness come from different authorities (the registry
+    /// and the node stack), which can momentarily disagree: a source can
+    /// commit to Running before its transition notify records the
+    /// incarnation. An unrecorded incarnation therefore stamps down, so the
+    /// pair can never claim a live source that has not run; the notify that
+    /// records it re-delivers the true state moments later. The mirror-image
+    /// window (a restart exposing the previous generation as live) is
+    /// likewise transient and healed by the same notify.
+    fn stamp_source(
+        &self,
+        registry: &Registry,
+        source: &SourceKey,
+        live_local_instances: &HashSet<String>,
+        verdict: &Option<LivenessVerdict<'_>>,
+    ) -> (u64, bool) {
+        let generation = registry.source_generation.get(source).copied().unwrap_or(0);
+        let live =
+            generation > 0 && self.source_is_live(registry, source, live_local_instances, verdict);
+        (generation, live)
     }
 
     /// Whether a source is currently up, from whichever authority owns it: the
@@ -500,18 +572,11 @@ impl ObservationCoordinator {
                     .filter(|record| record.observer_link_id == slot.observer_link_id)
                     .map(|record| {
                         let source = record.source();
+                        let (source_generation, source_live) =
+                            self.stamp_source(registry, &source, live_local_instances, &verdict);
                         ObservedMemberState {
-                            source_generation: registry
-                                .source_generation
-                                .get(&source)
-                                .copied()
-                                .unwrap_or(0),
-                            source_live: self.source_is_live(
-                                registry,
-                                &source,
-                                live_local_instances,
-                                &verdict,
-                            ),
+                            source_generation,
+                            source_live,
                             source: record.pin.clone(),
                         }
                     })
@@ -605,5 +670,132 @@ impl ObservationCoordinator {
                 "observation_update rejected",
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_node_api::encoding::ObservationTarget;
+    use pmi::{Messenger, MessengerAdapter, MockAdapter};
+
+    /// Minimal root manifest for a stack whose root instance doubles as the
+    /// observed source.
+    const ROOT_CONFIG: &str = r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "core_a", tag: "v1" },
+        interfaces: {},
+        execution: {
+            language: "rust",
+            parameters: {},
+            build_cmd: ["true"],
+            run_cmd: ["true"],
+        },
+    }"#;
+
+    const SOURCE_INSTANCE: &str = "arm_1";
+    const OBSERVER_INSTANCE: &str = "obs_1";
+
+    /// A coordinator over a stack whose root instance is `arm_1`, Running
+    /// from construction, with `obs_1` registered to observe it. The stack
+    /// (liveness authority) reports the source live the whole time, while
+    /// the incarnation counter starts unrecorded: exactly the two-authority
+    /// disagreement `stamp_source` must never surface as a torn stamp.
+    fn coordinator_observing_the_root(temp_dir: &tempfile::TempDir) -> ObservationCoordinator {
+        let root_config = config::node::NodeConfigParser::from_content(ROOT_CONFIG)
+            .expect("test root config parses");
+        let stack = Arc::new(NodeStack::new(
+            root_config,
+            Some(config::runtime::Name::new(SOURCE_INSTANCE).expect("valid test instance id")),
+            temp_dir.path(),
+        ));
+        let messenger = MessengerHandle::from_shared(Arc::new(tokio::sync::Mutex::new(
+            Messenger::new(MessengerAdapter::Mock(MockAdapter::default())),
+        )));
+        let coordinator = ObservationCoordinator::new(stack, messenger, "core_a", "core_root_inst");
+        coordinator.register_instance(OBSERVER_INSTANCE, &planned_observations());
+        coordinator
+    }
+
+    fn planned_observations() -> BTreeMap<String, ObservationTargets> {
+        ObservationTargets::slots_from_plan(
+            [(
+                "sole_arm".to_string(),
+                vec![ObservationTarget {
+                    source: ProducerRef::new("core_a", SOURCE_INSTANCE),
+                    source_link_id: "controller".to_string(),
+                }],
+            )]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    /// The seed-stamping invariants under a concurrent source lifecycle: an
+    /// observer spawning while its source restarts in a loop. Generation and
+    /// liveness come from different authorities (the registry and the node
+    /// stack), so this hammers the window between them and asserts what a
+    /// seed is never allowed to say, on every interleaving reached:
+    ///
+    /// - membership is always exactly the registered plan;
+    /// - no member ever claims a live source that has not run
+    ///   (`generation == 0 && live`), the invariant `stamp_source` clamps;
+    /// - a member's generation never decreases between successive seeds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_source_lifecycle_never_produces_a_torn_seed_stamp() {
+        const RESTARTS: u64 = 200;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let coordinator = Arc::new(coordinator_observing_the_root(&temp_dir));
+
+        let lifecycle = {
+            let coordinator = Arc::clone(&coordinator);
+            tokio::spawn(async move {
+                for _ in 0..RESTARTS {
+                    coordinator.on_instance_running(SOURCE_INSTANCE).await;
+                    coordinator.on_instance_down(SOURCE_INSTANCE).await;
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+
+        // A fixed budget of concurrent spawns rather than a wait-for-the-other
+        // loop, so both sides run to completion and every interleaving the
+        // scheduler reaches is asserted the same way.
+        let observations = planned_observations();
+        let mut last_generation = 0u64;
+        for _ in 0..RESTARTS {
+            let seeds = coordinator.seed_for_spawn(&observations);
+            let members = seeds
+                .get("sole_arm")
+                .expect("the registered slot is always seeded");
+            assert_eq!(members.len(), 1, "membership is the plan, always");
+            let member = &members[0];
+            assert_eq!(member.source.instance_id, SOURCE_INSTANCE);
+            assert_eq!(member.source_link_id, "controller");
+            assert!(
+                !(member.source_generation == 0 && member.source_live),
+                "a seed claimed a live source that has not run"
+            );
+            assert!(
+                member.source_generation >= last_generation,
+                "a member's generation went backwards: {} -> {}",
+                last_generation,
+                member.source_generation
+            );
+            last_generation = member.source_generation;
+            tokio::task::yield_now().await;
+        }
+        lifecycle.await.expect("lifecycle task");
+
+        // Quiesced: the counter recorded every Running transition, and the
+        // registrations survived the churn.
+        let final_seed = coordinator.seed_for_spawn(&observations);
+        assert_eq!(final_seed.get("sole_arm").expect("slot seeded").len(), 1);
+        assert_eq!(
+            final_seed.get("sole_arm").expect("slot seeded")[0].source_generation,
+            RESTARTS,
+            "every Running transition advances the incarnation exactly once"
+        );
     }
 }

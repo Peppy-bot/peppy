@@ -327,46 +327,82 @@ impl DependencyContext {
 /// shared verbatim by both language generators. The first line stands alone as
 /// the summary sentence.
 ///
-/// It carries the one difference that matters against a bound producer set: an
-/// observed set is live, so nothing about its size holds for the node's
-/// lifetime and an empty read is legal at any instant.
-pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
+/// It carries the one difference that matters against a bound producer set: the
+/// daemon owns an observed set live, so each member's incarnation and liveness
+/// move under the reader. The set's size does not: the launcher sizes the slot
+/// at plan time and node startup re-checks its seed against the same rule, so
+/// the slot's declared floor holds on every read, which is what lets the
+/// accessor be typed.
+///
+/// The `one_or_more` prose deliberately stops mid-sentence ("so"): the clause
+/// that finishes it names one language's API, so it comes from `language`
+/// rather than from the shared body. Taking the language here, at construction,
+/// is what keeps a floored accessor from being emitted with the sentence
+/// unfinished.
+pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> AccessorDoc {
     match cardinality {
         Cardinality::One => AccessorDoc {
             summary: "The pairing this module's observer slot observes.",
             body: &[
-                "`None` before the daemon has delivered the slot, and again if a",
-                "replan leaves it observing nothing. This slot declares cardinality",
-                "`one`: it observes at most one pairing, so the accessor is singular.",
+                "The daemon keeps the member's incarnation and liveness current, and a",
+                "source that is down stays observed. This slot declares cardinality `one`:",
+                "the plan binds exactly one pairing to it, so the accessor is singular and",
+                "has no absent case to answer.",
             ],
+            api_note: None,
         },
         Cardinality::ZeroOrOne => AccessorDoc {
             summary: "The pairing this module's observer slot observes, if any.",
             body: &[
-                "`None` before the daemon has delivered the slot, and again if a",
-                "replan leaves it observing nothing. This slot declares cardinality",
-                "`zero_or_one`: the deployment bound at most one pairing to it, and",
-                "`None` is the steady state wherever it left the slot vacant.",
+                "The daemon keeps the member's incarnation and liveness current, and a",
+                "source that is down stays observed. This slot declares",
+                "cardinality `zero_or_one`: the deployment binds at most one pairing to",
+                "it, and `None` is the steady state wherever it wrote the slot vacant.",
             ],
+            api_note: None,
         },
         Cardinality::OneOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
             body: &[
-                "The set is live: the daemon replaces it whole whenever the plan's",
-                "observed pairings change, so it can differ between reads and is",
-                "empty before the first delivery. This slot declares cardinality",
-                "`one_or_more`: the plan bound at least one pairing to it.",
+                "The daemon keeps each member's incarnation and liveness current, and a",
+                "member whose source is down stays in the set, at its position. This slot",
+                "declares cardinality `one_or_more`: the plan binds at least one pairing",
+                "to it, so the set is never empty and",
             ],
+            api_note: Some(language.never_empty_tail()),
         },
         Cardinality::ZeroOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
             body: &[
-                "The set is live: the daemon replaces it whole whenever the plan's",
-                "observed pairings change, so it can differ between reads. This slot",
-                "declares cardinality `zero_or_more`: the plan may have bound no",
-                "pairing at all, so the empty set is an expected steady state.",
+                "The daemon keeps each member's incarnation and liveness current, and a",
+                "member whose source is down stays in the set, at its position. This slot",
+                "declares cardinality `zero_or_more`: the plan may bind no pairing at",
+                "all, so the empty set is an expected steady state.",
             ],
+            api_note: None,
         },
+    }
+}
+
+/// The generated language a doc sentence is being written for. Every accessor
+/// doc is otherwise shared verbatim by both generators; this names the one
+/// place they cannot be, which is where the prose has to spell an API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocLanguage {
+    Rust,
+    Python,
+}
+
+impl DocLanguage {
+    /// The clause finishing a floored set's never-empty sentence, in this
+    /// language's own terms. Shared by the observer accessor and the
+    /// bound-producer accessor, which make the same guarantee about the same
+    /// kind of set and so should word it identically.
+    pub fn never_empty_tail(self) -> &'static str {
+        match self {
+            DocLanguage::Rust => "`first()` is infallible.",
+            DocLanguage::Python => "`[0]` is always valid.",
+        }
     }
 }
 
@@ -377,8 +413,13 @@ pub fn observed_sources_doc(cardinality: Cardinality) -> AccessorDoc {
 /// the callers' indexing.
 pub struct AccessorDoc {
     pub summary: &'static str,
-    /// The rest of the prose, without [`Self::CLOSING_NOTE`].
+    /// The rest of the prose, without [`Self::api_note`] or
+    /// [`Self::CLOSING_NOTE`].
     pub body: &'static [&'static str],
+    /// The language-specific clause finishing [`Self::body`]'s last sentence,
+    /// where the cardinality leaves one open. Resolved when the doc is built,
+    /// so reading it cannot drop it.
+    pub api_note: Option<&'static str>,
 }
 
 impl AccessorDoc {
@@ -389,11 +430,14 @@ impl AccessorDoc {
         "because a third node's health is not knowable here.",
     ];
 
-    /// Everything after the summary, closing note included.
+    /// Everything after the summary: the cardinality's prose, then its API tail
+    /// sentence where it has one, then the closing note. The tail sits ahead of
+    /// the closing note because it finishes the cardinality's sentence.
     pub fn body_lines(&self) -> impl Iterator<Item = &'static str> {
         self.body
             .iter()
             .copied()
+            .chain(self.api_note)
             .chain(Self::CLOSING_NOTE.iter().copied())
     }
 

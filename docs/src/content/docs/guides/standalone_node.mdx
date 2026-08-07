@@ -119,3 +119,47 @@ The node should run without a crash.
 The standalone object allows us to load parameters from an external JSON file and pass them to the node, which in turn allows us to run our node as a regular Rust/Python program.
 Note that the standalone config is completely ignored when a node is run with `peppy node run`; all parameters provided during the `node run` operation take precedence.
 
+## Seeding slots
+
+Parameters are not the only thing a launch resolves. A node that declares [pairings](/advanced_guides/pairing/), [producer-binding slots](/advanced_guides/topics/#bindings-and-routing), or [observer slots](/advanced_guides/pairing/#observing-several-pairings-through-one-slot) reads those from the boot config the daemon hands it, and standalone mode has no daemon to write one. The standalone config carries one builder per slot kind so the node still starts:
+
+| Builder | Stands in for |
+|---|---|
+| `with_peer_pin` | the daemon's `--pair` delivery for a `depends_on.pairings` slot |
+| `with_bound_producer` | one `--link` occurrence, or one launcher `links:` entry, for a `depends_on.nodes` / `depends_on.contracts` slot |
+| `with_vacant_producer_slot` | a launcher writing a producer-binding slot `{ vacant: "<why>" }` |
+| `with_observed_source` | one member of the set the daemon stamps into an observer slot at spawn |
+
+Every builder takes the local slot's `link_id` first. The three that name a remote instance follow it with that instance's `(core_node, instance_id)` address, and the two of those that also name a slot on the other side (a pairing's peer and an observed pairing's source) take that slot's `link_id` last. `with_vacant_producer_slot` names only the local slot, because there is no instance to point at:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+standalone_config = (
+    StandaloneConfig()
+    .with_parameters(params)
+    .with_peer_pin("arm", "core_x", "arm_1", "controller")
+    .with_bound_producer("camera", "core_x", "front_camera")
+    .with_vacant_producer_slot("greeter")
+    .with_observed_source("watch", "core_x", "arm_1", "controller")
+)
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+let standalone_config = StandaloneConfig::new()
+    .with_parameters(&params)
+    .with_peer_pin("arm", "core_x", "arm_1", "controller")
+    .with_bound_producer("camera", "core_x", "front_camera")
+    .with_vacant_producer_slot("greeter")
+    .with_observed_source("watch", "core_x", "arm_1", "controller");
+```
+  </TabItem>
+</Tabs>
+
+Repeat calls for the same `link_id` accumulate in call order, exactly as repeated `--link` flags do, so the Nth call is the Nth member the node reads back.
+
+Each slot's seeded set has to satisfy the slot's declared [cardinality](/advanced_guides/topics/#dependency-cardinality) at startup, which is the rule launch validation applies at plan time: exactly one for `one`, at most one for `zero_or_one`, at least one for `one_or_more`, any number for `zero_or_more`. So a slot whose cardinality has a floor of one must be seeded, and the node refuses to start otherwise rather than running a slot its own manifest says cannot be empty. The two zero-floor cardinalities may be left out entirely: an unseeded observer slot observes nothing, and an unseeded `zero_or_more` producer-binding slot binds nothing. A `zero_or_one` producer-binding slot is the one case that needs a word either way, because omitting it is how you forget it: `with_vacant_producer_slot` is the standalone spelling of a deployment writing the slot vacant.
+
+Naming a `link_id` the manifest does not declare is a typo rather than a shape error, so it warns and is ignored instead of failing the run.
+

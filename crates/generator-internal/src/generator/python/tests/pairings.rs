@@ -140,6 +140,75 @@ fn observed_consumed_topic_yields_observed_source_tagged_pairs() {
     );
 }
 
+/// The Python mirror of the Rust cardinality matrix. Two things differ, and both
+/// are deliberate: the annotation is the only place `one` and `zero_or_one` part
+/// ways, since Python has no way to spell "not optional" other than leaving the
+/// `Optional` off; and the two multi cardinalities share `List[...]` because
+/// Python has no non-empty list type, so `one_or_more` states its guarantee in
+/// the docstring. The emitted name and the runtime method it calls also part
+/// ways for `one`, which is what pins the name/method split.
+#[test]
+fn observed_topic_accessor_is_cardinality_typed() {
+    let cases = [
+        (
+            Cardinality::One,
+            "def source(node_runner: peppylib.NodeRunner) -> peppylib.ObservedSource:",
+            "return node_runner.observation_slot(LINK_ID).sole_source()",
+            "cardinality `one`",
+            "def sources(",
+        ),
+        (
+            Cardinality::ZeroOrOne,
+            "def source(node_runner: peppylib.NodeRunner) -> Optional[peppylib.ObservedSource]:",
+            "return node_runner.observation_slot(LINK_ID).source()",
+            "cardinality `zero_or_one`",
+            "def sources(",
+        ),
+        (
+            Cardinality::OneOrMore,
+            "def sources(node_runner: peppylib.NodeRunner) -> List[peppylib.ObservedSource]:",
+            "return node_runner.observation_slot_set(LINK_ID).sources()",
+            "cardinality `one_or_more`",
+            "def source(",
+        ),
+        (
+            Cardinality::ZeroOrMore,
+            "def sources(node_runner: peppylib.NodeRunner) -> List[peppylib.ObservedSource]:",
+            "return node_runner.observation_slot_set(LINK_ID).sources()",
+            "cardinality `zero_or_more`",
+            "def source(",
+        ),
+    ];
+    for (cardinality, expected_def, expected_splice, expected_doc, absent_fn) in cases {
+        let topic = parse_topic(JOINT_STATES);
+        let mut generator = PythonGenerator::new();
+        generator
+            .add_observed_topic(&topic, &peer_context(), cardinality)
+            .unwrap();
+        let artifacts = generator.into_artifacts();
+        let code = &artifacts[0].code_output;
+
+        assert_contains_all(code, &[expected_def, expected_splice, expected_doc]);
+        assert!(
+            !code.contains(absent_fn),
+            "a {cardinality:?} slot must expose only one accessor name; got: {code}"
+        );
+        // `zero_or_one` is the only cardinality whose accessor is annotated
+        // optional. The module imports `Optional` either way, because the
+        // subscription surface returns one, so the annotation is what to pin.
+        assert_eq!(
+            code.contains("Optional[peppylib.ObservedSource]"),
+            cardinality == Cardinality::ZeroOrOne,
+            "only `zero_or_one` annotates an optional source; got: {code}"
+        );
+        assert_eq!(
+            code.contains("`[0]` is always valid."),
+            cardinality == Cardinality::OneOrMore,
+            "the never-empty note belongs to `one_or_more` alone; got: {code}"
+        );
+    }
+}
+
 #[test]
 fn peer_consumed_topic_requires_a_message_format() {
     let topic: NativeEmittedTopic =

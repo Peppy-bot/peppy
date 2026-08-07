@@ -3196,18 +3196,22 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     }
 }
 
-/// An observer slot is delivered its member set live, at every cardinality. A
-/// recorder observing the `arm` role of `arm_link/v1` declares three slots: a
-/// `one` slot linked to `arm_1`, a `one_or_more` slot linked to
-/// `["arm_2", "arm_1"]`, and a `zero_or_more` slot the launcher omits entirely.
-/// The sources are `robot_arm` instances whose own participant slots are
-/// declared vacant, so they boot unpaired but still publish their role's
-/// topics. When
-/// the launch is up, the daemon's observation coordinator has pushed each slot's
-/// complete member set (in launcher order, at live generations) to the
-/// recorder's `observation_update` service, and the omitted slot holds the empty
-/// set. This is the observer analogue of
-/// `stack_launch_establishes_launcher_pairings`.
+/// An observer slot the deployment wrote gets its member set twice over: once
+/// in the boot config the daemon hands the process at spawn, and again live
+/// after the instance reaches Running. A recorder observing the `arm` role of
+/// `arm_link/v1` declares three slots: a `one` slot linked to `arm_1`, a
+/// `one_or_more` slot linked to `["arm_2", "arm_1"]`, and a `zero_or_more` slot
+/// the launcher omits entirely — the one slot with nothing to seed and nothing
+/// to deliver, asserted empty on both boundaries rather than populated. The
+/// sources are `robot_arm` instances whose own participant slots are declared
+/// vacant, so they boot unpaired but still publish their role's topics.
+///
+/// One launch shows both boundaries, because they are independent: the recorder
+/// snapshots its own `PEPPY_RUNTIME_CONFIG` before settling into the keep-alive
+/// (the spawn seed, which the live delivery would mask), and its
+/// `observation_update` service records what the coordinator pushed afterwards
+/// (the live set, in launcher order at live generations). This is the observer
+/// analogue of `stack_launch_establishes_launcher_pairings`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_delivers_observer_member_sets() {
     let serve = ServeCommandEmulation::with_zenoh()
@@ -3216,6 +3220,8 @@ async fn stack_launch_delivers_observer_member_sets() {
     let core_node_name = serve.core_node_name().to_string();
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let recorder_dump = dump_dir.path().join("recorder.json5");
     let ctx = Arc::new(
         AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
             .with_daemon_state_file(serve.daemon_state_path()),
@@ -3230,6 +3236,17 @@ async fn stack_launch_delivers_observer_member_sets() {
     // leaving the daemon to wait out its force-kill deadline once per instance.
     let instances = peppy::test_support::InstanceLifetime::new();
     let run_cmd = instances.keep_alive_argv();
+    // The recorder copies the boot config the daemon wrote before keeping alive,
+    // so the spawn seed survives the live delivery that replaces it in memory.
+    let recorder_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            recorder_dump.display(),
+            instances.keep_alive_script(),
+        ),
+    ];
     // The source plays the `arm` role through its participant slot `controller`,
     // declared optional so a watched-only deployment may write it vacant.
     let arm_path = write_node_config_for_helper(
@@ -3256,7 +3273,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         "recorder",
         "v1",
         &git_hash,
-        &run_cmd,
+        &recorder_run_cmd,
         Some(
             r#"{ pairing_observers: [
                 { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" },
@@ -3436,6 +3453,58 @@ async fn stack_launch_delivers_observer_member_sets() {
     assert!(
         slot_members("spare").is_empty(),
         "a `zero_or_more` slot the launcher omits boots with an empty member set"
+    );
+
+    // The other boundary: the boot config the recorder's process actually
+    // received. A floored slot rejects an empty seed at node construction, so a
+    // real observer could not even start unseeded; this asserts what the daemon
+    // wrote, which the live delivery above would otherwise mask.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut boot: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if let Ok(content) = fs::read_to_string(&recorder_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            boot = Some(cfg);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let boot = boot.unwrap_or_else(|| {
+        panic!(
+            "recorder runtime config dump never appeared / parsed at {}",
+            recorder_dump.display()
+        )
+    });
+    let seeds = &boot.node_instance.observation_seeds;
+
+    let watch_seed = seeds
+        .get("watch")
+        .expect("a `one` slot must be seeded, or the node cannot construct");
+    let [seeded] = watch_seed.as_slice() else {
+        panic!(
+            "a `one` slot seeds exactly one member, got {}",
+            watch_seed.len()
+        );
+    };
+    assert_eq!(seeded.source.instance_id, "arm_1");
+    assert_eq!(seeded.source.core_node, core_node_name);
+    assert_eq!(seeded.source_link_id, "controller");
+
+    assert_eq!(
+        seeds
+            .get("watched")
+            .expect("a `one_or_more` slot must be seeded too")
+            .iter()
+            .map(|member| member.source.instance_id.as_str())
+            .collect::<Vec<_>>(),
+        ["arm_2", "arm_1"],
+        "a multi slot seeds its members in launcher order, not sorted"
+    );
+
+    assert!(
+        !seeds.contains_key("spare"),
+        "a `zero_or_more` slot the launcher omits has nothing to seed: {seeds:?}"
     );
 
     // Assertions are done; ending the keep-alive first lets each Stop observe

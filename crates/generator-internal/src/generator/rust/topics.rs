@@ -236,9 +236,13 @@ pub fn build_peer_module_header(
 /// module, but it exposes the slot's observed sources instead of the peer
 /// helpers. An observer plays no role, so there is no `paired()`/`wait_paired()`.
 ///
-/// The accessor is cardinality-typed the way a producer slot's is: a scalar
-/// slot (`one` or `zero_or_one`) gets `source() -> Option<ObservedSource>`, the
-/// multi cardinalities get `sources() -> Vec<ObservedSource>` in plan order.
+/// The accessor is cardinality-typed the way a producer slot's is, name and
+/// return type together: `one` gets `source()` answering the observed pairing
+/// directly, `zero_or_one` gets `source()` answering an `Option`, `one_or_more`
+/// gets `sources()` answering a never-empty `NonEmptyObservedSources` whose
+/// `first()` needs no unwrap, and `zero_or_more` gets `sources()` answering a
+/// plain, possibly empty `Vec` in plan order. The empty branch exists only where
+/// the cardinality can produce one, so it is never dead code.
 pub fn build_observed_module_header(
     topic_name: &str,
     observer: &crate::generator::types::PeerContext,
@@ -248,31 +252,46 @@ pub fn build_observed_module_header(
     let link_id_literal = Literal::string(&observer.link_id);
     let pairing_name_literal = Literal::string(&observer.pairing_name);
     let pairing_tag_literal = Literal::string(&observer.pairing_tag);
-    let sources_doc = super::doc_attrs(
-        &crate::generator::types::observed_sources_doc(cardinality)
-            .lines()
-            .collect::<Vec<_>>(),
-    );
 
-    let sources_accessor = if cardinality.is_scalar() {
-        quote! {
-            #( #sources_doc )*
+    let sources_accessor = match cardinality {
+        Cardinality::One => quote! {
+            pub fn source(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<peppylib::messaging::ObservedSource> {
+                Ok(node_runner.observation_slot(LINK_ID)?.sole_source())
+            }
+        },
+        Cardinality::ZeroOrOne => quote! {
             pub fn source(
                 node_runner: &crate::NodeRunner,
             ) -> crate::Result<Option<peppylib::messaging::ObservedSource>> {
                 Ok(node_runner.observation_slot(LINK_ID)?.source())
             }
-        }
-    } else {
-        quote! {
-            #( #sources_doc )*
+        },
+        Cardinality::OneOrMore => quote! {
+            pub fn sources(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<peppylib::messaging::NonEmptyObservedSources> {
+                Ok(node_runner.observation_slot_set(LINK_ID)?.non_empty_sources())
+            }
+        },
+        Cardinality::ZeroOrMore => quote! {
             pub fn sources(
                 node_runner: &crate::NodeRunner,
             ) -> crate::Result<Vec<peppylib::messaging::ObservedSource>> {
                 Ok(node_runner.observation_slot_set(LINK_ID)?.sources())
             }
-        }
+        },
     };
+
+    let sources_doc = super::doc_attrs(
+        &crate::generator::types::observed_sources_doc(
+            cardinality,
+            crate::generator::types::DocLanguage::Rust,
+        )
+        .lines()
+        .collect::<Vec<_>>(),
+    );
 
     quote! {
         pub const TOPIC_NAME: &str = #topic_literal;
@@ -281,6 +300,7 @@ pub fn build_observed_module_header(
         pub const PAIRING_NAME: &str = #pairing_name_literal;
         pub const PAIRING_TAG: &str = #pairing_tag_literal;
 
+        #( #sources_doc )*
         #sources_accessor
     }
 }
@@ -722,7 +742,7 @@ pub fn build_bound_producer_accessor_fn(
             },
         ),
         Cardinality::OneOrMore => (
-            Some("`first()` is infallible."),
+            Some(crate::generator::types::DocLanguage::Rust.never_empty_tail()),
             quote! {
                 pub fn bound_producers(
                     node_runner: &crate::NodeRunner,
