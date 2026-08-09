@@ -3,6 +3,11 @@
 On macOS ARM64: builds all 4 targets (native + Linux via Lima VM).
 On Linux: builds the native target only (--local mode required).
 
+A full release is cut from `dev` and nothing else: the archives are built from
+the `dev` tip, the release notes are committed on `dev`, and `main` is then
+fast-forwarded to that commit through a refspec push, so the working tree stays
+on `dev` throughout.
+
 Requires:
   - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token) -- not needed with --local
   - git, cargo, rustc on PATH
@@ -10,7 +15,8 @@ Requires:
 
 Outputs:
   - Tar.gz archives in ./dist/
-  - A release notes HTML file in ./docs/src/content/releases/ (unless --local)
+  - A release notes HTML file in ./docs/src/content/releases/ (unless --local),
+    committed on `dev` and pushed to `dev` and `main`
 """
 
 from __future__ import annotations
@@ -59,11 +65,26 @@ from .release_notes import (
 from .release_summary import ReleaseContent, generate_release_content
 from .docker import main as build_base_images_main
 from .repo import (
+    commit_paths,
+    fetch_remote_branches,
+    get_commit,
     get_commit_subjects,
     get_current_branch,
     get_repo_root,
+    has_changes_in_paths,
     has_uncommitted_changes,
+    is_ancestor,
+    is_branch_checked_out,
+    push_branch,
+    set_branch_ref,
 )
+
+# A full release is cut from RELEASE_BRANCH, and ALIGNED_BRANCH is fast-forwarded
+# to it once the release is published, so the two branches always agree on what
+# has shipped.
+GIT_REMOTE = "origin"
+RELEASE_BRANCH = "dev"
+ALIGNED_BRANCH = "main"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -306,6 +327,107 @@ def _build_all_targets(
             stop_lima_vm(limactl)
 
 
+def _describe_release_branch_drift(local_commit: str, remote_commit: str) -> str:
+    """Explain how the local release branch differs from its remote counterpart."""
+    remote_ref = f"{GIT_REMOTE}/{RELEASE_BRANCH}"
+    if is_ancestor(local_commit, remote_commit):
+        return (
+            f"'{RELEASE_BRANCH}' is behind {remote_ref}. "
+            f"Run `git pull --ff-only` and retry."
+        )
+    if is_ancestor(remote_commit, local_commit):
+        return (
+            f"'{RELEASE_BRANCH}' has commits that are not on {remote_ref}. "
+            f"Run `git push {GIT_REMOTE} {RELEASE_BRANCH}` and retry."
+        )
+    return (
+        f"'{RELEASE_BRANCH}' and {remote_ref} have diverged. "
+        f"Reconcile them and retry."
+    )
+
+
+def _verify_release_branch_state() -> str:
+    """Check the git state a full release needs, before anything is built.
+
+    The release publishes from the `dev` tip, commits the generated notes on
+    `dev`, and fast-forwards `main` to that commit. All three are checked here
+    so a branch problem costs nothing rather than surfacing after a cross-compile
+    with a release already published:
+
+    - HEAD is on `dev`, so the release is never cut from another branch,
+    - `dev` matches `origin/dev`, so the final push cannot be rejected,
+    - `origin/main` is an ancestor of `dev`, so `main` can fast-forward.
+
+    Returns the `dev` commit the release is built from.
+    """
+    current_branch = get_current_branch()
+    if current_branch != RELEASE_BRANCH:
+        found = f"'{current_branch}'" if current_branch else "a detached commit"
+        raise ReleaseError(
+            f"releases are cut from '{RELEASE_BRANCH}' only, but HEAD is on {found}. "
+            f"Run `git checkout {RELEASE_BRANCH}` and retry."
+        )
+
+    console.print(
+        f"Checking '{RELEASE_BRANCH}' against {GIT_REMOTE} "
+        f"(and that '{ALIGNED_BRANCH}' can fast-forward to it)..."
+    )
+    fetch_remote_branches(GIT_REMOTE, (RELEASE_BRANCH, ALIGNED_BRANCH))
+
+    release_commit = get_commit("HEAD")
+    remote_release_commit = get_commit(f"{GIT_REMOTE}/{RELEASE_BRANCH}")
+    if release_commit != remote_release_commit:
+        raise ReleaseError(
+            _describe_release_branch_drift(release_commit, remote_release_commit)
+        )
+
+    remote_aligned_commit = get_commit(f"{GIT_REMOTE}/{ALIGNED_BRANCH}")
+    if not is_ancestor(remote_aligned_commit, release_commit):
+        raise ReleaseError(
+            f"{GIT_REMOTE}/{ALIGNED_BRANCH} has commits that are not on "
+            f"'{RELEASE_BRANCH}', so '{ALIGNED_BRANCH}' cannot fast-forward to it. "
+            f"Merge {GIT_REMOTE}/{ALIGNED_BRANCH} into '{RELEASE_BRANCH}' and retry."
+        )
+
+    return release_commit
+
+
+def _commit_notes_and_align_main(notes_path: Path, tag: str) -> None:
+    """Commit the release notes on `dev`, push it, and fast-forward `main`.
+
+    Runs only once the GitHub release is published. The commit takes the notes
+    file alone, so any other change in the working tree is left untouched, and
+    `main` is advanced with a refspec push plus a local `update-ref`, so the
+    working tree never leaves `dev`.
+
+    The local `main` ref is left alone when another worktree has it checked out:
+    moving it there would leave that worktree's index disagreeing with its HEAD.
+    """
+    if has_changes_in_paths([notes_path]):
+        commit_paths([notes_path], f"docs: add release notes for {tag}")
+        console.print(f"Committed release notes on '{RELEASE_BRANCH}'.")
+    else:
+        console.print(
+            f"[yellow]Release notes are already committed on "
+            f"'{RELEASE_BRANCH}'; nothing to commit.[/yellow]"
+        )
+
+    console.print(f"Pushing '{RELEASE_BRANCH}' to {GIT_REMOTE}...")
+    push_branch(GIT_REMOTE, RELEASE_BRANCH, RELEASE_BRANCH)
+
+    console.print(f"Fast-forwarding '{ALIGNED_BRANCH}' to '{RELEASE_BRANCH}'...")
+    push_branch(GIT_REMOTE, RELEASE_BRANCH, ALIGNED_BRANCH)
+
+    if is_branch_checked_out(ALIGNED_BRANCH):
+        console.print(
+            f"[yellow]{GIT_REMOTE}/{ALIGNED_BRANCH} is updated, but the local "
+            f"'{ALIGNED_BRANCH}' ref was left alone because a worktree has it "
+            f"checked out. Run `git pull --ff-only` in that worktree.[/yellow]"
+        )
+        return
+    set_branch_ref(ALIGNED_BRANCH, get_commit(RELEASE_BRANCH))
+
+
 def _run_local() -> None:
     """Build release artifacts locally without uploading to GitHub."""
     validate_release_environment(require_token=False)
@@ -329,7 +451,7 @@ def _run_local() -> None:
 
 
 def _run_full(skip_prod_cert_check: bool = False) -> None:
-    """Build all 3 targets and publish a full GitHub release.
+    """Build all 3 targets and publish a full GitHub release from `dev`.
 
     Only allowed on macOS ARM64, because a complete release requires
     all 3 targets (macOS + 2 Linux) and macOS cannot be built from Linux.
@@ -348,18 +470,13 @@ def _run_full(skip_prod_cert_check: bool = False) -> None:
     repo_root = get_repo_root()
     os.chdir(repo_root)
 
-    # Branch targeting check
-    target_commitish = os.environ.get("PEPPY_RELEASE_TARGET", "main")
-    current_branch = get_current_branch()
-    if current_branch and current_branch != target_commitish:
-        if not prompt_yn(
-            f"Current branch is '{current_branch}'. "
-            f"Release will target '{target_commitish}'. Continue?",
-        ):
-            sys.exit(1)
+    release_commit = _verify_release_branch_state()
 
     if has_uncommitted_changes():
-        if not prompt_yn("Working tree has uncommitted changes. Continue?"):
+        if not prompt_yn(
+            "Working tree has uncommitted changes; they end up in the archives "
+            "but not in the tagged commit. Continue?"
+        ):
             sys.exit(1)
 
     # The tag is the only value typed by hand; Claude writes the rest.
@@ -378,9 +495,11 @@ def _run_full(skip_prod_cert_check: bool = False) -> None:
     targets = get_targets_for_platform()
     artifacts = _build_all_targets(tag, targets, repo_root)
 
-    # Create a draft release (invisible until all uploads succeed)
+    # Create a draft release (invisible until all uploads succeed). The tag is
+    # pinned to the exact commit the archives were built from rather than to the
+    # branch name, so a push to `dev` during the build cannot retag the release.
     payload = _build_release_payload(
-        tag, content.title, target_commitish, content.notes
+        tag, content.title, release_commit, content.notes
     )
     console.print(f"Creating draft release [bold]{slug.full}@{tag}[/bold]...")
     release_response = github_api(
@@ -430,15 +549,31 @@ def _run_full(skip_prod_cert_check: bool = False) -> None:
         body_html=body_html,
     )
     releases_dir = repo_root / "docs" / "src" / "content" / "releases"
-    generate_release_notes_file(notes_input, releases_dir)
+    notes_path = generate_release_notes_file(notes_input, releases_dir)
 
-    # Final output
     release_url = release_details.get("html_url") or f"https://github.com/{slug.full}/releases/tag/{tag}"
     console.print(f"\n[green]Release created:[/green] {release_url}")
+
+    # The release is live, so a git failure past this point leaves only the
+    # docs side unfinished; say exactly how to finish it by hand.
+    try:
+        _commit_notes_and_align_main(notes_path, tag)
+    except ReleaseError as e:
+        raise ReleaseError(
+            f"{e}\n"
+            f"The GitHub release {tag} is published; only the git side is "
+            f"unfinished. From '{RELEASE_BRANCH}', complete it with:\n"
+            f"  git add {notes_path}\n"
+            f'  git commit -m "docs: add release notes for {tag}"\n'
+            f"  git push {GIT_REMOTE} {RELEASE_BRANCH}\n"
+            f"  git push {GIT_REMOTE} {RELEASE_BRANCH}:{ALIGNED_BRANCH}"
+        ) from e
+
     console.print(
-        "[red]Do not forget to commit the new release note[/red] "
-        "(to update https://forum.peppy.bot/c/peppy-os/announcements/6 "
-        "and https://docs.peppy.bot/reference/changelog/)"
+        f"[green]Release notes committed on '{RELEASE_BRANCH}' and "
+        f"'{ALIGNED_BRANCH}' fast-forwarded to it.[/green] They feed "
+        "https://forum.peppy.bot/c/peppy-os/announcements/6 and "
+        "https://docs.peppy.bot/reference/changelog/"
     )
 
 

@@ -1,8 +1,9 @@
-"""Git repository operations: repo root, branch checking, uncommitted changes, tag verification."""
+"""Git repository operations: repo root, branch state, commits, and pushes."""
 
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from .cli import ReleaseError
@@ -54,31 +55,39 @@ def has_uncommitted_changes() -> bool:
     return staged.returncode != 0 or unstaged.returncode != 0
 
 
-def get_tag_commit(tag: str) -> str:
-    """Resolve a tag to its commit SHA.
+def get_commit(rev: str) -> str:
+    """Resolve a revision (branch, tag, HEAD, SHA) to its commit SHA.
 
-    Raises ReleaseError if the tag doesn't exist locally.
+    Raises ReleaseError if the revision does not resolve to a commit locally.
     """
     result = subprocess.run(
-        ["git", "rev-parse", f"{tag}^{{commit}}"],
+        ["git", "rev-parse", "--verify", f"{rev}^{{commit}}"],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        raise ReleaseError(f"tag '{tag}' not found locally (run 'git fetch --tags')")
+        raise ReleaseError(
+            f"could not resolve '{rev}' to a commit: {result.stderr.strip()}"
+        )
     return result.stdout.strip()
 
 
-def get_head_commit() -> str:
-    """Return the SHA of the current HEAD commit."""
+def is_ancestor(ancestor: str, descendant: str) -> bool:
+    """Return True if *ancestor* is reachable from *descendant*.
+
+    Raises ReleaseError if either revision cannot be read, so an unresolvable
+    ref is never mistaken for "not an ancestor".
+    """
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        raise ReleaseError("failed to get HEAD commit")
-    return result.stdout.strip()
+    if result.returncode in (0, 1):
+        return result.returncode == 0
+    raise ReleaseError(
+        f"failed to compare '{ancestor}' with '{descendant}': {result.stderr.strip()}"
+    )
 
 
 def get_commit_subjects(base: str | None, head: str = "HEAD") -> list[str]:
@@ -105,15 +114,123 @@ def get_commit_subjects(base: str | None, head: str = "HEAD") -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def checkout(ref: str) -> None:
-    """Checkout a git ref (tag, branch, or commit).
+def fetch_remote_branches(remote: str, branches: Sequence[str]) -> None:
+    """Refresh the remote-tracking refs for *branches* from *remote*.
 
-    Raises ReleaseError if the checkout fails.
+    Uses explicit refspecs so ``{remote}/{branch}`` is guaranteed to reflect the
+    remote after this call, and forces the update so a rewound remote branch is
+    reported as it actually is.
+
+    Raises ReleaseError if the fetch fails or a branch is missing on the remote.
     """
+    refspecs = [f"+refs/heads/{b}:refs/remotes/{remote}/{b}" for b in branches]
     result = subprocess.run(
-        ["git", "checkout", ref],
+        ["git", "fetch", remote, *refspecs],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        raise ReleaseError(f"failed to checkout '{ref}': {result.stderr.strip()}")
+        raise ReleaseError(
+            f"failed to fetch {', '.join(branches)} from '{remote}': "
+            f"{result.stderr.strip()}"
+        )
+
+
+def has_changes_in_paths(paths: Sequence[Path]) -> bool:
+    """Return True if any of *paths* is modified, staged, or untracked.
+
+    Raises ReleaseError if the status cannot be read.
+    """
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--", *(str(p) for p in paths)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(f"failed to read git status: {result.stderr.strip()}")
+    return bool(result.stdout.strip())
+
+
+def commit_paths(paths: Sequence[Path], message: str) -> None:
+    """Commit exactly *paths*, leaving every other change in the tree alone.
+
+    ``git commit --only`` takes its content from the named paths rather than the
+    index, so an unrelated dirty file or staged change is never swept into the
+    release commit.
+
+    Raises ReleaseError if staging or committing fails.
+    """
+    path_args = [str(p) for p in paths]
+    staged = subprocess.run(
+        ["git", "add", "--", *path_args],
+        capture_output=True,
+        text=True,
+    )
+    if staged.returncode != 0:
+        raise ReleaseError(
+            f"failed to stage {', '.join(path_args)}: {staged.stderr.strip()}"
+        )
+
+    committed = subprocess.run(
+        ["git", "commit", "--only", "-m", message, "--", *path_args],
+        capture_output=True,
+        text=True,
+    )
+    if committed.returncode != 0:
+        raise ReleaseError(
+            f"failed to commit {', '.join(path_args)}: "
+            f"{committed.stderr.strip() or committed.stdout.strip()}"
+        )
+
+
+def push_branch(remote: str, local_branch: str, remote_branch: str) -> None:
+    """Push *local_branch* to ``{remote}/{remote_branch}``.
+
+    The push is a plain (non-forced) one, so it is rejected unless it is a
+    fast-forward. Raises ReleaseError if the push fails.
+    """
+    result = subprocess.run(
+        ["git", "push", remote, f"{local_branch}:refs/heads/{remote_branch}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to push '{local_branch}' to '{remote}/{remote_branch}': "
+            f"{result.stderr.strip()}"
+        )
+
+
+def is_branch_checked_out(branch: str) -> bool:
+    """Return True if *branch* is the checked-out branch of any worktree.
+
+    Raises ReleaseError if the worktree list cannot be read.
+    """
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(f"failed to list git worktrees: {result.stderr.strip()}")
+    return f"branch refs/heads/{branch}" in result.stdout.splitlines()
+
+
+def set_branch_ref(branch: str, commit: str) -> None:
+    """Point the local *branch* at *commit* without checking it out.
+
+    Only safe when *branch* is checked out nowhere (see `is_branch_checked_out`),
+    because moving the ref under a worktree that has it checked out leaves that
+    worktree's index disagreeing with HEAD.
+
+    Raises ReleaseError if the ref cannot be updated.
+    """
+    result = subprocess.run(
+        ["git", "update-ref", f"refs/heads/{branch}", commit],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to point '{branch}' at {commit}: {result.stderr.strip()}"
+        )

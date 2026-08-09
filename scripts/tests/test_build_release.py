@@ -11,6 +11,7 @@ from functions.build import BuildArtifact
 from functions.build_release import (
     _build_all_targets,
     _build_release_payload,
+    _commit_notes_and_align_main,
     _confirm_release_content,
     _open_editor,
     _parse_editable,
@@ -18,22 +19,26 @@ from functions.build_release import (
     _render_editable,
     _run_full,
     _run_local,
+    _verify_release_branch_state,
 )
 from functions.cli import ReleaseError
 from functions.release_summary import ReleaseContent
+
+DEV_COMMIT = "1111111111111111111111111111111111111111"
+MAIN_COMMIT = "2222222222222222222222222222222222222222"
 
 
 def test_build_release_payload_includes_body_and_draft() -> None:
     payload = _build_release_payload(
         tag="v0.2.0",
         title="Topics API hardening",
-        target_commitish="main",
+        target_commitish=DEV_COMMIT,
         notes_body="## What's Changed\n- Fixed bug\n",
     )
     assert payload == {
         "tag_name": "v0.2.0",
         "name": "Topics API hardening",
-        "target_commitish": "main",
+        "target_commitish": DEV_COMMIT,
         "draft": True,
         "body": "## What's Changed\n- Fixed bug\n",
     }
@@ -267,6 +272,7 @@ def _setup_run_full_mocks(
     )
 
 
+@patch("functions.build_release._commit_notes_and_align_main")
 @patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.generate_release_notes_file")
 @patch("functions.build_release.fetch_release_body_html", return_value="<p>notes</p>")
@@ -281,7 +287,7 @@ def _setup_run_full_mocks(
 @patch("functions.build_release.prompt_yn")
 @patch("functions.build_release.prompt")
 @patch("functions.build_release.has_uncommitted_changes", return_value=False)
-@patch("functions.build_release.get_current_branch", return_value="main")
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
 @patch("functions.build_release.get_repo_root")
 @patch(
     "functions.build_release.validate_release_environment", return_value="test-token"
@@ -291,7 +297,7 @@ def test_run_full_uploads_all_artifacts(
     mock_platform: MagicMock,
     mock_validate: MagicMock,
     mock_repo_root: MagicMock,
-    mock_branch: MagicMock,
+    mock_branch_state: MagicMock,
     mock_uncommitted: MagicMock,
     mock_prompt: MagicMock,
     mock_prompt_yn: MagicMock,
@@ -306,6 +312,7 @@ def test_run_full_uploads_all_artifacts(
     mock_fetch_html: MagicMock,
     mock_gen_notes: MagicMock,
     mock_prepare: MagicMock,
+    mock_align: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -322,6 +329,8 @@ def test_run_full_uploads_all_artifacts(
         mock_api=mock_api,
         mock_parse=mock_parse,
     )
+    notes_path = tmp_path / "docs" / "v0.1.0.html"
+    mock_gen_notes.return_value = notes_path
 
     _run_full()
 
@@ -334,10 +343,16 @@ def test_run_full_uploads_all_artifacts(
     assert create_payload["name"] == "Topics API hardening"
     assert create_payload["body"] == mock_prepare.return_value.notes
 
-    # Verify the release is created as a draft
+    # Verify the release is created as a draft, tagged at the exact dev commit
+    # the archives were built from rather than at a branch name.
     create_call = mock_api.call_args_list[0]
     payload = create_call.kwargs.get("json_data") or create_call[1].get("json_data")
     assert payload["draft"] is True
+    assert payload["target_commitish"] == DEV_COMMIT
+
+    # The generated notes file is committed on dev and main aligned to it, only
+    # after the release is published.
+    mock_align.assert_called_once_with(notes_path, "v0.1.0")
 
     # The displayed URL must be the published release URL, not the draft's untagged URL
     captured = capfd.readouterr()
@@ -358,7 +373,7 @@ def test_run_full_uploads_all_artifacts(
 @patch("functions.build_release.prompt_yn")
 @patch("functions.build_release.prompt")
 @patch("functions.build_release.has_uncommitted_changes", return_value=False)
-@patch("functions.build_release.get_current_branch", return_value="main")
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
 @patch("functions.build_release.get_repo_root")
 @patch(
     "functions.build_release.validate_release_environment", return_value="test-token"
@@ -368,7 +383,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_platform: MagicMock,
     mock_validate: MagicMock,
     mock_repo_root: MagicMock,
-    mock_branch: MagicMock,
+    mock_branch_state: MagicMock,
     mock_uncommitted: MagicMock,
     mock_prompt: MagicMock,
     mock_prompt_yn: MagicMock,
@@ -421,7 +436,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
 @patch("functions.build_release.prompt_yn")
 @patch("functions.build_release.prompt")
 @patch("functions.build_release.has_uncommitted_changes", return_value=False)
-@patch("functions.build_release.get_current_branch", return_value="main")
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
 @patch("functions.build_release.get_repo_root")
 @patch(
     "functions.build_release.validate_release_environment", return_value="test-token"
@@ -431,7 +446,7 @@ def test_run_full_warns_on_cleanup_failure(
     mock_platform: MagicMock,
     mock_validate: MagicMock,
     mock_repo_root: MagicMock,
-    mock_branch: MagicMock,
+    mock_branch_state: MagicMock,
     mock_uncommitted: MagicMock,
     mock_prompt: MagicMock,
     mock_prompt_yn: MagicMock,
@@ -469,6 +484,294 @@ def test_run_full_warns_on_cleanup_failure(
 
     mock_delete_release.assert_called_once()
     mock_publish.assert_not_called()
+
+
+@patch(
+    "functions.build_release._commit_notes_and_align_main",
+    side_effect=ReleaseError("failed to push 'dev' to 'origin/main': rejected"),
+)
+@patch("functions.build_release._prepare_release_content")
+@patch("functions.build_release.generate_release_notes_file")
+@patch("functions.build_release.fetch_release_body_html", return_value="<p>notes</p>")
+@patch("functions.build_release.publish_release")
+@patch("functions.build_release.replace_and_upload_asset")
+@patch("functions.build_release.parse_release_response")
+@patch("functions.build_release.github_api")
+@patch("functions.build_release.build_github_client")
+@patch("functions.build_release.github_repo_slug")
+@patch("functions.build_release._build_all_targets")
+@patch("functions.build_release.get_targets_for_platform")
+@patch("functions.build_release.prompt_yn")
+@patch("functions.build_release.prompt")
+@patch("functions.build_release.has_uncommitted_changes", return_value=False)
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
+@patch("functions.build_release.get_repo_root")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
+@patch("functions.build_release.is_macos_arm64", return_value=True)
+def test_run_full_reports_manual_steps_when_git_align_fails(
+    mock_platform: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_branch_state: MagicMock,
+    mock_uncommitted: MagicMock,
+    mock_prompt: MagicMock,
+    mock_prompt_yn: MagicMock,
+    mock_targets: MagicMock,
+    mock_build_all: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    mock_api: MagicMock,
+    mock_parse: MagicMock,
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_fetch_html: MagicMock,
+    mock_gen_notes: MagicMock,
+    mock_prepare: MagicMock,
+    mock_align: MagicMock,
+    tmp_path: Path,
+) -> None:
+    _setup_run_full_mocks(
+        tmp_path,
+        mock_repo_root=mock_repo_root,
+        mock_prompt=mock_prompt,
+        mock_prompt_yn=mock_prompt_yn,
+        mock_prepare=mock_prepare,
+        mock_targets=mock_targets,
+        mock_build_all=mock_build_all,
+        mock_slug=mock_slug,
+        mock_client=mock_client,
+        mock_api=mock_api,
+        mock_parse=mock_parse,
+    )
+    mock_gen_notes.return_value = tmp_path / "docs" / "v0.1.0.html"
+
+    with pytest.raises(ReleaseError) as excinfo:
+        _run_full()
+
+    # The release is already live, so the failure has to hand over the exact
+    # commands that finish the git side by hand.
+    message = str(excinfo.value)
+    assert "failed to push 'dev' to 'origin/main'" in message
+    assert "The GitHub release v0.1.0 is published" in message
+    assert "git push origin dev" in message
+    assert "git push origin dev:main" in message
+    # The published release is never rolled back over a git failure.
+    mock_publish.assert_called_once()
+
+
+# --- release branch state ---
+
+
+def _commit_resolver(commits: dict[str, str]):
+    """Return a get_commit stub resolving the given revisions."""
+    return lambda rev: commits[rev]
+
+
+def _ancestry_resolver(ancestry: dict[tuple[str, str], bool]):
+    """Return an is_ancestor stub answering the given (ancestor, descendant) pairs."""
+    return lambda ancestor, descendant: ancestry[(ancestor, descendant)]
+
+
+@patch("functions.build_release.get_current_branch", return_value="main")
+def test_verify_release_branch_state_rejects_other_branch(
+    mock_branch: MagicMock,
+) -> None:
+    with pytest.raises(ReleaseError, match="releases are cut from 'dev' only"):
+        _verify_release_branch_state()
+
+
+@patch("functions.build_release.get_current_branch", return_value=None)
+def test_verify_release_branch_state_rejects_detached_head(
+    mock_branch: MagicMock,
+) -> None:
+    with pytest.raises(ReleaseError, match="HEAD is on a detached commit"):
+        _verify_release_branch_state()
+
+
+@patch("functions.build_release.is_ancestor", return_value=True)
+@patch("functions.build_release.get_commit")
+@patch("functions.build_release.fetch_remote_branches")
+@patch("functions.build_release.get_current_branch", return_value="dev")
+def test_verify_release_branch_state_returns_the_dev_commit(
+    mock_branch: MagicMock,
+    mock_fetch: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_is_ancestor: MagicMock,
+) -> None:
+    mock_get_commit.side_effect = _commit_resolver(
+        {"HEAD": DEV_COMMIT, "origin/dev": DEV_COMMIT, "origin/main": MAIN_COMMIT}
+    )
+
+    assert _verify_release_branch_state() == DEV_COMMIT
+
+    # Both remote-tracking refs are refreshed before they are compared.
+    mock_fetch.assert_called_once_with("origin", ("dev", "main"))
+    mock_is_ancestor.assert_called_once_with(MAIN_COMMIT, DEV_COMMIT)
+
+
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release.get_commit")
+@patch("functions.build_release.fetch_remote_branches")
+@patch("functions.build_release.get_current_branch", return_value="dev")
+def test_verify_release_branch_state_rejects_dev_behind_remote(
+    mock_branch: MagicMock,
+    mock_fetch: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_is_ancestor: MagicMock,
+) -> None:
+    remote_dev = "3333333333333333333333333333333333333333"
+    mock_get_commit.side_effect = _commit_resolver(
+        {"HEAD": DEV_COMMIT, "origin/dev": remote_dev, "origin/main": MAIN_COMMIT}
+    )
+    mock_is_ancestor.side_effect = _ancestry_resolver({(DEV_COMMIT, remote_dev): True})
+
+    with pytest.raises(ReleaseError, match="'dev' is behind origin/dev"):
+        _verify_release_branch_state()
+
+
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release.get_commit")
+@patch("functions.build_release.fetch_remote_branches")
+@patch("functions.build_release.get_current_branch", return_value="dev")
+def test_verify_release_branch_state_rejects_unpushed_dev_commits(
+    mock_branch: MagicMock,
+    mock_fetch: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_is_ancestor: MagicMock,
+) -> None:
+    remote_dev = "3333333333333333333333333333333333333333"
+    mock_get_commit.side_effect = _commit_resolver(
+        {"HEAD": DEV_COMMIT, "origin/dev": remote_dev, "origin/main": MAIN_COMMIT}
+    )
+    mock_is_ancestor.side_effect = _ancestry_resolver(
+        {(DEV_COMMIT, remote_dev): False, (remote_dev, DEV_COMMIT): True}
+    )
+
+    with pytest.raises(ReleaseError, match="commits that are not on origin/dev"):
+        _verify_release_branch_state()
+
+
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release.get_commit")
+@patch("functions.build_release.fetch_remote_branches")
+@patch("functions.build_release.get_current_branch", return_value="dev")
+def test_verify_release_branch_state_rejects_diverged_dev(
+    mock_branch: MagicMock,
+    mock_fetch: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_is_ancestor: MagicMock,
+) -> None:
+    remote_dev = "3333333333333333333333333333333333333333"
+    mock_get_commit.side_effect = _commit_resolver(
+        {"HEAD": DEV_COMMIT, "origin/dev": remote_dev, "origin/main": MAIN_COMMIT}
+    )
+    mock_is_ancestor.side_effect = _ancestry_resolver(
+        {(DEV_COMMIT, remote_dev): False, (remote_dev, DEV_COMMIT): False}
+    )
+
+    with pytest.raises(ReleaseError, match="'dev' and origin/dev have diverged"):
+        _verify_release_branch_state()
+
+
+@patch("functions.build_release.is_ancestor", return_value=False)
+@patch("functions.build_release.get_commit")
+@patch("functions.build_release.fetch_remote_branches")
+@patch("functions.build_release.get_current_branch", return_value="dev")
+def test_verify_release_branch_state_rejects_main_ahead_of_dev(
+    mock_branch: MagicMock,
+    mock_fetch: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_is_ancestor: MagicMock,
+) -> None:
+    # main carries a commit dev does not have, so it cannot fast-forward.
+    mock_get_commit.side_effect = _commit_resolver(
+        {"HEAD": DEV_COMMIT, "origin/dev": DEV_COMMIT, "origin/main": MAIN_COMMIT}
+    )
+
+    with pytest.raises(ReleaseError, match="'main' cannot fast-forward to it"):
+        _verify_release_branch_state()
+
+
+# --- committing the notes and aligning main ---
+
+
+@patch("functions.build_release.set_branch_ref")
+@patch("functions.build_release.is_branch_checked_out", return_value=False)
+@patch("functions.build_release.get_commit", return_value=MAIN_COMMIT)
+@patch("functions.build_release.push_branch")
+@patch("functions.build_release.commit_paths")
+@patch("functions.build_release.has_changes_in_paths", return_value=True)
+def test_commit_notes_and_align_main_commits_pushes_and_aligns(
+    mock_has_changes: MagicMock,
+    mock_commit: MagicMock,
+    mock_push: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_checked_out: MagicMock,
+    mock_set_ref: MagicMock,
+    tmp_path: Path,
+) -> None:
+    notes = tmp_path / "v0.1.0.html"
+
+    _commit_notes_and_align_main(notes, "v0.1.0")
+
+    mock_commit.assert_called_once_with([notes], "docs: add release notes for v0.1.0")
+    assert [c.args for c in mock_push.call_args_list] == [
+        ("origin", "dev", "dev"),
+        ("origin", "dev", "main"),
+    ]
+    # The local main ref follows the push, so the working tree never leaves dev.
+    mock_set_ref.assert_called_once_with("main", MAIN_COMMIT)
+
+
+@patch("functions.build_release.set_branch_ref")
+@patch("functions.build_release.is_branch_checked_out", return_value=False)
+@patch("functions.build_release.get_commit", return_value=MAIN_COMMIT)
+@patch("functions.build_release.push_branch")
+@patch("functions.build_release.commit_paths")
+@patch("functions.build_release.has_changes_in_paths", return_value=False)
+def test_commit_notes_and_align_main_skips_empty_commit(
+    mock_has_changes: MagicMock,
+    mock_commit: MagicMock,
+    mock_push: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_checked_out: MagicMock,
+    mock_set_ref: MagicMock,
+    tmp_path: Path,
+) -> None:
+    # Re-running a release whose notes are already committed must still push and
+    # align rather than fail on an empty commit.
+    _commit_notes_and_align_main(tmp_path / "v0.1.0.html", "v0.1.0")
+
+    mock_commit.assert_not_called()
+    assert mock_push.call_count == 2
+    mock_set_ref.assert_called_once_with("main", MAIN_COMMIT)
+
+
+@patch("functions.build_release.set_branch_ref")
+@patch("functions.build_release.is_branch_checked_out", return_value=True)
+@patch("functions.build_release.get_commit", return_value=MAIN_COMMIT)
+@patch("functions.build_release.push_branch")
+@patch("functions.build_release.commit_paths")
+@patch("functions.build_release.has_changes_in_paths", return_value=True)
+def test_commit_notes_and_align_main_leaves_checked_out_main_ref_alone(
+    mock_has_changes: MagicMock,
+    mock_commit: MagicMock,
+    mock_push: MagicMock,
+    mock_get_commit: MagicMock,
+    mock_checked_out: MagicMock,
+    mock_set_ref: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # Moving the ref under a worktree that has main checked out would leave that
+    # worktree's index disagreeing with its HEAD.
+    _commit_notes_and_align_main(tmp_path / "v0.1.0.html", "v0.1.0")
+
+    assert mock_push.call_count == 2
+    mock_set_ref.assert_not_called()
+    assert "checked out" in capfd.readouterr().err
 
 
 # --- release content editing ---
