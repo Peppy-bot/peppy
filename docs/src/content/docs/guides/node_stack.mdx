@@ -11,7 +11,7 @@ The **node stack** is the central registry that manages all your nodes and their
 - **Nodes** are registered configurations that can have multiple running instances
 - **Edges** represent explicit dependencies declared via `depends_on` in the node manifest
 
-When you add a node to the stack, Peppy validates that all its dependencies are satisfied, ensuring that any topics, services, or actions your node relies on are provided by other nodes already in the stack. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
+When you add a node to the stack, Peppy validates that its dependencies are satisfied: any topics, services, or actions your node relies on must be provided by other nodes already in the stack. The exception is a dependency whose slot admits an empty bound set (`cardinality: "zero_or_one"` or `"zero_or_more"`): it may be absent from the stack, its interfaces resolve through the [repository cache](/advanced_guides/repositories/#syncing-against-repositories) so code generation still completes, and a dependency missing from both sources refuses the add; at launch, `zero_or_one` requires an explicit vacant binding, while `zero_or_more` may be omitted. This dependency validation prevents runtime errors and helps you understand how your nodes interconnect.
 
 The stack always contains a **core node** and an instance of it at its root, which coordinates the lifecycle of all other nodes. You can query the stack to see which nodes depend on each other and manage node instances.
 The **node stack** is started as a daemon on your system and the `peppy` binary communicates with it to execute user actions.

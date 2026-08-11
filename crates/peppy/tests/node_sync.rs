@@ -4,8 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use config::node::{EmittedTopic, MessageFormat, NodeConfigParser, QoSProfile, Toolchain};
-use core_node::nodes_repo_cache_path;
-use daemon_config::consts::PeppyDirs;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeInitBuilder, NodeName};
 use peppy::context::AppContext;
@@ -425,27 +423,10 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     .expect("write camera config");
 
     // Seed the daemon's packages cache so the repo tier can find it.
-    let peppy_dirs = PeppyDirs::new(serve.temp_dir());
-    std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("create cache dir");
-    let camera_manifest = camera_dir.path().join("peppy.json5");
-    let packages_json = serde_json::json!([{
-        "node_name": "uvc_camera",
-        "node_tag": "v1",
-        "sha256": config::fingerprint::fingerprint_for_bytes(
-            &std::fs::read(&camera_manifest).expect("read the camera manifest"),
-        ),
-        "origin": {
-            "source_type": "fs",
-            // The path points at the manifest file itself; the daemon's
-            // materialize step derives the directory via `.parent()`.
-            "path": camera_manifest.to_string_lossy(),
-        },
-    }]);
-    std::fs::write(
-        nodes_repo_cache_path(&peppy_dirs),
-        serde_json::to_string_pretty(&packages_json).unwrap(),
-    )
-    .expect("write nodes.json5");
+    super::common::register_repo_caches(
+        serve.temp_dir(),
+        &[("uvc_camera", "v1", camera_dir.path())],
+    );
 
     // Brain node consumes the camera's topic. Lives in its own temp dir
     // so we can run `node sync` against it directly.
