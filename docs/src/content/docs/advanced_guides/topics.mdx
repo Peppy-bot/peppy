@@ -314,7 +314,7 @@ Dependencies are declared in `manifest.depends_on` and referenced by `link_id` i
 </Tabs>
 
 :::note
-By default, the `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated.
+By default, the `node add` and `node sync` commands require the target node to already be in the node stack so the proper interfaces can be generated. The exception is a dependency whose slot admits an empty bound set (`cardinality: "zero_or_one"` or `"zero_or_more"`): `node add` resolves it through the repository cache automatically when it is absent from the stack.
 If the target node is missing, you will see an error like:
 ```
 Error: `web_video_stream:v1` depends on `uvc_camera:v1`, but it does not exist in the stack
