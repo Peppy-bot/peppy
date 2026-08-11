@@ -335,6 +335,8 @@ A dependency that is missing from **both** the node stack and every configured r
 dep `gps_module:v2` not found in node stack or repository cache; run `peppy repo refresh`
 ```
 
+`peppy node add` applies the same stack-then-cache lookup automatically, without a flag, but only for the direct dependencies of empty-admitting slots (`cardinality: "zero_or_one"` or `"zero_or_more"`) that are absent from the stack: their interfaces still feed code generation, each cache resolution is reported in the add output, and a dependency missing from both sources refuses the add with the same error. A dependency whose slot demands an instance must still be in the stack before the add.
+
 ### Tip: register your local workspace as a repository
 
 When a node depends on another node you maintain locally, registering your workspace directory as a `fs` repository removes the need to `peppy node add` every dependency just to regenerate peppygen for a downstream node:

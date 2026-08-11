@@ -58,7 +58,7 @@ pub(crate) async fn materialize_repo_deps(
     // Lazy-load the nodes cache: defer the read until the first stack
     // miss so a manifest fully covered by the NodeStack never touches
     // nodes.json5 (and a malformed cache can't fail a sync that
-    // wouldn't have used it). Loaded once for the whole BFS so the
+    // wouldn't have used it). Loaded once for the whole walk so the
     // `mtime`-keyed memo + checkout dedup amortize across deps.
     let mut cache: Option<Vec<repo_cache::NodeCacheEntry>> = None;
 
@@ -105,7 +105,7 @@ pub(crate) async fn materialize_repo_deps(
                 .await
                 .map_err(|e| format!("failed to materialize {name}:{tag} from repo cache: {e}"))?;
 
-        // Push transitive deps onto the BFS queue, skipping anything we
+        // Push transitive deps onto the worklist, skipping anything we
         // already plan to visit. Stack-tier shadowing happens at pop time.
         if closure == DepClosure::Transitive
             && let Some(child_deps) = parsed.manifest.depends_on.as_ref()

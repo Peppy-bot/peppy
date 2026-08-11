@@ -109,7 +109,7 @@ async fn handle_node_sync_request_inner(
     // so the resolver closure can use them as a second tier. Stack lookups
     // still win.
     let node_config_path = request.node_root_dir.join(config::consts::NODE_CONFIG_FILE);
-    let (repo_resolved, repo_resolved_provenance, bfs_stack_hits) = if request.include_repositories
+    let (repo_resolved, repo_resolved_provenance, walk_stack_hits) = if request.include_repositories
     {
         if !node_config_path.exists() {
             return NodeSyncResponse::failure(format!(
@@ -274,13 +274,13 @@ async fn handle_node_sync_request_inner(
 
     // Provenance: record every dep that resolves through the stack so the
     // response can list them under "Synchronized from node stack:" in the
-    // CLI's verbose output. When `include_repositories` is on, the BFS in
+    // CLI's verbose output. When `include_repositories` is on, the walk in
     // `materialize_repo_deps` already surfaces direct + transitive stack
     // hits (transitive ones reached through repo-cache-materialized
     // parents); we use that result directly. When the flag is off we
     // can't walk repo-cache nodes, so we fall back to a direct-deps pass
     // over the root manifest.
-    let resolved_from_stack: Vec<String> = bfs_stack_hits.unwrap_or_else(|| {
+    let resolved_from_stack: Vec<String> = walk_stack_hits.unwrap_or_else(|| {
         root_manifest
             .depends_on
             .as_ref()
