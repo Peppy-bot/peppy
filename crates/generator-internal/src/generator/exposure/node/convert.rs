@@ -10,8 +10,8 @@
 //! (`{prefix}{CamelCase(field)}` for nested objects, `_item` for array
 //! items).
 
-use crate::generator::naming::{array_item_field_name, to_camel_case};
-use crate::generator::rust::identifiers::sanitize_rust_identifier;
+use crate::generator::naming::array_item_field_name;
+use crate::generator::rust::identifiers::{nested_struct_name, sanitize_rust_identifier};
 use config::node::{MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -313,11 +313,6 @@ fn scalar_from_json_expr(
         }
         TypeToken::F64 => helper("value_f64"),
     }
-}
-
-/// The struct name the Rust backend gives a nested object field.
-fn nested_struct_name(prefix: &str, field_name: &str) -> String {
-    format!("{prefix}{}", to_camel_case(field_name))
 }
 
 /// The Rust identifier the backend gives a message field.

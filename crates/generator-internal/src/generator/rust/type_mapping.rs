@@ -1,7 +1,7 @@
 use super::context::GenerationContext;
-use super::identifiers::sanitize_rust_identifier;
+use super::identifiers::{nested_struct_name, sanitize_rust_identifier};
 use crate::error::{Error, Result};
-use crate::generator::naming::{array_item_field_name, to_camel_case};
+use crate::generator::naming::array_item_field_name;
 use config::node::{SchemaType, TypeToken};
 use encoding::FunctionParam;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -47,7 +47,7 @@ pub fn schema_type_to_tokens(
             }
         }
         SchemaType::Object(object) => {
-            let struct_name = format!("{struct_prefix}{}", to_camel_case(field_name));
+            let struct_name = nested_struct_name(struct_prefix, field_name);
             let struct_ident = Ident::new(&struct_name, Span::call_site());
 
             let mut fields = Vec::with_capacity(object.fields.len());

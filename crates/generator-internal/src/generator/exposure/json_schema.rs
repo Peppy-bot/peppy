@@ -31,10 +31,10 @@ use serde_json::{Map, Value, json};
 /// with the bundle format so the runtime checks the same number it reads.
 pub use peppy_mcp_catalog::SCHEMA_MAPPING_VERSION;
 
-/// Canonical decimal rendering of a `u64`: no leading zeros.
-const U64_DECIMAL_PATTERN: &str = "^(0|[1-9][0-9]*)$";
-/// Canonical decimal rendering of an `i64`: no leading zeros, no `-0`.
-const I64_DECIMAL_PATTERN: &str = "^(0|-?[1-9][0-9]*)$";
+/// Canonical decimal renderings of `u64`/`i64`, shared with the runtime
+/// bridge's acceptance checks so published patterns and enforcement cannot
+/// drift.
+use peppy_mcp_catalog::{I64_DECIMAL_PATTERN, U64_DECIMAL_PATTERN};
 
 /// Derive the public JSON Schema for `format`, applying the same DSL rules
 /// code generation enforces (fixed-length arrays hold scalars only, reserved
@@ -125,25 +125,39 @@ fn base64_encoded_len(bytes: usize) -> usize {
 }
 
 fn primitive_json(token: &TypeToken) -> Value {
+    if let Some((minimum, maximum)) = integer_bounds(token) {
+        return json!({"type": "integer", "minimum": minimum, "maximum": maximum});
+    }
     match token {
         TypeToken::Bool => json!({"type": "boolean"}),
         TypeToken::String => json!({"type": "string"}),
         TypeToken::Bytes => base64_string_json(None),
         TypeToken::Time => json!({"type": "string", "format": "date-time"}),
-        TypeToken::U8 => bounded_integer_json(0, u8::MAX as i64),
-        TypeToken::U16 => bounded_integer_json(0, u16::MAX as i64),
-        TypeToken::U32 => bounded_integer_json(0, u32::MAX as i64),
-        TypeToken::I8 => bounded_integer_json(i8::MIN as i64, i8::MAX as i64),
-        TypeToken::I16 => bounded_integer_json(i16::MIN as i64, i16::MAX as i64),
-        TypeToken::I32 => bounded_integer_json(i32::MIN as i64, i32::MAX as i64),
         TypeToken::U64 => json!({"type": "string", "pattern": U64_DECIMAL_PATTERN}),
         TypeToken::I64 => json!({"type": "string", "pattern": I64_DECIMAL_PATTERN}),
         TypeToken::F32 | TypeToken::F64 => json!({"type": "number"}),
+        TypeToken::U8
+        | TypeToken::U16
+        | TypeToken::U32
+        | TypeToken::I8
+        | TypeToken::I16
+        | TypeToken::I32 => unreachable!("bounded integers are handled by `integer_bounds`"),
     }
 }
 
-fn bounded_integer_json(minimum: i64, maximum: i64) -> Value {
-    json!({"type": "integer", "minimum": minimum, "maximum": maximum})
+/// The inclusive bounds a bounded-integer token publishes in its schema.
+/// Restrict-bounds validation enforces the same range, so both derive it
+/// here.
+pub(super) fn integer_bounds(token: &TypeToken) -> Option<(i64, i64)> {
+    match token {
+        TypeToken::U8 => Some((0, u8::MAX as i64)),
+        TypeToken::U16 => Some((0, u16::MAX as i64)),
+        TypeToken::U32 => Some((0, u32::MAX as i64)),
+        TypeToken::I8 => Some((i8::MIN as i64, i8::MAX as i64)),
+        TypeToken::I16 => Some((i16::MIN as i64, i16::MAX as i64)),
+        TypeToken::I32 => Some((i32::MIN as i64, i32::MAX as i64)),
+        _ => None,
+    }
 }
 
 /// Upper bound on the serialized JSON size of one value of `format`, under

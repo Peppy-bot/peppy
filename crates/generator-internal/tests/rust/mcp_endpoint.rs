@@ -25,27 +25,28 @@
 //! are wide enough to never expire mid-test.
 
 use crate::helpers::{
-    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project, contract_dep,
+    DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
     copy_config_to_output, init_cargo_user_node, init_test_env, send_shutdown, spawn_cargo_run,
     test_peppy_dirs, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::node::{ConsumedAction, ConsumedService, ConsumedTopic};
 use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
 use generator::{
-    ConsumedActionMessage, ContractOrigin, DeploymentInterface, LanguageGenerator,
-    ResolvedContractDocument, generate_exposure_node, generate_peppygen_lib,
+    ContractOrigin, DeploymentInterface, LanguageGenerator, ResolvedContractDocument,
+    generate_exposure_node, generate_peppygen_lib,
+};
+use mcp_test_support::{
+    Client, compile_node, confirmation_accept, connect_with_tasks, ephemeral_port, protocol_error,
+    register_contract_members,
 };
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientCapabilities,
-    ClientInfo, DetailedTask, ErrorCode, GetTaskParams, ProtocolVersion, ReadResourceRequestParams,
-    RequestMetaObject, ServerNotification, SubscriptionFilter, TaskStatus, UpdateTaskParams,
-    object,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientInfo,
+    DetailedTask, ErrorCode, GetTaskParams, ProtocolVersion, ReadResourceRequestParams,
+    RequestMetaObject, ServerNotification, SubscriptionFilter, TaskStatus, object,
 };
-use rmcp::service::ServiceError;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientLifecycleMode, ClientServiceExt};
@@ -234,128 +235,30 @@ fn emit_mcp_node(node_dir: &Path) {
 }
 
 /// The consumed interfaces the daemon would resolve for the node's contract
-/// slot, built from the same fixture contract.
-fn consumed_interfaces() -> Vec<DeploymentInterface> {
+/// slot: derived from the same bundle the node was emitted from, so the
+/// tests feed peppygen exactly what the generated manifest consumes.
+fn node_consumed_interfaces() -> Vec<DeploymentInterface> {
+    let exposure =
+        PeppyMcpExposureParser::from_content(&endpoint_exposure()).expect("exposure parses");
     let contract = PeppyContractParser::from_content(CAMERA_CONTRACT).expect("contract parses");
-    let mut interfaces = Vec::new();
-    for topic in &contract.interfaces.topics {
-        interfaces.push(DeploymentInterface::consumed_topic(
-            ConsumedTopic {
-                link_id: "front_camera".to_string(),
-                name: topic.name.clone(),
-            },
-            topic
-                .message_format
-                .clone()
-                .expect("fixture topics carry formats"),
-            contract_dep("rgb_camera", "v1", "front_camera"),
-        ));
-    }
-    for service in &contract.interfaces.services {
-        interfaces.push(DeploymentInterface::consumed_service(
-            ConsumedService {
-                link_id: "front_camera".to_string(),
-                name: service.name.clone(),
-            },
-            service.request_message_format.clone().unwrap_or_default(),
-            service.response_message_format.clone().unwrap_or_default(),
-            contract_dep("rgb_camera", "v1", "front_camera"),
-        ));
-    }
-    for action in &contract.interfaces.actions {
-        interfaces.push(DeploymentInterface::consumed_action(
-            ConsumedAction {
-                link_id: "front_camera".to_string(),
-                name: action.name.clone(),
-            },
-            ConsumedActionMessage {
-                goal_request: action
-                    .goal_service
-                    .as_ref()
-                    .and_then(|goal| goal.request_message_format.clone()),
-                goal_response: action
-                    .goal_service
-                    .as_ref()
-                    .and_then(|goal| goal.response_message_format.clone()),
-                feedback: action
-                    .feedback_topic
-                    .as_ref()
-                    .map(|feedback| feedback.message_format.clone()),
-                result_response: action
-                    .result_service
-                    .as_ref()
-                    .and_then(|result| result.response_message_format.clone()),
-            },
-            contract_dep("rgb_camera", "v1", "front_camera"),
-        ));
-    }
-    interfaces
+    let bundle = generator::build_exposure_bundle(
+        &exposure,
+        &[ResolvedContractDocument {
+            sha256: ManifestFingerprint::of_bytes(CAMERA_CONTRACT.as_bytes()),
+            document: PeppyContractParser::from_content(CAMERA_CONTRACT).expect("contract parses"),
+        }],
+    )
+    .expect("the exposure validates");
+    mcp_test_support::consumed_interfaces(&bundle, &[(&contract, "front_camera")])
 }
 
 /// Compiles the emitted node. `compile_project` serves the test-wrapper
-/// crates; the MCP node keeps its own manifest, so this mirrors the same
-/// steps by hand: unique peppygen package name (aliased back so generated
-/// `use peppygen::…` code is unchanged), offline build in the shared target
-/// dir, binary copied where `spawn_cargo_run` looks.
+/// crates; the MCP node keeps its own manifest, so the shared harness
+/// mirrors the same steps: unique peppygen package name (aliased back so
+/// generated `use peppygen::…` code is unchanged), offline build in the
+/// shared target dir, binary copied where `spawn_cargo_run` looks.
 fn compile_mcp_node(node_dir: &Path) {
-    crate::helpers::rename_peppygen_package(node_dir);
-    let peppygen_manifest =
-        fs::read_to_string(node_dir.join(PEPPYGEN_OUTPUT_PATH).join("Cargo.toml"))
-            .expect("generated peppygen manifest exists");
-    let unique_name = peppygen_manifest
-        .lines()
-        .find_map(|line| line.strip_prefix("name = \""))
-        .and_then(|rest| rest.strip_suffix('"'))
-        .expect("the peppygen manifest names its package");
-
-    let manifest_path = node_dir.join("Cargo.toml");
-    let manifest = fs::read_to_string(&manifest_path).expect("node manifest exists");
-    let aliased = manifest.replace(
-        "peppygen = { path = \".peppy/libs/peppygen\" }",
-        &format!("peppygen = {{ package = \"{unique_name}\", path = \".peppy/libs/peppygen\" }}"),
-    );
-    assert_ne!(
-        aliased, manifest,
-        "the node manifest declares the peppygen path dependency"
-    );
-    fs::write(&manifest_path, aliased).expect("rewrite node manifest");
-
-    let target_dir = config_test_support::test_data_root().join("cache/rust/test-targets");
-    fs::create_dir_all(&target_dir).expect("create shared target dir");
-    let output = std::process::Command::new("cargo")
-        .arg("build")
-        .env("CARGO_NET_OFFLINE", "true")
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .current_dir(node_dir)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("invoke cargo build on the generated node");
-    assert!(
-        output.status.success(),
-        "cargo build failed for the generated MCP node:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let built = target_dir
-        .join("debug")
-        .join(crate::helpers::executable_filename("camera_endpoint_mcp"));
-    let local_bin_dir = node_dir.join("target").join("debug");
-    fs::create_dir_all(&local_bin_dir).expect("create local target dir");
-    fs::copy(
-        &built,
-        local_bin_dir.join(crate::helpers::executable_filename("user_node")),
-    )
-    .expect("copy the built node binary");
-}
-
-/// An OS-assigned loopback port, released for the node to claim.
-fn ephemeral_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind an ephemeral port")
-        .local_addr()
-        .expect("bound listener has an address")
-        .port()
+    compile_node(node_dir, "camera_endpoint_mcp", "user_node");
 }
 
 /// Waits until the endpoint accepts TCP connections, panicking with the
@@ -397,64 +300,16 @@ fn wait_for_endpoint_or_exit(port: u16, child: &mut std::process::Child, dir: &P
     }
 }
 
-fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
-    match error {
-        ServiceError::McpError(data) => data,
-        other => panic!("expected a protocol error, got {other:?}"),
-    }
-}
-
-type Client = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
-
-/// Connects a client that declares the SEP-2663 tasks extension capability;
-/// in discover mode the SDK attaches it to every request's `_meta`.
-async fn connect_with_tasks(http_port: u16) -> Client {
-    let transport = StreamableHttpClientTransport::from_config(
-        StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{http_port}/mcp")),
-    );
-    let mut info = ClientInfo::default();
-    info.capabilities = ClientCapabilities::builder().enable_tasks().build();
-    info.serve_with_lifecycle(
-        transport,
-        ClientLifecycleMode::Discover {
-            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-        },
-    )
-    .await
-    .expect("the tasks-capable MCP client negotiates 2026-07-28")
-}
-
-/// Polls `tasks/get` until the task satisfies `accept`; bounded by
-/// [`DEFAULT_WAIT_TIMEOUT`] and driven by server responses.
+/// [`mcp_test_support::poll_task_until`] bounded by this file's
+/// [`DEFAULT_WAIT_TIMEOUT`].
 async fn poll_task_until(
     client: &Client,
     task_id: &str,
     description: &str,
     accept: impl Fn(&DetailedTask) -> bool,
 ) -> DetailedTask {
-    tokio::time::timeout(DEFAULT_WAIT_TIMEOUT, async {
-        loop {
-            let result = client
-                .get_task(GetTaskParams::new(task_id))
-                .await
-                .expect("tasks/get answers");
-            if accept(&result.task) {
-                return result.task;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
-}
-
-fn confirmation_accept(task_id: &str) -> UpdateTaskParams {
-    UpdateTaskParams::new(
-        task_id,
-        [("confirmation".to_string(), json!({ "action": "accept" }))]
-            .into_iter()
-            .collect(),
-    )
+    mcp_test_support::poll_task_until(client, DEFAULT_WAIT_TIMEOUT, task_id, description, accept)
+        .await
 }
 
 /// Fires `record_clip` as a task and walks the confirmation gate: the task
@@ -514,7 +369,7 @@ async fn mcp_endpoint_serves_the_exposure_end_to_end() {
     generate_peppygen_lib(
         config::node::PeppygenLanguage::Rust,
         &node_dir,
-        consumed_interfaces(),
+        node_consumed_interfaces(),
         "test-git-hash",
         &test_peppy_dirs(),
         Default::default(),
@@ -559,21 +414,7 @@ async fn mcp_endpoint_serves_the_exposure_end_to_end() {
         contract_tag: "v1".to_string(),
     };
     let contract = PeppyContractParser::from_content(CAMERA_CONTRACT).expect("contract parses");
-    for topic in &contract.interfaces.topics {
-        stub_generator
-            .add_emitted_topic(topic, Some(&origin))
-            .expect("register emitted topic");
-    }
-    for service in &contract.interfaces.services {
-        stub_generator
-            .add_exposed_service(service, Some(&origin))
-            .expect("register exposed service");
-    }
-    for action in &contract.interfaces.actions {
-        stub_generator
-            .add_exposed_action(action, Some(&origin))
-            .expect("register exposed action");
-    }
+    register_contract_members(&mut stub_generator, &contract, &origin);
     let output_config = copy_config_to_output(&user_node_stub, &output_dir_stub);
     stub_generator
         .build(&output_dir_stub, &test_peppy_dirs(), Default::default())

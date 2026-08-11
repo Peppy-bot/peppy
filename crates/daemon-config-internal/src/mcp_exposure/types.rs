@@ -95,32 +95,68 @@ fn deserialize_targets<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    struct TargetsVisitor;
+    deserialize_unique_map(
+        deserializer,
+        "a map of target names to exposure targets",
+        "target",
+        |name| config::repo_node_id::validate_repo_node_name(name, "target name"),
+    )
+}
 
-    impl<'de> de::Visitor<'de> for TargetsVisitor {
-        type Value = IndexMap<String, ExposureTarget>;
+/// Deserialize a document-order map, running `check_key` on each key and
+/// rejecting duplicates as `duplicate {key_label} `{key}``.
+fn deserialize_unique_map<'de, D, V>(
+    deserializer: D,
+    expecting: &'static str,
+    key_label: &'static str,
+    check_key: impl Fn(&str) -> Result<(), String>,
+) -> Result<IndexMap<String, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    V: Deserialize<'de>,
+{
+    struct UniqueMapVisitor<F, V> {
+        expecting: &'static str,
+        key_label: &'static str,
+        check_key: F,
+        value: std::marker::PhantomData<V>,
+    }
+
+    impl<'de, F, V> de::Visitor<'de> for UniqueMapVisitor<F, V>
+    where
+        F: Fn(&str) -> Result<(), String>,
+        V: Deserialize<'de>,
+    {
+        type Value = IndexMap<String, V>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a map of target names to exposure targets")
+            formatter.write_str(self.expecting)
         }
 
         fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
         where
             A: de::MapAccess<'de>,
         {
-            let mut targets = IndexMap::new();
-            while let Some((name, target)) = map.next_entry::<String, ExposureTarget>()? {
-                config::repo_node_id::validate_repo_node_name(&name, "target name")
-                    .map_err(de::Error::custom)?;
-                if targets.insert(name.clone(), target).is_some() {
-                    return Err(de::Error::custom(format!("duplicate target `{name}`")));
+            let mut entries = IndexMap::new();
+            while let Some((key, value)) = map.next_entry::<String, V>()? {
+                (self.check_key)(&key).map_err(de::Error::custom)?;
+                if entries.insert(key.clone(), value).is_some() {
+                    return Err(de::Error::custom(format!(
+                        "duplicate {} `{key}`",
+                        self.key_label
+                    )));
                 }
             }
-            Ok(targets)
+            Ok(entries)
         }
     }
 
-    deserializer.deserialize_map(TargetsVisitor)
+    deserializer.deserialize_map(UniqueMapVisitor {
+        expecting,
+        key_label,
+        check_key,
+        value: std::marker::PhantomData,
+    })
 }
 
 /// Server-level identity advertised to MCP clients through `server/discover`.
@@ -331,35 +367,18 @@ fn deserialize_restrict<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    struct RestrictVisitor;
-
-    impl<'de> de::Visitor<'de> for RestrictVisitor {
-        type Value = IndexMap<String, RestrictBounds>;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a map of request field names to bounds")
-        }
-
-        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-        where
-            A: de::MapAccess<'de>,
-        {
-            let mut restrict = IndexMap::new();
-            while let Some((field, bounds)) = map.next_entry::<String, RestrictBounds>()? {
-                if field.trim().is_empty() {
-                    return Err(de::Error::custom("`restrict` field name cannot be empty"));
-                }
-                if restrict.insert(field.clone(), bounds).is_some() {
-                    return Err(de::Error::custom(format!(
-                        "duplicate `restrict` field `{field}`"
-                    )));
-                }
+    deserialize_unique_map(
+        deserializer,
+        "a map of request field names to bounds",
+        "`restrict` field",
+        |field| {
+            if field.trim().is_empty() {
+                Err("`restrict` field name cannot be empty".to_string())
+            } else {
+                Ok(())
             }
-            Ok(restrict)
-        }
-    }
-
-    deserializer.deserialize_map(RestrictVisitor)
+        },
+    )
 }
 
 /// Inclusive numeric bounds on one request field. At least one bound must be

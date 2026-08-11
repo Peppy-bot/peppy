@@ -1281,7 +1281,7 @@ impl LanguageGenerator for RustGenerator {
             &format!("{service_name_component}_response"),
             response_arguments,
         )?;
-        let struct_prefix = to_camel_case(service_name_component.as_str());
+        let struct_prefix = identifiers::consumed_service_struct_prefix(service.name.as_str());
 
         let method_label = crate::generator::naming::consumed_service_request_schema_key(
             dependency_node_name,
@@ -1607,15 +1607,8 @@ impl LanguageGenerator for RustGenerator {
         dependency: &DependencyContext,
     ) -> Result<()> {
         let dependency_node_name = dependency.producer_name.as_str();
-        let node_component = sanitize_component(dependency_node_name);
-        let action_component = sanitize_component(action.name.as_str());
-        let base_component = match (node_component.is_empty(), action_component.is_empty()) {
-            (true, true) => "action".to_string(),
-            (true, false) => action_component.clone(),
-            (false, true) => node_component.clone(),
-            (false, false) => format!("{node_component}_{action_component}"),
-        };
-        let action_prefix = to_camel_case(&base_component);
+        let action_prefix =
+            identifiers::consumed_action_type_prefix(dependency_node_name, action.name.as_str());
         // `action_struct_name` names Rust IDENTIFIERS in the generated code
         // (e.g. `UvcCameraEnableActionGoalMessage`). The cap'n proto schema
         // keys (file_stems) are produced separately via the shared helper so

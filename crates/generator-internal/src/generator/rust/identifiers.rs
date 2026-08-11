@@ -1,4 +1,4 @@
-use crate::generator::naming::sanitize_component;
+use crate::generator::naming::{non_empty_str, sanitize_component, to_camel_case};
 
 pub(crate) fn is_rust_keyword(ident: &str) -> bool {
     matches!(
@@ -91,6 +91,34 @@ pub(crate) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &st
     } else {
         format!("{prefix}_{component}")
     }
+}
+
+/// The camel-case struct prefix of a consumed service's generated
+/// request/response types. The exposure generator emits references to these
+/// types, so both must derive them from this one rule.
+pub(crate) fn consumed_service_struct_prefix(service_name: &str) -> String {
+    to_camel_case(&prefixed_name("", non_empty_str(service_name), "service"))
+}
+
+/// The camel-case prefix of a consumed action's generated types, derived
+/// from the producer (contract) and action names (e.g. `UvcCameraEnable`,
+/// continued as `UvcCameraEnableActionGoal` for nested goal structs).
+pub(crate) fn consumed_action_type_prefix(producer_name: &str, action_name: &str) -> String {
+    let node_component = sanitize_component(producer_name);
+    let action_component = sanitize_component(action_name);
+    let base_component = match (node_component.is_empty(), action_component.is_empty()) {
+        (true, true) => "action".to_string(),
+        (true, false) => action_component,
+        (false, true) => node_component,
+        (false, false) => format!("{node_component}_{action_component}"),
+    };
+    to_camel_case(&base_component)
+}
+
+/// The struct name of a nested object field, continuing its parent's
+/// prefix.
+pub(crate) fn nested_struct_name(struct_prefix: &str, field_name: &str) -> String {
+    format!("{struct_prefix}{}", to_camel_case(field_name))
 }
 
 #[cfg(test)]

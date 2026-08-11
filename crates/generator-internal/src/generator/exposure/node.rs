@@ -14,13 +14,14 @@ mod convert;
 #[cfg(test)]
 mod tests;
 
-use crate::generator::exposure::bundle::{ExposureBundle, ResourceEntry, TaskEntry, ToolEntry};
+use crate::generator::exposure::bundle::{ExposureBundle, TaskEntry};
 use crate::generator::exposure::validate::{
     ExposureValidationError, ResolvedContractDocument, build_exposure_bundle, find_action,
     find_service, find_topic,
 };
-use crate::generator::naming::{sanitize_component, to_camel_case};
-use crate::generator::rust::identifiers::sanitize_rust_identifier;
+use crate::generator::rust::identifiers::{
+    consumed_action_type_prefix, consumed_service_struct_prefix, sanitize_rust_identifier,
+};
 use crate::generator::rust::type_mapping::render_tokens;
 use config::node::MessageFormat;
 use convert::{format_to_json_expr, object_from_json_expr};
@@ -59,15 +60,26 @@ pub fn generate_exposure_node(
     contracts: &[ResolvedContractDocument],
 ) -> Result<GeneratedServerNode, ExposureValidationError> {
     let bundle = build_exposure_bundle(exposure, contracts)?;
-    let node_name = bundle.node.name.clone();
+    Ok(generate_exposure_node_from_bundle(
+        &bundle, exposure, contracts,
+    ))
+}
+
+/// Emit the node files for a bundle already built from `exposure` and
+/// `contracts`, so a caller needing both artifacts validates only once.
+pub fn generate_exposure_node_from_bundle(
+    bundle: &ExposureBundle,
+    exposure: &McpExposure,
+    contracts: &[ResolvedContractDocument],
+) -> GeneratedServerNode {
     let files = vec![
         GeneratedFile {
             path: "peppy.json5".to_string(),
-            content: render_peppy_json5(&bundle),
+            content: render_peppy_json5(bundle),
         },
         GeneratedFile {
             path: "Cargo.toml".to_string(),
-            content: render_cargo_toml(&bundle),
+            content: render_cargo_toml(bundle),
         },
         GeneratedFile {
             path: ".gitignore".to_string(),
@@ -75,21 +87,21 @@ pub fn generate_exposure_node(
         },
         GeneratedFile {
             path: "src/main.rs".to_string(),
-            content: render_main_rs(&bundle),
+            content: render_main_rs(bundle),
         },
         GeneratedFile {
             path: "src/bridges.rs".to_string(),
-            content: render_bridges_rs(&bundle, exposure, contracts),
+            content: render_bridges_rs(bundle, exposure, contracts),
         },
         GeneratedFile {
             path: "src/bundle.json".to_string(),
             content: bundle.to_json_string(),
         },
     ];
-    Ok(GeneratedServerNode {
-        node_dir_name: node_name,
+    GeneratedServerNode {
+        node_dir_name: bundle.node.name.clone(),
         files,
-    })
+    }
 }
 
 /// `.peppy/` is materialized by `peppy node sync`; `Cargo.lock` depends on
@@ -211,27 +223,12 @@ fn member_module_idents(target: &str, member: &str) -> (Ident, Ident) {
     )
 }
 
-fn topic_bridge_ident(resource: &ResourceEntry) -> Ident {
+/// The bridge function ident for one catalog entry: `{kind}_{target}_{member}`.
+fn bridge_ident(kind: &str, target: &str, member: &str) -> Ident {
     format_ident!(
-        "topic_{}_{}",
-        sanitize_rust_identifier(&resource.target),
-        sanitize_rust_identifier(&resource.member)
-    )
-}
-
-fn tool_bridge_ident(tool: &ToolEntry) -> Ident {
-    format_ident!(
-        "tool_{}_{}",
-        sanitize_rust_identifier(&tool.target),
-        sanitize_rust_identifier(&tool.member)
-    )
-}
-
-fn task_bridge_ident(task: &TaskEntry) -> Ident {
-    format_ident!(
-        "task_{}_{}",
-        sanitize_rust_identifier(&task.target),
-        sanitize_rust_identifier(&task.member)
+        "{kind}_{}_{}",
+        sanitize_rust_identifier(target),
+        sanitize_rust_identifier(member)
     )
 }
 
@@ -241,7 +238,7 @@ fn render_main_rs(bundle: &ExposureBundle) -> String {
         .iter()
         .map(|tool| {
             let name_literal = Literal::string(&tool.name);
-            let bridge = tool_bridge_ident(tool);
+            let bridge = bridge_ident("tool", &tool.target, &tool.member);
             quote! {
                 .with_tool(#name_literal, {
                     let node_runner = std::sync::Arc::clone(&node_runner);
@@ -259,7 +256,7 @@ fn render_main_rs(bundle: &ExposureBundle) -> String {
         .iter()
         .map(|task| {
             let name_literal = Literal::string(&task.name);
-            let bridge = task_bridge_ident(task);
+            let bridge = bridge_ident("task", &task.target, &task.member);
             quote! {
                 .with_task(#name_literal, {
                     let node_runner = std::sync::Arc::clone(&node_runner);
@@ -278,7 +275,7 @@ fn render_main_rs(bundle: &ExposureBundle) -> String {
         .map(|resource| {
             let resource_literal = Literal::string(&resource.name);
             let (link, member) = member_module_idents(&resource.target, &resource.member);
-            let bridge = topic_bridge_ident(resource);
+            let bridge = bridge_ident("topic", &resource.target, &resource.member);
             quote! {
                 {
                     let ingest = server
@@ -399,7 +396,7 @@ fn render_bridges_rs(
             .expect("the bundle only carries members the contract declares");
         let format = declared.message_format.clone().unwrap_or_default();
         let (link, member) = member_module_idents(&resource.target, &resource.member);
-        let bridge = topic_bridge_ident(resource);
+        let bridge = bridge_ident("topic", &resource.target, &resource.member);
         let to_json = format_to_json_expr(&format, quote!(message));
         items.push(quote! {
             pub(crate) fn #bridge(
@@ -418,9 +415,9 @@ fn render_bridges_rs(
         let response_format = effective_format(declared.response_message_format.as_ref());
         let (link, member) = member_module_idents(&tool.target, &tool.member);
         let module = quote!(peppygen::consumed_services::#link::#member);
-        let bridge = tool_bridge_ident(tool);
+        let bridge = bridge_ident("tool", &tool.target, &tool.member);
         let deadline_literal = Literal::u64_unsuffixed(tool.deadline_ms.get());
-        let service_prefix = to_camel_case(&sanitize_rust_identifier(&tool.member));
+        let service_prefix = consumed_service_struct_prefix(&tool.member);
 
         let request_fn = format_ident!("{bridge}_request");
         let response_fn = format_ident!("{bridge}_response");
@@ -546,18 +543,14 @@ fn render_task_bridge(
 
     let (link, member) = member_module_idents(&task.target, &task.member);
     let module = quote!(peppygen::consumed_actions::#link::#member);
-    let bridge = task_bridge_ident(task);
+    let bridge = bridge_ident("task", &task.target, &task.member);
     let deadline_literal = Literal::u64_unsuffixed(task.deadline_ms.get());
     // The Rust backend names the generated action types after the producer
     // (here: the contract) and the action; nested goal structs continue
     // from `{that}ActionGoal`.
     let goal_prefix = format!(
         "{}ActionGoal",
-        to_camel_case(&format!(
-            "{}_{}",
-            sanitize_component(contract.manifest.name.as_str()),
-            sanitize_component(&task.member)
-        ))
+        consumed_action_type_prefix(contract.manifest.name.as_str(), &task.member)
     );
 
     let goal_fn = format_ident!("{bridge}_goal");

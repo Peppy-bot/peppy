@@ -22,5 +22,7 @@ pub use json_schema::{
     MaxSerializedSize, SCHEMA_MAPPING_VERSION, max_serialized_json_bytes,
     message_format_to_json_schema,
 };
-pub use node::{GeneratedFile, GeneratedServerNode, generate_exposure_node};
+pub use node::{
+    GeneratedFile, GeneratedServerNode, generate_exposure_node, generate_exposure_node_from_bundle,
+};
 pub use validate::{ExposureValidationError, ResolvedContractDocument, build_exposure_bundle};

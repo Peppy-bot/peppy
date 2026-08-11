@@ -32,23 +32,22 @@ use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::node::{ConsumedAction, ConsumedService, ConsumedTopic};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::contract::PeppyContractParser;
+use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
 use generator::{
-    ConsumedActionMessage, ContractOrigin, DeploymentInterface, LanguageGenerator,
+    ContractOrigin, DeploymentInterface, LanguageGenerator, ResolvedContractDocument,
     generate_peppygen_lib,
 };
-use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo, DetailedTask,
-    ErrorCode, GetTaskParams, ProtocolVersion, ReadResourceRequestParams, TaskStatus,
-    UpdateTaskParams, object,
+use mcp_test_support::{
+    compile_node, confirmation_accept, connect_with_tasks, consumed_interfaces, ephemeral_port,
+    poll_task_until, protocol_error, register_contract_members,
 };
-use rmcp::service::ServiceError;
-use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{ClientLifecycleMode, ClientServiceExt};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ErrorCode, ReadResourceRequestParams, TaskStatus,
+    object,
+};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -335,77 +334,33 @@ fn stack_exposure() -> String {
 
 /// The consumed interfaces the daemon resolves for the generated node's two
 /// contract slots, restricted to the members the exposure selects (which is
-/// exactly what the generated manifest consumes).
+/// exactly what the generated manifest consumes): derived from the same
+/// bundle publication builds, not hand-listed.
 fn mcp_consumed_interfaces() -> Vec<DeploymentInterface> {
     let camera = PeppyContractParser::from_content(CAMERA_CONTRACT).expect("contract parses");
     let recording = PeppyContractParser::from_content(RECORDING_CONTRACT).expect("contract parses");
-    let camera_dep = || {
-        generator::DependencyContext::contract(
-            "rgb_camera",
-            "v1",
-            "front_camera",
-            config::node::Cardinality::One,
-        )
-    };
-    let recorder_dep = || {
-        generator::DependencyContext::contract(
-            "episode_recording",
-            "v1",
-            "recorder",
-            config::node::Cardinality::One,
-        )
-    };
-
-    let topic = &camera.interfaces.topics[0];
-    let service = &camera.interfaces.services[0];
-    let action = &recording.interfaces.actions[0];
-    vec![
-        DeploymentInterface::consumed_topic(
-            ConsumedTopic {
-                link_id: "front_camera".to_string(),
-                name: topic.name.clone(),
+    let exposure =
+        PeppyMcpExposureParser::from_content(&stack_exposure()).expect("exposure parses");
+    let bundle = generator::build_exposure_bundle(
+        &exposure,
+        &[
+            ResolvedContractDocument {
+                sha256: ManifestFingerprint::of_bytes(CAMERA_CONTRACT.as_bytes()),
+                document: PeppyContractParser::from_content(CAMERA_CONTRACT)
+                    .expect("contract parses"),
             },
-            topic
-                .message_format
-                .clone()
-                .expect("the fixture topic carries a format"),
-            camera_dep(),
-        ),
-        DeploymentInterface::consumed_service(
-            ConsumedService {
-                link_id: "front_camera".to_string(),
-                name: service.name.clone(),
+            ResolvedContractDocument {
+                sha256: ManifestFingerprint::of_bytes(RECORDING_CONTRACT.as_bytes()),
+                document: PeppyContractParser::from_content(RECORDING_CONTRACT)
+                    .expect("contract parses"),
             },
-            service.request_message_format.clone().unwrap_or_default(),
-            service.response_message_format.clone().unwrap_or_default(),
-            camera_dep(),
-        ),
-        DeploymentInterface::consumed_action(
-            ConsumedAction {
-                link_id: "recorder".to_string(),
-                name: action.name.clone(),
-            },
-            ConsumedActionMessage {
-                goal_request: action
-                    .goal_service
-                    .as_ref()
-                    .and_then(|goal| goal.request_message_format.clone()),
-                goal_response: action
-                    .goal_service
-                    .as_ref()
-                    .and_then(|goal| goal.response_message_format.clone()),
-                feedback: action
-                    .feedback_topic
-                    .as_ref()
-                    .map(|feedback| feedback.message_format.clone()),
-                result_response: action
-                    .result_service
-                    .as_ref()
-                    .and_then(|result| result.response_message_format.clone()),
-            },
-            recorder_dep(),
-        ),
-    ]
+        ],
+    )
+    .expect("the exposure validates");
+    consumed_interfaces(
+        &bundle,
+        &[(&camera, "front_camera"), (&recording, "recorder")],
+    )
 }
 
 /// Writes one provider node crate into the hub and generates its peppygen
@@ -437,21 +392,7 @@ fn stage_provider(
         contract_tag: contract.manifest.tag.to_string(),
     };
     let mut generator = generator::RustGenerator::default();
-    for topic in &contract.interfaces.topics {
-        generator
-            .add_emitted_topic(topic, Some(&origin))
-            .expect("register emitted topic");
-    }
-    for service in &contract.interfaces.services {
-        generator
-            .add_exposed_service(service, Some(&origin))
-            .expect("register exposed service");
-    }
-    for action in &contract.interfaces.actions {
-        generator
-            .add_exposed_action(action, Some(&origin))
-            .expect("register exposed action");
-    }
+    register_contract_members(&mut generator, &contract, &origin);
     let output_dir = node_dir.join(PEPPYGEN_OUTPUT_PATH);
     fs::create_dir_all(&output_dir).expect("create peppygen output dir");
     let staged_config = output_dir.join(NODE_CONFIG_FILE);
@@ -461,55 +402,6 @@ fn stage_provider(
         .expect("build provider peppygen");
     fs::remove_file(staged_config).expect("remove staged config");
     node_dir
-}
-
-/// Compiles a node crate offline in the shared test target dir, mirroring
-/// the generator e2e: unique peppygen package name (aliased back so
-/// generated `use peppygen::…` code is unchanged), binary copied into the
-/// node's own `target/debug` where the staged `run_cmd` points.
-fn compile_node(node_dir: &Path, binary_name: &str) -> PathBuf {
-    let peppygen_cargo = node_dir.join(PEPPYGEN_OUTPUT_PATH).join("Cargo.toml");
-    let contents = fs::read_to_string(&peppygen_cargo).expect("generated peppygen manifest exists");
-    let unique = format!("peppygen_{binary_name}");
-    let renamed = contents.replacen("name = \"peppygen\"", &format!("name = \"{unique}\""), 1);
-    assert_ne!(renamed, contents, "the peppygen manifest names its package");
-    fs::write(&peppygen_cargo, renamed).expect("rewrite peppygen package name");
-
-    let manifest_path = node_dir.join("Cargo.toml");
-    let manifest = fs::read_to_string(&manifest_path).expect("node manifest exists");
-    let aliased = manifest.replace(
-        "peppygen = { path = \".peppy/libs/peppygen\" }",
-        &format!("peppygen = {{ package = \"{unique}\", path = \".peppy/libs/peppygen\" }}"),
-    );
-    assert_ne!(
-        aliased, manifest,
-        "the node manifest declares the peppygen path dependency"
-    );
-    fs::write(&manifest_path, aliased).expect("rewrite node manifest");
-
-    let target_dir = config_test_support::test_data_root().join("cache/rust/test-targets");
-    fs::create_dir_all(&target_dir).expect("create shared target dir");
-    let output = std::process::Command::new("cargo")
-        .arg("build")
-        .env("CARGO_NET_OFFLINE", "true")
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .current_dir(node_dir)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("invoke cargo build on the node crate");
-    assert!(
-        output.status.success(),
-        "cargo build failed for `{binary_name}`:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let built = target_dir.join("debug").join(binary_name);
-    let local_bin_dir = node_dir.join("target").join("debug");
-    fs::create_dir_all(&local_bin_dir).expect("create local target dir");
-    let local_binary = local_bin_dir.join(binary_name);
-    fs::copy(&built, &local_binary).expect("copy the built node binary");
-    local_binary
 }
 
 /// Rewrites a staged manifest for the pre-built binary: no build step, the
@@ -526,62 +418,6 @@ fn point_manifest_at_binary(node_dir: &Path, binary: &Path) {
         serde_json5::to_string(&node_config).expect("staged manifest serializes"),
     )
     .expect("rewrite staged manifest");
-}
-
-/// An OS-assigned loopback port, released for the MCP node to claim.
-fn ephemeral_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind an ephemeral port")
-        .local_addr()
-        .expect("bound listener has an address")
-        .port()
-}
-
-type Client = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
-
-async fn connect_with_tasks(http_port: u16) -> Client {
-    let transport = StreamableHttpClientTransport::from_config(
-        StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{http_port}/mcp")),
-    );
-    let mut info = ClientInfo::default();
-    info.capabilities = ClientCapabilities::builder().enable_tasks().build();
-    info.serve_with_lifecycle(
-        transport,
-        ClientLifecycleMode::Discover {
-            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-        },
-    )
-    .await
-    .expect("the MCP client negotiates 2026-07-28")
-}
-
-fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
-    match error {
-        ServiceError::McpError(data) => data,
-        other => panic!("expected a protocol error, got {other:?}"),
-    }
-}
-
-async fn poll_task_until(
-    client: &Client,
-    task_id: &str,
-    description: &str,
-    accept: impl Fn(&DetailedTask) -> bool,
-) -> DetailedTask {
-    tokio::time::timeout(WAIT, async {
-        loop {
-            let result = client
-                .get_task(GetTaskParams::new(task_id))
-                .await
-                .expect("tasks/get answers");
-            if accept(&result.task) {
-                return result.task;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
 }
 
 /// The run logs of the three instances, for readable panics when a wait on
@@ -669,9 +505,13 @@ async fn a_launcher_deploys_the_exposure_and_a_client_walks_it() {
     )
     .expect("peppygen generates for the published node");
 
-    let camera_binary = compile_node(&camera_dir, "mock_uvc_camera");
-    let recorder_binary = compile_node(&recorder_dir, "mock_recorder");
-    let mcp_binary = compile_node(&mcp_dir, "camera_and_recording_mcp");
+    let camera_binary = compile_node(&camera_dir, "mock_uvc_camera", "mock_uvc_camera");
+    let recorder_binary = compile_node(&recorder_dir, "mock_recorder", "mock_recorder");
+    let mcp_binary = compile_node(
+        &mcp_dir,
+        "camera_and_recording_mcp",
+        "camera_and_recording_mcp",
+    );
     point_manifest_at_binary(&camera_dir, &camera_binary);
     point_manifest_at_binary(&recorder_dir, &recorder_binary);
     point_manifest_at_binary(&mcp_dir, &mcp_binary);
@@ -829,20 +669,15 @@ async fn a_launcher_deploys_the_exposure_and_a_client_walks_it() {
         panic!("expected a task handle, got {response:?}");
     };
     let task_id = created.task.task_id;
-    poll_task_until(&client, &task_id, "input_required", |task| {
+    poll_task_until(&client, WAIT, &task_id, "input_required", |task| {
         task.status() == TaskStatus::InputRequired
     })
     .await;
     client
-        .update_task(UpdateTaskParams::new(
-            &*task_id,
-            [("confirmation".to_string(), json!({ "action": "accept" }))]
-                .into_iter()
-                .collect(),
-        ))
+        .update_task(confirmation_accept(&task_id))
         .await
         .expect("the confirmation is delivered");
-    let completed = poll_task_until(&client, &task_id, "a terminal status", |task| {
+    let completed = poll_task_until(&client, WAIT, &task_id, "a terminal status", |task| {
         task.status().is_terminal()
     })
     .await;

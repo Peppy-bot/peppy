@@ -1,0 +1,26 @@
+# Shared harness for the MCP endpoint e2e suites (generator-internal's
+# endpoint test and peppy's full-stack test), so the compile-the-node dance,
+# the real MCP client plumbing, and the daemon-shaped interface derivation
+# are written once.
+[package]
+name = "mcp-test-support"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+config = { workspace = true }
+config-test-support = { workspace = true }
+daemon-config = { workspace = true }
+generator = { workspace = true }
+# The `server` feature is what makes the client capability builder
+# available, mirroring how the e2e crates get it via `peppy-mcp-runtime`.
+rmcp = { version = "3.1.2", default-features = false, features = [
+    "client",
+    "server",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "time"] }

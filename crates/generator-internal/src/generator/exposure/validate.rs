@@ -414,32 +414,35 @@ fn apply_restrictions(
             }
         };
 
-        let mut checked = |bound: &Option<serde_json::Number>, side: &str| -> Option<f64> {
-            let bound = bound.as_ref()?;
-            if let Some((low, high)) = range {
-                let Some(value) = bound.as_i64() else {
-                    violations.push(format!(
-                        "{bound_context}: `{side}` must be an integer for the `{}` member, \
-                         got {bound}",
-                        type_token_name(token)
-                    ));
-                    return None;
-                };
-                if value < low || value > high {
-                    violations.push(format!(
-                        "{bound_context}: `{side}` ({value}) is outside `{}`'s range \
-                         [{low}, {high}]",
-                        type_token_name(token)
-                    ));
-                    return None;
+        // A passing bound comes back as its comparison value paired with the
+        // validated number the schema should carry.
+        let mut checked =
+            |bound: &Option<serde_json::Number>, side: &str| -> Option<(f64, serde_json::Number)> {
+                let bound = bound.as_ref()?;
+                if let Some((low, high)) = range {
+                    let Some(value) = bound.as_i64() else {
+                        violations.push(format!(
+                            "{bound_context}: `{side}` must be an integer for the `{}` member, \
+                             got {bound}",
+                            type_token_name(token)
+                        ));
+                        return None;
+                    };
+                    if value < low || value > high {
+                        violations.push(format!(
+                            "{bound_context}: `{side}` ({value}) is outside `{}`'s range \
+                             [{low}, {high}]",
+                            type_token_name(token)
+                        ));
+                        return None;
+                    }
+                    return Some((value as f64, bound.clone()));
                 }
-                return Some(value as f64);
-            }
-            bound.as_f64()
-        };
+                bound.as_f64().map(|value| (value, bound.clone()))
+            };
         let min = checked(&bounds.min, "min");
         let max = checked(&bounds.max, "max");
-        if let (Some(min), Some(max)) = (min, max)
+        if let (Some((min, _)), Some((max, _))) = (&min, &max)
             && min > max
         {
             violations.push(format!(
@@ -455,15 +458,11 @@ fn apply_restrictions(
         else {
             continue;
         };
-        if min.is_some()
-            && let Some(bound) = &bounds.min
-        {
-            properties.insert("minimum".to_string(), Value::Number(bound.clone()));
+        if let Some((_, bound)) = min {
+            properties.insert("minimum".to_string(), Value::Number(bound));
         }
-        if max.is_some()
-            && let Some(bound) = &bounds.max
-        {
-            properties.insert("maximum".to_string(), Value::Number(bound.clone()));
+        if let Some((_, bound)) = max {
+            properties.insert("maximum".to_string(), Value::Number(bound));
         }
     }
 }
@@ -476,18 +475,13 @@ enum NumericKind {
 }
 
 fn integer_range(token: &TypeToken) -> NumericKind {
+    if let Some(range) = super::json_schema::integer_bounds(token) {
+        return NumericKind::Integer(range);
+    }
     match token {
-        TypeToken::U8 => NumericKind::Integer((0, u8::MAX as i64)),
-        TypeToken::U16 => NumericKind::Integer((0, u16::MAX as i64)),
-        TypeToken::U32 => NumericKind::Integer((0, u32::MAX as i64)),
-        TypeToken::I8 => NumericKind::Integer((i8::MIN as i64, i8::MAX as i64)),
-        TypeToken::I16 => NumericKind::Integer((i16::MIN as i64, i16::MAX as i64)),
-        TypeToken::I32 => NumericKind::Integer((i32::MIN as i64, i32::MAX as i64)),
         TypeToken::F32 | TypeToken::F64 => NumericKind::Float,
         TypeToken::U64 | TypeToken::I64 => NumericKind::DecimalString,
-        TypeToken::Bool | TypeToken::String | TypeToken::Bytes | TypeToken::Time => {
-            NumericKind::NotNumeric
-        }
+        _ => NumericKind::NotNumeric,
     }
 }
 
@@ -642,17 +636,9 @@ pub(super) fn find_action<'a>(
         .find(|a| a.name == member)
 }
 
-/// Name the missing member, list what the contract does declare of that
-/// kind, and point at the right section when a member of the same name
-/// exists under another kind.
-fn missing_member_violation(
-    target_name: &str,
-    kind: MemberKind,
-    member: &str,
-    contract_label: &str,
-    contract: &PeppyContract,
-) -> String {
-    let declared: Vec<&str> = match kind {
+/// The names a contract declares under one member kind.
+fn member_names(contract: &PeppyContract, kind: MemberKind) -> Vec<&str> {
+    match kind {
         MemberKind::Topic => contract
             .interfaces
             .topics
@@ -671,7 +657,20 @@ fn missing_member_violation(
             .iter()
             .map(|a| a.name.as_str())
             .collect(),
-    };
+    }
+}
+
+/// Name the missing member, list what the contract does declare of that
+/// kind, and point at the right section when a member of the same name
+/// exists under another kind.
+fn missing_member_violation(
+    target_name: &str,
+    kind: MemberKind,
+    member: &str,
+    contract_label: &str,
+    contract: &PeppyContract,
+) -> String {
+    let declared = member_names(contract, kind);
     let mut message = format!(
         "target `{target_name}` selects {} member `{member}`, but contract `{contract_label}` \
          declares no such {}",
@@ -691,12 +690,7 @@ fn missing_member_violation(
         if other == kind {
             continue;
         }
-        let exists = match other {
-            MemberKind::Topic => find_topic(contract, member).is_some(),
-            MemberKind::Service => find_service(contract, member).is_some(),
-            MemberKind::Action => find_action(contract, member).is_some(),
-        };
-        if exists {
+        if member_names(contract, other).contains(&member) {
             message.push_str(&format!(
                 "; a {} with that name exists, select it under `{}`",
                 other.singular(),

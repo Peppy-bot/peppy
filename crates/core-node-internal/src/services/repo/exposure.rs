@@ -4,7 +4,8 @@
 //! document: the bundle file and the generated MCP server node.
 //!
 //! The validation itself is [`generator::build_exposure_bundle`] and the
-//! node emission [`generator::generate_exposure_node`], both pure functions;
+//! node emission [`generator::generate_exposure_node_from_bundle`], both
+//! pure functions;
 //! this module is the repository-facing shell that turns sha256 pins into
 //! contract bytes and generated values into committed files.
 
@@ -13,7 +14,7 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use generator::{
     ExposureBundle, GeneratedServerNode, ResolvedContractDocument, build_exposure_bundle,
-    generate_exposure_node,
+    generate_exposure_node_from_bundle,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -213,7 +214,7 @@ fn render_artifacts(
     }
 
     let bundle = build_exposure_bundle(&exposure, &contracts).map_err(|e| e.to_string())?;
-    let node = generate_exposure_node(&exposure, &contracts).map_err(|e| e.to_string())?;
+    let node = generate_exposure_node_from_bundle(&bundle, &exposure, &contracts);
     let content = bundle.to_json_string();
     Ok(RenderedExposure {
         bundle_path: exposure_bundle_path(exposure_path),

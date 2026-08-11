@@ -38,8 +38,8 @@ pub use generator::exposure::{
     BundleContractPin, BundleIdentity, BundleNode, BundleServer, EXPOSURE_BUNDLE_FORMAT,
     ExposureBundle, ExposureValidationError, GeneratedFile, GeneratedServerNode, MaxSerializedSize,
     ResolvedContractDocument, ResourceEntry, ResourcePolicies, SCHEMA_MAPPING_VERSION, TaskEntry,
-    ToolEntry, build_exposure_bundle, generate_exposure_node, max_serialized_json_bytes,
-    message_format_to_json_schema,
+    ToolEntry, build_exposure_bundle, generate_exposure_node, generate_exposure_node_from_bundle,
+    max_serialized_json_bytes, message_format_to_json_schema,
 };
 pub use generator::generate_peppygen_lib;
 pub use generator::python::PythonGenerator;

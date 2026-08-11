@@ -1,8 +1,8 @@
-use super::identifiers::sanitize_rust_identifier;
+use super::identifiers::{nested_struct_name, sanitize_rust_identifier};
 use super::serialization::NameGenerator;
 use super::type_mapping::primitive_type_token;
 use crate::error::{Error, Result};
-use crate::generator::naming::{array_item_type_name, sanitize_component, to_camel_case};
+use crate::generator::naming::{array_item_type_name, sanitize_component};
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use indexmap::IndexMap;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
@@ -508,7 +508,7 @@ fn generate_object_reader(
 
     let mut field_statements = Vec::new();
     let mut field_inits = Vec::new();
-    let nested_prefix = format!("{struct_prefix}{}", to_camel_case(field_name));
+    let nested_prefix = nested_struct_name(struct_prefix, field_name);
 
     for (nested_name, nested_schema) in object {
         let (mut nested_statements, nested_value_ident) = generate_field_reader_statements(
@@ -526,7 +526,7 @@ fn generate_object_reader(
 
     statements.extend(field_statements);
 
-    let struct_name = format!("{struct_prefix}{}", to_camel_case(field_name));
+    let struct_name = nested_struct_name(struct_prefix, field_name);
     let struct_ident = Ident::new(&struct_name, Span::call_site());
     let value_ident = names.next(field_name);
     statements.push(quote! {
