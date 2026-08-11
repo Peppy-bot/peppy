@@ -1049,6 +1049,71 @@ fn dependency_fails_when_node_tag_mismatches() {
     );
 }
 
+/// An absent dependency whose slot admits the empty bound set is not a
+/// missing node: the dependant joins the stack without it, and the pending
+/// requirement completes into a real dependency edge the moment the
+/// dependency itself joins.
+#[test]
+fn absent_dependency_on_an_empty_admitting_slot_is_not_missing() {
+    let dependent: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+              name: "brain",
+              tag: "v1",
+              depends_on: {
+                nodes: [
+                  { name: "recorder", tag: "v1", link_id: "rec", cardinality: "zero_or_more" }
+                ]
+              },
+            },
+            execution: {
+              language: "rust",
+              run_cmd: ["brain"]
+            },
+        }"#,
+    )
+    .expect("valid dependent node config");
+
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    stack
+        .push_config(dependent, false, PathBuf::from("/tmp"))
+        .expect("an absent zero_or_more dependency is the admitted empty set");
+    assert_eq!(stack.len(), 2, "stack should have core node + brain");
+
+    let dependency: config::node::NodeConfig = serde_json5::from_str(
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+              name: "recorder",
+              tag: "v1",
+            },
+            execution: {
+              language: "rust",
+              run_cmd: ["recorder"]
+            },
+        }"#,
+    )
+    .expect("valid dependency node config");
+    stack
+        .push_config(dependency, false, PathBuf::from("/tmp"))
+        .expect("recorder has no dependencies");
+
+    let graph = stack.to_serialized_graph();
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|e| e.from.label().contains("brain:v1") && e.to.label().contains("recorder:v1")),
+        "the late-joining dependency completes the edge. Got: {:?}",
+        graph
+            .edges
+            .iter()
+            .map(|e| (e.from.label(), e.to.label()))
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn overwriting_existing_node_fails_if_node_has_dependencies() {
     let dependency_v1: config::node::NodeConfig = serde_json5::from_str(

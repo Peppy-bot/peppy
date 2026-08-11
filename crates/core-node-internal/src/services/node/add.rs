@@ -2,8 +2,8 @@ use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_actio
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::sync::{
-    self, AutoSyncParams, collect_all_deployment_interfaces, generate_peppygen_for_node,
-    stack_resolver,
+    self, AutoSyncParams, DepClosure, collect_all_deployment_interfaces,
+    generate_peppygen_for_node, materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
 };
 use super::{
     clone_with_progress, extract_tar_zst, format_bytes, generate_random_id,
@@ -13,7 +13,7 @@ use super::{
 use crate::Result;
 use chrono::Local;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
-use config::node::validate_dependency_specs;
+use config::node::{MissingDependencyPolicy, validate_dependency_specs};
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::ActionId;
 use core_node_api::encoding::{
@@ -1411,20 +1411,51 @@ async fn process_node_add_inner(
         });
     }
 
-    // Validate that all dependency nodes exist in the stack and expose the required
-    // interfaces before running build_cmd. This prevents confusing build failures when
-    // peppygen is generated with incomplete interfaces due to missing dependencies.
+    // Presence pass, before build_cmd so a wrong stack fails fast: a
+    // dependency may be absent only where its slot admits the empty set.
     let dep_errors = validate_dependency_specs(
         &node_config.manifest,
         &node_config.interfaces,
         &node_name,
         &node_tag,
-        |name, tag| {
-            ctx.action
-                .node_stack
-                .find(name, tag)
-                .map(|e| e.read().config().clone())
-        },
+        MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
+        stack_resolver(&ctx.action.node_stack),
+    );
+    if let Some(err) = dep_errors.into_iter().next() {
+        return Err(format!("Failed to add node config: {}", err));
+    }
+
+    // Resolvability pass: an admitted-absent dependency still feeds the
+    // consumed modules peppygen generates, so it must resolve through the
+    // repository cache instead, and exposure is re-checked against the exact
+    // configs the generator consumes.
+    let (repo_resolved, repo_provenance, _) = materialize_repo_deps(
+        &node_config.manifest,
+        &ctx.action.node_stack,
+        &ctx.action.peppy_dirs,
+        DepClosure::Direct,
+    )
+    .await
+    .map_err(|reason| format!("Failed to add node config: {}", reason))?;
+    for entry in &repo_provenance {
+        let _ = ctx.feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: format!(
+                "Resolved dependency `{}:{}` from the repository cache ({})",
+                entry.name,
+                entry.tag,
+                entry.source_kind.as_str()
+            ),
+        });
+    }
+    let resolve_dep = stack_then_repo_resolver(&ctx.action.node_stack, &repo_resolved);
+    let dep_errors = validate_dependency_specs(
+        &node_config.manifest,
+        &node_config.interfaces,
+        &node_name,
+        &node_tag,
+        MissingDependencyPolicy::RequireResolvable,
+        &resolve_dep,
     );
     if let Some(err) = dep_errors.into_iter().next() {
         return Err(format!("Failed to add node config: {}", err));
@@ -1459,7 +1490,7 @@ async fn process_node_add_inner(
     let consumed_interfaces = collect_all_deployment_interfaces(
         &node_config.manifest,
         &node_config.interfaces,
-        stack_resolver(&ctx.action.node_stack),
+        &resolve_dep,
         &ctx.action.peppy_dirs,
         doc_pins.as_ref(),
         &interface_feedback,

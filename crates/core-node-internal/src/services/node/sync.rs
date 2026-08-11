@@ -4,15 +4,15 @@ mod interfaces;
 mod pairings;
 
 pub use self::codegen::{AutoSyncParams, auto_sync_if_missing, generate_peppygen_for_node};
-pub(crate) use self::interfaces::resolve_contract_doc;
 pub use self::interfaces::{collect_all_deployment_interfaces, stack_resolver};
+pub(crate) use self::interfaces::{resolve_contract_doc, stack_then_repo_resolver};
 
 use self::codegen::remove_previous_peppy_dir;
-use self::deps::materialize_repo_deps;
+pub(crate) use self::deps::{DepClosure, materialize_repo_deps};
 use crate::Result;
 use crate::services::response::into_service_response;
 use config::ParsingError;
-use config::node::{NodeConfigParser, validate_dependency_specs};
+use config::node::{MissingDependencyPolicy, NodeConfigParser, validate_dependency_specs};
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeSyncRequest, NodeSyncResponse};
 use core_node_api::names;
@@ -127,7 +127,14 @@ async fn handle_node_sync_request_inner(
                     .map_err(Into::into);
             }
         };
-        match materialize_repo_deps(&parsed.manifest, node_stack, &peppy_dirs).await {
+        match materialize_repo_deps(
+            &parsed.manifest,
+            node_stack,
+            &peppy_dirs,
+            DepClosure::Transitive,
+        )
+        .await
+        {
             Ok((resolved, provenance, stack_hits)) => (resolved, provenance, Some(stack_hits)),
             Err(reason) => {
                 return NodeSyncResponse::failure(reason)
@@ -139,19 +146,9 @@ async fn handle_node_sync_request_inner(
         (HashMap::new(), Vec::new(), None)
     };
 
-    // Resolver closure: node stack first, then any repository-materialized
-    // deps. Stack always wins; the repo cache is a fallback opt-in via
-    // the request's `include_repositories` flag.
-    let resolve_dep = |name: &str, tag: &str| -> Option<config::node::NodeConfig> {
-        node_stack
-            .find(name, tag)
-            .map(|e| e.read().config().clone())
-            .or_else(|| {
-                repo_resolved
-                    .get(&(name.to_owned(), tag.to_owned()))
-                    .cloned()
-            })
-    };
+    // The repo tier is a fallback opt-in via the request's
+    // `include_repositories` flag (`repo_resolved` stays empty without it).
+    let resolve_dep = stack_then_repo_resolver(node_stack, &repo_resolved);
 
     // Validate dependencies before generation and collect consumed interfaces
     let (consumed_interfaces, language, root_manifest) = if !node_config_path.exists() {
@@ -169,7 +166,8 @@ async fn handle_node_sync_request_inner(
                     &node_config.interfaces,
                     node_config.manifest.name.as_str(),
                     &node_config.manifest.tag,
-                    resolve_dep,
+                    MissingDependencyPolicy::RequireResolvable,
+                    &resolve_dep,
                 );
 
                 let mut missing_dependencies: HashSet<String> = HashSet::new();
@@ -244,7 +242,7 @@ async fn handle_node_sync_request_inner(
                 let interfaces = match interfaces::collect_all_deployment_interfaces(
                     &node_config.manifest,
                     &node_config.interfaces,
-                    resolve_dep,
+                    &resolve_dep,
                     &peppy_dirs,
                     None,
                     &interface_feedback,

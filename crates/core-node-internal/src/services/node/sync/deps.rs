@@ -7,24 +7,35 @@ use generator::ConsumedActionMessage;
 use node_stack::NodeStack;
 use std::collections::{HashMap, HashSet};
 
-/// Walks `manifest.depends_on.nodes` and BFS-fetches every dependency
-/// missing from `node_stack` through the repository cache. Returns
-/// `(name, tag) -> NodeConfig` for every materialized dep, a provenance
-/// vec for repo-resolved entries, and a `name:tag` list of every dep
-/// the BFS found in the node stack (direct or transitive via a
-/// repo-cache-materialized parent) so the response can surface them
-/// under "Synchronized from node stack:".
+/// How far [`materialize_repo_deps`] walks past the root manifest's own
+/// `depends_on.nodes` entries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DepClosure {
+    /// The root's direct dependencies only: what codegen of the root's
+    /// consumed interfaces needs, and nothing a grandchild can fail.
+    Direct,
+    /// The full transitive closure, for sync's provenance reporting.
+    Transitive,
+}
+
+/// Walks `manifest.depends_on.nodes` and fetches every dependency
+/// missing from `node_stack` through the repository cache, to `closure`
+/// depth. Returns `(name, tag) -> NodeConfig` for every materialized dep,
+/// a provenance vec for repo-resolved entries, and a `name:tag` list of
+/// every dep the walk found in the node stack (direct or, under
+/// [`DepClosure::Transitive`], via a repo-cache-materialized parent) so
+/// the response can surface them under "Synchronized from node stack:".
 ///
 /// A dep that resolves through `node_stack` is recorded as a stack hit
-/// and BFS expansion stops there (the existing resolver tier handles
-/// transitive walking via stack entries). A dep that resolves through
-/// neither the stack nor any configured repository is a hard failure:
-/// the returned `Err` becomes the request's `NodeSyncResponse::failure(...)`
-/// payload.
-pub(super) async fn materialize_repo_deps(
+/// and expansion stops there (the existing resolver tier handles
+/// transitive walking via stack entries). A dep in scope that resolves
+/// through neither the stack nor any configured repository is a hard
+/// failure naming `peppy repo refresh`.
+pub(crate) async fn materialize_repo_deps(
     manifest: &config::node::Manifest,
     node_stack: &NodeStack,
     peppy_dirs: &PeppyDirs,
+    closure: DepClosure,
 ) -> std::result::Result<
     (
         HashMap<(String, String), config::node::NodeConfig>,
@@ -96,7 +107,9 @@ pub(super) async fn materialize_repo_deps(
 
         // Push transitive deps onto the BFS queue, skipping anything we
         // already plan to visit. Stack-tier shadowing happens at pop time.
-        if let Some(child_deps) = parsed.manifest.depends_on.as_ref() {
+        if closure == DepClosure::Transitive
+            && let Some(child_deps) = parsed.manifest.depends_on.as_ref()
+        {
             for child in &child_deps.nodes {
                 let key = (child.name.as_str().to_owned(), child.tag.clone());
                 if !seen.contains(&key) {

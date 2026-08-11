@@ -2036,3 +2036,152 @@ fn node_add_build_force_supersedes_inflight_build() {
         "chained build should have completed. Logs:\n{logs}"
     );
 }
+
+/// The exit-immediately staging both optional-dependency tests use: the add
+/// path runs codegen for the manifest but has nothing to build or keep alive.
+fn write_run_only_node(
+    work_dir: &std::path::Path,
+    name: &str,
+    git_hash: &str,
+    depends_on_json5: Option<&str>,
+    interfaces_json5: Option<&str>,
+) -> std::path::PathBuf {
+    let run_cmd = vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()];
+    super::common::write_node_config_for_helper(
+        work_dir,
+        name,
+        "v1",
+        git_hash,
+        &run_cmd,
+        depends_on_json5,
+        None,
+        interfaces_json5,
+    )
+}
+
+/// A local-path add of a consumer whose `zero_or_more` node dependency is
+/// absent from the stack: the dependency's interfaces resolve through the
+/// repository cache instead, and the add succeeds without conjuring the
+/// dependency into the stack (unlike the pinned batch path, a local add
+/// carries no closure).
+#[test]
+fn node_add_resolves_absent_optional_dependency_through_the_repo_cache() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let recorder_name = "optadd_recorder";
+    let consumer_name = "optadd_consumer";
+    let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let recorder_dir = write_run_only_node(
+        work_dir.path(),
+        recorder_name,
+        &git_hash,
+        None,
+        Some(
+            r#"{
+        services: {
+            exposes: [{
+                name: "finish_session",
+                response_message_format: { episodes_recorded: "u32" }
+            }]
+        }
+    }"#,
+        ),
+    );
+    super::common::register_repo_caches(serve.temp_dir(), &[(recorder_name, "v1", &recorder_dir)]);
+
+    let consumer_depends_on = format!(
+        r#"{{ nodes: [{{ name: "{recorder_name}", tag: "v1", link_id: "rec", cardinality: "zero_or_more" }}] }}"#
+    );
+    let consumer_dir = write_run_only_node(
+        work_dir.path(),
+        consumer_name,
+        &git_hash,
+        Some(&consumer_depends_on),
+        Some(r#"{ services: { consumes: [{ link_id: "rec", name: "finish_session" }] } }"#),
+    );
+
+    super::common::node_add_command(&consumer_dir)
+        .execute(&node_ctx)
+        .expect(
+            "adding a consumer whose optional dependency lives only in the repo cache should succeed",
+        );
+
+    let messenger_handle = node_ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = rt
+        .block_on(poll(
+            &StackListRequest::new(),
+            messenger_handle,
+            &core_node_name,
+            CALLER_INSTANCE_ID,
+            &core_node_name,
+            Duration::from_secs(5),
+        ))
+        .expect("stack_list request should complete");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    assert!(
+        graph.find_node(consumer_name, "v1").is_some(),
+        "the consumer should be in the stack. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+    );
+    assert!(
+        graph.find_node(recorder_name, "v1").is_none(),
+        "a local add carries no closure, so the cache-resolved dependency stays out of the stack. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+    );
+}
+
+/// The same consumer with the dependency in neither the stack nor the
+/// repository cache: the add must refuse loudly before codegen, naming the
+/// fix, instead of generating peppygen with the consumed service silently
+/// missing and failing later in the build.
+#[test]
+fn node_add_refuses_optional_dependency_resolvable_nowhere() {
+    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+
+    let work_dir = tempfile::tempdir().expect("failed to create work dir");
+    let consumer_name = "nowhere_dep_consumer";
+    let git_hash = super::common::read_daemon_git_hash(serve.daemon_state_path());
+
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let consumer_dir = write_run_only_node(
+        work_dir.path(),
+        consumer_name,
+        &git_hash,
+        Some(
+            r#"{ nodes: [{ name: "ghost_recorder", tag: "v1", link_id: "rec", cardinality: "zero_or_more" }] }"#,
+        ),
+        Some(r#"{ services: { consumes: [{ link_id: "rec", name: "finish_session" }] } }"#),
+    );
+
+    let err = super::common::node_add_command(&consumer_dir)
+        .execute(&node_ctx)
+        .expect_err("a dependency resolvable nowhere must refuse the add");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ghost_recorder:v1") && msg.contains("repo refresh"),
+        "the refusal should name the dependency and the fix: {msg}"
+    );
+}

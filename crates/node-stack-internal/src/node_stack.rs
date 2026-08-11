@@ -16,8 +16,8 @@ pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
 use crate::error::{Error, Result};
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
-    NodeConfig, PairingParticipantDependency, collect_contract_implementation_edges,
-    collect_dependency_specs, validate_dependency_specs,
+    MissingDependencyPolicy, NodeConfig, PairingParticipantDependency,
+    collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
 use core_node_api::{
@@ -146,11 +146,15 @@ impl NodeStackInner {
     }
 
     fn validate_dependencies(&self, entity: &NodeEntity) -> Result<()> {
+        // An empty-admitting slot's dependency may be absent from the stack;
+        // `rewire_dependencies` keeps it as a pending requirement so the edge
+        // appears if the node ever joins.
         let errors = validate_dependency_specs(
             &entity.config().manifest,
             &entity.config().interfaces,
             entity.config().manifest.name.as_str(),
             &entity.config().manifest.tag,
+            MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
             |name, tag| {
                 let key = NodeKey::new(name, tag);
                 self.key_to_index
