@@ -8,8 +8,13 @@
 //! Streamable HTTP under `2026-07-28`: catalog listing with caching hints,
 //! unavailable-then-served resource reads with the JPEG default
 //! representation, a subscription notification after a publish, read-only
-//! and mutating tool round-trips, and rejection of restrict violations and
-//! unknown names before anything reaches the Peppy graph.
+//! and mutating tool round-trips, a deadline miss on a service the provider
+//! never answers, rejection of restrict violations and unknown names before
+//! anything reaches the Peppy graph, and the full action-backed task walk:
+//! the capability refusal, `CreateTaskResult`, confirmation through
+//! `input_required` and `tasks/update`, feedback-driven progress,
+//! cancellation, the terminal-state mapping, and reconnect-and-resume on
+//! the same task handle.
 //!
 //! The design doc's harness sketch boots the node on the `MockAdapter`;
 //! compiled nodes always dial a real transport, so like every other
@@ -24,18 +29,19 @@ use crate::helpers::{
     test_peppy_dirs, wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
-use config::node::{ConsumedService, ConsumedTopic};
+use config::node::{ConsumedAction, ConsumedService, ConsumedTopic};
 use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::repository::ManifestFingerprint;
 use generator::{
-    ContractOrigin, DeploymentInterface, LanguageGenerator, ResolvedContractDocument,
-    generate_exposure_node, generate_peppygen_lib,
+    ConsumedActionMessage, ContractOrigin, DeploymentInterface, LanguageGenerator,
+    ResolvedContractDocument, generate_exposure_node, generate_peppygen_lib,
 };
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, ClientInfo, ErrorCode, ProtocolVersion,
-    ReadResourceRequestParams, ServerNotification, SubscriptionFilter, object,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientCapabilities,
+    ClientInfo, DetailedTask, ErrorCode, GetTaskParams, ProtocolVersion, ReadResourceRequestParams,
+    ServerNotification, SubscriptionFilter, TaskStatus, UpdateTaskParams, object,
 };
 use rmcp::service::ServiceError;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -94,6 +100,24 @@ const CAMERA_CONTRACT: &str = r#"{
                 name: "set_brightness",
                 request_message_format: { value: "i32" },
                 response_message_format: { applied: "bool" },
+            },
+            {
+                name: "freeze_probe",
+                response_message_format: { ok: "bool" },
+            },
+        ],
+        actions: [
+            {
+                name: "record_clip",
+                goal_service: {
+                    request_message_format: { duration_frames: "u32" },
+                },
+                feedback_topic: {
+                    message_format: { frame: "u32" },
+                },
+                result_service: {
+                    response_message_format: { frames_written: "u32" },
+                },
             },
         ],
     },
@@ -162,6 +186,24 @@ fn endpoint_exposure() -> String {
                         deadline_ms: 5000,
                         restrict: {{ value: {{ min: -64, max: 64 }} }},
                     }},
+                    {{
+                        member: "freeze_probe",
+                        tool: "front_camera.freeze_probe",
+                        description: "Report the frame-freeze detector state.",
+                        operation: "read_only",
+                        deadline_ms: 1500,
+                    }},
+                ],
+                actions: [
+                    {{
+                        member: "record_clip",
+                        tool: "front_camera.record_clip",
+                        description: "Record a short clip to local storage. Long-running; returns a task handle.",
+                        operation: "long_running",
+                        safety_sensitive: true,
+                        confirmation_required: true,
+                        deadline_ms: 600000,
+                    }},
                 ],
             }},
         }},
@@ -215,6 +257,33 @@ fn consumed_interfaces() -> Vec<DeploymentInterface> {
             },
             service.request_message_format.clone().unwrap_or_default(),
             service.response_message_format.clone().unwrap_or_default(),
+            contract_dep("rgb_camera", "v1", "front_camera"),
+        ));
+    }
+    for action in &contract.interfaces.actions {
+        interfaces.push(DeploymentInterface::consumed_action(
+            ConsumedAction {
+                link_id: "front_camera".to_string(),
+                name: action.name.clone(),
+            },
+            ConsumedActionMessage {
+                goal_request: action
+                    .goal_service
+                    .as_ref()
+                    .and_then(|goal| goal.request_message_format.clone()),
+                goal_response: action
+                    .goal_service
+                    .as_ref()
+                    .and_then(|goal| goal.response_message_format.clone()),
+                feedback: action
+                    .feedback_topic
+                    .as_ref()
+                    .map(|feedback| feedback.message_format.clone()),
+                result_response: action
+                    .result_service
+                    .as_ref()
+                    .and_then(|result| result.response_message_format.clone()),
+            },
             contract_dep("rgb_camera", "v1", "front_camera"),
         ));
     }
@@ -333,6 +402,99 @@ fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
     }
 }
 
+type Client = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
+
+/// Connects a client that declares the SEP-2663 tasks extension capability;
+/// in discover mode the SDK attaches it to every request's `_meta`.
+async fn connect_with_tasks(http_port: u16) -> Client {
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{http_port}/mcp")),
+    );
+    let mut info = ClientInfo::default();
+    info.capabilities = ClientCapabilities::builder().enable_tasks().build();
+    info.serve_with_lifecycle(
+        transport,
+        ClientLifecycleMode::Discover {
+            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        },
+    )
+    .await
+    .expect("the tasks-capable MCP client negotiates 2026-07-28")
+}
+
+/// Polls `tasks/get` until the task satisfies `accept`; bounded by
+/// [`DEFAULT_WAIT_TIMEOUT`] and driven by server responses.
+async fn poll_task_until(
+    client: &Client,
+    task_id: &str,
+    description: &str,
+    accept: impl Fn(&DetailedTask) -> bool,
+) -> DetailedTask {
+    tokio::time::timeout(DEFAULT_WAIT_TIMEOUT, async {
+        loop {
+            let result = client
+                .get_task(GetTaskParams::new(task_id))
+                .await
+                .expect("tasks/get answers");
+            if accept(&result.task) {
+                return result.task;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("task `{task_id}` never reached: {description}"))
+}
+
+fn confirmation_accept(task_id: &str) -> UpdateTaskParams {
+    UpdateTaskParams::new(
+        task_id,
+        [("confirmation".to_string(), json!({ "action": "accept" }))]
+            .into_iter()
+            .collect(),
+    )
+}
+
+/// Fires `record_clip` as a task and walks the confirmation gate: the task
+/// parks in `input_required` with the confirmation elicitation, and the
+/// accept delivered via `tasks/update` releases the goal.
+async fn start_confirmed_record_clip(client: &Client, duration_frames: u32) -> String {
+    let response = client
+        .call_tool_once(
+            CallToolRequestParams::new("front_camera.record_clip")
+                .with_arguments(object(json!({ "duration_frames": duration_frames }))),
+        )
+        .await
+        .expect("the task-backed tool answers");
+    let CallToolResponse::Task(created) = response else {
+        panic!("expected a task handle, got {response:?}");
+    };
+    assert_eq!(created.task.status, TaskStatus::Working);
+    assert_eq!(
+        created.task.ttl_ms,
+        Some(600000),
+        "the whole-goal deadline is the advertised TTL"
+    );
+    let task_id = created.task.task_id;
+
+    let parked = poll_task_until(client, &task_id, "input_required", |task| {
+        task.status() == TaskStatus::InputRequired
+    })
+    .await;
+    let rmcp::model::TaskPayload::InputRequired { input_requests } = parked.payload else {
+        panic!("expected input_required, got {:?}", parked.payload);
+    };
+    assert!(
+        input_requests.contains_key("confirmation"),
+        "the confirmation elicitation is outstanding"
+    );
+    client
+        .update_task(confirmation_accept(&task_id))
+        .await
+        .expect("the confirmation is delivered");
+    task_id
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_endpoint_serves_the_exposure_end_to_end() {
     let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
@@ -405,6 +567,11 @@ async fn mcp_endpoint_serves_the_exposure_end_to_end() {
             .add_exposed_service(service, Some(&origin))
             .expect("register exposed service");
     }
+    for action in &contract.interfaces.actions {
+        stub_generator
+            .add_exposed_action(action, Some(&origin))
+            .expect("register exposed action");
+    }
     let output_config = copy_config_to_output(&user_node_stub, &output_dir_stub);
     stub_generator
         .build(&output_dir_stub, &test_peppy_dirs(), Default::default())
@@ -430,14 +597,54 @@ async fn mcp_endpoint_serves_the_exposure_end_to_end() {
         .expect("write stub runtime config");
 
     init_cargo_user_node(&user_node_stub);
+    // The stub deliberately never answers `freeze_probe`, so its exposed
+    // tool exercises the deadline path. `record_clip` runs short goals to
+    // completion and parks long goals on the cancel signal, republishing
+    // their first feedback so the MCP side observes progress regardless of
+    // sensor-data QoS drops.
     let stub_main = r#"
 use peppygen::emitted_topics::cam_impl::{camera_status, video_stream};
+use peppygen::exposed_actions::cam_impl::record_clip;
 use peppygen::exposed_services::cam_impl::{set_brightness, video_stream_info};
 use peppygen::{NodeBuilder, Result};
 use std::time::Duration;
 
 fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        let runner = node_runner.clone();
+        tokio::spawn(async move {
+            let mut action = record_clip::ActionHandle::expose(&runner)
+                .await
+                .expect("expose record_clip");
+            loop {
+                let maybe_ctx = action
+                    .handle_goal_next_request(|_request| -> Result<record_clip::GoalDecision> {
+                        Ok(record_clip::GoalDecision::accept())
+                    })
+                    .await;
+                match maybe_ctx {
+                    Ok(Some(ctx)) => {
+                        let duration = ctx.request().data.duration_frames;
+                        if duration >= 1000 {
+                            loop {
+                                let _ = ctx.publish_feedback(1).await;
+                                tokio::select! {
+                                    _ = ctx.cancel_signal() => break,
+                                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                                }
+                            }
+                            ctx.complete_cancelled(1).await.expect("complete cancelled");
+                        } else {
+                            for frame in 1..=duration {
+                                ctx.publish_feedback(frame).await.expect("publish feedback");
+                            }
+                            ctx.complete(duration).await.expect("complete");
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        });
         let runner = node_runner.clone();
         tokio::spawn(async move {
             let publisher = video_stream::declare_publisher(&runner)
@@ -534,7 +741,25 @@ fn main() -> Result<()> {
     tool_names.sort_unstable();
     assert_eq!(
         tool_names,
-        ["front_camera.info", "front_camera.set_brightness"]
+        [
+            "front_camera.freeze_probe",
+            "front_camera.info",
+            "front_camera.record_clip",
+            "front_camera.set_brightness"
+        ]
+    );
+    let record_tool = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "front_camera.record_clip")
+        .expect("the action tool is listed");
+    assert_eq!(
+        record_tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.destructive_hint),
+        Some(true),
+        "safety_sensitive surfaces as the destructive hint"
     );
     assert_eq!(tools.cache_scope, Some(CacheScope::Private));
     assert!(tools.ttl_ms.is_some());
@@ -718,7 +943,108 @@ fn main() -> Result<()> {
     );
     assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
+    // The stub never answers `freeze_probe`, so its 1500 ms deadline turns
+    // the call into a readable tool error instead of a hang.
+    let called = client
+        .call_tool(CallToolRequestParams::new("front_camera.freeze_probe"))
+        .await
+        .expect("a deadline miss is a tool error, not a protocol error");
+    assert_eq!(called.is_error, Some(true), "got {:?}", called.content);
+
+    // Without the tasks extension capability, the action tool refuses the
+    // call before any task (or Peppy goal) exists.
+    let error = protocol_error(
+        client
+            .call_tool_once(
+                CallToolRequestParams::new("front_camera.record_clip")
+                    .with_arguments(object(json!({ "duration_frames": 3 }))),
+            )
+            .await
+            .expect_err("the tasks capability is required"),
+    );
+    assert_eq!(error.code, ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY);
+
     client.cancel().await.expect("client disconnects");
+
+    // --- The action-backed task walk, on a tasks-capable client.
+    let tasks_client = connect_with_tasks(http_port).await;
+
+    // A goal failing the derived schema never materializes a task.
+    let error = protocol_error(
+        tasks_client
+            .call_tool_once(
+                CallToolRequestParams::new("front_camera.record_clip")
+                    .with_arguments(object(json!({ "duration_frames": "three" }))),
+            )
+            .await
+            .expect_err("a non-integer duration is rejected"),
+    );
+    assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+
+    // Completion: confirm, let the stub record three frames, and read the
+    // structured result off the completed task.
+    let task_id = start_confirmed_record_clip(&tasks_client, 3).await;
+    let completed = poll_task_until(&tasks_client, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
+    })
+    .await;
+    assert_eq!(completed.status(), TaskStatus::Completed);
+    let rmcp::model::TaskPayload::Completed { result } = completed.payload else {
+        panic!("expected a completed payload");
+    };
+    assert_eq!(result["structuredContent"], json!({ "frames_written": 3 }));
+
+    // Cancellation: a long goal parks on the provider; its feedback drives
+    // the observable status message, and `tasks/cancel` forwards to the
+    // Peppy cancel path, whose cancelled result settles the task.
+    let task_id = start_confirmed_record_clip(&tasks_client, 100000).await;
+    poll_task_until(
+        &tasks_client,
+        &task_id,
+        "feedback-driven progress",
+        |task| {
+            task.task
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("frame"))
+        },
+    )
+    .await;
+    tasks_client
+        .cancel_task(CancelTaskParams::new(&*task_id))
+        .await
+        .expect("tasks/cancel acknowledges");
+    let cancelled = poll_task_until(&tasks_client, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
+    })
+    .await;
+    assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+
+    // Reconnect-and-resume: drop the client mid-goal and keep driving the
+    // same task handle from a fresh connection.
+    let task_id = start_confirmed_record_clip(&tasks_client, 100000).await;
+    poll_task_until(
+        &tasks_client,
+        &task_id,
+        "feedback-driven progress",
+        |task| task.task.status_message.is_some(),
+    )
+    .await;
+    tasks_client
+        .cancel()
+        .await
+        .expect("client disconnects mid-task");
+    let reconnected = connect_with_tasks(http_port).await;
+    reconnected
+        .cancel_task(CancelTaskParams::new(&*task_id))
+        .await
+        .expect("the reconnected client cancels the same handle");
+    let cancelled = poll_task_until(&reconnected, &task_id, "a terminal status", |task| {
+        task.status().is_terminal()
+    })
+    .await;
+    assert_eq!(cancelled.status(), TaskStatus::Cancelled);
+    reconnected.cancel().await.expect("client disconnects");
 
     // --- Teardown: cooperative shutdown through the framework service.
     send_shutdown(

@@ -631,7 +631,10 @@ pub(super) fn find_service<'a>(
         .find(|s| s.name == member)
 }
 
-fn find_action<'a>(contract: &'a PeppyContract, member: &str) -> Option<&'a NativeExposedAction> {
+pub(super) fn find_action<'a>(
+    contract: &'a PeppyContract,
+    member: &str,
+) -> Option<&'a NativeExposedAction> {
     contract
         .interfaces
         .actions

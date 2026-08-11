@@ -4,24 +4,22 @@
 //! contracts into a complete, buildable node crate: the `peppy.json5`
 //! declaring one `depends_on.contracts` slot per logical target, the
 //! committed exposure bundle, the per-member bridges between canonical JSON
-//! and the peppygen typed clients, and a `main` composing the shared
-//! `peppy-mcp-runtime` crate. The node carries no hand-written code;
-//! everything protocol-shaped lives in the runtime crate, and regeneration
-//! happens only when the exposure changes.
-//!
-//! Action-backed MCP tasks are not emitted yet; an exposure with actions is
-//! refused so a generated node never advertises a surface it cannot serve.
+//! and the peppygen typed clients (topics, services, and action-backed
+//! tasks), and a `main` composing the shared `peppy-mcp-runtime` crate. The
+//! node carries no hand-written code; everything protocol-shaped lives in
+//! the runtime crate, and regeneration happens only when the exposure
+//! changes.
 
 mod convert;
 #[cfg(test)]
 mod tests;
 
-use crate::generator::exposure::bundle::{ExposureBundle, ResourceEntry, ToolEntry};
+use crate::generator::exposure::bundle::{ExposureBundle, ResourceEntry, TaskEntry, ToolEntry};
 use crate::generator::exposure::validate::{
-    ExposureValidationError, ResolvedContractDocument, build_exposure_bundle, find_service,
-    find_topic,
+    ExposureValidationError, ResolvedContractDocument, build_exposure_bundle, find_action,
+    find_service, find_topic,
 };
-use crate::generator::naming::to_camel_case;
+use crate::generator::naming::{sanitize_component, to_camel_case};
 use crate::generator::rust::identifiers::sanitize_rust_identifier;
 use crate::generator::rust::type_mapping::render_tokens;
 use config::node::MessageFormat;
@@ -55,24 +53,12 @@ pub struct GeneratedServerNode {
 
 /// Validate `exposure` against `contracts` and emit its MCP server node.
 ///
-/// Everything [`build_exposure_bundle`] refuses is refused here too, plus
-/// exposures selecting actions: the tasks surface lands in a later release,
-/// and a node that advertised tools it cannot serve would lie to clients.
+/// Everything [`build_exposure_bundle`] refuses is refused here too.
 pub fn generate_exposure_node(
     exposure: &McpExposure,
     contracts: &[ResolvedContractDocument],
 ) -> Result<GeneratedServerNode, ExposureValidationError> {
     let bundle = build_exposure_bundle(exposure, contracts)?;
-    if !bundle.tasks.is_empty() {
-        return Err(ExposureValidationError {
-            violations: vec![format!(
-                "the exposure selects {} action(s); the MCP server node generator does not \
-                 support action-backed tasks yet, so the node cannot be generated",
-                bundle.tasks.len()
-            )],
-        });
-    }
-
     let node_name = bundle.node.name.clone();
     let files = vec![
         GeneratedFile {
@@ -144,6 +130,11 @@ fn render_peppy_json5(bundle: &ExposureBundle) -> String {
         .iter()
         .map(|tool| consumed(&tool.target, &tool.member))
         .collect();
+    let action_consumes: Vec<serde_json::Value> = bundle
+        .tasks
+        .iter()
+        .map(|task| consumed(&task.target, &task.member))
+        .collect();
 
     let mut interfaces = serde_json::Map::new();
     if !topic_consumes.is_empty() {
@@ -153,6 +144,12 @@ fn render_peppy_json5(bundle: &ExposureBundle) -> String {
         interfaces.insert(
             "services".to_string(),
             json!({ "consumes": service_consumes }),
+        );
+    }
+    if !action_consumes.is_empty() {
+        interfaces.insert(
+            "actions".to_string(),
+            json!({ "consumes": action_consumes }),
         );
     }
 
@@ -230,6 +227,14 @@ fn tool_bridge_ident(tool: &ToolEntry) -> Ident {
     )
 }
 
+fn task_bridge_ident(task: &TaskEntry) -> Ident {
+    format_ident!(
+        "task_{}_{}",
+        sanitize_rust_identifier(&task.target),
+        sanitize_rust_identifier(&task.member)
+    )
+}
+
 fn render_main_rs(bundle: &ExposureBundle) -> String {
     let tool_registrations: Vec<TokenStream> = bundle
         .tools
@@ -243,6 +248,24 @@ fn render_main_rs(bundle: &ExposureBundle) -> String {
                     move |input: serde_json::Value| {
                         let node_runner = std::sync::Arc::clone(&node_runner);
                         async move { bridges::#bridge(&node_runner, input).await }
+                    }
+                })
+            }
+        })
+        .collect();
+
+    let task_registrations: Vec<TokenStream> = bundle
+        .tasks
+        .iter()
+        .map(|task| {
+            let name_literal = Literal::string(&task.name);
+            let bridge = task_bridge_ident(task);
+            quote! {
+                .with_task(#name_literal, {
+                    let node_runner = std::sync::Arc::clone(&node_runner);
+                    move |input: serde_json::Value, context: peppy_mcp_runtime::ActionContext| {
+                        let node_runner = std::sync::Arc::clone(&node_runner);
+                        async move { bridges::#bridge(&node_runner, input, context).await }
                     }
                 })
             }
@@ -335,6 +358,7 @@ fn render_main_rs(bundle: &ExposureBundle) -> String {
                         peppygen::clock::now_ns().unwrap_or_default()
                     }))
                     #(#tool_registrations)*
+                    #(#task_registrations)*
                     .build()
                     .expect("the committed bundle and the generated bridges agree");
                 #(#pumps)*
@@ -473,6 +497,10 @@ fn render_bridges_rs(
         });
     }
 
+    for task in &bundle.tasks {
+        items.push(render_task_bridge(task, exposure, contracts));
+    }
+
     let tokens = quote! {
         #(#items)*
     };
@@ -484,6 +512,238 @@ fn render_bridges_rs(
         ),
         render_tokens(tokens)
     )
+}
+
+/// The bridge behind one action-backed task: fire the goal, pump feedback
+/// into the task's status message, forward `tasks/cancel` cooperatively,
+/// and map the Peppy terminal result onto the MCP terminal state.
+fn render_task_bridge(
+    task: &TaskEntry,
+    exposure: &McpExposure,
+    contracts: &[ResolvedContractDocument],
+) -> TokenStream {
+    let contract = contract_for(exposure, contracts, &task.target);
+    let declared = find_action(contract, &task.member)
+        .expect("the bundle only carries members the contract declares");
+    let goal_format = effective_format(
+        declared
+            .goal_service
+            .as_ref()
+            .and_then(|goal| goal.request_message_format.as_ref()),
+    );
+    let feedback_format = effective_format(
+        declared
+            .feedback_topic
+            .as_ref()
+            .map(|feedback| &feedback.message_format),
+    );
+    let result_format = effective_format(
+        declared
+            .result_service
+            .as_ref()
+            .and_then(|result| result.response_message_format.as_ref()),
+    );
+
+    let (link, member) = member_module_idents(&task.target, &task.member);
+    let module = quote!(peppygen::consumed_actions::#link::#member);
+    let bridge = task_bridge_ident(task);
+    let deadline_literal = Literal::u64_unsuffixed(task.deadline_ms.get());
+    // The Rust backend names the generated action types after the producer
+    // (here: the contract) and the action; nested goal structs continue
+    // from `{that}ActionGoal`.
+    let goal_prefix = format!(
+        "{}ActionGoal",
+        to_camel_case(&format!(
+            "{}_{}",
+            sanitize_component(contract.manifest.name.as_str()),
+            sanitize_component(&task.member)
+        ))
+    );
+
+    let goal_fn = format_ident!("{bridge}_goal");
+    let feedback_fn = format_ident!("{bridge}_feedback");
+    let result_fn = format_ident!("{bridge}_result");
+
+    let mut items: Vec<TokenStream> = Vec::new();
+    if let Some(format) = goal_format {
+        let from_json = object_from_json_expr(
+            &format.0,
+            quote!(input),
+            &module,
+            "GoalRequest",
+            &goal_prefix,
+            0,
+        );
+        items.push(quote! {
+            fn #goal_fn(
+                input: &serde_json::Value,
+            ) -> std::result::Result<#module::GoalRequest, String> {
+                Ok(#from_json)
+            }
+        });
+    }
+    if let Some(format) = feedback_format {
+        let to_json = format_to_json_expr(format, quote!(message));
+        items.push(quote! {
+            fn #feedback_fn(
+                message: #module::FeedbackMessage,
+            ) -> std::result::Result<serde_json::Value, String> {
+                Ok(#to_json)
+            }
+        });
+    }
+    if let Some(format) = result_format {
+        let to_json = format_to_json_expr(format, quote!(data));
+        items.push(quote! {
+            fn #result_fn(
+                data: #module::ResultResponseData,
+            ) -> std::result::Result<serde_json::Value, String> {
+                Ok(#to_json)
+            }
+        });
+    }
+
+    let request_statement = if goal_format.is_some() {
+        quote! {
+            let request = #goal_fn(&input).map_err(peppy_mcp_runtime::ActionExit::Failed)?;
+        }
+    } else {
+        quote! {
+            let _ = input;
+        }
+    };
+    let fire_arguments = if goal_format.is_some() {
+        quote!(
+            node_runner,
+            target,
+            deadline,
+            request,
+            peppygen::QoSProfile::SensorData
+        )
+    } else {
+        quote!(
+            node_runner,
+            target,
+            deadline,
+            peppygen::QoSProfile::SensorData
+        )
+    };
+    // Only the feedback drain needs the handle mutably.
+    let handle_binding = if feedback_format.is_some() {
+        quote!(mut handle)
+    } else {
+        quote!(handle)
+    };
+
+    // Cancellation is cooperative on both sides: `tasks/cancel` is
+    // forwarded once to the Peppy cancel path, and the terminal result the
+    // provider settles on decides the task's terminal state.
+    let await_result = if feedback_format.is_some() {
+        quote! {
+            let mut cancel_pending = false;
+            let mut cancel_forwarded = false;
+            loop {
+                if cancel_pending {
+                    cancel_pending = false;
+                    cancel_forwarded = true;
+                    let _ = handle.cancel_goal(deadline).await;
+                }
+                tokio::select! {
+                    _ = context.cancel_requested(), if !cancel_forwarded => {
+                        cancel_pending = true;
+                    }
+                    message = handle.on_next_feedback_message() => match message {
+                        Ok(message) => {
+                            if let Ok(value) = #feedback_fn(message) {
+                                context.report_feedback(value.to_string());
+                            }
+                        }
+                        // The stream ends at the terminal result (clean
+                        // close) or when the producer disappears; either
+                        // way the result reply below settles the outcome.
+                        Err(_) => break,
+                    }
+                }
+            }
+            let result = handle
+                .get_result(deadline)
+                .await
+                .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
+        }
+    } else {
+        quote! {
+            let mut cancel_forwarded = false;
+            let result_future = handle.get_result(deadline);
+            tokio::pin!(result_future);
+            let result = loop {
+                tokio::select! {
+                    result = &mut result_future => break result,
+                    _ = context.cancel_requested(), if !cancel_forwarded => {
+                        cancel_forwarded = true;
+                        let _ = handle.cancel_goal(deadline).await;
+                    }
+                }
+            }
+            .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
+        }
+    };
+
+    let completed_arm = if result_format.is_some() {
+        quote! {
+            #module::ResultOutcome::Completed(data) => {
+                #result_fn(data).map_err(peppy_mcp_runtime::ActionExit::Failed)
+            }
+        }
+    } else {
+        quote! {
+            #module::ResultOutcome::Completed => {
+                Ok(serde_json::Value::Object(serde_json::Map::new()))
+            }
+        }
+    };
+    let cancelled_pattern = if result_format.is_some() {
+        quote!(#module::ResultOutcome::Cancelled(_))
+    } else {
+        quote!(#module::ResultOutcome::Cancelled)
+    };
+
+    items.push(quote! {
+        pub(crate) async fn #bridge(
+            node_runner: &peppygen::NodeRunner,
+            input: serde_json::Value,
+            context: peppy_mcp_runtime::ActionContext,
+        ) -> std::result::Result<serde_json::Value, peppy_mcp_runtime::ActionExit> {
+            #request_statement
+            let target = #module::bound_producer(node_runner);
+            let deadline = std::time::Duration::from_millis(#deadline_literal);
+            let #handle_binding = #module::ActionHandle::fire_goal(#fire_arguments)
+                .await
+                .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
+            if !handle.accepted {
+                return Err(peppy_mcp_runtime::ActionExit::Failed(
+                    match handle.reason.as_deref() {
+                        Some(reason) => format!("the provider rejected the goal: {reason}"),
+                        None => "the provider rejected the goal".to_string(),
+                    },
+                ));
+            }
+            #await_result
+            match result.outcome {
+                #completed_arm
+                #cancelled_pattern => Err(peppy_mcp_runtime::ActionExit::Cancelled),
+                #module::ResultOutcome::Abandoned => Err(peppy_mcp_runtime::ActionExit::Failed(
+                    "the provider abandoned the goal".to_string(),
+                )),
+                #module::ResultOutcome::Expired => Err(peppy_mcp_runtime::ActionExit::Failed(
+                    "the goal expired before reaching a terminal result".to_string(),
+                )),
+            }
+        }
+    });
+
+    quote! {
+        #(#items)*
+    }
 }
 
 /// Treats an absent or empty format the way the peppygen backend does: no

@@ -14,11 +14,10 @@ use crate::error::{Error, Result};
 /// caches, so `peppy repo refresh` must have run on this machine. Publishing
 /// validates the exposure against exactly the pinned contract bytes, writes
 /// `<stem>.bundle.json` next to the document, and generates the node into a
-/// sibling directory named after it. Exposures selecting actions publish the
-/// bundle only: the node generator does not support action-backed tasks yet.
-/// `--check` regenerates everything and refuses committed files that do not
-/// match, byte for byte. Run it in CI so a hub cannot merge artifacts that
-/// have drifted from their exposure document.
+/// sibling directory named after it. `--check` regenerates everything and
+/// refuses committed files that do not match, byte for byte. Run it in CI so
+/// a hub cannot merge artifacts that have drifted from their exposure
+/// document.
 pub fn repo_exposure(path: PathBuf, check: bool) -> Result<()> {
     if !path.is_file() {
         return Err(Error::ExecutionFailed(format!(
@@ -59,16 +58,14 @@ pub fn repo_exposure(path: PathBuf, check: bool) -> Result<()> {
         plural(published.bundle.tasks.len()),
         published.bundle_path.display()
     );
-    if let Some(node_dir) = &published.node_dir {
-        info!(
-            "Generated the MCP server node `{}:{}` ({} file{}) at {}",
-            published.bundle.node.name,
-            published.bundle.node.tag,
-            published.node_file_count,
-            plural(published.node_file_count),
-            node_dir.display()
-        );
-    }
+    info!(
+        "Generated the MCP server node `{}:{}` ({} file{}) at {}",
+        published.bundle.node.name,
+        published.bundle.node.tag,
+        published.node_file_count,
+        plural(published.node_file_count),
+        published.node_dir.display()
+    );
     Ok(())
 }
 

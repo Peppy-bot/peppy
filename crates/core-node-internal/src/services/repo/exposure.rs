@@ -6,10 +6,7 @@
 //! The validation itself is [`generator::build_exposure_bundle`] and the
 //! node emission [`generator::generate_exposure_node`], both pure functions;
 //! this module is the repository-facing shell that turns sha256 pins into
-//! contract bytes and generated values into committed files. Exposures that
-//! select actions publish their bundle only: the node generator does not
-//! support action-backed tasks yet, and a node must never advertise a
-//! surface it cannot serve.
+//! contract bytes and generated values into committed files.
 
 use crate::services::node::resolve_contract_doc;
 use daemon_config::consts::PeppyDirs;
@@ -26,9 +23,8 @@ use std::path::{Path, PathBuf};
 pub struct PublishedExposure {
     pub bundle_path: PathBuf,
     pub bundle: ExposureBundle,
-    /// The generated node's directory; `None` when the exposure selects
-    /// actions and the node is therefore not generated yet.
-    pub node_dir: Option<PathBuf>,
+    /// The generated node's directory.
+    pub node_dir: PathBuf,
     pub node_file_count: usize,
 }
 
@@ -97,30 +93,24 @@ pub fn publish_exposure(
     })
     .map_err(|e| format!("failed to write {}: {e}", rendered.bundle_path.display()))?;
 
-    let mut node_dir = None;
-    let mut node_file_count = 0;
-    if let Some(node) = &rendered.node {
-        let dir = exposure_node_dir(exposure_path, &node.node_dir_name);
-        for file in &node.files {
-            let path = dir.join(&file.path);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-            }
-            daemon_config::atomic_write::publish_atomic(&path, |tmp| {
-                std::fs::write(tmp, &file.content)
-            })
-            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    let node_dir = exposure_node_dir(exposure_path, &rendered.node.node_dir_name);
+    for file in &rendered.node.files {
+        let path = node_dir.join(&file.path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
         }
-        node_file_count = node.files.len();
-        node_dir = Some(dir);
+        daemon_config::atomic_write::publish_atomic(&path, |tmp| {
+            std::fs::write(tmp, &file.content)
+        })
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     }
 
     Ok(PublishedExposure {
         bundle_path: rendered.bundle_path,
         bundle: rendered.bundle,
         node_dir,
-        node_file_count,
+        node_file_count: rendered.node.files.len(),
     })
 }
 
@@ -154,22 +144,20 @@ pub fn check_exposure(
         }
     }
 
-    if let Some(node) = &rendered.node {
-        let dir = exposure_node_dir(exposure_path, &node.node_dir_name);
-        for file in &node.files {
-            let path = dir.join(&file.path);
-            match std::fs::read_to_string(&path) {
-                Ok(committed) if committed == file.content => {}
-                Ok(_) => drifts.push(ExposureDrift::NodeFileOutdated {
-                    path: path.display().to_string(),
-                }),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    drifts.push(ExposureDrift::NodeFileMissing {
-                        expected_path: path.display().to_string(),
-                    });
-                }
-                Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
+    let dir = exposure_node_dir(exposure_path, &rendered.node.node_dir_name);
+    for file in &rendered.node.files {
+        let path = dir.join(&file.path);
+        match std::fs::read_to_string(&path) {
+            Ok(committed) if committed == file.content => {}
+            Ok(_) => drifts.push(ExposureDrift::NodeFileOutdated {
+                path: path.display().to_string(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                drifts.push(ExposureDrift::NodeFileMissing {
+                    expected_path: path.display().to_string(),
+                });
             }
+            Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
         }
     }
 
@@ -180,11 +168,11 @@ struct RenderedExposure {
     bundle_path: PathBuf,
     bundle: ExposureBundle,
     bundle_content: String,
-    node: Option<GeneratedServerNode>,
+    node: GeneratedServerNode,
 }
 
 /// Parse the exposure, resolve every pinned contract it references, and
-/// build the bundle plus (when the exposure carries no actions) the node.
+/// build the bundle plus the node.
 fn render_artifacts(
     exposure_path: &Path,
     peppy_dirs: &PeppyDirs,
@@ -225,15 +213,7 @@ fn render_artifacts(
     }
 
     let bundle = build_exposure_bundle(&exposure, &contracts).map_err(|e| e.to_string())?;
-    let node = if bundle.tasks.is_empty() {
-        Some(generate_exposure_node(&exposure, &contracts).map_err(|e| e.to_string())?)
-    } else {
-        on_feedback(
-            "the exposure selects actions; the MCP server node is not generated yet \
-             (action-backed tasks land in a later release), publishing the bundle only",
-        );
-        None
-    };
+    let node = generate_exposure_node(&exposure, &contracts).map_err(|e| e.to_string())?;
     let content = bundle.to_json_string();
     Ok(RenderedExposure {
         bundle_path: exposure_bundle_path(exposure_path),
@@ -399,9 +379,7 @@ mod tests {
             "committed bundles end with a newline"
         );
 
-        let node_dir = published
-            .node_dir
-            .expect("a service-only exposure generates its node");
+        let node_dir = published.node_dir;
         assert_eq!(node_dir, exposure_path.with_file_name("camera_surface_mcp"));
         assert_eq!(published.node_file_count, 6);
         for path in [
@@ -456,10 +434,7 @@ mod tests {
         let mut committed = fs::read_to_string(&published.bundle_path).expect("bundle exists");
         committed.push_str("{}\n");
         fs::write(&published.bundle_path, committed).expect("tamper bundle");
-        let main_rs = published
-            .node_dir
-            .expect("node published")
-            .join("src/main.rs");
+        let main_rs = published.node_dir.join("src/main.rs");
         let mut main_content = fs::read_to_string(&main_rs).expect("main.rs exists");
         main_content.push_str("// edited by hand\n");
         fs::write(&main_rs, main_content).expect("tamper node");
@@ -482,31 +457,25 @@ mod tests {
     }
 
     #[test]
-    fn an_action_exposure_publishes_the_bundle_without_a_node() {
+    fn an_action_exposure_publishes_the_node_too() {
         let (_dirs_guard, _docs_guard, dirs, exposure_path) =
             seeded_setup(&action_exposure_document());
-        let notes = std::cell::RefCell::new(Vec::new());
-        let on_feedback = |message: &str| notes.borrow_mut().push(message.to_string());
-        let published = publish_exposure(&exposure_path, &dirs, &on_feedback).expect("publishes");
-        let notes = notes.into_inner();
+        let published = publish_exposure(&exposure_path, &dirs, &|_| {}).expect("publishes");
         assert_eq!(published.bundle.tasks.len(), 1);
-        assert_eq!(published.node_dir, None);
-        assert_eq!(published.node_file_count, 0);
-        assert!(
-            !exposure_path
-                .with_file_name("recording_surface_mcp")
-                .exists(),
-            "no node directory appears"
+        assert_eq!(
+            published.node_dir,
+            exposure_path.with_file_name("recording_surface_mcp")
         );
+        assert_eq!(published.node_file_count, 6);
+        let bridges = fs::read_to_string(published.node_dir.join("src/bridges.rs"))
+            .expect("bridges are published");
         assert!(
-            notes
-                .iter()
-                .any(|note| note.contains("action-backed tasks")),
-            "the skip is reported: {notes:?}"
+            bridges.contains("fire_goal"),
+            "the action bridge is published: {bridges}"
         );
 
         let drifts = check_exposure(&exposure_path, &dirs, &|_| {}).expect("check runs");
-        assert_eq!(drifts, Vec::new(), "check ignores the absent node");
+        assert_eq!(drifts, Vec::new());
     }
 
     #[test]

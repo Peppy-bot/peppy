@@ -80,6 +80,10 @@ const CAMERA_CONTRACT: &str = r#"{
     },
 }"#;
 
+/// Two action shapes: `record_episode` carries every optional endpoint
+/// (goal request, feedback, result data), `resume_session` carries none, so
+/// the golden pins both the data-bearing and the unit `ResultOutcome`
+/// bridge codegen.
 const RECORDING_CONTRACT: &str = r#"{
     peppy_schema: "contract/v1",
     manifest: { name: "episode_recording", tag: "v1" },
@@ -90,10 +94,14 @@ const RECORDING_CONTRACT: &str = r#"{
                 goal_service: {
                     request_message_format: { task_description: "string" },
                 },
+                feedback_topic: {
+                    message_format: { frame: "u32", phase: "string" },
+                },
                 result_service: {
                     response_message_format: { episode_index: "u32" },
                 },
             },
+            { name: "resume_session" },
         ],
     },
 }"#;
@@ -109,9 +117,10 @@ fn sha_of(contract_json5: &str) -> String {
     ManifestFingerprint::of_bytes(contract_json5.as_bytes()).to_string()
 }
 
-/// A camera-only surface covering both resource shapes (image-represented
-/// and plain telemetry) and all four service shapes (response-only,
-/// request+response, request-only, and bare).
+/// A surface covering both resource shapes (image-represented and plain
+/// telemetry), all four service shapes (response-only, request+response,
+/// request-only, and bare), and both action shapes (fully-endowed and
+/// bare).
 fn camera_exposure() -> String {
     format!(
         r#"{{
@@ -186,17 +195,44 @@ fn camera_exposure() -> String {
                     }},
                 ],
             }},
+            recorder: {{
+                contract: {{ name: "episode_recording", tag: "v1", sha256: "{recording_sha}" }},
+                actions: [
+                    {{
+                        member: "record_episode",
+                        tool: "recorder.record_episode",
+                        description: "Record one teleoperation episode to the local dataset.",
+                        operation: "long_running",
+                        safety_sensitive: true,
+                        confirmation_required: true,
+                        deadline_ms: 900000,
+                    }},
+                    {{
+                        member: "resume_session",
+                        tool: "recorder.resume_session",
+                        description: "Resume the recording session after a pause.",
+                        operation: "long_running",
+                        safety_sensitive: false,
+                        confirmation_required: false,
+                        deadline_ms: 30000,
+                    }},
+                ],
+            }},
         }},
     }}"#,
         camera_sha = sha_of(CAMERA_CONTRACT),
+        recording_sha = sha_of(RECORDING_CONTRACT),
     )
 }
 
 fn generated_camera_node() -> GeneratedServerNode {
     let exposure =
         PeppyMcpExposureParser::from_content(&camera_exposure()).expect("exposure parses");
-    generate_exposure_node(&exposure, &[resolved(CAMERA_CONTRACT)])
-        .expect("the camera exposure generates")
+    generate_exposure_node(
+        &exposure,
+        &[resolved(CAMERA_CONTRACT), resolved(RECORDING_CONTRACT)],
+    )
+    .expect("the camera exposure generates")
 }
 
 /// The committed goldens under `goldens/camera_observation_mcp/`, keyed by
@@ -291,12 +327,13 @@ fn the_generated_peppy_json5_parses_as_a_node_config() {
         .manifest
         .depends_on
         .expect("contract slots are declared");
-    assert_eq!(depends_on.contracts.len(), 1);
+    assert_eq!(depends_on.contracts.len(), 2);
     assert_eq!(depends_on.contracts[0].link_id, "front_camera");
     assert_eq!(
         depends_on.contracts[0].sha256.as_deref(),
         Some(sha_of(CAMERA_CONTRACT).as_str())
     );
+    assert_eq!(depends_on.contracts[1].link_id, "recorder");
     let topics = config
         .interfaces
         .topics
@@ -307,10 +344,15 @@ fn the_generated_peppy_json5_parses_as_a_node_config() {
         .services
         .expect("a services section is declared");
     assert_eq!(services.consumes.expect("services are consumed").len(), 4);
+    let actions = config
+        .interfaces
+        .actions
+        .expect("an actions section is declared");
+    assert_eq!(actions.consumes.expect("actions are consumed").len(), 2);
 }
 
 #[test]
-fn exposures_selecting_actions_are_refused() {
+fn an_action_only_exposure_generates_the_node() {
     let exposure_json5 = format!(
         r#"{{
         peppy_schema: "mcp_exposure/v1",
@@ -336,13 +378,28 @@ fn exposures_selecting_actions_are_refused() {
         sha = sha_of(RECORDING_CONTRACT),
     );
     let exposure = PeppyMcpExposureParser::from_content(&exposure_json5).expect("exposure parses");
-    let error = generate_exposure_node(&exposure, &[resolved(RECORDING_CONTRACT)])
-        .expect_err("actions are not supported yet");
-    assert_eq!(error.violations.len(), 1);
+    let node = generate_exposure_node(&exposure, &[resolved(RECORDING_CONTRACT)])
+        .expect("an action-only exposure generates");
+    assert_eq!(node.node_dir_name, "recording_mcp");
+    let bridges = &node
+        .files
+        .iter()
+        .find(|file| file.path == "src/bridges.rs")
+        .expect("bridges are emitted")
+        .content;
     assert!(
-        error.violations[0].contains("does not support action-backed tasks yet"),
-        "got: {}",
-        error.violations[0]
+        bridges.contains("fire_goal") && bridges.contains("task_recorder_record_episode"),
+        "the action bridge is emitted: {bridges}"
+    );
+    let main = &node
+        .files
+        .iter()
+        .find(|file| file.path == "src/main.rs")
+        .expect("main is emitted")
+        .content;
+    assert!(
+        main.contains("with_task"),
+        "the task is registered with the runtime: {main}"
     );
 }
 

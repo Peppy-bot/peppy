@@ -58,9 +58,7 @@ pub enum RepoCommands {
     /// repository caches (run `peppy repo refresh` first), writes the
     /// derived bundle (public catalog plus generated-node identity) to
     /// `<stem>.bundle.json` next to the document, and generates the MCP
-    /// server node into a sibling directory named after it. Exposures
-    /// selecting actions publish the bundle only; the node generator does
-    /// not support action-backed tasks yet.
+    /// server node into a sibling directory named after it.
     ///
     /// With `--check`, regenerates everything and verifies the committed
     /// files match byte for byte. Run it in CI so a hub cannot merge

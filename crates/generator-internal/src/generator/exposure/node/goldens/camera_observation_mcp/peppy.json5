@@ -12,6 +12,12 @@
           tag: "v1",
           link_id: "front_camera",
           sha256: "44527ab0542ac56389806315f21c6977c535a1874527926fcc480dd57fb736ab"
+        },
+        {
+          name: "episode_recording",
+          tag: "v1",
+          link_id: "recorder",
+          sha256: "a4cfd6ec023d2359c3b9911bf829a565b6e6a6b3b83d57df146c4a87f177c0d2"
         }
       ]
     }
@@ -46,6 +52,18 @@
         {
           link_id: "front_camera",
           name: "ping"
+        }
+      ]
+    },
+    actions: {
+      consumes: [
+        {
+          link_id: "recorder",
+          name: "record_episode"
+        },
+        {
+          link_id: "recorder",
+          name: "resume_session"
         }
       ]
     }

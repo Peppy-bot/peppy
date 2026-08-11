@@ -18,6 +18,12 @@
         "tag": "v1",
         "sha256": "44527ab0542ac56389806315f21c6977c535a1874527926fcc480dd57fb736ab",
         "link_id": "front_camera"
+      },
+      {
+        "name": "episode_recording",
+        "tag": "v1",
+        "sha256": "a4cfd6ec023d2359c3b9911bf829a565b6e6a6b3b83d57df146c4a87f177c0d2",
+        "link_id": "recorder"
       }
     ]
   },
@@ -369,5 +375,80 @@
       }
     }
   ],
-  "tasks": []
+  "tasks": [
+    {
+      "name": "recorder.record_episode",
+      "description": "Record one teleoperation episode to the local dataset.",
+      "target": "recorder",
+      "member": "record_episode",
+      "operation": "long_running",
+      "safety_sensitive": true,
+      "confirmation_required": true,
+      "deadline_ms": 900000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_description"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "episode_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "required": [
+          "episode_index"
+        ],
+        "additionalProperties": false
+      },
+      "feedback_schema": {
+        "type": "object",
+        "properties": {
+          "frame": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "phase": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "frame",
+          "phase"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "recorder.resume_session",
+      "description": "Resume the recording session after a pause.",
+      "target": "recorder",
+      "member": "resume_session",
+      "operation": "long_running",
+      "safety_sensitive": false,
+      "confirmation_required": false,
+      "deadline_ms": 30000,
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ]
 }

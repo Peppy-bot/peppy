@@ -328,3 +328,182 @@ pub(crate) async fn tool_front_camera_ping(
         .map_err(|error| peppy_mcp_runtime::ToolCallError::Failed(error.to_string()))?;
     Ok(serde_json::Value::Object(serde_json::Map::new()))
 }
+fn task_recorder_record_episode_goal(
+    input: &serde_json::Value,
+) -> std::result::Result<
+    peppygen::consumed_actions::recorder::record_episode::GoalRequest,
+    String,
+> {
+    Ok({
+        let input_0 = input;
+        peppygen::consumed_actions::recorder::record_episode::GoalRequest {
+            task_description: peppy_mcp_runtime::bridge::value_string(
+                peppy_mcp_runtime::bridge::require(input_0, "task_description")?,
+                "task_description",
+            )?,
+        }
+    })
+}
+fn task_recorder_record_episode_feedback(
+    message: peppygen::consumed_actions::recorder::record_episode::FeedbackMessage,
+) -> std::result::Result<serde_json::Value, String> {
+    Ok({
+        let nested_0 = message;
+        let mut object_0 = serde_json::Map::new();
+        object_0.insert("frame".to_string(), serde_json::Value::from(nested_0.frame));
+        object_0.insert("phase".to_string(), serde_json::Value::from(nested_0.phase));
+        serde_json::Value::Object(object_0)
+    })
+}
+fn task_recorder_record_episode_result(
+    data: peppygen::consumed_actions::recorder::record_episode::ResultResponseData,
+) -> std::result::Result<serde_json::Value, String> {
+    Ok({
+        let nested_0 = data;
+        let mut object_0 = serde_json::Map::new();
+        object_0
+            .insert(
+                "episode_index".to_string(),
+                serde_json::Value::from(nested_0.episode_index),
+            );
+        serde_json::Value::Object(object_0)
+    })
+}
+pub(crate) async fn task_recorder_record_episode(
+    node_runner: &peppygen::NodeRunner,
+    input: serde_json::Value,
+    context: peppy_mcp_runtime::ActionContext,
+) -> std::result::Result<serde_json::Value, peppy_mcp_runtime::ActionExit> {
+    let request = task_recorder_record_episode_goal(&input)
+        .map_err(peppy_mcp_runtime::ActionExit::Failed)?;
+    let target = peppygen::consumed_actions::recorder::record_episode::bound_producer(
+        node_runner,
+    );
+    let deadline = std::time::Duration::from_millis(900000);
+    let mut handle = peppygen::consumed_actions::recorder::record_episode::ActionHandle::fire_goal(
+            node_runner,
+            target,
+            deadline,
+            request,
+            peppygen::QoSProfile::SensorData,
+        )
+        .await
+        .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
+    if !handle.accepted {
+        return Err(
+            peppy_mcp_runtime::ActionExit::Failed(
+                match handle.reason.as_deref() {
+                    Some(reason) => format!("the provider rejected the goal: {reason}"),
+                    None => "the provider rejected the goal".to_string(),
+                },
+            ),
+        );
+    }
+    let mut cancel_pending = false;
+    let mut cancel_forwarded = false;
+    loop {
+        if cancel_pending {
+            cancel_pending = false;
+            cancel_forwarded = true;
+            let _ = handle.cancel_goal(deadline).await;
+        }
+        tokio::select! {
+            _ = context.cancel_requested(), if ! cancel_forwarded => { cancel_pending =
+            true; } message = handle.on_next_feedback_message() => match message {
+            Ok(message) => { if let Ok(value) =
+            task_recorder_record_episode_feedback(message) { context
+            .report_feedback(value.to_string()); } } Err(_) => break, }
+        }
+    }
+    let result = handle
+        .get_result(deadline)
+        .await
+        .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
+    match result.outcome {
+        peppygen::consumed_actions::recorder::record_episode::ResultOutcome::Completed(
+            data,
+        ) => {
+            task_recorder_record_episode_result(data)
+                .map_err(peppy_mcp_runtime::ActionExit::Failed)
+        }
+        peppygen::consumed_actions::recorder::record_episode::ResultOutcome::Cancelled(
+            _,
+        ) => Err(peppy_mcp_runtime::ActionExit::Cancelled),
+        peppygen::consumed_actions::recorder::record_episode::ResultOutcome::Abandoned => {
+            Err(
+                peppy_mcp_runtime::ActionExit::Failed(
+                    "the provider abandoned the goal".to_string(),
+                ),
+            )
+        }
+        peppygen::consumed_actions::recorder::record_episode::ResultOutcome::Expired => {
+            Err(
+                peppy_mcp_runtime::ActionExit::Failed(
+                    "the goal expired before reaching a terminal result".to_string(),
+                ),
+            )
+        }
+    }
+}
+pub(crate) async fn task_recorder_resume_session(
+    node_runner: &peppygen::NodeRunner,
+    input: serde_json::Value,
+    context: peppy_mcp_runtime::ActionContext,
+) -> std::result::Result<serde_json::Value, peppy_mcp_runtime::ActionExit> {
+    let _ = input;
+    let target = peppygen::consumed_actions::recorder::resume_session::bound_producer(
+        node_runner,
+    );
+    let deadline = std::time::Duration::from_millis(30000);
+    let handle = peppygen::consumed_actions::recorder::resume_session::ActionHandle::fire_goal(
+            node_runner,
+            target,
+            deadline,
+            peppygen::QoSProfile::SensorData,
+        )
+        .await
+        .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
+    if !handle.accepted {
+        return Err(
+            peppy_mcp_runtime::ActionExit::Failed(
+                match handle.reason.as_deref() {
+                    Some(reason) => format!("the provider rejected the goal: {reason}"),
+                    None => "the provider rejected the goal".to_string(),
+                },
+            ),
+        );
+    }
+    let mut cancel_forwarded = false;
+    let result_future = handle.get_result(deadline);
+    tokio::pin!(result_future);
+    let result = loop {
+        tokio::select! {
+            result = & mut result_future => break result, _ = context.cancel_requested(),
+            if ! cancel_forwarded => { cancel_forwarded = true; let _ = handle
+            .cancel_goal(deadline). await; }
+        }
+    }
+        .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
+    match result.outcome {
+        peppygen::consumed_actions::recorder::resume_session::ResultOutcome::Completed => {
+            Ok(serde_json::Value::Object(serde_json::Map::new()))
+        }
+        peppygen::consumed_actions::recorder::resume_session::ResultOutcome::Cancelled => {
+            Err(peppy_mcp_runtime::ActionExit::Cancelled)
+        }
+        peppygen::consumed_actions::recorder::resume_session::ResultOutcome::Abandoned => {
+            Err(
+                peppy_mcp_runtime::ActionExit::Failed(
+                    "the provider abandoned the goal".to_string(),
+                ),
+            )
+        }
+        peppygen::consumed_actions::recorder::resume_session::ResultOutcome::Expired => {
+            Err(
+                peppy_mcp_runtime::ActionExit::Failed(
+                    "the goal expired before reaching a terminal result".to_string(),
+                ),
+            )
+        }
+    }
+}

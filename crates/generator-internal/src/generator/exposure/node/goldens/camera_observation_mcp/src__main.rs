@@ -75,6 +75,46 @@ fn main() -> Result<()> {
                         }
                     },
                 )
+                .with_task(
+                    "recorder.record_episode",
+                    {
+                        let node_runner = std::sync::Arc::clone(&node_runner);
+                        move |
+                            input: serde_json::Value,
+                            context: peppy_mcp_runtime::ActionContext|
+                        {
+                            let node_runner = std::sync::Arc::clone(&node_runner);
+                            async move {
+                                bridges::task_recorder_record_episode(
+                                        &node_runner,
+                                        input,
+                                        context,
+                                    )
+                                    .await
+                            }
+                        }
+                    },
+                )
+                .with_task(
+                    "recorder.resume_session",
+                    {
+                        let node_runner = std::sync::Arc::clone(&node_runner);
+                        move |
+                            input: serde_json::Value,
+                            context: peppy_mcp_runtime::ActionContext|
+                        {
+                            let node_runner = std::sync::Arc::clone(&node_runner);
+                            async move {
+                                bridges::task_recorder_resume_session(
+                                        &node_runner,
+                                        input,
+                                        context,
+                                    )
+                                    .await
+                            }
+                        }
+                    },
+                )
                 .build()
                 .expect("the committed bundle and the generated bridges agree");
             {

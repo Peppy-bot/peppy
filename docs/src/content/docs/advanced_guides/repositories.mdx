@@ -289,9 +289,8 @@ node), and the generated node itself in a sibling directory named after it. The 
 Rust crate with no hand-written code: its `peppy.json5` declares one `depends_on.contracts` slot
 per logical target, its `main` composes the shared `peppy-mcp-runtime` crate from
 `public-peppy-libs`, its bridges translate between the canonical public JSON and the peppygen
-typed clients, and it embeds the exact published bundle bytes as its served catalog. Exposures
-that select actions publish the bundle only: the node generator does not support action-backed
-MCP tasks yet, and a node must never advertise a surface it cannot serve.
+typed clients (topics become resources, services become tools, and actions become tools backed by
+MCP tasks), and it embeds the exact published bundle bytes as its served catalog.
 
 Validation refuses, naming every violation at once, when a selected member does not exist in its
 contract with the expected kind, a public name is claimed twice, a message definition does not
