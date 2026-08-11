@@ -27,7 +27,7 @@ const APPTAINER_CACHEDIR_ENV: &str = "APPTAINER_CACHEDIR";
 /// `APPTAINER_CACHEDIR`: pointing an existing installation at a fresh cache
 /// directory would cold-start multi-GB re-downloads for exactly the
 /// slow-connection users the progress probe serves.
-pub fn effective_host_cache_dir() -> Option<PathBuf> {
+fn effective_host_cache_dir() -> Option<PathBuf> {
     effective_host_cache_dir_from(
         std::env::var_os(APPTAINER_CACHEDIR_ENV),
         std::env::var_os("HOME"),
@@ -77,13 +77,12 @@ impl Apptainer {
     /// scratch, plus the extras. Lima (macOS): the guest cache is sampled via
     /// `du` inside the VM; only the extras are sampled host-side (the build's
     /// working dir is host-mounted, so they remain visible).
-    pub fn cache_usage_probe(&self, extra_host_roots: &[PathBuf]) -> CacheUsageProbe {
+    pub fn cache_usage_probe(&self, extra_host_roots: Vec<PathBuf>) -> CacheUsageProbe {
+        let mut host_roots = extra_host_roots;
         match &self.backend {
             Backend::Native { tmp_dir, .. } => {
-                let mut host_roots = Vec::with_capacity(extra_host_roots.len() + 2);
                 host_roots.extend(effective_host_cache_dir());
                 host_roots.push(tmp_dir.clone());
-                host_roots.extend(extra_host_roots.iter().cloned());
                 CacheUsageProbe {
                     host_roots,
                     guest: None,
@@ -94,7 +93,7 @@ impl Apptainer {
                 lima_home,
                 ..
             } => CacheUsageProbe {
-                host_roots: extra_host_roots.to_vec(),
+                host_roots,
                 guest: Some(GuestUsageProbe {
                     limactl_path: limactl_path.clone(),
                     lima_home: lima_home.clone(),
@@ -126,14 +125,16 @@ impl CacheUsageProbe {
 
 impl GuestUsageProbe {
     /// `du -sb` of the guest-side apptainer cache, through the same
-    /// `limactl shell` plumbing every other guest command uses. Any failure
-    /// (VM unreachable, `du` missing, unparseable output) reads as 0.
+    /// `limactl shell` plumbing every other guest command uses. The guest
+    /// shell resolves the cache dir with the same override-then-default rule
+    /// as [`effective_host_cache_dir`], so the two spellings cannot fork. Any
+    /// failure (VM unreachable, `du` missing, unparseable output) reads as 0.
     fn usage_bytes(&self) -> u64 {
         let output = lima::lima_shell_cmd(&self.limactl_path, &self.lima_home, lima::LIMA_INSTANCE)
             .args([
                 "sh",
                 "-c",
-                r#"du -sb "$HOME/.apptainer/cache" 2>/dev/null | cut -f1"#,
+                r#"du -sb "${APPTAINER_CACHEDIR:-$HOME/.apptainer/cache}" 2>/dev/null | cut -f1"#,
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -157,16 +158,30 @@ fn dir_size_bytes(root: &Path) -> u64 {
         Ok(meta) => meta,
         Err(_) => return 0,
     };
-    if !meta.is_dir() {
-        return meta.len();
+    if meta.is_dir() {
+        dir_tree_size(root)
+    } else {
+        meta.len()
     }
-    let entries = match std::fs::read_dir(root) {
+}
+
+/// Sums the entries of a directory known to exist. Leans on `read_dir`'s own
+/// per-entry handles — `file_type` (free on most filesystems) to pick the
+/// recursion, `metadata` (lstat, no path building) for sizes — because this
+/// runs over the whole apptainer cache every sample tick.
+fn dir_tree_size(dir: &Path) -> u64 {
+    let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return 0,
     };
     entries
         .filter_map(|entry| entry.ok())
         .fold(0, |sum, entry| {
-            sum.saturating_add(dir_size_bytes(&entry.path()))
+            let size = match entry.file_type() {
+                Ok(file_type) if file_type.is_dir() => dir_tree_size(&entry.path()),
+                Ok(_) => entry.metadata().map_or(0, |meta| meta.len()),
+                Err(_) => 0,
+            };
+            sum.saturating_add(size)
         })
 }

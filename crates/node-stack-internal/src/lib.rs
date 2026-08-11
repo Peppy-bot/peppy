@@ -40,7 +40,7 @@ mod virtual_deptree;
 pub use error::Error as NodeStackError;
 
 pub use archive::extract_tar_zst;
-pub use build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks};
+pub use build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks, stdout_line_sender};
 pub use core_node_api::InstanceState;
 pub use node_stack::add_steps;
 pub use node_stack::{

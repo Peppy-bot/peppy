@@ -14,6 +14,7 @@ use clock::{ClockSource, SimClockSource, WallClockSource};
 
 pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances};
 pub use presence::NAME_CLAIM_LINKED_SETTLE;
+pub use stack::{idle_timeout_flag, slow_connection_hint};
 
 use crate::Result;
 use config::{

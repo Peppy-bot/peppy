@@ -9,6 +9,32 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+/// The `peppy stack launch` flag that raises the idle budget of the phase a
+/// feedback step belongs to. `None` for the launcher step, whose work
+/// (parse/resolve) has no per-phase flag — the CLI watchdog alone bounds it.
+///
+/// The one place the step→flag mapping lives: both the daemon's per-phase
+/// timeout message (below) and the CLI watchdog's timeout message consume it,
+/// so a flag rename cannot leave the two giving different advice.
+pub fn idle_timeout_flag(step: LaunchFeedbackStep) -> Option<&'static str> {
+    match step {
+        LaunchFeedbackStep::AddingNode => Some("--node-add-idle-timeout-secs"),
+        LaunchFeedbackStep::BuildingNode => Some("--node-build-idle-timeout-secs"),
+        LaunchFeedbackStep::RunningNode => Some("--node-run-idle-timeout-secs"),
+        LaunchFeedbackStep::LauncherStep => None,
+    }
+}
+
+/// The retry advice appended to an idle-timeout error, pointing a
+/// slow-connection user at the flag that raises the budget. Shared by the
+/// daemon and CLI timeout messages so the wording cannot drift.
+pub fn slow_connection_hint(flag: &str) -> String {
+    format!(
+        "if this machine is on a slow connection, retry with a larger {flag} \
+         (progress output resets this clock)"
+    )
+}
+
 /// Watches for an idle period: returns when no `notify_one()` arrives for `idle_timeout`.
 /// Each call to `notify_one()` on `notify` resets the clock.
 async fn watch_idle(notify: Arc<Notify>, idle_timeout: Duration) {
@@ -182,16 +208,14 @@ where
     {
         PhaseOutcome::Completed(result) => result,
         PhaseOutcome::IdleTimeout => {
-            // The three phases run through here (add/build/run) each have a
-            // matching `--node-<phase>-idle-timeout-secs` flag on
-            // `peppy stack launch`, so the label doubles as the flag name.
-            let reason = format!(
-                "timeout: {label} idle timeout exceeded ({secs}s without output); if this \
-                 machine is on a slow connection, retry with a larger \
-                 --node-{label}-idle-timeout-secs (progress output resets this clock)",
-                label = step.phase_label(),
-                secs = idle_timeout.as_secs()
+            let mut reason = format!(
+                "timeout: {} idle timeout exceeded ({}s without output)",
+                step.phase_label(),
+                idle_timeout.as_secs()
             );
+            if let Some(flag) = idle_timeout_flag(step) {
+                reason = format!("{reason}; {}", slow_connection_hint(flag));
+            }
             write_error_to_log(log_file, &reason);
             build_failure(reason)
         }

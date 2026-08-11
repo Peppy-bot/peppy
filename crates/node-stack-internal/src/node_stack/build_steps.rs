@@ -13,7 +13,7 @@ use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output};
-use crate::build_progress::{BUILD_PROGRESS_SAMPLE_INTERVAL, BuildProgressMonitor};
+use crate::build_progress::BuildProgressMonitor;
 use crate::node_stack::container_build_cache;
 use config::node::PeppygenLanguage;
 
@@ -264,12 +264,11 @@ pub(super) async fn build_container_image(
         if let Some(cache) = &build_cache {
             extra_roots.push(cache.host_dir.clone());
         }
-        apptainer.cache_usage_probe(&extra_roots)
+        apptainer.cache_usage_probe(extra_roots)
     };
     let progress_monitor = BuildProgressMonitor::spawn(
-        Arc::new(move || usage_probe.usage_bytes()),
+        move || usage_probe.usage_bytes(),
         inputs.feedback_tx.clone(),
-        BUILD_PROGRESS_SAMPLE_INTERVAL,
     );
 
     let stream_result = stream_child_output(

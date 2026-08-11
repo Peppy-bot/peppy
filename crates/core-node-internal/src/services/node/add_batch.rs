@@ -48,15 +48,8 @@ pub(crate) async fn run_pinned_add(
     log_path: PathBuf,
 ) -> NodeAddResult {
     let peppy_dirs = action_context.peppy_dirs.clone();
-    let on_feedback: super::cache::MaterializeFeedback = {
-        let fb = feedback_tx.clone();
-        Arc::new(move |line: &str| {
-            let _ = fb.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: line.to_owned(),
-            });
-        })
-    };
+    let on_feedback: super::cache::MaterializeFeedback =
+        Arc::new(super::stdout_line_sender(feedback_tx.clone()));
 
     // An ABSENT cache is not a problem on the pinned path: content this
     // machine does not hold is fetched from each pin's own origin, which is

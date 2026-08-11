@@ -1,7 +1,7 @@
 use super::feedback::{publish_stderr, publish_stdout, spawn_feedback_forwarder};
 use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::pins;
-use crate::services::node::{FeedbackLine, FeedbackStream};
+use crate::services::node::{FeedbackLine, stdout_line_sender};
 use crate::services::repo::cache as repo_cache;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, PlacementSpec,
@@ -245,12 +245,7 @@ async fn resolve_launcher_origin(
                 crate::services::repo::cache::resolve_repo_launcher_path(
                     &name_for_blocking,
                     &peppy_dirs,
-                    &|line| {
-                        let _ = feedback_tx.send(FeedbackLine {
-                            stream: FeedbackStream::Stdout,
-                            line: line.to_owned(),
-                        });
-                    },
+                    &stdout_line_sender(feedback_tx),
                 )
             })
             .await
@@ -445,15 +440,8 @@ async fn resolve_one(
     )
     .await;
     let remote = has_remote_instances(deployment, placements);
-    let feedback: crate::services::node::cache::MaterializeFeedback = {
-        let tx = feedback_tx.clone();
-        Arc::new(move |line: &str| {
-            let _ = tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line: line.to_owned(),
-            });
-        })
-    };
+    let feedback: crate::services::node::cache::MaterializeFeedback =
+        Arc::new(stdout_line_sender(feedback_tx.clone()));
 
     let closure = pins::resolve_pinned_closure(
         &ctx.peppy_dirs,

@@ -86,6 +86,39 @@ pub struct FeedbackLine {
     pub line: String,
 }
 
+/// Wraps `tx` as a `&str` line sink that forwards each line as a stdout
+/// [`FeedbackLine`], the adapter shape blocking checkout/materialize progress
+/// callbacks expect. Send errors are ignored: a closed channel means the
+/// consumer is gone and the lines have nowhere to go.
+pub fn stdout_line_sender(
+    tx: mpsc::UnboundedSender<FeedbackLine>,
+) -> impl Fn(&str) + Send + Sync + 'static {
+    move |line: &str| {
+        let _ = tx.send(FeedbackLine {
+            stream: FeedbackStream::Stdout,
+            line: line.to_owned(),
+        });
+    }
+}
+
+/// Renders byte counts in the compact `KB`/`MB`/`GB` form shared by peppy's
+/// progress lines (clone/fetch transfer reports, build disk-growth feedback).
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 /// Hooks called by [`spawn_output_reader_async`] at meaningful moments in the
 /// reader loop. This trait exists so `node-stack-internal` does not have to
 /// know about the daemon's `FeedbackSync` drain primitive: the daemon
@@ -379,7 +412,12 @@ impl LineSplitter {
     }
 
     fn take_partial(&mut self) -> String {
-        String::from_utf8_lossy(&std::mem::take(&mut self.partial)).into_owned()
+        // Reuse the buffer's allocation on the (overwhelmingly common) valid
+        // UTF-8 path; only invalid bytes pay for a lossy re-encode.
+        match String::from_utf8(std::mem::take(&mut self.partial)) {
+            Ok(line) => line,
+            Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
+        }
     }
 }
 
@@ -391,29 +429,23 @@ impl LineSplitter {
 pub(crate) const REPAINT_FORWARD_MIN_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Decides which fragments forward: `\n`-terminated lines always do, bare-`\r`
-/// repaints only when at least `min_interval` has passed since the last
-/// forwarded line. Suppressed fragments are dropped entirely (no log write, no
-/// stderr tail), matching their pre-`\r`-splitting invisibility.
+/// repaints only when at least [`REPAINT_FORWARD_MIN_INTERVAL`] has passed
+/// since the last forwarded line. Suppressed fragments are dropped entirely
+/// (no log write, no stderr tail), matching their pre-`\r`-splitting
+/// invisibility.
+#[derive(Default)]
 pub(crate) struct RepaintCoalescer {
-    min_interval: Duration,
     last_forward: Option<Instant>,
 }
 
 impl RepaintCoalescer {
-    pub(crate) fn new(min_interval: Duration) -> Self {
-        Self {
-            min_interval,
-            last_forward: None,
-        }
-    }
-
     /// Whether a fragment with `terminator` observed at `now` forwards.
     pub(crate) fn should_forward(&mut self, terminator: LineTerminator, now: Instant) -> bool {
         let forward = match terminator {
             LineTerminator::Newline => true,
             LineTerminator::CarriageReturn => self
                 .last_forward
-                .is_none_or(|last| now.duration_since(last) >= self.min_interval),
+                .is_none_or(|last| now.duration_since(last) >= REPAINT_FORWARD_MIN_INTERVAL),
         };
         if forward {
             self.last_forward = Some(now);
@@ -441,7 +473,7 @@ impl RepaintCoalescer {
 /// for as long as the spawned node is alive, which is the desired behavior so
 /// the daemon keeps streaming the running node's stdout/stderr.
 pub fn spawn_output_reader_async<R>(
-    reader: R,
+    mut reader: R,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     publish_enabled: Arc<AtomicBool>,
     hooks: Arc<dyn OutputReaderHooks>,
@@ -455,9 +487,8 @@ where
     use tokio::io::AsyncReadExt;
 
     tokio::spawn(async move {
-        let mut reader = reader;
         let mut splitter = LineSplitter::default();
-        let mut coalescer = RepaintCoalescer::new(REPAINT_FORWARD_MIN_INTERVAL);
+        let mut coalescer = RepaintCoalescer::default();
         let mut buf = vec![0u8; 8192];
         // Tracks whether we have already signalled idle for the current quiet
         // stretch, so `on_reader_idle` fires once per active-to-idle transition.
@@ -528,15 +559,13 @@ where
                 hooks.on_reader_active();
             }
 
-            let mut fragments = Vec::new();
+            // One timestamp per chunk: every fragment in it arrived together.
+            let now = Instant::now();
             splitter.push(&buf[..n], |line, terminator| {
-                fragments.push((line, terminator));
-            });
-            for (line, terminator) in fragments {
-                if coalescer.should_forward(terminator, Instant::now()) {
+                if coalescer.should_forward(terminator, now) {
                     forward_line(line);
                 }
-            }
+            });
         };
 
         // Report exit so the daemon stops counting this reader as live.
@@ -675,7 +704,7 @@ mod tests {
     #[test]
     fn coalescer_throttles_repaints_but_never_newlines() {
         let t0 = std::time::Instant::now();
-        let mut coalescer = RepaintCoalescer::new(Duration::from_millis(500));
+        let mut coalescer = RepaintCoalescer::default();
 
         // First repaint forwards; a rapid follow-up is suppressed.
         assert!(coalescer.should_forward(LineTerminator::CarriageReturn, t0));
@@ -692,8 +721,16 @@ mod tests {
         // …and a repaint after the interval forwards again.
         assert!(coalescer.should_forward(
             LineTerminator::CarriageReturn,
-            t0 + Duration::from_millis(600)
+            t0 + Duration::from_millis(20) + REPAINT_FORWARD_MIN_INTERVAL
         ));
+    }
+
+    #[test]
+    fn format_bytes_scales_units() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2048), "2 KB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 / 2), "1.5 MB");
+        assert_eq!(format_bytes(19 * 1024 * 1024 * 1024 / 10), "1.9 GB");
     }
 
     // -- spawn_output_reader_async end-to-end --

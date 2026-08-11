@@ -19,17 +19,18 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::build_io::{FeedbackLine, FeedbackStream};
+use crate::build_io::{FeedbackLine, FeedbackStream, format_bytes};
 
 /// Cadence of usage samples. Each tick is one blocking probe (a filesystem
 /// walk; a `limactl shell du` subprocess under Lima), so the interval also
 /// bounds the probe overhead.
 pub(crate) const BUILD_PROGRESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Byte-count sampler the monitor polls each tick. Boxed as a closure rather
-/// than a concrete probe type so tests can drive the monitor with a synthetic
+/// Byte-count sampler the monitor polls each tick. A closure rather than a
+/// concrete probe type so tests can drive the monitor with a synthetic
 /// counter; production passes `containers::CacheUsageProbe::usage_bytes`.
-pub(crate) type UsageSampler = Arc<dyn Fn() -> u64 + Send + Sync>;
+/// Arc'd internally so [`sample`] can clone it into `spawn_blocking`.
+type UsageSampler = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Guard around the sampling task: dropping it aborts the task, so tying it to
 /// the build future's stack scopes the monitor to `stream_child_output` — the
@@ -41,14 +42,14 @@ pub(crate) struct BuildProgressMonitor {
 
 impl BuildProgressMonitor {
     /// Starts the sampling task: a baseline sample immediately, then one
-    /// sample per `interval`, emitting a stdout `FeedbackLine` only on growth
-    /// since the last sample. Each sample runs on the blocking pool (the
-    /// probe walks filesystems and may shell out).
+    /// sample per [`BUILD_PROGRESS_SAMPLE_INTERVAL`], emitting a stdout
+    /// `FeedbackLine` only on growth since the last sample. Each sample runs
+    /// on the blocking pool (the probe walks filesystems and may shell out).
     pub(crate) fn spawn(
-        sampler: UsageSampler,
+        sampler: impl Fn() -> u64 + Send + Sync + 'static,
         feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
-        interval: Duration,
     ) -> Self {
+        let sampler: UsageSampler = Arc::new(sampler);
         let task = tokio::spawn(async move {
             // Baseline before the first tick, so the first line reports growth
             // since the build started rather than the preexisting cache size.
@@ -56,7 +57,7 @@ impl BuildProgressMonitor {
                 return;
             };
             loop {
-                tokio::time::sleep(interval).await;
+                tokio::time::sleep(BUILD_PROGRESS_SAMPLE_INTERVAL).await;
                 let Some(total) = sample(&sampler).await else {
                     return;
                 };
@@ -99,25 +100,6 @@ async fn sample(sampler: &UsageSampler) -> Option<u64> {
     tokio::task::spawn_blocking(move || sampler()).await.ok()
 }
 
-/// Renders byte counts in the compact `KB`/`MB`/`GB` form used by peppy's
-/// clone/fetch progress lines, extended with `GB` because base-image pulls
-/// routinely cross it.
-fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,13 +108,16 @@ mod tests {
     /// Sampler over a shared counter that also counts its own invocations, so
     /// tests can wait for the baseline sample before mutating the total
     /// (mutating earlier would fold the "growth" into the baseline).
-    fn counter_sampler(bytes: &Arc<AtomicU64>, calls: &Arc<AtomicU64>) -> UsageSampler {
+    fn counter_sampler(
+        bytes: &Arc<AtomicU64>,
+        calls: &Arc<AtomicU64>,
+    ) -> impl Fn() -> u64 + Send + Sync + 'static {
         let bytes = Arc::clone(bytes);
         let calls = Arc::clone(calls);
-        Arc::new(move || {
+        move || {
             calls.fetch_add(1, Ordering::SeqCst);
             bytes.load(Ordering::SeqCst)
-        })
+        }
     }
 
     /// Parks the test until the sampler has run at least `at_least` times.
@@ -144,14 +129,14 @@ mod tests {
         }
     }
 
-    const INTERVAL: Duration = Duration::from_secs(5);
+    const INTERVAL: Duration = BUILD_PROGRESS_SAMPLE_INTERVAL;
 
     #[tokio::test(start_paused = true)]
     async fn emits_on_growth_and_stays_silent_when_flat() {
         let bytes = Arc::new(AtomicU64::new(1_000));
         let calls = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let _monitor = BuildProgressMonitor::spawn(counter_sampler(&bytes, &calls), tx, INTERVAL);
+        let _monitor = BuildProgressMonitor::spawn(counter_sampler(&bytes, &calls), tx);
         wait_for_calls(&calls, 1).await;
 
         // Growth after the baseline produces a line reporting the delta.
@@ -188,7 +173,7 @@ mod tests {
         let bytes = Arc::new(AtomicU64::new(10 * 1024 * 1024));
         let calls = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let _monitor = BuildProgressMonitor::spawn(counter_sampler(&bytes, &calls), tx, INTERVAL);
+        let _monitor = BuildProgressMonitor::spawn(counter_sampler(&bytes, &calls), tx);
         wait_for_calls(&calls, 1).await;
 
         // Shrink (e.g. cache cleanup): no line, but only assert once at least
@@ -210,7 +195,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn dropping_the_guard_aborts_the_sampling_task() {
         let (tx, mut rx) = mpsc::unbounded_channel::<FeedbackLine>();
-        let monitor = BuildProgressMonitor::spawn(Arc::new(|| 0), tx, INTERVAL);
+        let monitor = BuildProgressMonitor::spawn(|| 0, tx);
         drop(monitor);
         // The aborted task drops its sender, so the channel closes; a live
         // task would hold it open forever.
@@ -218,13 +203,5 @@ mod tests {
             .await
             .expect("the channel must close once the guard is dropped");
         assert!(closed.is_none());
-    }
-
-    #[test]
-    fn format_bytes_scales_units() {
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(2048), "2 KB");
-        assert_eq!(format_bytes(3 * 1024 * 1024 / 2), "1.5 MB");
-        assert_eq!(format_bytes(19 * 1024 * 1024 * 1024 / 10), "1.9 GB");
     }
 }
