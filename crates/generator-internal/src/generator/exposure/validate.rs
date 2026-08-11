@@ -613,11 +613,17 @@ impl MemberKind {
     }
 }
 
-fn find_topic<'a>(contract: &'a PeppyContract, member: &str) -> Option<&'a NativeEmittedTopic> {
+pub(super) fn find_topic<'a>(
+    contract: &'a PeppyContract,
+    member: &str,
+) -> Option<&'a NativeEmittedTopic> {
     contract.interfaces.topics.iter().find(|t| t.name == member)
 }
 
-fn find_service<'a>(contract: &'a PeppyContract, member: &str) -> Option<&'a NativeExposedService> {
+pub(super) fn find_service<'a>(
+    contract: &'a PeppyContract,
+    member: &str,
+) -> Option<&'a NativeExposedService> {
     contract
         .interfaces
         .services

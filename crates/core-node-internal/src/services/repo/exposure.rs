@@ -1,45 +1,66 @@
-//! Exposure-bundle publication: resolve an `mcp_exposure/v1` document's
-//! pinned contracts through the local repository caches, validate the
-//! exposure against them, and publish (or verify) the committed bundle file
-//! next to the document.
+//! Exposure publication: resolve an `mcp_exposure/v1` document's pinned
+//! contracts through the local repository caches, validate the exposure
+//! against them, and publish (or verify) the committed artifacts next to the
+//! document: the bundle file and the generated MCP server node.
 //!
-//! The validation itself is [`generator::build_exposure_bundle`], a pure
-//! function; this module is the repository-facing shell that turns sha256
-//! pins into contract bytes and bundle values into committed files.
+//! The validation itself is [`generator::build_exposure_bundle`] and the
+//! node emission [`generator::generate_exposure_node`], both pure functions;
+//! this module is the repository-facing shell that turns sha256 pins into
+//! contract bytes and generated values into committed files. Exposures that
+//! select actions publish their bundle only: the node generator does not
+//! support action-backed tasks yet, and a node must never advertise a
+//! surface it cannot serve.
 
 use crate::services::node::resolve_contract_doc;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
-use generator::{ExposureBundle, ResolvedContractDocument, build_exposure_bundle};
+use generator::{
+    ExposureBundle, GeneratedServerNode, ResolvedContractDocument, build_exposure_bundle,
+    generate_exposure_node,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// A generated bundle and where it was (or would be) published.
+/// The artifacts published (or verified) for one exposure document.
 #[derive(Debug)]
-pub struct GeneratedExposureBundle {
-    pub path: PathBuf,
+pub struct PublishedExposure {
+    pub bundle_path: PathBuf,
     pub bundle: ExposureBundle,
+    /// The generated node's directory; `None` when the exposure selects
+    /// actions and the node is therefore not generated yet.
+    pub node_dir: Option<PathBuf>,
+    pub node_file_count: usize,
 }
 
-/// How the committed bundle file differs from the one its exposure document
-/// produces. At most one drift exists per exposure: the bundle is a single
-/// file that either matches, differs, or is missing.
+/// One way the committed artifacts differ from what the exposure document
+/// produces right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExposureBundleDrift {
-    Missing { expected_path: String },
-    Outdated { path: String },
+pub enum ExposureDrift {
+    BundleMissing { expected_path: String },
+    BundleOutdated { path: String },
+    NodeFileMissing { expected_path: String },
+    NodeFileOutdated { path: String },
 }
 
-impl std::fmt::Display for ExposureBundleDrift {
+impl std::fmt::Display for ExposureDrift {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Missing { expected_path } => {
+            Self::BundleMissing { expected_path } => {
                 write!(f, "no bundle is committed at {expected_path}")
             }
-            Self::Outdated { path } => {
+            Self::BundleOutdated { path } => {
                 write!(
                     f,
                     "{path} does not match the bundle its exposure document produces"
+                )
+            }
+            Self::NodeFileMissing { expected_path } => {
+                write!(f, "the generated node is missing {expected_path}")
+            }
+            Self::NodeFileOutdated { path } => {
+                write!(
+                    f,
+                    "{path} does not match the node its exposure document produces"
                 )
             }
         }
@@ -56,52 +77,119 @@ pub fn exposure_bundle_path(exposure_path: &Path) -> PathBuf {
     exposure_path.with_file_name(format!("{stem}.bundle.json"))
 }
 
-/// Validates the exposure at `exposure_path` against its pinned contracts
-/// (resolved through the local repository caches) and publishes the bundle
-/// file next to it.
-pub fn generate_exposure_bundle_file(
-    exposure_path: &Path,
-    peppy_dirs: &PeppyDirs,
-    on_feedback: &dyn Fn(&str),
-) -> std::result::Result<GeneratedExposureBundle, String> {
-    let (path, bundle, content) = render_bundle(exposure_path, peppy_dirs, on_feedback)?;
-    daemon_config::atomic_write::publish_atomic(&path, |tmp| std::fs::write(tmp, &content))
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(GeneratedExposureBundle { path, bundle })
+/// The generated node's directory: a sibling of the exposure document named
+/// after the node.
+fn exposure_node_dir(exposure_path: &Path, node_name: &str) -> PathBuf {
+    exposure_path.with_file_name(node_name)
 }
 
-/// Verifies the committed bundle file against the one the exposure document
-/// produces right now. `Ok(None)` means the committed bundle matches.
-pub fn check_exposure_bundle_file(
+/// Validates the exposure at `exposure_path` against its pinned contracts
+/// (resolved through the local repository caches) and publishes the bundle
+/// file and the generated MCP server node next to it.
+pub fn publish_exposure(
     exposure_path: &Path,
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),
-) -> std::result::Result<Option<ExposureBundleDrift>, String> {
-    let (path, _, expected) = render_bundle(exposure_path, peppy_dirs, on_feedback)?;
-    let committed = match std::fs::read_to_string(&path) {
-        Ok(committed) => committed,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Some(ExposureBundleDrift::Missing {
-                expected_path: path.display().to_string(),
-            }));
+) -> std::result::Result<PublishedExposure, String> {
+    let rendered = render_artifacts(exposure_path, peppy_dirs, on_feedback)?;
+    daemon_config::atomic_write::publish_atomic(&rendered.bundle_path, |tmp| {
+        std::fs::write(tmp, &rendered.bundle_content)
+    })
+    .map_err(|e| format!("failed to write {}: {e}", rendered.bundle_path.display()))?;
+
+    let mut node_dir = None;
+    let mut node_file_count = 0;
+    if let Some(node) = &rendered.node {
+        let dir = exposure_node_dir(exposure_path, &node.node_dir_name);
+        for file in &node.files {
+            let path = dir.join(&file.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+            }
+            daemon_config::atomic_write::publish_atomic(&path, |tmp| {
+                std::fs::write(tmp, &file.content)
+            })
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
         }
-        Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
-    };
-    if committed != expected {
-        return Ok(Some(ExposureBundleDrift::Outdated {
-            path: path.display().to_string(),
-        }));
+        node_file_count = node.files.len();
+        node_dir = Some(dir);
     }
-    Ok(None)
+
+    Ok(PublishedExposure {
+        bundle_path: rendered.bundle_path,
+        bundle: rendered.bundle,
+        node_dir,
+        node_file_count,
+    })
+}
+
+/// Verifies the committed artifacts against what the exposure document
+/// produces right now. An empty list means everything matches. Only
+/// generated files are compared; extra files a hub commits alongside them
+/// (such as a `Cargo.lock`) are not judged here.
+pub fn check_exposure(
+    exposure_path: &Path,
+    peppy_dirs: &PeppyDirs,
+    on_feedback: &dyn Fn(&str),
+) -> std::result::Result<Vec<ExposureDrift>, String> {
+    let rendered = render_artifacts(exposure_path, peppy_dirs, on_feedback)?;
+    let mut drifts = Vec::new();
+
+    match std::fs::read_to_string(&rendered.bundle_path) {
+        Ok(committed) if committed == rendered.bundle_content => {}
+        Ok(_) => drifts.push(ExposureDrift::BundleOutdated {
+            path: rendered.bundle_path.display().to_string(),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            drifts.push(ExposureDrift::BundleMissing {
+                expected_path: rendered.bundle_path.display().to_string(),
+            });
+        }
+        Err(e) => {
+            return Err(format!(
+                "failed to read {}: {e}",
+                rendered.bundle_path.display()
+            ));
+        }
+    }
+
+    if let Some(node) = &rendered.node {
+        let dir = exposure_node_dir(exposure_path, &node.node_dir_name);
+        for file in &node.files {
+            let path = dir.join(&file.path);
+            match std::fs::read_to_string(&path) {
+                Ok(committed) if committed == file.content => {}
+                Ok(_) => drifts.push(ExposureDrift::NodeFileOutdated {
+                    path: path.display().to_string(),
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    drifts.push(ExposureDrift::NodeFileMissing {
+                        expected_path: path.display().to_string(),
+                    });
+                }
+                Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
+            }
+        }
+    }
+
+    Ok(drifts)
+}
+
+struct RenderedExposure {
+    bundle_path: PathBuf,
+    bundle: ExposureBundle,
+    bundle_content: String,
+    node: Option<GeneratedServerNode>,
 }
 
 /// Parse the exposure, resolve every pinned contract it references, and
-/// build the bundle plus its canonical serialized form.
-fn render_bundle(
+/// build the bundle plus (when the exposure carries no actions) the node.
+fn render_artifacts(
     exposure_path: &Path,
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),
-) -> std::result::Result<(PathBuf, ExposureBundle, String), String> {
+) -> std::result::Result<RenderedExposure, String> {
     let exposure = PeppyMcpExposureParser::from_path(exposure_path)
         .map_err(|e| format!("{}: {e}", exposure_path.display()))?;
 
@@ -137,8 +225,22 @@ fn render_bundle(
     }
 
     let bundle = build_exposure_bundle(&exposure, &contracts).map_err(|e| e.to_string())?;
+    let node = if bundle.tasks.is_empty() {
+        Some(generate_exposure_node(&exposure, &contracts).map_err(|e| e.to_string())?)
+    } else {
+        on_feedback(
+            "the exposure selects actions; the MCP server node is not generated yet \
+             (action-backed tasks land in a later release), publishing the bundle only",
+        );
+        None
+    };
     let content = bundle.to_json_string();
-    Ok((exposure_bundle_path(exposure_path), bundle, content))
+    Ok(RenderedExposure {
+        bundle_path: exposure_bundle_path(exposure_path),
+        bundle,
+        bundle_content: content,
+        node,
+    })
 }
 
 #[cfg(test)]
@@ -166,8 +268,30 @@ mod tests {
         },
     }"#;
 
+    const RECORDING_CONTRACT: &str = r#"{
+        peppy_schema: "contract/v1",
+        manifest: { name: "episode_recording", tag: "v1" },
+        interfaces: {
+            actions: [
+                {
+                    name: "record_episode",
+                    goal_service: {
+                        request_message_format: { task_description: "string" },
+                    },
+                    result_service: {
+                        response_message_format: { episode_index: "u32" },
+                    },
+                },
+            ],
+        },
+    }"#;
+
+    fn sha_of(contract: &str) -> String {
+        ManifestFingerprint::of_bytes(contract.as_bytes()).to_string()
+    }
+
     fn camera_sha() -> String {
-        ManifestFingerprint::of_bytes(CAMERA_CONTRACT.as_bytes()).to_string()
+        sha_of(CAMERA_CONTRACT)
     }
 
     fn exposure_document(member: &str) -> String {
@@ -195,9 +319,36 @@ mod tests {
         )
     }
 
-    /// A temp `PeppyDirs` whose contract cache serves the camera contract
-    /// from an on-disk file, plus an exposure document written next to a
-    /// would-be bundle. Returns `(dirs_guard, docs_guard, dirs,
+    fn action_exposure_document() -> String {
+        format!(
+            r#"{{
+            peppy_schema: "mcp_exposure/v1",
+            manifest: {{ name: "recording_surface", tag: "v1" }},
+            server: {{ title: "Recording surface" }},
+            targets: {{
+                recorder: {{
+                    contract: {{ name: "episode_recording", tag: "v1", sha256: "{}" }},
+                    actions: [
+                        {{
+                            member: "record_episode",
+                            tool: "recorder.record_episode",
+                            description: "Record one teleoperation episode.",
+                            operation: "long_running",
+                            safety_sensitive: true,
+                            confirmation_required: true,
+                            deadline_ms: 900000,
+                        }},
+                    ],
+                }},
+            }},
+        }}"#,
+            sha_of(RECORDING_CONTRACT)
+        )
+    }
+
+    /// A temp `PeppyDirs` whose contract cache serves the fixture contracts
+    /// from on-disk files, plus an exposure document written next to its
+    /// would-be artifacts. Returns `(dirs_guard, docs_guard, dirs,
     /// exposure_path)`.
     fn seeded_setup(exposure: &str) -> (TempDir, TempDir, PeppyDirs, PathBuf) {
         let peppy_tmp = TempDir::new().expect("temp peppy home");
@@ -205,18 +356,24 @@ mod tests {
         fs::create_dir_all(dirs.cache_dir()).expect("create cache dir");
 
         let docs_tmp = TempDir::new().expect("temp docs dir");
-        let contract_path = docs_tmp.path().join("rgb_camera_v1.json5");
-        fs::write(&contract_path, CAMERA_CONTRACT).expect("write contract");
-        let entry = repo_cache::ContractCacheEntry {
-            contract_name: ItemName::parse("rgb_camera").expect("valid name"),
-            tag: ItemTag::parse("v1").expect("valid tag"),
-            sha256: ManifestFingerprint::of_bytes(CAMERA_CONTRACT.as_bytes()),
-            origin: repo_cache::EntryOrigin::Fs {
-                path: contract_path,
-            },
-            repo_id: 0,
-        };
-        let cache_json = serde_json5::to_string(&vec![entry]).expect("serialize cache");
+        let mut entries = Vec::new();
+        for (name, contract) in [
+            ("rgb_camera", CAMERA_CONTRACT),
+            ("episode_recording", RECORDING_CONTRACT),
+        ] {
+            let contract_path = docs_tmp.path().join(format!("{name}_v1.json5"));
+            fs::write(&contract_path, contract).expect("write contract");
+            entries.push(repo_cache::ContractCacheEntry {
+                contract_name: ItemName::parse(name).expect("valid name"),
+                tag: ItemTag::parse("v1").expect("valid tag"),
+                sha256: ManifestFingerprint::of_bytes(contract.as_bytes()),
+                origin: repo_cache::EntryOrigin::Fs {
+                    path: contract_path,
+                },
+                repo_id: 0,
+            });
+        }
+        let cache_json = serde_json5::to_string(&entries).expect("serialize cache");
         fs::write(repo_cache::contracts_repo_cache_path(&dirs), cache_json)
             .expect("write cache file");
 
@@ -226,71 +383,137 @@ mod tests {
     }
 
     #[test]
-    fn generates_the_bundle_file_next_to_the_document() {
+    fn publishes_the_bundle_and_the_node_next_to_the_document() {
         let (_dirs_guard, _docs_guard, dirs, exposure_path) =
             seeded_setup(&exposure_document("video_stream_info"));
-        let generated = generate_exposure_bundle_file(&exposure_path, &dirs, &|_| {})
-            .expect("the exposure publishes");
-        assert_eq!(generated.path, exposure_bundle_path(&exposure_path));
-        assert_eq!(generated.bundle.node.name, "camera_surface_mcp");
-        assert_eq!(generated.bundle.tools.len(), 1);
+        let published =
+            publish_exposure(&exposure_path, &dirs, &|_| {}).expect("the exposure publishes");
+        assert_eq!(published.bundle_path, exposure_bundle_path(&exposure_path));
+        assert_eq!(published.bundle.node.name, "camera_surface_mcp");
+        assert_eq!(published.bundle.tools.len(), 1);
 
-        let committed = fs::read_to_string(&generated.path).expect("bundle file exists");
-        assert_eq!(committed, generated.bundle.to_json_string());
+        let committed = fs::read_to_string(&published.bundle_path).expect("bundle file exists");
+        assert_eq!(committed, published.bundle.to_json_string());
         assert!(
             committed.ends_with('\n'),
             "committed bundles end with a newline"
         );
-    }
 
-    #[test]
-    fn check_passes_right_after_generation() {
-        let (_dirs_guard, _docs_guard, dirs, exposure_path) =
-            seeded_setup(&exposure_document("video_stream_info"));
-        generate_exposure_bundle_file(&exposure_path, &dirs, &|_| {}).expect("publishes");
-        let drift = check_exposure_bundle_file(&exposure_path, &dirs, &|_| {}).expect("check runs");
-        assert_eq!(drift, None);
-    }
-
-    #[test]
-    fn check_reports_a_missing_bundle() {
-        let (_dirs_guard, _docs_guard, dirs, exposure_path) =
-            seeded_setup(&exposure_document("video_stream_info"));
-        let drift = check_exposure_bundle_file(&exposure_path, &dirs, &|_| {})
-            .expect("check runs")
-            .expect("the missing bundle is a drift");
-        assert!(matches!(drift, ExposureBundleDrift::Missing { .. }));
-        assert!(
-            drift.to_string().contains("camera_surface.bundle.json"),
-            "{drift}"
+        let node_dir = published
+            .node_dir
+            .expect("a service-only exposure generates its node");
+        assert_eq!(node_dir, exposure_path.with_file_name("camera_surface_mcp"));
+        assert_eq!(published.node_file_count, 6);
+        for path in [
+            "peppy.json5",
+            "Cargo.toml",
+            ".gitignore",
+            "src/main.rs",
+            "src/bridges.rs",
+        ] {
+            assert!(node_dir.join(path).is_file(), "{path} should be published");
+        }
+        let embedded_bundle =
+            fs::read_to_string(node_dir.join("src/bundle.json")).expect("embedded bundle exists");
+        assert_eq!(
+            embedded_bundle, committed,
+            "the node embeds the exact published bundle bytes"
         );
     }
 
     #[test]
-    fn check_reports_a_tampered_bundle() {
+    fn check_passes_right_after_publication() {
         let (_dirs_guard, _docs_guard, dirs, exposure_path) =
             seeded_setup(&exposure_document("video_stream_info"));
-        let generated =
-            generate_exposure_bundle_file(&exposure_path, &dirs, &|_| {}).expect("publishes");
-        let mut committed = fs::read_to_string(&generated.path).expect("bundle exists");
+        publish_exposure(&exposure_path, &dirs, &|_| {}).expect("publishes");
+        let drifts = check_exposure(&exposure_path, &dirs, &|_| {}).expect("check runs");
+        assert_eq!(drifts, Vec::new());
+    }
+
+    #[test]
+    fn check_reports_missing_artifacts() {
+        let (_dirs_guard, _docs_guard, dirs, exposure_path) =
+            seeded_setup(&exposure_document("video_stream_info"));
+        let drifts = check_exposure(&exposure_path, &dirs, &|_| {}).expect("check runs");
+        assert!(
+            drifts
+                .iter()
+                .any(|d| matches!(d, ExposureDrift::BundleMissing { .. })),
+            "{drifts:?}"
+        );
+        let node_missing = drifts
+            .iter()
+            .filter(|d| matches!(d, ExposureDrift::NodeFileMissing { .. }))
+            .count();
+        assert_eq!(node_missing, 6, "every node file is reported: {drifts:?}");
+    }
+
+    #[test]
+    fn check_reports_a_tampered_bundle_and_node_file() {
+        let (_dirs_guard, _docs_guard, dirs, exposure_path) =
+            seeded_setup(&exposure_document("video_stream_info"));
+        let published = publish_exposure(&exposure_path, &dirs, &|_| {}).expect("publishes");
+        let mut committed = fs::read_to_string(&published.bundle_path).expect("bundle exists");
         committed.push_str("{}\n");
-        fs::write(&generated.path, committed).expect("tamper");
+        fs::write(&published.bundle_path, committed).expect("tamper bundle");
+        let main_rs = published
+            .node_dir
+            .expect("node published")
+            .join("src/main.rs");
+        let mut main_content = fs::read_to_string(&main_rs).expect("main.rs exists");
+        main_content.push_str("// edited by hand\n");
+        fs::write(&main_rs, main_content).expect("tamper node");
 
-        let drift = check_exposure_bundle_file(&exposure_path, &dirs, &|_| {})
-            .expect("check runs")
-            .expect("the tampered bundle is a drift");
-        assert!(matches!(drift, ExposureBundleDrift::Outdated { .. }));
+        let drifts = check_exposure(&exposure_path, &dirs, &|_| {}).expect("check runs");
         assert!(
-            drift.to_string().contains("does not match the bundle"),
-            "{drift}"
+            drifts
+                .iter()
+                .any(|d| matches!(d, ExposureDrift::BundleOutdated { .. })),
+            "{drifts:?}"
         );
+        assert!(
+            drifts.iter().any(|d| matches!(
+                d,
+                ExposureDrift::NodeFileOutdated { path } if path.ends_with("src/main.rs")
+            )),
+            "{drifts:?}"
+        );
+        assert_eq!(drifts.len(), 2, "untouched files do not drift: {drifts:?}");
+    }
+
+    #[test]
+    fn an_action_exposure_publishes_the_bundle_without_a_node() {
+        let (_dirs_guard, _docs_guard, dirs, exposure_path) =
+            seeded_setup(&action_exposure_document());
+        let notes = std::cell::RefCell::new(Vec::new());
+        let on_feedback = |message: &str| notes.borrow_mut().push(message.to_string());
+        let published = publish_exposure(&exposure_path, &dirs, &on_feedback).expect("publishes");
+        let notes = notes.into_inner();
+        assert_eq!(published.bundle.tasks.len(), 1);
+        assert_eq!(published.node_dir, None);
+        assert_eq!(published.node_file_count, 0);
+        assert!(
+            !exposure_path
+                .with_file_name("recording_surface_mcp")
+                .exists(),
+            "no node directory appears"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("action-backed tasks")),
+            "the skip is reported: {notes:?}"
+        );
+
+        let drifts = check_exposure(&exposure_path, &dirs, &|_| {}).expect("check runs");
+        assert_eq!(drifts, Vec::new(), "check ignores the absent node");
     }
 
     #[test]
     fn an_invalid_exposure_is_refused_with_its_violations() {
         let (_dirs_guard, _docs_guard, dirs, exposure_path) =
             seeded_setup(&exposure_document("set_exposure"));
-        let error = generate_exposure_bundle_file(&exposure_path, &dirs, &|_| {})
+        let error = publish_exposure(&exposure_path, &dirs, &|_| {})
             .expect_err("an absent member is refused");
         assert!(error.contains("set_exposure"), "{error}");
         assert!(error.contains("declares no such service"), "{error}");
@@ -307,7 +530,7 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000000",
         );
         let (_dirs_guard, _docs_guard, dirs, exposure_path) = seeded_setup(&exposure);
-        let error = generate_exposure_bundle_file(&exposure_path, &dirs, &|_| {})
+        let error = publish_exposure(&exposure_path, &dirs, &|_| {})
             .expect_err("a pin the caches cannot serve is refused");
         assert!(error.contains("rgb_camera"), "{error}");
     }

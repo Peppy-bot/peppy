@@ -27,8 +27,9 @@ use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use serde_json::{Map, Value, json};
 
 /// Version of the mapping in this module. Recorded in every exposure bundle
-/// so a bundle states which rules produced its schemas.
-pub const SCHEMA_MAPPING_VERSION: u32 = 1;
+/// so a bundle states which rules produced its schemas; the constant lives
+/// with the bundle format so the runtime checks the same number it reads.
+pub use peppy_mcp_catalog::SCHEMA_MAPPING_VERSION;
 
 /// Canonical decimal rendering of a `u64`: no leading zeros.
 const U64_DECIMAL_PATTERN: &str = "^(0|[1-9][0-9]*)$";

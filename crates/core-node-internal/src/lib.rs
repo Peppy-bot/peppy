@@ -12,8 +12,7 @@ pub use services::repo::cache::{
     nodes_repo_cache_path, pairings_repo_cache_path, repositories_list_path,
 };
 pub use services::repo::exposure::{
-    ExposureBundleDrift, GeneratedExposureBundle, check_exposure_bundle_file, exposure_bundle_path,
-    generate_exposure_bundle_file,
+    ExposureDrift, PublishedExposure, check_exposure, exposure_bundle_path, publish_exposure,
 };
 pub use services::repo::index::{
     IndexDrift, IndexError, RepoConflict, check_repository_index, generate_repository_index,

@@ -9,6 +9,14 @@ use serde::{
 use std::collections::HashSet;
 use std::num::NonZeroU64;
 
+// The operational policy vocabulary is shared with the exposure bundle and
+// the MCP server runtime, so it lives in the `peppy-mcp-catalog` crate and
+// is re-exported here for the document model.
+pub use peppy_mcp_catalog::{
+    ActionOperation, FreshnessPolicy, ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality,
+    MaxHz, OversizePolicy, ServiceOperation, UpdatePolicy,
+};
+
 /// Reject any `peppy_schema` value other than `mcp_exposure/v1` so a node,
 /// launcher, or contract document can't slip through `PeppyMcpExposureParser`.
 fn deserialize_mcp_exposure_v1_schema<'de, D>(deserializer: D) -> Result<PeppySchema, D::Error>
@@ -273,151 +281,6 @@ impl TopicExposure {
     }
 }
 
-/// How old a snapshot may grow before a read reports it as stale, in
-/// milliseconds.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct FreshnessPolicy {
-    pub max_age_ms: NonZeroU64,
-}
-
-/// Cap on how often the published snapshot refreshes and notifies
-/// subscribers. Messages arriving faster than this are dropped before any
-/// decoding or transcoding runs.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct UpdatePolicy {
-    pub max_hz: MaxHz,
-}
-
-/// A positive, finite rate in hertz.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
-#[serde(transparent)]
-pub struct MaxHz(f64);
-
-impl MaxHz {
-    pub fn get(self) -> f64 {
-        self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for MaxHz {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = f64::deserialize(deserializer)?;
-        if !value.is_finite() || value <= 0.0 {
-            return Err(de::Error::custom(
-                "`max_hz` must be a finite value greater than zero",
-            ));
-        }
-        Ok(Self(value))
-    }
-}
-
-/// What the runtime does when a snapshot's final serialized content exceeds
-/// `max_result_bytes`: re-encode the image small enough to fit, or report
-/// the read as failed.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum OversizePolicy {
-    Downscale,
-    Reject,
-}
-
-/// Interpret an image-carrying topic through named members of its derived
-/// schema and publish it in the declared codec. Frames whose encoding
-/// already matches the codec pass through without transcoding.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ImageRepresentation {
-    pub image: ImageCodec,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quality: Option<JpegQuality>,
-    pub fields: ImageFieldMap,
-}
-
-/// The published encoding of an image resource. `jpeg` transcodes
-/// uncompressed frames; `raw` passes frame bytes through untouched and is
-/// the explicit opt-in for uncompressed data.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ImageCodec {
-    Jpeg,
-    Raw,
-}
-
-/// JPEG quality between 1 and 100.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct JpegQuality(u8);
-
-impl JpegQuality {
-    pub fn get(self) -> u8 {
-        self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for JpegQuality {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = u8::deserialize(deserializer)?;
-        if !(1..=100).contains(&value) {
-            return Err(de::Error::custom(format!(
-                "`quality` must be between 1 and 100, got {value}"
-            )));
-        }
-        Ok(Self(value))
-    }
-}
-
-/// Which members of the derived schema carry the frame bytes, encoding
-/// label, and dimensions. Validation against the contract checks that each
-/// names a real member with the right type.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(try_from = "RawImageFieldMap")]
-pub struct ImageFieldMap {
-    pub data: String,
-    pub encoding: String,
-    pub width: String,
-    pub height: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawImageFieldMap {
-    data: String,
-    encoding: String,
-    width: String,
-    height: String,
-}
-
-impl TryFrom<RawImageFieldMap> for ImageFieldMap {
-    type Error = String;
-
-    fn try_from(raw: RawImageFieldMap) -> Result<Self, String> {
-        for (role, value) in [
-            ("data", &raw.data),
-            ("encoding", &raw.encoding),
-            ("width", &raw.width),
-            ("height", &raw.height),
-        ] {
-            if value.trim().is_empty() {
-                return Err(format!("representation field `{role}` cannot be empty"));
-            }
-        }
-        Ok(Self {
-            data: raw.data,
-            encoding: raw.encoding,
-            width: raw.width,
-            height: raw.height,
-        })
-    }
-}
-
 /// A service member exposed as an MCP tool that completes within one
 /// request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -499,15 +362,6 @@ where
     deserializer.deserialize_map(RestrictVisitor)
 }
 
-/// Whether the tool observes or changes the system. Long-running work is an
-/// action, so a service is either `read_only` or `mutating`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceOperation {
-    ReadOnly,
-    Mutating,
-}
-
 /// Inclusive numeric bounds on one request field. At least one bound must be
 /// set.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -540,14 +394,6 @@ pub struct ActionExposure {
     pub confirmation_required: bool,
     /// Whole-goal deadline in milliseconds.
     pub deadline_ms: NonZeroU64,
-}
-
-/// Actions are long-running by definition; the field states it explicitly in
-/// the document.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionOperation {
-    LongRunning,
 }
 
 fn is_false(value: &bool) -> bool {

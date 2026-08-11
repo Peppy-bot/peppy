@@ -51,21 +51,25 @@ pub enum RepoCommands {
         #[arg(long)]
         check: bool,
     },
-    /// Publish an MCP exposure document's bundle file, or verify it.
+    /// Publish an MCP exposure document's artifacts, or verify them.
     ///
     /// Validates the `mcp_exposure/v1` document against the contract
     /// documents its sha256 pins name, resolved through the local
-    /// repository caches (run `peppy repo refresh` first), and writes the
+    /// repository caches (run `peppy repo refresh` first), writes the
     /// derived bundle (public catalog plus generated-node identity) to
-    /// `<stem>.bundle.json` next to the document.
+    /// `<stem>.bundle.json` next to the document, and generates the MCP
+    /// server node into a sibling directory named after it. Exposures
+    /// selecting actions publish the bundle only; the node generator does
+    /// not support action-backed tasks yet.
     ///
-    /// With `--check`, regenerates the bundle and verifies the committed
-    /// file matches byte for byte. Run it in CI so a hub cannot merge a
-    /// bundle that has drifted from its exposure document. Needs no daemon.
+    /// With `--check`, regenerates everything and verifies the committed
+    /// files match byte for byte. Run it in CI so a hub cannot merge
+    /// artifacts that have drifted from their exposure document. Needs no
+    /// daemon.
     Exposure {
         /// Path to the exposure `.json5` document.
         path: PathBuf,
-        /// Verify the committed bundle instead of writing it.
+        /// Verify the committed artifacts instead of writing them.
         #[arg(long)]
         check: bool,
     },

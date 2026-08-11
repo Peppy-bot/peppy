@@ -4,13 +4,13 @@ mod tests;
 mod actions;
 mod context;
 mod deserialization;
-mod identifiers;
+pub(crate) mod identifiers;
 mod parameters;
 mod scaffold;
 mod serialization;
 mod services;
 mod topics;
-mod type_mapping;
+pub(crate) mod type_mapping;
 
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 

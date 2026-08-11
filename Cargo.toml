@@ -38,6 +38,8 @@ core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+peppy-mcp-catalog = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+peppy-mcp-runtime = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
 
 # Internal workspace crates (members under `crates/`). Centralized here so each
 # member references them with `{ workspace = true }` instead of repeating a

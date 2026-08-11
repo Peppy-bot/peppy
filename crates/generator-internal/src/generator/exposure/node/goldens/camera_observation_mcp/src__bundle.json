@@ -1,0 +1,373 @@
+{
+  "bundle_format": 1,
+  "schema_mapping_version": 1,
+  "exposure": {
+    "name": "camera_observation",
+    "tag": "v1"
+  },
+  "server": {
+    "title": "OpenArm camera",
+    "instructions": "Observe and control the front camera on this robot."
+  },
+  "node": {
+    "name": "camera_observation_mcp",
+    "tag": "v1",
+    "contracts": [
+      {
+        "name": "rgb_camera",
+        "tag": "v1",
+        "sha256": "44527ab0542ac56389806315f21c6977c535a1874527926fcc480dd57fb736ab",
+        "link_id": "front_camera"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "name": "front_camera.latest_frame",
+      "uri": "peppy://resource/front_camera.latest_frame",
+      "description": "Latest frame from the front-facing camera, JPEG encoded.",
+      "target": "front_camera",
+      "member": "video_stream",
+      "policies": {
+        "freshness": {
+          "max_age_ms": 2000
+        },
+        "update": {
+          "max_hz": 2.0
+        },
+        "representation": {
+          "image": "jpeg",
+          "quality": 80,
+          "fields": {
+            "data": "frame",
+            "encoding": "encoding",
+            "width": "width",
+            "height": "height"
+          }
+        },
+        "max_result_bytes": 524288,
+        "on_oversize": "downscale"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "frame": {
+            "type": "string",
+            "contentEncoding": "base64"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "stamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "frame",
+          "encoding",
+          "width",
+          "height",
+          "stamp"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "front_camera.status",
+      "uri": "peppy://resource/front_camera.status",
+      "description": "Latest camera status snapshot.",
+      "target": "front_camera",
+      "member": "camera_status",
+      "policies": {
+        "freshness": {
+          "max_age_ms": 5000
+        },
+        "update": {
+          "max_hz": 1.0
+        },
+        "max_result_bytes": 8192,
+        "on_oversize": "reject"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "battery": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "temperature_c": {
+            "type": "number"
+          },
+          "frames_captured": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$"
+          },
+          "clock_drift_ns": {
+            "type": "string",
+            "pattern": "^(0|-?[1-9][0-9]*)$"
+          },
+          "recording": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          },
+          "calibrated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "checksum": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "minLength": 8,
+            "maxLength": 8
+          },
+          "gains": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pose": {
+            "type": "object",
+            "properties": {
+              "x_m": {
+                "type": "number"
+              },
+              "y_m": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x_m",
+              "y_m"
+            ],
+            "additionalProperties": false
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "offset": {
+                  "type": "integer",
+                  "minimum": -32768,
+                  "maximum": 32767
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "offset",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "battery",
+          "temperature_c",
+          "frames_captured",
+          "clock_drift_ns",
+          "recording",
+          "calibrated_at",
+          "checksum",
+          "gains",
+          "tags",
+          "pose",
+          "samples"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "front_camera.info",
+      "description": "Report the camera's resolution, frame rate, and encoding.",
+      "target": "front_camera",
+      "member": "video_stream_info",
+      "operation": "read_only",
+      "deadline_ms": 2000,
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "fps": {
+            "type": "number"
+          },
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "width",
+          "height",
+          "fps",
+          "device"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "front_camera.set_brightness",
+      "description": "Set the camera brightness in device units.",
+      "target": "front_camera",
+      "member": "set_brightness",
+      "operation": "mutating",
+      "deadline_ms": 2000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer",
+            "minimum": -64,
+            "maximum": 64
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "applied"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "front_camera.calibrate",
+      "description": "Recalibrate the camera color profile.",
+      "target": "front_camera",
+      "member": "calibrate",
+      "operation": "mutating",
+      "deadline_ms": 10000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "exposure_us": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "offsets": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": -32768,
+              "maximum": 32767
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "profile": {
+            "type": "object",
+            "properties": {
+              "gamma": {
+                "type": "number"
+              },
+              "white_balance": {
+                "type": "object",
+                "properties": {
+                  "red": {
+                    "type": "number"
+                  },
+                  "blue": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "red",
+                  "blue"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "gamma",
+              "white_balance"
+            ],
+            "additionalProperties": false
+          },
+          "comment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exposure_us",
+          "offsets",
+          "profile"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "front_camera.ping",
+      "description": "Check that the camera answers at all.",
+      "target": "front_camera",
+      "member": "ping",
+      "operation": "read_only",
+      "deadline_ms": 1000,
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tasks": []
+}

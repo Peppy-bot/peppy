@@ -37,6 +37,12 @@ sha2 = "0.11"
 # properties in message-format declaration order so bundle output is stable.
 serde_json = { version = "1", features = ["preserve_order"] }
 serde = { version = "1", features = ["derive"] }
+# Renders the generated MCP server node's peppy.json5 with unquoted keys,
+# matching the style of hand-written node documents.
+json5-pretty = { workspace = true }
+# The exposure bundle format: the MCP server runtime parses the same bytes
+# this generator writes, so the model lives in the shared crate.
+peppy-mcp-catalog = { workspace = true }
 
 [build-dependencies]
 build-helpers = { workspace = true }
@@ -50,7 +56,6 @@ config = { workspace = true, features = ["fingerprint_test_helpers"] }
 # Only the pure-std helpers (`assert_contains_all`, `test_tmp_root`) are used, so
 # no `git_fixtures` feature: keeps libgit2 out of the generator test build.
 config-test-support = { workspace = true }
-json5-pretty = { workspace = true }
 pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 serde_json5 = "0.2.1"
 # Golden-test guard: every derived schema must compile as a JSON Schema and
@@ -59,4 +64,15 @@ jsonschema = "0.49"
 tempfile = "3.10"
 peppylib = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# The endpoint e2e drives a generated MCP server with the real MCP client.
+# Depending on the runtime crate here also pulls its whole dependency tree
+# (rmcp server side, axum, image, jsonschema) into the cargo cache, which the
+# offline `cargo build` of the generated node resolves from.
+peppy-mcp-runtime = { workspace = true }
+rmcp = { version = "3.1.2", default-features = false, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+base64 = "0.22"
 rstest = { workspace = true }
