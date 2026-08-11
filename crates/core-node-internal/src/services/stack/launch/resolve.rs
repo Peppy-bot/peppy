@@ -1,6 +1,7 @@
-use super::feedback::{publish_stderr, publish_stdout};
+use super::feedback::{publish_stderr, publish_stdout, spawn_feedback_forwarder};
 use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::pins;
+use crate::services::node::{FeedbackLine, FeedbackStream};
 use crate::services::repo::cache as repo_cache;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, PlacementSpec,
@@ -217,8 +218,11 @@ fn wire_core_node_links<'a>(
 ///
 /// `Fs` is a no-op; `Repository` looks up the launcher in the cache and, for git-sourced
 /// entries, materializes the checkout via `ensure_checkout`. Progress lines emitted by the
-/// (blocking) checkout are buffered into a `Vec` and flushed to the launch feedback topic
-/// after the resolver returns: quiet for cached/Fs entries, a few lines for fresh clones.
+/// (blocking) checkout STREAM to the launch feedback topic as they happen — a slow clone
+/// used to buffer them until the checkout returned, leaving the CLI watchdog staring at
+/// silence for the whole download. `activity_notify: None` is correct here: no daemon
+/// idle watcher runs during resolve; the streaming exists for the CLI watchdog, which
+/// resets on any published feedback.
 async fn resolve_launcher_origin(
     ctx: &ProcessLaunchContext,
     origin: &LauncherOrigin,
@@ -228,25 +232,31 @@ async fn resolve_launcher_origin(
         LauncherOrigin::Repository { name } => {
             let peppy_dirs = ctx.peppy_dirs.clone();
             let name_for_blocking = name.clone();
-            let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
-            let collected_for_cb = Arc::clone(&collected);
+            let (feedback_tx, forwarder) = spawn_feedback_forwarder(
+                &ctx.feedback_publisher,
+                LaunchFeedbackStep::LauncherStep,
+                &ctx.log_file,
+                None,
+            );
 
+            // The sender moves into the blocking closure, so the channel
+            // closes when the checkout ends and the forwarder drains out.
             let result = tokio::task::spawn_blocking(move || {
                 crate::services::repo::cache::resolve_repo_launcher_path(
                     &name_for_blocking,
                     &peppy_dirs,
                     &|line| {
-                        collected_for_cb.lock().push(line.to_owned());
+                        let _ = feedback_tx.send(FeedbackLine {
+                            stream: FeedbackStream::Stdout,
+                            line: line.to_owned(),
+                        });
                     },
                 )
             })
             .await
             .map_err(|e| format!("launcher resolver join error: {e}"))?;
 
-            let captured: Vec<String> = std::mem::take(&mut *collected.lock());
-            for line in captured {
-                publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
-            }
+            let _ = forwarder.await;
             result
         }
     }
@@ -306,16 +316,22 @@ pub(super) async fn resolve_deployments(
             continue;
         }
 
-        // Resolution runs partly on blocking threads, so progress lines are
-        // buffered through a shared Vec and flushed here, the same shape
-        // `resolve_launcher_origin` uses: quiet for cached entries, a few
-        // clone lines for fresh fetches, published in order either way.
-        let collected = Arc::new(StdMutex::new(Vec::<String>::new()));
-        let resolved = resolve_one(ctx, &deployment, placements, &node_entries, &collected).await;
-        let captured: Vec<String> = std::mem::take(&mut *collected.lock());
-        for line in captured {
-            publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
-        }
+        // Resolution runs partly on blocking threads; progress lines stream
+        // through a per-deployment forwarder (the same seam
+        // `resolve_launcher_origin` uses) so a slow clone shows live progress
+        // instead of a silent stretch that trips the CLI watchdog. The
+        // forwarder is drained before the "resolved" line below is published,
+        // preserving the old per-deployment ordering. Single channel, single
+        // consumer: lines stay in emission order.
+        let (feedback_tx, forwarder) = spawn_feedback_forwarder(
+            &ctx.feedback_publisher,
+            LaunchFeedbackStep::LauncherStep,
+            &ctx.log_file,
+            None,
+        );
+        let resolved = resolve_one(ctx, &deployment, placements, &node_entries, &feedback_tx).await;
+        drop(feedback_tx);
+        let _ = forwarder.await;
         let ResolvedDeployment {
             config,
             root_pin,
@@ -419,7 +435,7 @@ async fn resolve_one(
     deployment: &Deployment,
     placements: &Placements,
     node_entries: &Arc<Vec<repo_cache::NodeCacheEntry>>,
-    collected: &Arc<StdMutex<Vec<String>>>,
+    feedback_tx: &tokio::sync::mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedDeployment, String> {
     let label = deployment_label(deployment);
     publish_stdout(
@@ -430,8 +446,13 @@ async fn resolve_one(
     .await;
     let remote = has_remote_instances(deployment, placements);
     let feedback: crate::services::node::cache::MaterializeFeedback = {
-        let sink = Arc::clone(collected);
-        Arc::new(move |line: &str| sink.lock().push(line.to_owned()))
+        let tx = feedback_tx.clone();
+        Arc::new(move |line: &str| {
+            let _ = tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line: line.to_owned(),
+            });
+        })
     };
 
     let closure = pins::resolve_pinned_closure(

@@ -182,10 +182,15 @@ where
     {
         PhaseOutcome::Completed(result) => result,
         PhaseOutcome::IdleTimeout => {
+            // The three phases run through here (add/build/run) each have a
+            // matching `--node-<phase>-idle-timeout-secs` flag on
+            // `peppy stack launch`, so the label doubles as the flag name.
             let reason = format!(
-                "timeout: {} idle timeout exceeded ({}s without output)",
-                step.phase_label(),
-                idle_timeout.as_secs()
+                "timeout: {label} idle timeout exceeded ({secs}s without output); if this \
+                 machine is on a slow connection, retry with a larger \
+                 --node-{label}-idle-timeout-secs (progress output resets this clock)",
+                label = step.phase_label(),
+                secs = idle_timeout.as_secs()
             );
             write_error_to_log(log_file, &reason);
             build_failure(reason)

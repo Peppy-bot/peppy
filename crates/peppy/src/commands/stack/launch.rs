@@ -113,6 +113,18 @@ fn display_node_log_files(
     }
 }
 
+/// The `peppy stack launch` flag that raises the idle budget of the phase a
+/// feedback step belongs to. `None` for the launcher step, whose work
+/// (parse/resolve) has no per-phase flag — the CLI watchdog alone bounds it.
+fn idle_timeout_flag(step: LaunchFeedbackStep) -> Option<&'static str> {
+    match step {
+        LaunchFeedbackStep::AddingNode => Some("--node-add-idle-timeout-secs"),
+        LaunchFeedbackStep::BuildingNode => Some("--node-build-idle-timeout-secs"),
+        LaunchFeedbackStep::RunningNode => Some("--node-run-idle-timeout-secs"),
+        LaunchFeedbackStep::LauncherStep => None,
+    }
+}
+
 fn handle_feedback(
     feedback: &LaunchFeedback,
     scrolling_output: &mut Option<ScrollingOutput>,
@@ -447,8 +459,23 @@ async fn launch_async(
             if let Some(output) = scrolling_output.as_mut() {
                 output.clear();
             }
+            // Name the phase that went quiet and the flag that raises its
+            // budget, so a slow-connection user is pointed at the fix instead
+            // of a bare timeout.
+            let phase = current_scrolling_step
+                .map(|step| format!(" during the {} phase", step.phase_label()))
+                .unwrap_or_default();
+            let hint = current_scrolling_step
+                .and_then(idle_timeout_flag)
+                .map(|flag| {
+                    format!(
+                        "; if this machine is on a slow connection, retry with a larger \
+                         {flag} (progress output resets this clock)"
+                    )
+                })
+                .unwrap_or_default();
             return Err(Error::ExecutionFailed(format!(
-                "Launch timed out: no output received for {}s. Log file: {}",
+                "Launch timed out: no output received for {}s{phase}{hint}. Log file: {}",
                 cli_idle_timeout.as_secs(),
                 goal_response.log_path.display()
             )));

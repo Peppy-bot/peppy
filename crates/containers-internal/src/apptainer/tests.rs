@@ -2005,3 +2005,77 @@ fn wait_for_child_bounded_returns_none_and_reaps_on_timeout() {
         "the timeout path must kill and reap the wedged child"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cache usage probe (build progress sampling)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn effective_host_cache_dir_prefers_the_env_override() {
+    use super::usage::effective_host_cache_dir_from;
+    use std::ffi::OsString;
+
+    // The env override wins over $HOME, and an empty override is ignored the
+    // way apptainer ignores it (fall back to the default location).
+    let dir = effective_host_cache_dir_from(
+        Some(OsString::from("/custom/cache")),
+        Some(OsString::from("/home/user")),
+    );
+    assert_eq!(dir, Some(PathBuf::from("/custom/cache")));
+
+    let dir =
+        effective_host_cache_dir_from(Some(OsString::new()), Some(OsString::from("/home/user")));
+    assert_eq!(dir, Some(PathBuf::from("/home/user/.apptainer/cache")));
+
+    assert_eq!(effective_host_cache_dir_from(None, None), None);
+}
+
+#[test]
+fn cache_usage_probe_sums_a_tree_and_ignores_missing_roots() {
+    use super::usage::CacheUsageProbe;
+
+    let root = TempDir::new().expect("tempdir");
+    fs::create_dir_all(root.path().join("blobs/sha256")).expect("mkdir");
+    fs::write(root.path().join("blobs/sha256/aa"), vec![0u8; 1024]).expect("write");
+    fs::write(root.path().join("blobs/sha256/bb"), vec![0u8; 512]).expect("write");
+    fs::write(root.path().join("top"), vec![0u8; 64]).expect("write");
+
+    let probe = CacheUsageProbe {
+        host_roots: vec![
+            root.path().to_path_buf(),
+            PathBuf::from("/nonexistent-peppy-usage-root"),
+        ],
+        guest: None,
+    };
+    assert_eq!(probe.usage_bytes(), 1024 + 512 + 64);
+
+    let missing_only = CacheUsageProbe {
+        host_roots: vec![PathBuf::from("/nonexistent-peppy-usage-root")],
+        guest: None,
+    };
+    assert_eq!(missing_only.usage_bytes(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_usage_probe_counts_a_symlink_itself_not_its_target() {
+    use super::usage::CacheUsageProbe;
+
+    // A symlink pointing outside the root must not pull the target's size (or
+    // an unbounded tree) into the sample; only the link's own metadata counts.
+    let target = TempDir::new().expect("tempdir");
+    fs::write(target.path().join("big"), vec![0u8; 4096]).expect("write");
+    let root = TempDir::new().expect("tempdir");
+    fs::write(root.path().join("real"), vec![0u8; 128]).expect("write");
+    std::os::unix::fs::symlink(target.path(), root.path().join("link")).expect("symlink");
+
+    let probe = CacheUsageProbe {
+        host_roots: vec![root.path().to_path_buf()],
+        guest: None,
+    };
+    let total = probe.usage_bytes();
+    assert!(
+        (128..4096).contains(&total),
+        "the symlink target's 4096-byte file must not be counted, got {total}"
+    );
+}

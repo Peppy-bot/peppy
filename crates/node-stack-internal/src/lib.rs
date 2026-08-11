@@ -31,6 +31,7 @@
 
 pub mod archive;
 pub mod build_io;
+mod build_progress;
 mod error;
 mod node_stack;
 mod service_action_cycle;
