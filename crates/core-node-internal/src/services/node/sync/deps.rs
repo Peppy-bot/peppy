@@ -105,8 +105,9 @@ pub(crate) async fn materialize_repo_deps(
                 .await
                 .map_err(|e| format!("failed to materialize {name}:{tag} from repo cache: {e}"))?;
 
-        // Push transitive deps onto the worklist, skipping anything we
-        // already plan to visit. Stack-tier shadowing happens at pop time.
+        // Push transitive deps onto the worklist. `seen` de-duplicates
+        // entries when they are popped; stack-tier shadowing happens at
+        // pop time too.
         if closure == DepClosure::Transitive
             && let Some(child_deps) = parsed.manifest.depends_on.as_ref()
         {
