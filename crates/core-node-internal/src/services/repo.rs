@@ -1,6 +1,7 @@
 mod add;
 pub(crate) mod cache;
 mod exclude;
+pub(crate) mod exposure;
 pub(crate) mod index;
 mod init;
 mod list;

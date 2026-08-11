@@ -348,6 +348,8 @@ pub struct RepositoryIndex {
     pub contracts: TaggedSection,
     #[serde(default, skip_serializing_if = "UniqueMap::is_empty")]
     pub pairings: TaggedSection,
+    #[serde(default, skip_serializing_if = "UniqueMap::is_empty")]
+    pub mcp_exposures: TaggedSection,
 }
 
 /// Flattens one two-level section into items. A free function rather than a
@@ -394,6 +396,7 @@ impl Default for RepositoryIndex {
             launchers: UniqueMap::default(),
             contracts: UniqueMap::default(),
             pairings: UniqueMap::default(),
+            mcp_exposures: UniqueMap::default(),
         }
     }
 }
@@ -423,6 +426,7 @@ impl RepositoryIndex {
             RepoItemKind::Node => &mut self.nodes,
             RepoItemKind::Contract => &mut self.contracts,
             RepoItemKind::Pairing => &mut self.pairings,
+            RepoItemKind::McpExposure => &mut self.mcp_exposures,
         };
         let Some(tag) = tag else {
             return Err(format!("{kind} `{name}` has no tag"));
@@ -442,6 +446,7 @@ impl RepositoryIndex {
             }))
             .chain(tagged_items(RepoItemKind::Contract, &self.contracts))
             .chain(tagged_items(RepoItemKind::Pairing, &self.pairings))
+            .chain(tagged_items(RepoItemKind::McpExposure, &self.mcp_exposures))
     }
 
     pub fn declared_count(&self) -> usize {

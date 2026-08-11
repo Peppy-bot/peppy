@@ -3047,13 +3047,15 @@ fn main() -> Result<()> {
         consumer_stderr
     );
     assert!(
-        consumer_stdout.contains("rejected goal accepted=false reason=Some(\"arm 99 is reserved\")")
+        consumer_stdout
+            .contains("rejected goal accepted=false reason=Some(\"arm 99 is reserved\")")
             && consumer_stdout.contains("goal accepted=true data_accepted=true")
             && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
             && consumer_stdout.contains("result success=true final_position=[98, 4, 26]")
             && consumer_stdout.contains("cancel signalled=true")
-            && consumer_stdout
-                .contains("cancelled result success=false error=Some(\"goal cancelled by server\")"),
+            && consumer_stdout.contains(
+                "cancelled result success=false error=Some(\"goal cancelled by server\")"
+            ),
         "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr

@@ -16,8 +16,8 @@
 //! conflict, happens in `refresh.rs`.
 
 use crate::services::repo::cache::{
-    ContractCacheEntry, EntryOrigin, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry,
-    RepoItems,
+    ContractCacheEntry, EntryOrigin, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
+    PairingCacheEntry, RepoItems,
 };
 use crate::services::repo::refresh::RepoFailureKind;
 use config::node::NodeConfigParser;
@@ -25,6 +25,7 @@ use config::schema::PeppySchema;
 use core_node_api::encoding::RepoItemKind;
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::launcher::PeppyLauncherParser;
+use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use daemon_config::pairing::PeppyPairingParser;
 use daemon_config::repository::{
     DeclaredItem, GitCommit, ItemName, ItemTag, ManifestFingerprint, PeppyRepositoryIndexParser,
@@ -297,7 +298,7 @@ pub(crate) fn build_cache_entries(
 ) -> std::result::Result<RepoItems, String> {
     let mut built = RepoItems::default();
     for item in items {
-        // A tag is present for exactly the three tagged kinds, because the
+        // A tag is present for exactly the four tagged kinds, because the
         // index nests those under one and launchers one level less deep.
         // Spelling the mismatch out keeps the conversion total rather than
         // resting the invariant on a panic.
@@ -329,6 +330,13 @@ pub(crate) fn build_cache_entries(
             }),
             RepoItemKind::Pairing => built.pairings.push(PairingCacheEntry {
                 pairing_name: item.name.clone(),
+                tag: tagged(&item)?,
+                sha256: item.sha256,
+                origin: item.origin,
+                repo_id: 0,
+            }),
+            RepoItemKind::McpExposure => built.mcp_exposures.push(McpExposureCacheEntry {
+                exposure_name: item.name.clone(),
                 tag: tagged(&item)?,
                 sha256: item.sha256,
                 origin: item.origin,
@@ -583,6 +591,14 @@ fn identity_of(
                 parsed.manifest.tag.clone(),
             ))
         }
+        RepoItemKind::McpExposure => {
+            let parsed =
+                PeppyMcpExposureParser::from_content(content).map_err(|e| e.to_string())?;
+            Ok((
+                parsed.manifest.name.as_str().to_owned(),
+                parsed.manifest.tag.clone(),
+            ))
+        }
     }
 }
 
@@ -717,6 +733,7 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
     let mut launchers_seen = ClaimMap::new();
     let mut contracts_seen = ClaimMap::new();
     let mut pairings_seen = ClaimMap::new();
+    let mut mcp_exposures_seen = ClaimMap::new();
     let mut items: Vec<WalkedItem> = Vec::new();
 
     for entry in walker.flatten() {
@@ -763,6 +780,12 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
             PeppySchema::PairingV1 => {
                 collect_item(&ctx, RepoItemKind::Pairing, &mut pairings_seen, &mut items)
             }
+            PeppySchema::McpExposureV1 => collect_item(
+                &ctx,
+                RepoItemKind::McpExposure,
+                &mut mcp_exposures_seen,
+                &mut items,
+            ),
             // The repository's own index declares no item. It is the
             // output of this walk, not an input to it.
             PeppySchema::RepositoryV1 => {}
@@ -779,6 +802,10 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
         contracts_seen,
     ));
     conflicts.extend(conflicts_from_claims(RepoItemKind::Pairing, pairings_seen));
+    conflicts.extend(conflicts_from_claims(
+        RepoItemKind::McpExposure,
+        mcp_exposures_seen,
+    ));
 
     WalkResult { items, conflicts }
 }
@@ -952,6 +979,44 @@ mod tests {
         .unwrap();
     }
 
+    /// Helper: write a minimal valid MCP exposure manifest at `path`. The
+    /// sha256 pin only has to be well-formed here: the walk extracts the
+    /// identity and never resolves the pinned contract.
+    fn write_mcp_exposure_json5(path: &Path, name: &str, tag: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(
+            path,
+            format!(
+                r#"{{
+  peppy_schema: "mcp_exposure/v1",
+  manifest: {{ name: "{name}", tag: "{tag}" }},
+  server: {{ title: "Test surface" }},
+  targets: {{
+    camera: {{
+      contract: {{
+        name: "rgb_camera",
+        tag: "v1",
+        sha256: "9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c",
+      }},
+      services: [
+        {{
+          member: "video_stream_info",
+          tool: "camera.info",
+          description: "Report stream parameters.",
+          operation: "read_only",
+          deadline_ms: 2000,
+        }}
+      ],
+    }},
+  }},
+}}"#
+            ),
+        )
+        .unwrap();
+    }
+
     /// The identities the walk found, of one kind, as `name:tag` labels.
     fn found(walked: &WalkResult, kind: RepoItemKind) -> Vec<String> {
         walked
@@ -963,8 +1028,8 @@ mod tests {
     }
 
     /// The walk dispatches `.json5` files by `peppy_schema`: a node
-    /// manifest, a launcher, a contract and a pairing coexisting in the
-    /// same repository each land under the matching kind.
+    /// manifest, a launcher, a contract, a pairing and an MCP exposure
+    /// coexisting in the same repository each land under the matching kind.
     #[test]
     fn walk_directory_dispatches_by_schema() {
         let tmp = tempfile::tempdir().unwrap();
@@ -977,6 +1042,11 @@ mod tests {
             "v1",
         );
         write_pairing_json5(&repo.join("robot/joint.json5"), "joint_link", "v1");
+        write_mcp_exposure_json5(
+            &repo.join("exposures/camera_surface.json5"),
+            "camera_surface",
+            "v1",
+        );
 
         let walked = walk_directory(&repo, &[]);
 
@@ -987,7 +1057,28 @@ mod tests {
             vec!["uvc_camera:v1"]
         );
         assert_eq!(found(&walked, RepoItemKind::Pairing), vec!["joint_link:v1"]);
+        assert_eq!(
+            found(&walked, RepoItemKind::McpExposure),
+            vec!["camera_surface:v1"]
+        );
         assert!(walked.conflicts.is_empty(), "nothing claimed twice");
+    }
+
+    /// One exposure identity claimed by two files is a conflict, exactly as
+    /// for every other tagged kind.
+    #[test]
+    fn walk_directory_refuses_an_exposure_identity_claimed_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        write_mcp_exposure_json5(&repo.join("a/surface.json5"), "camera_surface", "v1");
+        write_mcp_exposure_json5(&repo.join("b/surface.json5"), "camera_surface", "v1");
+
+        let walked = walk_directory(&repo, &[]);
+
+        assert_eq!(walked.conflicts.len(), 1);
+        let conflict = walked.conflicts[0].to_string();
+        assert!(conflict.contains("camera_surface"), "{conflict}");
+        assert!(conflict.contains("mcp_exposure"), "{conflict}");
     }
 
     /// Every item records where it was found, relative to the scanned

@@ -84,11 +84,12 @@ async fn repo_refresh_async(ctx: &Arc<AppContext>) -> Result<()> {
     }
 
     info!(
-        "Repository refresh complete. {} node(s), {} launcher(s), {} contract(s), {} pairing(s) found.",
+        "Repository refresh complete. {} node(s), {} launcher(s), {} contract(s), {} pairing(s), {} MCP exposure(s) found.",
         result.total_nodes_found,
         result.total_launchers_found,
         result.total_contracts_found,
-        result.total_pairings_found
+        result.total_pairings_found,
+        result.total_mcp_exposures_found
     );
 
     // A repository that could not be read is not a failed command: every

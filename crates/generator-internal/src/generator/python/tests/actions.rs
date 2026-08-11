@@ -879,7 +879,11 @@ fn consumed_action_via_contract_origin_targets_contract() {
 
     let mut generator = PythonGenerator::new();
     generator
-        .add_consumed_action(&action, &format, &contract_dep("arm_contract", "v2", "brain"))
+        .add_consumed_action(
+            &action,
+            &format,
+            &contract_dep("arm_contract", "v2", "brain"),
+        )
         .unwrap();
     let rendered = render_artifacts(generator.into_artifacts())
         .into_iter()

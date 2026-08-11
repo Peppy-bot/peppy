@@ -1,0 +1,19 @@
+// $optional on every shape that allows it: string, bytes, time, object, and
+// array, all at the root (the only level where $optional is legal).
+{
+  required_label: "string",
+  optional_label: { $type: "string", $optional: true },
+  optional_blob: { $type: "bytes", $optional: true },
+  optional_stamp: { $type: "time", $optional: true },
+  optional_extent: {
+    $type: "object",
+    $optional: true,
+    width: "u32",
+    height: "u32",
+  },
+  optional_samples: {
+    $type: "array",
+    $items: "f64",
+    $optional: true,
+  },
+}

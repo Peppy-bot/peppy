@@ -29,3 +29,6 @@ dirs = "6"
 # Compile-time string concatenation so the bundled peppy_config template
 # splices in its numeric defaults instead of duplicating the literals.
 const_format = "0.2"
+# Ordered maps for MCP exposure targets and restrictions, so the document's
+# declaration order carries through to the derived public catalog.
+indexmap = { version = "2.2", features = ["serde"] }

@@ -4,8 +4,8 @@ use crate::services::node::cache as node_cache;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{checkout_repo_ref, clone_repo_shallow, head_commit};
 use crate::services::repo::cache::{
-    ContractCacheEntry, LauncherCacheEntry, NodeCacheEntry, PairingCacheEntry, RepoCacheEntry,
-    RepoItems, write_repo_cache,
+    ContractCacheEntry, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
+    PairingCacheEntry, RepoCacheEntry, RepoItems, write_repo_cache,
 };
 use crate::services::repo::exclude::ExclusionSet;
 use crate::services::repo::index::{
@@ -152,6 +152,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     launchers: count_unique(&refreshed.launchers),
                     contracts: count_unique(&refreshed.contracts),
                     pairings: count_unique(&refreshed.pairings),
+                    mcp_exposures: count_unique(&refreshed.mcp_exposures),
                     failures: refreshed.failures,
                 })
             })
@@ -163,6 +164,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     counts.launchers,
                     counts.contracts,
                     counts.pairings,
+                    counts.mcp_exposures,
                 ),
                 // A repository that could not be read does not fail the
                 // run. The refresh did everything it could: it published
@@ -177,6 +179,7 @@ impl GoalHandler for RepoRefreshGoalHandler {
                     counts.launchers,
                     counts.contracts,
                     counts.pairings,
+                    counts.mcp_exposures,
                     failure_report(&counts.failures),
                 ),
                 Ok(Err(e)) => {
@@ -198,15 +201,16 @@ impl GoalHandler for RepoRefreshGoalHandler {
     }
 }
 
-/// Unique-identity counts for the four caches, plus the repositories
+/// Unique-identity counts for the five caches, plus the repositories
 /// that failed. What one refresh has to report back. Named fields rather
-/// than a tuple: four `u32`s in a row are indistinguishable at the call
+/// than a tuple: five `u32`s in a row are indistinguishable at the call
 /// site, and swapping two of them would go unnoticed.
 struct RefreshCounts {
     nodes: u32,
     launchers: u32,
     contracts: u32,
     pairings: u32,
+    mcp_exposures: u32,
     failures: Vec<RepoFailure>,
 }
 
@@ -337,6 +341,7 @@ pub(crate) struct RefreshedRepos {
     pub(crate) launchers: Vec<LauncherCacheEntry>,
     pub(crate) contracts: Vec<ContractCacheEntry>,
     pub(crate) pairings: Vec<PairingCacheEntry>,
+    pub(crate) mcp_exposures: Vec<McpExposureCacheEntry>,
     /// Reported to the client through [`RepoRefreshFeedback::Excluded`]
     /// as the scan runs, so the handler has nothing left to do with it;
     /// kept on the result because the tests assert against it.
@@ -348,7 +353,7 @@ pub(crate) struct RefreshedRepos {
     pub(crate) statuses: Vec<RepoStatus>,
 }
 
-/// The four caches as they stood before this refresh. A repository that
+/// The five caches as they stood before this refresh. A repository that
 /// fails its read keeps serving what it last published, so its
 /// identities do not vanish out from under launchers that reference
 /// them.
@@ -357,6 +362,7 @@ struct PreviousCaches {
     launchers: Vec<LauncherCacheEntry>,
     contracts: Vec<ContractCacheEntry>,
     pairings: Vec<PairingCacheEntry>,
+    mcp_exposures: Vec<McpExposureCacheEntry>,
 }
 
 impl PreviousCaches {
@@ -375,6 +381,7 @@ impl PreviousCaches {
             launchers: read(peppy_dirs),
             contracts: read(peppy_dirs),
             pairings: read(peppy_dirs),
+            mcp_exposures: read(peppy_dirs),
         }
     }
 }
@@ -394,7 +401,7 @@ fn retained_entries<E: RepoCacheEntry>(
         .collect()
 }
 
-/// Publishes every cache file from one refresh result. The four entry
+/// Publishes every cache file from one refresh result. The five entry
 /// caches must always move together: rewriting only a subset leaves the
 /// untouched files still listing items from repositories that are no
 /// longer configured. The status file moves with them so it always
@@ -404,6 +411,7 @@ pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepo
     write_repo_cache(peppy_dirs, &refreshed.launchers)?;
     write_repo_cache(peppy_dirs, &refreshed.contracts)?;
     write_repo_cache(peppy_dirs, &refreshed.pairings)?;
+    write_repo_cache(peppy_dirs, &refreshed.mcp_exposures)?;
     status::write(peppy_dirs, &refreshed.statuses)?;
 
     // Pruned only once the caches that could still name a checkout have
@@ -417,7 +425,7 @@ pub(crate) fn write_all_caches(peppy_dirs: &PeppyDirs, refreshed: &RefreshedRepo
     Ok(())
 }
 
-/// Every `(repo_url, commit)` the four caches still resolve through the
+/// Every `(repo_url, commit)` the five caches still resolve through the
 /// checkout cache.
 fn live_checkouts(refreshed: &RefreshedRepos) -> impl Iterator<Item = (&str, &GitCommit)> {
     fn checkouts<E: RepoCacheEntry>(entries: &[E]) -> impl Iterator<Item = (&str, &GitCommit)> {
@@ -427,6 +435,7 @@ fn live_checkouts(refreshed: &RefreshedRepos) -> impl Iterator<Item = (&str, &Gi
         .chain(checkouts(&refreshed.launchers))
         .chain(checkouts(&refreshed.contracts))
         .chain(checkouts(&refreshed.pairings))
+        .chain(checkouts(&refreshed.mcp_exposures))
 }
 
 /// Parse a JSON entry from repositories.json5 into a `RepoSource`.
@@ -515,7 +524,7 @@ pub(crate) fn process_refresh(
     };
     let previous = PreviousCaches::load(peppy_dirs);
     // Resolved once for the whole refresh: retention asks which repository
-    // owns an entry for every previous entry of all four kinds, of every
+    // owns an entry for every previous entry of all five kinds, of every
     // repository that failed.
     let owners = RepoOwners::new(&repos);
     let previous_statuses = status::read(peppy_dirs);
@@ -527,10 +536,12 @@ pub(crate) fn process_refresh(
     let mut global_seen_launchers: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_contracts: HashSet<(String, String)> = HashSet::new();
     let mut global_seen_pairings: HashSet<(String, String)> = HashSet::new();
+    let mut global_seen_mcp_exposures: HashSet<(String, String)> = HashSet::new();
     let mut all_nodes: Vec<NodeCacheEntry> = Vec::new();
     let mut all_launchers: Vec<LauncherCacheEntry> = Vec::new();
     let mut all_contracts: Vec<ContractCacheEntry> = Vec::new();
     let mut all_pairings: Vec<PairingCacheEntry> = Vec::new();
+    let mut all_mcp_exposures: Vec<McpExposureCacheEntry> = Vec::new();
     let excluded_repos: Vec<ExcludedRepo> = exclusions
         .entries
         .iter()
@@ -618,11 +629,13 @@ pub(crate) fn process_refresh(
                     launchers: retained_entries(&previous.launchers, &owners, id),
                     contracts: retained_entries(&previous.contracts, &owners, id),
                     pairings: retained_entries(&previous.pairings, &owners, id),
+                    mcp_exposures: retained_entries(&previous.mcp_exposures, &owners, id),
                 };
                 let count = retained.nodes.len()
                     + retained.launchers.len()
                     + retained.contracts.len()
-                    + retained.pairings.len();
+                    + retained.pairings.len()
+                    + retained.mcp_exposures.len();
                 let failure = RepoFailure {
                     id,
                     label: source.display_label(),
@@ -680,6 +693,12 @@ pub(crate) fn process_refresh(
             &mut all_pairings,
             on_feedback,
         );
+        merge_published(
+            items.mcp_exposures,
+            &mut global_seen_mcp_exposures,
+            &mut all_mcp_exposures,
+            on_feedback,
+        );
     }
 
     Ok(RefreshedRepos {
@@ -687,6 +706,7 @@ pub(crate) fn process_refresh(
         launchers: all_launchers,
         contracts: all_contracts,
         pairings: all_pairings,
+        mcp_exposures: all_mcp_exposures,
         excluded: excluded_repos,
         failures,
         statuses,

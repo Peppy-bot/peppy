@@ -1,0 +1,17 @@
+// Array shapes: variable and fixed scalar arrays, both u8 renderings (which
+// share the base64 form with `bytes`), and an array of objects.
+{
+  readings: { $type: "array", $items: "f32" },
+  corners: { $type: "array", $items: "u16", $length: 4 },
+  frame: { $type: "array", $items: "u8" },
+  crc_block: { $type: "array", $items: "u8", $length: 5 },
+  payload: "bytes",
+  poses: {
+    $type: "array",
+    $items: {
+      $type: "object",
+      joint_name: "string",
+      angle_rad: "f64",
+    },
+  },
+}
