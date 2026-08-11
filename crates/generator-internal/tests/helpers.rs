@@ -50,6 +50,22 @@ pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> generator::
     )
 }
 
+/// Contract twin of [`native_dep`]: a `depends_on.contracts` slot at the
+/// manifest's default `one` cardinality, so the generated modules address
+/// their producer through `SenderTarget::contract`.
+pub fn contract_dep(
+    contract_name: &str,
+    contract_tag: &str,
+    link_id: &str,
+) -> generator::DependencyContext {
+    generator::DependencyContext::contract(
+        contract_name,
+        contract_tag,
+        link_id,
+        config::node::Cardinality::One,
+    )
+}
+
 /// Root for per-test scratch directories. Thin re-export of the shared
 /// [`config_test_support::test_tmp_root`] so the many generator test files can
 /// keep calling `crate::helpers::test_tmp_root()`.
@@ -220,6 +236,12 @@ pub fn bind_slot_many(
 /// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
+/// Builds a contract-shaped [`SenderTarget`] with the standard test tag, the
+/// shape both ends of a contract-backed interface address on the wire.
+pub fn test_contract_target(name: &str) -> SenderTarget {
+    SenderTarget::contract(name, TEST_NODE_TAG).expect("test contract target")
 }
 
 pub const STUB_NODE_CONFIG: &str = r#"{
@@ -876,14 +898,39 @@ pub async fn wait_for_action_service_reachable_or_exit(
     dir: &std::path::Path,
     timeout: Duration,
 ) {
+    wait_for_action_reachable_via_target_or_exit(
+        ctx,
+        test_node_target(to_node_name),
+        to_action_name,
+        target_instance_id,
+        child,
+        dir,
+        timeout,
+    )
+    .await;
+}
+
+/// Target-shaped core of [`wait_for_action_service_reachable_or_exit`]: a
+/// contract-exposed action is addressed by a contract [`SenderTarget`], so
+/// the contract-slot communication tests probe with the same target shape
+/// their generated consumers fire at.
+pub async fn wait_for_action_reachable_via_target_or_exit(
+    ctx: &WaitContext<'_>,
+    to_target: SenderTarget,
+    to_action_name: &str,
+    target_instance_id: Option<&str>,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+    timeout: Duration,
+) {
     let start = Instant::now();
     loop {
         if start.elapsed() > timeout {
             panic!(
-                "timed out after {:?} waiting for action `{}` (node={}, instance={:?}) to become reachable for project at {}",
+                "timed out after {:?} waiting for action `{}` (target={:?}, instance={:?}) to become reachable for project at {}",
                 timeout,
                 to_action_name,
-                to_node_name,
+                to_target,
                 target_instance_id,
                 dir.display(),
             );
@@ -912,16 +959,16 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            test_node_target(to_node_name),
+            to_target.clone(),
             to_action_name,
             target.as_ref(),
         )
         .await
         .unwrap_or_else(|err| {
             panic!(
-                "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
+                "failed to check reachability for action `{}` (target={:?}, instance={:?}) for project at {}: {}",
                 to_action_name,
-                to_node_name,
+                to_target,
                 target_instance_id,
                 dir.display(),
                 err

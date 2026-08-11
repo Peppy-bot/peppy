@@ -1429,6 +1429,181 @@ mod implements_tests {
         }
     }
 
+    /// Contract fixture for the consumed-action tests: one full member
+    /// (goal request/response, feedback, result) and one minimal member
+    /// (goal request and result only).
+    const ARM_ACTIONS_V1_BODY: &str = r#"{
+        peppy_schema: "contract/v1",
+        manifest: { name: "arm_actions", tag: "v1" },
+        interfaces: {
+            actions: [
+                {
+                    name: "move_arm",
+                    goal_service: {
+                        request_message_format: { task: "string" },
+                        response_message_format: { accepted: "bool" }
+                    },
+                    feedback_topic: {
+                        qos_profile: "standard",
+                        message_format: { frames_done: "u64" }
+                    },
+                    result_service: {
+                        response_message_format: { success: "bool" }
+                    }
+                },
+                {
+                    name: "wave",
+                    goal_service: {
+                        request_message_format: { times: "u8" }
+                    },
+                    result_service: {
+                        response_message_format: { success: "bool" }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    /// The consumer-side contract action path: a `depends_on.contracts` slot
+    /// consuming a contract-declared action must resolve every action message
+    /// format (goal request/response, feedback, result) from the contract
+    /// document, and carry a contract-origin dependency so codegen addresses
+    /// the producer as a contract. Consumed topics and services already had
+    /// contract-slot coverage here; actions had none.
+    #[test]
+    fn consumed_action_via_contract_resolves() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "arm_actions", "v1", ARM_ACTIONS_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "arm_consumer", tag: "v1",
+                depends_on: {
+                    contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg =
+            interfaces_from(r#"{ actions: { consumes: [{ link_id: "arm", name: "move_arm" }] } }"#);
+
+        let out = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
+            .expect("contract-declared action must resolve");
+
+        assert_eq!(out.len(), 1, "expected exactly one ConsumedAction: {out:?}");
+        match out[0].interface() {
+            InterfaceVariant::ConsumedAction {
+                action,
+                messages,
+                dependency,
+            } => {
+                assert_eq!(action.name, "move_arm");
+                let goal_request = messages
+                    .goal_request
+                    .as_ref()
+                    .expect("goal request format must come from the contract");
+                assert_eq!(goal_request.0.len(), 1, "goal request should carry `task`");
+                assert!(
+                    messages.goal_response.is_some(),
+                    "goal response format must come from the contract"
+                );
+                assert!(
+                    messages.feedback.is_some(),
+                    "feedback format must come from the contract"
+                );
+                assert!(
+                    messages.result_response.is_some(),
+                    "result format must come from the contract"
+                );
+                let origin = dependency
+                    .origin
+                    .as_ref()
+                    .expect("a contract slot must resolve to a contract-origin dependency");
+                assert_eq!(origin.contract_name, "arm_actions");
+                assert_eq!(origin.contract_tag, "v1");
+            }
+            other => panic!("expected ConsumedAction variant, got {other:?}"),
+        }
+    }
+
+    /// A contract action without a feedback topic (and without a goal
+    /// response) resolves with those formats absent instead of inventing
+    /// them, so the generated consumer exposes no feedback API for a
+    /// progress-free member.
+    #[test]
+    fn consumed_feedbackless_action_via_contract_resolves_without_feedback() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "arm_actions", "v1", ARM_ACTIONS_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "arm_consumer", tag: "v1",
+                depends_on: {
+                    contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg =
+            interfaces_from(r#"{ actions: { consumes: [{ link_id: "arm", name: "wave" }] } }"#);
+
+        let out = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
+            .expect("feedback-less contract action must resolve");
+
+        assert_eq!(out.len(), 1, "expected exactly one ConsumedAction: {out:?}");
+        match out[0].interface() {
+            InterfaceVariant::ConsumedAction {
+                action, messages, ..
+            } => {
+                assert_eq!(action.name, "wave");
+                assert!(messages.goal_request.is_some());
+                assert!(
+                    messages.goal_response.is_none(),
+                    "an absent goal response must stay absent"
+                );
+                assert!(
+                    messages.feedback.is_none(),
+                    "an absent feedback topic must stay absent"
+                );
+                assert!(messages.result_response.is_some());
+            }
+            other => panic!("expected ConsumedAction variant, got {other:?}"),
+        }
+    }
+
+    /// A consumed action naming no member of its contract is rejected with
+    /// the same error shape as topics and services; nothing upstream sees
+    /// contract link_ids, so this is the only place it can be reported.
+    #[test]
+    fn consumed_action_absent_from_contract_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "arm_actions", "v1", ARM_ACTIONS_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest: Manifest = serde_json5::from_str(
+            r#"{
+                name: "arm_consumer", tag: "v1",
+                depends_on: {
+                    contracts: [{ name: "arm_actions", tag: "v1", link_id: "arm" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses");
+        let cfg =
+            interfaces_from(r#"{ actions: { consumes: [{ link_id: "arm", name: "move_leg" }] } }"#);
+
+        let err = collect_consumed_interfaces(&manifest, &cfg, |_, _| None, &dirs, None, &|_| {})
+            .expect_err("a name absent from the contract must not be dropped silently");
+        for needle in ["move_leg", "arm", "arm_actions", "v1", "actions.consumes"] {
+            assert!(
+                err.contains(needle),
+                "error must name the entry, the slot and the document, missing {needle}: {err}"
+            );
+        }
+    }
+
     /// The same typo against a NODE dependency is reported once, by
     /// `validate_dependency_specs` upstream. This collector stays silent so
     /// the user does not see it twice.

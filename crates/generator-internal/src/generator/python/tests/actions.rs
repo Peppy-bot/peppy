@@ -860,6 +860,52 @@ fn consumed_two_actions_same_node() {
     );
 }
 
+/// A consumed action pulled via a `depends_on.contracts` dependency
+/// addresses the producer as a *contract* rather than a node: `fire_goal`
+/// splices `peppylib.SenderTarget.contract(contract_name, contract_tag)`
+/// instead of `peppylib.SenderTarget.node(...)`. Python twin of the Rust
+/// backend's `consumed_action_via_contract_origin_targets_contract`.
+#[test]
+fn consumed_action_via_contract_origin_targets_contract() {
+    let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
+    let format = ConsumedActionMessage {
+        goal_request: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_FORMAT1).unwrap()),
+        goal_response: Some(serde_json5::from_str(SUBSCRIBED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
+        feedback: Some(serde_json5::from_str(SUBSCRIBED_ACTION_FEEDBACK_FORMAT1).unwrap()),
+        result_response: Some(
+            serde_json5::from_str(SUBSCRIBED_ACTION_RESULT_RESPONSE_FORMAT1).unwrap(),
+        ),
+    };
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_consumed_action(&action, &format, &contract_dep("arm_contract", "v2", "brain"))
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &["peppylib.SenderTarget.contract(\"arm_contract\", \"v2\")"],
+    );
+    assert!(
+        !rendered.contains("SenderTarget.node("),
+        "a contract-origin dep must address the producer as a contract, not a node: {rendered}"
+    );
+    // The action lifecycle surface is unchanged by the addressing shape.
+    assert_contains_all(
+        &rendered,
+        &[
+            "async def fire_goal(",
+            "async def cancel_goal(",
+            "async def on_next_feedback_message(",
+            "async def get_result(",
+        ],
+    );
+}
+
 #[test]
 fn consumed_action_without_response_payload() {
     let action: ConsumedAction = serde_json5::from_str(SUBSCRIBED_ACTION_EXAMPLE1).unwrap();
