@@ -309,6 +309,8 @@ pub(super) async fn validate_and_order_dependencies(
         .collect();
 
     // Validate all dependencies exist and expose the required interfaces.
+    // An empty-admitting slot's dependency may be missing from the plan
+    // entirely; the binding validation below still decides slot coverage.
     let dependency_errors: Vec<String> = planned
         .iter()
         .flat_map(|item| {
@@ -317,6 +319,7 @@ pub(super) async fn validate_and_order_dependencies(
                 &item.config.interfaces,
                 &item.node_name,
                 &item.node_tag,
+                config::node::MissingDependencyPolicy::AllowAbsentWhenSlotAdmitsEmpty,
                 |name, tag| configs_by_key.get(&NodeKey::new(name, tag)).cloned(),
             )
         })

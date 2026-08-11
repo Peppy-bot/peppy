@@ -675,6 +675,24 @@ pub fn stack_resolver(
     }
 }
 
+/// Two-tier resolver: the node stack first, then the repository-materialized
+/// configs a [`super::deps::materialize_repo_deps`] call produced. Stack
+/// lookups always win; the one stack-then-cache precedence rule, shared by
+/// `node sync` and `node add`.
+pub(crate) fn stack_then_repo_resolver<'a>(
+    node_stack: &'a NodeStack,
+    repo_resolved: &'a std::collections::HashMap<(String, String), config::node::NodeConfig>,
+) -> impl Fn(&str, &str) -> Option<config::node::NodeConfig> + 'a {
+    let stack = stack_resolver(node_stack);
+    move |name, tag| {
+        stack(name, tag).or_else(|| {
+            repo_resolved
+                .get(&(name.to_owned(), tag.to_owned()))
+                .cloned()
+        })
+    }
+}
+
 #[cfg(test)]
 mod implements_tests {
     //! Exercises [`resolve_implements`]: the cache-loading, entry-driven
@@ -1632,6 +1650,7 @@ mod implements_tests {
             &cfg,
             "consumer",
             "v1",
+            config::node::MissingDependencyPolicy::RequireResolvable,
             |name, _| (name == "producer_node").then(|| producer.clone()),
         );
         assert_eq!(

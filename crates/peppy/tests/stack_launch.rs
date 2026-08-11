@@ -8,10 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::consts::NODE_CONFIG_FILE;
 use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
-use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::commands::stack::{StackCommand, StackCommands};
@@ -21,43 +20,12 @@ use peppylib::services::health::listen_for_node_health;
 use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
-use super::common::test_node_target;
+use super::common::{
+    install_node_manifest, read_daemon_git_hash, register_repo_caches, run_cmd_json5,
+    test_node_target, write_node_config_for_helper,
+};
 use peppylib::core_node::transport::poll;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
-
-/// The on-disk layout the daemon expects of a staged node, written once: the
-/// manifest, its codegen fingerprint, and the `git.hash` under the peppy output
-/// dir. Every helper below stages a node this way and differs only in how it
-/// produces `manifest`.
-fn install_node_manifest(
-    nodes_directory: &Path,
-    node_name: &str,
-    git_hash: &str,
-    manifest: &str,
-) -> PathBuf {
-    let node_dir = nodes_directory.join(node_name);
-    fs::create_dir_all(&node_dir).expect("failed to create node directory");
-    let node_config_path = node_dir.join(NODE_CONFIG_FILE);
-    fs::write(&node_config_path, manifest).expect("failed to write node config");
-    config::fingerprint::create_codegen_fingerprint(
-        &node_config_path,
-        Path::new(PEPPYGEN_OUTPUT_PATH),
-    );
-
-    let peppy_output_dir = node_dir.join(PEPPY_OUTPUT_DIR);
-    fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
-    fs::write(peppy_output_dir.join("git.hash"), git_hash).expect("failed to write node git hash");
-    node_dir
-}
-
-/// The `run_cmd` array body of a manifest, one JSON5 string per argument.
-fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
-    run_cmd
-        .iter()
-        .map(|arg| serde_json::to_string(arg.as_ref()).expect("run_cmd arg should serialize"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
 
 fn write_node_config(
     nodes_directory: &Path,
@@ -85,39 +53,6 @@ fn write_node_config(
             }}"#
         ),
     )
-}
-
-/// Registers node directories in the daemon's node cache (`cache/nodes.json5`)
-/// so a launcher's `name:tag` deployment sources resolve without a full
-/// `repo refresh`.
-/// `peppy_root` is the serve emulation's peppy dir root (`serve.temp_dir()`).
-/// Call this AFTER the node configs' final bytes are on disk (a pinned add
-/// verifies the manifest bytes against the entry's fingerprint) and after any
-/// `repo refresh` in the test, which rewrites the cache file.
-fn register_repo_caches(peppy_root: impl AsRef<Path>, nodes: &[(&str, &str, &Path)]) {
-    let peppy_dirs = daemon_config::consts::PeppyDirs::new(peppy_root.as_ref());
-    fs::create_dir_all(peppy_dirs.cache_dir()).expect("failed to create cache dir");
-
-    let node_entries: Vec<serde_json::Value> = nodes
-        .iter()
-        .map(|(name, tag, dir)| {
-            let manifest_path = dir.join(NODE_CONFIG_FILE);
-            let bytes = fs::read(&manifest_path).expect("node manifest should exist");
-            serde_json::json!({
-                "node_name": name,
-                "node_tag": tag,
-                "sha256": config::fingerprint::fingerprint_for_bytes(&bytes),
-                // The origin is serialized from the type `repo refresh`
-                // writes, so a change to its shape reaches this fixture.
-                "origin": daemon_config::repository::EntryOrigin::Fs { path: manifest_path },
-            })
-        })
-        .collect();
-    fs::write(
-        core_node::nodes_repo_cache_path(&peppy_dirs),
-        serde_json::to_string_pretty(&node_entries).expect("serialize nodes cache"),
-    )
-    .expect("failed to write nodes.json5");
 }
 
 /// Stages a checked-in hub fixture node into a temp nodes directory, ready for
@@ -168,19 +103,6 @@ fn stage_hub_docs(repo_dir: &Path, pairings: &[&str], contracts: &[&str]) {
                 .unwrap_or_else(|e| panic!("hub doc {} should copy: {e}", source.display()));
         }
     }
-}
-
-fn read_daemon_git_hash(daemon_state_path: &Path) -> String {
-    let contents =
-        fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
-    let value: serde_json::Value =
-        serde_json5::from_str(&contents).expect("daemon state should parse as JSON5");
-    value
-        .get("git_hash")
-        .and_then(|v| v.as_str())
-        .filter(|git_hash| !git_hash.is_empty())
-        .expect("daemon state should include a non-empty git_hash")
-        .to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -813,49 +735,6 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
         err_msg.contains("timeout") && err_msg.contains("max"),
         "error message should mention 'timeout' and 'max' on max launch failure. Got: {err_msg}",
     );
-}
-
-/// Writes a minimal peppy.json5 with an explicit `run_cmd` (so the daemon's
-/// build phase is skipped), optional `depends_on` / `implements` manifest
-/// blocks, and an optional top-level `interfaces` block. Mirrors
-/// `write_node_config` but accepts run_cmd as owned strings and
-/// manifest/interfaces extensions for tests that need to exercise binding
-/// resolution against `manifest.implements`.
-#[allow(clippy::too_many_arguments)]
-fn write_node_config_for_helper(
-    nodes_directory: &Path,
-    node_name: &str,
-    node_tag: &str,
-    git_hash: &str,
-    run_cmd: &[String],
-    depends_on_json5: Option<&str>,
-    implements_json5: Option<&str>,
-    interfaces_json5: Option<&str>,
-) -> PathBuf {
-    let run_cmd_json5 = run_cmd_json5(run_cmd);
-    let manifest_extra = implements_json5
-        .map(|implements| format!(",\n            implements: {implements}"))
-        .unwrap_or_default()
-        + &depends_on_json5
-            .map(|deps| format!(",\n            depends_on: {deps}"))
-            .unwrap_or_default();
-    let interfaces_extra = interfaces_json5
-        .map(|ifaces| format!(",\n            interfaces: {ifaces}"))
-        .unwrap_or_default();
-    let body = format!(
-        r#"{{
-            peppy_schema: "node/v1",
-            manifest: {{
-                name: "{node_name}",
-                tag: "{node_tag}"{manifest_extra}
-            }}{interfaces_extra},
-            execution: {{
-                language: "rust",
-                run_cmd: [{run_cmd_json5}]
-            }}
-        }}"#
-    );
-    install_node_manifest(nodes_directory, node_name, git_hash, &body)
 }
 
 /// Regression for the launcher's `bindings` field actually wiring
@@ -4001,4 +3880,320 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         }
         .execute(&ctx);
     }
+}
+
+/// A `zero_or_more` node dependency whose node the launcher does not deploy
+/// at all: the launch must treat the absent dependency as the slot's admitted
+/// empty set, not a missing node. The dependency stays resolvable through the
+/// repository cache (add-time codegen still needs its exposed interfaces for
+/// the consumer's consumed-service module), but no instance of it exists
+/// anywhere in the stack, and the consumer must come up with the slot empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot() {
+    // Instances must stay in the stack until the assertions below have read
+    // them; a fixed `sleep` would make that a race against machine load.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
+    let consumer_dump = dump_dir.path().join("consumer.json5");
+
+    let recorder_name = "optdep_recorder";
+    let consumer_name = "optdep_consumer";
+    let node_tag = "v1";
+    let consumer_instance_id = "optdep_cons_inst";
+    let link_id = "recorder";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    // The optional dependency exposes a service the consumer consumes, so the
+    // consumer's codegen cannot skip resolving it: absence from the stack must
+    // fall through to the repository cache.
+    let recorder_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        instances.keep_alive_script(),
+    ];
+    let recorder_interfaces = r#"{
+        services: {
+            exposes: [{
+                name: "finish_session",
+                response_message_format: { episodes_recorded: "u32" }
+            }]
+        }
+    }"#;
+    let recorder_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        recorder_name,
+        node_tag,
+        &git_hash,
+        &recorder_run_cmd,
+        None,
+        None,
+        Some(recorder_interfaces),
+    );
+
+    let consumer_run_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cp \"$PEPPY_RUNTIME_CONFIG\" \"{}\" && {}",
+            consumer_dump.display(),
+            instances.keep_alive_script(),
+        ),
+    ];
+    let consumer_depends_on = format!(
+        r#"{{ nodes: [{{ name: "{recorder_name}", tag: "{node_tag}", link_id: "{link_id}", cardinality: "zero_or_more" }}] }}"#
+    );
+    let consumer_interfaces = format!(
+        r#"{{ services: {{ consumes: [{{ link_id: "{link_id}", name: "finish_session" }}] }} }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &consumer_run_cmd,
+        Some(&consumer_depends_on),
+        None,
+        Some(&consumer_interfaces),
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // The dummy `sh` consumer does not expose the framework services, so
+    // impersonate them from the test process.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let _ready_consumer = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+    )
+    .await
+    .expect("consumer ready service should start");
+    let _health_consumer = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+    )
+    .await
+    .expect("consumer health service should start");
+    let (_shutdown_consumer, _) = listen_for_shutdown(
+        &node_messenger,
+        &core_node_name,
+        consumer_instance_id,
+        test_node_target(consumer_name),
+    )
+    .await
+    .expect("consumer shutdown service should start");
+
+    // The launcher deploys only the consumer. The recorder is registered in
+    // the repository cache but appears in no deployment and no binding.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
+                    instances: [{{ instance_id: "{consumer_instance_id}" }}]
+                }}
+            ]
+        }}"#
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (recorder_name, node_tag, &recorder_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
+
+    StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("a launch omitting a zero_or_more node dependency should succeed");
+
+    // The consumer boots with the slot as an explicit empty set, mirroring the
+    // in-stack-but-unbound case the commander panel test pins.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut consumer_config: Option<config::runtime::RuntimeConfig> = None;
+    while Instant::now() < deadline {
+        if let Ok(content) = fs::read_to_string(&consumer_dump)
+            && let Ok(cfg) = serde_json5::from_str::<config::runtime::RuntimeConfig>(&content)
+        {
+            consumer_config = Some(cfg);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    drop(instances);
+    let _ = NodeCommand {
+        command: NodeCommands::Stop {
+            instance_id: consumer_instance_id.to_string(),
+        },
+    }
+    .execute(&ctx);
+
+    let consumer_config = consumer_config.unwrap_or_else(|| {
+        panic!(
+            "consumer runtime config dump never appeared / parsed at {}",
+            consumer_dump.display()
+        )
+    });
+    let recorder_slot = consumer_config
+        .node_instance
+        .slot_bindings
+        .get(link_id)
+        .expect("an unbound zero_or_more slot still materializes as the empty set");
+    assert!(
+        recorder_slot.is_empty(),
+        "no recorder exists anywhere in this stack: {recorder_slot:?}"
+    );
+
+    let messenger_handle = ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = poll(
+        &StackListRequest::new(),
+        messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete after launch");
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");
+    assert!(
+        graph.find_node(consumer_name, node_tag).is_some(),
+        "the consumer should be in the stack. Got: {:?}",
+        graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+    );
+    // The dependency's config still joins the stack: the deployment's pinned
+    // closure carries every dependency, and the batch add materializes the
+    // ones the stack does not hold, exactly as `peppy node add <name>:<tag>`
+    // does. What the empty slot guarantees is that no instance of it runs.
+    let recorder_node = graph.find_node(recorder_name, node_tag).unwrap_or_else(|| {
+        panic!(
+            "the dependency's config arrives with the deployment's pinned closure. Got: {:?}",
+            graph.nodes.iter().map(|n| n.label()).collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        recorder_node.instance_count(),
+        0,
+        "no instance of the absent dependency may run"
+    );
+}
+
+/// The admitted absence never reaches past the binding layer for a
+/// `zero_or_one` slot: its node may be missing from the deployment, but the
+/// slot must still be linked or written vacant, so a launcher that omits both
+/// is refused at binding validation rather than passed through or misreported
+/// as a missing node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependency() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let recorder_name = "optdep_zoo_recorder";
+    let consumer_name = "optdep_zoo_consumer";
+    let node_tag = "v1";
+    let link_id = "recorder";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+
+    let recorder_path = write_node_config(
+        nodes_dir.path(),
+        recorder_name,
+        node_tag,
+        &git_hash,
+        &["sh", "-c", "exit 0"],
+    );
+    let consumer_run_cmd = vec!["sh".to_string(), "-c".to_string(), "exit 0".to_string()];
+    let consumer_depends_on = format!(
+        r#"{{ nodes: [{{ name: "{recorder_name}", tag: "{node_tag}", link_id: "{link_id}", cardinality: "zero_or_one" }}] }}"#
+    );
+    let consumer_path = write_node_config_for_helper(
+        nodes_dir.path(),
+        consumer_name,
+        node_tag,
+        &git_hash,
+        &consumer_run_cmd,
+        Some(&consumer_depends_on),
+        None,
+        None,
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    // Neither a link nor a `{ vacant: ... }` entry for the slot.
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                {{
+                    source: {{ name: "{consumer_name}:{node_tag}" }},
+                    instances: [{{ instance_id: "optdep_zoo_inst" }}]
+                }}
+            ]
+        }}"#
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (recorder_name, node_tag, &recorder_path),
+            (consumer_name, node_tag, &consumer_path),
+        ],
+    );
+
+    let err = StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect_err("an uncovered zero_or_one slot must fail the launch");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(link_id) && msg.contains("zero_or_one"),
+        "the refusal should name the uncovered slot, not a missing node: {msg}"
+    );
+    assert!(
+        !msg.contains("does not exist in the stack"),
+        "the absent node itself is admitted; only the slot coverage is refused: {msg}"
+    );
 }

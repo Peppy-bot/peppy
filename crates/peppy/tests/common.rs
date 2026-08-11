@@ -73,6 +73,153 @@ pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
 }
 
+pub fn read_daemon_git_hash(daemon_state_path: &std::path::Path) -> String {
+    let contents =
+        std::fs::read_to_string(daemon_state_path).expect("daemon state file should be readable");
+    let value: serde_json::Value =
+        serde_json5::from_str(&contents).expect("daemon state should parse as JSON5");
+    value
+        .get("git_hash")
+        .and_then(|v| v.as_str())
+        .filter(|git_hash| !git_hash.is_empty())
+        .expect("daemon state should include a non-empty git_hash")
+        .to_string()
+}
+
+/// The on-disk layout the daemon expects of a staged node, written once: the
+/// manifest, its codegen fingerprint, and the `git.hash` under the peppy output
+/// dir. Every staging helper builds on this and differs only in how it
+/// produces `manifest`.
+pub fn install_node_manifest(
+    nodes_directory: &std::path::Path,
+    node_name: &str,
+    git_hash: &str,
+    manifest: &str,
+) -> std::path::PathBuf {
+    let node_dir = nodes_directory.join(node_name);
+    std::fs::create_dir_all(&node_dir).expect("failed to create node directory");
+    let node_config_path = node_dir.join(config::consts::NODE_CONFIG_FILE);
+    std::fs::write(&node_config_path, manifest).expect("failed to write node config");
+    config::fingerprint::create_codegen_fingerprint(
+        &node_config_path,
+        std::path::Path::new(config::consts::PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let peppy_output_dir = node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
+    std::fs::create_dir_all(&peppy_output_dir).expect("failed to create peppy output directory");
+    std::fs::write(peppy_output_dir.join("git.hash"), git_hash)
+        .expect("failed to write node git hash");
+    node_dir
+}
+
+/// The `run_cmd` array body of a manifest, one JSON5 string per argument.
+pub fn run_cmd_json5(run_cmd: &[impl AsRef<str>]) -> String {
+    run_cmd
+        .iter()
+        .map(|arg| serde_json::to_string(arg.as_ref()).expect("run_cmd arg should serialize"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Writes a minimal peppy.json5 with an explicit `run_cmd` (so the daemon's
+/// build phase is skipped), optional `depends_on` / `implements` manifest
+/// blocks, and an optional top-level `interfaces` block, staged via
+/// [`install_node_manifest`].
+#[allow(clippy::too_many_arguments)]
+pub fn write_node_config_for_helper(
+    nodes_directory: &std::path::Path,
+    node_name: &str,
+    node_tag: &str,
+    git_hash: &str,
+    run_cmd: &[String],
+    depends_on_json5: Option<&str>,
+    implements_json5: Option<&str>,
+    interfaces_json5: Option<&str>,
+) -> std::path::PathBuf {
+    let run_cmd_json5 = run_cmd_json5(run_cmd);
+    let manifest_extra = implements_json5
+        .map(|implements| format!(",\n            implements: {implements}"))
+        .unwrap_or_default()
+        + &depends_on_json5
+            .map(|deps| format!(",\n            depends_on: {deps}"))
+            .unwrap_or_default();
+    let interfaces_extra = interfaces_json5
+        .map(|ifaces| format!(",\n            interfaces: {ifaces}"))
+        .unwrap_or_default();
+    let body = format!(
+        r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "{node_name}",
+                tag: "{node_tag}"{manifest_extra}
+            }}{interfaces_extra},
+            execution: {{
+                language: "rust",
+                run_cmd: [{run_cmd_json5}]
+            }}
+        }}"#
+    );
+    install_node_manifest(nodes_directory, node_name, git_hash, &body)
+}
+
+/// Registers node directories in the daemon's node cache (`cache/nodes.json5`)
+/// so a `name:tag` reference (a launcher deployment source, or a dependency
+/// absent from the stack) resolves without a full `repo refresh`.
+/// `peppy_root` is the serve emulation's peppy dir root (`serve.temp_dir()`).
+/// Call this AFTER the node configs' final bytes are on disk (a pinned add
+/// verifies the manifest bytes against the entry's fingerprint) and after any
+/// `repo refresh` in the test, which rewrites the cache file.
+pub fn register_repo_caches(
+    peppy_root: impl AsRef<std::path::Path>,
+    nodes: &[(&str, &str, &std::path::Path)],
+) {
+    let peppy_dirs = daemon_config::consts::PeppyDirs::new(peppy_root.as_ref());
+    std::fs::create_dir_all(peppy_dirs.cache_dir()).expect("failed to create cache dir");
+
+    let node_entries: Vec<serde_json::Value> = nodes
+        .iter()
+        .map(|(name, tag, dir)| {
+            let manifest_path = dir.join(config::consts::NODE_CONFIG_FILE);
+            let bytes = std::fs::read(&manifest_path).expect("node manifest should exist");
+            serde_json::json!({
+                "node_name": name,
+                "node_tag": tag,
+                "sha256": config::fingerprint::fingerprint_for_bytes(&bytes),
+                // The origin is serialized from the type `repo refresh`
+                // writes, so a change to its shape reaches this fixture.
+                "origin": daemon_config::repository::EntryOrigin::Fs { path: manifest_path },
+            })
+        })
+        .collect();
+    std::fs::write(
+        core_node::nodes_repo_cache_path(&peppy_dirs),
+        serde_json::to_string_pretty(&node_entries).expect("serialize nodes cache"),
+    )
+    .expect("failed to write nodes.json5");
+}
+
+/// The standard local-path `node add` (no sync, build, no run), for tests
+/// that assert on the outcome themselves; [`add_built_node`] wraps it for the
+/// expect-success case.
+pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::NodeCommand {
+    peppy::commands::node::NodeCommand {
+        command: peppy::commands::node::NodeCommands::Add {
+            source: Some(source.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            links: Vec::new(),
+            vacant_links: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+}
+
 /// Writes a node config and adds/builds it without running an instance.
 pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str) {
     use peppy::commands::Command;
