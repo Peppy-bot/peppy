@@ -87,6 +87,23 @@ git2 = "0.21"
 # Self-reference so `cargo test` builds this crate with the test-only helpers
 # enabled, without making `test-support` a default feature of the shipped CLI.
 peppy = { path = ".", features = ["test-support"] }
+# The full-stack MCP e2e generates the exposure node's peppygen out-of-band
+# (the same entry points the daemon's sync uses) and drives the launched
+# stack with the real MCP client. `config-test-support` roots the shared
+# cargo target cache the pre-launch builds reuse.
+generator = { workspace = true }
+config-test-support = { workspace = true }
+# Also pulls the MCP server-side dependency tree (rmcp server, axum, image,
+# jsonschema) into the cargo cache, which the offline pre-launch build of
+# the generated node resolves from; its rmcp `server` feature is what makes
+# the client capability builder available to the test.
+peppy-mcp-runtime = { workspace = true }
+rmcp = { version = "3.1.2", default-features = false, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+base64 = "0.22"
 
 [[test]]
 name = "integration"

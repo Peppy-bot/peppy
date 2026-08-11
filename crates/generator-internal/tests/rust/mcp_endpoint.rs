@@ -5,7 +5,8 @@
 //! real `generate_peppygen_lib` entry point, compile it, and boot it against
 //! an ephemeral zenoh router with a generated stub provider filling its
 //! contract slot. A real MCP client then drives the running endpoint over
-//! Streamable HTTP under `2026-07-28`: catalog listing with caching hints,
+//! Streamable HTTP under `2026-07-28`: `server/discover` advertising the
+//! published identity and hints, catalog listing with caching hints,
 //! unavailable-then-served resource reads with the JPEG default
 //! representation, a subscription notification after a publish, read-only
 //! and mutating tool round-trips, a deadline miss on a service the provider
@@ -41,7 +42,8 @@ use generator::{
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientCapabilities,
     ClientInfo, DetailedTask, ErrorCode, GetTaskParams, ProtocolVersion, ReadResourceRequestParams,
-    ServerNotification, SubscriptionFilter, TaskStatus, UpdateTaskParams, object,
+    RequestMetaObject, ServerNotification, SubscriptionFilter, TaskStatus, UpdateTaskParams,
+    object,
 };
 use rmcp::service::ServiceError;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -735,6 +737,30 @@ fn main() -> Result<()> {
         .await
         .expect("the MCP client negotiates 2026-07-28");
 
+    // Discovery on the real generated server advertises the published
+    // identity: the supported revision, the catalog caching hints, and the
+    // exposure's server block.
+    let discovered = client
+        .discover(RequestMetaObject(Default::default()))
+        .await
+        .expect("server/discover answers");
+    assert_eq!(
+        discovered.supported_versions,
+        vec![ProtocolVersion::V_2026_07_28]
+    );
+    assert_eq!(discovered.ttl_ms, 3_600_000);
+    assert_eq!(discovered.cache_scope, CacheScope::Private);
+    assert_eq!(
+        discovered.instructions.as_deref(),
+        Some("Observe and control the front camera on this robot.")
+    );
+    let implementation = discovered
+        .server_info()
+        .expect("the server identity rides in the result _meta");
+    assert_eq!(implementation.name, "camera_endpoint_mcp");
+    assert_eq!(implementation.version, "v1");
+    assert_eq!(implementation.title.as_deref(), Some("OpenArm camera"));
+
     // The catalog matches the published surface and carries caching hints.
     let tools = client.list_tools(None).await.expect("tools/list answers");
     let mut tool_names: Vec<_> = tools.tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -762,7 +788,7 @@ fn main() -> Result<()> {
         "safety_sensitive surfaces as the destructive hint"
     );
     assert_eq!(tools.cache_scope, Some(CacheScope::Private));
-    assert!(tools.ttl_ms.is_some());
+    assert_eq!(tools.ttl_ms, Some(3_600_000));
     let resources = client
         .list_resources(None)
         .await
@@ -774,7 +800,8 @@ fn main() -> Result<()> {
         .collect();
     resource_uris.sort_unstable();
     assert_eq!(resource_uris, [FRAME_URI, STATUS_URI]);
-    assert!(resources.ttl_ms.is_some());
+    assert_eq!(resources.cache_scope, Some(CacheScope::Private));
+    assert_eq!(resources.ttl_ms, Some(3_600_000));
 
     // Nothing has been published yet.
     let error = protocol_error(
@@ -783,6 +810,7 @@ fn main() -> Result<()> {
             .await
             .expect_err("no provider is running yet"),
     );
+    assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
     assert!(
         error.message.contains("unavailable"),
         "got {}",
@@ -978,6 +1006,15 @@ fn main() -> Result<()> {
             )
             .await
             .expect_err("a non-integer duration is rejected"),
+    );
+    assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+
+    // A task handle that was never created is refused the same way.
+    let error = protocol_error(
+        tasks_client
+            .get_task(GetTaskParams::new("never-created"))
+            .await
+            .expect_err("the handle does not exist"),
     );
     assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 

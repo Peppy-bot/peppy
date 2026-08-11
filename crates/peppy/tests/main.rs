@@ -3,6 +3,7 @@ mod container;
 mod daemon_lifecycle_e2e;
 mod daemon_singleton;
 mod info;
+mod mcp_full_stack;
 mod node_add;
 mod node_info;
 mod node_init;
