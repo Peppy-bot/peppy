@@ -307,9 +307,23 @@ fn scalar_from_json_expr(
         TypeToken::I16 => helper("value_i16"),
         TypeToken::I32 => helper("value_i32"),
         TypeToken::I64 => helper("value_i64_decimal"),
+        // JSON carries one float width, so an `f32` member arrives as an
+        // `f64` and is narrowed here. `as` saturates to an infinity, which
+        // the schema's `{"type": "number"}` cannot exclude, so the range is
+        // checked instead of letting an out-of-range request become `inf`
+        // on the wire.
         TypeToken::F32 => {
             let inner = helper("value_f64");
-            quote!((#inner as f32))
+            quote!({
+                let wide = #inner;
+                if !wide.is_finite() || wide < f32::MIN as f64 || wide > f32::MAX as f64 {
+                    return Err(format!(
+                        "`{}` is outside the range of a 32-bit float",
+                        #name_literal
+                    ));
+                }
+                wide as f32
+            })
         }
         TypeToken::F64 => helper("value_f64"),
     }

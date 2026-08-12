@@ -273,14 +273,38 @@ fn tool_front_camera_calibrate_request(
                             "white_balance",
                         )?;
                         peppygen::consumed_services::front_camera::calibrate::CalibrateProfileWhiteBalance {
-                            red: (peppy_mcp_runtime::bridge::value_f64(
-                                peppy_mcp_runtime::bridge::require(input_2, "red")?,
-                                "red",
-                            )? as f32),
-                            blue: (peppy_mcp_runtime::bridge::value_f64(
-                                peppy_mcp_runtime::bridge::require(input_2, "blue")?,
-                                "blue",
-                            )? as f32),
+                            red: {
+                                let wide = peppy_mcp_runtime::bridge::value_f64(
+                                    peppy_mcp_runtime::bridge::require(input_2, "red")?,
+                                    "red",
+                                )?;
+                                if !wide.is_finite() || wide < f32::MIN as f64
+                                    || wide > f32::MAX as f64
+                                {
+                                    return Err(
+                                        format!(
+                                            "`{}` is outside the range of a 32-bit float", "red"
+                                        ),
+                                    );
+                                }
+                                wide as f32
+                            },
+                            blue: {
+                                let wide = peppy_mcp_runtime::bridge::value_f64(
+                                    peppy_mcp_runtime::bridge::require(input_2, "blue")?,
+                                    "blue",
+                                )?;
+                                if !wide.is_finite() || wide < f32::MIN as f64
+                                    || wide > f32::MAX as f64
+                                {
+                                    return Err(
+                                        format!(
+                                            "`{}` is outside the range of a 32-bit float", "blue"
+                                        ),
+                                    );
+                                }
+                                wide as f32
+                            },
                         }
                     },
                 }
@@ -380,6 +404,7 @@ pub(crate) async fn task_recorder_record_episode(
         node_runner,
     );
     let deadline = std::time::Duration::from_millis(900000);
+    let started = std::time::Instant::now();
     let mut handle = peppygen::consumed_actions::recorder::record_episode::ActionHandle::fire_goal(
             node_runner,
             target,
@@ -401,22 +426,24 @@ pub(crate) async fn task_recorder_record_episode(
     }
     let mut cancel_pending = false;
     let mut cancel_forwarded = false;
+    let expiry = tokio::time::sleep(deadline.saturating_sub(started.elapsed()));
+    tokio::pin!(expiry);
     loop {
         if cancel_pending {
             cancel_pending = false;
             cancel_forwarded = true;
-            let _ = handle.cancel_goal(deadline).await;
+            let _ = handle.cancel_goal(deadline.saturating_sub(started.elapsed())).await;
         }
         tokio::select! {
-            _ = context.cancel_requested(), if ! cancel_forwarded => { cancel_pending =
-            true; } message = handle.on_next_feedback_message() => match message {
-            Ok(message) => { if let Ok(value) =
-            task_recorder_record_episode_feedback(message) { context
+            _ = & mut expiry => break, _ = context.cancel_requested(), if !
+            cancel_forwarded => { cancel_pending = true; } message = handle
+            .on_next_feedback_message() => match message { Ok(message) => { if let
+            Ok(value) = task_recorder_record_episode_feedback(message) { context
             .report_feedback(value.to_string()); } } Err(_) => break, }
         }
     }
     let result = handle
-        .get_result(deadline)
+        .get_result(deadline.saturating_sub(started.elapsed()))
         .await
         .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
     match result.outcome {
@@ -455,6 +482,7 @@ pub(crate) async fn task_recorder_resume_session(
         node_runner,
     );
     let deadline = std::time::Duration::from_millis(30000);
+    let started = std::time::Instant::now();
     let handle = peppygen::consumed_actions::recorder::resume_session::ActionHandle::fire_goal(
             node_runner,
             target,
@@ -474,13 +502,13 @@ pub(crate) async fn task_recorder_resume_session(
         );
     }
     let mut cancel_forwarded = false;
-    let result_future = handle.get_result(deadline);
+    let result_future = handle.get_result(deadline.saturating_sub(started.elapsed()));
     tokio::pin!(result_future);
     let result = loop {
         tokio::select! {
             result = & mut result_future => break result, _ = context.cancel_requested(),
             if ! cancel_forwarded => { cancel_forwarded = true; let _ = handle
-            .cancel_goal(deadline). await; }
+            .cancel_goal(deadline.saturating_sub(started.elapsed())). await; }
         }
     }
         .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;

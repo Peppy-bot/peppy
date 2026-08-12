@@ -327,10 +327,14 @@ async fn start_confirmed_record_clip(client: &Client, duration_frames: u32) -> S
         panic!("expected a task handle, got {response:?}");
     };
     assert_eq!(created.task.status, TaskStatus::Working);
+    // The exposure's `deadline_ms` plus the runtime's one-second TTL grace:
+    // the task manager's TTL sweep is a hard stop reporting a generic
+    // expiry, so it must land after the deadline the bridge enforces rather
+    // than race it.
     assert_eq!(
         created.task.ttl_ms,
-        Some(600000),
-        "the whole-goal deadline is the advertised TTL"
+        Some(600000 + 1000),
+        "the advertised TTL is the whole-goal deadline plus the runtime's grace"
     );
     let task_id = created.task.task_id;
 

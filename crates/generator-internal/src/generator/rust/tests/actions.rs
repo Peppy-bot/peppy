@@ -716,9 +716,14 @@ fn consumed_action_via_contract_origin_targets_contract() {
         .next()
         .expect("artifact is present");
 
-    assert_contains_all(
-        &rendered,
-        &["SenderTarget::contract(", "\"arm_contract\"", "\"v2\""],
+    // Whitespace-insensitive so the assertion pins the whole call and its
+    // arguments rather than three substrings that could come from anywhere
+    // in the artifact.
+    let compact: String = rendered.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_rendered!(
+        compact.contains(r#"SenderTarget::contract("arm_contract","v2")"#),
+        rendered,
+        "the goal sender addresses the producer by contract name and tag",
     );
     assert_rendered!(
         !rendered.contains("SenderTarget::node"),

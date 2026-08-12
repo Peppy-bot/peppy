@@ -70,7 +70,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # offline `cargo build` of the generated node resolves from.
 peppy-mcp-runtime = { workspace = true }
 mcp-test-support = { workspace = true }
-rmcp = { version = "3.1.2", default-features = false, features = [
+rmcp = { workspace = true, features = [
     "client",
     "transport-streamable-http-client-reqwest",
     "reqwest",

@@ -367,6 +367,7 @@ fn mcp_consumed_interfaces() -> Vec<DeploymentInterface> {
 /// from the contract it implements, the way the daemon's sync would.
 fn stage_provider(
     hub: &Path,
+    peppy_dirs: &PeppyDirs,
     node_name: &str,
     node_config: &str,
     main_rs: &str,
@@ -398,7 +399,7 @@ fn stage_provider(
     let staged_config = output_dir.join(NODE_CONFIG_FILE);
     fs::copy(node_dir.join(NODE_CONFIG_FILE), &staged_config).expect("stage provider config");
     generator
-        .build(&output_dir, &PeppyDirs::default(), Default::default())
+        .build(&output_dir, peppy_dirs, Default::default())
         .expect("build provider peppygen");
     fs::remove_file(staged_config).expect("remove staged config");
     node_dir
@@ -461,8 +462,13 @@ async fn a_launcher_deploys_the_exposure_and_a_client_walks_it() {
     .expect("write contract");
     let exposure_path = hub.join("exposures/camera_and_recording.json5");
     fs::write(&exposure_path, stack_exposure()).expect("write exposure");
+    // Every step that reads or writes the peppy tree, code generation
+    // included, goes through the emulation's root: the host's default cache
+    // is not this test's to touch.
+    let peppy_dirs = PeppyDirs::new(serve.temp_dir());
     let camera_dir = stage_provider(
         hub,
+        &peppy_dirs,
         "mock_uvc_camera",
         CAMERA_NODE_CONFIG,
         CAMERA_MAIN,
@@ -471,6 +477,7 @@ async fn a_launcher_deploys_the_exposure_and_a_client_walks_it() {
     );
     let recorder_dir = stage_provider(
         hub,
+        &peppy_dirs,
         "mock_recorder",
         RECORDER_NODE_CONFIG,
         RECORDER_MAIN,
@@ -484,12 +491,8 @@ async fn a_launcher_deploys_the_exposure_and_a_client_walks_it() {
     // --- Publication: the same entry point `peppy repo exposure` runs,
     // against the daemon's caches. The node lands as a sibling of the
     // exposure document.
-    let published = core_node::publish_exposure(
-        &exposure_path,
-        &PeppyDirs::new(serve.temp_dir()),
-        &|_feedback| {},
-    )
-    .expect("the exposure publishes");
+    let published = core_node::publish_exposure(&exposure_path, &peppy_dirs, &|_feedback| {})
+        .expect("the exposure publishes");
     let mcp_dir = hub.join("exposures/camera_and_recording_mcp");
     assert_eq!(published.node_dir, mcp_dir, "the node is published in-repo");
 
@@ -499,7 +502,7 @@ async fn a_launcher_deploys_the_exposure_and_a_client_walks_it() {
         &mcp_dir,
         mcp_consumed_interfaces(),
         "test-git-hash",
-        &PeppyDirs::default(),
+        &peppy_dirs,
         Default::default(),
         None,
     )

@@ -414,10 +414,12 @@ fn apply_restrictions(
             }
         };
 
-        // A passing bound comes back as its comparison value paired with the
-        // validated number the schema should carry.
+        // A passing bound comes back as the validated number the schema
+        // should carry. An empty range (`min` above `max`) needs no contract
+        // to spot, so the document model rejects it at parse time and it
+        // cannot reach here.
         let mut checked =
-            |bound: &Option<serde_json::Number>, side: &str| -> Option<(f64, serde_json::Number)> {
+            |bound: &Option<serde_json::Number>, side: &str| -> Option<serde_json::Number> {
                 let bound = bound.as_ref()?;
                 if let Some((low, high)) = range {
                     let Some(value) = bound.as_i64() else {
@@ -436,20 +438,11 @@ fn apply_restrictions(
                         ));
                         return None;
                     }
-                    return Some((value as f64, bound.clone()));
                 }
-                bound.as_f64().map(|value| (value, bound.clone()))
+                Some(bound.clone())
             };
         let min = checked(&bounds.min, "min");
         let max = checked(&bounds.max, "max");
-        if let (Some((min, _)), Some((max, _))) = (&min, &max)
-            && min > max
-        {
-            violations.push(format!(
-                "{bound_context}: `min` ({min}) is greater than `max` ({max})"
-            ));
-            continue;
-        }
 
         let Some(properties) = input_schema
             .get_mut("properties")
@@ -458,10 +451,10 @@ fn apply_restrictions(
         else {
             continue;
         };
-        if let Some((_, bound)) = min {
+        if let Some(bound) = min {
             properties.insert("minimum".to_string(), Value::Number(bound));
         }
-        if let Some((_, bound)) = max {
+        if let Some(bound) = max {
             properties.insert("maximum".to_string(), Value::Number(bound));
         }
     }

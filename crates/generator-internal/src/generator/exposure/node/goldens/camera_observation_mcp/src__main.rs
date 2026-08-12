@@ -223,12 +223,14 @@ fn main() -> Result<()> {
                     }
                 });
             }
-            let listener = match tokio::net::TcpListener::bind(("127.0.0.1", args.port))
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", args.port))
                 .await
-            {
-                Ok(listener) => listener,
-                Err(error) => panic!("cannot bind 127.0.0.1:{}: {error}", args.port),
-            };
+                .map_err(|error| peppygen::Error::Io(
+                    std::io::Error::new(
+                        error.kind(),
+                        format!("cannot bind 127.0.0.1:{}: {error}", args.port),
+                    ),
+                ))?;
             let shutdown = tokio_util::sync::CancellationToken::new();
             {
                 let shutdown = shutdown.clone();
@@ -237,7 +239,18 @@ fn main() -> Result<()> {
                         shutdown.cancel();
                     });
             }
-            tokio::spawn(server.serve(listener, shutdown));
+            {
+                let node_runner = std::sync::Arc::clone(&node_runner);
+                tokio::spawn(async move {
+                    match server.serve(listener, shutdown).await {
+                        Ok(()) => tracing::debug!("the MCP endpoint stopped"),
+                        Err(error) => {
+                            tracing::error!(% error, "the MCP endpoint failed");
+                            node_runner.cancellation_token().cancel();
+                        }
+                    }
+                });
+            }
             Ok(())
         })
 }

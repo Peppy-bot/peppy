@@ -326,6 +326,31 @@ fn max_size_is_exact_for_bounded_formats() {
     );
 }
 
+/// An `f32` is widened to `f64` before it is serialized, so its worst case
+/// is the `f64` rendering: `0.1f32` reaches JSON as `0.10000000149011612`,
+/// not as `0.1`. The bound has to cover what the runtime actually emits.
+#[test]
+fn max_size_covers_an_f32_widened_to_f64() {
+    let format_json5 = r#"{ ratio: "f32" }"#;
+    let MaxSerializedSize::Bounded(max) = max_serialized_json_bytes(&parse_format(format_json5))
+    else {
+        panic!("an f32 member has a static maximum");
+    };
+    let emitted = serde_json::to_string(&json!({"ratio": f64::from(0.1f32)})).expect("serializes");
+    assert_eq!(emitted, r#"{"ratio":0.10000000149011612}"#);
+    assert!(
+        emitted.len() as u64 <= max,
+        "the widened rendering ({} bytes) must fit the bound ({max} bytes)",
+        emitted.len()
+    );
+    assert!(
+        compiled_validator("f32_member", format_json5).is_valid(&json!({
+            "ratio": f64::from(0.1f32),
+        })),
+        "the derived schema accepts the value the runtime emits"
+    );
+}
+
 #[test]
 fn max_size_reports_unbounded_members() {
     for format_json5 in [

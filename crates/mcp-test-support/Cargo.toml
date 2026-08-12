@@ -16,7 +16,7 @@ daemon-config = { workspace = true }
 generator = { workspace = true }
 # The `server` feature is what makes the client capability builder
 # available, mirroring how the e2e crates get it via `peppy-mcp-runtime`.
-rmcp = { version = "3.1.2", default-features = false, features = [
+rmcp = { workspace = true, features = [
     "client",
     "server",
     "transport-streamable-http-client-reqwest",

@@ -137,4 +137,36 @@ mod tests {
         assert_eq!(sanitize_rust_identifier("frame_id"), "frame_id");
         assert_eq!(sanitize_rust_identifier("video-stream"), "video_stream");
     }
+
+    /// The three names below are the contract between the Rust backend and
+    /// the exposure generator: both derive the types they emit and the
+    /// types they reference from these functions, so the exact strings are
+    /// pinned here, empty components included.
+    #[test]
+    fn the_consumed_action_type_prefix_joins_producer_and_action() {
+        assert_eq!(
+            consumed_action_type_prefix("uvc_camera", "enable"),
+            "UvcCameraEnable"
+        );
+        assert_eq!(consumed_action_type_prefix("", "enable"), "Enable");
+        assert_eq!(consumed_action_type_prefix("uvc_camera", ""), "UvcCamera");
+        assert_eq!(consumed_action_type_prefix("", ""), "Action");
+    }
+
+    #[test]
+    fn the_consumed_service_struct_prefix_falls_back_to_service() {
+        assert_eq!(
+            consumed_service_struct_prefix("video_stream_info"),
+            "VideoStreamInfo"
+        );
+        assert_eq!(consumed_service_struct_prefix(""), "Service");
+    }
+
+    #[test]
+    fn a_nested_struct_name_continues_its_parent_prefix() {
+        assert_eq!(
+            nested_struct_name("UvcCameraEnableActionGoal", "frame_header"),
+            "UvcCameraEnableActionGoalFrameHeader"
+        );
+    }
 }

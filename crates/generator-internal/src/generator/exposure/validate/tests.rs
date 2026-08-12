@@ -557,14 +557,13 @@ fn restrict_violations_are_collected_per_field() {
                         position: { min: 0 },
                         label: { max: 10 },
                         no_such_field: { min: 1 },
-                        speed: { min: 3, max: 1 },
                     },
                 },
             ]"#,
         ),
         &[resolved(CAMERA_CONTRACT)],
     );
-    assert_eq!(violations.len(), 4, "{violations:?}");
+    assert_eq!(violations.len(), 3, "{violations:?}");
     assert!(
         violations[0].contains("decimal-string schema"),
         "{violations:?}"
@@ -577,10 +576,9 @@ fn restrict_violations_are_collected_per_field() {
         violations[2].contains("names no root member"),
         "{violations:?}"
     );
-    assert!(
-        violations[3].contains("`min` (3) is greater than `max` (1)"),
-        "{violations:?}"
-    );
+    // A `min` above its `max` is not in the list: it needs no contract to
+    // spot, so the document model refuses it at parse time. See
+    // `rejects_a_restrict_entry_whose_min_exceeds_its_max` in daemon-config.
 }
 
 #[test]

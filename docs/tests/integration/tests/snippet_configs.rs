@@ -106,6 +106,15 @@ fn assert_parses_with_matching_schema(path: &Path) {
                 result.unwrap_err()
             );
         }
+        PeppySchema::McpExposureV1 => {
+            let result = daemon_config::mcp_exposure::PeppyMcpExposureParser::from_path(path);
+            assert!(
+                result.is_ok(),
+                "failed to parse MCP exposure {}: {:?}",
+                path.display(),
+                result.unwrap_err()
+            );
+        }
     }
 }
 

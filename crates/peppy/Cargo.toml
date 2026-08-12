@@ -99,7 +99,7 @@ config-test-support = { workspace = true }
 # the client capability builder available to the test.
 peppy-mcp-runtime = { workspace = true }
 mcp-test-support = { workspace = true }
-rmcp = { version = "3.1.2", default-features = false, features = [
+rmcp = { workspace = true, features = [
     "client",
     "transport-streamable-http-client-reqwest",
     "reqwest",

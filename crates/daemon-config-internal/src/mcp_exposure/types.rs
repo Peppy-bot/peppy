@@ -348,11 +348,23 @@ pub struct ServiceExposure {
 impl ServiceExposure {
     fn check_coherence(&self, target_name: &str) -> Result<(), String> {
         for (field, bounds) in &self.restrict {
+            let context = format!(
+                "target `{target_name}` service `{}`: `restrict.{field}`",
+                self.member
+            );
             if bounds.min.is_none() && bounds.max.is_none() {
+                return Err(format!("{context} must set `min`, `max`, or both"));
+            }
+            // An empty range is a mistake in the document itself, so it is
+            // caught here rather than when the bounds meet the contract's
+            // member type. Comparing as `f64` covers the three
+            // `serde_json::Number` variants with one rule.
+            if let (Some(min), Some(max)) = (&bounds.min, &bounds.max)
+                && let (Some(min), Some(max)) = (min.as_f64(), max.as_f64())
+                && min > max
+            {
                 return Err(format!(
-                    "target `{target_name}` service `{}`: `restrict.{field}` must set `min`, \
-                     `max`, or both",
-                    self.member
+                    "{context}: `min` ({min}) is greater than `max` ({max})"
                 ));
             }
         }
@@ -360,7 +372,9 @@ impl ServiceExposure {
     }
 }
 
-/// Deserialize a `restrict` map, rejecting duplicate and blank field names.
+/// Deserialize a `restrict` map, rejecting duplicate, blank, and padded
+/// field names: the key is matched against the request format's root
+/// members, so it must be the member name exactly.
 fn deserialize_restrict<'de, D>(
     deserializer: D,
 ) -> Result<IndexMap<String, RestrictBounds>, D::Error>
@@ -371,13 +385,7 @@ where
         deserializer,
         "a map of request field names to bounds",
         "`restrict` field",
-        |field| {
-            if field.trim().is_empty() {
-                Err("`restrict` field name cannot be empty".to_string())
-            } else {
-                Ok(())
-            }
-        },
+        |field| check_identifier(field, "`restrict` field name"),
     )
 }
 
@@ -469,16 +477,32 @@ impl TryFrom<String> for PublicName {
     }
 }
 
-/// Reject blank member names so a selection always names something.
+/// Reject blank member names so a selection always names something, and
+/// padded ones so the stored name is the contract identifier exactly:
+/// `" video_stream "` would otherwise be looked up verbatim at publication
+/// and reported as a member the contract does not declare.
 fn deserialize_member<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
-    if value.trim().is_empty() {
-        return Err(de::Error::custom("`member` cannot be empty"));
-    }
+    check_identifier(&value, "`member`").map_err(de::Error::custom)?;
     Ok(value)
+}
+
+/// The rule both selection identifiers follow: not blank, and not padded
+/// with whitespace. `label` names the field in the error.
+fn check_identifier(value: &str, label: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{label} cannot be empty"));
+    }
+    if value.trim() != value {
+        return Err(format!(
+            "{label} `{value}` is padded with whitespace; it must match the contract's \
+             identifier exactly"
+        ));
+    }
+    Ok(())
 }
 
 /// Reject blank prose (titles, instructions, descriptions): the exposure
@@ -768,6 +792,55 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_duplicate_target_key() {
+        let doc = format!(
+            r#"{{
+            peppy_schema: "mcp_exposure/v1",
+            manifest: {{ name: "surface", tag: "v1" }},
+            server: {{ title: "Surface" }},
+            targets: {{
+                cam: {{
+                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                    services: [{INFO_SERVICE}],
+                }},
+                cam: {{
+                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                    services: [{}],
+                }},
+            }},
+        }}"#,
+            INFO_SERVICE
+                .replace("video_stream_info", "set_brightness")
+                .replace("cam.info", "cam.set_brightness")
+        );
+        let err = parse_err(&doc);
+        assert!(err.contains("duplicate target `cam`"), "{err}");
+    }
+
+    #[test]
+    fn rejects_a_padded_member_name() {
+        let doc = minimal(&INFO_SERVICE.replace(
+            r#"member: "video_stream_info""#,
+            r#"member: " video_stream_info ""#,
+        ));
+        let err = parse_err(&doc);
+        assert!(
+            err.contains("padded with whitespace") && err.contains("video_stream_info"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_padded_restrict_field_name() {
+        let doc = camera_and_recording().replace(
+            "restrict: { value: { min: -64, max: 64 } }",
+            r#"restrict: { " value": { min: -64, max: 64 } }"#,
+        );
+        let err = parse_err(&doc);
+        assert!(err.contains("padded with whitespace"), "{err}");
+    }
+
+    #[test]
     fn rejects_an_empty_server_title() {
         let doc = minimal(INFO_SERVICE).replace(r#"title: "Surface""#, r#"title: "  ""#);
         assert!(parse_err(&doc).contains("cannot be empty"));
@@ -887,6 +960,23 @@ mod tests {
             err.contains("`restrict.value` must set `min`, `max`, or both"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn rejects_a_restrict_entry_whose_min_exceeds_its_max() {
+        for (bounds, min, max) in [
+            ("{ min: 64, max: -64 }", "64", "-64"),
+            ("{ min: 1.5, max: 0.5 }", "1.5", "0.5"),
+            ("{ min: 9007199254740993, max: 1 }", "9007199254740992", "1"),
+        ] {
+            let doc = camera_and_recording().replace("{ min: -64, max: 64 }", bounds);
+            let err = parse_err(&doc);
+            assert!(
+                err.contains("`restrict.value`")
+                    && err.contains(&format!("`min` ({min}) is greater than `max` ({max})")),
+                "{bounds}: {err}"
+            );
+        }
     }
 
     #[test]

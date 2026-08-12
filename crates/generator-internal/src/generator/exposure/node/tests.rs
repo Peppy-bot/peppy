@@ -407,13 +407,16 @@ fn an_action_only_exposure_generates_the_node() {
 fn an_invalid_exposure_reports_the_bundle_violations() {
     let exposure_json5 = camera_exposure().replace("video_stream_info", "video_info");
     let exposure = PeppyMcpExposureParser::from_content(&exposure_json5).expect("exposure parses");
-    let error = generate_exposure_node(&exposure, &[resolved(CAMERA_CONTRACT)])
-        .expect_err("a missing member does not generate");
+    // Both contracts resolve, so the renamed member is the only thing left
+    // to complain about.
+    let error = generate_exposure_node(
+        &exposure,
+        &[resolved(CAMERA_CONTRACT), resolved(RECORDING_CONTRACT)],
+    )
+    .expect_err("a missing member does not generate");
+    assert_eq!(error.violations.len(), 1, "got: {:?}", error.violations);
     assert!(
-        error
-            .violations
-            .iter()
-            .any(|violation| violation.contains("video_info")),
+        error.violations[0].contains("video_info"),
         "got: {:?}",
         error.violations
     );

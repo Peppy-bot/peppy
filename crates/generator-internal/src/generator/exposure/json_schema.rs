@@ -229,9 +229,10 @@ fn max_primitive_bytes(token: &TypeToken) -> Option<u64> {
         TypeToken::I32 => Some(11),
         // 20 decimal digits (sign included for i64) plus quotes.
         TypeToken::U64 | TypeToken::I64 => Some(22),
-        // Ryu shortest-representation worst cases.
-        TypeToken::F32 => Some(16),
-        TypeToken::F64 => Some(24),
+        // Ryu shortest-representation worst cases. An `f32` is widened to
+        // `f64` before it is serialized, so its rendering is the `f64` one:
+        // `0.1f32` reaches JSON as `0.10000000149011612`, not `0.1`.
+        TypeToken::F32 | TypeToken::F64 => Some(24),
         // Quotes, sign, a 12-digit proleptic year, `-MM-DDTHH:MM:SS`, nine
         // fractional digits with their dot, and `Z`.
         TypeToken::Time => Some(41),

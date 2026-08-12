@@ -508,6 +508,9 @@ fn generate_object_reader(
 
     let mut field_statements = Vec::new();
     let mut field_inits = Vec::new();
+    // The struct this reader builds and the prefix its own nested structs
+    // continue from are the same name, so it is computed once: the declared
+    // type and the constructed type cannot drift apart.
     let nested_prefix = nested_struct_name(struct_prefix, field_name);
 
     for (nested_name, nested_schema) in object {
@@ -526,8 +529,7 @@ fn generate_object_reader(
 
     statements.extend(field_statements);
 
-    let struct_name = nested_struct_name(struct_prefix, field_name);
-    let struct_ident = Ident::new(&struct_name, Span::call_site());
+    let struct_ident = Ident::new(&nested_prefix, Span::call_site());
     let value_ident = names.next(field_name);
     statements.push(quote! {
         let #value_ident = #struct_ident {

@@ -67,6 +67,13 @@ pub fn generate_exposure_node(
 
 /// Emit the node files for a bundle already built from `exposure` and
 /// `contracts`, so a caller needing both artifacts validates only once.
+///
+/// # Panics
+///
+/// `bundle` must be the [`build_exposure_bundle`] output for this exact
+/// `exposure` and `contracts`; the bridges are emitted by looking each
+/// bundle entry back up in its contract, so a bundle from a different
+/// input panics rather than emitting a node that cannot compile.
 pub fn generate_exposure_node_from_bundle(
     bundle: &ExposureBundle,
     exposure: &McpExposure,
@@ -359,11 +366,12 @@ fn render_main_rs(bundle: &ExposureBundle) -> String {
                     .build()
                     .expect("the committed bundle and the generated bridges agree");
                 #(#pumps)*
-                let listener =
-                    match tokio::net::TcpListener::bind(("127.0.0.1", args.port)).await {
-                        Ok(listener) => listener,
-                        Err(error) => panic!("cannot bind 127.0.0.1:{}: {error}", args.port),
-                    };
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", args.port))
+                    .await
+                    .map_err(|error| peppygen::Error::Io(std::io::Error::new(
+                        error.kind(),
+                        format!("cannot bind 127.0.0.1:{}: {error}", args.port),
+                    )))?;
                 let shutdown = tokio_util::sync::CancellationToken::new();
                 {
                     let shutdown = shutdown.clone();
@@ -371,7 +379,22 @@ fn render_main_rs(bundle: &ExposureBundle) -> String {
                         shutdown.cancel();
                     });
                 }
-                tokio::spawn(server.serve(listener, shutdown));
+                // The endpoint outlives this setup closure, so its outcome
+                // is observed by the spawned task itself: a `serve` that
+                // stops on its own takes the node down rather than leaving
+                // it running with no endpoint.
+                {
+                    let node_runner = std::sync::Arc::clone(&node_runner);
+                    tokio::spawn(async move {
+                        match server.serve(listener, shutdown).await {
+                            Ok(()) => tracing::debug!("the MCP endpoint stopped"),
+                            Err(error) => {
+                                tracing::error!(%error, "the MCP endpoint failed");
+                                node_runner.cancellation_token().cancel();
+                            }
+                        }
+                    });
+                }
                 Ok(())
             })
         }
@@ -631,17 +654,31 @@ fn render_task_bridge(
     // Cancellation is cooperative on both sides: `tasks/cancel` is
     // forwarded once to the Peppy cancel path, and the terminal result the
     // provider settles on decides the task's terminal state.
+    //
+    // `deadline_ms` is the whole-goal deadline, so every await after
+    // `started` spends what is left of it rather than restarting it: a
+    // provider that keeps sending feedback, or a cancel that takes its own
+    // time, cannot push the bridge past the deadline the tool advertises.
     let await_result = if feedback_format.is_some() {
         quote! {
             let mut cancel_pending = false;
             let mut cancel_forwarded = false;
+            // Armed once rather than per message: a feedback stream can be
+            // fast, and re-arming a timer on every message would both cost
+            // more and never actually expire.
+            let expiry = tokio::time::sleep(deadline.saturating_sub(started.elapsed()));
+            tokio::pin!(expiry);
             loop {
                 if cancel_pending {
                     cancel_pending = false;
                     cancel_forwarded = true;
-                    let _ = handle.cancel_goal(deadline).await;
+                    let _ = handle.cancel_goal(deadline.saturating_sub(started.elapsed())).await;
                 }
                 tokio::select! {
+                    // The deadline ends the feedback drain; the expired
+                    // `get_result` below turns it into the failure the
+                    // caller sees.
+                    _ = &mut expiry => break,
                     _ = context.cancel_requested(), if !cancel_forwarded => {
                         cancel_pending = true;
                     }
@@ -659,21 +696,21 @@ fn render_task_bridge(
                 }
             }
             let result = handle
-                .get_result(deadline)
+                .get_result(deadline.saturating_sub(started.elapsed()))
                 .await
                 .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
         }
     } else {
         quote! {
             let mut cancel_forwarded = false;
-            let result_future = handle.get_result(deadline);
+            let result_future = handle.get_result(deadline.saturating_sub(started.elapsed()));
             tokio::pin!(result_future);
             let result = loop {
                 tokio::select! {
                     result = &mut result_future => break result,
                     _ = context.cancel_requested(), if !cancel_forwarded => {
                         cancel_forwarded = true;
-                        let _ = handle.cancel_goal(deadline).await;
+                        let _ = handle.cancel_goal(deadline.saturating_sub(started.elapsed())).await;
                     }
                 }
             }
@@ -709,6 +746,7 @@ fn render_task_bridge(
             #request_statement
             let target = #module::bound_producer(node_runner);
             let deadline = std::time::Duration::from_millis(#deadline_literal);
+            let started = std::time::Instant::now();
             let #handle_binding = #module::ActionHandle::fire_goal(#fire_arguments)
                 .await
                 .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
