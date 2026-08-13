@@ -18,5 +18,6 @@ pub use services::repo::index::{
 pub use services::repo::{InitOutcome, ensure_default_repos};
 pub use services::{
     CoreNode, CoreNodeArguments, CoreNodeConfig, NAME_CLAIM_LINKED_SETTLE, TEARDOWN_REAP_BUDGET,
-    check_runtime_prerequisites, force_kill_deadline, teardown_all_instances,
+    check_runtime_prerequisites, force_kill_deadline, idle_timeout_flag, slow_connection_hint,
+    teardown_all_instances,
 };

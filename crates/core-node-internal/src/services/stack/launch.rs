@@ -4,6 +4,8 @@ mod orchestrate;
 mod phases;
 mod resolve;
 
+pub use phases::{idle_timeout_flag, slow_connection_hint};
+
 use self::feedback::{publish_stderr, publish_stdout};
 use self::orchestrate::{
     add_node_directly, build_node_directly, fail_and_clear_stack, start_node_directly,

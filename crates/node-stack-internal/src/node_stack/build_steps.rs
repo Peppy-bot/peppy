@@ -13,6 +13,7 @@ use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output};
+use crate::build_progress::BuildProgressMonitor;
 use crate::node_stack::container_build_cache;
 use config::node::PeppygenLanguage;
 
@@ -248,6 +249,28 @@ pub(super) async fn build_container_image(
     let child = spawn_in_process_group(cmd)
         .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
 
+    // Disk-growth progress: apptainer suppresses per-blob download progress
+    // off-TTY, so a slow base-image pull (and the silent "Creating SIF file..."
+    // stretch) would otherwise produce no feedback for minutes and trip the
+    // idle timeout. The probe samples every surface this build writes to —
+    // apptainer's cache and scratch, the build cache bind (a `%post` that
+    // compiles writes mostly there), and the output SIF — and the monitor
+    // emits a line only when the total grew, so genuine progress resets the
+    // idle clocks while a wedged build still times out. The guard lives on
+    // this future's stack: the phase runner dropping the future on timeout,
+    // cancellation, and normal completion all abort the monitor.
+    let usage_probe = {
+        let mut extra_roots = vec![output_path.clone()];
+        if let Some(cache) = &build_cache {
+            extra_roots.push(cache.host_dir.clone());
+        }
+        apptainer.cache_usage_probe(extra_roots)
+    };
+    let progress_monitor = BuildProgressMonitor::spawn(
+        move || usage_probe.usage_bytes(),
+        inputs.feedback_tx.clone(),
+    );
+
     let stream_result = stream_child_output(
         child,
         inputs.feedback_tx,
@@ -256,6 +279,7 @@ pub(super) async fn build_container_image(
         inputs.cancel_token,
     )
     .await;
+    drop(progress_monitor);
 
     // A `--force` supersede SIGKILL'd + reaped the host child above; now reach
     // into the VM and kill the guest process group too (no-op on Linux). Reuses

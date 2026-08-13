@@ -8,7 +8,7 @@
 //! The forwarder consumes those lines from an in-process mpsc channel and
 //! republishes each one onto a peppylib topic.
 
-pub(crate) use node_stack::{FeedbackLine, FeedbackStream};
+pub(crate) use node_stack::{FeedbackLine, FeedbackStream, stdout_line_sender};
 
 /// Spawns a task that consumes `FeedbackLine` values from `feedback_rx`,
 /// converts each one via `encode` and publishes the resulting payload. Shared

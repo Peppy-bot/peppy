@@ -41,7 +41,7 @@ pub use sync::listen_for_node_sync;
 
 pub(crate) use add::{NodeAddActionContext, dispatch_node_add, log_label_from_source};
 pub(crate) use builder::{NodeBuildActionContext, run_node_build_for_entity};
-pub(crate) use feedback::{FeedbackLine, FeedbackStream};
+pub(crate) use feedback::{FeedbackLine, FeedbackStream, stdout_line_sender};
 pub(crate) use git_utils::{
     checkout_repo_ref, clone_repo_shallow, clone_with_progress, format_bytes, head_commit,
 };
