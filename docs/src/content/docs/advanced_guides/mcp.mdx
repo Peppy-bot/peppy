@@ -1,0 +1,279 @@
+---
+title: MCP exposure
+description: Publish a selected, policy-governed slice of a running Peppy stack to MCP clients as resources, tools, and tasks, through a generated server node with no hand-written code
+sidebar:
+  order: 17
+---
+
+import { Code } from '@astrojs/starlight/components';
+import cameraAndRecordingExposure from '../guides/snippets/exposures/camera_and_recording.json5?raw';
+import mcpLauncher from '../guides/snippets/launchers/camera_and_recording_mcp.json5?raw';
+
+An **MCP exposure** publishes part of a running Peppy stack to [Model Context Protocol](https://modelcontextprotocol.io) clients. A client reads camera frames, calls services, and drives long-running actions over one HTTP endpoint, without a Peppy session, without the messaging layer, and without knowing that any of it is Peppy.
+
+The exposure is an allowlist, and that is the whole security model. You write one document that names the contract members you want public, gives each a stable public name, MCP-facing prose, and operational policies. `peppy repo exposure` validates that document against the exact pinned contract bytes and generates a complete MCP server node from it. **Anything you do not name is not reachable through the endpoint** — not by guessing a name, not by a client that knows the internal one. The catalog a client sees is exactly the selection, even when the stack it fronts carries far more.
+
+Nothing about the surface is hand-written. Every request and response shape is derived from the referenced contracts, so the public schema and the internal one cannot drift apart: change a contract, and either the exposure republishes with the new shapes or it stops validating.
+
+## The shape of the surface
+
+An exposure draws from [contracts](/advanced_guides/contract_implementation/), so the three Peppy communication primitives map onto the three MCP ones:
+
+| You select a contract's… | It becomes | A client… |
+| --- | --- | --- |
+| [Topic](/advanced_guides/topics/) | **Resource** | Reads the latest policy-approved snapshot, and subscribes to be told when it changes |
+| [Service](/advanced_guides/services/) | **Tool** | Calls it and gets the answer in the same request |
+| [Action](/advanced_guides/actions/) | **Tool backed by an MCP task** | Gets a task handle, watches progress, confirms, cancels, reconnects |
+
+The server speaks MCP revision `2026-07-28` over Streamable HTTP, including the tasks extension (SEP-2663) that action-backed tools need.
+
+## The exposure document
+
+An exposure is a stand-alone JSON5 document declaring `peppy_schema: "mcp_exposure/v1"`. Like contracts and pairings it is filename-agnostic and identified by content, keyed by the `name:tag` in its manifest, and discovered by [`peppy repo index`](/advanced_guides/repositories/#index-a-repository).
+
+Here is a complete one. It fronts two nodes: a camera whose frames become an image resource and whose two services become tools, and a recorder whose `record_episode` action becomes a confirmation-gated task.
+
+<Code code={cameraAndRecordingExposure} lang="json5" title="exposures/camera_and_recording.json5" />
+
+It selects from these two contracts:
+
+```json5
+// contracts/rgb_camera.json5
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "rgb_camera", tag: "v1" },
+  interfaces: {
+    topics: [
+      {
+        name: "video_stream",
+        qos_profile: "sensor_data",
+        message_format: {
+          frame: { $type: "array", $items: "u8" },
+          encoding: "string",
+          width: "u32",
+          height: "u32",
+        },
+      },
+    ],
+    services: [
+      {
+        name: "video_stream_info",
+        response_message_format: {
+          width: "u32",
+          height: "u32",
+          frames_per_second: "u8",
+          encoding: "string",
+        },
+      },
+      {
+        name: "set_brightness",
+        request_message_format: { value: "i8" },
+        response_message_format: { applied: "i8" },
+      },
+    ],
+  },
+}
+```
+
+```json5
+// contracts/episode_recording.json5
+{
+  peppy_schema: "contract/v1",
+  manifest: { name: "episode_recording", tag: "v1" },
+  interfaces: {
+    actions: [
+      {
+        name: "record_episode",
+        goal_service: { request_message_format: { episode_name: "string" } },
+        feedback_topic: { message_format: { frame: "u32" } },
+        result_service: { response_message_format: { frames: "u32" } },
+      },
+    ],
+    services: [
+      { name: "finish_session", response_message_format: { episodes_recorded: "u32" } },
+    ],
+  },
+}
+```
+
+`finish_session` is live on the running recorder and absent from the exposure. It stays private.
+
+### Targets are logical, not instances
+
+Each key under `targets` names a **role**, not a running node. `front_camera` becomes the `link_id` of a `depends_on.contracts` slot on the generated server node, and the launcher binds it to a concrete instance at [deploy time](#deploy-it). One exposure therefore serves a simulated camera in the morning and the real one in the afternoon, with no republication.
+
+A target must select at least one member, and an exposure must declare at least one target.
+
+### Contracts are pinned by content
+
+The `sha256` on a target's contract reference is **mandatory**, unlike the optional author pins described in [Content pins](/advanced_guides/lockfiles/). A `name:tag` does not fix content, and the public JSON Schemas are derived from content: the same exposure resolved against a drifted contract would publish a different surface under the same name. The pin makes publication reproducible wherever it runs.
+
+The fingerprint is the SHA-256 of the contract document's bytes, so `sha256sum contracts/rgb_camera.json5` gives it to you. You can also let the tool tell you: publish with any 64-character placeholder, and the refusal names the fingerprint the resolved document actually has.
+
+```text
+target `front_camera` pins contract `rgb_camera:v1` at sha256 `0000…0000`,
+but the resolved document's bytes fingerprint to `44527ab0…fb736ab`
+```
+
+### Public names
+
+`resource` and `tool` are the names clients see, and they are yours to choose: stable, prefixed however you like, independent of the internal member names. They live in **one namespace across the whole exposure** — a resource and a tool cannot share a name, even across targets — and must be 1 to 128 characters of ASCII letters, digits, `_`, `-`, and `.`, with `.` only between other characters.
+
+A resource's URI is derived from its name as `peppy://resource/<name>`.
+
+## Policies
+
+Policies are the difference between "the messaging layer, but on HTTP" and a surface that is safe to hand to a model. They are declared per member and enforced by the running server.
+
+### Topic policies
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `freshness.max_age_ms` | yes | A snapshot older than this reads as stale instead of being served as if current |
+| `update.max_hz` | yes | Cap on how often the snapshot refreshes and notifies subscribers. Messages arriving faster are dropped **before** any decoding or transcoding, so a 30 Hz camera costs nothing extra for a client reading twice a minute |
+| `representation` | no | Interpret the message as an image and publish it in a codec (see below) |
+| `max_result_bytes` | conditional | Cap on the serialized snapshot content, after representation runs |
+| `on_oversize` | conditional | What to do when the content exceeds that cap: `downscale` (re-encode small enough to fit) or `reject` (report the read as failed) |
+
+Whether the size policy is required is decided by the message format, not by taste. A payload whose serialized size has a **static maximum** (only fixed-size scalars, fixed-length arrays, nested objects of those) is checked once at publication: `max_result_bytes` is optional, but if present it must be at least that maximum, and `on_oversize` is refused outright because it could never fire. A payload with **no static maximum** (a `string`, a `bytes`, or a variable-length array — a camera frame, for instance) must declare both `max_result_bytes` and `on_oversize`, because nothing else bounds what a read can return.
+
+An image `representation` names members of the topic's own message format by role:
+
+```json5
+representation: {
+  image: "jpeg",     // or "raw", which passes the frame bytes through untouched
+  quality: 80,       // `jpeg` only; a `raw` representation has no encode step
+  fields: {
+    data: "frame",       // `bytes` or an array of `u8`
+    encoding: "encoding", // `string`
+    width: "width",       // `u8`, `u16`, or `u32`
+    height: "height",     // `u8`, `u16`, or `u32`
+  },
+}
+```
+
+All four roles must name required (non-`$optional`) root members of the right type: a frame the runtime has to interpret must always carry them. Frames whose encoding already matches the codec pass through without transcoding, and `on_oversize: "downscale"` requires a `jpeg` representation, since re-encoding smaller is the only way to comply.
+
+### Service policies
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `operation` | yes | `read_only` or `mutating`, advertised to the client. Long-running work is an action, so there is no third value |
+| `deadline_ms` | yes | How long the call waits before it comes back as a tool error |
+| `restrict` | no | Inclusive `min`/`max` bounds narrowing numeric request fields |
+| `max_result_bytes` | no | Cap on the serialized tool result; a larger response is a tool error |
+
+`restrict` keeps the contract's types and tightens its ranges. Each key names a **root member of the request format**, and the bounds are reflected into the published input schema as `minimum`/`maximum`, so a client sees the narrowed range and the endpoint refuses violations before the Peppy graph is touched. Bounds must fit the member's own type (`min: -200` on an `i8` is refused at publication), and a `u64` or `i64` member cannot be restricted at all: it publishes as a decimal string, which has nowhere to carry numeric bounds. Narrow the contract type instead.
+
+### Action policies
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `operation` | yes | `long_running`, the only value; actions are long-running by definition |
+| `deadline_ms` | yes | Whole-goal deadline. The advertised task TTL is this plus a short grace window |
+| `safety_sensitive` | no | Advertises that the call changes the physical world. Defaults to `false` |
+| `confirmation_required` | no | The task parks in `input_required` and sends no goal until the client confirms through `tasks/update`. Defaults to `false` |
+
+## The published schemas
+
+Request and response shapes are never written in the exposure. They are derived from the contract's [`message_format`](/reference/message_format/) declarations by one canonical, versioned mapping, recorded in the bundle so a reader knows which rules produced its schemas.
+
+Most of it is the obvious thing. The four rules worth knowing are the shapes JSON cannot carry natively:
+
+| `message_format` | Published JSON Schema | Why |
+| --- | --- | --- |
+| `bool`, `string`, `f32`, `f64` | `boolean`, `string`, `number` | Direct |
+| `u8`…`u32`, `i8`…`i32` | `integer` with `minimum`/`maximum` | The type's own range is published |
+| `u64`, `i64` | `string` with a canonical decimal `pattern` | JSON numbers lose precision above 2<sup>53</sup> |
+| `time` | `string`, `format: "date-time"` | RFC 3339, fractional seconds carrying full nanosecond precision |
+| `bytes`, array of `u8` | `string`, `contentEncoding: "base64"` | Identical on the wire, so they share one rendering. A fixed byte length pins the exact base64 length |
+| Other arrays | `array` with `items`; fixed length pins `minItems`/`maxItems` | Direct |
+| Nested objects | `object` with every property required | `$optional` is legal only at the root |
+| `$optional` root field | Omitted from `required` | Direct |
+
+Public property names keep the DSL's snake_case spelling rather than the lowerCamelCase the wire encoding uses internally, and every emitted object schema closes with `additionalProperties: false`.
+
+## Publish it
+
+```sh
+peppy repo exposure exposures/camera_and_recording.json5           # write the artifacts
+peppy repo exposure exposures/camera_and_recording.json5 --check   # verify the committed ones
+```
+
+The pinned contracts resolve through the local repository caches, so [`peppy repo refresh`](/advanced_guides/repositories/#refresh-the-index) must have run on this machine first. Neither form needs a running daemon.
+
+Publication writes two artifacts next to the document:
+
+```text
+exposures/
+├── camera_and_recording.json5            # the document you wrote
+├── camera_and_recording.bundle.json      # the derived public catalog
+└── camera_and_recording_mcp/             # the generated MCP server node
+    ├── peppy.json5
+    ├── Cargo.toml
+    ├── .gitignore
+    └── src/
+        ├── main.rs
+        ├── bridges.rs
+        └── bundle.json
+```
+
+The **bundle** is the public catalog: every resource, tool, and task with its stable name, prose, policies, and derived JSON Schemas, plus the identity and contract slots of the server node. The **node** is a complete Rust crate with no hand-written code:
+
+- `peppy.json5` declares one `depends_on.contracts` slot per logical target, consumes exactly the selected members, and takes a single `port` argument (default `8900`).
+- `bridges.rs` translates between the canonical public JSON and the typed peppygen clients, in both directions, for every shape the message-format DSL can express.
+- `main.rs` composes the shared `peppy-mcp-runtime` crate, pumps each exposed topic into its resource, and binds the endpoint.
+- `src/bundle.json` is the published bundle, embedded byte-identical, and served as the catalog.
+
+Both artifacts are committed to the hub alongside the document. `--check` regenerates everything and refuses committed files that do not match byte for byte, listing every drifted file; run it in CI next to `peppy repo index --check` so a hub cannot merge a catalog that has drifted from the document it claims to come from. Only generated files are compared, so a `Cargo.lock` you commit beside them is not judged. The remedy for a drift is the same as for the index: re-run the command and commit the result.
+
+## Deploy it
+
+The generated node is an ordinary `node/v1`. `peppy repo index` picks it up like any other node, and a launcher deploys it by `name:tag` — `<exposure name>_mcp` at the exposure's tag. The one thing specific to it is `links`: one entry per target, binding each logical role to a concrete running instance.
+
+<Code code={mcpLauncher} lang="json5" title="camera_and_recording_mcp.json5" />
+
+```sh
+peppy stack launch camera_and_recording_mcp
+```
+
+The node binds `127.0.0.1:<port>` and serves MCP under `/mcp`; every other path answers 404. Point a client at `http://127.0.0.1:8900/mcp`.
+
+## What a client sees
+
+**Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity, and `2026-07-28` as the only supported revision. Discovery and both list results carry caching hints — a one-hour TTL, private scope — because the catalog is fixed for the life of the server: changing it means republishing the exposure and redeploying the node.
+
+**Resources.** A read serves the latest snapshot that passed the policies, with `ttlMs` set to the freshness it has left. Before the first publish arrives the resource reads as unavailable; once the stored snapshot ages past `freshness.max_age_ms` it reads as stale rather than serving a stale frame silently. A snapshot refused by the size policy leaves the previous one current, ageing toward staleness. Subscribers are notified on each accepted publish.
+
+**Tools.** Input is validated against the published schema — including `restrict` bounds — before anything reaches the Peppy graph, so a violation and an unknown tool name are both refused at the endpoint. A service that does not answer within `deadline_ms` comes back as a readable tool error.
+
+**Tasks.** An action-backed tool requires a client that advertises the tasks capability; without it, the call is refused before any task exists. With it, the call returns a task handle, and from there:
+
+1. If `confirmation_required`, the task parks in `input_required` until the client confirms through `tasks/update`. No goal is sent before that.
+2. The goal fires, and action feedback drives the task's status message as it arrives.
+3. `tasks/cancel` forwards to the action's cooperative cancel path; the task settles as `cancelled`.
+4. On success the task completes with the structured result. A goal that is rejected, abandoned, or expired settles as `failed` with a message saying which.
+
+Task handles outlive connections: a client that reconnects can drive and observe the same task.
+
+## What validation refuses
+
+Publication names **every** violation at once, so a document is fixed in one pass rather than one error per run. An exposure is refused when:
+
+- A selected member does not exist in its contract, or exists under a different kind. The message lists what the contract does declare, and points at the right section when a member of that name exists as another kind.
+- A public name is claimed twice anywhere in the document.
+- A message definition does not translate under the canonical schema mapping.
+- A representation role names a missing, `$optional`, or wrongly typed member.
+- A `restrict` bound does not fit its member's type, names a non-numeric member, or targets a `u64`/`i64`.
+- A `max_result_bytes` is smaller than a payload's static maximum, or a topic with an unbounded payload omits the size policy.
+- A contract pin does not match the resolved document's bytes.
+
+Parse-level mistakes are caught before that: an empty target set, a target selecting nothing, a duplicated member, blank prose, a zero deadline, a `max_hz` that is not positive and finite, a `quality` on a `raw` representation, an `on_oversize` without a `max_result_bytes`, or `downscale` without a `jpeg` representation.
+
+## What stays private
+
+Worth stating plainly, because it is the reason the exposure exists:
+
+- The MCP endpoint is **not** a bridge to the messaging layer. There is no pass-through, no escape hatch, and no way to name an internal member that the exposure did not select. A running stack carrying live capabilities the exposure omits — `finish_session` in the example above — publishes none of them.
+- The catalog is exactly the selection. `tools/list` and `resources/list` return what the bundle contains and nothing else, and unknown names are refused at the endpoint.
+- The endpoint binds `127.0.0.1`. Reaching it from elsewhere is a deliberate act of your own network configuration, not a default.

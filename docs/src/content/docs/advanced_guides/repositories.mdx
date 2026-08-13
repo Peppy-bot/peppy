@@ -11,7 +11,7 @@ Repositories tell Peppy where to look for nodes, launchers, contracts, pairings,
 - **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
 - **Contracts**, identified by content: every `.json5` file whose body declares `peppy_schema: "contract/v1"` is treated as a contract, regardless of its filename. A contract is a reusable declaration of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes claim contracts by `name:tag` in `manifest.implements`.
 - **Pairings**, identified by content: every `.json5` file whose body declares `peppy_schema: "pairing/v1"` is treated as a pairing, regardless of its filename. A pairing is a two-role, topics-only contract that two node instances pair 1:1 over, keyed by the `name:tag` declared in its manifest; see [Pairing](/advanced_guides/pairing/).
-- **MCP exposures**, identified by content: every `.json5` file whose body declares `peppy_schema: "mcp_exposure/v1"` is treated as an MCP exposure, regardless of its filename, keyed by the `name:tag` declared in its manifest. An exposure selects members of sha256-pinned contracts and gives them stable public names, MCP-facing prose, and operational policies; [`peppy repo exposure`](#publish-an-exposures-bundle-and-mcp-server-node) validates it and publishes its bundle.
+- **MCP exposures**, identified by content: every `.json5` file whose body declares `peppy_schema: "mcp_exposure/v1"` is treated as an MCP exposure, regardless of its filename, keyed by the `name:tag` declared in its manifest. An exposure selects members of sha256-pinned contracts and gives them stable public names, MCP-facing prose, and operational policies; [`peppy repo exposure`](#publish-an-exposures-bundle-and-mcp-server-node) validates it and publishes its bundle. See [MCP exposure](/advanced_guides/mcp/).
 
 Out of the box, four repositories are configured:
 
@@ -280,7 +280,8 @@ peppy repo exposure PATH --check   # verify the committed artifacts instead of w
 ```
 
 An MCP exposure document (`peppy_schema: "mcp_exposure/v1"`) selects members of sha256-pinned
-contracts and assigns them stable public names, MCP-facing descriptions, and operational policies.
+contracts and assigns them stable public names, MCP-facing descriptions, and operational policies;
+[MCP exposure](/advanced_guides/mcp/) is the guide to writing one and deploying its server node.
 `peppy repo exposure` resolves each pinned contract through the local repository caches (run
 `peppy repo refresh` first), validates the exposure against exactly those bytes, and publishes two
 artifacts next to the document: the derived bundle (the public catalog of resources, tools, and
