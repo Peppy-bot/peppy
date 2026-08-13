@@ -14,7 +14,7 @@ use clap::Subcommand;
 use tracing::info;
 
 use super::Command;
-use super::node::DEFAULT_IDLE_TIMEOUT_SECS;
+use super::node::{DEFAULT_BUILD_IDLE_TIMEOUT_SECS, DEFAULT_IDLE_TIMEOUT_SECS};
 use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
@@ -42,8 +42,9 @@ pub enum StackCommands {
         /// Idle timeout in seconds for the node add phase (resets on git/http progress or sub-process output)
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         node_add_idle_timeout_secs: u64,
-        /// Idle timeout in seconds for the node build phase (resets on build_cmd output)
-        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        /// Idle timeout in seconds for the node build phase (resets on build output or
+        /// image-download/write progress)
+        #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS)]
         node_build_idle_timeout_secs: u64,
         /// Idle timeout in seconds for the node run-startup phase (resets on subprocess output until the node signals ready)
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]

@@ -20,19 +20,10 @@ fn is_local_url(repo_url: &str) -> bool {
     repo_url.starts_with('/') || repo_url.starts_with("file://")
 }
 
-/// Renders byte counts in the compact form used by all clone/fetch progress
-/// lines (`KB`/`MB`).
+/// Renders byte counts in the compact `KB`/`MB`/`GB` form shared by all of
+/// peppy's progress lines (delegates to the one formatter in `node-stack`).
 pub(crate) fn format_bytes(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
+    node_stack::build_io::format_bytes(bytes as u64)
 }
 
 pub(crate) fn sanitize_repo_path(repo_path: &str) -> std::result::Result<PathBuf, String> {

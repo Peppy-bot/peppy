@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use core_node::{idle_timeout_flag, slow_connection_hint};
 use core_node_api::encoding::{
     LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
@@ -447,8 +448,20 @@ async fn launch_async(
             if let Some(output) = scrolling_output.as_mut() {
                 output.clear();
             }
+            // Name the phase that went quiet and the flag that raises its
+            // budget, so a slow-connection user is pointed at the fix instead
+            // of a bare timeout.
+            let (phase, hint) = match current_scrolling_step {
+                Some(step) => (
+                    format!(" during the {} phase", step.phase_label()),
+                    idle_timeout_flag(step)
+                        .map(|flag| format!("; {}", slow_connection_hint(flag)))
+                        .unwrap_or_default(),
+                ),
+                None => (String::new(), String::new()),
+            };
             return Err(Error::ExecutionFailed(format!(
-                "Launch timed out: no output received for {}s. Log file: {}",
+                "Launch timed out: no output received for {}s{phase}{hint}. Log file: {}",
                 cli_idle_timeout.as_secs(),
                 goal_response.log_path.display()
             )));

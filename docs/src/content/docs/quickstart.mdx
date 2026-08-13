@@ -62,7 +62,7 @@ Every circle is one instance the launcher started, and every arrow a link betwee
 :::
 
 :::note
-The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. `--node-build-idle-timeout-secs` raises the window the daemon allows without build output, which keeps it from killing that first download partway through. Subsequent launches don't need the flag.
+The first launch pulls the MuJoCo simulation image (a few hundred megabytes) and converts it into a local Apptainer image, so expect it to take a while; later launches reuse the cached image. Download and image-assembly progress counts as build output, so a slow connection won't trip the build idle timeout on its own. If a build of yours genuinely goes quiet for minutes (no output *and* no bytes written to disk), raise the window with `--node-build-idle-timeout-secs`.
 :::
 
 ## Step 3: Drive the arms
