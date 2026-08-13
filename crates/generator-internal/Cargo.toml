@@ -75,5 +75,5 @@ rmcp = { workspace = true, features = [
     "transport-streamable-http-client-reqwest",
     "reqwest",
 ] }
-base64 = "0.22"
+base64 = "0.23"
 rstest = { workspace = true }

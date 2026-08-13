@@ -54,7 +54,7 @@ tempfile = { version = "3.8", optional = true }
 # Docker Engine API driver for the multi-daemon e2e test (container lifecycle,
 # exec, logs) instead of shelling out to the docker CLI. Optional rather than a
 # dev-dependency so its tree is only built when `multi_daemon_e2e` is enabled.
-testcontainers = { version = "0.27", optional = true }
+testcontainers = { version = "0.28", optional = true }
 
 [build-dependencies]
 build-helpers = { workspace = true }
@@ -104,7 +104,7 @@ rmcp = { workspace = true, features = [
     "transport-streamable-http-client-reqwest",
     "reqwest",
 ] }
-base64 = "0.22"
+base64 = "0.23"
 
 [[test]]
 name = "integration"
