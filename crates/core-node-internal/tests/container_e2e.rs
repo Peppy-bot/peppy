@@ -10,12 +10,14 @@ mod container_e2e_tests {
     };
     use config::node::Toolchain;
     use config::runtime::Name as NodeName;
-    use core_node_api::encoding::NodeInitRequest;
+    use core_node_api::encoding::{NodeBuildResult, NodeInitRequest};
     use daemon_config::consts::DEFAULT_ALPINE_BASE_IMAGE;
-    use node_stack::{NodeStack, NodeStage};
+    use node_stack::NodeStack;
     use peppylib::core_node::transport::poll;
+    use std::collections::HashSet;
     use std::time::Duration;
     use tempfile::tempdir;
+    use tokio::task::JoinHandle;
 
     /// End-to-end test: init a Rust container node, build the container image,
     /// and start it using the real Apptainer runtime.
@@ -337,22 +339,87 @@ mod container_e2e_tests {
         );
     }
 
-    /// Polls the node stack until `(name, tag)` is `Building`, so the next
-    /// `--force` actually supersedes a running build rather than racing its
+    /// PIDs of the live `%post` marker processes in the build kernel. The
+    /// `[P]...` class keeps the grep from matching its own argv.
+    fn marker_pids(facade: &containers::Apptainer) -> HashSet<u32> {
+        let out = facade
+            .guest_command(&[
+                "sh",
+                "-c",
+                "ps -eo pid=,args= | grep '[P]EPPY_ZOMBIE_E2E_MARKER'",
+            ])
+            .expect("guest_command should run");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+            .collect()
+    }
+
+    /// SIGKILLs each marker's whole (setsid-detached) process group, so the
+    /// `%post` loop and its `sleep` child go together.
+    fn kill_marker_groups(facade: &containers::Apptainer, marker: &str) {
+        let kill_groups = format!(
+            "for p in $(pgrep -f '[P]{m}'); do \
+                 g=$(ps -o pgid= -p \"$p\" 2>/dev/null | tr -d ' '); \
+                 [ -n \"$g\" ] && kill -KILL -\"$g\" 2>/dev/null; \
+             done; true",
+            m = &marker[1..]
+        );
+        let _ = facade.guest_command(&["sh", "-c", &kill_groups]);
+    }
+
+    /// How `(name, tag)` stands in the stack, for failure diagnostics. A build
+    /// that fails rolls its entity out of the stack entirely, so without this
+    /// "the build died" and "the build never started" look identical from the
+    /// waiting side.
+    fn stack_stage(stack: &NodeStack, name: &str, tag: &str) -> String {
+        match stack.find(name, tag) {
+            Some(handle) => handle.read().stage().name().to_owned(),
+            None => "rolled out of the stack by a failed build".to_owned(),
+        }
+    }
+
+    /// Blocks until the build driven by `task` is inside `%post`, which is what
+    /// makes the next `--force` supersede a running build rather than race its
     /// admission.
-    async fn wait_until_building(stack: &NodeStack, name: &str, tag: &str) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    ///
+    /// The evidence is a marker process that was not already alive in `before`:
+    /// a displaced build leaking its `%post` is the very thing this test hunts,
+    /// so "a marker is alive" would not prove *this* build got there.
+    ///
+    /// A build that reaches `%post` blocks there until superseded, so a task
+    /// that finishes while we wait was rejected or failed. Its error is
+    /// surfaced here, because the alternative is the failure this guard was
+    /// written for: the build dies, the daemon rolls the entity out of the
+    /// stack, every later `--force` goal is rejected with "not in the node
+    /// stack", and the test reports a timeout that names none of it.
+    async fn wait_until_in_post(
+        facade: &containers::Apptainer,
+        stack: &NodeStack,
+        name: &str,
+        tag: &str,
+        before: &HashSet<u32>,
+        task: &mut JoinHandle<Result<NodeBuildResult, String>>,
+        index: usize,
+    ) -> HashSet<u32> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
         loop {
-            if let Some(handle) = stack.find(name, tag)
-                && matches!(handle.read().stage(), NodeStage::Building { .. })
-            {
-                return;
+            if task.is_finished() {
+                let outcome = task.await.expect("build task should not panic");
+                panic!("build {index} ended instead of blocking in `%post`: {outcome:?}");
+            }
+            let pids = marker_pids(facade);
+            if pids.difference(before).next().is_some() {
+                return pids;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "node {name}:{tag} did not enter Building within 60s"
+                "build {index} did not reach `%post` within 120s (node {name}:{tag} is {}, \
+                 {} marker process(es) alive)",
+                stack_stage(stack, name, tag),
+                pids.len()
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -370,6 +437,7 @@ mod container_e2e_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn container_force_build_kills_displaced_guest_build() {
         const NODE_NAME: &str = "zombie_e2e_node";
+        const BASE_NODE_NAME: &str = "zombie_e2e_base";
         const NODE_TAG: &str = "v1";
         const MARKER: &str = "PEPPY_ZOMBIE_E2E_MARKER";
         // Each `--force` supersedes the prior in-flight build. The first build is
@@ -386,21 +454,68 @@ mod container_e2e_tests {
         // Same runtime the build uses, for inspecting/cleaning its processes.
         let facade = containers::Apptainer::new().expect("apptainer facade should init");
 
-        // Count live `%post` marker processes in the build kernel. The `[P]...`
-        // class keeps the grep from matching its own argv.
-        let count_markers = || -> usize {
-            let out = facade
-                .guest_command(&[
-                    "sh",
-                    "-c",
-                    "ps -eo args | grep -c '[P]EPPY_ZOMBIE_E2E_MARKER'",
-                ])
-                .expect("guest_command should run");
-            String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .parse()
-                .unwrap_or(0)
-        };
+        // A run that panicked mid-chain never reached its own cleanup and left
+        // its blocked `%post` processes behind. Reclaim any such leftovers up
+        // front so this run counts only markers it created, instead of failing
+        // on a predecessor's.
+        kill_marker_groups(&facade, MARKER);
+
+        // Pull the base image once, here, into a local `.sif` the supersede
+        // chain then bootstraps from. The chain cares only that each build
+        // blocks in `%post`, not where its rootfs came from, and going through
+        // a registry six times makes it hostage to that registry: a fetch that
+        // fails takes its build's entity out of the stack with it, and every
+        // later `--force` goal is then rejected. Doing it once, up front, in a
+        // build whose only job is the fetch, keeps that failure legible.
+        let base_dir = tempfile::tempdir().expect("base source dir");
+        write_peppy_json5(
+            base_dir.path(),
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "zombie_e2e_base", tag: "v1" },
+                execution: { language: "rust", container: { def_file: "apptainer.def" } }
+            }"#,
+        );
+        std::fs::write(
+            base_dir.path().join("apptainer.def"),
+            format!("Bootstrap: docker\nFrom: {DEFAULT_ALPINE_BASE_IMAGE}\n"),
+        )
+        .expect("write base apptainer.def");
+
+        let base_add = send_node_add_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            base_dir.path(),
+            Duration::from_secs(30),
+            Duration::from_secs(300),
+            None,
+        )
+        .await
+        .expect("base node_add request should complete");
+        assert!(
+            base_add.success,
+            "base node_add should succeed, got error: {:?}",
+            base_add.error_message
+        );
+
+        let base_build = send_node_build_and_wait(
+            &started.caller_handle,
+            &started.core_node_name,
+            BASE_NODE_NAME,
+            NODE_TAG,
+            Duration::from_secs(30),
+            Duration::from_secs(600),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("base node_build request should complete");
+        assert!(
+            base_build.success,
+            "the base image build should succeed, got error: {:?}",
+            base_build.error_message
+        );
+        let base_sif = base_build.artifact_path;
 
         // A container node whose apptainer build blocks forever in `%post`,
         // leaving a uniquely-named process (`sh /PEPPY_ZOMBIE_E2E_MARKER`, so the
@@ -417,8 +532,9 @@ mod container_e2e_tests {
         std::fs::write(
             source_dir.path().join("apptainer.def"),
             format!(
-                "Bootstrap: docker\nFrom: {DEFAULT_ALPINE_BASE_IMAGE}\n\n\
-                 %post\n    echo 'while true; do sleep 100000; done' > /{MARKER}\n    sh /{MARKER}\n"
+                "Bootstrap: localimage\nFrom: {}\n\n\
+                 %post\n    echo 'while true; do sleep 100000; done' > /{MARKER}\n    sh /{MARKER}\n",
+                base_sif.display()
             ),
         )
         .expect("write apptainer.def");
@@ -444,11 +560,12 @@ mod container_e2e_tests {
         // superseded) and each `--force` supersedes the prior one, which must
         // kill the displaced build's whole process group.
         let mut tasks = Vec::new();
+        let mut markers = HashSet::new();
         for i in 0..BUILDS {
             let messenger = started.caller_handle.clone();
             let core_node = started.core_node_name.clone();
-            tasks.push(tokio::spawn(async move {
-                let _ = send_node_build_and_wait_forced(
+            let mut task = tokio::spawn(async move {
+                send_node_build_and_wait_forced(
                     &messenger,
                     &core_node,
                     NODE_NAME,
@@ -458,36 +575,45 @@ mod container_e2e_tests {
                     Vec::new(),
                     None,
                 )
-                .await;
-            }));
+                .await
+            });
 
-            // Wait until the build is registered Building, then let apptainer
-            // fetch/extract and enter `%post` (its marker process appears).
-            wait_until_building(&started.node_stack, NODE_NAME, NODE_TAG).await;
-            tokio::time::sleep(Duration::from_secs(12)).await;
+            markers = wait_until_in_post(
+                &facade,
+                &started.node_stack,
+                NODE_NAME,
+                NODE_TAG,
+                &markers,
+                &mut task,
+                i,
+            )
+            .await;
             eprintln!(
-                "[zombie-e2e] after build {i}: live markers = {}",
-                count_markers()
+                "[zombie-e2e] build {i} reached `%post`: live markers = {}",
+                markers.len()
             );
+            tasks.push(task);
         }
 
         // After the supersede chain, at most the final still-active build may have
         // a live marker. On the pre-fix code, displaced reuse-builds whose PGID
         // write lost the race were never killed and leak orphaned `%post`
         // processes.
-        let live = count_markers();
+        //
+        // The displaced build is SIGKILL'd and reaped before its successor is
+        // admitted, so a healthy chain is already down to one marker by the time
+        // the last build reports in; the short settle only absorbs the kernel
+        // taking a moment over the last kill. A leaked `%post` is an orphaned
+        // `sleep` loop that nothing will ever kill, so no settle window hides it.
+        let settle = std::time::Instant::now() + Duration::from_secs(10);
+        let mut live = marker_pids(&facade).len();
+        while live > 1 && std::time::Instant::now() < settle {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            live = marker_pids(&facade).len();
+        }
 
         // Clean up before asserting so a failure never leaks build processes.
-        // Kill each marker's whole (setsid-detached) process group so the
-        // `%post` loop and its `sleep` child go together.
-        let kill_groups = format!(
-            "for p in $(pgrep -f '[P]{m}'); do \
-                 g=$(ps -o pgid= -p \"$p\" 2>/dev/null | tr -d ' '); \
-                 [ -n \"$g\" ] && kill -KILL -\"$g\" 2>/dev/null; \
-             done; true",
-            m = &MARKER[1..]
-        );
-        let _ = facade.guest_command(&["sh", "-c", &kill_groups]);
+        kill_marker_groups(&facade, MARKER);
         for t in tasks {
             t.abort();
         }
