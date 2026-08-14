@@ -18,13 +18,12 @@
 
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use crate::helpers::{
-    init_python_project_venv, init_python_user_node, native_dep, test_peppy_dirs,
+    init_python_project_venv, init_python_user_node, native_dep, run_uv, test_peppy_dirs,
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
 use generator::{DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
 use std::fs;
-use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 const NODE_CONFIG: &str = r#"{
@@ -150,12 +149,7 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
     init_python_user_node(&user_node_dir);
     init_python_project_venv(&user_node_dir);
 
-    let output = Command::new("uv")
-        .args(["run", "python", "-c", PYTHON_PROBE])
-        .current_dir(&user_node_dir)
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to invoke uv run python");
+    let output = run_uv(&user_node_dir, &["run", "python", "-c", PYTHON_PROBE]);
 
     assert!(
         output.status.success(),

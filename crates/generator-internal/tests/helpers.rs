@@ -15,7 +15,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
@@ -1138,14 +1138,59 @@ peppylib = {{ path = "{PEPPYLIB_OUTPUT_PATH}" }}
         .expect("failed to write Python user node pyproject.toml");
 }
 
-/// Resolves and installs dependencies for the Python project via `uv sync`.
-pub fn init_python_project_venv(dir: impl AsRef<Path>) {
-    let output = Command::new("uv")
-        .arg("sync")
+/// Holds every other Python test until the first `uv sync` of the process has
+/// filled the shared uv cache. See [`init_python_project_venv`].
+static UV_CACHE_FILLED: OnceLock<()> = OnceLock::new();
+
+/// Runs `uv <args>` in `dir` and returns its output.
+pub fn run_uv(dir: impl AsRef<Path>, args: &[&str]) -> std::process::Output {
+    Command::new("uv")
+        .args(args)
         .current_dir(dir.as_ref())
         .stdin(Stdio::null())
         .output()
-        .expect("failed to invoke uv sync on Python project");
+        .unwrap_or_else(|err| panic!("failed to invoke `uv {}`: {err}", args.join(" ")))
+}
+
+/// Resolves and installs dependencies for the Python project via `uv sync`.
+///
+/// The first call in the process runs its sync alone and every other caller
+/// blocks behind it, because only that first sync writes the shared entries of
+/// the uv cache (`target/uv-cache`, pointed there by the workspace
+/// `.cargo/config.toml`).
+///
+/// Two syncs that materialise the same distribution at the same moment race:
+/// uv unpacks the wheel into a temp directory and renames it onto the archive
+/// id recorded in that distribution's cache pointer, so the loser dies with
+/// "Failed to read from the distribution cache ... Directory not empty".
+/// Every Python test project here is written by [`init_python_user_node`] with
+/// the same two path dependencies, so one completed sync leaves their whole
+/// third-party closure in the cache and every later sync only reads it. The
+/// per-test `peppygen` and `peppylib` builds cannot collide in their turn: uv
+/// keys built wheels by source path (`sdists-v9/path/<hash>`) and gives each a
+/// freshly generated archive id, and every test builds them under its own
+/// temporary directory.
+///
+/// The gate is per process, which is the whole race: cargo runs test binaries
+/// one at a time, so the parallel syncs all come from this binary's threads.
+pub fn init_python_project_venv(dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
+    let mut filled_the_cache = false;
+
+    UV_CACHE_FILLED.get_or_init(|| {
+        sync_python_project(dir);
+        filled_the_cache = true;
+    });
+
+    if !filled_the_cache {
+        sync_python_project(dir);
+    }
+}
+
+/// The `uv sync` itself, shared by the cache-filling first call and every
+/// parallel call after it.
+fn sync_python_project(dir: &Path) {
+    let output = run_uv(dir, &["sync"]);
     assert!(
         output.status.success(),
         "uv sync failed for Python project with status: {:?}\nstdout:\n{}\nstderr:\n{}",
