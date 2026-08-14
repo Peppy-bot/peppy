@@ -8,14 +8,14 @@
 //! Streamable HTTP under `2026-07-28`: `server/discover` advertising the
 //! published identity and hints, catalog listing with caching hints,
 //! unavailable-then-served resource reads with the JPEG default
-//! representation, a subscription notification after a publish, read-only
-//! and mutating tool round-trips, a deadline miss on a service the provider
-//! never answers, rejection of restrict violations and unknown names before
-//! anything reaches the Peppy graph, and the full action-backed task walk:
-//! the capability refusal, `CreateTaskResult`, confirmation through
+//! representation, a subscription notification per resource after a publish,
+//! read-only and mutating tool round-trips, a deadline miss on a service the
+//! provider never answers, rejection of restrict violations and unknown names
+//! before anything reaches the Peppy graph, and the full action-backed task
+//! walk: the capability refusal, `CreateTaskResult`, confirmation through
 //! `input_required` and `tasks/update`, feedback-driven progress,
-//! cancellation, the terminal-state mapping, and reconnect-and-resume on
-//! the same task handle.
+//! cancellation, the terminal-state mapping, and reconnect-and-resume on the
+//! same task handle.
 //!
 //! The design doc's harness sketch boots the node on the `MockAdapter`;
 //! compiled nodes always dial a real transport, so like every other
@@ -47,6 +47,7 @@ use rmcp::model::{
     DetailedTask, ErrorCode, GetTaskParams, ProtocolVersion, ReadResourceRequestParams,
     RequestMetaObject, ServerNotification, SubscriptionFilter, TaskStatus, object,
 };
+use rmcp::service::Subscription;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientLifecycleMode, ClientServiceExt};
@@ -297,6 +298,41 @@ fn wait_for_endpoint_or_exit(port: u16, child: &mut std::process::Child, dir: &P
             "the MCP endpoint did not accept connections within {DEFAULT_WAIT_TIMEOUT:?}"
         );
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Drains `subscription` until every URI in `expected` has announced a
+/// snapshot, allowing [`DEFAULT_WAIT_TIMEOUT`] per notification.
+///
+/// A `resources/read` serves only what a publish already pushed through the
+/// endpoint's policies, so every snapshot assertion has to be ordered behind
+/// that resource's own resource-updated notification. The stub drives its two
+/// topics from independent loops, and `video_stream` carries `sensor_data`
+/// QoS (best effort, low priority, dropped under congestion) while
+/// `camera_status` does not, so the first frame can land arbitrarily later
+/// than the first status message. Waiting on one URI says nothing about the
+/// other.
+async fn await_resource_updates(subscription: &mut Subscription, expected: &[&str]) {
+    let mut pending: Vec<&str> = expected.to_vec();
+    while !pending.is_empty() {
+        let notification = tokio::time::timeout(DEFAULT_WAIT_TIMEOUT, subscription.next())
+            .await
+            .unwrap_or_else(|_| {
+                panic!("{pending:?} announced no snapshot within {DEFAULT_WAIT_TIMEOUT:?}")
+            })
+            .expect("the subscription stream is healthy")
+            .expect("the stream did not end");
+        match notification {
+            ServerNotification::ResourceUpdatedNotification(updated) => {
+                assert!(
+                    expected.contains(&updated.params.uri.as_str()),
+                    "the filter subscribes {expected:?}, got {}",
+                    updated.params.uri
+                );
+                pending.retain(|uri| *uri != updated.params.uri);
+            }
+            other => panic!("expected a resource-updated notification, got {other:?}"),
+        }
     }
 }
 
@@ -671,12 +707,14 @@ fn main() -> Result<()> {
     );
     assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
-    // Subscribe before the provider exists; the notification proves the
-    // publish-to-notify path once the stub starts.
+    // Subscribe to both resources before the provider exists; the
+    // notifications prove the publish-to-notify path once the stub starts and
+    // are what the snapshot reads below are ordered behind.
     let mut subscription = client
         .listen(
             SubscriptionFilter::builder()
                 .resource_subscription(STATUS_URI)
+                .resource_subscription(FRAME_URI)
                 .build(),
         )
         .await
@@ -711,19 +749,11 @@ fn main() -> Result<()> {
     )
     .await;
 
-    // The subscription delivers a resource-updated notification for the
-    // subscribed URI once a publish passes the policies.
-    let notification = tokio::time::timeout(DEFAULT_WAIT_TIMEOUT, subscription.next())
-        .await
-        .expect("a notification arrives before the guard timeout")
-        .expect("the subscription stream is healthy")
-        .expect("the stream did not end");
-    match notification {
-        ServerNotification::ResourceUpdatedNotification(updated) => {
-            assert_eq!(updated.params.uri, STATUS_URI);
-        }
-        other => panic!("expected a resource-updated notification, got {other:?}"),
-    }
+    // The subscription delivers a resource-updated notification per
+    // subscribed URI once a publish on that topic passes the policies. Both
+    // have to arrive before the reads below: the notification is the
+    // endpoint's own evidence that the resource holds a snapshot.
+    await_resource_updates(&mut subscription, &[STATUS_URI, FRAME_URI]).await;
     subscription.cancel().await.expect("subscription cancels");
 
     // The status snapshot serves the canonical JSON of the published message.
