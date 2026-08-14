@@ -11,13 +11,13 @@
           name: "rgb_camera",
           tag: "v1",
           link_id: "front_camera",
-          sha256: "44527ab0542ac56389806315f21c6977c535a1874527926fcc480dd57fb736ab"
+          sha256: "c01e0d18340ab469c70cdec51a96282564af6883186f735c2cdd75660e079e2a"
         },
         {
           name: "episode_recording",
           tag: "v1",
           link_id: "recorder",
-          sha256: "a4cfd6ec023d2359c3b9911bf829a565b6e6a6b3b83d57df146c4a87f177c0d2"
+          sha256: "1be04e1677007c54cc1313abe847bca898fa1eef35f47df8a2916e00ab57b70a"
         }
       ]
     }

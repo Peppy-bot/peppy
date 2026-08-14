@@ -478,6 +478,13 @@ fn integer_range(token: &TypeToken) -> NumericKind {
     }
 }
 
+struct RepresentationRole<'a> {
+    name: &'static str,
+    member: &'a str,
+    accepts: fn(&SchemaType) -> bool,
+    expected: &'static str,
+}
+
 /// Check an image representation's field mapping against the topic's message
 /// format: every role must name a required root member of the right type.
 fn check_representation(
@@ -493,45 +500,56 @@ fn check_representation(
         ));
         return;
     };
-    let roles: [(&str, &str, fn(&SchemaType) -> bool, &str); 4] = [
-        (
-            "data",
-            &fields.data,
-            is_byte_carrier,
-            "`bytes` or an array of `u8`",
-        ),
-        ("encoding", &fields.encoding, is_string, "`string`"),
-        (
-            "width",
-            &fields.width,
-            is_dimension,
-            "`u8`, `u16`, or `u32`",
-        ),
-        (
-            "height",
-            &fields.height,
-            is_dimension,
-            "`u8`, `u16`, or `u32`",
-        ),
+    let roles = [
+        RepresentationRole {
+            name: "data",
+            member: &fields.data,
+            accepts: is_byte_carrier,
+            expected: "`bytes` or an array of `u8`",
+        },
+        RepresentationRole {
+            name: "encoding",
+            member: &fields.encoding,
+            accepts: is_string,
+            expected: "`string`",
+        },
+        RepresentationRole {
+            name: "width",
+            member: &fields.width,
+            accepts: is_dimension,
+            expected: "`u8`, `u16`, or `u32`",
+        },
+        RepresentationRole {
+            name: "height",
+            member: &fields.height,
+            accepts: is_dimension,
+            expected: "`u8`, `u16`, or `u32`",
+        },
     ];
-    for (role, member, accepts, expected) in roles {
+    for RepresentationRole {
+        name,
+        member,
+        accepts,
+        expected,
+    } in roles
+    {
         let Some(schema_type) = format.0.get(member) else {
             violations.push(format!(
-                "{context}: representation field `{role}` names `{member}`, but the topic's \
+                "{context}: representation field `{name}` names `{member}`, but the topic's \
                  message format has no root member `{member}`"
             ));
             continue;
         };
         if schema_type.is_optional() {
             violations.push(format!(
-                "{context}: representation field `{role}` names `{member}`, which is \
+                "{context}: representation field `{name}` names `{member}`, which is \
                  `$optional`; a frame the runtime interprets must always carry it"
             ));
             continue;
         }
         if !accepts(schema_type) {
             violations.push(format!(
-                "{context}: representation field `{role}` names `{member}`, which must be \
+                "{context}: representation field `{name}` names `{member}`, which must be \
                  {expected}"
             ));
         }

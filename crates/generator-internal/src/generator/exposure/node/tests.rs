@@ -10,101 +10,18 @@ use std::path::Path;
 /// DSL: scalars, decimal-string integers, time, bytes, optional pointer
 /// fields, fixed and variable arrays (including both `u8` renderings),
 /// nested objects, and arrays of objects.
-const CAMERA_CONTRACT: &str = r#"{
-    peppy_schema: "contract/v1",
-    manifest: { name: "rgb_camera", tag: "v1" },
-    interfaces: {
-        topics: [
-            {
-                name: "video_stream",
-                qos_profile: "sensor_data",
-                message_format: {
-                    frame: { $type: "array", $items: "u8" },
-                    encoding: "string",
-                    width: "u16",
-                    height: "u16",
-                    stamp: "time",
-                },
-            },
-            {
-                name: "camera_status",
-                message_format: {
-                    battery: "u8",
-                    temperature_c: "f32",
-                    frames_captured: "u64",
-                    clock_drift_ns: "i64",
-                    recording: "bool",
-                    note: { $type: "string", $optional: true },
-                    calibrated_at: "time",
-                    checksum: { $type: "array", $items: "u8", $length: 4 },
-                    gains: { $type: "array", $items: "f32", $length: 3 },
-                    tags: { $type: "array", $items: "string" },
-                    pose: { $type: "object", x_m: "f64", y_m: "f64" },
-                    samples: {
-                        $type: "array",
-                        $items: { $type: "object", offset: "i16", value: "f64" },
-                    },
-                },
-            },
-        ],
-        services: [
-            {
-                name: "video_stream_info",
-                response_message_format: {
-                    width: "u16",
-                    height: "u16",
-                    fps: "f32",
-                    device: "string",
-                },
-            },
-            {
-                name: "set_brightness",
-                request_message_format: { value: "i32" },
-                response_message_format: { applied: "bool" },
-            },
-            {
-                name: "calibrate",
-                request_message_format: {
-                    exposure_us: "u32",
-                    offsets: { $type: "array", $items: "i16", $length: 2 },
-                    profile: {
-                        $type: "object",
-                        gamma: "f64",
-                        white_balance: { $type: "object", red: "f32", blue: "f32" },
-                    },
-                    comment: { $type: "string", $optional: true },
-                },
-            },
-            { name: "ping" },
-        ],
-    },
-}"#;
+const CAMERA_CONTRACT: &str = include_str!("fixtures/camera_observation/rgb_camera.contract.json5");
 
 /// Two action shapes: `record_episode` carries every optional endpoint
 /// (goal request, feedback, result data), `resume_session` carries none, so
 /// the golden pins both the data-bearing and the unit `ResultOutcome`
 /// bridge codegen.
-const RECORDING_CONTRACT: &str = r#"{
-    peppy_schema: "contract/v1",
-    manifest: { name: "episode_recording", tag: "v1" },
-    interfaces: {
-        actions: [
-            {
-                name: "record_episode",
-                goal_service: {
-                    request_message_format: { task_description: "string" },
-                },
-                feedback_topic: {
-                    message_format: { frame: "u32", phase: "string" },
-                },
-                result_service: {
-                    response_message_format: { episode_index: "u32" },
-                },
-            },
-            { name: "resume_session" },
-        ],
-    },
-}"#;
+const RECORDING_CONTRACT: &str =
+    include_str!("fixtures/camera_observation/episode_recording.contract.json5");
+
+/// The complete `mcp_exposure/v1` source document whose generated node is
+/// committed under `goldens/camera_observation_mcp/`.
+const CAMERA_EXPOSURE: &str = include_str!("fixtures/camera_observation/exposure.json5");
 
 fn resolved(contract_json5: &str) -> ResolvedContractDocument {
     ResolvedContractDocument {
@@ -117,117 +34,8 @@ fn sha_of(contract_json5: &str) -> String {
     ManifestFingerprint::of_bytes(contract_json5.as_bytes()).to_string()
 }
 
-/// A surface covering both resource shapes (image-represented and plain
-/// telemetry), all four service shapes (response-only, request+response,
-/// request-only, and bare), and both action shapes (fully-endowed and
-/// bare).
-fn camera_exposure() -> String {
-    format!(
-        r#"{{
-        peppy_schema: "mcp_exposure/v1",
-        manifest: {{ name: "camera_observation", tag: "v1" }},
-        server: {{
-            title: "OpenArm camera",
-            instructions: "Observe and control the front camera on this robot.",
-        }},
-        targets: {{
-            front_camera: {{
-                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{camera_sha}" }},
-                topics: [
-                    {{
-                        member: "video_stream",
-                        resource: "front_camera.latest_frame",
-                        description: "Latest frame from the front-facing camera, JPEG encoded.",
-                        freshness: {{ max_age_ms: 2000 }},
-                        update: {{ max_hz: 2 }},
-                        representation: {{
-                            image: "jpeg",
-                            quality: 80,
-                            fields: {{
-                                data: "frame",
-                                encoding: "encoding",
-                                width: "width",
-                                height: "height",
-                            }},
-                        }},
-                        max_result_bytes: 524288,
-                        on_oversize: "downscale",
-                    }},
-                    {{
-                        member: "camera_status",
-                        resource: "front_camera.status",
-                        description: "Latest camera status snapshot.",
-                        freshness: {{ max_age_ms: 5000 }},
-                        update: {{ max_hz: 1 }},
-                        max_result_bytes: 8192,
-                        on_oversize: "reject",
-                    }},
-                ],
-                services: [
-                    {{
-                        member: "video_stream_info",
-                        tool: "front_camera.info",
-                        description: "Report the camera's resolution, frame rate, and encoding.",
-                        operation: "read_only",
-                        deadline_ms: 2000,
-                    }},
-                    {{
-                        member: "set_brightness",
-                        tool: "front_camera.set_brightness",
-                        description: "Set the camera brightness in device units.",
-                        operation: "mutating",
-                        deadline_ms: 2000,
-                        restrict: {{ value: {{ min: -64, max: 64 }} }},
-                    }},
-                    {{
-                        member: "calibrate",
-                        tool: "front_camera.calibrate",
-                        description: "Recalibrate the camera color profile.",
-                        operation: "mutating",
-                        deadline_ms: 10000,
-                    }},
-                    {{
-                        member: "ping",
-                        tool: "front_camera.ping",
-                        description: "Check that the camera answers at all.",
-                        operation: "read_only",
-                        deadline_ms: 1000,
-                    }},
-                ],
-            }},
-            recorder: {{
-                contract: {{ name: "episode_recording", tag: "v1", sha256: "{recording_sha}" }},
-                actions: [
-                    {{
-                        member: "record_episode",
-                        tool: "recorder.record_episode",
-                        description: "Record one teleoperation episode to the local dataset.",
-                        operation: "long_running",
-                        safety_sensitive: true,
-                        confirmation_required: true,
-                        deadline_ms: 900000,
-                    }},
-                    {{
-                        member: "resume_session",
-                        tool: "recorder.resume_session",
-                        description: "Resume the recording session after a pause.",
-                        operation: "long_running",
-                        safety_sensitive: false,
-                        confirmation_required: false,
-                        deadline_ms: 30000,
-                    }},
-                ],
-            }},
-        }},
-    }}"#,
-        camera_sha = sha_of(CAMERA_CONTRACT),
-        recording_sha = sha_of(RECORDING_CONTRACT),
-    )
-}
-
 fn generated_camera_node() -> GeneratedServerNode {
-    let exposure =
-        PeppyMcpExposureParser::from_content(&camera_exposure()).expect("exposure parses");
+    let exposure = PeppyMcpExposureParser::from_content(CAMERA_EXPOSURE).expect("exposure parses");
     generate_exposure_node(
         &exposure,
         &[resolved(CAMERA_CONTRACT), resolved(RECORDING_CONTRACT)],
@@ -405,7 +213,7 @@ fn an_action_only_exposure_generates_the_node() {
 
 #[test]
 fn an_invalid_exposure_reports_the_bundle_violations() {
-    let exposure_json5 = camera_exposure().replace("video_stream_info", "video_info");
+    let exposure_json5 = CAMERA_EXPOSURE.replace("video_stream_info", "video_info");
     let exposure = PeppyMcpExposureParser::from_content(&exposure_json5).expect("exposure parses");
     // Both contracts resolve, so the renamed member is the only thing left
     // to complain about.

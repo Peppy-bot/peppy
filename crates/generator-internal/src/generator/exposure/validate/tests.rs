@@ -3,100 +3,14 @@ use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
 use std::path::Path;
 
-/// Camera contract fixture: an unbounded image topic, a bounded telemetry
-/// topic, and services covering every restrict shape (i32, u64, string,
-/// f32).
-const CAMERA_CONTRACT: &str = r#"{
-    peppy_schema: "contract/v1",
-    manifest: { name: "rgb_camera", tag: "v1" },
-    interfaces: {
-        topics: [
-            {
-                name: "video_stream",
-                qos_profile: "sensor_data",
-                message_format: {
-                    header: { $type: "object", stamp: "time", frame_id: "u32" },
-                    encoding: "string",
-                    width: "u32",
-                    height: "u32",
-                    frame: { $type: "array", $items: "u8" },
-                },
-            },
-            {
-                name: "camera_status",
-                message_format: {
-                    temperature_c: "i16",
-                    recording: "bool",
-                },
-            },
-        ],
-        services: [
-            {
-                name: "video_stream_info",
-                response_message_format: {
-                    width: "u32",
-                    height: "u32",
-                    frames_per_second: "u8",
-                    encoding: "string",
-                },
-            },
-            {
-                name: "set_brightness",
-                request_message_format: { value: "i32" },
-                response_message_format: {
-                    success: "bool",
-                    message: "string",
-                    current_value: "i32",
-                },
-            },
-            {
-                name: "seek",
-                request_message_format: {
-                    position: "u64",
-                    label: "string",
-                    speed: "f32",
-                },
-                response_message_format: { success: "bool" },
-            },
-        ],
-    },
-}"#;
-
-/// Recorder contract fixture: one full action (goal payloads, feedback,
-/// result) and one minimal action that stays unselected.
-const RECORDING_CONTRACT: &str = r#"{
-    peppy_schema: "contract/v1",
-    manifest: { name: "episode_recording", tag: "v1" },
-    interfaces: {
-        actions: [
-            {
-                name: "record_episode",
-                goal_service: {
-                    request_message_format: {
-                        task_name: "string",
-                        episode_index: "u32",
-                    },
-                    response_message_format: { accepted: "bool" },
-                },
-                feedback_topic: {
-                    message_format: { frames_recorded: "u64" },
-                },
-                result_service: {
-                    response_message_format: {
-                        success: "bool",
-                        frames_recorded: "u64",
-                    },
-                },
-            },
-            {
-                name: "finish_session",
-                result_service: {
-                    response_message_format: { success: "bool" },
-                },
-            },
-        ],
-    },
-}"#;
+/// Source documents for the bundle golden. The exposure carries the literal
+/// fingerprints of these exact contract bytes, matching a published
+/// `mcp_exposure/v1` document.
+const WALKTHROUGH_EXPOSURE: &str = include_str!("fixtures/camera_and_recording/exposure.json5");
+const CAMERA_CONTRACT: &str =
+    include_str!("fixtures/camera_and_recording/rgb_camera.contract.json5");
+const RECORDING_CONTRACT: &str =
+    include_str!("fixtures/camera_and_recording/episode_recording.contract.json5");
 
 fn resolved(contract_json5: &str) -> ResolvedContractDocument {
     ResolvedContractDocument {
@@ -107,80 +21,6 @@ fn resolved(contract_json5: &str) -> ResolvedContractDocument {
 
 fn sha_of(contract_json5: &str) -> String {
     ManifestFingerprint::of_bytes(contract_json5.as_bytes()).to_string()
-}
-
-/// The design walkthrough surface against the fixture contracts, with the
-/// pins computed from the fixture bytes.
-fn walkthrough_exposure() -> String {
-    format!(
-        r#"{{
-        peppy_schema: "mcp_exposure/v1",
-        manifest: {{ name: "camera_and_recording", tag: "v1" }},
-        server: {{
-            title: "OpenArm camera and recording",
-            instructions: "Observe the front camera and record teleoperation episodes on this robot.",
-        }},
-        targets: {{
-            front_camera: {{
-                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{camera_sha}" }},
-                topics: [
-                    {{
-                        member: "video_stream",
-                        resource: "front_camera.latest_frame",
-                        description: "Latest frame from the front-facing camera, JPEG encoded.",
-                        freshness: {{ max_age_ms: 2000 }},
-                        update: {{ max_hz: 2 }},
-                        representation: {{
-                            image: "jpeg",
-                            quality: 80,
-                            fields: {{
-                                data: "frame",
-                                encoding: "encoding",
-                                width: "width",
-                                height: "height",
-                            }},
-                        }},
-                        max_result_bytes: 524288,
-                        on_oversize: "downscale",
-                    }},
-                ],
-                services: [
-                    {{
-                        member: "video_stream_info",
-                        tool: "front_camera.info",
-                        description: "Report the camera's resolution, frame rate, and encoding.",
-                        operation: "read_only",
-                        deadline_ms: 2000,
-                    }},
-                    {{
-                        member: "set_brightness",
-                        tool: "front_camera.set_brightness",
-                        description: "Set the camera brightness in device units.",
-                        operation: "mutating",
-                        deadline_ms: 2000,
-                        restrict: {{ value: {{ min: -64, max: 64 }} }},
-                    }},
-                ],
-            }},
-            recorder: {{
-                contract: {{ name: "episode_recording", tag: "v1", sha256: "{recorder_sha}" }},
-                actions: [
-                    {{
-                        member: "record_episode",
-                        tool: "recorder.record_episode",
-                        description: "Record one teleoperation episode to the local dataset. Long-running; returns a task handle.",
-                        operation: "long_running",
-                        safety_sensitive: true,
-                        confirmation_required: true,
-                        deadline_ms: 900000,
-                    }},
-                ],
-            }},
-        }},
-    }}"#,
-        camera_sha = sha_of(CAMERA_CONTRACT),
-        recorder_sha = sha_of(RECORDING_CONTRACT),
-    )
 }
 
 fn build(exposure_json5: &str, contracts: &[ResolvedContractDocument]) -> ExposureBundle {
@@ -226,7 +66,7 @@ const INFO_TOOL: &str = r#"services: [
 #[test]
 fn the_walkthrough_exposure_builds_its_bundle() {
     let bundle = build(
-        &walkthrough_exposure(),
+        WALKTHROUGH_EXPOSURE,
         &[resolved(CAMERA_CONTRACT), resolved(RECORDING_CONTRACT)],
     );
 
@@ -309,7 +149,7 @@ fn the_walkthrough_exposure_builds_its_bundle() {
 #[test]
 fn bundle_golden_matches_committed_output() {
     let bundle = build(
-        &walkthrough_exposure(),
+        WALKTHROUGH_EXPOSURE,
         &[resolved(CAMERA_CONTRACT), resolved(RECORDING_CONTRACT)],
     );
     let rendered = bundle.to_json_string();
