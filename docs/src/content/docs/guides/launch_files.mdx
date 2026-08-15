@@ -5,6 +5,9 @@ sidebar:
   order: 9
 ---
 import { Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
+import viewerLauncher from './snippets/launchers/viewer.json5?raw';
+import zedCameraFragment from './snippets/launchers/viewer_zed_camera.json5?raw';
 
 Launch files let you start multiple nodes simultaneously, including those with dependencies on each other. 
 With a single launch file, you or your team can recreate an entire node environment using just one command.
@@ -305,3 +308,124 @@ that leaves one unwired is refused. The escape hatch is
 `peppy stack launch --local`, which ignores the launcher's placements and runs
 every instance on the daemon you launched from. `--local` and `--place` are
 mutually exclusive.
+
+## Swapping parts at launch time
+
+A launcher file can describe a family of stacks whose members differ in which implementation fills a slot: a real robot or a simulator, a browser panel or a headset, with or without a recorder. The launcher declares **component axes**, and the launch command picks one option per axis with `--with`. A launcher without `components` is a plain flat stack, and that stays the ordinary way to write a one-off.
+
+The whole feature fits in one file. Here is a viewer stack with two swappable cameras:
+
+<Code code={viewerLauncher} lang="json5" title="viewer.json5" />
+
+```sh
+peppy stack launch ./viewer.json5              # runs the default camera (uvc)
+peppy stack launch ./viewer.json5 --with=zed   # runs the ZED camera instead
+```
+
+An axis entry has five fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | The axis's name, unique in the launcher. Used in `--with axis=option` and in adjustment guards. |
+| `options` | The alternatives that fill this axis, at least one. Each option's body uses the same `deployments` grammar the launcher's own `deployments` use, so reading an option teaches nothing new. |
+| `default` | The option chosen when `--with` names nothing on this axis. |
+| `optional` | When true, the axis may be left unfilled; an unselected optional axis contributes nothing to the stack. Forbidden together with `default`. An axis with neither `default` nor `optional` must be selected. |
+| `provides` | The axis's interface: instance ids every option defines, so a link written against one is valid whichever option the operator picks. Options may define additional private ids. |
+
+Two cameras competing for one `cam_inst` is exactly what an axis is: the options of one axis are mutually exclusive alternatives, and a launch fills each axis with exactly one of them. `--with web_commander --with xr_commander` on a `commander` axis is refused, because the stack cannot have two commanders. Repeating the same option, or naming it once bare and once as `axis=option`, is the same choice and is fine.
+
+Each `--with` entry is either `option` (looked up across every axis) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. Several axes can each carry a `none` option, which is how an author writes a feature that is on by default and switchable off: declare the axis with a `none` option (its body can be empty) and make it the default.
+
+A launch with a `--with` selection echoes the full resolution before anything runs:
+
+```
+components: robot=mujoco  commander=web_commander (default)  recorder=(off)
+```
+
+`--with` is purely additive: unselected axes take their defaults, and there is no way to unselect a default other than naming a different option of that axis. Passing `--with` to a launcher that declares no `components` is refused.
+
+## Adjustments
+
+A family of stacks often needs more than swapped deployments: the recorder attaches itself to whichever commander was selected, and the headset flips a mode argument on the backbone. An **adjustment** names one instance defined elsewhere and one change to it, and every change names its operation:
+
+```json5
+adjustments: [
+  {
+    target: "backbone_inst",              // the instance to change
+    when: { commander: "xr_commander" },  // optional guard, see below
+
+    set_arguments: { upstream_mode: "pose" },
+    set_links: { collision_ctrl: { vacant: "the headset never produces governor_control" } },
+    add_links: { recorder: ["recorder_inst"] },
+    unset_links: ["leader_left_arm_pose"],
+  },
+]
+```
+
+| Operation | Effect |
+|---|---|
+| `set_arguments` | Replaces the target's value for each named argument key, creating it when absent. Nested objects replace wholesale. |
+| `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
+| `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent fragments each contribute bindings to one multi-cardinality slot. |
+| `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
+
+Fragments refuse to fight: two selected fragments writing the same argument key or the same slot on one target are refused, naming both. The launcher's own top-level `adjustments` apply after all fragment adjustments and may override anything a fragment set, which is how one launcher specializes fragments it shares with another. Within the launcher's own list, a later entry wins over an earlier one: both lines live in one file one author edits.
+
+An adjustment whose target the current selection does not define is **skipped**, not refused: the recorder's attach simply does not run when no recorder was selected. A target no option of the launcher defines anywhere is a dead reference and fails when the launcher is read. `when` guards are for conditions existence cannot express, mostly shape: two leaders may both provide `commander_inst`, but only one of them has camera slots. A guard names one option per axis, and every named axis must match; `when: { commander: "xr_commander", robot: "real" }` runs only for that pair.
+
+The ownership rule of thumb: if a value is something the operator genuinely decides, make it another option on the axis, visible in the command line. If it is a *consequence* of a choice already made, write the adjustment into that option's own fragment, where it needs no guard: it runs exactly when its fragment is selected and skips when its target is absent.
+
+## Fragments: splitting a launcher across files
+
+An option's body can live in its own file, called a **fragment**. This is an organizational choice, never a requirement: a launcher whose options are all inline is self-contained. Extract a fragment once a second launcher wants the same body, so the body is stated once.
+
+A fragment file carries the `launcher_fragment/v1` tag:
+
+<Code code={zedCameraFragment} lang="json5" title="fragments/zed_camera.json5" />
+
+The launcher references it by path, and the option value becomes that path string:
+
+```json5
+options: {
+  uvc: { deployments: [ /* inline, as above */ ] },
+  zed: "fragments/zed_camera.json5",
+}
+```
+
+Fragment paths are relative to the launcher's own directory. A path must be relative and plain: no `..`, no absolute paths, and nothing that escapes the launcher's directory through a symlink. A repository launcher and a filesystem launcher resolve their fragments identically.
+
+Two options can share one body with the list form, which merges its parts in order before the option contributes anything. This is how two simulator options share the relay deployments and differ only in the engine:
+
+```json5
+options: {
+  mujoco:    ["fragments/sim_relays.json5", "fragments/mujoco_engine.json5"],
+  isaac_sim: ["fragments/sim_relays.json5", "fragments/isaac_engine.json5"],
+}
+```
+
+Besides `deployments` and `adjustments`, a fragment may declare `core_nodes`: additional placement placeholders its instances need, unioned with the launcher's own, so selecting the option makes the matching `--place` bindings required exactly as if the launcher declared them.
+
+A fragment is not a stack. The repository indexer never lists a fragment as a launchable launcher, it needs no entry in `peppy_repository.json5`, and it cannot collide with a launcher name. `peppy repo index --check` validates every fragment a launcher references and flattens every legal selection of its axes, so a broken combination is refused on the branch that introduced it.
+
+## Auditing a composed launch
+
+Composition changes instances from a distance, so it ships with an audit command:
+
+```sh
+peppy stack resolve openarm_v2 --with=xr_commander,lerobot_recorder
+```
+
+`stack resolve` needs no running stack and touches nothing. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr:
+
+```
+components: robot=real (default)  commander=xr_commander  recorder=lerobot_recorder
+
+adjustments applied:
+  backbone_inst.arguments.upstream_mode      "joints" -> "pose"          fragments/xr_commander.json5
+  commander_inst.links.recorder              + "recorder_inst"           fragments/lerobot_recorder.json5
+
+adjustments skipped:
+  sim_inst.arguments.hardware_version        sim_inst is not in this selection  openarm_v2.json5 (base)
+```
+
+Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file.

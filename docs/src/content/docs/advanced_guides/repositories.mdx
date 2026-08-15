@@ -241,6 +241,14 @@ Rules worth knowing before you hand-edit one:
 - **The file is generated.** Comments survive `--check`, but the next `peppy repo index` run
   discards them.
 
+A launcher fragment file (`peppy_schema: "launcher_fragment/v1"`) declares no item of its own: it
+is a piece of a composed launcher, referenced by the option that wants it (see
+[Launch files](/guides/launch_files/#fragments-splitting-a-launcher-across-files)), so it gets no
+entry here, takes no launcher name, and is never listed as a launchable stack. The indexer
+recognizes the kind, and `peppy repo index --check` validates every fragment a launcher references
+and flattens every legal selection of its component axes, so a broken combination is refused on
+the branch that introduced it rather than at the first launch that picks it.
+
 ### Index a repository
 
 ```sh

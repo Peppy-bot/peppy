@@ -561,6 +561,7 @@ async fn a_launcher_deploys_the_exposure_and_a_client_walks_it() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 120,
             node_build_idle_timeout_secs: 120,

@@ -1,0 +1,62 @@
+// One file, two swappable cameras: the viewer stack declares a `camera`
+// axis whose options are written inline, so composition needs no second
+// file. `peppy stack launch ./viewer.json5` runs the default (`uvc`); the
+// same launcher with `--with=zed` swaps the camera.
+{
+  peppy_schema: "launcher/v1",
+
+  components: [
+    {
+      name: "camera",
+      provides: ["cam_inst"],
+      default: "uvc",
+      options: {
+        uvc: {
+          deployments: [
+            {
+              source: { name: "uvc_camera_linux", tag: "v1" },
+              instances: [
+                {
+                  instance_id: "cam_inst",
+                  arguments: {
+                    device_path: "/dev/video0",
+                    video: {
+                      frame_rate: 30,
+                      resolution: { width: 1280, height: 720 },
+                      camera_encoding: "mjpeg",
+                      topic_encoding: "rgb8",
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        zed: {
+          deployments: [
+            {
+              source: { name: "zed_camera", tag: "v1" },
+              instances: [
+                {
+                  instance_id: "cam_inst",
+                  arguments: {
+                    resolution: "hd720",
+                    frame_rate: 30,
+                    depth: { min_depth_m: 0.4, downscale: 2, block_size: 3 },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  ],
+
+  deployments: [
+    {
+      source: { name: "web_viewer", tag: "v1" },
+      instances: [{ instance_id: "viewer_inst", links: { camera: "cam_inst" } }],
+    },
+  ],
+}

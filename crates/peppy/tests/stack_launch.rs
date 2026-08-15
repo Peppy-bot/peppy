@@ -264,6 +264,7 @@ async fn node_launch_command_succeed() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -465,6 +466,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -622,6 +624,7 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 1,
@@ -662,6 +665,7 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -710,6 +714,7 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -910,6 +915,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1137,6 +1143,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1278,6 +1285,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1375,6 +1383,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1673,6 +1682,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1825,6 +1835,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1968,6 +1979,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2245,6 +2257,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2504,6 +2517,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2654,6 +2668,7 @@ async fn stack_launch_rejects_unbound_slot() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2850,6 +2865,7 @@ async fn stack_launch_establishes_launcher_pairings() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3031,6 +3047,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3285,6 +3302,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3451,6 +3469,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3505,6 +3524,7 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3768,6 +3788,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4022,6 +4043,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4178,6 +4200,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
+            with: Vec::new(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4195,5 +4218,370 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
     assert!(
         !msg.contains("does not exist in the stack"),
         "the absent node itself is admitted; only the slot coverage is refused: {msg}"
+    );
+}
+
+/// A composed launch, end to end: the launcher declares a `backend` axis
+/// whose two options deploy the same registered node under different
+/// instance ids, and an optional `extras` axis whose fragment adjusts both
+/// candidates (one of which is absent in any given selection, so the launch
+/// also exercises the skip). `--with` picks beta and the extras; what runs
+/// is the flattened single deployment, and the coordinator echoes the full
+/// resolution before anything starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stack_launch_flattens_a_composed_launcher() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let node_name = "compose_flip_node";
+    let node_tag = "v1";
+    let instance_id = "beta_inst";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let node_path = write_node_config(
+        nodes_dir.path(),
+        node_name,
+        node_tag,
+        &git_hash,
+        &["sh", "-c", "exit 0"],
+    );
+    // The launched instance must outlive the post-launch stack-list check,
+    // so tie it to the test instead of a fixed sleep.
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(
+        &node_path.join(NODE_CONFIG_FILE),
+        &instances.sentinel(),
+    );
+    // Model a node that releases its keep-alive when asked to shut down, so
+    // the teardown at the end of the test does not wait out a grace period.
+    let (_shutdown_handle, shutdown_rx) = peppylib::services::shutdown::listen_for_shutdown(
+        &MessengerHandle::from_shared(Arc::clone(&shared_messenger)),
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node shutdown service should start");
+    tokio::spawn(async move {
+        let _ = shutdown_rx.await;
+        drop(instances);
+    });
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    register_repo_caches(serve.temp_dir(), &[(node_name, node_tag, &node_path)]);
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let instance_id = "beta_inst";
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
+
+    let launcher_path = nodes_dir.path().join("composed_launcher.json5");
+    let deployment = |instance_id: &str| {
+        format!(
+            r#"{{
+                source: {{ name: "{node_name}:{node_tag}" }},
+                instances: [{{ instance_id: "{instance_id}" }}]
+            }}"#
+        )
+    };
+    let launcher_json5 = format!(
+        r#"{{
+            peppy_schema: "launcher/v1",
+            components: [
+                {{
+                    name: "backend",
+                    default: "alpha",
+                    options: {{
+                        alpha: {{ deployments: [{}] }},
+                        beta: {{ deployments: [{}] }},
+                    }},
+                }},
+                {{
+                    name: "extras",
+                    optional: true,
+                    options: {{
+                        on: "fragments/extras.json5",
+                    }},
+                }},
+            ],
+            deployments: [],
+        }}"#,
+        deployment("alpha_inst"),
+        deployment("beta_inst"),
+    );
+    fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
+    fs::create_dir_all(nodes_dir.path().join("fragments"))
+        .expect("fragments dir should be writable");
+    fs::write(
+        nodes_dir.path().join("fragments/extras.json5"),
+        r#"{
+            peppy_schema: "launcher_fragment/v1",
+            adjustments: [
+                { target: "alpha_inst", set_arguments: { tuned: true } },
+                { target: "beta_inst", set_arguments: { tuned: true } },
+            ],
+        }"#,
+    )
+    .expect("fragment should be writable");
+
+    StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            with: vec!["beta".to_owned(), "extras=on".to_owned()],
+            launcher_config_path: launcher_path,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(120),
+        },
+    }
+    .execute(&ctx)
+    .expect("composed launch should succeed");
+
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains("components: backend=beta  extras=on"),
+        "the coordinator's echo of the full resolution should reach the CLI: {logs}"
+    );
+
+    let messenger_handle = ctx
+        .messenger_handle()
+        .expect("messenger handle should be available");
+    let response = poll(
+        &StackListRequest::new(),
+        &messenger_handle,
+        &core_node_name,
+        CALLER_INSTANCE_ID,
+        &core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("stack_list request should complete after launch");
+
+    let graph: SerializedNodeGraph =
+        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let running: Vec<String> = graph
+        .nodes
+        .iter()
+        .flat_map(|node| node.running_instance_ids())
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        running.iter().any(|id| id == "beta_inst"),
+        "the selected option's instance should be running. Got: {running:?}"
+    );
+    assert!(
+        running.iter().all(|id| id != "alpha_inst"),
+        "the unselected option's instance must not exist. Got: {running:?}"
+    );
+}
+
+/// The words a `--with` sends are refused fast, caller-side, when the
+/// launcher on disk can already say they are wrong: a flat launcher has
+/// nothing to select, an unknown word names no option, and two options on
+/// one axis are two answers to one question. Each refusal happens before
+/// the daemon round-trip, naming what the operator should have typed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let flat_launcher = nodes_dir.path().join("flat.json5");
+    fs::write(
+        &flat_launcher,
+        r#"{ peppy_schema: "launcher/v1", deployments: [] }"#,
+    )
+    .expect("flat launcher should be writable");
+    let err = StackCommand {
+        command: StackCommands::Launch {
+            place: Vec::new(),
+            local: false,
+            with: vec!["mujoco".to_owned()],
+            launcher_config_path: flat_launcher,
+            node_add_idle_timeout_secs: 60,
+            node_build_idle_timeout_secs: 60,
+            node_run_idle_timeout_secs: 60,
+            max_timeout_secs: Some(60),
+        },
+    }
+    .execute(&ctx)
+    .expect_err("--with on a flat launcher must be refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("declares no `components`"),
+        "the refusal should say what is missing: {msg}"
+    );
+
+    let composed_launcher = nodes_dir.path().join("composed.json5");
+    fs::write(
+        &composed_launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", default: "real",
+                  options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
+                { name: "recorder", optional: true,
+                  options: { on: { deployments: [] } } },
+            ],
+            deployments: [],
+        }"#,
+    )
+    .expect("composed launcher should be writable");
+
+    let launch_with = |with: Vec<String>, path: PathBuf| {
+        StackCommand {
+            command: StackCommands::Launch {
+                place: Vec::new(),
+                local: false,
+                with,
+                launcher_config_path: path,
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(60),
+            },
+        }
+        .execute(&ctx)
+    };
+
+    let msg = launch_with(vec!["isaac".to_owned()], composed_launcher.clone())
+        .expect_err("an unknown word must be refused")
+        .to_string();
+    assert!(
+        msg.contains("isaac") && msg.contains("`mujoco`, `real`") && msg.contains("`on`"),
+        "the refusal should list every axis with its options: {msg}"
+    );
+
+    let msg = launch_with(
+        vec!["mujoco".to_owned(), "robot=real".to_owned()],
+        composed_launcher.clone(),
+    )
+    .expect_err("two options on one axis must be refused")
+    .to_string();
+    assert!(
+        msg.contains("robot") && msg.contains("`mujoco`") && msg.contains("`real`"),
+        "the refusal should name the axis and both options: {msg}"
+    );
+}
+
+/// `peppy stack resolve` needs no daemon: for a filesystem launcher it reads
+/// the file where it stands, flattens the selection, and hands back the
+/// plain `launcher/v1` document plus the audit report. The document is what
+/// a launch would run; the report shows applied and skipped adjustments,
+/// each with its origin.
+#[test]
+fn stack_resolve_prints_the_flat_launcher_and_report() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir_all(dir.path().join("fragments")).expect("fragments dir");
+    std::fs::write(
+        dir.path().join("fragments/recorder.json5"),
+        r#"{
+            peppy_schema: "launcher_fragment/v1",
+            deployments: [
+                { source: { name: "recorder", tag: "v1" },
+                  instances: [{ instance_id: "recorder_inst" }] },
+            ],
+            adjustments: [
+                { target: "panel_inst", add_links: { recorder: ["recorder_inst"] } },
+            ],
+        }"#,
+    )
+    .expect("fragment");
+    let launcher = dir.path().join("panel.json5");
+    std::fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", default: "real",
+                  options: {
+                      real: { deployments: [] },
+                      mujoco: { deployments: [
+                          { source: { name: "sim", tag: "v1" },
+                            instances: [{ instance_id: "sim_inst" }] } ] },
+                  } },
+                { name: "recorder", optional: true,
+                  provides: ["recorder_inst"],
+                  options: { on: "fragments/recorder.json5" } },
+            ],
+            adjustments: [
+                { target: "sim_inst", set_arguments: { hardware_version: "v2" } },
+            ],
+            deployments: [
+                { source: { name: "panel", tag: "v1" },
+                  instances: [{ instance_id: "panel_inst",
+                                links: { recorder: [] } }] },
+            ],
+        }"#,
+    )
+    .expect("launcher");
+
+    let (document, report) =
+        peppy::commands::stack::resolve_rendered(launcher, &["recorder=on".to_owned()])
+            .expect("resolves");
+
+    assert!(
+        document.contains("recorder_inst") && document.contains("panel_inst"),
+        "the flat document carries the base and the selected fragment: {document}"
+    );
+    assert!(
+        !document.contains("components"),
+        "the flat document is an ordinary launcher with no composition keys: {document}"
+    );
+    assert!(
+        document.contains("\"launcher/v1\""),
+        "the document still declares the launcher schema: {document}"
+    );
+
+    let report_text = report.join("\\n");
+    assert!(
+        report_text.contains("components: robot=real (default)  recorder=on"),
+        "the report leads with the resolution: {report_text}"
+    );
+    assert!(
+        report_text.contains("panel_inst.links.recorder")
+            && report_text.contains("fragments/recorder.json5"),
+        "the applied attach is listed with its origin: {report_text}"
+    );
+    assert!(
+        report_text.contains("sim_inst") && report_text.contains("not in this selection"),
+        "the base's sleeping adjustment is listed as skipped: {report_text}"
     );
 }

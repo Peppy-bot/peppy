@@ -1,0 +1,31 @@
+// The `zed` option of a viewer launcher, extracted into its own file: the
+// body is the same `deployments` grammar the launcher itself uses, and the
+// fragment tag is what keeps a fragment from ever being mistaken for a
+// launchable stack. Referenced from a launcher as
+// `zed: "fragments/zed_camera.json5"`.
+{
+  peppy_schema: "launcher_fragment/v1",
+
+  deployments: [
+    {
+      source: { name: "zed_camera", tag: "v1" },
+      instances: [
+        {
+          instance_id: "cam_inst",
+          arguments: {
+            resolution: "hd720",
+            frame_rate: 30,
+            depth: { min_depth_m: 0.4, downscale: 2, block_size: 3 },
+          },
+        },
+      ],
+    },
+  ],
+
+  adjustments: [
+    // A consequence of running this camera: the depth-aware viewer wants a
+    // denser mesh than the default. Lives here, with no guard, because it
+    // runs exactly when this fragment is selected.
+    { target: "viewer_inst", set_arguments: { mesh_density: "high" } },
+  ],
+}
