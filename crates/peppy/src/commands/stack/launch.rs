@@ -9,7 +9,7 @@ use core_node_api::encoding::{
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
 };
 use daemon_config::core_node_name::CoreNodeName;
-use daemon_config::launcher::PeppyLauncherParser;
+use daemon_config::launcher::{PeppyLauncherParser, compose};
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
@@ -186,7 +186,7 @@ fn resolve_launcher_path(path: PathBuf) -> PathBuf {
 /// finds it regardless of its working directory. A bare name like `openarm01_sim_teleop` first
 /// tries the filesystem (sibling `.json5` shorthand from `resolve_launcher_path`) and only
 /// falls back to `Repository` when no file exists at that name.
-fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
+pub(super) fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
     if looks_like_fs_path(&input) {
         let resolved = resolve_launcher_path(input);
         let canonical = resolved.canonicalize().map_err(|e| {
@@ -275,6 +275,7 @@ pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     placement: PlacementArgs,
+    with: Vec<String>,
     node_add_idle_timeout_secs: u64,
     node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
@@ -284,6 +285,7 @@ pub fn launch(
         ctx,
         launcher_config_path,
         placement,
+        with,
         node_add_idle_timeout_secs,
         node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
@@ -295,6 +297,7 @@ async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     placement: PlacementArgs,
+    with: Vec<String>,
     node_add_idle_timeout_secs: u64,
     node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
@@ -304,11 +307,13 @@ async fn launch_async(
 
     // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
     // error before the daemon round-trip. `Repository` resolution lives daemon-side, so we
-    // skip the local check rather than duplicate the lookup here. Only the parse verdict is
-    // used: placement is resolved against the document the COORDINATOR read, so that a
-    // repository launcher and a file one place identically.
+    // skip the local check rather than duplicate the lookup here. Only the verdict is
+    // used: placement and the `--with` selection are resolved against the document the
+    // COORDINATOR read, so that a repository launcher and a file one resolve identically.
     if let LauncherOrigin::Fs(path) = &launcher_origin {
-        PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
+        let parsed = PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
+        compose(&parsed, path, &with)
+            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     }
 
     let conn = ctx.connect_to_daemon().await?;
@@ -377,7 +382,8 @@ async fn launch_async(
         max_timeout_secs,
     )
     .with_env_vars(caller_env_overrides())
-    .with_placement(placement);
+    .with_placement(placement)
+    .with_selections(with);
 
     // CLI fallback ceiling: when the user opts into a max we grant the daemon a response-grace
     // window to surface its own error first, but never less than the absolute floor in case the

@@ -34,7 +34,7 @@ use daemon_config::repository::{
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Directory names that are never descended into while looking for the
 /// files that declare items.
@@ -342,6 +342,13 @@ pub(crate) fn build_cache_entries(
                 origin: item.origin,
                 repo_id: 0,
             }),
+            RepoItemKind::LauncherFragment => {
+                return Err(format!(
+                    "fragment `{}` reached the cache builder: a fragment is referenced by the \
+                     launcher whose option names it, never published as an item of its own",
+                    item.name
+                ));
+            }
         }
     }
     Ok(built)
@@ -368,7 +375,27 @@ pub enum IndexError {
     /// while the item is invisible to peppy.
     #[error("{0}")]
     Unrepresentable(String),
+    /// A composed launcher that cannot deliver what it declares: a missing
+    /// or malformed fragment, an option that does not provide its axis's
+    /// interface, or a legal selection that does not flatten. Author-time,
+    /// so `--check` refuses the commit that introduced it.
+    #[error("{}", format_composition_problems(.0))]
+    CompositionFailed(Vec<String>),
 }
+
+fn format_composition_problems(problems: &[String]) -> String {
+    problems
+        .iter()
+        .map(|problem| format!("\n  - {problem}"))
+        .collect::<String>()
+}
+
+/// The ceiling on the selection space `check_repository_index` enumerates.
+/// Above it the check degrades to per-axis validation (every fragment
+/// exists, parses, provides, and guards cleanly) and says so, because a
+/// check that skips combinations must say so or it looks like it checked
+/// them all.
+const COMBINATION_CEILING: usize = 512;
 
 fn format_conflicts(conflicts: &[RepoConflict]) -> String {
     conflicts
@@ -599,6 +626,11 @@ fn identity_of(
                 parsed.manifest.tag.clone(),
             ))
         }
+        RepoItemKind::LauncherFragment => Err(
+            "a fragment has no repository identity: it is referenced by the launcher whose \
+             option names it, never listed in peppy_repository.json5"
+                .to_owned(),
+        ),
     }
 }
 
@@ -673,10 +705,82 @@ pub fn check_repository_index(root: &Path) -> Result<Vec<IndexDrift>, IndexError
         }
     }
 
+    check_compositions(&root, &generated)?;
+
     // Sorted by rendered text so the report is reproducible in a test and
     // comparable between two machines.
     drifts.sort_by_key(|drift| drift.to_string());
     Ok(drifts)
+}
+
+/// The composition checks on every composed launcher the repository lists:
+/// every referenced fragment exists and parses, every option provides its
+/// axis's interface ids, every adjustment target is defined somewhere, and
+/// every legal selection flattens into a valid flat launcher.
+///
+/// All of this is launcher-local (no node manifests, no daemon), which is
+/// what lets it run on a contributor's branch: the commit that adds an
+/// option whose shape contradicts an existing adjustment is the commit whose
+/// check fails, rather than the first launch that selects it.
+fn check_compositions(root: &Path, generated: &RepositoryIndex) -> Result<(), IndexError> {
+    let mut problems = Vec::new();
+    for item in generated
+        .declared_items()
+        .filter(|item| item.kind == RepoItemKind::Launcher)
+    {
+        let launcher_file = root.join(item.path.as_str());
+        let Ok(parsed) = PeppyLauncherParser::from_path(&launcher_file) else {
+            // An unparseable launcher is the walk's failure to report (it
+            // skips the file, so the item is not listed) or the committed
+            // index's (reported as Unmatched above). Either way it is not a
+            // composition problem.
+            continue;
+        };
+        if parsed.components.is_empty() {
+            continue;
+        }
+        let label = launcher_file
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| launcher_file.display().to_string());
+        let Some(launcher_dir) = launcher_file.parent() else {
+            continue;
+        };
+
+        let loaded = match daemon_config::launcher::load_composition(&parsed, launcher_dir) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                problems.push(format!("{label}: {e}"));
+                continue;
+            }
+        };
+
+        let space = daemon_config::launcher::selection_space_size(&parsed.components);
+        if space > COMBINATION_CEILING {
+            // Per-axis validation above (fragments, provides, guards,
+            // targets) still ran; what is skipped is every CROSS-axial
+            // combination, and the count of those is the space itself.
+            warn!(
+                "skipped all {space} cross-combination checks for {label}: the selection space \
+                 exceeds the {COMBINATION_CEILING}-combination ceiling, so each axis was \
+                 validated on its own instead"
+            );
+            continue;
+        }
+        for selection in daemon_config::launcher::enumerate_selections(&parsed.components) {
+            if let Err(e) = daemon_config::launcher::flatten(&parsed, &loaded, &selection, &label) {
+                problems.push(format!(
+                    "{label} ({}): {e}",
+                    selection.echo()
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(IndexError::CompositionFailed(problems))
+    }
 }
 
 fn identity_label(item: &DeclaredItem<'_>) -> String {
@@ -789,6 +893,12 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
             // The repository's own index declares no item. It is the
             // output of this walk, not an input to it.
             PeppySchema::RepositoryV1 => {}
+            // A fragment file declares no item either: it is a piece of the
+            // launcher whose option references it. The walk recognizes the
+            // tag so a fragment is never mistaken for an unrecognized
+            // schema; the composition checks in `check_repository_index`
+            // read and validate the fragments each launcher references.
+            PeppySchema::LauncherFragmentV1 => {}
         }
     }
 
@@ -1724,5 +1834,200 @@ mod tests {
 
         let err = check_repository_index(&repo).expect_err("a missing index is refused");
         assert!(err.to_string().contains("peppy_repository.json5"), "{err}");
+    }
+
+    /// A fragment file is recognized by the walk but never listed: it is a
+    /// piece of the launcher whose option references it, so it neither takes
+    /// a launcher name nor needs an index entry.
+    #[test]
+    fn a_fragment_file_is_never_a_listed_item() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("hub");
+        write_launcher_json5(&repo.join("teleop.json5"));
+        std::fs::create_dir_all(repo.join("fragments")).unwrap();
+        std::fs::write(
+            repo.join("fragments/cameras.json5"),
+            r#"{ peppy_schema: "launcher_fragment/v1", deployments: [] }"#,
+        )
+        .unwrap();
+
+        let walked = walk_directory(&repo, &[]);
+
+        assert_eq!(walked.conflicts, Vec::new());
+        assert_eq!(
+            found(&walked, RepoItemKind::Launcher),
+            vec!["teleop".to_owned()],
+            "the fragment must not claim a launcher identity"
+        );
+        let index = generate_repository_index(&repo).expect("generates");
+        assert_eq!(index.declared_count(), 1);
+    }
+
+    /// A composed launcher whose every legal selection flattens passes
+    /// `--check`, and the fragment it references is validated through the
+    /// launcher's reference (not as an item).
+    #[test]
+    fn check_passes_a_composed_launcher_with_fragments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("hub");
+        std::fs::create_dir_all(repo.join("fragments")).unwrap();
+        std::fs::write(
+            repo.join("fragments/mujoco.json5"),
+            r#"{
+                peppy_schema: "launcher_fragment/v1",
+                deployments: [
+                    { source: { name: "sim", tag: "v1" },
+                      instances: [{ instance_id: "arm_inst" }] },
+                ],
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("teleop.json5"),
+            r#"{
+                peppy_schema: "launcher/v1",
+                components: [
+                    { name: "robot", default: "real",
+                      provides: ["arm_inst"],
+                      options: {
+                          real: { deployments: [
+                              { source: { name: "can", tag: "v1" },
+                                instances: [{ instance_id: "arm_inst" }] } ] },
+                          mujoco: "fragments/mujoco.json5",
+                      } },
+                ],
+                deployments: [],
+            }"#,
+        )
+        .unwrap();
+        let index = generate_repository_index(&repo).expect("generates");
+        write_repository_index(&repo, &index).expect("writes");
+
+        let drifts = check_repository_index(&repo).expect("checks");
+        assert_eq!(drifts, Vec::new(), "every selection should flatten");
+    }
+
+    /// The composition checks are author-time refusals, not drift: a
+    /// fragment that is missing, an option that does not provide its axis's
+    /// interface, or a selection that cannot flatten each fail `--check`
+    /// naming the launcher, so the commit that breaks a selection is the
+    /// commit whose check fails.
+    #[test]
+    fn check_refuses_broken_compositions() {
+        // A fragment reference to a file that is not there.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("hub");
+        write_composed_launcher_referencing(&repo, "teleop.json5", "fragments/missing.json5");
+        let index = generate_repository_index(&repo).expect("generates");
+        write_repository_index(&repo, &index).expect("writes");
+        let err = check_repository_index(&repo).expect_err("a missing fragment must be refused");
+        let IndexError::CompositionFailed(problems) = &err else {
+            panic!("expected a composition failure, got: {err}");
+        };
+        assert!(
+            problems[0].contains("teleop.json5") && problems[0].contains("fragments/missing.json5"),
+            "the problem should name the launcher and the fragment: {problems:?}"
+        );
+
+        // An option that does not provide the axis's interface ids.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("hub");
+        write_composed_launcher_referencing(&repo, "teleop.json5", "fragments/sparse.json5");
+        std::fs::create_dir_all(repo.join("fragments")).unwrap();
+        std::fs::write(
+            repo.join("fragments/sparse.json5"),
+            r#"{ peppy_schema: "launcher_fragment/v1", deployments: [] }"#,
+        )
+        .unwrap();
+        let index = generate_repository_index(&repo).expect("generates");
+        write_repository_index(&repo, &index).expect("writes");
+        let err = check_repository_index(&repo).expect_err("an unmet provides must be refused");
+        let IndexError::CompositionFailed(problems) = &err else {
+            panic!("expected a composition failure, got: {err}");
+        };
+        assert!(
+            problems[0].contains("arm_inst"),
+            "the problem should name the promised id: {problems:?}"
+        );
+
+        // A selection that cannot flatten: the sim fragment defines an id
+        // the base already deploys, which only the selection that picks it
+        // trips over. The real option's selection still flattens, so the
+        // failure names the one broken selection rather than the launcher.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("hub");
+        std::fs::create_dir_all(repo.join("fragments")).unwrap();
+        std::fs::write(
+            repo.join("fragments/dup.json5"),
+            r#"{
+                peppy_schema: "launcher_fragment/v1",
+                deployments: [
+                    { source: { name: "sim", tag: "v1" },
+                      instances: [
+                          { instance_id: "arm_inst" },
+                          { instance_id: "viewer_inst" },
+                      ] },
+                ],
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("teleop.json5"),
+            r#"{
+                peppy_schema: "launcher/v1",
+                components: [
+                    { name: "robot", default: "real",
+                      provides: ["arm_inst"],
+                      options: {
+                          real: { deployments: [
+                              { source: { name: "can", tag: "v1" },
+                                instances: [{ instance_id: "arm_inst" }] } ] },
+                          sim: "fragments/dup.json5",
+                      } },
+                ],
+                deployments: [
+                    { source: { name: "web", tag: "v1" },
+                      instances: [{ instance_id: "viewer_inst" }] },
+                ],
+            }"#,
+        )
+        .unwrap();
+        let index = generate_repository_index(&repo).expect("generates");
+        write_repository_index(&repo, &index).expect("writes");
+        let err = check_repository_index(&repo).expect_err("an unflattenable selection must be refused");
+        let IndexError::CompositionFailed(problems) = &err else {
+            panic!("expected a composition failure, got: {err}");
+        };
+        assert!(
+            problems.iter().any(|problem| problem.contains("robot=sim") && problem.contains("viewer_inst")),
+            "the problem should name the selection and the id: {problems:?}"
+        );
+    }
+
+    /// Writes a composed launcher whose `sim` option references `fragment`,
+    /// with a base and a `real` option that both define `arm_inst` (the
+    /// axis's `provides`), so the fragment's content is the only variable.
+    fn write_composed_launcher_referencing(repo: &Path, launcher: &str, fragment: &str) {
+        std::fs::create_dir_all(repo).unwrap();
+        std::fs::write(
+            repo.join(launcher),
+            format!(
+                r#"{{
+                    peppy_schema: "launcher/v1",
+                    components: [
+                        {{ name: "robot", default: "real",
+                          provides: ["arm_inst"],
+                          options: {{
+                              real: {{ deployments: [
+                                  {{ source: {{ name: "can", tag: "v1" }},
+                                    instances: [{{ instance_id: "arm_inst" }}] }} ] }},
+                              sim: "{fragment}",
+                          }} }},
+                    ],
+                    deployments: [],
+                }}"#
+            ),
+        )
+        .unwrap();
     }
 }

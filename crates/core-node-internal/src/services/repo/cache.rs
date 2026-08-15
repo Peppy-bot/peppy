@@ -530,8 +530,9 @@ pub fn load_pairing_cache(peppy_dirs: &PeppyDirs) -> Result<Vec<PairingCacheEntr
 /// For Git entries this materializes the repo's checkout via
 /// [`crate::services::node::cache::git::ensure_checkout`] (blocking; wrap
 /// callers in `spawn_blocking` when running inside Tokio). `on_feedback`
-/// receives clone/refresh progress lines.
-pub(crate) fn resolve_repo_launcher_path(
+/// receives clone/refresh progress lines. Touches no stack state, so
+/// read-only callers (`stack resolve`) share it with the launch flow.
+pub fn resolve_repo_launcher_path(
     name: &str,
     peppy_dirs: &PeppyDirs,
     on_feedback: &dyn Fn(&str),

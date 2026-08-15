@@ -19,7 +19,16 @@ fn deployment_label(deployment: &Deployment) -> String {
     format!("{}:{}", deployment.source.name, deployment.source.tag)
 }
 
-/// Step 1: Parse launcher configuration from file path.
+/// Step 1: Parse launcher configuration from file path, resolving the
+/// `--with` selection the caller asked for when the launcher declares
+/// component axes.
+///
+/// The selection words travel on the goal verbatim and are resolved HERE,
+/// for the same reason placement is: only the coordinator holds a
+/// repository launcher's document, so only it knows which axes exist. A
+/// caller that resolved selections itself could do so for a filesystem
+/// launcher and not for a repository one, and the two origins would drift
+/// into meaning different things.
 pub(super) async fn parse_launcher_config(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
@@ -51,8 +60,38 @@ pub(super) async fn parse_launcher_config(
         return Err(LaunchResult::failure(&ctx.log_path, msg));
     }
 
-    let peppy_launcher = match PeppyLauncherParser::from_path(&launch_file) {
+    let parsed = match PeppyLauncherParser::from_path(&launch_file) {
         Ok(cfg) => cfg,
+        Err(e) => {
+            publish_stderr(
+                ctx,
+                format!("Invalid launcher config: {e}"),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+            return Err(LaunchResult::failure(
+                &ctx.log_path,
+                format!("Invalid launcher config: {e}"),
+            ));
+        }
+    };
+
+    let peppy_launcher = match daemon_config::launcher::compose(&parsed, &launch_file, &goal.selections)
+    {
+        Ok((flat, report)) => {
+            if !parsed.components.is_empty() {
+                // The full resolution is echoed before anything runs, so the
+                // operator sees which stack this launch is of while there is
+                // still time to interrupt it.
+                publish_stdout(
+                    ctx,
+                    format!("components: {}", report.selection.echo()),
+                    LaunchFeedbackStep::LauncherStep,
+                )
+                .await;
+            }
+            flat
+        }
         Err(e) => {
             publish_stderr(
                 ctx,

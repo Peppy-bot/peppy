@@ -10,6 +10,7 @@ pub use error::{Error, Result};
 pub use services::repo::cache::{
     contracts_repo_cache_path, launchers_repo_cache_path, mcp_exposures_repo_cache_path,
     nodes_repo_cache_path, pairings_repo_cache_path, repositories_list_path,
+    resolve_repo_launcher_path,
 };
 pub use services::repo::exposure::{
     ExposureDrift, PublishedExposure, check_exposure, exposure_bundle_path, publish_exposure,
