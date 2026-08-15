@@ -15,7 +15,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use std::{fs, thread, time::Duration};
 use tempfile::TempDir;
@@ -45,6 +45,22 @@ pub fn native_dep(node_name: &str, node_tag: &str, link_id: &str) -> generator::
     generator::DependencyContext::native(
         node_name,
         node_tag,
+        link_id,
+        config::node::Cardinality::One,
+    )
+}
+
+/// Contract twin of [`native_dep`]: a `depends_on.contracts` slot at the
+/// manifest's default `one` cardinality, so the generated modules address
+/// their producer through `SenderTarget::contract`.
+pub fn contract_dep(
+    contract_name: &str,
+    contract_tag: &str,
+    link_id: &str,
+) -> generator::DependencyContext {
+    generator::DependencyContext::contract(
+        contract_name,
+        contract_tag,
         link_id,
         config::node::Cardinality::One,
     )
@@ -220,6 +236,12 @@ pub fn bind_slot_many(
 /// invalid names; tests use known-good values only.
 pub fn test_node_target(name: &str) -> SenderTarget {
     SenderTarget::node(name, TEST_NODE_TAG).expect("test node target")
+}
+
+/// Builds a contract-shaped [`SenderTarget`] with the standard test tag, the
+/// shape both ends of a contract-backed interface address on the wire.
+pub fn test_contract_target(name: &str) -> SenderTarget {
+    SenderTarget::contract(name, TEST_NODE_TAG).expect("test contract target")
 }
 
 pub const STUB_NODE_CONFIG: &str = r#"{
@@ -876,14 +898,39 @@ pub async fn wait_for_action_service_reachable_or_exit(
     dir: &std::path::Path,
     timeout: Duration,
 ) {
+    wait_for_action_reachable_via_target_or_exit(
+        ctx,
+        test_node_target(to_node_name),
+        to_action_name,
+        target_instance_id,
+        child,
+        dir,
+        timeout,
+    )
+    .await;
+}
+
+/// Target-shaped core of [`wait_for_action_service_reachable_or_exit`]: a
+/// contract-exposed action is addressed by a contract [`SenderTarget`], so
+/// the contract-slot communication tests probe with the same target shape
+/// their generated consumers fire at.
+pub async fn wait_for_action_reachable_via_target_or_exit(
+    ctx: &WaitContext<'_>,
+    to_target: SenderTarget,
+    to_action_name: &str,
+    target_instance_id: Option<&str>,
+    child: &mut std::process::Child,
+    dir: &std::path::Path,
+    timeout: Duration,
+) {
     let start = Instant::now();
     loop {
         if start.elapsed() > timeout {
             panic!(
-                "timed out after {:?} waiting for action `{}` (node={}, instance={:?}) to become reachable for project at {}",
+                "timed out after {:?} waiting for action `{}` (target={:?}, instance={:?}) to become reachable for project at {}",
                 timeout,
                 to_action_name,
-                to_node_name,
+                to_target,
                 target_instance_id,
                 dir.display(),
             );
@@ -912,16 +959,16 @@ pub async fn wait_for_action_service_reachable_or_exit(
             ctx.messenger,
             ctx.bound_core_node,
             ctx.caller_instance_id,
-            test_node_target(to_node_name),
+            to_target.clone(),
             to_action_name,
             target.as_ref(),
         )
         .await
         .unwrap_or_else(|err| {
             panic!(
-                "failed to check reachability for action `{}` (node={}, instance={:?}) for project at {}: {}",
+                "failed to check reachability for action `{}` (target={:?}, instance={:?}) for project at {}: {}",
                 to_action_name,
-                to_node_name,
+                to_target,
                 target_instance_id,
                 dir.display(),
                 err
@@ -1091,14 +1138,59 @@ peppylib = {{ path = "{PEPPYLIB_OUTPUT_PATH}" }}
         .expect("failed to write Python user node pyproject.toml");
 }
 
-/// Resolves and installs dependencies for the Python project via `uv sync`.
-pub fn init_python_project_venv(dir: impl AsRef<Path>) {
-    let output = Command::new("uv")
-        .arg("sync")
+/// Holds every other Python test until the first `uv sync` of the process has
+/// filled the shared uv cache. See [`init_python_project_venv`].
+static UV_CACHE_FILLED: OnceLock<()> = OnceLock::new();
+
+/// Runs `uv <args>` in `dir` and returns its output.
+pub fn run_uv(dir: impl AsRef<Path>, args: &[&str]) -> std::process::Output {
+    Command::new("uv")
+        .args(args)
         .current_dir(dir.as_ref())
         .stdin(Stdio::null())
         .output()
-        .expect("failed to invoke uv sync on Python project");
+        .unwrap_or_else(|err| panic!("failed to invoke `uv {}`: {err}", args.join(" ")))
+}
+
+/// Resolves and installs dependencies for the Python project via `uv sync`.
+///
+/// The first call in the process runs its sync alone and every other caller
+/// blocks behind it, because only that first sync writes the shared entries of
+/// the uv cache (`target/uv-cache`, pointed there by the workspace
+/// `.cargo/config.toml`).
+///
+/// Two syncs that materialise the same distribution at the same moment race:
+/// uv unpacks the wheel into a temp directory and renames it onto the archive
+/// id recorded in that distribution's cache pointer, so the loser dies with
+/// "Failed to read from the distribution cache ... Directory not empty".
+/// Every Python test project here is written by [`init_python_user_node`] with
+/// the same two path dependencies, so one completed sync leaves their whole
+/// third-party closure in the cache and every later sync only reads it. The
+/// per-test `peppygen` and `peppylib` builds cannot collide in their turn: uv
+/// keys built wheels by source path (`sdists-v9/path/<hash>`) and gives each a
+/// freshly generated archive id, and every test builds them under its own
+/// temporary directory.
+///
+/// The gate is per process, which is the whole race: cargo runs test binaries
+/// one at a time, so the parallel syncs all come from this binary's threads.
+pub fn init_python_project_venv(dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
+    let mut filled_the_cache = false;
+
+    UV_CACHE_FILLED.get_or_init(|| {
+        sync_python_project(dir);
+        filled_the_cache = true;
+    });
+
+    if !filled_the_cache {
+        sync_python_project(dir);
+    }
+}
+
+/// The `uv sync` itself, shared by the cache-filling first call and every
+/// parallel call after it.
+fn sync_python_project(dir: &Path) {
+    let output = run_uv(dir, &["sync"]);
     assert!(
         output.status.success(),
         "uv sync failed for Python project with status: {:?}\nstdout:\n{}\nstderr:\n{}",

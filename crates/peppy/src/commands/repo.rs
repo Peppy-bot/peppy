@@ -1,11 +1,13 @@
 mod add;
 mod exclude;
+mod exposure;
 mod index;
 mod init;
 mod list;
 mod refresh;
 mod remove;
 
+pub use exposure::repo_exposure;
 pub use index::repo_index;
 pub use init::repo_init_with_dirs;
 
@@ -46,6 +48,26 @@ pub enum RepoCommands {
         /// Repository root to index (defaults to the current directory).
         path: Option<PathBuf>,
         /// Verify the committed index instead of writing it.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Publish an MCP exposure document's artifacts, or verify them.
+    ///
+    /// Validates the `mcp_exposure/v1` document against the contract
+    /// documents its sha256 pins name, resolved through the local
+    /// repository caches (run `peppy repo refresh` first), writes the
+    /// derived bundle (public catalog plus generated-node identity) to
+    /// `<stem>.bundle.json` next to the document, and generates the MCP
+    /// server node into a sibling directory named after it.
+    ///
+    /// With `--check`, regenerates everything and verifies the committed
+    /// files match byte for byte. Run it in CI so a hub cannot merge
+    /// artifacts that have drifted from their exposure document. Needs no
+    /// daemon.
+    Exposure {
+        /// Path to the exposure `.json5` document.
+        path: PathBuf,
+        /// Verify the committed artifacts instead of writing them.
         #[arg(long)]
         check: bool,
     },
@@ -101,6 +123,7 @@ impl Command for RepoCommand {
         match self.command {
             RepoCommands::Init => init::repo_init(ctx),
             RepoCommands::Index { path, check } => index::repo_index(path, check),
+            RepoCommands::Exposure { path, check } => exposure::repo_exposure(path, check),
             RepoCommands::List => list::list_repos(ctx),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {

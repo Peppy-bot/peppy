@@ -1,4 +1,4 @@
-use crate::generator::naming::sanitize_component;
+use crate::generator::naming::{non_empty_str, sanitize_component, to_camel_case};
 
 pub(crate) fn is_rust_keyword(ident: &str) -> bool {
     matches!(
@@ -93,6 +93,34 @@ pub(crate) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &st
     }
 }
 
+/// The camel-case struct prefix of a consumed service's generated
+/// request/response types. The exposure generator emits references to these
+/// types, so both must derive them from this one rule.
+pub(crate) fn consumed_service_struct_prefix(service_name: &str) -> String {
+    to_camel_case(&prefixed_name("", non_empty_str(service_name), "service"))
+}
+
+/// The camel-case prefix of a consumed action's generated types, derived
+/// from the producer (contract) and action names (e.g. `UvcCameraEnable`,
+/// continued as `UvcCameraEnableActionGoal` for nested goal structs).
+pub(crate) fn consumed_action_type_prefix(producer_name: &str, action_name: &str) -> String {
+    let node_component = sanitize_component(producer_name);
+    let action_component = sanitize_component(action_name);
+    let base_component = match (node_component.is_empty(), action_component.is_empty()) {
+        (true, true) => "action".to_string(),
+        (true, false) => action_component,
+        (false, true) => node_component,
+        (false, false) => format!("{node_component}_{action_component}"),
+    };
+    to_camel_case(&base_component)
+}
+
+/// The struct name of a nested object field, continuing its parent's
+/// prefix.
+pub(crate) fn nested_struct_name(struct_prefix: &str, field_name: &str) -> String {
+    format!("{struct_prefix}{}", to_camel_case(field_name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +136,37 @@ mod tests {
     fn non_keywords_are_unchanged() {
         assert_eq!(sanitize_rust_identifier("frame_id"), "frame_id");
         assert_eq!(sanitize_rust_identifier("video-stream"), "video_stream");
+    }
+
+    /// The three names below are the contract between the Rust backend and
+    /// the exposure generator: both derive the types they emit and the
+    /// types they reference from these functions, so the exact strings are
+    /// pinned here, empty components included.
+    #[test]
+    fn the_consumed_action_type_prefix_joins_producer_and_action() {
+        assert_eq!(
+            consumed_action_type_prefix("uvc_camera", "enable"),
+            "UvcCameraEnable"
+        );
+        assert_eq!(consumed_action_type_prefix("", "enable"), "Enable");
+        assert_eq!(consumed_action_type_prefix("uvc_camera", ""), "UvcCamera");
+        assert_eq!(consumed_action_type_prefix("", ""), "Action");
+    }
+
+    #[test]
+    fn the_consumed_service_struct_prefix_falls_back_to_service() {
+        assert_eq!(
+            consumed_service_struct_prefix("video_stream_info"),
+            "VideoStreamInfo"
+        );
+        assert_eq!(consumed_service_struct_prefix(""), "Service");
+    }
+
+    #[test]
+    fn a_nested_struct_name_continues_its_parent_prefix() {
+        assert_eq!(
+            nested_struct_name("UvcCameraEnableActionGoal", "frame_header"),
+            "UvcCameraEnableActionGoalFrameHeader"
+        );
     }
 }

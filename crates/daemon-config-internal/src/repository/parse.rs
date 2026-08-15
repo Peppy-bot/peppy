@@ -42,6 +42,7 @@ mod tests {
         launchers: { "openarm_v1_teleop": { path: "openarm/openarm_v1_teleop.json5" } },
         contracts: { "rgb_camera": { "v1": { path: "cameras/rgb_camera.json5" } } },
         pairings: { "joint_link": { "v1": { path: "robot/joint_link.json5" } } },
+        mcp_exposures: { "camera_surface": { "v1": { path: "exposures/camera_surface.json5" } } },
     }"#;
 
     #[test]
@@ -59,6 +60,7 @@ mod tests {
                 "launcher `openarm_v1_teleop` -> openarm/openarm_v1_teleop.json5",
                 "contract `rgb_camera:v1` -> cameras/rgb_camera.json5",
                 "pairing `joint_link:v1` -> robot/joint_link.json5",
+                "mcp_exposure `camera_surface:v1` -> exposures/camera_surface.json5",
             ]
         );
     }
@@ -97,7 +99,7 @@ mod tests {
         let tmp = NamedTempFile::new().expect("temp file");
         std::fs::write(tmp.path(), EVERY_KIND).expect("write");
         let index = PeppyRepositoryIndexParser::from_path(tmp.path()).expect("parses");
-        assert_eq!(index.declared_count(), 5);
+        assert_eq!(index.declared_count(), 6);
     }
 
     /// An index peppy does not understand is refused rather than read on a

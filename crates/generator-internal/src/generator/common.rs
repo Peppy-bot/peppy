@@ -197,6 +197,22 @@ pub(crate) struct EmbeddedBuildHelpers;
 #[exclude = "examples/*"]
 pub(crate) struct EmbeddedCoreNodeApi;
 
+#[derive(Embed)]
+#[folder = "$PEPPY_SHARED_DIR/peppy-mcp-catalog/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+pub(crate) struct EmbeddedMcpCatalog;
+
+#[derive(Embed)]
+#[folder = "$PEPPY_SHARED_DIR/peppy-mcp-runtime/"]
+#[include = "*.rs"]
+#[include = "*.toml"]
+#[exclude = "target/*"]
+#[exclude = "tests/*"]
+pub(crate) struct EmbeddedMcpRuntime;
+
 /// Recursively copies a directory and all of its contents.
 pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;

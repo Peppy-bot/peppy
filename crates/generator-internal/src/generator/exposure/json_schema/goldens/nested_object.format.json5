@@ -1,0 +1,15 @@
+// Nested objects: every nested property is required, and snake_case names
+// survive into the schema untouched.
+{
+  header: {
+    $type: "object",
+    stamp: "time",
+    frame_id: "u32",
+    origin: {
+      $type: "object",
+      x_m: "f64",
+      y_m: "f64",
+    },
+  },
+  status_code: "u8",
+}

@@ -36,6 +36,29 @@ pub struct ConsumedActionMessage {
     pub result_response: Option<MessageFormat>,
 }
 
+impl From<&NativeExposedAction> for ConsumedActionMessage {
+    fn from(exposed: &NativeExposedAction) -> Self {
+        Self {
+            goal_request: exposed
+                .goal_service
+                .as_ref()
+                .and_then(|s| s.request_message_format.clone()),
+            goal_response: exposed
+                .goal_service
+                .as_ref()
+                .and_then(|s| s.response_message_format.clone()),
+            feedback: exposed
+                .feedback_topic
+                .as_ref()
+                .map(|t| t.message_format.clone()),
+            result_response: exposed
+                .result_service
+                .as_ref()
+                .and_then(|s| s.response_message_format.clone()),
+        }
+    }
+}
+
 /// Identifies the implemented contract a producer artifact was pulled from.
 ///
 /// `None` on a producer variant means the artifact is the node's own (native)

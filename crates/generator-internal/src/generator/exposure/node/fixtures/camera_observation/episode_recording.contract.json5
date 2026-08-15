@@ -1,0 +1,22 @@
+{
+    peppy_schema: "contract/v1",
+    manifest: { name: "episode_recording", tag: "v1" },
+    interfaces: {
+        actions: [
+            {
+                name: "record_episode",
+                goal_service: {
+                    request_message_format: { task_description: "string" },
+                },
+                feedback_topic: {
+                    qos_profile: "sensor_data",
+                    message_format: { frame: "u32", phase: "string" },
+                },
+                result_service: {
+                    response_message_format: { episode_index: "u32" },
+                },
+            },
+            { name: "resume_session" },
+        ],
+    },
+}

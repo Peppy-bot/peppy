@@ -1,0 +1,69 @@
+{
+    peppy_schema: "contract/v1",
+    manifest: { name: "rgb_camera", tag: "v1" },
+    interfaces: {
+        topics: [
+            {
+                name: "video_stream",
+                qos_profile: "sensor_data",
+                message_format: {
+                    frame: { $type: "array", $items: "u8" },
+                    encoding: "string",
+                    width: "u16",
+                    height: "u16",
+                    stamp: "time",
+                },
+            },
+            {
+                name: "camera_status",
+                message_format: {
+                    battery: "u8",
+                    temperature_c: "f32",
+                    frames_captured: "u64",
+                    clock_drift_ns: "i64",
+                    recording: "bool",
+                    note: { $type: "string", $optional: true },
+                    calibrated_at: "time",
+                    checksum: { $type: "array", $items: "u8", $length: 4 },
+                    gains: { $type: "array", $items: "f32", $length: 3 },
+                    tags: { $type: "array", $items: "string" },
+                    pose: { $type: "object", x_m: "f64", y_m: "f64" },
+                    samples: {
+                        $type: "array",
+                        $items: { $type: "object", offset: "i16", value: "f64" },
+                    },
+                },
+            },
+        ],
+        services: [
+            {
+                name: "video_stream_info",
+                response_message_format: {
+                    width: "u16",
+                    height: "u16",
+                    fps: "f32",
+                    device: "string",
+                },
+            },
+            {
+                name: "set_brightness",
+                request_message_format: { value: "i32" },
+                response_message_format: { applied: "bool" },
+            },
+            {
+                name: "calibrate",
+                request_message_format: {
+                    exposure_us: "u32",
+                    offsets: { $type: "array", $items: "i16", $length: 2 },
+                    profile: {
+                        $type: "object",
+                        gamma: "f64",
+                        white_balance: { $type: "object", red: "f32", blue: "f32" },
+                    },
+                    comment: { $type: "string", $optional: true },
+                },
+            },
+            { name: "ping" },
+        ],
+    },
+}

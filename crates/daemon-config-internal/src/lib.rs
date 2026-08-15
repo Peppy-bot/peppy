@@ -4,7 +4,8 @@
 //!
 //! This crate owns the config formats only the peppy daemon and CLI read or
 //! write: launcher documents (`peppy_schema: "launcher/v1"`) and their
-//! deployment sources, contract documents (`contract/v1`), the global
+//! deployment sources, contract documents (`contract/v1`), MCP exposure
+//! documents (`mcp_exposure/v1`), the global
 //! daemon config `peppy_config.json5` with its comment-preserving completion,
 //! the [`atomic_write::publish_atomic`] staging helper, and the
 //! [`consts::PeppyDirs`] filesystem-layout helper with the process-global
@@ -32,6 +33,7 @@ mod internal {
     pub mod core_node_name;
     pub mod env;
     pub mod launcher;
+    pub mod mcp_exposure;
     pub mod pairing;
     pub mod peppy_config;
     pub mod repository;
@@ -102,6 +104,16 @@ pub mod launcher {
 // -- contract --
 pub mod contract {
     pub use crate::internal::contract::{Interfaces, Manifest, PeppyContract, PeppyContractParser};
+}
+
+// -- mcp_exposure --
+pub mod mcp_exposure {
+    pub use crate::internal::mcp_exposure::{
+        ActionExposure, ActionOperation, ExposureTarget, FreshnessPolicy, ImageCodec,
+        ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure, OversizePolicy,
+        PeppyMcpExposureParser, PinnedContractRef, PublicName, RestrictBounds, ServerIdentity,
+        ServiceExposure, ServiceOperation, TopicExposure, UpdatePolicy,
+    };
 }
 
 // -- pairing --

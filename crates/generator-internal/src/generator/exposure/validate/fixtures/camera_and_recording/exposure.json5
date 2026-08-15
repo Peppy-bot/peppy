@@ -1,0 +1,73 @@
+{
+    peppy_schema: "mcp_exposure/v1",
+    manifest: { name: "camera_and_recording", tag: "v1" },
+    server: {
+        title: "OpenArm camera and recording",
+        instructions: "Observe the front camera and record teleoperation episodes on this robot.",
+    },
+    targets: {
+        front_camera: {
+            contract: {
+                name: "rgb_camera",
+                tag: "v1",
+                sha256: "c4db5cee269b64fa3da3618748b71b7d92211c1813978b220b3c09720895c607",
+            },
+            topics: [
+                {
+                    member: "video_stream",
+                    resource: "front_camera.latest_frame",
+                    description: "Latest frame from the front-facing camera, JPEG encoded.",
+                    freshness: { max_age_ms: 2000 },
+                    update: { max_hz: 2 },
+                    representation: {
+                        image: "jpeg",
+                        quality: 80,
+                        fields: {
+                            data: "frame",
+                            encoding: "encoding",
+                            width: "width",
+                            height: "height",
+                        },
+                    },
+                    max_result_bytes: 524288,
+                    on_oversize: "downscale",
+                },
+            ],
+            services: [
+                {
+                    member: "video_stream_info",
+                    tool: "front_camera.info",
+                    description: "Report the camera's resolution, frame rate, and encoding.",
+                    operation: "read_only",
+                    deadline_ms: 2000,
+                },
+                {
+                    member: "set_brightness",
+                    tool: "front_camera.set_brightness",
+                    description: "Set the camera brightness in device units.",
+                    operation: "mutating",
+                    deadline_ms: 2000,
+                    restrict: { value: { min: -64, max: 64 } },
+                },
+            ],
+        },
+        recorder: {
+            contract: {
+                name: "episode_recording",
+                tag: "v1",
+                sha256: "86f972761e3ea31ee918071b11bcd68440210f1ecc20a9c445e5a7486cb110be",
+            },
+            actions: [
+                {
+                    member: "record_episode",
+                    tool: "recorder.record_episode",
+                    description: "Record one teleoperation episode to the local dataset. Long-running; returns a task handle.",
+                    operation: "long_running",
+                    safety_sensitive: true,
+                    confirmation_required: true,
+                    deadline_ms: 900000,
+                },
+            ],
+        },
+    },
+}

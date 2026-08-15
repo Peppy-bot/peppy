@@ -48,8 +48,9 @@ pub struct Manifest {
 
 /// Enforce the repo-ID tag contract on the manifest tag at parse time, reusing
 /// the shared rules from `repo_node_id` so a `name`/`tag` pair from a contract
-/// document matches node dependencies the same way everywhere.
-fn deserialize_tag<'de, D>(deserializer: D) -> Result<String, D::Error>
+/// document matches node dependencies the same way everywhere. Shared with the
+/// MCP exposure model, whose contract references carry the same tag rules.
+pub(crate) fn deserialize_tag<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {

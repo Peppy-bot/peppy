@@ -3,11 +3,12 @@ use crate::helpers::{
     CONSUMED_ACTION_GOAL_RESPONSE_FORMAT, CONSUMED_ACTION_RESULT_FORMAT, EXPOSED_ACTION_EXAMPLE,
 };
 use crate::helpers::{
-    CapturedChild, DEFAULT_WAIT_TIMEOUT, STUB_NODE_CONFIG, WaitContext, bind_slot, compile_project,
-    consumer_stub_node_config, copy_config_to_output, init_cargo_user_node, init_test_env,
-    native_dep, send_shutdown, spawn_cargo_run, test_peppy_dirs,
-    wait_for_action_service_reachable_or_exit, wait_for_child,
-    wait_for_health_service_reachable_or_exit,
+    CapturedChild, DEFAULT_WAIT_TIMEOUT, RUST_STUB_EXECUTION, STUB_NODE_CONFIG, WaitContext,
+    bind_slot, compile_project, consumer_stub_node_config, contract_consumer_stub_node_config,
+    contract_dep, copy_config_to_output, init_cargo_user_node, init_test_env, native_dep,
+    send_shutdown, spawn_cargo_run, test_contract_target, test_peppy_dirs,
+    wait_for_action_reachable_via_target_or_exit, wait_for_action_service_reachable_or_exit,
+    wait_for_child, wait_for_health_service_reachable_or_exit,
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::runtime::NodeInstanceConfig;
@@ -15,7 +16,7 @@ use config::{
     node::{ConsumedAction, MessageFormat, NativeExposedAction},
     runtime::{Name, RuntimeConfig},
 };
-use generator::{ConsumedActionMessage, LanguageGenerator};
+use generator::{ConsumedActionMessage, ContractOrigin, LanguageGenerator};
 use std::path::Path;
 use std::{fs, time::Duration};
 use tempfile::TempDir;
@@ -2655,5 +2656,429 @@ fn main() -> Result<()> {
         "get_result did not resolve to Abandoned after producer death.\nstdout:\n{}\nstderr:\n{}",
         consumer_stdout,
         consumer_stderr
+    );
+}
+
+const ARM_CONTRACT_NAME: &str = "arm_actions";
+const ARM_SERVER_NODE_NAME: &str = "arm_server";
+
+const CONSUMED_ACTION_CONTRACT_EXAMPLE: &str = r#"
+{
+  link_id: "arm",
+  name: "move_arm",
+}
+"#;
+
+/// Consumer-side contract-slot capstone: the consumer's manifest declares the
+/// action's slot under `depends_on.contracts` (not `.nodes`), the producer
+/// exposes the same action through a `manifest.implements` slot, and both
+/// sides address the wire via `SenderTarget::contract`. The exposer node is
+/// deliberately named `arm_server`, a name the consumer never mentions: the
+/// contract carries the shared identity. Covers the full lifecycle over a
+/// live router: framework rejection, accept with declared response, feedback,
+/// completed result, then cancel driving a cancelled result on a second goal.
+/// Production nodes consume actions only via node slots, so before this test
+/// the consumer side of contract-backed actions had no end-to-end coverage.
+#[rstest::rstest]
+#[case::peer(crate::helpers::LocalNodesTopology::Peer)]
+#[case::router(crate::helpers::LocalNodesTopology::Router)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_communication_via_contract_slot(
+    #[case] topology: crate::helpers::LocalNodesTopology,
+) {
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    // --- Consumer (client) project: one contract slot, bound to the exposer.
+    let consumer_instance_id = CONSUMER_INSTANCE_ID;
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
+    let consumed_action: ConsumedAction =
+        serde_json5::from_str(CONSUMED_ACTION_CONTRACT_EXAMPLE).unwrap();
+    let action_messages = ConsumedActionMessage {
+        goal_request: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_FORMAT).unwrap()),
+        goal_response: Some(serde_json5::from_str(CONSUMED_ACTION_GOAL_RESPONSE_FORMAT).unwrap()),
+        feedback: Some(serde_json5::from_str(CONSUMED_ACTION_FEEDBACK_FORMAT).unwrap()),
+        result_response: Some(serde_json5::from_str(CONSUMED_ACTION_RESULT_FORMAT).unwrap()),
+    };
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &contract_consumer_stub_node_config(
+                ARM_CONTRACT_NAME,
+                "v1",
+                "arm",
+                "one",
+                RUST_STUB_EXECUTION,
+            ),
+        );
+    generator
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &contract_dep(ARM_CONTRACT_NAME, "v1", "arm"),
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
+    generator
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let consumer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
+        CONSUMER_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "arm",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
+    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_consumer);
+    let consumer_main = r#"
+use peppygen::consumed_actions::arm::move_arm as arm_move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use std::time::Duration;
+
+async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    // Framework rejection rides the admission ack, contract addressing or not.
+    let rejected = arm_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        arm_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        arm_move_arm::GoalRequest {
+            arm_id: 99,
+            desired_position: [0, 0, 0],
+        },
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    println!(
+        "rejected goal accepted={} reason={:?}",
+        rejected.accepted,
+        rejected.reason.as_deref()
+    );
+
+    // Accepted goal: feedback, then a completed result.
+    let mut action_handle = arm_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        arm_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        arm_move_arm::GoalRequest {
+            arm_id: 7,
+            desired_position: [10, 20, 30],
+        },
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    let data = action_handle.data.as_ref().expect("accepted goal carries the declared response");
+    println!("goal accepted={} data_accepted={}", action_handle.accepted, data.accepted);
+
+    let feedback = action_handle.on_next_feedback_message().await?;
+    println!("feedback message received new_position={:?}", feedback.new_position);
+
+    let result = action_handle.get_result(Duration::from_secs(5)).await?;
+    match result.outcome {
+        arm_move_arm::ResultOutcome::Completed(data) => println!(
+            "result success={} final_position={:?}",
+            data.success, data.final_position
+        ),
+        other => panic!("expected Completed outcome, got {other:?}"),
+    }
+
+    // Second goal: cancel drives the cancelled result through the same
+    // contract-addressed endpoints.
+    let cancel_handle = arm_move_arm::ActionHandle::fire_goal(
+        &node_runner,
+        arm_move_arm::bound_producer(&node_runner),
+        Duration::from_secs(5),
+        arm_move_arm::GoalRequest {
+            arm_id: 8,
+            desired_position: [1, 2, 3],
+        },
+        peppygen::QoSProfile::SensorData,
+    ).await?;
+    let cancel_response = cancel_handle.cancel_goal(Duration::from_secs(5)).await?;
+    println!(
+        "cancel signalled={}",
+        matches!(cancel_response.state, arm_move_arm::CancelState::Signalled)
+    );
+    let result = cancel_handle.get_result(Duration::from_secs(5)).await?;
+    match result.outcome {
+        arm_move_arm::ResultOutcome::Cancelled(data) => println!(
+            "cancelled result success={} error={:?}",
+            data.success,
+            data.error_msg.as_deref()
+        ),
+        other => panic!("expected Cancelled outcome, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        consume_action(&node_runner).await
+    })
+}
+"#;
+    fs::write(
+        user_node_consumer.join("src").join("main.rs"),
+        consumer_main,
+    )
+    .expect("failed to write consumer main");
+
+    // --- Exposer (server) project: exposes the action through a
+    // `manifest.implements`-shaped contract origin.
+    let exposer_instance_id = EXPOSER_INSTANCE_ID;
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
+    let exposed_action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_EXAMPLE).unwrap();
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
+    generator
+        .add_exposed_action(
+            &exposed_action,
+            Some(&ContractOrigin {
+                link_id: "arm_impl".to_string(),
+                contract_name: ARM_CONTRACT_NAME.to_string(),
+                contract_tag: "v1".to_string(),
+            }),
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
+    generator
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let exposer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
+        ARM_SERVER_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .unwrap();
+    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
+    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_exposer);
+    let exposer_main = r#"
+use peppygen::exposed_actions::arm_impl::move_arm;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let mut action = move_arm::ActionHandle::expose(&node_runner).await?;
+
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|request| -> Result<move_arm::GoalDecision> {
+                    println!(
+                        "server received goal arm_id={} desired={:?}",
+                        request.data.arm_id, request.data.desired_position
+                    );
+                    if request.data.arm_id == 99 {
+                        return Ok(move_arm::GoalDecision::reject("arm 99 is reserved"));
+                    }
+                    Ok(move_arm::GoalDecision::Accept(move_arm::GoalResponse::new(true)))
+                })
+                .await;
+
+            match maybe_ctx {
+                Ok(Some(ctx)) => {
+                    if ctx.request().data.arm_id == 8 {
+                        // Wait for the cancel, then report the cancelled result.
+                        ctx.cancel_signal().await;
+                        println!("server observed cancel for goal");
+                        let _ = ctx
+                            .complete_cancelled(false, Some("goal cancelled by server".to_owned()), [0, 0, 0])
+                            .await;
+                    } else {
+                        let feedback_message = [7, 31, 43];
+                        let _ = ctx.publish_feedback(feedback_message).await;
+                        println!("server emitted feedback message {:?}", feedback_message);
+                        let _ = ctx.complete(true, None, [98, 4, 26]).await;
+                        println!("server completed goal");
+                    }
+                }
+                _ => break,
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        expose_action(&node_runner).await
+    })
+}
+"#;
+    fs::write(user_node_exposer.join("src").join("main.rs"), exposer_main)
+        .expect("failed to write exposer main");
+
+    compile_project(&user_node_consumer);
+    compile_project(&user_node_exposer);
+
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
+
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+
+    // Spawn exposer first so it's ready to handle requests. The probe uses
+    // the contract-shaped target, exactly what the consumer fires at.
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
+    );
+
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: TEST_CORE_NODE,
+    };
+    wait_for_action_reachable_via_target_or_exit(
+        &ctx,
+        test_contract_target(ARM_CONTRACT_NAME),
+        "move_arm",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    let mut consumer_child = spawn_cargo_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
+    );
+
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        ARM_SERVER_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        CONSUMER_NODE_NAME,
+        TEST_CORE_NODE,
+        consumer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        ARM_SERVER_NODE_NAME,
+        TEST_CORE_NODE,
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_consumer,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
+    assert!(
+        consumer_output.status.success(),
+        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
+    );
+    assert!(
+        consumer_stdout
+            .contains("rejected goal accepted=false reason=Some(\"arm 99 is reserved\")")
+            && consumer_stdout.contains("goal accepted=true data_accepted=true")
+            && consumer_stdout.contains("feedback message received new_position=[7, 31, 43]")
+            && consumer_stdout.contains("result success=true final_position=[98, 4, 26]")
+            && consumer_stdout.contains("cancel signalled=true")
+            && consumer_stdout.contains(
+                "cancelled result success=false error=Some(\"goal cancelled by server\")"
+            ),
+        "consumer did not complete the contract-addressed action lifecycle.\nstdout:\n{}\nstderr:\n{}",
+        consumer_stdout,
+        consumer_stderr
+    );
+
+    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
+    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
+    assert!(
+        exposer_output.status.success(),
+        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        exposer_output.status.code(),
+        exposer_stdout,
+        exposer_stderr
+    );
+    assert!(
+        exposer_stdout.contains("server received goal arm_id=99 desired=[0, 0, 0]")
+            && exposer_stdout.contains("server received goal arm_id=7 desired=[10, 20, 30]")
+            && exposer_stdout.contains("server emitted feedback message [7, 31, 43]")
+            && exposer_stdout.contains("server completed goal")
+            && exposer_stdout.contains("server received goal arm_id=8 desired=[1, 2, 3]")
+            && exposer_stdout.contains("server observed cancel for goal"),
+        "exposer did not process the contract-addressed action endpoints as expected.\nstdout:\n{}\nstderr:\n{}",
+        exposer_stdout,
+        exposer_stderr
     );
 }

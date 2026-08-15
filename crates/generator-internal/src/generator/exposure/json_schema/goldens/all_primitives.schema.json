@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "properties": {
+    "flag": {
+      "type": "boolean"
+    },
+    "label": {
+      "type": "string"
+    },
+    "blob": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "stamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tiny": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "small": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "medium": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "big": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "tiny_signed": {
+      "type": "integer",
+      "minimum": -128,
+      "maximum": 127
+    },
+    "small_signed": {
+      "type": "integer",
+      "minimum": -32768,
+      "maximum": 32767
+    },
+    "medium_signed": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 2147483647
+    },
+    "big_signed": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$"
+    },
+    "ratio": {
+      "type": "number"
+    },
+    "precise": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "flag",
+    "label",
+    "blob",
+    "stamp",
+    "tiny",
+    "small",
+    "medium",
+    "big",
+    "tiny_signed",
+    "small_signed",
+    "medium_signed",
+    "big_signed",
+    "ratio",
+    "precise"
+  ],
+  "additionalProperties": false
+}

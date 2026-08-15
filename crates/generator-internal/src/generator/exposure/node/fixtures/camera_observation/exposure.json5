@@ -1,0 +1,105 @@
+{
+    peppy_schema: "mcp_exposure/v1",
+    manifest: { name: "camera_observation", tag: "v1" },
+    server: {
+        title: "OpenArm camera",
+        instructions: "Observe and control the front camera on this robot.",
+    },
+    targets: {
+        front_camera: {
+            contract: {
+                name: "rgb_camera",
+                tag: "v1",
+                sha256: "c01e0d18340ab469c70cdec51a96282564af6883186f735c2cdd75660e079e2a",
+            },
+            topics: [
+                {
+                    member: "video_stream",
+                    resource: "front_camera.latest_frame",
+                    description: "Latest frame from the front-facing camera, JPEG encoded.",
+                    freshness: { max_age_ms: 2000 },
+                    update: { max_hz: 2 },
+                    representation: {
+                        image: "jpeg",
+                        quality: 80,
+                        fields: {
+                            data: "frame",
+                            encoding: "encoding",
+                            width: "width",
+                            height: "height",
+                        },
+                    },
+                    max_result_bytes: 524288,
+                    on_oversize: "downscale",
+                },
+                {
+                    member: "camera_status",
+                    resource: "front_camera.status",
+                    description: "Latest camera status snapshot.",
+                    freshness: { max_age_ms: 5000 },
+                    update: { max_hz: 1 },
+                    max_result_bytes: 8192,
+                    on_oversize: "reject",
+                },
+            ],
+            services: [
+                {
+                    member: "video_stream_info",
+                    tool: "front_camera.info",
+                    description: "Report the camera's resolution, frame rate, and encoding.",
+                    operation: "read_only",
+                    deadline_ms: 2000,
+                },
+                {
+                    member: "set_brightness",
+                    tool: "front_camera.set_brightness",
+                    description: "Set the camera brightness in device units.",
+                    operation: "mutating",
+                    deadline_ms: 2000,
+                    restrict: { value: { min: -64, max: 64 } },
+                },
+                {
+                    member: "calibrate",
+                    tool: "front_camera.calibrate",
+                    description: "Recalibrate the camera color profile.",
+                    operation: "mutating",
+                    deadline_ms: 10000,
+                },
+                {
+                    member: "ping",
+                    tool: "front_camera.ping",
+                    description: "Check that the camera answers at all.",
+                    operation: "read_only",
+                    deadline_ms: 1000,
+                },
+            ],
+        },
+        recorder: {
+            contract: {
+                name: "episode_recording",
+                tag: "v1",
+                sha256: "f3d9411741362f9f3acea6cedd346c9958a4e2c33cda8d9be2cd0b625fcb90f4",
+            },
+            actions: [
+                {
+                    member: "record_episode",
+                    tool: "recorder.record_episode",
+                    description: "Record one teleoperation episode to the local dataset.",
+                    operation: "long_running",
+                    safety_sensitive: true,
+                    confirmation_required: true,
+                    deadline_ms: 900000,
+                },
+                {
+                    member: "resume_session",
+                    tool: "recorder.resume_session",
+                    description: "Resume the recording session after a pause.",
+                    operation: "long_running",
+                    safety_sensitive: false,
+                    confirmation_required: false,
+                    deadline_ms: 30000,
+                },
+            ],
+        },
+    },
+}

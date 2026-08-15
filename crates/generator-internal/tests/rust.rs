@@ -11,6 +11,8 @@ mod consumed_services_dedup;
 mod consumed_topics_dedup;
 #[path = "rust/generate_lib.rs"]
 mod generate_lib;
+#[path = "rust/mcp_endpoint.rs"]
+mod mcp_endpoint;
 #[path = "rust/multi_binding_communication.rs"]
 mod multi_binding_communication;
 #[path = "rust/pairing_lib.rs"]

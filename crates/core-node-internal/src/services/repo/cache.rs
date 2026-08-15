@@ -93,6 +93,19 @@ pub struct PairingCacheEntry {
     pub repo_id: u32,
 }
 
+/// One entry as it appears in `mcp_exposures.json5`. MCP exposures are
+/// stand-alone JSON5 documents (`peppy_schema: "mcp_exposure/v1"`)
+/// selecting the contract members a generated MCP server makes public.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct McpExposureCacheEntry {
+    pub exposure_name: ItemName,
+    pub tag: ItemTag,
+    pub sha256: ManifestFingerprint,
+    pub origin: EntryOrigin,
+    #[serde(skip)]
+    pub repo_id: u32,
+}
+
 /// One repository's items, split by kind. Whatever read the repository
 /// hands back this shape, so the merge, retention and cache-writing below
 /// it are written once.
@@ -102,9 +115,10 @@ pub(crate) struct RepoItems {
     pub launchers: Vec<LauncherCacheEntry>,
     pub contracts: Vec<ContractCacheEntry>,
     pub pairings: Vec<PairingCacheEntry>,
+    pub mcp_exposures: Vec<McpExposureCacheEntry>,
 }
 
-/// Uniform view over the four cache-entry kinds, so the cache plumbing
+/// Uniform view over the five cache-entry kinds, so the cache plumbing
 /// (write/load/lookup here, collection and cross-repo merging in
 /// `refresh.rs`) exists once instead of once per kind.
 pub(crate) trait RepoCacheEntry:
@@ -139,9 +153,9 @@ pub(crate) trait RepoCacheEntry:
     }
 }
 
-/// Writes the [`RepoCacheEntry`] impl for one kind. The four differ only in
+/// Writes the [`RepoCacheEntry`] impl for one kind. The five differ only in
 /// their constants and in which field holds the name and the tag, so
-/// spelling the accessors out four times would be four chances to wire one
+/// spelling the accessors out five times would be five chances to wire one
 /// to the wrong field.
 /// The trailing tag field is omitted for launchers, the one untagged kind.
 macro_rules! repo_cache_entry {
@@ -202,6 +216,14 @@ repo_cache_entry!(
     "pairings.json5",
     Pairing,
     pairing_name,
+    tag
+);
+repo_cache_entry!(
+    McpExposureCacheEntry,
+    "mcp exposure",
+    "mcp_exposures.json5",
+    McpExposure,
+    exposure_name,
     tag
 );
 
@@ -480,6 +502,10 @@ pub fn contracts_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
 
 pub fn pairings_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
     repo_cache_path::<PairingCacheEntry>(peppy_dirs)
+}
+
+pub fn mcp_exposures_repo_cache_path(peppy_dirs: &PeppyDirs) -> PathBuf {
+    repo_cache_path::<McpExposureCacheEntry>(peppy_dirs)
 }
 
 pub fn repositories_list_path(peppy_dirs: &PeppyDirs) -> PathBuf {

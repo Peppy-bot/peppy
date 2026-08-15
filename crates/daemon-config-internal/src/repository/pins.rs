@@ -34,6 +34,8 @@ pub enum PinKind {
     Node,
     Contract,
     Pairing,
+    #[serde(rename = "mcp_exposure")]
+    McpExposure,
 }
 
 impl fmt::Display for PinKind {
@@ -42,6 +44,7 @@ impl fmt::Display for PinKind {
             Self::Node => "node",
             Self::Contract => "contract",
             Self::Pairing => "pairing",
+            Self::McpExposure => "mcp_exposure",
         })
     }
 }
@@ -171,12 +174,30 @@ mod tests {
                 pin(PinKind::Node, "driver", "v2"),
                 pin(PinKind::Contract, "frames", "v1"),
                 pin(PinKind::Pairing, "joint_link", "v1"),
+                pin(PinKind::McpExposure, "camera_surface", "v1"),
             ],
         )
         .expect("a node root");
         let encoded = serde_json5::to_string(&pins).expect("serialize");
         let decoded: DeploymentPins = serde_json5::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded, pins);
+    }
+
+    /// The serde form and `Display` are written out separately; this pins
+    /// them to each other for every kind so a pin's wire spelling and its
+    /// error text cannot disagree.
+    #[test]
+    fn pin_kind_display_matches_the_wire_form_for_every_kind() {
+        for kind in [
+            PinKind::Node,
+            PinKind::Contract,
+            PinKind::Pairing,
+            PinKind::McpExposure,
+        ] {
+            let wire = serde_json5::to_string(&kind).expect("serializes");
+            assert_eq!(wire, format!("\"{kind}\""));
+        }
+        assert_eq!(PinKind::McpExposure.to_string(), "mcp_exposure");
     }
 
     /// A root pin as raw JSON5, with the identity fields filled in. The hex
