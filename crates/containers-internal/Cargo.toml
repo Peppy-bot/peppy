@@ -10,6 +10,9 @@ config = { workspace = true }
 # `APPTAINER_TMPDIR`, so it lands on the same peppy-owned tree as every other
 # peppy temporary instead of the host's `/tmp`.
 daemon-config = { workspace = true }
+# Home lookup for `~` expansion in mount-spec sources. `dirs` falls back to
+# the passwd database when `$HOME` is unset (daemons under systemd/cron).
+dirs = "6"
 serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"

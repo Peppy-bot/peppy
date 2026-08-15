@@ -77,6 +77,78 @@ pub fn auto_created_warning(src: &str) -> String {
     )
 }
 
+/// Expands a leading `~` in the host-source segment of a
+/// `host_path[:container_path[:options]]` mount spec against THIS machine's
+/// home directory. The container path and options pass through verbatim: a
+/// `~` there belongs to the container, not the host.
+///
+/// Expansion is deliberately machine-local. A launch coordinator ships mount
+/// sources to peer machines as the raw `~/...` token, because the peer's home
+/// is not the coordinator's; whichever daemon is about to create, register,
+/// or bind a source calls this at that moment. Without it the literal `~` is
+/// a relative path, and the auto-create/`--bind` grow a stray `~/` tree in
+/// whatever directory the daemon happened to be started from.
+///
+/// `~user` sources are rejected via [`home_mount_source_rejection`], and an
+/// expansion landing in a blocked system directory (a pathological `$HOME`
+/// like `/tmp`) is refused with the phrasing the spec validation uses, so the
+/// "nothing handed to the auto-create or the runtime is a blocked top-level
+/// dir" invariant survives expansion.
+pub fn expand_home_in_mount_spec(spec: &str) -> std::result::Result<String, String> {
+    expand_home_in_mount_spec_with(spec, dirs::home_dir().as_deref())
+}
+
+/// Why `src` cannot name a home-relative mount source, or `None` if it can.
+///
+/// Only the `~user` form is unsupported: resolving another user's home is a
+/// passwd lookup peppy has no business doing on a node's behalf. Shared so
+/// the coordinator-side plan validation (which must not expand, only reject)
+/// and the machine-local expansion above refuse with the same words.
+pub fn home_mount_source_rejection(src: &str) -> Option<String> {
+    let is_tilde_user = src.starts_with('~') && src != "~" && !src.starts_with("~/");
+    is_tilde_user.then(|| {
+        format!(
+            "~user paths are not supported in mount path source `{src}`; \
+             use an absolute path or ~/..."
+        )
+    })
+}
+
+/// [`expand_home_in_mount_spec`] with the home directory injected, so tests
+/// don't depend on the runner's real `$HOME`.
+fn expand_home_in_mount_spec_with(
+    spec: &str,
+    home: Option<&Path>,
+) -> std::result::Result<String, String> {
+    let src = mount_spec_source(spec);
+    if !src.starts_with('~') {
+        return Ok(spec.to_owned());
+    }
+    if let Some(rejection) = home_mount_source_rejection(src) {
+        return Err(rejection);
+    }
+    let home = home.ok_or_else(|| {
+        format!("cannot expand `~` in mount path `{spec}`: the home directory is unavailable")
+    })?;
+    let expanded = if src == "~" {
+        home.to_path_buf()
+    } else {
+        home.join(&src["~/".len()..])
+    };
+    let expanded_src = expanded.to_str().ok_or_else(|| {
+        format!(
+            "cannot expand `~` in mount path `{spec}`: the home directory path is not valid UTF-8"
+        )
+    })?;
+    if config::node::is_blocked_mount_source(expanded_src) {
+        return Err(format!(
+            "mount path `{spec}` expands its source to a blocked system directory \
+             `{expanded_src}`; use a subdirectory instead"
+        ));
+    }
+    Ok(format!("{expanded_src}{}", &spec[src.len()..]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +260,93 @@ mod tests {
         assert!(
             message.contains(target.to_string_lossy().as_ref()),
             "error must name the offending path, got: {message}"
+        );
+    }
+
+    #[test]
+    fn expand_home_expands_bare_tilde_source() {
+        let expanded = expand_home_in_mount_spec_with("~", Some(Path::new("/home/me")))
+            .expect("a bare ~ is a valid source");
+        assert_eq!(expanded, "/home/me");
+    }
+
+    #[test]
+    fn expand_home_expands_tilde_source_and_keeps_dest_and_opts() {
+        let expanded = expand_home_in_mount_spec_with(
+            "~/.cache/kit:/isaac-sim/kit/cache:rw",
+            Some(Path::new("/home/me")),
+        )
+        .expect("a home-relative source is a valid spec");
+        assert_eq!(expanded, "/home/me/.cache/kit:/isaac-sim/kit/cache:rw");
+    }
+
+    #[test]
+    fn expand_home_rejects_tilde_user_sources() {
+        let error = expand_home_in_mount_spec_with("~bob/data:/data", Some(Path::new("/home/me")))
+            .expect_err("~user sources are unsupported");
+        assert!(
+            error.contains("~user paths are not supported"),
+            "the rejection must say why, got: {error}"
+        );
+        assert!(
+            error.contains("~bob/data"),
+            "the rejection must name the offending source, got: {error}"
+        );
+    }
+
+    /// Everything without a leading `~` in the SOURCE comes back verbatim: an
+    /// absolute spec, a plain relative source (whose cwd anchoring is the
+    /// documented Lima behavior, not ours to change here), and a spec whose
+    /// only `~` is on the container side.
+    #[test]
+    fn expand_home_leaves_non_tilde_specs_alone() {
+        for spec in [
+            "/data/models:/opt/models:ro",
+            "robot_assets",
+            "/data:~/inside:rw",
+        ] {
+            let expanded = expand_home_in_mount_spec_with(spec, Some(Path::new("/home/me")))
+                .expect("a non-tilde source is always valid");
+            assert_eq!(expanded, spec, "{spec} must pass through unchanged");
+        }
+    }
+
+    #[test]
+    fn expand_home_fails_without_a_home_directory() {
+        let error = expand_home_in_mount_spec_with("~/.cache/kit", None)
+            .expect_err("no home means no expansion");
+        assert!(
+            error.contains("home directory is unavailable"),
+            "the failure must say what is missing, got: {error}"
+        );
+    }
+
+    /// A pathological home (say the daemon was started with `HOME=/tmp`) must
+    /// not let a bare `~` smuggle a blocked top-level directory past the spec
+    /// validation, which ran before expansion and saw only the token.
+    #[test]
+    fn expand_home_rejects_a_blocked_expansion() {
+        let error = expand_home_in_mount_spec_with("~", Some(Path::new("/tmp")))
+            .expect_err("an expansion into a blocked directory must be refused");
+        assert!(
+            error.contains("blocked system directory"),
+            "the refusal must keep the canonical phrase, got: {error}"
+        );
+    }
+
+    /// The public wrapper wires the real home lookup to the expansion. Skipped
+    /// when the environment has no resolvable home, where the error branch is
+    /// already covered above.
+    #[test]
+    fn expand_home_public_wrapper_uses_the_real_home() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let expanded =
+            expand_home_in_mount_spec("~/.cache/kit:/kit:rw").expect("expansion must succeed");
+        assert_eq!(
+            expanded,
+            format!("{}/.cache/kit:/kit:rw", home.to_str().expect("utf-8 home"))
         );
     }
 }
