@@ -12,6 +12,8 @@ mod services;
 mod topics;
 pub(crate) mod type_mapping;
 
+pub(crate) use topics::qos_profile_variant;
+
 pub use parameters::{generate_parameters_struct, validate_parameter_schema};
 
 use super::types::{

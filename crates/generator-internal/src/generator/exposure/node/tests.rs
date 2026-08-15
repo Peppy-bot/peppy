@@ -13,9 +13,11 @@ use std::path::Path;
 const CAMERA_CONTRACT: &str = include_str!("fixtures/camera_observation/rgb_camera.contract.json5");
 
 /// Two action shapes: `record_episode` carries every optional endpoint
-/// (goal request, feedback, result data), `resume_session` carries none, so
-/// the golden pins both the data-bearing and the unit `ResultOutcome`
-/// bridge codegen.
+/// (goal request, feedback, result data) and declares its feedback topic
+/// `sensor_data`, so the golden pins both the data-bearing and the unit
+/// `ResultOutcome` bridge codegen plus the contract-derived feedback QoS
+/// (`SensorData` from the declaration, against `resume_session`'s
+/// default for a feedback-less action).
 const RECORDING_CONTRACT: &str =
     include_str!("fixtures/camera_observation/episode_recording.contract.json5");
 

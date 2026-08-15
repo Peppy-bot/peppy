@@ -22,8 +22,9 @@ use crate::generator::exposure::validate::{
 use crate::generator::rust::identifiers::{
     consumed_action_type_prefix, consumed_service_struct_prefix, sanitize_rust_identifier,
 };
+use crate::generator::rust::qos_profile_variant;
 use crate::generator::rust::type_mapping::render_tokens;
-use config::node::MessageFormat;
+use config::node::{MessageFormat, NativeExposedAction};
 use convert::{format_to_json_expr, object_from_json_expr};
 use daemon_config::contract::PeppyContract;
 use daemon_config::mcp_exposure::McpExposure;
@@ -628,21 +629,23 @@ fn render_task_bridge(
             let _ = input;
         }
     };
+    // The feedback subscription follows the contract: the QoS profile the
+    // action's feedback topic declares picks the subscriber's buffering
+    // tier (the publisher side always sends feedback as `Important`, so
+    // the profile selects how this end is buffered, not delivery
+    // reliability), and a feedback-less action's sentinel-only stream
+    // takes the default.
+    let feedback_qos = feedback_qos_tokens(declared);
     let fire_arguments = if goal_format.is_some() {
         quote!(
             node_runner,
             target,
             deadline,
             request,
-            peppygen::QoSProfile::SensorData
+            #feedback_qos
         )
     } else {
-        quote!(
-            node_runner,
-            target,
-            deadline,
-            peppygen::QoSProfile::SensorData
-        )
+        quote!(node_runner, target, deadline, #feedback_qos)
     };
     // Only the feedback drain needs the handle mutably.
     let handle_binding = if feedback_format.is_some() {
@@ -781,6 +784,19 @@ fn render_task_bridge(
 /// request struct, or a `()`-returning poll.
 fn effective_format(format: Option<&MessageFormat>) -> Option<&MessageFormat> {
     format.filter(|format| !format.0.is_empty())
+}
+
+/// The `fire_goal` feedback-subscription QoS derived from the contract: the
+/// profile the action's feedback topic declares, or the default for a
+/// feedback-less action.
+fn feedback_qos_tokens(declared: &NativeExposedAction) -> TokenStream {
+    let profile = declared
+        .feedback_topic
+        .as_ref()
+        .map(|topic| topic.qos_profile.clone())
+        .unwrap_or_default();
+    let variant = qos_profile_variant(&profile);
+    quote!(peppygen::QoSProfile::#variant)
 }
 
 fn contract_for<'a>(

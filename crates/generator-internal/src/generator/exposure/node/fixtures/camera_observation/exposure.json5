@@ -78,7 +78,7 @@
             contract: {
                 name: "episode_recording",
                 tag: "v1",
-                sha256: "1be04e1677007c54cc1313abe847bca898fa1eef35f47df8a2916e00ab57b70a",
+                sha256: "f3d9411741362f9f3acea6cedd346c9958a4e2c33cda8d9be2cd0b625fcb90f4",
             },
             actions: [
                 {

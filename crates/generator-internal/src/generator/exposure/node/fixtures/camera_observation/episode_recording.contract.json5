@@ -9,6 +9,7 @@
                     request_message_format: { task_description: "string" },
                 },
                 feedback_topic: {
+                    qos_profile: "sensor_data",
                     message_format: { frame: "u32", phase: "string" },
                 },
                 result_service: {

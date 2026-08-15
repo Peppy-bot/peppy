@@ -832,13 +832,21 @@ fn build_topic_deserialize_helper(
     ))
 }
 
-pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
+/// The `QoSProfile` variant an emitted reference spells, for renderers that
+/// reach the type through a different module path (generated peppygen code
+/// says `peppylib::config::QoSProfile`, the exposure node's bridges say
+/// `peppygen::QoSProfile`).
+pub fn qos_profile_variant(profile: &QoSProfile) -> Ident {
     let variant = match profile {
         QoSProfile::Standard => "Standard",
         QoSProfile::Reliable => "Reliable",
         QoSProfile::SensorData => "SensorData",
         QoSProfile::Critical => "Critical",
     };
-    let variant_ident = Ident::new(variant, proc_macro2::Span::call_site());
+    Ident::new(variant, proc_macro2::Span::call_site())
+}
+
+pub fn qos_profile_tokens(profile: &QoSProfile) -> TokenStream {
+    let variant_ident = qos_profile_variant(profile);
     quote!(peppylib::config::QoSProfile::#variant_ident)
 }

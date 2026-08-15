@@ -487,7 +487,7 @@ pub(crate) async fn task_recorder_resume_session(
             node_runner,
             target,
             deadline,
-            peppygen::QoSProfile::SensorData,
+            peppygen::QoSProfile::Standard,
         )
         .await
         .map_err(|error| peppy_mcp_runtime::ActionExit::Failed(error.to_string()))?;
