@@ -997,10 +997,17 @@ async fn process_node_run(
     let raw_mount_paths = container_config
         .and_then(|c| c.mount_paths.as_deref())
         .unwrap_or_default();
+    // Parameter substitution first, then `~` expansion: this daemon is the
+    // machine the instance runs on, so its home is the right one. The launch
+    // coordinator's copy of these specs stays unexpanded (see
+    // `resolve_mount_path_parameters`), because its per-machine mount lists
+    // travel to peers whose home is not the coordinator's.
     let resolved_mount_paths = match resolve_mount_path_parameters(
         raw_mount_paths,
         &runtime_config.node_instance.arguments,
-    ) {
+    )
+    .and_then(expand_home_in_mount_specs)
+    {
         Ok(paths) => paths,
         Err(msg) => {
             write_error_to_log(&ctx.log_file, &msg);
@@ -1526,13 +1533,35 @@ fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
     }
 }
 
+/// Expands `~` in the host-source segment of already-resolved mount specs
+/// against this machine's home directory.
+///
+/// Applied only on the machine that runs the instance (never on the launch
+/// coordinator's copies, which travel to peers): from here on, everything
+/// downstream — the restart-refusal check, the bind-source auto-create, Lima
+/// registration, and the apptainer `--bind` — sees the same absolute path,
+/// instead of treating the literal `~/...` as a path relative to whatever
+/// directory the daemon was started from.
+fn expand_home_in_mount_specs(specs: Vec<String>) -> std::result::Result<Vec<String>, String> {
+    specs
+        .into_iter()
+        .map(|spec| containers::expand_home_in_mount_spec(&spec))
+        .collect()
+}
+
 /// Replaces `${parameters:...}` tokens in mount paths with actual argument values.
 ///
 /// Each `${parameters:<dot.path>}` is resolved against the runtime `arguments`.
 /// Only `AnyType::String` values are accepted; other types produce an error.
 ///
 /// After resolution, the source (host) portion of each mount path is validated
-/// against the blocked system directories list.
+/// against the blocked system directories list, and unsupported `~user` forms
+/// are rejected. `~`/`~/...` sources are NOT expanded here: the launch
+/// coordinator calls this for every machine in the plan and ships the results
+/// to peers whose home is not the coordinator's, so the token must stay
+/// machine-independent. Expansion happens machine-locally, via
+/// [`expand_home_in_mount_specs`] at instance start and
+/// [`crate::services::stack::prepare_container_mounts`] at launch preflight.
 pub(crate) fn resolve_mount_path_parameters(
     mount_paths: &[String],
     arguments: &BTreeMap<String, AnyType>,
@@ -1576,6 +1605,12 @@ pub(crate) fn resolve_mount_path_parameters(
             return Err(format!(
                 "Resolved mount path `{result}` uses a blocked system directory `{src}` as source; use a subdirectory instead"
             ));
+        }
+        // A `~user` source can never be expanded (on any machine), so a launch
+        // fails on it here, while a failure is still free, instead of on the
+        // machine that would have had to bind it.
+        if let Some(rejection) = containers::home_mount_source_rejection(src) {
+            return Err(rejection);
         }
 
         resolved.push(result);
@@ -2375,6 +2410,59 @@ mod tests {
         let result = resolve_mount_path_parameters(&mount_paths, &arguments);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("blocked system directory"));
+    }
+
+    /// The `~user` form is rejected during plan resolution — the launch
+    /// coordinator runs this, so a launcher naming an unexpandable source
+    /// fails before any stack is replaced — and the rejection sees the
+    /// post-substitution source, so a parameter cannot smuggle one in.
+    #[test]
+    fn test_resolve_mount_path_parameters_rejects_tilde_user() {
+        let literal = vec!["~bob/data:/data:rw".to_string()];
+        let error = resolve_mount_path_parameters(&literal, &BTreeMap::new()).unwrap_err();
+        assert!(error.contains("~user paths are not supported"), "{error}");
+
+        let via_parameter = vec!["${parameters:path}:/data:rw".to_string()];
+        let mut arguments = BTreeMap::new();
+        arguments.insert("path".to_string(), AnyType::String("~bob/data".to_string()));
+        let error = resolve_mount_path_parameters(&via_parameter, &arguments).unwrap_err();
+        assert!(error.contains("~user paths are not supported"), "{error}");
+    }
+
+    /// A `~/...` source must come back UNEXPANDED: the coordinator resolves
+    /// mount paths for every machine in the plan and ships them to peers whose
+    /// home is not the coordinator's. Expansion is machine-local
+    /// ([`expand_home_in_mount_specs`] at instance start,
+    /// `prepare_container_mounts` at launch preflight); expanding here would
+    /// bake the coordinator's home into another machine's bind.
+    #[test]
+    fn test_resolve_mount_path_parameters_passes_home_relative_source_through() {
+        let mount_paths = vec!["~/.cache/kit:/kit:rw".to_string()];
+        let resolved = resolve_mount_path_parameters(&mount_paths, &BTreeMap::new()).unwrap();
+        assert_eq!(resolved, vec!["~/.cache/kit:/kit:rw"]);
+    }
+
+    /// The machine-local half: at instance start the resolved specs go through
+    /// home expansion, so everything downstream (auto-create, Lima
+    /// registration, `--bind`) sees an absolute path instead of a literal
+    /// `~/...` treated as relative to the daemon's working directory.
+    #[test]
+    fn test_expand_home_in_mount_specs_expands_tilde_sources() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let specs = vec![
+            "~/.cache/kit:/kit:rw".to_string(),
+            "/data/models:/opt/models:ro".to_string(),
+        ];
+        let expanded = expand_home_in_mount_specs(specs).unwrap();
+        assert_eq!(
+            expanded,
+            vec![
+                format!("{}/.cache/kit:/kit:rw", home.to_str().unwrap()),
+                "/data/models:/opt/models:ro".to_string(),
+            ]
+        );
     }
 
     // ---- FeedbackSync::wait_for_drain ----

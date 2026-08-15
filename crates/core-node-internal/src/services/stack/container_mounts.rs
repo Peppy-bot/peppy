@@ -11,6 +11,11 @@
 //! On Linux there is no VM and `ensure_host_mounts` is a no-op, so what remains
 //! is the auto-create of missing sources, which every machine owes its own
 //! instances.
+//!
+//! Sources may arrive as raw `~/...` tokens: the coordinator resolves the
+//! plan's mount paths but deliberately leaves `~` alone, because a peer's home
+//! is not the coordinator's. This is the place they become this machine's
+//! absolute paths — before anything is created or registered.
 
 use std::path::{Path, PathBuf};
 
@@ -25,18 +30,29 @@ use containers::{Apptainer, is_host_provided_mount_source};
 /// The returned paths are the ones that did not exist. Each is an operator
 /// warning its caller must surface in whatever stream it owns, because an
 /// auto-created source is also what a bind meant to name an existing file looks
-/// like when the name is misspelled.
+/// like when the name is misspelled. A `~` source is reported (and created,
+/// registered) in its expanded form: the expanded path is what actually lands
+/// on this machine's disk.
 pub(crate) async fn prepare_container_mounts(
     mount_sources: &[String],
 ) -> std::result::Result<Vec<String>, String> {
+    // Expanding here and at instance start through the one shared helper keeps
+    // both sides byte-identical: `host_mounts_need_restart` at start compares
+    // against what was registered now, and a `~` source registered in one form
+    // but checked in another would demand a spurious VM restart.
+    let mount_sources = mount_sources
+        .iter()
+        .map(|src| containers::expand_home_in_mount_spec(src))
+        .collect::<std::result::Result<Vec<String>, String>>()?;
+
     let mut auto_created = Vec::new();
-    for src in mount_sources {
+    for src in &mount_sources {
         if containers::ensure_bind_source(Path::new(src)).map_err(|e| e.to_string())? {
             auto_created.push(src.clone());
         }
     }
 
-    let lima_mount_sources = external_lima_mount_sources(mount_sources);
+    let lima_mount_sources = external_lima_mount_sources(&mount_sources);
     if lima_mount_sources.is_empty() {
         return Ok(auto_created);
     }
@@ -148,6 +164,32 @@ mod tests {
         assert!(
             error.contains(target.to_string_lossy().as_ref()),
             "the failure must name the offending path, got: {error}"
+        );
+    }
+
+    /// The regression this module's expansion exists for: a `~` source arriving
+    /// from the coordinator must be expanded to this machine's home BEFORE the
+    /// auto-create, not `mkdir -p`'d as a literal relative path. The home
+    /// already exists, so nothing is created and nothing is reported — and in
+    /// particular no stray `~/` directory appears under the process cwd, which
+    /// is exactly what the unexpanded token used to produce.
+    #[tokio::test]
+    async fn prepare_expands_home_relative_sources() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        assert!(home.exists(), "the test needs a real home to expand into");
+
+        let auto_created = prepare_container_mounts(&["~".to_string()])
+            .await
+            .expect("a home-relative source must be preparable");
+        assert!(
+            auto_created.is_empty(),
+            "the home exists, so nothing may be auto-created, got: {auto_created:?}"
+        );
+        assert!(
+            !Path::new("~").exists(),
+            "a literal ./~ directory must never be created"
         );
     }
 

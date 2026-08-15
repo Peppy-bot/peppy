@@ -845,6 +845,7 @@ dependencies = [
  "build-helpers",
  "config-test-support",
  "daemon-config",
+ "dirs 6.0.0",
  "peppy-config-model",
  "serde_yaml",
  "tempfile",

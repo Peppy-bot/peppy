@@ -14,7 +14,8 @@ pub use apptainer::CacheUsageProbe;
 pub use apptainer::{SetupStatus, check_setup_status};
 pub use error::{Error, Result};
 pub use mount_source::{
-    auto_created_warning, ensure_bind_source, is_host_provided_mount_source, mount_spec_source,
+    auto_created_warning, ensure_bind_source, expand_home_in_mount_spec,
+    home_mount_source_rejection, is_host_provided_mount_source, mount_spec_source,
 };
 
 /// Pinned Apptainer version bundled at build time.
