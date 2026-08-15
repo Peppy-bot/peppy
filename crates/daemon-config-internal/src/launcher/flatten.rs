@@ -865,7 +865,7 @@ pub fn flatten(
     // not a second author fighting a fragment; it is the one author who
     // owns the file, and its later entries win over its earlier ones.
     let mut writers: HashMap<(&str, KeySpace, &str), (usize, String)> = HashMap::new();
-    let mut adders: HashMap<(&str, &str), (usize, String)> = HashMap::new();
+    let mut adders: HashMap<(&str, &str), String> = HashMap::new();
     for step in &running {
         if step.is_base {
             continue;
@@ -895,17 +895,15 @@ pub fn flatten(
             claim_write(&mut writers, target, space, key, step)?;
         }
         for key in step.adjustment.add_links.iter().flat_map(|links| links.keys()) {
-            let entry = adders
-                .entry((target, key.as_str()))
-                .or_insert((step.fragment_id, step.origin.clone()));
-            entry.1 = step.origin.clone();
+            adders.insert((target, key.as_str()), step.origin.clone());
         }
     }
-    for ((target, key), (adder_id, adder_origin)) in &adders {
-        if let Some((writer_id, writer_origin)) =
-            writers.get(&(target, KeySpace::Links, key))
-            && *writer_id != *adder_id
-        {
+    // Appending to a slot and replacing it are two claims on the same entry,
+    // from one fragment or two: whichever order they applied in, one verb
+    // would silently eat part of the other's effect, so the pair is refused
+    // outright.
+    for ((target, key), adder_origin) in &adders {
+        if let Some((_writer_id, writer_origin)) = writers.get(&(target, KeySpace::Links, key)) {
             return Err(CompositionError::AdjustmentsConflict {
                 target: (*target).to_owned(),
                 field: format!("links.{key}"),
@@ -1515,6 +1513,43 @@ mod tests {
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("duplicate add");
         assert!(err.to_string().contains("seed_inst"), "got: {err}");
+    }
+
+    #[test]
+    fn replacing_and_appending_to_one_slot_conflict_even_in_one_fragment() {
+        let dir = tempdir().unwrap();
+        write(
+            &dir.path().join("fragments/a.json5"),
+            &fragment_file(
+                r#"
+                adjustments: [
+                    { target: "panel", set_links: { observers: ["seed_inst"] } },
+                    { target: "panel", add_links: { observers: ["a_inst"] } },
+                ],
+            "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
+                peppy_schema: "launcher/v1",
+                components: [
+                    { name: "a", optional: true, options: { on: "fragments/a.json5" } },
+                ],
+                deployments: [
+                    { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
+                    { source: { name: "seed", tag: "v1" }, instances: [{ instance_id: "seed_inst" }] },
+                    { source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] },
+                ],
+            }"#,
+        );
+        let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+        let err = compose(&parsed, &launcher, &words(&["on"]))
+            .expect_err("replace and append are two claims on one entry");
+        let CompositionError::AdjustmentsConflict { field, .. } = &err else {
+            panic!("expected AdjustmentsConflict, got: {err}");
+        };
+        assert_eq!(field, "links.observers");
     }
 
     #[test]
