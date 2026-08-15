@@ -1,0 +1,31 @@
+<entry>
+  <title>v0.23.3</title>
+  <id>https://docs.peppy.bot/releases/v0-23-3/</id>
+  <updated>2026-08-15T00:00:00Z</updated>
+
+  <summary>Adds the mcp_exposure/v1 format for generating MCP server nodes and task bridges, and keeps slow-connection launches alive.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.23.3&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Adds the mcp_exposure/v1 format for generating MCP server nodes and task bridges, and keeps slow-connection launches alive.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on August 15, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;MCP exposure&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The new &lt;code&gt;mcp_exposure/v1&lt;/code&gt; format lets you declare MCP exposures, which peppy wires into the repository and publishes as exposure bundles.&lt;/li&gt;
+&lt;li&gt;An exposure generates an MCP server node together with action-backed task bridges, whose feedback QoS is derived from the contract rather than a fixed default.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Launches and containers&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Container &lt;code&gt;mount_paths&lt;/code&gt; that start with &lt;code&gt;~&lt;/code&gt; are now expanded to the home directory on the machine that binds them.&lt;/li&gt;
+&lt;li&gt;Launches over slow connections stay alive by reporting genuine build progress instead of stalling.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Documentation&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;MCP exposure is now covered by its own dedicated advanced guide.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
