@@ -16,6 +16,7 @@ use super::types::{Deployment, LinkTargets, LinkValue, PeppyLauncher, Selection}
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component as PathComponent, Path, PathBuf};
 use thiserror::Error;
+use tracing::warn;
 
 /// Everything composition can refuse: bad `--with` words, unreadable or
 /// unsafe fragment paths, options that do not provide what their axis
@@ -208,48 +209,33 @@ pub fn resolve_selection(
     axes: &[ComponentAxis],
     words: &[String],
 ) -> Result<ComponentSelection, CompositionError> {
-    let menu = axes_menu(axes);
     let mut chosen: BTreeMap<String, String> = BTreeMap::new();
 
     for word in words {
-        let (axis_name, option_name) = match word.split_once('=') {
-            Some((axis, option)) => (Some(axis), option),
-            None => (None, word.as_str()),
-        };
-
-        let axis_name = match axis_name {
-            Some(explicit) => {
-                if !axes.iter().any(|axis| axis.name == explicit) {
-                    return Err(CompositionError::UnknownSelection {
-                        word: word.clone(),
-                        menu,
-                    });
-                }
-                explicit
+        let (axis, option_name) = match word.split_once('=') {
+            Some((axis_name, option)) => {
+                let Some(axis) = axes.iter().find(|axis| axis.name == axis_name) else {
+                    return Err(unknown_selection(word, axes));
+                };
+                (axis, option)
             }
             // A bare word resolves against option names across every axis;
             // matching more than one is ambiguous and asks for the explicit
             // form.
             None => {
-                let holders: Vec<&str> = axes
+                let holders: Vec<&ComponentAxis> = axes
                     .iter()
-                    .filter(|axis| axis.options.contains_key(option_name))
-                    .map(ComponentAxis::as_str)
+                    .filter(|axis| axis.options.contains_key(word.as_str()))
                     .collect();
                 match holders.as_slice() {
-                    [] => {
-                        return Err(CompositionError::UnknownSelection {
-                            word: word.clone(),
-                            menu,
-                        })
-                    }
-                    [axis] => *axis,
+                    [] => return Err(unknown_selection(word, axes)),
+                    [axis] => (*axis, word.as_str()),
                     many => {
                         return Err(CompositionError::AmbiguousSelection {
                             word: word.clone(),
                             axes: many
                                 .iter()
-                                .map(|axis| format!("`{axis}`"))
+                                .map(|axis| format!("`{}`", axis.as_str()))
                                 .collect::<Vec<_>>()
                                 .join(", "),
                         })
@@ -258,26 +244,19 @@ pub fn resolve_selection(
             }
         };
 
-        let axis = axes
-            .iter()
-            .find(|axis| axis.name == axis_name)
-            .expect("axis existence checked above");
         if !axis.options.contains_key(option_name) {
-            return Err(CompositionError::UnknownSelection {
-                word: word.clone(),
-                menu,
-            });
+            return Err(unknown_selection(word, axes));
         }
-        if let Some(first) = chosen.get(axis_name)
+        if let Some(first) = chosen.get(axis.name.as_str())
             && first != option_name
         {
             return Err(CompositionError::ConflictingSelection {
-                axis: axis_name.to_owned(),
+                axis: axis.name.clone(),
                 first: first.clone(),
                 second: option_name.to_owned(),
             });
         }
-        chosen.insert(axis_name.to_owned(), option_name.to_owned());
+        chosen.insert(axis.name.clone(), option_name.to_owned());
     }
 
     let mut entries = Vec::with_capacity(axes.len());
@@ -313,6 +292,16 @@ pub fn resolve_selection(
     }
 
     Ok(ComponentSelection { entries })
+}
+
+/// The refusal for a `--with` word that names no axis or option, with the
+/// menu the fix picks from. Built here, on the error path, so a resolving
+/// selection never pays for the menu.
+fn unknown_selection(word: &str, axes: &[ComponentAxis]) -> CompositionError {
+    CompositionError::UnknownSelection {
+        word: word.to_owned(),
+        menu: axes_menu(axes),
+    }
 }
 
 /// One line per axis naming its options, for the "names no option of this
@@ -401,6 +390,20 @@ pub fn load_composition(
     let axes = &launcher.components;
     let mut options: BTreeMap<String, BTreeMap<String, Vec<LoadedFragment>>> = BTreeMap::new();
     let launcher_label = launcher_file_label(launcher_dir);
+    // The symlink-escape check compares each fragment's canonical path
+    // against the launcher's canonical directory, resolved once here rather
+    // than once per fragment reference.
+    let canonical_dir = launcher_dir.canonicalize().map_err(|e| {
+        CompositionError::FragmentUnreadable {
+            path: launcher_dir.display().to_string(),
+            origin: launcher_label.clone(),
+            detail: format!("the launcher's directory cannot be resolved: {e}"),
+        }
+    })?;
+    // Sharing one fragment file between several options is the designed
+    // pattern (the relay fragment under both simulators), so each file is
+    // read and parsed once per composition, keyed by the path as written.
+    let mut file_bodies: HashMap<&str, super::composition::Fragment> = HashMap::new();
 
     for axis in axes {
         let mut loaded_axis = BTreeMap::new();
@@ -413,8 +416,23 @@ pub fn load_composition(
                         origin: format!("inline option `{}.{}`", axis.name, option_name),
                     }),
                     FragmentPart::File(raw) => {
-                        let origin = format!("{launcher_label}, option `{}.{}`", axis.name, option_name);
-                        loaded.push(load_fragment_file(launcher_dir, raw, &origin)?);
+                        let origin = format!(
+                            "{launcher_label}, option `{}.{}`",
+                            axis.name, option_name
+                        );
+                        let body = match file_bodies.get(raw.as_str()) {
+                            Some(cached) => cached.clone(),
+                            None => {
+                                let body =
+                                    read_fragment_file(&canonical_dir, raw, &origin, axes)?;
+                                file_bodies.insert(raw.as_str(), body.clone());
+                                body
+                            }
+                        };
+                        loaded.push(LoadedFragment {
+                            fragment: body,
+                            origin: raw.to_owned(),
+                        });
                     }
                 }
             }
@@ -446,39 +464,21 @@ pub fn load_composition(
         }
     }
 
-    // Guards of file fragments reference the launcher's axes; the inline ones
-    // were checked when the launcher parsed.
-    for axis in axes {
-        for loaded in options[axis.name.as_str()].values() {
-            for fragment in loaded {
-                for adjustment in &fragment.fragment.adjustments {
-                    if let Some(when) = &adjustment.when {
-                        validate_guard(when, axes, &fragment.origin)
-                            .map_err(|reason| CompositionError::FragmentInvalid {
-                                path: fragment.origin.clone(),
-                                origin: launcher_label.clone(),
-                                detail: reason,
-                            })?;
-                    }
-                }
-            }
-        }
-    }
-
     // An adjustment target the selection does not define is skipped; a
     // target NOTHING can define is a dead reference, and refusing it here
     // catches it once for every selection.
+    let all_fragments: Vec<&LoadedFragment> = options
+        .values()
+        .flat_map(|axis| axis.values())
+        .flat_map(|fragments| fragments.iter())
+        .collect();
     let mut definable: HashSet<&str> = launcher
         .deployments
         .iter()
         .flat_map(|d| d.instances.iter())
         .map(|i| i.instance_id.as_str())
         .collect();
-    for fragment in options
-        .values()
-        .flat_map(|axis| axis.values())
-        .flat_map(|fragments| fragments.iter())
-    {
+    for fragment in &all_fragments {
         for deployment in &fragment.fragment.deployments {
             for instance in &deployment.instances {
                 definable.insert(instance.instance_id.as_str());
@@ -493,11 +493,7 @@ pub fn load_composition(
             });
         }
     }
-    for fragment in options
-        .values()
-        .flat_map(|axis| axis.values())
-        .flat_map(|fragments| fragments.iter())
-    {
+    for fragment in &all_fragments {
         for adjustment in &fragment.fragment.adjustments {
             if !definable.contains(adjustment.target.as_str()) {
                 return Err(CompositionError::TargetDefinedNowhere {
@@ -520,50 +516,49 @@ fn launcher_file_label(launcher_dir: &Path) -> String {
         .unwrap_or_else(|| launcher_dir.display().to_string())
 }
 
-fn load_fragment_file(
-    launcher_dir: &Path,
+/// Reads, parses, and shape-checks one `launcher_fragment/v1` file through
+/// the shared fragment parser (which owns the read-and-refuse-empty half).
+/// The adjustment checks — shape and guard — run wherever a fragment is
+/// read: here for files, at launcher parse for inline bodies.
+fn read_fragment_file(
+    canonical_dir: &Path,
     raw: &str,
     origin: &str,
-) -> Result<LoadedFragment, CompositionError> {
-    let path = resolve_fragment_path(launcher_dir, raw, origin)?;
-    let content = std::fs::read_to_string(&path).map_err(|e| CompositionError::FragmentUnreadable {
+    axes: &[ComponentAxis],
+) -> Result<super::composition::Fragment, CompositionError> {
+    let invalid = |detail: String| CompositionError::FragmentInvalid {
         path: raw.to_owned(),
         origin: origin.to_owned(),
-        detail: e.to_string(),
-    })?;
-    if content.trim().is_empty() {
-        return Err(CompositionError::FragmentUnreadable {
-            path: raw.to_owned(),
-            origin: origin.to_owned(),
-            detail: "the file is empty".to_owned(),
-        });
-    }
-    let parsed = LauncherFragmentParser::from_content(&content).map_err(|e| {
-        CompositionError::FragmentInvalid {
+        detail,
+    };
+    let path = resolve_fragment_path(canonical_dir, raw, origin)?;
+    let parsed = LauncherFragmentParser::from_path(&path).map_err(|e| match &e {
+        crate::error::Error::Parsing(
+            crate::error::ParsingError::CannotRead(..) | crate::error::ParsingError::EmptyContent(..),
+        ) => CompositionError::FragmentUnreadable {
             path: raw.to_owned(),
             origin: origin.to_owned(),
             detail: e.to_string(),
-        }
+        },
+        other => invalid(other.to_string()),
     })?;
     for adjustment in &parsed.body.adjustments {
-        validate_adjustment(adjustment, raw).map_err(|reason| CompositionError::FragmentInvalid {
-            path: raw.to_owned(),
-            origin: origin.to_owned(),
-            detail: reason,
-        })?;
+        validate_adjustment(adjustment, raw).map_err(&invalid)?;
+        if let Some(when) = &adjustment.when {
+            validate_guard(when, axes, raw).map_err(&invalid)?;
+        }
     }
-    Ok(LoadedFragment {
-        fragment: parsed.body,
-        origin: raw.to_owned(),
-    })
+    Ok(parsed.body)
 }
 
 /// A fragment path must be relative, plain (no `.` or `..` segments), and
 /// must stay inside the launcher's directory even through symlinks: a
 /// repository launcher and a filesystem launcher resolve fragments
-/// identically, and neither reaches outside the tree it lives in.
+/// identically, and neither reaches outside the tree it lives in. The base
+/// arrives already canonicalized, once per composition rather than once per
+/// fragment.
 fn resolve_fragment_path(
-    launcher_dir: &Path,
+    canonical_dir: &Path,
     raw: &str,
     origin: &str,
 ) -> Result<PathBuf, CompositionError> {
@@ -592,14 +587,7 @@ fn resolve_fragment_path(
         return refuse("it is empty");
     }
 
-    let base = launcher_dir.canonicalize().map_err(|e| {
-        CompositionError::FragmentUnreadable {
-            path: raw.to_owned(),
-            origin: origin.to_owned(),
-            detail: format!("the launcher's directory cannot be resolved: {e}"),
-        }
-    })?;
-    let full = launcher_dir.join(&cleaned);
+    let full = canonical_dir.join(&cleaned);
     let canonical = full.canonicalize().map_err(|e| {
         CompositionError::FragmentUnreadable {
             path: raw.to_owned(),
@@ -607,7 +595,7 @@ fn resolve_fragment_path(
             detail: e.to_string(),
         }
     })?;
-    if !canonical.starts_with(&base) {
+    if !canonical.starts_with(canonical_dir) {
         return refuse("it escapes the launcher's directory (through a symlink)");
     }
     Ok(full)
@@ -728,9 +716,10 @@ struct PlannedAdjustment<'a> {
     origin: String,
     /// Identifies the fragment an adjustment belongs to for the conflict
     /// rules: two adjustments from one fragment are one author applying list
-    /// order, two from different fragments are two authors fighting.
-    fragment_id: usize,
-    is_base: bool,
+    /// order, two from different fragments are two authors fighting. `None`
+    /// marks the base, which is no second author but the one who owns the
+    /// file, so it joins no conflict at all.
+    fragment_id: Option<usize>,
 }
 
 /// Flattens a composed launcher with a resolved selection into the ordinary
@@ -825,8 +814,7 @@ pub fn flatten(
             planned.push(PlannedAdjustment {
                 adjustment,
                 origin: fragment.origin.clone(),
-                fragment_id,
-                is_base: false,
+                fragment_id: Some(fragment_id),
             });
         }
     }
@@ -834,8 +822,7 @@ pub fn flatten(
         planned.push(PlannedAdjustment {
             adjustment,
             origin: base_origin.clone(),
-            fragment_id: usize::MAX,
-            is_base: true,
+            fragment_id: None,
         });
     }
     let mut running: Vec<&PlannedAdjustment> = Vec::new();
@@ -864,10 +851,10 @@ pub fn flatten(
     // 6. Conflict rules among surviving FRAGMENT adjustments. The base is
     // not a second author fighting a fragment; it is the one author who
     // owns the file, and its later entries win over its earlier ones.
-    let mut writers: HashMap<(&str, KeySpace, &str), (usize, String)> = HashMap::new();
+    let mut writers: HashMap<(&str, KeySpace, &str), (Option<usize>, String)> = HashMap::new();
     let mut adders: HashMap<(&str, &str), String> = HashMap::new();
     for step in &running {
-        if step.is_base {
+        if step.fragment_id.is_none() {
             continue;
         }
         let target = step.adjustment.target.as_str();
@@ -938,9 +925,9 @@ pub fn flatten(
                         old: instance
                             .arguments
                             .get(key)
-                            .map(render_value)
+                            .map(render)
                             .or(Some(String::from("(absent)"))),
-                        new: render_value(value),
+                        new: render(value),
                     },
                     target: target.clone(),
                     origin: origin.clone(),
@@ -953,8 +940,8 @@ pub fn flatten(
                 applied.push(AppliedAdjustment {
                     field: format!("links.{slot}"),
                     change: AppliedChange::Set {
-                        old: instance.links.get(slot).map(render_link).or(Some(String::from("(absent)"))),
-                        new: render_link(value),
+                        old: instance.links.get(slot).map(render).or(Some(String::from("(absent)"))),
+                        new: render(value),
                     },
                     target: target.clone(),
                     origin: origin.clone(),
@@ -964,73 +951,52 @@ pub fn flatten(
         }
         if let Some(links) = &step.adjustment.add_links {
             for (slot, additions) in links {
-                match instance.links.get(slot) {
-                    None | Some(LinkValue::Bound(Selection::Array(_))) => {
-                        let mut targets = instance
-                            .links
-                            .get(slot)
-                            .and_then(|value| value.selection().cloned())
-                            .map(|selection| match selection {
-                                Selection::Array(targets) => targets.as_slice().to_vec(),
-                                _ => unreachable!("matched an array binding above"),
-                            })
-                            .unwrap_or_default();
-                        for addition in additions {
-                            if targets.contains(addition) {
-                                return Err(CompositionError::AddLinksDuplicateTarget {
-                                    origin: origin.clone(),
-                                    target: target.clone(),
-                                    slot: slot.clone(),
-                                    added: addition.clone(),
-                                });
-                            }
-                            applied.push(AppliedAdjustment {
-                                field: format!("links.{slot}"),
-                                change: AppliedChange::Added {
-                                    target: addition.clone(),
-                                },
-                                target: target.clone(),
-                                origin: origin.clone(),
-                            });
-                            targets.push(addition.clone());
-                        }
-                        let bound = LinkTargets::new(targets).map_err(|err| {
-                            CompositionError::AddLinksDuplicateTarget {
-                                origin: origin.clone(),
-                                target: target.clone(),
-                                slot: slot.clone(),
-                                added: err.target,
-                            }
-                        })?;
-                        instance
-                            .links
-                            .insert(slot.clone(), LinkValue::Bound(Selection::Array(bound)));
+                // Appending is for array bindings: an absent slot starts
+                // one, an existing array extends, anything else is refused.
+                let mut targets = match instance.links.get(slot) {
+                    None => Vec::new(),
+                    Some(LinkValue::Bound(Selection::Array(existing))) => {
+                        existing.as_slice().to_vec()
                     }
-                    Some(LinkValue::Bound(Selection::Scalar(_))) => {
+                    Some(other) => {
                         return Err(CompositionError::AddLinksOnNonArray {
                             origin: origin.clone(),
                             target: target.clone(),
                             slot: slot.clone(),
-                            holds: "a scalar binding",
+                            holds: non_array_holds(other),
                         })
                     }
-                    Some(LinkValue::Bound(Selection::Flags(_))) => {
-                        return Err(CompositionError::AddLinksOnNonArray {
+                };
+                for addition in additions {
+                    if targets.contains(addition) {
+                        return Err(CompositionError::AddLinksDuplicateTarget {
                             origin: origin.clone(),
                             target: target.clone(),
                             slot: slot.clone(),
-                            holds: "a flag-accumulated binding",
-                        })
+                            added: addition.clone(),
+                        });
                     }
-                    Some(LinkValue::Vacant(_)) => {
-                        return Err(CompositionError::AddLinksOnNonArray {
-                            origin: origin.clone(),
-                            target: target.clone(),
-                            slot: slot.clone(),
-                            holds: "a vacancy",
-                        })
-                    }
+                    applied.push(AppliedAdjustment {
+                        field: format!("links.{slot}"),
+                        change: AppliedChange::Added {
+                            target: addition.clone(),
+                        },
+                        target: target.clone(),
+                        origin: origin.clone(),
+                    });
+                    targets.push(addition.clone());
                 }
+                let bound = LinkTargets::new(targets).map_err(|err| {
+                    CompositionError::AddLinksDuplicateTarget {
+                        origin: origin.clone(),
+                        target: target.clone(),
+                        slot: slot.clone(),
+                        added: err.target,
+                    }
+                })?;
+                instance
+                    .links
+                    .insert(slot.clone(), LinkValue::Bound(Selection::Array(bound)));
             }
         }
         if let Some(slots) = &step.adjustment.unset_links {
@@ -1039,7 +1005,7 @@ pub fn flatten(
                     applied.push(AppliedAdjustment {
                         field: format!("links.{slot}"),
                         change: AppliedChange::Removed {
-                            old: render_link(&old),
+                            old: render(&old),
                         },
                         target: target.clone(),
                         origin: origin.clone(),
@@ -1099,7 +1065,7 @@ impl KeySpace {
 /// two authors, and no last-writer-wins between them is allowed to be
 /// silent.
 fn claim_write<'a>(
-    writers: &mut HashMap<(&'a str, KeySpace, &'a str), (usize, String)>,
+    writers: &mut HashMap<(&'a str, KeySpace, &'a str), (Option<usize>, String)>,
     target: &'a str,
     space: KeySpace,
     key: &'a str,
@@ -1135,11 +1101,19 @@ fn render_guard(when: &BTreeMap<String, String>) -> String {
         .join(" ")
 }
 
-fn render_value(value: &config::AnyType) -> String {
-    serde_json5::to_string(value).unwrap_or_else(|_| String::from("(unrenderable)"))
+/// What a slot holds, for the "appending is for array bindings" refusal.
+/// The array arm exists for totality; the caller matches it before this
+/// helper can see it.
+fn non_array_holds(value: &LinkValue) -> &'static str {
+    match value {
+        LinkValue::Bound(Selection::Scalar(_)) => "a scalar binding",
+        LinkValue::Bound(Selection::Flags(_)) => "a flag-accumulated binding",
+        LinkValue::Bound(Selection::Array(_)) => "an array binding",
+        LinkValue::Vacant(_) => "a vacancy",
+    }
 }
 
-fn render_link(value: &LinkValue) -> String {
+fn render<T: serde::Serialize>(value: &T) -> String {
     serde_json5::to_string(value).unwrap_or_else(|_| String::from("(unrenderable)"))
 }
 
@@ -1161,17 +1135,64 @@ pub fn compose(
         return Err(CompositionError::WithOnFlatLauncher);
     }
 
-    let launcher_dir = match launcher_file.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
+    let launcher_dir = launcher_dir_of(launcher_file);
     let loaded = load_composition(launcher, &launcher_dir)?;
     let selection = resolve_selection(&launcher.components, words)?;
-    let base_label = launcher_file
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| launcher_file.display().to_string());
+    let base_label = launcher_file_label(launcher_file);
     flatten(launcher, &loaded, &selection, &base_label)
+}
+
+/// The ceiling on the selection space [`check_composition`] enumerates.
+/// Above it the check degrades to per-axis validation (every fragment
+/// exists, parses, provides, and guards cleanly) and says so, because a
+/// check that skips combinations must say so or it looks like it checked
+/// them all.
+const COMBINATION_CEILING: usize = 512;
+
+/// The directory fragment paths resolve against: the launcher's own, or the
+/// working directory when the launcher path itself was elided.
+fn launcher_dir_of(launcher_file: &Path) -> PathBuf {
+    match launcher_file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// Holds a composed launcher to the same checks a launch would run, across
+/// every legal selection of its axes: the wholesale validation
+/// `repo index --check` performs per launcher. All of it is launcher-local
+/// (no node manifests, no daemon), which is what lets it run on a
+/// contributor's branch: the commit that adds an option whose shape
+/// contradicts an existing adjustment is the commit whose check fails,
+/// rather than the first launch that selects it.
+///
+/// Returns the rendered problems, each prefixed with the launcher's file
+/// name; an empty vec means every selection flattens.
+pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<String> {
+    let label = launcher_file_label(launcher_file);
+    let loaded = match load_composition(launcher, &launcher_dir_of(launcher_file)) {
+        Ok(loaded) => loaded,
+        Err(e) => return vec![format!("{label}: {e}")],
+    };
+    let space = selection_space_size(&launcher.components);
+    if space > COMBINATION_CEILING {
+        // Per-axis validation above (fragments, provides, guards, targets)
+        // still ran; what is skipped is every CROSS-axial combination, and
+        // the count of those is the space itself.
+        warn!(
+            "skipped all {space} cross-combination checks for {label}: the selection space \
+             exceeds the {COMBINATION_CEILING}-combination ceiling, so each axis was \
+             validated on its own instead"
+        );
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    for selection in enumerate_selections(&launcher.components) {
+        if let Err(e) = flatten(launcher, &loaded, &selection, &label) {
+            problems.push(format!("{label} ({}): {e}", selection.echo()));
+        }
+    }
+    problems
 }
 
 #[cfg(test)]
@@ -1774,14 +1795,13 @@ mod tests {
             let spec = FragmentSpec(vec![super::super::composition::FragmentPart::File(
                 raw.to_owned(),
             )]);
-            let mut axis = ComponentAxis {
+            let axis = ComponentAxis {
                 name: "robot".to_owned(),
                 options: BTreeMap::from([("sim".to_owned(), spec)]),
                 default: None,
                 optional: false,
                 provides: Vec::new(),
             };
-            axis.default = None;
             let launcher = PeppyLauncher {
                 peppy_schema: config::schema::PeppySchema::LauncherV1,
                 core_nodes: Vec::new(),

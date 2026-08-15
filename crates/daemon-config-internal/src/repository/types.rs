@@ -427,13 +427,6 @@ impl RepositoryIndex {
             RepoItemKind::Contract => &mut self.contracts,
             RepoItemKind::Pairing => &mut self.pairings,
             RepoItemKind::McpExposure => &mut self.mcp_exposures,
-            RepoItemKind::LauncherFragment => {
-                return Err(format!(
-                    "fragment `{name}` cannot be declared in a repository index: a fragment \
-                     is referenced by the launcher whose option names it, never listed \
-                     alongside the stacks"
-                ));
-            }
         };
         let Some(tag) = tag else {
             return Err(format!("{kind} `{name}` has no tag"));

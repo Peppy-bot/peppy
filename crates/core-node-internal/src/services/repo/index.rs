@@ -34,7 +34,7 @@ use daemon_config::repository::{
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Directory names that are never descended into while looking for the
 /// files that declare items.
@@ -342,13 +342,6 @@ pub(crate) fn build_cache_entries(
                 origin: item.origin,
                 repo_id: 0,
             }),
-            RepoItemKind::LauncherFragment => {
-                return Err(format!(
-                    "fragment `{}` reached the cache builder: a fragment is referenced by the \
-                     launcher whose option names it, never published as an item of its own",
-                    item.name
-                ));
-            }
         }
     }
     Ok(built)
@@ -379,23 +372,9 @@ pub enum IndexError {
     /// or malformed fragment, an option that does not provide its axis's
     /// interface, or a legal selection that does not flatten. Author-time,
     /// so `--check` refuses the commit that introduced it.
-    #[error("{}", format_composition_problems(.0))]
+    #[error("{}", daemon_config::format_bulleted(.0))]
     CompositionFailed(Vec<String>),
 }
-
-fn format_composition_problems(problems: &[String]) -> String {
-    problems
-        .iter()
-        .map(|problem| format!("\n  - {problem}"))
-        .collect::<String>()
-}
-
-/// The ceiling on the selection space `check_repository_index` enumerates.
-/// Above it the check degrades to per-axis validation (every fragment
-/// exists, parses, provides, and guards cleanly) and says so, because a
-/// check that skips combinations must say so or it looks like it checked
-/// them all.
-const COMBINATION_CEILING: usize = 512;
 
 fn format_conflicts(conflicts: &[RepoConflict]) -> String {
     conflicts
@@ -626,11 +605,6 @@ fn identity_of(
                 parsed.manifest.tag.clone(),
             ))
         }
-        RepoItemKind::LauncherFragment => Err(
-            "a fragment has no repository identity: it is referenced by the launcher whose \
-             option names it, never listed in peppy_repository.json5"
-                .to_owned(),
-        ),
     }
 }
 
@@ -713,10 +687,11 @@ pub fn check_repository_index(root: &Path) -> Result<Vec<IndexDrift>, IndexError
     Ok(drifts)
 }
 
-/// The composition checks on every composed launcher the repository lists:
-/// every referenced fragment exists and parses, every option provides its
-/// axis's interface ids, every adjustment target is defined somewhere, and
-/// every legal selection flattens into a valid flat launcher.
+/// The composition checks on every composed launcher the repository lists,
+/// delegated whole to `daemon_config::launcher::check_composition`: every
+/// referenced fragment exists and parses, every option provides its axis's
+/// interface ids, every adjustment target is defined somewhere, and every
+/// legal selection flattens into a valid flat launcher.
 ///
 /// All of this is launcher-local (no node manifests, no daemon), which is
 /// what lets it run on a contributor's branch: the commit that adds an
@@ -739,42 +714,10 @@ fn check_compositions(root: &Path, generated: &RepositoryIndex) -> Result<(), In
         if parsed.components.is_empty() {
             continue;
         }
-        let label = launcher_file
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| launcher_file.display().to_string());
-        let Some(launcher_dir) = launcher_file.parent() else {
-            continue;
-        };
-
-        let loaded = match daemon_config::launcher::load_composition(&parsed, launcher_dir) {
-            Ok(loaded) => loaded,
-            Err(e) => {
-                problems.push(format!("{label}: {e}"));
-                continue;
-            }
-        };
-
-        let space = daemon_config::launcher::selection_space_size(&parsed.components);
-        if space > COMBINATION_CEILING {
-            // Per-axis validation above (fragments, provides, guards,
-            // targets) still ran; what is skipped is every CROSS-axial
-            // combination, and the count of those is the space itself.
-            warn!(
-                "skipped all {space} cross-combination checks for {label}: the selection space \
-                 exceeds the {COMBINATION_CEILING}-combination ceiling, so each axis was \
-                 validated on its own instead"
-            );
-            continue;
-        }
-        for selection in daemon_config::launcher::enumerate_selections(&parsed.components) {
-            if let Err(e) = daemon_config::launcher::flatten(&parsed, &loaded, &selection, &label) {
-                problems.push(format!(
-                    "{label} ({}): {e}",
-                    selection.echo()
-                ));
-            }
-        }
+        problems.extend(daemon_config::launcher::check_composition(
+            &parsed,
+            &launcher_file,
+        ));
     }
     if problems.is_empty() {
         Ok(())

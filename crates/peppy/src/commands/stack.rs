@@ -41,21 +41,8 @@ pub enum StackCommands {
         /// against a federated topology with no second machine.
         #[arg(long)]
         local: bool,
-        /// Select one option of the launcher's declared `components` axes:
-        /// `option` or `axis=option`. Repeatable and comma-separated; every
-        /// axis left unselected takes its default.
-        ///
-        /// The words travel to the coordinator verbatim, like `--local`:
-        /// only the daemon holds a repository launcher's document, so only
-        /// it knows which axes exist.
-        #[arg(
-            long = "with",
-            value_name = "option|axis=option",
-            value_delimiter = ',',
-            value_parser = parse_with_word,
-            action = clap::ArgAction::Append
-        )]
-        with: Vec<String>,
+        #[command(flatten)]
+        with: WithSelection,
         /// Idle timeout in seconds for the node add phase (resets on git/http progress or sub-process output)
         #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
         node_add_idle_timeout_secs: u64,
@@ -82,17 +69,8 @@ pub enum StackCommands {
     Resolve {
         /// Path to the peppy launcher configuration file
         launcher_config_path: PathBuf,
-        /// Select one option of the launcher's declared `components` axes:
-        /// `option` or `axis=option`. Repeatable and comma-separated; every
-        /// axis left unselected takes its default.
-        #[arg(
-            long = "with",
-            value_name = "option|axis=option",
-            value_delimiter = ',',
-            value_parser = parse_with_word,
-            action = clap::ArgAction::Append
-        )]
-        with: Vec<String>,
+        #[command(flatten)]
+        with: WithSelection,
     },
     /// Tear the node stack down to an empty state.
     ///
@@ -139,6 +117,28 @@ fn parse_place_kv(raw: &str) -> Result<(String, String), String> {
     crate::commands::node::parse_key_at_target(raw, "--place", "CORE_NODE_LINK@CORE_NODE")
 }
 
+/// The `--with` selection, stated once for every subcommand that takes one:
+/// `stack launch` and `stack resolve` must accept exactly the same words,
+/// because resolve's output is the advertised preview of a launch.
+#[derive(clap::Args, Default)]
+pub struct WithSelection {
+    /// Select one option of the launcher's declared `components` axes:
+    /// `option` or `axis=option`. Repeatable and comma-separated; every
+    /// axis left unselected takes its default.
+    ///
+    /// The words travel to the coordinator verbatim, like `--local`:
+    /// only the daemon holds a repository launcher's document, so only
+    /// it knows which axes exist.
+    #[arg(
+        long = "with",
+        value_name = "option|axis=option",
+        value_delimiter = ',',
+        value_parser = parse_with_word,
+        action = clap::ArgAction::Append
+    )]
+    pub words: Vec<String>,
+}
+
 /// One `--with` word: `option` or `axis=option`, never blank. Which axes and
 /// options exist is the coordinator's to say (it holds the document), so the
 /// CLI checks only that the word says something.
@@ -166,7 +166,7 @@ impl Command for StackCommand {
             StackCommands::Resolve {
                 launcher_config_path,
                 with,
-            } => resolve::resolve(ctx, launcher_config_path, with),
+            } => resolve::resolve(ctx, launcher_config_path, with.words),
             StackCommands::Launch {
                 launcher_config_path,
                 place,
@@ -185,7 +185,7 @@ impl Command for StackCommand {
                         places: place,
                         local,
                     },
-                    with,
+                    with.words,
                     node_add_idle_timeout_secs,
                     node_build_idle_timeout_secs,
                     node_run_idle_timeout_secs,

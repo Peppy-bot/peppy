@@ -11,7 +11,7 @@
 //! and no selection.
 
 use super::types::{Deployment, LinkValue};
-use config::{AnyType, consts::ALLOWED_CONFIG_CHARS, runtime::Name, schema::PeppySchema};
+use config::{AnyType, runtime::Name, schema::PeppySchema};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer, MapAccess, SeqAccess, Visitor},
@@ -180,6 +180,25 @@ impl Serialize for FragmentSpec {
     }
 }
 
+/// One fragment part read from a path string: the fragment lives in its
+/// own `launcher_fragment/v1` file next to the launcher.
+fn fragment_part_from_str<E: de::Error>(v: &str) -> Result<FragmentPart, E> {
+    if v.trim().is_empty() {
+        return Err(de::Error::custom(
+            "a fragment path cannot be empty: name a `launcher_fragment/v1` file relative to \
+             the launcher's directory",
+        ));
+    }
+    Ok(FragmentPart::File(v.to_owned()))
+}
+
+/// One fragment part read from a map: an inline fragment body, written
+/// where the option is.
+fn fragment_part_from_map<'de, A: MapAccess<'de>>(map: A) -> Result<FragmentPart, A::Error> {
+    let fragment = Fragment::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+    Ok(FragmentPart::Inline(fragment))
+}
+
 impl<'de> Deserialize<'de> for FragmentSpec {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -197,23 +216,14 @@ impl<'de> Deserialize<'de> for FragmentSpec {
                 )
             }
 
-            /// A path string: the fragment lives in its own
-            /// `launcher_fragment/v1` file next to the launcher.
+            /// A path string or an inline fragment: one part, read the same
+            /// way a lone [`FragmentPart`] is.
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                if v.trim().is_empty() {
-                    return Err(de::Error::custom(
-                        "a fragment path cannot be empty: name a `launcher_fragment/v1` file \
-                         relative to the launcher's directory",
-                    ));
-                }
-                Ok(FragmentSpec(vec![FragmentPart::File(v.to_owned())]))
+                Ok(FragmentSpec(vec![fragment_part_from_str(v)?]))
             }
 
-            /// An inline fragment: the body is written here, in the option.
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                let fragment =
-                    Fragment::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(FragmentSpec(vec![FragmentPart::Inline(fragment)]))
+                Ok(FragmentSpec(vec![fragment_part_from_map(map)?]))
             }
 
             /// The list form: parts merge in list order before the option's
@@ -253,19 +263,11 @@ impl<'de> Deserialize<'de> for FragmentPart {
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                if v.trim().is_empty() {
-                    return Err(de::Error::custom(
-                        "a fragment path cannot be empty: name a `launcher_fragment/v1` file \
-                         relative to the launcher's directory",
-                    ));
-                }
-                Ok(FragmentPart::File(v.to_owned()))
+                fragment_part_from_str(v)
             }
 
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                let fragment =
-                    Fragment::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(FragmentPart::Inline(fragment))
+                fragment_part_from_map(map)
             }
         }
 
@@ -304,16 +306,17 @@ impl LauncherFragmentParser {
 }
 
 /// Axis and option names share the identifier grammar of every other name in
-/// a peppy document, and for the same reason: an axis name is one half of
-/// `--with axis=option` and a bare `--with` word is an option name, so a name
-/// carrying an `=`, a `,`, or whitespace would be unwireable from the very
-/// surface it exists for. (`,` separates `--with` entries and `=` splits the
-/// `axis=option` form; both are outside [`ALLOWED_CONFIG_CHARS`].)
+/// a peppy document — the one [`Name`] enforces — and for the same reason: an
+/// axis name is one half of `--with axis=option` and a bare `--with` word is
+/// an option name, so a name carrying an `=`, a `,`, or whitespace would be
+/// unwireable from the very surface it exists for. (`,` separates `--with`
+/// entries and `=` splits the `axis=option` form; both are outside the
+/// identifier grammar.)
 pub(crate) fn check_axis_or_option_name(kind: &str, name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err(format!("`components` declares {kind} with an empty name"));
     }
-    if !name.chars().all(|c| ALLOWED_CONFIG_CHARS.contains(c)) {
+    if Name::try_from(name.to_owned()).is_err() {
         return Err(format!(
             "`components` declares {kind} `{name}`, which is not a plain identifier \
              (letters, digits, `_`, `-`): the name appears in `--with` entries and `when` \

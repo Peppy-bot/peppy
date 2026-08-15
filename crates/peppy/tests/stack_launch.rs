@@ -13,7 +13,7 @@ use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::commands::stack::{StackCommand, StackCommands};
+use peppy::commands::stack::{StackCommand, StackCommands, WithSelection};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -264,7 +264,7 @@ async fn node_launch_command_succeed() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -466,7 +466,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -624,7 +624,7 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 1,
@@ -665,7 +665,7 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -714,7 +714,7 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -915,7 +915,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1143,7 +1143,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1285,7 +1285,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1383,7 +1383,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1682,7 +1682,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1835,7 +1835,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -1979,7 +1979,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2257,7 +2257,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2517,7 +2517,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2668,7 +2668,7 @@ async fn stack_launch_rejects_unbound_slot() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -2865,7 +2865,7 @@ async fn stack_launch_establishes_launcher_pairings() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3047,7 +3047,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3302,7 +3302,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3469,7 +3469,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3524,7 +3524,7 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -3788,7 +3788,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4043,7 +4043,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4200,7 +4200,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: Vec::new(),
+            with: Default::default(),
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4357,7 +4357,9 @@ async fn stack_launch_flattens_a_composed_launcher() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: vec!["beta".to_owned(), "extras=on".to_owned()],
+            with: WithSelection {
+                words: vec!["beta".to_owned(), "extras=on".to_owned()],
+            },
             launcher_config_path: launcher_path,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4431,7 +4433,9 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         command: StackCommands::Launch {
             place: Vec::new(),
             local: false,
-            with: vec!["mujoco".to_owned()],
+            with: WithSelection {
+                words: vec!["mujoco".to_owned()],
+            },
             launcher_config_path: flat_launcher,
             node_add_idle_timeout_secs: 60,
             node_build_idle_timeout_secs: 60,
@@ -4468,7 +4472,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
             command: StackCommands::Launch {
                 place: Vec::new(),
                 local: false,
-                with,
+                with: WithSelection { words: with },
                 launcher_config_path: path,
                 node_add_idle_timeout_secs: 60,
                 node_build_idle_timeout_secs: 60,

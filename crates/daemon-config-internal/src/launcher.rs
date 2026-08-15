@@ -18,8 +18,7 @@ pub use composition::{
 };
 pub use flatten::{
     AppliedAdjustment, AppliedChange, ComponentSelection, CompositionError, FlattenReport,
-    SelectionEntry, SelectionSource, SkipReason, SkippedAdjustment, compose, enumerate_selections,
-    flatten, load_composition, resolve_selection, selection_space_size,
+    SelectionEntry, SelectionSource, SkipReason, SkippedAdjustment, check_composition, compose,
 };
 pub use links::{ValidatedLinkPlan, validate_link_plan, validate_link_slots};
 pub use observations::{PlannedObservation, ValidatedObservations, validate_observations};
