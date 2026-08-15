@@ -4374,12 +4374,10 @@ async fn stack_launch_flattens_a_composed_launcher() {
         "the coordinator's echo of the full resolution should reach the CLI: {logs}"
     );
 
-    let messenger_handle = ctx
-        .messenger_handle()
-        .expect("messenger handle should be available");
     let response = poll(
         &StackListRequest::new(),
-        &messenger_handle,
+        ctx.messenger_handle()
+            .expect("messenger handle should be available"),
         &core_node_name,
         CALLER_INSTANCE_ID,
         &core_node_name,

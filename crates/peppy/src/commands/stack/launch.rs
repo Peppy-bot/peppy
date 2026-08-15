@@ -271,6 +271,7 @@ impl PlacementArgs {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
@@ -293,6 +294,7 @@ pub fn launch(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
