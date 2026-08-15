@@ -1,3 +1,4 @@
+use super::composition::{Adjustment, ComponentAxis};
 use crate::error::StructuredError;
 use crate::internal::contract::validate_named_items;
 use crate::internal::core_node_name::{CoreNodeName, SELF_CORE_NODE};
@@ -29,6 +30,24 @@ pub struct PeppyLauncher {
     pub core_nodes: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deployments: Vec<Deployment>,
+    /// The component axes of a composed launcher: what `--with` selects
+    /// between. Empty for a flat stack, which is the ordinary way to write a
+    /// one-off and parses with today's exact semantics.
+    ///
+    /// A launcher that declares axes is a FAMILY of stacks, not one: its base
+    /// `deployments` may link instance ids only an option defines, so the
+    /// whole-document cross-checks a flat launcher gets below (every link
+    /// target names a known instance, every `core_node` names a declared
+    /// link) are deferred to the flattened result, where the selected
+    /// options' deployments are part of the document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<ComponentAxis>,
+    /// The base's changes to instances defined elsewhere, applied after all
+    /// fragment adjustments. How a base specializes fragments shared between
+    /// launchers. Requires `components`: with nothing to specialize, an
+    /// adjustment is indirection around a file the author can edit directly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adjustments: Vec<Adjustment>,
 }
 
 /// Custom deserialization for [`PeppyLauncher`] that, after the default
@@ -37,6 +56,11 @@ pub struct PeppyLauncher {
 /// points at an unknown instance is rejected with a structured
 /// [`StructuredError::UnknownInstanceId`] so callers see a path-aware
 /// message instead of a generic serde error.
+///
+/// A COMPOSED launcher (one declaring `components`) gets the same shape
+/// checks per fragment but not the cross-instance ones: its base links may
+/// name ids only a selected option defines, so those checks run once, on
+/// the flattened document.
 impl<'de> Deserialize<'de> for PeppyLauncher {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -51,78 +75,110 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             core_nodes: Vec<String>,
             #[serde(default)]
             deployments: Vec<Deployment>,
+            #[serde(default)]
+            components: Vec<ComponentAxis>,
+            #[serde(default)]
+            adjustments: Vec<Adjustment>,
         }
 
         let raw = RawPeppyLauncher::deserialize(deserializer)?;
 
         validate_core_node_links(&raw.core_nodes).map_err(de::Error::custom)?;
-
-        // A `core_node` must name a declared link. Checking it here, once the
-        // whole document is parsed, is what lets the error say WHICH links
-        // were available instead of just that this one was not one of them.
-        let declared: HashSet<&str> = raw.core_nodes.iter().map(String::as_str).collect();
-        for deployment in &raw.deployments {
-            for instance in &deployment.instances {
-                let Some(core_node) = &instance.core_node else {
-                    continue;
-                };
-                if declared.contains(core_node.as_str()) {
-                    continue;
-                }
-                return Err(de::Error::custom(undeclared_core_node_message(
-                    instance.instance_id.as_str(),
-                    core_node,
-                    &raw.core_nodes,
-                )));
-            }
+        super::composition::validate_axes(&raw.components).map_err(de::Error::custom)?;
+        super::composition::validate_launcher_adjustments(&raw.adjustments, &raw.components)
+            .map_err(de::Error::custom)?;
+        if raw.components.is_empty() && !raw.adjustments.is_empty() {
+            return Err(de::Error::custom(
+                "this launcher declares `adjustments` but no `components`: with nothing to \
+                 specialize, an adjustment is indirection around a file the author can edit \
+                 directly. Move the values into the instances themselves, or declare the axes \
+                 the adjustments specialize",
+            ));
         }
 
-        let known_ids: HashSet<&str> = raw
-            .deployments
-            .iter()
-            .flat_map(|d| d.instances.iter())
-            .map(|i| i.instance_id.as_str())
-            .collect();
-
-        for deployment in &raw.deployments {
-            for instance in &deployment.instances {
-                for (link, value) in &instance.links {
-                    if link == DEFAULT_LINK_ID_SENTINEL {
-                        let err = StructuredError::LinkSentinelKey {
-                            owner_instance_id: instance.instance_id.to_string(),
-                            link: link.clone(),
-                        };
-                        return Err(de::Error::custom(err.json5_message()));
-                    }
-                    // Only the instance part of a target names a deployed
-                    // instance; a pairing/observer target's optional
-                    // `/<link_id>` suffix selects a slot on that instance and
-                    // is resolved (against the manifest) at plan time. A vacant
-                    // slot selects nothing, so it names no instance to check.
-                    let Some(selection) = value.selection() else {
-                        continue;
-                    };
-                    for target in selection.targets() {
-                        let (target_instance, _link_suffix) = split_link_target(target);
-                        if !known_ids.contains(target_instance) {
-                            let err = StructuredError::UnknownInstanceId {
-                                owner_instance_id: instance.instance_id.to_string(),
-                                link: link.clone(),
-                                instance_id: target_instance.to_string(),
-                            };
-                            return Err(de::Error::custom(err.json5_message()));
-                        }
-                    }
-                }
-            }
+        if raw.components.is_empty() {
+            cross_check_flat_document(&raw.deployments, &raw.core_nodes).map_err(de::Error::custom)?;
         }
 
         Ok(PeppyLauncher {
             peppy_schema: raw.peppy_schema,
             core_nodes: raw.core_nodes,
             deployments: raw.deployments,
+            components: raw.components,
+            adjustments: raw.adjustments,
         })
     }
+}
+
+/// The whole-document cross-checks of a flat launcher: every `core_node`
+/// names a declared link, no link key is the reserved producer-default
+/// sentinel, and every link target names a known instance. Extracted from
+/// [`PeppyLauncher`]'s deserializer so the composed arm of that deserializer
+/// can defer exactly these checks to the flattened document.
+fn cross_check_flat_document(
+    deployments: &[Deployment],
+    core_nodes: &[String],
+) -> Result<(), String> {
+    // A `core_node` must name a declared link. Checking it here, once the
+    // whole document is parsed, is what lets the error say WHICH links
+    // were available instead of just that this one was not one of them.
+    let declared: HashSet<&str> = core_nodes.iter().map(String::as_str).collect();
+    for deployment in deployments {
+        for instance in &deployment.instances {
+            let Some(core_node) = &instance.core_node else {
+                continue;
+            };
+            if declared.contains(core_node.as_str()) {
+                continue;
+            }
+            return Err(undeclared_core_node_message(
+                instance.instance_id.as_str(),
+                core_node,
+                core_nodes,
+            ));
+        }
+    }
+
+    let known_ids: HashSet<&str> = deployments
+        .iter()
+        .flat_map(|d| d.instances.iter())
+        .map(|i| i.instance_id.as_str())
+        .collect();
+
+    for deployment in deployments {
+        for instance in &deployment.instances {
+            for (link, value) in &instance.links {
+                if link == DEFAULT_LINK_ID_SENTINEL {
+                    let err = StructuredError::LinkSentinelKey {
+                        owner_instance_id: instance.instance_id.to_string(),
+                        link: link.clone(),
+                    };
+                    return Err(err.json5_message());
+                }
+                // Only the instance part of a target names a deployed
+                // instance; a pairing/observer target's optional
+                // `/<link_id>` suffix selects a slot on that instance and
+                // is resolved (against the manifest) at plan time. A vacant
+                // slot selects nothing, so it names no instance to check.
+                let Some(selection) = value.selection() else {
+                    continue;
+                };
+                for target in selection.targets() {
+                    let (target_instance, _link_suffix) = split_link_target(target);
+                    if !known_ids.contains(target_instance) {
+                        let err = StructuredError::UnknownInstanceId {
+                            owner_instance_id: instance.instance_id.to_string(),
+                            link: link.clone(),
+                            instance_id: target_instance.to_string(),
+                        };
+                        return Err(err.json5_message());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Core node link ids are unique, never the reserved `self`, and spelled like
