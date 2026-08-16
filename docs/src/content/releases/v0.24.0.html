@@ -1,0 +1,37 @@
+<entry>
+  <title>v0.24.0</title>
+  <id>https://docs.peppy.bot/releases/v0-24-0/</id>
+  <updated>2026-08-16T00:00:00Z</updated>
+
+  <summary>Compose launchers from fragments with --with selections and a new stack resolve command, plus sturdier container builds.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.24.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Compose launchers from fragments with --with selections and a new stack resolve command, plus sturdier container builds.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on August 16, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Launch composition&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Peppy parses composed launchers and flattens a launcher selection into a single flat launcher.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--with&lt;/code&gt; selections are resolved on the coordinator, and the new &lt;code&gt;stack resolve&lt;/code&gt; command reports the resolved stack.&lt;/li&gt;
+&lt;li&gt;A single launcher fragment can no longer both replace and append to the same slot; peppy rejects fragments that do.&lt;/li&gt;
+&lt;li&gt;Launcher fragment validation covers previously missed cases, tightening composition safety.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Containers&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Container builds are retried automatically when the base image fetch fails transiently.&lt;/li&gt;
+&lt;li&gt;Peppy checks for &lt;code&gt;fuse2fs&lt;/code&gt; on hosts that run rootless Apptainer containers.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Networking&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Peppy supports a wildcard peer listener for peer discovery.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Output&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Peppy announces a cached-checkout reuse once per checkout population.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
