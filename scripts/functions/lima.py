@@ -23,7 +23,7 @@ GUEST_CARGO_HOME = f"{GUEST_RUST_DIR}/cargo"
 # guest agent from another is a known way to land an instance in DEGRADED
 # state. Nothing enforces the sync, so it is prose across the Rust/Python
 # boundary, exactly like GO_VERSION below.
-LIMA_VERSION = "2.1.3"
+LIMA_VERSION = "2.2.0"
 
 # Pinned Go toolchain for the in-VM Linux target builds. The containers crate
 # builds apptainer from source, whose `mconfig` needs a Go newer than Ubuntu's
