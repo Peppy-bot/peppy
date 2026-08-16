@@ -102,7 +102,7 @@ impl AppContext {
         namespace: config::namespace::Namespace,
     ) -> crate::error::Result<()> {
         // Open the control session as a pure Zenoh client under the typed
-        // namespace recorded by the daemon generation: no loopback listener,
+        // namespace recorded by the daemon generation: no listener,
         // no gossip discovery, every request relayed through the daemon's
         // router.
         self.messenger_handle

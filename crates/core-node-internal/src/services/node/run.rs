@@ -185,7 +185,7 @@ pub(crate) struct NodeRunActionContext {
 /// liveness grace period (so the spawned node's watchdog self-terminates if the
 /// daemon dies and stays gone). `container_separate_ns` forces the node onto the
 /// router-relay (client) path even when gossip is configured, because a container
-/// in a separate network namespace cannot form direct loopback peer links. So the
+/// in a separate network namespace cannot form direct peer links. So the
 /// effective gossip is "configured AND not separate-namespace".
 fn apply_daemon_defaults(
     cfg: &mut RuntimeConfig,
@@ -1020,8 +1020,8 @@ async fn process_node_run(
     //
     //  - Lima (macOS): `Some(gateway)`: the container runs in a VM, a separate
     //    namespace. It reaches a router on the macOS host only through the Lima
-    //    gateway, and a loopback peer locator advertised inside the guest is
-    //    unreachable from the host (and vice versa), so it cannot form direct
+    //    gateway, and peer locators advertised inside the guest (the VM's own
+    //    addresses) are unreachable from the host, so it cannot form direct
     //    peer links. Route it through the router as a client (gossip forced off).
     //    A host-local router address is rewritten to the gateway; an external
     //    router on another host stays unchanged.

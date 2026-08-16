@@ -137,14 +137,17 @@ const CORE_NODE_NAME_SECTION_SNIPPET: &str = const_format::concatcp!(
 
 /// The `zenoh.managed.local_nodes_topology` entry with its explanatory comment,
 /// indented for the `managed` block.
-const LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET: &str = r#"      // How the nodes on this machine exchange data with each other. Traffic to
-      // and from other machines always relays through the local zenohd router and
-      // its federation, regardless of this setting (node sessions only accept
-      // direct links over loopback).
+const LOCAL_NODES_TOPOLOGY_FIELD_SNIPPET: &str = r#"      // How the nodes on this machine exchange data with each other.
       //   "peer"   - Zenoh peer sessions with gossip: local nodes form direct
-      //              peer-to-peer links and data stops relaying through the router.
+      //              peer-to-peer links and data stops relaying through the
+      //              router. Peer sessions listen on all interfaces (zenoh 1.10
+      //              gossips only non-loopback locators, so a loopback listener
+      //              would never be advertised and no direct link could form),
+      //              which makes the listener reachable from the network.
       //   "router" - gossip off: all traffic relays through the central zenohd
-      //              router.
+      //              router, and node sessions open no listener at all.
+      // Traffic to and from other machines relays through the local zenohd router
+      // and its federation regardless of this setting.
       // Container nodes in a separate network namespace (Lima on macOS) always use
       // the router path regardless of this setting.
       local_nodes_topology: "peer",
@@ -304,9 +307,13 @@ const DEFAULT_PEPPY_CONFIG_TEMPLATE: &str = const_format::concatcp!(
 ///
 /// `Peer` keeps gossip on so co-located nodes form direct peer-to-peer links;
 /// `Router` turns gossip off so every node routes through the central
-/// `zenohd`. Local-only by construction: node sessions accept direct links
-/// over a loopback-bound listener, so cross-machine traffic always relays
-/// through the routers regardless of this choice. The `gossip()` mapping is
+/// `zenohd` and opens no listener. Peer sessions bind the wildcard address —
+/// zenoh 1.10 gossips only non-loopback locators, so a loopback listener
+/// would never be advertised and no direct link could form — which makes the
+/// peer listener reachable from the network (the zenoh transport is
+/// unauthenticated, like the router's own listener). Cross-machine traffic
+/// still relays through the routers and their federation; the workspace
+/// namespace isolates what any link may carry. The `gossip()` mapping is
 /// the single source of truth tying this user-facing choice to the
 /// `DiscoveryConfig.gossip` flag the sessions actually read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
