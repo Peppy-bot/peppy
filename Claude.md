@@ -14,6 +14,7 @@
 - When you write comments or documentation, stop using em-dash `—`, this is a recurring pattern that you make and immediately jumps at users as being your coding style.
 - Push back hard against design implementation that you think are fundamentally wrong and explain your reasoning
 - Never merge PRs in the remote repository without my consent
+- Never add "Co-Authored-By" trailers crediting an LLM (e.g., Claude) to commit messages; commits are authored by me alone
 - When tests are written, never make them time-based, they should be deterministic and should not depend on the speed of the host
 
 ---
