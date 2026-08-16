@@ -1,4 +1,6 @@
 mod bindings;
+mod composition;
+mod flatten;
 mod links;
 mod observations;
 mod pairings;
@@ -10,6 +12,14 @@ mod types;
 // but the parser is filename-agnostic; repository discovery accepts any
 // `.json5` file whose body declares the launcher schema.
 pub use bindings::{BindingValidationItem, ValidatedBindings, validate_bindings};
+pub use composition::{
+    Adjustment, ComponentAxis, Fragment, FragmentPart, FragmentSpec, LauncherFragment,
+    LauncherFragmentParser,
+};
+pub use flatten::{
+    AppliedAdjustment, AppliedChange, ComponentSelection, CompositionError, FlattenReport,
+    SelectionEntry, SelectionSource, SkipReason, SkippedAdjustment, check_composition, compose,
+};
 pub use links::{ValidatedLinkPlan, validate_link_plan, validate_link_slots};
 pub use observations::{PlannedObservation, ValidatedObservations, validate_observations};
 pub use pairings::{
