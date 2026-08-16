@@ -360,8 +360,16 @@ EOF
         [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo "no")" = "yes" ]
     }
 
+    # Returns 0 if the fuse2fs ext2/3/4 FUSE mount helper is installed. The
+    # bundled rootless apptainer needs it to mount EXT3 filesystem images —
+    # peppy ships squashfuse_ll and gocryptfs next to apptainer, but not this
+    # one, so it must come from the distro.
+    check_fuse2fs() {
+        command -v fuse2fs >/dev/null 2>&1
+    }
+
     # ---- Linux system dependency checks (pre-download) -------------------------
-    # Checks and installs pre-download dependencies (dbus, linger, curl).
+    # Checks and installs pre-download dependencies (dbus, linger, curl, fuse2fs).
     # Apptainer setup is handled post-install by `peppy container setup`.
     #
     # Inside containers (Docker/Podman), D-Bus and linger are irrelevant —
@@ -395,6 +403,18 @@ EOF
                     echo "" >&2
                     echo "error: loginctl linger is not enabled for user ${CURRENT_USER}." >&2
                     echo "       Enable it manually: sudo loginctl enable-linger ${CURRENT_USER}" >&2
+                    echo "" >&2
+                    exit 1
+                fi
+
+                if ! check_fuse2fs; then
+                    echo "" >&2
+                    echo "error: fuse2fs not found." >&2
+                    echo "       Rootless apptainer needs it to mount EXT3 filesystem images." >&2
+                    echo "       Install it manually:" >&2
+                    echo "         Debian/Ubuntu: sudo apt-get install fuse2fs" >&2
+                    echo "         Fedora/RHEL:   sudo dnf install fuse2fs" >&2
+                    echo "         Arch Linux:    sudo pacman -S fuse2fs" >&2
                     echo "" >&2
                     exit 1
                 fi
@@ -434,6 +454,29 @@ EOF
                 if ! check_linger_enabled; then
                     ENABLE_LINGER_USER="$(id -un)"
                     ALL_LABELS="${ALL_LABELS}  - Enable systemd linger for user ${ENABLE_LINGER_USER} (allows peppy daemon to run after SSH disconnect)\n"
+                fi
+
+                # fuse2fs: the ext2/3/4 FUSE mounter the bundled rootless
+                # apptainer uses for EXT3 filesystem images. Unlike
+                # squashfuse_ll and gocryptfs it is not bundled with peppy,
+                # so it comes from the distro.
+                if ! check_fuse2fs; then
+                    FUSE2FS_FIX=""
+                    if command -v apt-get >/dev/null 2>&1; then
+                        FUSE2FS_FIX="apt-get update -qq && apt-get install -y -qq fuse2fs"
+                    elif command -v dnf >/dev/null 2>&1; then
+                        FUSE2FS_FIX="dnf install -y fuse2fs"
+                    elif command -v pacman >/dev/null 2>&1; then
+                        FUSE2FS_FIX="pacman -Sy --noconfirm fuse2fs"
+                    fi
+                    if [ -n "$FUSE2FS_FIX" ]; then
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}${FUSE2FS_FIX} && "
+                        ALL_LABELS="${ALL_LABELS}  - Install fuse2fs (needed to mount EXT3 filesystems in rootless containers)\n"
+                    else
+                        echo "warning: fuse2fs not found and no supported package manager detected (apt-get, dnf, pacman)." >&2
+                        echo "         Rootless containers cannot mount EXT3 filesystems without it." >&2
+                        echo "         Debian/Ubuntu: sudo apt-get install fuse2fs; Fedora/RHEL: sudo dnf install fuse2fs; Arch Linux: sudo pacman -S fuse2fs" >&2
+                    fi
                 fi
             fi
 
