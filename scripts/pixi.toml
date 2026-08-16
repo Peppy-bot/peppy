@@ -12,7 +12,7 @@ requires-pixi = ">=0.72"
 [dependencies]
 python = ">=3.13,<3.14"
 pip = "*"
-lima = { version = ">=2.1.3", channel = "https://prefix.dev/github-releases" }
+lima = { version = ">=2.2.0", channel = "https://prefix.dev/github-releases" }
 
 [pypi-dependencies]
 peppy-release-scripts = { path = ".", editable = true }

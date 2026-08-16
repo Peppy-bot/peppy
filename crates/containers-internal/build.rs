@@ -124,9 +124,9 @@ mod apptainer_build {
     const SQUASHFUSE_SHA256: &str =
         "267f2852d6e20147eb1e21931f9d0fe7634a66612f1ede27e15fa60e56ce0eac";
 
-    const LIMA_VERSION: &str = "2.1.3";
+    const LIMA_VERSION: &str = "2.2.0";
     const LIMA_DARWIN_ARM64_ARCHIVE_SHA256: &str =
-        "52bcf0780fcb28128ac9f6924d4410a6bc7c92fa80c9a858d89ae34ec3ce4f35";
+        "bbdef91774885a0d05f7b048c4eb89ae2bcf3a0c252ae7ca7934e63df76d93c3";
     /// SHA-256 of `lima-additional-guestagents-{LIMA_VERSION}-Darwin-arm64.tar.gz`.
     /// This archive carries the cross-architecture (Linux-x86_64, ...) guest
     /// agents that the main Lima package omits. The guest agent MUST come from
@@ -134,7 +134,7 @@ mod apptainer_build {
     /// agent cannot speak to the host and leaves cross-arch VMs stuck in a
     /// DEGRADED state. Bump alongside `LIMA_VERSION`.
     const LIMA_ADDITIONAL_GUESTAGENTS_DARWIN_ARM64_SHA256: &str =
-        "ee85b79aa7ebebf71039d6fb145695c5697ff870f6c88bf4150a6bd72813b78c";
+        "3aff4453eb3c359eb4f3b458056db24f2c5c15019232531292f49e04050554ed";
     const LIMA_INSTANCE: &str = "peppy";
 
     /// Prebuilt amd64 Ubuntu base rootfs. On an Apple Silicon host the x86_64
@@ -326,7 +326,7 @@ mod apptainer_build {
 
     fn lima_archive_sha256(version: &str, os: &str, arch: &str) -> Option<&'static str> {
         match (version, os, arch) {
-            ("2.1.3", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
+            ("2.2.0", "Darwin", "arm64") => Some(LIMA_DARWIN_ARM64_ARCHIVE_SHA256),
             _ => None,
         }
     }
