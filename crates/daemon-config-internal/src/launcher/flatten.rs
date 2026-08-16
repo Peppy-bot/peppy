@@ -8,8 +8,8 @@
 //! filesystem launcher compose identically.
 
 use super::composition::{
-    Adjustment, ComponentAxis, FragmentPart, LauncherFragmentParser, validate_adjustment,
-    validate_guard,
+    Adjustment, ComponentAxis, FragmentPart, LauncherFragmentParser, SelectionConstraint,
+    validate_adjustment, validate_guard,
 };
 use super::parse::PeppyLauncherParser;
 use super::types::{Deployment, LinkTargets, LinkValue, PeppyLauncher, Selection};
@@ -57,6 +57,23 @@ pub enum CompositionError {
          its options with `--with`{options}"
     )]
     UnresolvedAxis { axis: String, options: String },
+
+    #[error(
+        "this launcher refuses the selection ({selection}): {condition} requires \
+         {alternatives}, which this selection does not satisfy. {reason}"
+    )]
+    ConstraintViolated {
+        /// The full resolved selection, with its `(default)` markers: the
+        /// axes the operator did not name are usually the fix.
+        selection: String,
+        /// `selecting axis=option ...`, or `every selection` for an
+        /// unconditional constraint.
+        condition: String,
+        /// The rendered `requires` alternatives.
+        alternatives: String,
+        /// The author's `reason`, verbatim.
+        reason: String,
+    },
 
     #[error(
         "fragment path `{path}` in {origin} is not usable: {reason}. A fragment path is \
@@ -1042,6 +1059,7 @@ fn flatten(
         deployments: merged,
         components: Vec::new(),
         adjustments: Vec::new(),
+        constraints: Vec::new(),
     };
     let text = serde_json5::to_string(&flat).map_err(|e| {
         CompositionError::FlatValidation(crate::error::Error::Serialize(e.to_string()))
@@ -1119,6 +1137,68 @@ fn render_guard(when: &BTreeMap<String, String>) -> String {
         .join(" ")
 }
 
+/// Whether this selection satisfies one constraint: either the constraint's
+/// guard does not speak about it, or at least one `requires` alternative
+/// holds wholly. Alternatives use the same matching a guard does, so an
+/// unfilled optional axis satisfies no pair on either side.
+fn constraint_satisfied(selection: &ComponentSelection, constraint: &SelectionConstraint) -> bool {
+    if let Some(when) = &constraint.when
+        && !guard_holds(selection, when)
+    {
+        return true;
+    }
+    constraint
+        .requires
+        .iter()
+        .any(|alternative| guard_holds(selection, alternative))
+}
+
+/// The first declared constraint this selection violates, with its position.
+/// Declaration order, so overlapping constraints refuse deterministically
+/// and the launcher author controls which reason the operator reads first.
+fn first_violated<'a>(
+    constraints: &'a [SelectionConstraint],
+    selection: &ComponentSelection,
+) -> Option<(usize, &'a SelectionConstraint)> {
+    constraints
+        .iter()
+        .enumerate()
+        .find(|(_, constraint)| !constraint_satisfied(selection, constraint))
+}
+
+/// The refusal for a selection that violates a constraint, carrying the full
+/// resolved selection (whose `(default)` markers show the axes the operator
+/// did not name), what was required, and the author's reason.
+fn constraint_violation(
+    constraint: &SelectionConstraint,
+    selection: &ComponentSelection,
+) -> CompositionError {
+    CompositionError::ConstraintViolated {
+        selection: selection.echo(),
+        condition: render_condition(constraint),
+        alternatives: render_alternatives(&constraint.requires),
+        reason: constraint.reason.clone(),
+    }
+}
+
+fn render_condition(constraint: &SelectionConstraint) -> String {
+    match &constraint.when {
+        Some(when) => format!("selecting {}", render_guard(when)),
+        None => String::from("every selection"),
+    }
+}
+
+fn render_alternatives(alternatives: &[BTreeMap<String, String>]) -> String {
+    let rendered: Vec<String> = alternatives
+        .iter()
+        .map(|alternative| format!("`{}`", render_guard(alternative)))
+        .collect();
+    match rendered.as_slice() {
+        [single] => single.clone(),
+        many => format!("one of {}", many.join(", ")),
+    }
+}
+
 /// What a slot holds, for the "appending is for array bindings" refusal.
 /// The array arm exists for totality; the caller matches it before this
 /// helper can see it.
@@ -1155,6 +1235,13 @@ pub fn compose(
 
     let loaded = load_composition(launcher, launcher_file)?;
     let selection = resolve_selection(&launcher.components, words)?;
+    // Constraints judge the RESOLVED selection: a default fills an axis
+    // exactly as an explicit word does, and the refusal's echo marks which
+    // was which. Refusing (rather than picking a satisfying option) keeps
+    // `--with` deterministic as constraints evolve.
+    if let Some((_, constraint)) = first_violated(&launcher.constraints, &selection) {
+        return Err(constraint_violation(constraint, &selection));
+    }
     let base_label = launcher_file_label(launcher_file);
     flatten(launcher, &loaded, &selection, &base_label)
 }
@@ -1183,8 +1270,14 @@ fn launcher_dir_of(launcher_file: &Path) -> PathBuf {
 /// contradicts an existing adjustment is the commit whose check fails,
 /// rather than the first launch that selects it.
 ///
+/// A legal selection is one the launcher's `constraints` admit: refused
+/// selections are refused by design and are not required to flatten, but
+/// the constraints themselves are held to leaving a usable family behind
+/// (no dead option, no dead constraint, a bare launch that still starts).
+///
 /// Returns the rendered problems, each prefixed with the launcher's file
-/// name; an empty vec means every selection flattens.
+/// name; an empty vec means every legal selection flattens and the
+/// constraints refuse only what the author could mean to refuse.
 pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<String> {
     let label = launcher_file_label(launcher_file);
     let loaded = match load_composition(launcher, launcher_file) {
@@ -1204,11 +1297,93 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
         )];
     }
     let mut problems = Vec::new();
+
+    // Split the space into the selections the constraints admit and the ones
+    // they refuse. A refused selection is refused by design, so it is not
+    // required to flatten; what IS checked is that the refusals leave a
+    // usable family behind (below).
+    let mut refused_by: Vec<usize> = vec![0; launcher.constraints.len()];
+    let mut legal: Vec<ComponentSelection> = Vec::new();
     for selection in enumerate_selections(&launcher.components) {
-        if let Err(e) = flatten(launcher, &loaded, &selection, &label) {
+        match first_violated(&launcher.constraints, &selection) {
+            Some((index, _)) => refused_by[index] += 1,
+            None => legal.push(selection),
+        }
+    }
+    for selection in &legal {
+        if let Err(e) = flatten(launcher, &loaded, selection, &label) {
             problems.push(format!("{label} ({}): {e}", selection.echo()));
         }
     }
+
+    // A constraint that refuses nothing is dead: every selection it speaks
+    // about already satisfies it, or an earlier constraint refuses those
+    // selections first. Either way its reason is never read, and a dead rule
+    // reads as protection it does not give.
+    for (index, refused) in refused_by.iter().enumerate() {
+        if *refused == 0 {
+            let constraint = &launcher.constraints[index];
+            problems.push(format!(
+                "{label}: constraint {} ({} requires {}) refuses no selection: it is already \
+                 guaranteed by the axes or by an earlier constraint. Tighten it or drop it",
+                index + 1,
+                render_condition(constraint),
+                render_alternatives(&constraint.requires),
+            ));
+        }
+    }
+
+    // Every state of every axis must survive the constraints somewhere: an
+    // option no legal selection can pick is dead weight behind a refusal,
+    // and an optional axis that can never stay off is `optional` in name
+    // only.
+    for axis in &launcher.components {
+        let mut states: Vec<Option<&str>> =
+            axis.options.keys().map(|option| Some(option.as_str())).collect();
+        if axis.optional {
+            states.push(None);
+        }
+        for state in states {
+            if legal
+                .iter()
+                .any(|selection| selection.option_on(&axis.name) == state)
+            {
+                continue;
+            }
+            problems.push(match state {
+                Some(option) => format!(
+                    "{label}: no selection may fill axis `{}` with `{option}`: the \
+                     `constraints` refuse every selection that picks it, so the option can \
+                     never launch. Loosen a constraint or drop the option",
+                    axis.name
+                ),
+                None => format!(
+                    "{label}: no selection may leave axis `{}` unfilled: the `constraints` \
+                     refuse every selection without it, so `optional` is a promise nothing \
+                     keeps. Make the axis required or loosen a constraint",
+                    axis.name
+                ),
+            });
+        }
+    }
+
+    // The bare launch must stay a member of the family: when every axis
+    // defaults or is optional, the selection `--with` nothing produces has
+    // to satisfy the constraints too. (A launcher with a required,
+    // defaultless axis has no bare launch, and resolve refuses it before
+    // constraints are consulted.)
+    if let Ok(default_selection) = resolve_selection(&launcher.components, &[])
+        && let Some((_, constraint)) = first_violated(&launcher.constraints, &default_selection)
+    {
+        problems.push(format!(
+            "{label}: the default selection ({}) violates constraint `{} requires {}`: a bare \
+             launch with no `--with` must start. Change the axes' defaults or the constraint",
+            default_selection.echo(),
+            render_condition(constraint),
+            render_alternatives(&constraint.requires),
+        ));
+    }
+
     problems
 }
 
@@ -1951,6 +2126,7 @@ mod tests {
                 deployments: Vec::new(),
                 components: vec![axis],
                 adjustments: Vec::new(),
+                constraints: Vec::new(),
             };
             let err = compose(&launcher, &dir.path().join("l.json5"), &["sim".to_string()])
                 .expect_err("unsafe path must be refused");
@@ -2154,5 +2330,237 @@ mod tests {
         )
         .expect_err("flat launcher has nothing to select");
         assert!(matches!(err, CompositionError::WithOnFlatLauncher));
+    }
+
+    // -- constraints ---------------------------------------------------------
+
+    /// A robot choice and an optional recorder toggle, all inline: the
+    /// smallest family the constraints have something to say about.
+    fn constrained_launcher(constraints: &str) -> PeppyLauncher {
+        parse_launcher(&format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                components: [
+                    {{ name: "robot", default: "real",
+                       options: {{
+                           real: {{ deployments: [
+                               {{ source: {{ name: "can_arm", tag: "v1" }},
+                                  instances: [{{ instance_id: "arm_inst" }}] }} ] }},
+                           mujoco: {{ deployments: [
+                               {{ source: {{ name: "sim_arm", tag: "v1" }},
+                                  instances: [{{ instance_id: "arm_inst" }}] }} ] }},
+                       }} }},
+                    {{ name: "recorder", optional: true,
+                       options: {{ on: {{ deployments: [
+                           {{ source: {{ name: "recorder", tag: "v1" }},
+                              instances: [{{ instance_id: "recorder_inst" }}] }} ] }} }} }},
+                ],
+                constraints: [{constraints}],
+            }}"#
+        ))
+    }
+
+    #[test]
+    fn a_selection_the_constraints_refuse_does_not_launch() {
+        let launcher = constrained_launcher(
+            r#"{ when: { recorder: "on" }, requires: [{ robot: "real" }],
+                 reason: "the recorder films the physical rig" }"#,
+        );
+        let err = compose(
+            &launcher,
+            Path::new("family.json5"),
+            &words(&["mujoco", "on"]),
+        )
+        .expect_err("the constraint must refuse this member");
+        assert!(matches!(err, CompositionError::ConstraintViolated { .. }));
+        let message = err.to_string();
+        assert!(message.contains("robot=mujoco  recorder=on"), "got: {message}");
+        assert!(message.contains("selecting recorder=on"), "got: {message}");
+        assert!(message.contains("`robot=real`"), "got: {message}");
+        assert!(
+            message.contains("films the physical rig"),
+            "the author's reason must reach the operator, got: {message}"
+        );
+    }
+
+    /// A default fills an axis exactly as an explicit word does, and the
+    /// refusal's echo marks it, so the operator sees which axis they never
+    /// named.
+    #[test]
+    fn a_defaulted_axis_can_violate_a_constraint_and_the_echo_marks_it() {
+        let launcher = constrained_launcher(
+            r#"{ when: { recorder: "on" }, requires: [{ robot: "mujoco" }],
+                 reason: "this recorder observes only the simulated arm" }"#,
+        );
+        let err = compose(&launcher, Path::new("family.json5"), &words(&["on"]))
+            .expect_err("the defaulted robot violates the constraint");
+        assert!(
+            err.to_string().contains("robot=real (default)"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_selection_satisfying_the_constraints_flattens() {
+        let launcher = constrained_launcher(
+            r#"{ when: { recorder: "on" }, requires: [{ robot: "real" }],
+                 reason: "the recorder films the physical rig" }"#,
+        );
+        // The default satisfies the requirement...
+        compose(&launcher, Path::new("family.json5"), &words(&["on"]))
+            .expect("real (default) + recorder satisfies the constraint");
+        // ...and a selection the guard does not speak about is untouched.
+        compose(&launcher, Path::new("family.json5"), &words(&["mujoco"]))
+            .expect("with the recorder off the constraint is quiet");
+        // An alternative list is an OR: the second alternative carries it.
+        let either = constrained_launcher(
+            r#"{ when: { robot: "mujoco" }, requires: [{ recorder: "on" }],
+                 reason: "the sim exists to produce datasets" }"#,
+        );
+        compose(&either, Path::new("family.json5"), &words(&["mujoco", "on"]))
+            .expect("the required recorder is selected");
+    }
+
+    /// The gap `repo index --check` closes: a selection the constraints
+    /// refuse is not required to flatten. This family's refused member is
+    /// exactly its broken one (the recorder's append lands on a slot the
+    /// mujoco arm binds as a scalar), so without the constraint the check
+    /// fails and with it the check passes.
+    #[test]
+    fn check_composition_holds_only_legal_selections_to_flattening() {
+        let family = |constraints: &str| {
+            parse_launcher(&format!(
+                r#"{{
+                    peppy_schema: "launcher/v1",
+                    components: [
+                        {{ name: "robot", default: "real",
+                           options: {{
+                               real: {{ deployments: [
+                                   {{ source: {{ name: "can_arm", tag: "v1" }},
+                                      instances: [{{ instance_id: "arm_inst" }}] }} ] }},
+                               mujoco: {{ deployments: [
+                                   {{ source: {{ name: "sim_engine", tag: "v1" }},
+                                      instances: [{{ instance_id: "sim_inst" }}] }},
+                                   {{ source: {{ name: "sim_arm", tag: "v1" }},
+                                      instances: [{{ instance_id: "arm_inst",
+                                                    links: {{ observed: "sim_inst" }} }}] }} ] }},
+                           }} }},
+                        {{ name: "recorder", optional: true,
+                           options: {{ on: {{
+                               deployments: [
+                                   {{ source: {{ name: "recorder", tag: "v1" }},
+                                      instances: [{{ instance_id: "recorder_inst" }}] }} ],
+                               adjustments: [
+                                   {{ target: "arm_inst",
+                                      add_links: {{ observed: ["recorder_inst"] }} }} ],
+                           }} }} }},
+                    ],
+                    {constraints}
+                }}"#
+            ))
+        };
+
+        let unconstrained = family("");
+        let problems = check_composition(&unconstrained, Path::new("family.json5"));
+        assert_eq!(problems.len(), 1, "got: {problems:?}");
+        assert!(
+            problems[0].contains("robot=mujoco  recorder=on"),
+            "got: {problems:?}"
+        );
+
+        let constrained = family(
+            r#"constraints: [
+                { when: { recorder: "on" }, requires: [{ robot: "real" }],
+                  reason: "the recorder films the physical rig" } ],"#,
+        );
+        let problems = check_composition(&constrained, Path::new("family.json5"));
+        assert!(problems.is_empty(), "got: {problems:?}");
+    }
+
+    #[test]
+    fn check_composition_flags_an_option_nothing_may_select() {
+        let launcher = constrained_launcher(
+            r#"{ when: { robot: "mujoco" }, requires: [{ recorder: "on" }],
+                 reason: "the sim exists to produce datasets" },
+               { when: { recorder: "on" }, requires: [{ robot: "real" }],
+                 reason: "the recorder films the physical rig" }"#,
+        );
+        let problems = check_composition(&launcher, Path::new("family.json5"));
+        assert_eq!(problems.len(), 1, "got: {problems:?}");
+        assert!(
+            problems[0].contains("fill axis `robot` with `mujoco`"),
+            "got: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn check_composition_flags_a_constraint_that_refuses_nothing() {
+        let launcher = constrained_launcher(
+            r#"{ when: { recorder: "on" }, requires: [{ robot: "real" }, { robot: "mujoco" }],
+                 reason: "some robot must be selected" }"#,
+        );
+        let problems = check_composition(&launcher, Path::new("family.json5"));
+        assert_eq!(problems.len(), 1, "got: {problems:?}");
+        assert!(
+            problems[0].contains("refuses no selection"),
+            "got: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn check_composition_flags_a_refused_default_selection() {
+        let launcher = constrained_launcher(
+            r#"{ when: { robot: "real" }, requires: [{ recorder: "on" }],
+                 reason: "the rig is always recorded" }"#,
+        );
+        let problems = check_composition(&launcher, Path::new("family.json5"));
+        assert_eq!(problems.len(), 1, "got: {problems:?}");
+        assert!(
+            problems[0].contains("default selection"),
+            "got: {problems:?}"
+        );
+        assert!(
+            problems[0].contains("robot=real (default)"),
+            "got: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn check_composition_flags_an_optional_axis_that_may_never_stay_off() {
+        let launcher = constrained_launcher(
+            r#"{ requires: [{ recorder: "on" }], reason: "every session is recorded" }"#,
+        );
+        let problems = check_composition(&launcher, Path::new("family.json5"));
+        // Two findings, one cause: `optional` is a promise nothing keeps,
+        // and the bare launch it implies is refused.
+        assert_eq!(problems.len(), 2, "got: {problems:?}");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("leave axis `recorder` unfilled")),
+            "got: {problems:?}"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("default selection")),
+            "got: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn constraints_without_components_are_refused() {
+        let err = PeppyLauncherParser::from_content(
+            r#"{
+                peppy_schema: "launcher/v1",
+                deployments: [],
+                constraints: [
+                    { requires: [{ robot: "real" }], reason: "r" } ],
+            }"#,
+        )
+        .expect_err("a flat launcher has no selection to refuse");
+        assert!(
+            err.to_string()
+                .contains("declares `constraints` but no `components`"),
+            "got: {err}"
+        );
     }
 }
