@@ -19,7 +19,11 @@ use crate::error::{Error, Result};
 /// `launcher/v1` document goes to stdout, so it doubles as the escape
 /// hatch: flatten, hand-edit, launch the flat file. The resolution report
 /// goes to stderr.
-pub fn resolve(_ctx: &Arc<AppContext>, launcher_config_path: PathBuf, with: Vec<String>) -> Result<()> {
+pub fn resolve(
+    _ctx: &Arc<AppContext>,
+    launcher_config_path: PathBuf,
+    with: Vec<String>,
+) -> Result<()> {
     let (document, report) = resolve_rendered(launcher_config_path, &with)?;
     for line in report {
         eprintln!("{line}");
@@ -37,12 +41,12 @@ pub fn resolve_rendered(
 ) -> Result<(String, Vec<String>)> {
     let path = match infer_launcher_origin(launcher_config_path)? {
         LauncherOrigin::Fs(path) => path,
-        LauncherOrigin::Repository { name } => core_node::resolve_repo_launcher_path(
-            &name,
-            &PeppyDirs::default(),
-            &|message: &str| info!("{message}"),
-        )
-        .map_err(Error::ExecutionFailed)?,
+        LauncherOrigin::Repository { name } => {
+            core_node::resolve_repo_launcher_path(&name, &PeppyDirs::default(), &|message: &str| {
+                info!("{message}")
+            })
+            .map_err(Error::ExecutionFailed)?
+        }
     };
 
     let parsed = PeppyLauncherParser::from_path(&path).map_err(Error::DaemonConfig)?;

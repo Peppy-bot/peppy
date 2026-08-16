@@ -1937,12 +1937,15 @@ mod tests {
         .unwrap();
         let index = generate_repository_index(&repo).expect("generates");
         write_repository_index(&repo, &index).expect("writes");
-        let err = check_repository_index(&repo).expect_err("an unflattenable selection must be refused");
+        let err =
+            check_repository_index(&repo).expect_err("an unflattenable selection must be refused");
         let IndexError::CompositionFailed(problems) = &err else {
             panic!("expected a composition failure, got: {err}");
         };
         assert!(
-            problems.iter().any(|problem| problem.contains("robot=sim") && problem.contains("viewer_inst")),
+            problems
+                .iter()
+                .any(|problem| problem.contains("robot=sim") && problem.contains("viewer_inst")),
             "the problem should name the selection and the id: {problems:?}"
         );
     }

@@ -4572,7 +4572,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
         "the document still declares the launcher schema: {document}"
     );
 
-    let report_text = report.join("\\n");
+    let report_text = report.join("\n");
     assert!(
         report_text.contains("components: robot=real (default)  recorder=on"),
         "the report leads with the resolution: {report_text}"

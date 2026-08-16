@@ -314,8 +314,7 @@ async fn launch_async(
     // COORDINATOR read, so that a repository launcher and a file one resolve identically.
     if let LauncherOrigin::Fs(path) = &launcher_origin {
         let parsed = PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
-        compose(&parsed, path, &with)
-            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        compose(&parsed, path, &with).map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     }
 
     let conn = ctx.connect_to_daemon().await?;

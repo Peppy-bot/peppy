@@ -76,35 +76,31 @@ pub(super) async fn parse_launcher_config(
         }
     };
 
-    let peppy_launcher = match daemon_config::launcher::compose(&parsed, &launch_file, &goal.selections)
-    {
-        Ok((flat, report)) => {
-            if !parsed.components.is_empty() {
-                // The full resolution is echoed before anything runs, so the
-                // operator sees which stack this launch is of while there is
-                // still time to interrupt it.
-                publish_stdout(
-                    ctx,
-                    format!("components: {}", report.selection.echo()),
-                    LaunchFeedbackStep::LauncherStep,
-                )
-                .await;
+    let peppy_launcher =
+        match daemon_config::launcher::compose(&parsed, &launch_file, &goal.selections) {
+            Ok((flat, report)) => {
+                if !parsed.components.is_empty() {
+                    // The full resolution is echoed before anything runs, so the
+                    // operator sees which stack this launch is of while there is
+                    // still time to interrupt it.
+                    publish_stdout(
+                        ctx,
+                        format!("components: {}", report.selection.echo()),
+                        LaunchFeedbackStep::LauncherStep,
+                    )
+                    .await;
+                }
+                flat
             }
-            flat
-        }
-        Err(e) => {
-            publish_stderr(
-                ctx,
-                format!("Invalid launcher config: {e}"),
-                LaunchFeedbackStep::LauncherStep,
-            )
-            .await;
-            return Err(LaunchResult::failure(
-                &ctx.log_path,
-                format!("Invalid launcher config: {e}"),
-            ));
-        }
-    };
+            Err(e) => {
+                // Not a parse failure: the document was already read fine. The
+                // composition errors themselves name the axis and its options,
+                // so the prefix only says which step refused.
+                let msg = format!("Cannot resolve the launcher's components: {e}");
+                publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+                return Err(LaunchResult::failure(&ctx.log_path, msg));
+            }
+        };
 
     let placements = match resolve_placements(&peppy_launcher, goal, ctx.bound_core_node.as_str()) {
         Ok(placements) => placements,

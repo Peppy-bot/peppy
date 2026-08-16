@@ -32,7 +32,7 @@ pub struct PeppyLauncher {
     pub deployments: Vec<Deployment>,
     /// The component axes of a composed launcher: what `--with` selects
     /// between. Empty for a flat stack, which is the ordinary way to write a
-    /// one-off and parses with today's exact semantics.
+    /// one-off.
     ///
     /// A launcher that declares axes is a FAMILY of stacks, not one: its base
     /// `deployments` may link instance ids only an option defines, so the
@@ -85,8 +85,10 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
 
         validate_core_node_links(&raw.core_nodes).map_err(de::Error::custom)?;
         super::composition::validate_axes(&raw.components).map_err(de::Error::custom)?;
-        super::composition::validate_launcher_adjustments(&raw.adjustments, &raw.components)
-            .map_err(de::Error::custom)?;
+        // Checked before the per-adjustment validation: a flat launcher with
+        // adjustments should hear that adjustments do not belong here, not
+        // that one of its guards names an axis the (empty) `components` list
+        // does not declare.
         if raw.components.is_empty() && !raw.adjustments.is_empty() {
             return Err(de::Error::custom(
                 "this launcher declares `adjustments` but no `components`: with nothing to \
@@ -95,9 +97,12 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                  the adjustments specialize",
             ));
         }
+        super::composition::validate_launcher_adjustments(&raw.adjustments, &raw.components)
+            .map_err(de::Error::custom)?;
 
         if raw.components.is_empty() {
-            cross_check_flat_document(&raw.deployments, &raw.core_nodes).map_err(de::Error::custom)?;
+            cross_check_flat_document(&raw.deployments, &raw.core_nodes)
+                .map_err(de::Error::custom)?;
         }
 
         Ok(PeppyLauncher {

@@ -101,19 +101,30 @@ impl<'de> Deserialize<'de> for LauncherFragment {
     where
         D: Deserializer<'de>,
     {
+        // The body's fields are declared here rather than `#[serde(flatten)]`ed
+        // in: serde ignores `deny_unknown_fields` on both sides of a flatten,
+        // so a misspelled field would be silently dropped instead of refused.
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RawLauncherFragment {
             #[serde(deserialize_with = "deserialize_launcher_fragment_v1_schema")]
             peppy_schema: PeppySchema,
-            #[serde(flatten)]
-            body: Fragment,
+            #[serde(default)]
+            deployments: Vec<Deployment>,
+            #[serde(default)]
+            adjustments: Vec<Adjustment>,
+            #[serde(default)]
+            core_nodes: Vec<String>,
         }
 
         let raw = RawLauncherFragment::deserialize(deserializer)?;
         Ok(LauncherFragment {
             peppy_schema: raw.peppy_schema,
-            body: raw.body,
+            body: Fragment {
+                deployments: raw.deployments,
+                adjustments: raw.adjustments,
+                core_nodes: raw.core_nodes,
+            },
         })
     }
 }
@@ -306,7 +317,7 @@ impl LauncherFragmentParser {
 }
 
 /// Axis and option names share the identifier grammar of every other name in
-/// a peppy document — the one [`Name`] enforces — and for the same reason: an
+/// a peppy document (the one [`Name`] enforces) and for the same reason: an
 /// axis name is one half of `--with axis=option` and a bare `--with` word is
 /// an option name, so a name carrying an `=`, a `,`, or whitespace would be
 /// unwireable from the very surface it exists for. (`,` separates `--with`
@@ -416,10 +427,16 @@ pub(crate) fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Resu
         ));
     }
 
-    let has_operation = adjustment.set_arguments.as_ref().is_some_and(|m| !m.is_empty())
+    let has_operation = adjustment
+        .set_arguments
+        .as_ref()
+        .is_some_and(|m| !m.is_empty())
         || adjustment.set_links.as_ref().is_some_and(|m| !m.is_empty())
         || adjustment.add_links.as_ref().is_some_and(|m| !m.is_empty())
-        || adjustment.unset_links.as_ref().is_some_and(|v| !v.is_empty());
+        || adjustment
+            .unset_links
+            .as_ref()
+            .is_some_and(|v| !v.is_empty());
     if !has_operation {
         return Err(format!(
             "adjustment on `{}` in {origin} names no operation: state at least one of \
@@ -515,7 +532,11 @@ fn check_non_empty_keys<'a>(
 /// That a `when` guard names axes this launcher declares and options those
 /// axes declare. A guard is what licenses an adjustment to depend on the
 /// shape those options define, so naming something else is a dead reference.
-pub(crate) fn validate_guard(when: &BTreeMap<String, String>, axes: &[ComponentAxis], origin: &str) -> Result<(), String> {
+pub(crate) fn validate_guard(
+    when: &BTreeMap<String, String>,
+    axes: &[ComponentAxis],
+    origin: &str,
+) -> Result<(), String> {
     for (axis_name, option_name) in when {
         let Some(axis) = axes.iter().find(|axis| axis.name == *axis_name) else {
             return Err(format!(
@@ -602,7 +623,9 @@ mod tests {
         .expect("list parses");
         assert_eq!(spec.0.len(), 2);
         assert!(matches!(&spec.0[0], FragmentPart::File(p) if p == "fragments/sim_relays.json5"));
-        assert!(matches!(&spec.0[1], FragmentPart::File(p) if p == "fragments/mujoco_engine.json5"));
+        assert!(
+            matches!(&spec.0[1], FragmentPart::File(p) if p == "fragments/mujoco_engine.json5")
+        );
     }
 
     #[test]
@@ -629,9 +652,8 @@ mod tests {
 
     #[test]
     fn an_inline_fragment_cannot_declare_a_schema() {
-        let error =
-            parse_fragment_spec(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#)
-                .expect_err("inline fragments take no peppy_schema");
+        let error = parse_fragment_spec(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#)
+            .expect_err("inline fragments take no peppy_schema");
         assert!(error.contains("peppy_schema"), "got: {error}");
     }
 
@@ -644,8 +666,7 @@ mod tests {
         ] {
             let spec = serde_json5::from_str::<FragmentSpec>(&written).expect("parses");
             let reserialized = serde_json5::to_string(&spec).expect("serializes");
-            let reparsed = serde_json5::from_str::<FragmentSpec>(&reserialized)
-                .expect("reparses");
+            let reparsed = serde_json5::from_str::<FragmentSpec>(&reserialized).expect("reparses");
             assert_eq!(spec.0.len(), reparsed.0.len(), "round trip of {written}");
         }
     }
@@ -659,6 +680,15 @@ mod tests {
         let fragment = LauncherFragmentParser::from_content(content).expect("fragment parses");
         assert_eq!(fragment.peppy_schema, PeppySchema::LauncherFragmentV1);
         assert!(fragment.body.deployments.is_empty());
+    }
+
+    #[test]
+    fn a_fragment_file_refuses_an_unknown_field() {
+        let error = LauncherFragmentParser::from_content(
+            r#"{ peppy_schema: "launcher_fragment/v1", deploymnts: [] }"#,
+        )
+        .expect_err("a misspelled field must not silently vanish");
+        assert!(error.to_string().contains("deploymnts"), "got: {error}");
     }
 
     #[test]
@@ -676,8 +706,8 @@ mod tests {
     // -- validate_axes ------------------------------------------------------
 
     fn one_axis(body: &str) -> Result<Vec<ComponentAxis>, String> {
-        let axes: Vec<ComponentAxis> = serde_json5::from_str(&format!("[{body}]"))
-            .map_err(|e| e.to_string())?;
+        let axes: Vec<ComponentAxis> =
+            serde_json5::from_str(&format!("[{body}]")).map_err(|e| e.to_string())?;
         validate_axes(&axes).map(|()| axes)
     }
 
@@ -781,7 +811,11 @@ mod tests {
         .expect("a full adjustment parses");
         assert_eq!(adjustment.target.as_str(), "backbone_inst");
         assert_eq!(
-            adjustment.when.as_ref().and_then(|w| w.get("commander")).map(String::as_str),
+            adjustment
+                .when
+                .as_ref()
+                .and_then(|w| w.get("commander"))
+                .map(String::as_str),
             Some("xr_commander")
         );
     }
@@ -795,40 +829,32 @@ mod tests {
 
     #[test]
     fn an_empty_guard_is_refused() {
-        let error = parse_adjustment(
-            r#"{ target: "backbone_inst", when: {}, set_arguments: { a: 1 } }"#,
-        )
-        .expect_err("an empty guard means nothing");
+        let error =
+            parse_adjustment(r#"{ target: "backbone_inst", when: {}, set_arguments: { a: 1 } }"#)
+                .expect_err("an empty guard means nothing");
         assert!(error.contains("empty `when`"), "got: {error}");
     }
 
     #[test]
     fn add_links_targets_are_shape_checked() {
-        let error = parse_adjustment(
-            r#"{ target: "c", add_links: { cameras: [] } }"#,
-        )
-        .expect_err("an empty target list appends nothing");
+        let error = parse_adjustment(r#"{ target: "c", add_links: { cameras: [] } }"#)
+            .expect_err("an empty target list appends nothing");
         assert!(error.contains("no target"), "got: {error}");
 
-        let error = parse_adjustment(
-            r#"{ target: "c", add_links: { cameras: ["a", "a"] } }"#,
-        )
-        .expect_err("a duplicate target is a mistake");
+        let error = parse_adjustment(r#"{ target: "c", add_links: { cameras: ["a", "a"] } }"#)
+            .expect_err("a duplicate target is a mistake");
         assert!(error.contains("more than once"), "got: {error}");
 
-        let error = parse_adjustment(
-            r#"{ target: "c", add_links: { cameras: ["a//b"] } }"#,
-        )
-        .expect_err("a malformed target is refused");
+        let error = parse_adjustment(r#"{ target: "c", add_links: { cameras: ["a//b"] } }"#)
+            .expect_err("a malformed target is refused");
         assert!(error.contains("malformed"), "got: {error}");
     }
 
     #[test]
     fn a_guard_naming_an_unknown_axis_is_refused() {
-        let axes: Vec<ComponentAxis> = serde_json5::from_str(
-            r#"[{ name: "robot", options: { real: { deployments: [] } } }]"#,
-        )
-        .expect("axes parse");
+        let axes: Vec<ComponentAxis> =
+            serde_json5::from_str(r#"[{ name: "robot", options: { real: { deployments: [] } } }]"#)
+                .expect("axes parse");
         let error = validate_guard(
             &BTreeMap::from([("commander".to_owned(), "web".to_owned())]),
             &axes,
@@ -841,10 +867,9 @@ mod tests {
 
     #[test]
     fn a_guard_naming_an_unknown_option_is_refused() {
-        let axes: Vec<ComponentAxis> = serde_json5::from_str(
-            r#"[{ name: "robot", options: { real: { deployments: [] } } }]"#,
-        )
-        .expect("axes parse");
+        let axes: Vec<ComponentAxis> =
+            serde_json5::from_str(r#"[{ name: "robot", options: { real: { deployments: [] } } }]"#)
+                .expect("axes parse");
         let error = validate_guard(
             &BTreeMap::from([("robot".to_owned(), "sim".to_owned())]),
             &axes,

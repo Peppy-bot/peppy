@@ -16,7 +16,6 @@ use super::types::{Deployment, LinkTargets, LinkValue, PeppyLauncher, Selection}
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component as PathComponent, Path, PathBuf};
 use thiserror::Error;
-use tracing::warn;
 
 /// Everything composition can refuse: bad `--with` words, unreadable or
 /// unsafe fragment paths, options that do not provide what their axis
@@ -97,10 +96,7 @@ pub enum CompositionError {
         "adjustment on `{target}` in {origin} names a target no option of this launcher defines \
          anywhere; that is a dead reference or a typo"
     )]
-    TargetDefinedNowhere {
-        target: String,
-        origin: String,
-    },
+    TargetDefinedNowhere { target: String, origin: String },
 
     #[error(
         "instance `{id}` is defined by both {first} and {second}; each instance id belongs to \
@@ -192,7 +188,9 @@ impl ComponentSelection {
         self.entries
             .iter()
             .map(|entry| match (&entry.option, entry.source) {
-                (Some(option), SelectionSource::Default) => format!("{}={option} (default)", entry.axis),
+                (Some(option), SelectionSource::Default) => {
+                    format!("{}={option} (default)", entry.axis)
+                }
                 (Some(option), _) => format!("{}={option}", entry.axis),
                 (None, _) => format!("{}=(off)", entry.axis),
             })
@@ -205,7 +203,7 @@ impl ComponentSelection {
 /// `axis=option`. At most one option per axis (repeating the same option is
 /// the same choice); unselected axes take their default, and a required axis
 /// with neither refuses.
-pub fn resolve_selection(
+fn resolve_selection(
     axes: &[ComponentAxis],
     words: &[String],
 ) -> Result<ComponentSelection, CompositionError> {
@@ -238,7 +236,7 @@ pub fn resolve_selection(
                                 .map(|axis| format!("`{}`", axis.as_str()))
                                 .collect::<Vec<_>>()
                                 .join(", "),
-                        })
+                        });
                     }
                 }
             }
@@ -285,7 +283,7 @@ pub fn resolve_selection(
                             "; its options are {}",
                             crate::error::format_quoted_list(axis.options.keys())
                         ),
-                    })
+                    });
                 }
             },
         }
@@ -323,7 +321,7 @@ fn axes_menu(axes: &[ComponentAxis]) -> String {
 /// declaration order, option by option in declaration order, an unfilled
 /// entry last on optional axes. Used by `repo index --check` to hold the
 /// whole selection space to the same structural checks a launch would run.
-pub fn enumerate_selections(axes: &[ComponentAxis]) -> Vec<ComponentSelection> {
+fn enumerate_selections(axes: &[ComponentAxis]) -> Vec<ComponentSelection> {
     let mut selections = vec![ComponentSelection::default()];
     for axis in axes {
         let mut next = Vec::with_capacity(selections.len() * (axis.options.len() + 1));
@@ -355,7 +353,7 @@ pub fn enumerate_selections(axes: &[ComponentAxis]) -> Vec<ComponentSelection> {
 /// The size of the selection space, saturating rather than multiplying out:
 /// callers use it to decide whether enumerating is reasonable, which it must
 /// answer without doing the enumeration.
-pub fn selection_space_size(axes: &[ComponentAxis]) -> usize {
+fn selection_space_size(axes: &[ComponentAxis]) -> usize {
     axes.iter()
         .map(|axis| axis.options.len() + usize::from(axis.optional))
         .fold(1usize, |acc, per_axis| acc.saturating_mul(per_axis))
@@ -364,9 +362,9 @@ pub fn selection_space_size(axes: &[ComponentAxis]) -> usize {
 /// One fragment of one option, loaded and paired with the label the resolve
 /// report and the error messages name it by: the path as written for a file,
 /// `inline option `axis.option`` for a body written in the launcher.
-pub struct LoadedFragment {
-    pub fragment: super::composition::Fragment,
-    pub origin: String,
+struct LoadedFragment {
+    fragment: super::composition::Fragment,
+    origin: String,
 }
 
 /// Every option's fragments, loaded: file fragments read and validated,
@@ -375,31 +373,28 @@ pub struct LoadedFragment {
 /// `repo index --check` refuses (an option that does not provide its axis's
 /// interface, a guard naming an unknown axis) instead of discovering them
 /// one selection at a time.
-pub struct LoadedComposition {
-    pub options: BTreeMap<String, BTreeMap<String, Vec<LoadedFragment>>>,
+struct LoadedComposition {
+    options: BTreeMap<String, BTreeMap<String, Vec<LoadedFragment>>>,
 }
 
 /// Reads every file fragment the launcher references and runs the
 /// selection-independent checks: path safety, fragment parse, `provides`
 /// satisfaction, guard references, and that every adjustment target is
 /// defined by some option of the launcher.
-pub fn load_composition(
+fn load_composition(
     launcher: &PeppyLauncher,
-    launcher_dir: &Path,
+    launcher_file: &Path,
 ) -> Result<LoadedComposition, CompositionError> {
     let axes = &launcher.components;
     let mut options: BTreeMap<String, BTreeMap<String, Vec<LoadedFragment>>> = BTreeMap::new();
-    let launcher_label = launcher_file_label(launcher_dir);
+    let launcher_label = launcher_file_label(launcher_file);
     // The symlink-escape check compares each fragment's canonical path
-    // against the launcher's canonical directory, resolved once here rather
-    // than once per fragment reference.
-    let canonical_dir = launcher_dir.canonicalize().map_err(|e| {
-        CompositionError::FragmentUnreadable {
-            path: launcher_dir.display().to_string(),
-            origin: launcher_label.clone(),
-            detail: format!("the launcher's directory cannot be resolved: {e}"),
-        }
-    })?;
+    // against the launcher's canonical directory, resolved once at the first
+    // file reference rather than once per fragment. Resolving lazily is what
+    // lets an inline-only composition flatten without touching the
+    // filesystem at all: its launcher directory need not even exist.
+    let launcher_dir = launcher_dir_of(launcher_file);
+    let mut canonical_dir: Option<PathBuf> = None;
     // Sharing one fragment file between several options is the designed
     // pattern (the relay fragment under both simulators), so each file is
     // read and parsed once per composition, keyed by the path as written.
@@ -416,15 +411,24 @@ pub fn load_composition(
                         origin: format!("inline option `{}.{}`", axis.name, option_name),
                     }),
                     FragmentPart::File(raw) => {
-                        let origin = format!(
-                            "{launcher_label}, option `{}.{}`",
-                            axis.name, option_name
-                        );
+                        let origin =
+                            format!("{launcher_label}, option `{}.{}`", axis.name, option_name);
+                        if canonical_dir.is_none() {
+                            canonical_dir = Some(launcher_dir.canonicalize().map_err(|e| {
+                                CompositionError::FragmentUnreadable {
+                                    path: launcher_dir.display().to_string(),
+                                    origin: launcher_label.clone(),
+                                    detail: format!(
+                                        "the launcher's directory cannot be resolved: {e}"
+                                    ),
+                                }
+                            })?);
+                        }
+                        let canonical = canonical_dir.as_deref().expect("resolved just above");
                         let body = match file_bodies.get(raw.as_str()) {
                             Some(cached) => cached.clone(),
                             None => {
-                                let body =
-                                    read_fragment_file(&canonical_dir, raw, &origin, axes)?;
+                                let body = read_fragment_file(canonical, raw, &origin, axes)?;
                                 file_bodies.insert(raw.as_str(), body.clone());
                                 body
                             }
@@ -508,17 +512,17 @@ pub fn load_composition(
 }
 
 /// The label error messages and reports name a launcher by: its file name,
-/// or the directory's name when the launcher path itself was elided.
-fn launcher_file_label(launcher_dir: &Path) -> String {
-    launcher_dir
+/// or the path as written when it has no final component.
+fn launcher_file_label(launcher_file: &Path) -> String {
+    launcher_file
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| launcher_dir.display().to_string())
+        .unwrap_or_else(|| launcher_file.display().to_string())
 }
 
 /// Reads, parses, and shape-checks one `launcher_fragment/v1` file through
 /// the shared fragment parser (which owns the read-and-refuse-empty half).
-/// The adjustment checks — shape and guard — run wherever a fragment is
+/// The adjustment checks (shape and guard) run wherever a fragment is
 /// read: here for files, at launcher parse for inline bodies.
 fn read_fragment_file(
     canonical_dir: &Path,
@@ -534,7 +538,8 @@ fn read_fragment_file(
     let path = resolve_fragment_path(canonical_dir, raw, origin)?;
     let parsed = LauncherFragmentParser::from_path(&path).map_err(|e| match &e {
         crate::error::Error::Parsing(
-            crate::error::ParsingError::CannotRead(..) | crate::error::ParsingError::EmptyContent(..),
+            crate::error::ParsingError::CannotRead(..)
+            | crate::error::ParsingError::EmptyContent(..),
         ) => CompositionError::FragmentUnreadable {
             path: raw.to_owned(),
             origin: origin.to_owned(),
@@ -588,17 +593,20 @@ fn resolve_fragment_path(
     }
 
     let full = canonical_dir.join(&cleaned);
-    let canonical = full.canonicalize().map_err(|e| {
-        CompositionError::FragmentUnreadable {
+    let canonical = full
+        .canonicalize()
+        .map_err(|e| CompositionError::FragmentUnreadable {
             path: raw.to_owned(),
             origin: origin.to_owned(),
             detail: e.to_string(),
-        }
-    })?;
+        })?;
     if !canonical.starts_with(canonical_dir) {
         return refuse("it escapes the launcher's directory (through a symlink)");
     }
-    Ok(full)
+    // The canonical path is the one that was validated, so it is the one the
+    // caller opens: no symlink swapped in after the check can redirect the
+    // read.
+    Ok(canonical)
 }
 
 /// What one applied adjustment did, for the resolve report: the target and
@@ -615,16 +623,9 @@ pub struct AppliedAdjustment {
 
 #[derive(Debug, Clone)]
 pub enum AppliedChange {
-    Set {
-        old: Option<String>,
-        new: String,
-    },
-    Added {
-        target: String,
-    },
-    Removed {
-        old: String,
-    },
+    Set { old: Option<String>, new: String },
+    Added { target: String },
+    Removed { old: String },
 }
 
 impl AppliedChange {
@@ -689,7 +690,10 @@ impl FlattenReport {
             for entry in &self.applied {
                 lines.push(format!(
                     "  {}.{}: {}  ({})",
-                    entry.target, entry.field, entry.change.render(), entry.origin
+                    entry.target,
+                    entry.field,
+                    entry.change.render(),
+                    entry.origin
                 ));
             }
         }
@@ -729,7 +733,7 @@ struct PlannedAdjustment<'a> {
 /// The flattened document goes back through the flat launcher's own
 /// validation (serialize, re-parse), so every whole-document check a
 /// hand-written file gets runs on the composed result too.
-pub fn flatten(
+fn flatten(
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
     selection: &ComponentSelection,
@@ -744,7 +748,9 @@ pub fn flatten(
         .collect();
     let mut selected_fragments: Vec<&LoadedFragment> = Vec::new();
     for entry in &selection.entries {
-        let Some(option) = &entry.option else { continue };
+        let Some(option) = &entry.option else {
+            continue;
+        };
         let Some(fragments) = loaded
             .options
             .get(entry.axis.as_str())
@@ -850,9 +856,11 @@ pub fn flatten(
 
     // 6. Conflict rules among surviving FRAGMENT adjustments. The base is
     // not a second author fighting a fragment; it is the one author who
-    // owns the file, and its later entries win over its earlier ones.
-    let mut writers: HashMap<(&str, KeySpace, &str), (Option<usize>, String)> = HashMap::new();
-    let mut adders: HashMap<(&str, &str), String> = HashMap::new();
+    // owns the file, and its later entries win over its earlier ones. Both
+    // maps are ordered so when several pairs fight, the one reported is the
+    // same on every run.
+    let mut writers: BTreeMap<(&str, KeySpace, &str), (Option<usize>, String)> = BTreeMap::new();
+    let mut adders: BTreeMap<(&str, &str), String> = BTreeMap::new();
     for step in &running {
         if step.fragment_id.is_none() {
             continue;
@@ -881,7 +889,12 @@ pub fn flatten(
         for (space, key) in written_keys {
             claim_write(&mut writers, target, space, key, step)?;
         }
-        for key in step.adjustment.add_links.iter().flat_map(|links| links.keys()) {
+        for key in step
+            .adjustment
+            .add_links
+            .iter()
+            .flat_map(|links| links.keys())
+        {
             adders.insert((target, key.as_str()), step.origin.clone());
         }
     }
@@ -906,7 +919,10 @@ pub fn flatten(
     let mut index: HashMap<String, (usize, usize)> = HashMap::new();
     for (deployment_idx, deployment) in merged.iter().enumerate() {
         for (instance_idx, instance) in deployment.instances.iter().enumerate() {
-            index.insert(instance.instance_id.to_string(), (deployment_idx, instance_idx));
+            index.insert(
+                instance.instance_id.to_string(),
+                (deployment_idx, instance_idx),
+            );
         }
     }
     let mut applied: Vec<AppliedAdjustment> = Vec::new();
@@ -940,7 +956,11 @@ pub fn flatten(
                 applied.push(AppliedAdjustment {
                     field: format!("links.{slot}"),
                     change: AppliedChange::Set {
-                        old: instance.links.get(slot).map(render).or(Some(String::from("(absent)"))),
+                        old: instance
+                            .links
+                            .get(slot)
+                            .map(render)
+                            .or(Some(String::from("(absent)"))),
                         new: render(value),
                     },
                     target: target.clone(),
@@ -964,7 +984,7 @@ pub fn flatten(
                             target: target.clone(),
                             slot: slot.clone(),
                             holds: non_array_holds(other),
-                        })
+                        });
                     }
                 };
                 for addition in additions {
@@ -1004,9 +1024,7 @@ pub fn flatten(
                 if let Some(old) = instance.links.remove(slot) {
                     applied.push(AppliedAdjustment {
                         field: format!("links.{slot}"),
-                        change: AppliedChange::Removed {
-                            old: render(&old),
-                        },
+                        change: AppliedChange::Removed { old: render(&old) },
                         target: target.clone(),
                         origin: origin.clone(),
                     });
@@ -1025,9 +1043,9 @@ pub fn flatten(
         components: Vec::new(),
         adjustments: Vec::new(),
     };
-    let text = serde_json5::to_string(&flat).map_err(|e| CompositionError::FlatValidation(
-        crate::error::Error::Serialize(e.to_string()),
-    ))?;
+    let text = serde_json5::to_string(&flat).map_err(|e| {
+        CompositionError::FlatValidation(crate::error::Error::Serialize(e.to_string()))
+    })?;
     let validated = PeppyLauncherParser::from_content(&text)?;
 
     Ok((
@@ -1043,7 +1061,7 @@ pub fn flatten(
 /// The two key spaces an adjustment can write in. `add_links` shares the
 /// links space with `set_links` and `unset_links`: appending to a slot and
 /// replacing it are two claims on the same entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum KeySpace {
     Arguments,
     Links,
@@ -1065,7 +1083,7 @@ impl KeySpace {
 /// two authors, and no last-writer-wins between them is allowed to be
 /// silent.
 fn claim_write<'a>(
-    writers: &mut HashMap<(&'a str, KeySpace, &'a str), (Option<usize>, String)>,
+    writers: &mut BTreeMap<(&'a str, KeySpace, &'a str), (Option<usize>, String)>,
     target: &'a str,
     space: KeySpace,
     key: &'a str,
@@ -1135,18 +1153,17 @@ pub fn compose(
         return Err(CompositionError::WithOnFlatLauncher);
     }
 
-    let launcher_dir = launcher_dir_of(launcher_file);
-    let loaded = load_composition(launcher, &launcher_dir)?;
+    let loaded = load_composition(launcher, launcher_file)?;
     let selection = resolve_selection(&launcher.components, words)?;
     let base_label = launcher_file_label(launcher_file);
     flatten(launcher, &loaded, &selection, &base_label)
 }
 
 /// The ceiling on the selection space [`check_composition`] enumerates.
-/// Above it the check degrades to per-axis validation (every fragment
-/// exists, parses, provides, and guards cleanly) and says so, because a
-/// check that skips combinations must say so or it looks like it checked
-/// them all.
+/// Above it only per-axis validation runs (every fragment exists, parses,
+/// provides, and guards cleanly), and the skipped cross-combination checks
+/// are reported as a problem: a check that skips combinations must fail or
+/// it looks like it checked them all.
 const COMBINATION_CEILING: usize = 512;
 
 /// The directory fragment paths resolve against: the launcher's own, or the
@@ -1170,7 +1187,7 @@ fn launcher_dir_of(launcher_file: &Path) -> PathBuf {
 /// name; an empty vec means every selection flattens.
 pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<String> {
     let label = launcher_file_label(launcher_file);
-    let loaded = match load_composition(launcher, &launcher_dir_of(launcher_file)) {
+    let loaded = match load_composition(launcher, launcher_file) {
         Ok(loaded) => loaded,
         Err(e) => return vec![format!("{label}: {e}")],
     };
@@ -1178,13 +1195,13 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
     if space > COMBINATION_CEILING {
         // Per-axis validation above (fragments, provides, guards, targets)
         // still ran; what is skipped is every CROSS-axial combination, and
-        // the count of those is the space itself.
-        warn!(
-            "skipped all {space} cross-combination checks for {label}: the selection space \
-             exceeds the {COMBINATION_CEILING}-combination ceiling, so each axis was \
-             validated on its own instead"
-        );
-        return Vec::new();
+        // an incomplete check reported as success would read as a pass.
+        return vec![format!(
+            "{label}: the selection space has {space} combinations, more than the \
+             {COMBINATION_CEILING} this check enumerates, so the cross-combination checks \
+             did not run (each axis was validated on its own). Split the launcher or \
+             reduce its axes' options"
+        )];
     }
     let mut problems = Vec::new();
     for selection in enumerate_selections(&launcher.components) {
@@ -1226,7 +1243,8 @@ mod tests {
     fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
         write(
             &dir.join("fragments/sim_relays.json5"),
-            &fragment_file(r#"
+            &fragment_file(
+                r#"
                 deployments: [
                     { source: { name: "arm_sim", tag: "v1" },
                       instances: [{ instance_id: "arm_inst", links: { engine: "sim_inst/arm" } }] },
@@ -1234,11 +1252,13 @@ mod tests {
                 adjustments: [
                     { target: "backbone_inst", set_arguments: { max_ee_velocity_m_s: 0.5 } },
                 ],
-            "#),
+            "#,
+            ),
         );
         write(
             &dir.join("fragments/mujoco_engine.json5"),
-            &fragment_file(r#"
+            &fragment_file(
+                r#"
                 deployments: [
                     { source: { name: "sim_mujoco", tag: "v1" },
                       instances: [{ instance_id: "sim_inst", arguments: { state_rate_hz: 100 } }] },
@@ -1247,11 +1267,13 @@ mod tests {
                     { target: "recorder_inst",
                       set_arguments: { robot_type: "openarm_mujoco" } },
                 ],
-            "#),
+            "#,
+            ),
         );
         write(
             &dir.join("fragments/recorder.json5"),
-            &fragment_file(r#"
+            &fragment_file(
+                r#"
                 deployments: [
                     { source: { name: "recorder", tag: "v1" },
                       instances: [{ instance_id: "recorder_inst",
@@ -1260,7 +1282,8 @@ mod tests {
                 adjustments: [
                     { target: "commander_inst", add_links: { recorder: ["recorder_inst"] } },
                 ],
-            "#),
+            "#,
+            ),
         );
         let launcher = write(
             &dir.join("teleop.json5"),
@@ -1317,12 +1340,17 @@ mod tests {
             .map(|d| format!("{}:{}", d.source.name, d.source.tag))
             .collect();
         assert_eq!(sources, ["backbone:v1", "commander:v1", "can_arm:v1"]);
-        assert_eq!(report.selection.echo(), "robot=real (default)  recorder=(off)");
+        assert_eq!(
+            report.selection.echo(),
+            "robot=real (default)  recorder=(off)"
+        );
         // The base's sim specialization sleeps when the robot is real.
-        assert!(report
-            .skipped
-            .iter()
-            .any(|s| s.target == "sim_inst" && matches!(s.reason, SkipReason::TargetAbsent)));
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|s| s.target == "sim_inst" && matches!(s.reason, SkipReason::TargetAbsent))
+        );
     }
 
     #[test]
@@ -1341,7 +1369,6 @@ mod tests {
             sources,
             ["backbone:v1", "commander:v1", "arm_sim:v1", "sim_mujoco:v1"]
         );
-        let _ = report;
         // The base adjustment reached the engine instance.
         let sim = flat
             .deployments
@@ -1368,13 +1395,20 @@ mod tests {
     #[test]
     fn fragments_merge_into_a_base_deployment_of_the_same_source() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/cam.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/cam.json5"),
+            &fragment_file(
+                r#"
             deployments: [
                 { source: { name: "camera", tag: "v1" },
                   instances: [{ instance_id: "wrist" }] },
             ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "cams", optional: true, provides: ["wrist"],
@@ -1384,7 +1418,8 @@ mod tests {
                 { source: { name: "camera", tag: "v1" },
                   instances: [{ instance_id: "chest" }] },
             ],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let (flat, _) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
         assert_eq!(flat.deployments.len(), 1);
@@ -1400,13 +1435,20 @@ mod tests {
     #[test]
     fn a_duplicate_instance_id_names_both_origins() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/dup.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/dup.json5"),
+            &fragment_file(
+                r#"
             deployments: [
                 { source: { name: "other", tag: "v1" },
                   instances: [{ instance_id: "arm_inst" }] },
             ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "robot", optional: true, provides: ["arm_inst"],
@@ -1416,30 +1458,46 @@ mod tests {
                 { source: { name: "can_arm", tag: "v1" },
                   instances: [{ instance_id: "arm_inst" }] },
             ],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("duplicate id");
         assert!(err.to_string().contains("arm_inst"), "got: {err}");
         assert!(err.to_string().contains("l.json5"), "got: {err}");
-        assert!(err.to_string().contains("fragments/dup.json5"), "got: {err}");
+        assert!(
+            err.to_string().contains("fragments/dup.json5"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn add_links_appends_across_fragments_in_order() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/a.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/a.json5"),
+            &fragment_file(
+                r#"
             deployments: [],
             adjustments: [
                 { target: "panel", add_links: { observers: ["a_inst"] } },
             ],
-        "#));
-        write(&dir.path().join("fragments/b.json5"), &fragment_file(r#"
+        "#,
+            ),
+        );
+        write(
+            &dir.path().join("fragments/b.json5"),
+            &fragment_file(
+                r#"
             deployments: [],
             adjustments: [
                 { target: "panel", add_links: { observers: ["b_inst"] } },
             ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "a", optional: true, options: { on: "fragments/a.json5" } },
@@ -1453,10 +1511,15 @@ mod tests {
                 { source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] },
                 { source: { name: "b", tag: "v1" }, instances: [{ instance_id: "b_inst" }] },
             ],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-        let (flat, report) = compose(&parsed, &launcher, &["a=on".to_string(), "b=on".to_string()])
-            .expect("composes");
+        let (flat, report) = compose(
+            &parsed,
+            &launcher,
+            &["a=on".to_string(), "b=on".to_string()],
+        )
+        .expect("composes");
         let panel = &flat.deployments[0].instances[0];
         let LinkValue::Bound(Selection::Array(targets)) = &panel.links["observers"] else {
             panic!("observers stays an array binding");
@@ -1517,10 +1580,17 @@ mod tests {
     #[test]
     fn add_links_refuses_a_target_already_bound() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/a.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/a.json5"),
+            &fragment_file(
+                r#"
             adjustments: [ { target: "panel", add_links: { observers: ["seed_inst"] } } ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "a", optional: true, options: { on: "fragments/a.json5" } },
@@ -1530,7 +1600,8 @@ mod tests {
                   instances: [{ instance_id: "panel",
                                 links: { observers: ["seed_inst"] } }] },
             ],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("duplicate add");
         assert!(err.to_string().contains("seed_inst"), "got: {err}");
@@ -1576,13 +1647,25 @@ mod tests {
     #[test]
     fn two_fragments_writing_one_key_are_refused() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/a.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/a.json5"),
+            &fragment_file(
+                r#"
             adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ],
-        "#));
-        write(&dir.path().join("fragments/b.json5"), &fragment_file(r#"
+        "#,
+            ),
+        );
+        write(
+            &dir.path().join("fragments/b.json5"),
+            &fragment_file(
+                r#"
             adjustments: [ { target: "panel", set_arguments: { rate: 20 } } ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "a", optional: true, options: { on: "fragments/a.json5" } },
@@ -1591,24 +1674,45 @@ mod tests {
             deployments: [
                 { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
             ],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-        let err = compose(&parsed, &launcher, &["a=on".to_string(), "b=on".to_string()])
-            .expect_err("fragments must not fight");
-        let CompositionError::AdjustmentsConflict { field, first, second, .. } = &err else {
+        let err = compose(
+            &parsed,
+            &launcher,
+            &["a=on".to_string(), "b=on".to_string()],
+        )
+        .expect_err("fragments must not fight");
+        let CompositionError::AdjustmentsConflict {
+            field,
+            first,
+            second,
+            ..
+        } = &err
+        else {
             panic!("expected AdjustmentsConflict, got: {err}");
         };
         assert_eq!(field, "arguments.rate");
-        assert!(first.contains("a.json5") && second.contains("b.json5"), "got: {first} / {second}");
+        assert!(
+            first.contains("a.json5") && second.contains("b.json5"),
+            "got: {first} / {second}"
+        );
     }
 
     #[test]
     fn the_base_overrides_a_fragment_and_a_later_base_entry_wins() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/a.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/a.json5"),
+            &fragment_file(
+                r#"
             adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "a", optional: true, options: { on: "fragments/a.json5" } },
@@ -1620,7 +1724,8 @@ mod tests {
             deployments: [
                 { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
             ],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let (flat, report) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
         assert_eq!(
@@ -1633,7 +1738,9 @@ mod tests {
             .iter()
             .filter(|a| a.field == "arguments.rate")
             .map(|a| match &a.change {
-                AppliedChange::Set { old, new } => format!("{}->{}", old.clone().unwrap_or_default(), new),
+                AppliedChange::Set { old, new } => {
+                    format!("{}->{}", old.clone().unwrap_or_default(), new)
+                }
                 _ => String::new(),
             })
             .collect();
@@ -1643,7 +1750,10 @@ mod tests {
     #[test]
     fn guards_skip_and_absent_targets_skip() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/xr.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/xr.json5"),
+            &fragment_file(
+                r#"
             deployments: [
                 { source: { name: "xr", tag: "v1" },
                   instances: [{ instance_id: "leader_inst" }] },
@@ -1652,8 +1762,13 @@ mod tests {
                 { target: "backbone_inst",
                   set_arguments: { upstream_mode: "pose" } },
             ],
-        "#));
-        write(&dir.path().join("fragments/rec.json5"), &fragment_file(r#"
+        "#,
+            ),
+        );
+        write(
+            &dir.path().join("fragments/rec.json5"),
+            &fragment_file(
+                r#"
             deployments: [
                 { source: { name: "rec", tag: "v1" },
                   instances: [{ instance_id: "recorder_inst" }] },
@@ -1668,8 +1783,12 @@ mod tests {
                 { target: "sim_inst",
                   set_arguments: { state_rate_hz: 50 } },
             ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "commander", default: "web",
@@ -1688,41 +1807,46 @@ mod tests {
                 { source: { name: "backbone", tag: "v1" },
                   instances: [{ instance_id: "backbone_inst" }] },
             ],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
 
         // web + recorder: the guard is not met and sim_inst is absent, so
         // both of the recorder fragment's adjustments skip.
-        let (flat, report) = compose(&parsed, &launcher, &words(&["recorder=on"]))
-            .expect("composes");
+        let (flat, report) =
+            compose(&parsed, &launcher, &words(&["recorder=on"])).expect("composes");
         assert_eq!(report.skipped.len(), 2);
         assert!(report.skipped.iter().any(|s| matches!(
             s.reason,
             SkipReason::GuardNotMet(ref g) if g == "commander=xr"
         )));
-        assert!(report.skipped.iter().any(|s| matches!(
-            s.reason,
-            SkipReason::TargetAbsent
-        )));
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|s| matches!(s.reason, SkipReason::TargetAbsent))
+        );
         let backbone = flat
             .deployments
             .iter()
             .find(|d| d.source.name == "backbone")
             .unwrap();
-        assert!(!backbone.instances[0].arguments.contains_key("record_backbone"));
+        assert!(
+            !backbone.instances[0]
+                .arguments
+                .contains_key("record_backbone")
+        );
 
         // xr + recorder: the guard holds and its target exists, so it
         // applies; sim_inst is still absent and still skips.
-        let (flat, report) = compose(
-            &parsed,
-            &launcher,
-            &words(&["commander=xr", "recorder=on"]),
-        )
-        .expect("composes");
-        assert!(report
-            .skipped
-            .iter()
-            .all(|s| matches!(s.reason, SkipReason::TargetAbsent)));
+        let (flat, report) = compose(&parsed, &launcher, &words(&["commander=xr", "recorder=on"]))
+            .expect("composes");
+        assert!(
+            report
+                .skipped
+                .iter()
+                .all(|s| matches!(s.reason, SkipReason::TargetAbsent))
+        );
         let backbone = flat
             .deployments
             .iter()
@@ -1746,40 +1870,59 @@ mod tests {
     #[test]
     fn an_option_missing_a_provides_id_is_refused() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/bad.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/bad.json5"),
+            &fragment_file(
+                r#"
             deployments: [
                 { source: { name: "other", tag: "v1" }, instances: [{ instance_id: "wrong_inst" }] },
             ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "robot", provides: ["arm_inst"],
                   options: { sim: "fragments/bad.json5" } },
             ],
             deployments: [],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("provides unmet");
         let CompositionError::ProvidesUnmet { axis, option, id } = &err else {
             panic!("expected ProvidesUnmet, got: {err}");
         };
-        assert_eq!((axis.as_str(), option.as_str(), id.as_str()), ("robot", "sim", "arm_inst"));
+        assert_eq!(
+            (axis.as_str(), option.as_str(), id.as_str()),
+            ("robot", "sim", "arm_inst")
+        );
     }
 
     #[test]
     fn an_adjustment_target_defined_nowhere_is_refused() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/a.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/a.json5"),
+            &fragment_file(
+                r#"
             adjustments: [ { target: "ghost_inst", set_arguments: { x: 1 } } ],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "a", optional: true, options: { on: "fragments/a.json5" } },
             ],
             deployments: [],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("dead target");
         let CompositionError::TargetDefinedNowhere { target, .. } = &err else {
@@ -1812,31 +1955,70 @@ mod tests {
             let err = compose(&launcher, &dir.path().join("l.json5"), &["sim".to_string()])
                 .expect_err("unsafe path must be refused");
             assert!(
-                err.to_string().contains("not usable") || err.to_string().contains("cannot be read"),
+                err.to_string().contains("not usable")
+                    || err.to_string().contains("cannot be read"),
+                "raw path {raw:?}: got: {err}"
+            );
+            // The origin names the launcher FILE, exactly as the flatten
+            // report and the duplicate-id refusal do.
+            assert!(
+                err.to_string().contains("l.json5"),
                 "raw path {raw:?}: got: {err}"
             );
         }
     }
 
     #[test]
+    fn an_inline_only_composition_needs_no_launcher_directory() {
+        let launcher = parse_launcher(
+            r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", default: "real",
+                  options: { real: { deployments: [
+                      { source: { name: "can_arm", tag: "v1" },
+                        instances: [{ instance_id: "arm_inst" }] } ] } } },
+            ],
+            deployments: [],
+        }"#,
+        );
+        // Inline fragments do no I/O, so the launcher's directory is never
+        // resolved and need not exist.
+        let (flat, _) = compose(
+            &launcher,
+            Path::new("/nonexistent-peppy-launcher-dir/l.json5"),
+            &[],
+        )
+        .expect("an inline-only composition reads no files");
+        assert_eq!(flat.deployments.len(), 1);
+        assert_eq!(flat.deployments[0].source.name, "can_arm");
+    }
+
+    #[test]
     fn a_symlink_escaping_the_launcher_directory_is_refused() {
         let dir = tempdir().unwrap();
         let outside = tempdir().unwrap();
-        write(&outside.path().join("escape.json5"), &fragment_file("deployments: []"));
+        write(
+            &outside.path().join("escape.json5"),
+            &fragment_file("deployments: []"),
+        );
         fs::create_dir_all(dir.path().join("fragments")).unwrap();
         std::os::unix::fs::symlink(
             outside.path().join("escape.json5"),
             dir.path().join("fragments/escape.json5"),
         )
         .unwrap();
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "robot", optional: true,
                   options: { sim: "fragments/escape.json5" } },
             ],
             deployments: [],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("escape refused");
         assert!(err.to_string().contains("escapes"), "got: {err}");
@@ -1845,17 +2027,25 @@ mod tests {
     #[test]
     fn core_nodes_union_base_first() {
         let dir = tempdir().unwrap();
-        write(&dir.path().join("fragments/a.json5"), &fragment_file(r#"
+        write(
+            &dir.path().join("fragments/a.json5"),
+            &fragment_file(
+                r#"
             core_nodes: ["edge", "cloud"],
-        "#));
-        let launcher = write(&dir.path().join("l.json5"), r#"{
+        "#,
+            ),
+        );
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            r#"{
             peppy_schema: "launcher/v1",
             components: [
                 { name: "a", optional: true, options: { on: "fragments/a.json5" } },
             ],
             core_nodes: ["cloud", "base"],
             deployments: [],
-        }"#);
+        }"#,
+        );
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let (flat, _) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
         assert_eq!(flat.core_nodes, ["cloud", "base", "edge"]);
@@ -1892,7 +2082,10 @@ mod tests {
         let CompositionError::AmbiguousSelection { axes: named, .. } = &err else {
             panic!("expected AmbiguousSelection, got: {err}");
         };
-        assert!(named.contains("`robot`") && named.contains("`recorder`"), "got: {named}");
+        assert!(
+            named.contains("`robot`") && named.contains("`recorder`"),
+            "got: {named}"
+        );
         // The explicit form resolves.
         resolve_selection(&axes, &["robot=none".to_string()]).expect("explicit form");
     }
@@ -1902,21 +2095,23 @@ mod tests {
         let axes = axes_from(
             r#"[{ name: "robot", options: { real: { deployments: [] }, mujoco: { deployments: [] } } }]"#,
         );
-        let err = resolve_selection(
-            &axes,
-            &["mujoco".to_string(), "robot=real".to_string()],
-        )
-        .expect_err("conflicting selection");
-        let CompositionError::ConflictingSelection { axis, first, second } = &err else {
+        let err = resolve_selection(&axes, &["mujoco".to_string(), "robot=real".to_string()])
+            .expect_err("conflicting selection");
+        let CompositionError::ConflictingSelection {
+            axis,
+            first,
+            second,
+        } = &err
+        else {
             panic!("expected ConflictingSelection, got: {err}");
         };
-        assert_eq!((axis.as_str(), first.as_str(), second.as_str()), ("robot", "mujoco", "real"));
+        assert_eq!(
+            (axis.as_str(), first.as_str(), second.as_str()),
+            ("robot", "mujoco", "real")
+        );
         // Repeating the same option is the same choice, not a conflict.
-        resolve_selection(
-            &axes,
-            &["mujoco".to_string(), "robot=mujoco".to_string()],
-        )
-        .expect("same option twice is one choice");
+        resolve_selection(&axes, &["mujoco".to_string(), "robot=mujoco".to_string()])
+            .expect("same option twice is one choice");
     }
 
     #[test]
@@ -1951,11 +2146,13 @@ mod tests {
 
     #[test]
     fn with_on_a_flat_launcher_is_refused() {
-        let launcher = parse_launcher(
-            r#"{ peppy_schema: "launcher/v1", deployments: [] }"#,
-        );
-        let err = compose(&launcher, Path::new("/tmp/x.json5"), &["mujoco".to_string()])
-            .expect_err("flat launcher has nothing to select");
+        let launcher = parse_launcher(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#);
+        let err = compose(
+            &launcher,
+            Path::new("/tmp/x.json5"),
+            &["mujoco".to_string()],
+        )
+        .expect_err("flat launcher has nothing to select");
         assert!(matches!(err, CompositionError::WithOnFlatLauncher));
     }
 }

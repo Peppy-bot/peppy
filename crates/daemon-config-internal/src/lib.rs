@@ -97,11 +97,10 @@ pub mod launcher {
         FlattenReport, Fragment, FragmentPart, FragmentSpec, FrameworkOverrides, LauncherFragment,
         LauncherFragmentParser, LinkTargets, LinkValue, PairingValidationItem, PeppyLauncher,
         PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing,
-        Selection, SelectionEntry,
-        SelectionSource, SkipReason, SkippedAdjustment, VacantReason, ValidatedBindings,
-        ValidatedLinkPlan, ValidatedObservations, ValidatedPairings, check_composition, compose,
-        participant_vacancies, split_link_target, validate_bindings, validate_link_plan,
-        validate_link_slots, validate_observations, validate_pairings,
+        Selection, SelectionEntry, SelectionSource, SkipReason, SkippedAdjustment, VacantReason,
+        ValidatedBindings, ValidatedLinkPlan, ValidatedObservations, ValidatedPairings,
+        check_composition, compose, participant_vacancies, split_link_target, validate_bindings,
+        validate_link_plan, validate_link_slots, validate_observations, validate_pairings,
     };
 }
 
