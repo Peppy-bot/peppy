@@ -1344,30 +1344,70 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
         Ok(loaded) => loaded,
         Err(e) => return vec![format!("{label}: {e}")],
     };
+    let mut problems = Vec::new();
+
+    // The bare launch must stay a member of the family: when every axis
+    // defaults or is optional, the selection `--with` nothing produces has
+    // to satisfy the constraints too. (A launcher with a required,
+    // defaultless axis has no bare launch, and resolve refuses it before
+    // constraints are consulted.) The default selection is one member
+    // checked on its own, so this runs before the enumeration cut below
+    // and an oversized family still hears it.
+    if let Ok(default_selection) = resolve_selection(&launcher.components, &[])
+        && let Some((_, constraint)) = first_violated(&launcher.constraints, &default_selection)
+    {
+        problems.push(format!(
+            "{label}: the default selection ({}) violates constraint `{}`: a bare launch \
+             with no `--with` must start. Change the axes' defaults or the constraint",
+            default_selection.echo(),
+            render_constraint(constraint),
+        ));
+    }
+
     let space = selection_space_size(&launcher.components);
     if space > COMBINATION_CEILING {
         // Per-axis validation above (fragments, provides, guards, targets)
         // still ran; what is skipped is every CROSS-axial combination, and
         // an incomplete check reported as success would read as a pass.
-        return vec![format!(
+        problems.push(format!(
             "{label}: the selection space has {space} combinations, more than the \
              {COMBINATION_CEILING} this check enumerates, so the cross-combination checks \
              did not run (each axis was validated on its own). Split the launcher or \
              reduce its axes' options"
-        )];
+        ));
+        return problems;
     }
-    let mut problems = Vec::new();
 
     // Split the space into the selections the constraints admit and the ones
     // they refuse. A refused selection is refused by design, so it is not
     // required to flatten; what IS checked is that the refusals leave a
     // usable family behind (below).
     let mut refused_by: Vec<usize> = vec![0; launcher.constraints.len()];
+    // For each constraint, the first constraint seen refusing a selection it
+    // also speaks about: itself when it is the first violation, an earlier
+    // one when something in front of it refuses that selection first. A
+    // constraint that refuses nothing while this names an EARLIER constraint
+    // is dead because that constraint shadows it; None means no selection
+    // ever spoke about it at all, so the axes alone already satisfy it.
+    let mut first_refuser: Vec<Option<usize>> = vec![None; launcher.constraints.len()];
     let mut legal: Vec<ComponentSelection> = Vec::new();
     for selection in enumerate_selections(&launcher.components) {
-        match first_violated(&launcher.constraints, &selection) {
-            Some((index, _)) => refused_by[index] += 1,
-            None => legal.push(selection),
+        let first = first_violated(&launcher.constraints, &selection);
+        for (index, constraint) in launcher.constraints.iter().enumerate() {
+            if constraint_satisfied(&selection, constraint) {
+                continue;
+            }
+            // This selection violates `index`, so `first` is necessarily
+            // Some: it names who refuses the selection, this constraint or
+            // an earlier one standing in front of it.
+            let (first_index, _) = first.expect("a violated constraint is a violation");
+            if first_index == index {
+                refused_by[index] += 1;
+            }
+            first_refuser[index].get_or_insert(first_index);
+        }
+        if first.is_none() {
+            legal.push(selection);
         }
     }
     for selection in &legal {
@@ -1382,9 +1422,20 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
     // reads as protection it does not give.
     for (index, refused) in refused_by.iter().enumerate() {
         if *refused == 0 {
+            // The shadowed case names the constraint in front; the other
+            // keeps the axes explanation, since nothing was ever refused.
+            let why = match first_refuser[index].filter(|first| *first != index) {
+                Some(first) => format!(
+                    "the selections it would refuse are already refused by earlier \
+                     constraints (constraint {} refuses them first)",
+                    first + 1
+                ),
+                None => String::from(
+                    "it is already guaranteed by the axes or by an earlier constraint",
+                ),
+            };
             problems.push(format!(
-                "{label}: constraint {} ({}) refuses no selection: it is already guaranteed \
-                 by the axes or by an earlier constraint. Tighten it or drop it",
+                "{label}: constraint {} ({}) refuses no selection: {why}. Tighten it or drop it",
                 index + 1,
                 render_constraint(&launcher.constraints[index]),
             ));
@@ -1423,22 +1474,6 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
                 ),
             });
         }
-    }
-
-    // The bare launch must stay a member of the family: when every axis
-    // defaults or is optional, the selection `--with` nothing produces has
-    // to satisfy the constraints too. (A launcher with a required,
-    // defaultless axis has no bare launch, and resolve refuses it before
-    // constraints are consulted.)
-    if let Ok(default_selection) = resolve_selection(&launcher.components, &[])
-        && let Some((_, constraint)) = first_violated(&launcher.constraints, &default_selection)
-    {
-        problems.push(format!(
-            "{label}: the default selection ({}) violates constraint `{}`: a bare launch \
-             with no `--with` must start. Change the axes' defaults or the constraint",
-            default_selection.echo(),
-            render_constraint(constraint),
-        ));
     }
 
     problems
@@ -2616,6 +2651,36 @@ mod tests {
         );
     }
 
+    /// A dead constraint shadowed by an earlier one is reported with the
+    /// constraint in front named, so the author sees the rule that makes
+    /// the later one dead rather than hunting for it.
+    #[test]
+    fn check_composition_names_the_constraint_that_shadows_a_dead_one() {
+        let launcher = constrained_launcher(
+            r#"{ forbids: [{ robot: "mujoco" }], reason: "the sim is retired" },
+               { when: { recorder: "on" }, forbids: [{ robot: "mujoco" }],
+                 reason: "the recorder films only the physical rig" }"#,
+        );
+        let problems = check_composition(&launcher, Path::new("family.json5"));
+        // The broad first rule strangles `mujoco` outright (a dead option)
+        // and stands in front of the narrow second one (a dead constraint).
+        assert_eq!(problems.len(), 2, "got: {problems:?}");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("fill axis `robot` with `mujoco`")),
+            "got: {problems:?}"
+        );
+        let dead = problems
+            .iter()
+            .find(|p| p.contains("refuses no selection"))
+            .expect("the shadowed constraint is dead");
+        assert!(
+            dead.contains("constraint 1 refuses them first"),
+            "got: {dead}"
+        );
+    }
+
     #[test]
     fn check_composition_flags_a_refused_default_selection() {
         let launcher = constrained_launcher(
@@ -2630,6 +2695,45 @@ mod tests {
         );
         assert!(
             problems[0].contains("robot=real (default)"),
+            "got: {problems:?}"
+        );
+    }
+
+    /// The default selection is one member checked on its own, so it is
+    /// still checked when the family is too big to enumerate: the ceiling
+    /// guard skips the cross-combination checks, not the bare launch.
+    #[test]
+    fn check_composition_flags_a_refused_default_selection_above_the_ceiling() {
+        // Ten binary axes: 1024 selections, past the 512 ceiling, with
+        // defaults that violate the rule.
+        let axes = (0..10)
+            .map(|i| {
+                format!(
+                    r#"{{ name: "a{i}", default: "one",
+                         options: {{ one: {{ deployments: [] }}, two: {{ deployments: [] }} }} }}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let launcher = parse_launcher(&format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                components: [{axes}],
+                constraints: [
+                    {{ when: {{ a0: "one" }}, requires: [{{ a1: "two" }}],
+                       reason: "the all-defaults member is not one anyone may run" }} ],
+            }}"#
+        ));
+        let problems = check_composition(&launcher, Path::new("family.json5"));
+        assert_eq!(problems.len(), 2, "got: {problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("default selection")),
+            "got: {problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("cross-combination checks")),
             "got: {problems:?}"
         );
     }

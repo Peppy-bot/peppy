@@ -1038,6 +1038,17 @@ mod tests {
         );
     }
 
+    /// The conflict is the IDENTICAL map in both lists: different maps may
+    /// share one constraint, each list keeping its own meaning.
+    #[test]
+    fn requires_and_forbids_with_different_maps_coexist() {
+        one_constraint(
+            r#"{ requires: [{ robot: "real" }], forbids: [{ recorder: "on" }],
+                 reason: "the rig runs unrecorded" }"#,
+        )
+        .expect("only the identical map in both lists is a conflict");
+    }
+
     #[test]
     fn a_forbids_entry_naming_an_unknown_option_is_refused() {
         let error = one_constraint(
