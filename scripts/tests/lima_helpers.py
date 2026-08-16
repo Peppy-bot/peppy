@@ -179,9 +179,26 @@ def copy_to_lima(
 ) -> None:
     """Copy a file from the host to the guest VM.
 
+    Pins ``--backend=scp`` rather than letting ``limactl copy`` pick its
+    ``auto`` backend, which prefers rsync whenever the guest has it (Lima's
+    own boot provisioning installs rsync into every guest). The rsync path
+    runs a guest-side ``rsync --server``, so the host and guest rsync
+    versions must interoperate: the Ubuntu runners ship rsync 3.2.7 while
+    Arch guests roll with the latest release, and rsync 3.5.0 (Arch,
+    2026-08-13) made the guest-side server die mid-handshake against the
+    old client, failing every copy with rsync exit status 12. scp needs
+    only the guest sshd, which the tests already depend on, so the copies
+    stay independent of guest package versions.
+
     Retries on transient SSH connection errors (common with cross-arch QEMU VMs).
     """
-    cmd = ["limactl", "copy", str(local_path), f"{instance}:{guest_path}"]
+    cmd = [
+        "limactl",
+        "copy",
+        "--backend=scp",
+        str(local_path),
+        f"{instance}:{guest_path}",
+    ]
     env = lima_env()
     for attempt in range(1, retries + 1):
         result = subprocess.run(
@@ -190,8 +207,12 @@ def copy_to_lima(
         if result.returncode == 0:
             return
         if not is_ssh_connection_error(result) or attempt == retries:
-            raise subprocess.CalledProcessError(
-                result.returncode, cmd, output=result.stdout, stderr=result.stderr
+            # Surface stderr: rsync/scp relay the guest-side error here, which
+            # is the only clue when a copy dies inside the guest (swallowing
+            # it turned the Arch rsync 3.5.0 failure into a bare exit 12).
+            pytest.fail(
+                f"limactl copy to {instance}:{guest_path} failed "
+                f"(exit {result.returncode}){diagnostic(result)}"
             )
         logger.warning(
             "SCP connection error (attempt %d/%d) for %s, retrying in %ds...",
