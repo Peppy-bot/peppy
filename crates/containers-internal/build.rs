@@ -2175,6 +2175,29 @@ echo "=== Apptainer build complete ==="
             false
         };
 
+        // fuse2fs is the one userspace mount helper the bundled apptainer tree
+        // does not carry: squashfs (every SIF root filesystem) is handled by
+        // the compiled-in squashfuse_ll and encrypted images by the bundled
+        // gocryptfs, but EXT3 filesystem images can only be mounted by the
+        // rootless fuse2fs image driver — this apptainer is deliberately
+        // built `--without-suid`, so there is no privileged ext mount to fall
+        // back on. Apptainer searches its own libexec bin dir (where peppy
+        // drops squashfuse_ll and gocryptfs) ahead of `$PATH` and ships no
+        // fuse2fs binary itself, so the machines peppy runs containers on take
+        // it from their distro; `scripts/install.sh` installs it there. A
+        // warning, not a panic: peppy also builds on machines that never
+        // launch containers (CI, cross-compile hosts), and squashfs SIFs run
+        // fine without it.
+        if !use_lima && !binary_runs("fuse2fs") {
+            println!(
+                "cargo:warning=fuse2fs not found on this host. The bundled rootless apptainer \
+                 needs it to mount EXT3 filesystem images; without it every container start logs \
+                 `fuse2fs not found, will not be able to mount EXT3 filesystems` and EXT3 mounts \
+                 are unavailable. Install it with `sudo apt-get install fuse2fs` (Debian/Ubuntu), \
+                 `sudo dnf install fuse2fs` (Fedora/RHEL) or `sudo pacman -S fuse2fs` (Arch)."
+            );
+        }
+
         let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "aarch64".to_string());
         let out_dir = env::var("OUT_DIR").unwrap();
 
