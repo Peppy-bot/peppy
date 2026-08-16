@@ -67,6 +67,111 @@ fn repo_index_check_passes_on_a_generated_index() {
     repo_index(Some(repo), true).expect("the index it just wrote should check out");
 }
 
+/// Helper: a composed family whose one structurally broken member is the
+/// one the given `constraints` refuse. The mujoco arm binds `observed` to
+/// its engine as a scalar, so the recorder's append onto that slot cannot
+/// flatten: without constraints the check must fail on `mujoco` + recorder,
+/// with them it must pass, because a refused selection is refused by
+/// design rather than required to flatten.
+fn write_constrained_family(repo: &Path, constraints: &str) {
+    std::fs::create_dir_all(repo.join("launchers")).unwrap();
+    std::fs::write(
+        repo.join("launchers/family.json5"),
+        format!(
+            r#"{{
+  peppy_schema: "launcher/v1",
+  components: [
+    {{ name: "robot", default: "real",
+       options: {{
+           real: {{ deployments: [
+               {{ source: {{ name: "arm", tag: "v1" }},
+                  instances: [{{ instance_id: "arm_inst" }}] }} ] }},
+           mujoco: {{ deployments: [
+               {{ source: {{ name: "engine", tag: "v1" }},
+                  instances: [{{ instance_id: "sim_inst" }}] }},
+               {{ source: {{ name: "arm", tag: "v1" }},
+                  instances: [{{ instance_id: "arm_inst",
+                                links: {{ observed: "sim_inst" }} }}] }} ] }},
+       }} }},
+    {{ name: "recorder", optional: true,
+       options: {{ on: {{
+           deployments: [
+               {{ source: {{ name: "recorder", tag: "v1" }},
+                  instances: [{{ instance_id: "recorder_inst" }}] }} ],
+           adjustments: [
+               {{ target: "arm_inst",
+                  add_links: {{ observed: ["recorder_inst"] }} }} ],
+       }} }} }},
+  ],
+  {constraints}
+  deployments: [],
+}}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// The end-to-end shape of the whole feature: a family with a member that
+/// flattens into nonsense is refused by its `constraints`, and
+/// `repo index --check` holds only the legal members to flattening. The
+/// same family without the constraints fails the same check on the same
+/// member.
+#[test]
+fn repo_index_check_skips_selections_the_constraints_refuse() {
+    let tmp = TempDir::new().unwrap();
+
+    let unconstrained = tmp.path().join("unconstrained");
+    write_node(&unconstrained.join("nodes/a"), "a", "v1");
+    write_constrained_family(&unconstrained, "");
+    repo_index(Some(unconstrained.clone()), false).expect("indexing should succeed");
+    let err = repo_index(Some(unconstrained), true)
+        .expect_err("the broken member must fail the unconstrained check");
+    let message = err.to_string();
+    assert!(message.contains("family.json5"), "{message}");
+    assert!(
+        message.contains("robot=mujoco  recorder=on"),
+        "the check names the selection that cannot flatten: {message}"
+    );
+
+    let constrained = tmp.path().join("constrained");
+    write_node(&constrained.join("nodes/a"), "a", "v1");
+    write_constrained_family(
+        &constrained,
+        r#"constraints: [
+    { when: { recorder: "on" }, requires: [{ robot: "real" }],
+      reason: "the recorder films the physical rig" } ],"#,
+    );
+    repo_index(Some(constrained.clone()), false).expect("indexing should succeed");
+    repo_index(Some(constrained), true)
+        .expect("the constrained family should check out: its refused member need not flatten");
+}
+
+/// The guardrail on the guardrail: constraints that strangle an option out
+/// of the family entirely fail the check, naming the dead option, so a
+/// typo'd rule cannot silently shrink what a launcher offers.
+#[test]
+fn repo_index_check_flags_an_option_the_constraints_strangle() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("hub");
+    write_node(&repo.join("nodes/a"), "a", "v1");
+    write_constrained_family(
+        &repo,
+        r#"constraints: [
+    { when: { robot: "mujoco" }, requires: [{ recorder: "on" }],
+      reason: "the sim exists to produce datasets" },
+    { when: { recorder: "on" }, requires: [{ robot: "real" }],
+      reason: "the recorder films the physical rig" } ],"#,
+    );
+    repo_index(Some(repo.clone()), false).expect("indexing should succeed");
+
+    let err = repo_index(Some(repo), true).expect_err("a dead option must fail the check");
+    let message = err.to_string();
+    assert!(
+        message.contains("fill axis `robot` with `mujoco`"),
+        "the check names the option nothing can select: {message}"
+    );
+}
+
 /// Writing twice produces the same file, so re-running generation after an
 /// unrelated change never shows up as a spurious diff in a pull request.
 #[test]
