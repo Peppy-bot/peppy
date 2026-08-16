@@ -23,12 +23,44 @@ use super::key;
 use super::keyed_lock::KeyedLocks;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::GitCommit;
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 static LOCKS: KeyedLocks = KeyedLocks::new();
+
+/// Checkouts whose reuse has been announced through `on_feedback` while
+/// this process has been running, keyed by checkout directory.
+///
+/// One launch resolves many items out of the same few repositories, and
+/// every resolution re-enters [`ensure_checkout_at_commit`] on the same
+/// warm checkout. The first reuse line tells the operator the cache is
+/// doing its job; the dozens after it repeat it, so each checkout is
+/// announced once per population. A checkout removed from the cache and
+/// materialized again is a new population, announced afresh.
+static ANNOUNCED_REUSES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+/// Whether `dir` has not been announced as reused yet, marking it
+/// announced. Under the checkout's own lock, so the first reuse after each
+/// population is the one that reports.
+fn mark_reuse_announced(dir: &Path) -> bool {
+    ANNOUNCED_REUSES
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .insert(dir.to_path_buf())
+}
+
+/// Drops `dir`'s reuse announcement, for a checkout leaving the cache: a
+/// checkout later materialized at the same key is a new population whose
+/// first reuse is worth a line again.
+fn forget_reuse_announced(dir: &Path) {
+    if let Some(announced) = ANNOUNCED_REUSES.get() {
+        announced.lock().remove(dir);
+    }
+}
 
 /// How long a checkout that no cache entry names any more is kept.
 ///
@@ -97,6 +129,7 @@ fn clear_dir(dir: &Path) -> std::result::Result<(), String> {
         })?;
     }
     if dir.exists() {
+        forget_reuse_announced(dir);
         std::fs::remove_dir_all(dir).map_err(|e| {
             format!(
                 "Failed to remove incomplete checkout at {}: {e}",
@@ -147,10 +180,12 @@ pub fn ensure_checkout_at_commit(
     let _guard = lock.lock();
 
     if is_checked_out_at(&dir, commit) {
-        on_feedback(&format!(
-            "Reusing cached checkout of {commit} at {}",
-            dir.display()
-        ));
+        if mark_reuse_announced(&dir) {
+            on_feedback(&format!(
+                "Reusing cached checkout of {commit} at {}",
+                dir.display()
+            ));
+        }
         touch_last_used(&dir);
         return Ok(dir);
     }
@@ -272,7 +307,10 @@ pub fn prune_checkouts<'a>(
             continue;
         };
         match std::fs::remove_dir_all(&dir) {
-            Ok(()) => removed += 1,
+            Ok(()) => {
+                forget_reuse_announced(&dir);
+                removed += 1;
+            }
             Err(e) => warn!("Failed to remove stale checkout {}: {e}", dir.display()),
         }
     }
@@ -441,6 +479,108 @@ mod tests {
                 commits[0],
                 reused.display()
             )]
+        );
+
+        // The reuse was announced the first time; a launch resolves dozens
+        // of items out of one checkout, so a repeat would bury the lines
+        // that matter.
+        let lines = std::cell::RefCell::new(Vec::new());
+        let again =
+            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
+                lines.borrow_mut().push(l.to_owned())
+            })
+            .expect("a populated checkout needs no remote");
+        assert_eq!(reused, again);
+        assert_eq!(
+            lines.into_inner(),
+            Vec::<String>::new(),
+            "an already-announced reuse reports nothing"
+        );
+    }
+
+    /// A checkout that leaves the cache and is cloned again is a new
+    /// population: its first reuse is announced again, so the
+    /// once-per-population rule cannot outlive the bytes it described.
+    #[test]
+    fn ensure_checkout_at_commit_reannounces_a_rematerialized_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let source = tempfile::tempdir().unwrap();
+        let source_dir = source.path().join("source-repo");
+        let commits = repo_with_commits(&source_dir, &["first"]);
+        let url = source_dir.display().to_string();
+        let branch = head_branch(&source_dir);
+
+        let checkout =
+            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+                .expect("initial checkout");
+        let lines = std::cell::RefCell::new(Vec::new());
+        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
+            lines.borrow_mut().push(l.to_owned())
+        })
+        .expect("first reuse");
+        assert_eq!(lines.into_inner().len(), 1);
+
+        // Strip the git dir, the state a clone killed half-way through
+        // leaves, so the next call cannot trust the directory and clones
+        // afresh rather than reusing it.
+        std::fs::remove_dir_all(checkout.join(".git")).expect("break the checkout");
+
+        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+            .expect("re-materialized checkout");
+
+        let lines = std::cell::RefCell::new(Vec::new());
+        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
+            lines.borrow_mut().push(l.to_owned())
+        })
+        .expect("reuse of the new population");
+        assert_eq!(
+            lines.into_inner().len(),
+            1,
+            "the first reuse of a re-materialized checkout is announced again"
+        );
+    }
+
+    /// Prune removes a checkout the caches no longer name, and the reuse
+    /// announcement goes with it: a checkout later cloned at the same key is
+    /// a new population announced on its own first reuse.
+    #[test]
+    fn prune_checkouts_forgets_the_reuse_announcement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let source = tempfile::tempdir().unwrap();
+        let source_dir = source.path().join("source-repo");
+        let commits = repo_with_commits(&source_dir, &["first"]);
+        let url = source_dir.display().to_string();
+        let branch = head_branch(&source_dir);
+
+        let checkout =
+            ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+                .expect("initial checkout");
+        let lines = std::cell::RefCell::new(Vec::new());
+        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
+            lines.borrow_mut().push(l.to_owned())
+        })
+        .expect("first reuse");
+        assert_eq!(lines.into_inner().len(), 1);
+
+        // The grace marker would keep a checkout just handed out; removing
+        // it stands in for the grace period having elapsed.
+        std::fs::remove_file(last_used_marker(&checkout)).expect("drop the grace marker");
+        assert_eq!(prune_checkouts(&peppy_dirs, std::iter::empty()), 1);
+
+        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|_| {})
+            .expect("checkout cloned again");
+
+        let lines = std::cell::RefCell::new(Vec::new());
+        ensure_checkout_at_commit(&peppy_dirs, &url, Some(&branch), &commits[0], &|l| {
+            lines.borrow_mut().push(l.to_owned())
+        })
+        .expect("reuse of the new population");
+        assert_eq!(
+            lines.into_inner().len(),
+            1,
+            "the first reuse of a pruned-and-recloned checkout is announced again"
         );
     }
 

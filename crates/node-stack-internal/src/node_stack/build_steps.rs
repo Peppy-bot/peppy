@@ -5,6 +5,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use daemon_config::consts::PeppyDirs;
 use tokio::sync::mpsc;
@@ -12,7 +13,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
-use crate::build_io::{FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output};
+use crate::build_io::{
+    FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output,
+    write_feedback_log_line,
+};
 use crate::build_progress::BuildProgressMonitor;
 use crate::node_stack::container_build_cache;
 use config::node::PeppygenLanguage;
@@ -111,6 +115,34 @@ pub(super) struct ContainerBuildInputs<'a> {
     /// (and its `%post` children) live in a separate kernel and are killed via
     /// [`containers::Apptainer::kill_guest_process_group`].
     pub cancel_token: &'a CancellationToken,
+}
+
+/// Total attempts (initial try plus retries) for an `apptainer build` whose
+/// base image could not be fetched from its registry.
+const CONTAINER_BUILD_ATTEMPTS: usize = 3;
+/// Backoff before retry N+1. Registry-side fetch failures are either a
+/// per-request hiccup, which the next request survives, or an exhausted
+/// pull quota, which no short backoff can fix; the delays stay short so the
+/// second kind surfaces quickly instead of stalling the build.
+const CONTAINER_BUILD_RETRY_DELAYS: [Duration; CONTAINER_BUILD_ATTEMPTS - 1] =
+    [Duration::from_secs(1), Duration::from_secs(5)];
+
+/// Whether a failed `apptainer build` died while acquiring its base image.
+///
+/// Apptainer prefixes every source-acquisition error with
+/// `conveyor failed to get:` (registry token, manifest, and layer requests
+/// all surface through it), and that phase runs before `%post` and SIF
+/// assembly. A failure carrying this signature therefore lost no build work:
+/// re-running the build repeats only the fetch, and layers the failed attempt
+/// already downloaded sit in apptainer's content-addressed cache for the
+/// retry. A registry that answered with an empty or truncated body (the
+/// `unexpected end of JSON input` variant) or dropped a transfer mid-stream
+/// (the EOF variants) is a transient, per-request condition, so a retry can
+/// succeed where the first attempt failed.
+fn failed_fetching_base_image(stderr_tail: &[String]) -> bool {
+    stderr_tail
+        .iter()
+        .any(|line| line.contains("conveyor failed to get"))
 }
 
 /// Builds a container image using the Apptainer facade.
@@ -216,88 +248,129 @@ pub(super) async fn build_container_image(
     // and aborts if the directory is not mounted, where a host-side
     // `current_dir` would be canonicalized by `limactl shell`, miss the mount,
     // and silently fall back to the guest home directory.
-    let mut cmd_builder = apptainer
-        .build(&output_path, &def_path)
-        .working_dir(inputs.working_dir);
-    if let Some(key) = &build_key {
-        cmd_builder = cmd_builder.cancel_pgid(key);
-    }
-    if let Some(cache) = &build_cache {
-        cmd_builder = cmd_builder.bind(
-            &cache.host_dir.to_string_lossy(),
-            Some(container_build_cache::BIND_DEST),
-            None,
-        );
-        for (key, value) in &cache.env {
-            cmd_builder = cmd_builder.apptainer_env(key, value);
+    //
+    // One attempt per loop iteration; a failed base-image fetch (see
+    // [`failed_fetching_base_image`]) re-runs the whole command, since a
+    // conveyor-phase failure precedes every other build phase and the retry
+    // only repeats the fetch itself.
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+
+        let mut cmd_builder = apptainer
+            .build(&output_path, &def_path)
+            .working_dir(inputs.working_dir);
+        if let Some(key) = &build_key {
+            cmd_builder = cmd_builder.cancel_pgid(key);
         }
-    }
-    for arg in inputs.apptainer_build_extra_args {
-        cmd_builder = cmd_builder.raw_flag(arg);
-    }
-    cmd_builder = cmd_builder.lima_shell_extra_args(inputs.lima_shell_extra_args);
-
-    let std_cmd = cmd_builder
-        .into_std_command()
-        .map_err(|e| format!("Failed to build apptainer command: {}", e))?;
-
-    let mut cmd = tokio::process::Command::from(std_cmd);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.stdin(Stdio::null());
-
-    let child = spawn_in_process_group(cmd)
-        .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
-
-    // Disk-growth progress: apptainer suppresses per-blob download progress
-    // off-TTY, so a slow base-image pull (and the silent "Creating SIF file..."
-    // stretch) would otherwise produce no feedback for minutes and trip the
-    // idle timeout. The probe samples every surface this build writes to —
-    // apptainer's cache and scratch, the build cache bind (a `%post` that
-    // compiles writes mostly there), and the output SIF — and the monitor
-    // emits a line only when the total grew, so genuine progress resets the
-    // idle clocks while a wedged build still times out. The guard lives on
-    // this future's stack: the phase runner dropping the future on timeout,
-    // cancellation, and normal completion all abort the monitor.
-    let usage_probe = {
-        let mut extra_roots = vec![output_path.clone()];
         if let Some(cache) = &build_cache {
-            extra_roots.push(cache.host_dir.clone());
+            cmd_builder = cmd_builder.bind(
+                &cache.host_dir.to_string_lossy(),
+                Some(container_build_cache::BIND_DEST),
+                None,
+            );
+            for (key, value) in &cache.env {
+                cmd_builder = cmd_builder.apptainer_env(key, value);
+            }
         }
-        apptainer.cache_usage_probe(extra_roots)
-    };
-    let progress_monitor = BuildProgressMonitor::spawn(
-        move || usage_probe.usage_bytes(),
-        inputs.feedback_tx.clone(),
-    );
-
-    let stream_result = stream_child_output(
-        child,
-        inputs.feedback_tx,
-        inputs.log_file,
-        true,
-        inputs.cancel_token,
-    )
-    .await;
-    drop(progress_monitor);
-
-    // A `--force` supersede SIGKILL'd + reaped the host child above; now reach
-    // into the VM and kill the guest process group too (no-op on Linux). Reuses
-    // the already-initialized facade. Runs on a blocking thread because the
-    // guest kill shells out to `limactl`.
-    if inputs.cancel_token.is_cancelled()
-        && let Some(key) = build_key
-    {
-        match tokio::task::spawn_blocking(move || apptainer.kill_guest_process_group(&key)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => debug!("Failed to kill guest process group on build cancellation: {e}"),
-            Err(e) => debug!("Guest-kill task failed on build cancellation: {e}"),
+        for arg in inputs.apptainer_build_extra_args {
+            cmd_builder = cmd_builder.raw_flag(arg);
         }
-    }
+        cmd_builder = cmd_builder.lima_shell_extra_args(inputs.lima_shell_extra_args);
 
-    let (status, stderr_tail) = stream_result?;
+        let std_cmd = cmd_builder
+            .into_std_command()
+            .map_err(|e| format!("Failed to build apptainer command: {}", e))?;
 
-    if !status.success() {
+        let mut cmd = tokio::process::Command::from(std_cmd);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.stdin(Stdio::null());
+
+        let child = spawn_in_process_group(cmd)
+            .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
+
+        // Disk-growth progress: apptainer suppresses per-blob download progress
+        // off-TTY, so a slow base-image pull (and the silent "Creating SIF file..."
+        // stretch) would otherwise produce no feedback for minutes and trip the
+        // idle timeout. The probe samples every surface this build writes to —
+        // apptainer's cache and scratch, the build cache bind (a `%post` that
+        // compiles writes mostly there), and the output SIF — and the monitor
+        // emits a line only when the total grew, so genuine progress resets the
+        // idle clocks while a wedged build still times out. The guard lives on
+        // this future's stack: the phase runner dropping the future on timeout,
+        // cancellation, and normal completion all abort the monitor.
+        let usage_probe = {
+            let mut extra_roots = vec![output_path.clone()];
+            if let Some(cache) = &build_cache {
+                extra_roots.push(cache.host_dir.clone());
+            }
+            apptainer.cache_usage_probe(extra_roots)
+        };
+        let progress_monitor = BuildProgressMonitor::spawn(
+            move || usage_probe.usage_bytes(),
+            inputs.feedback_tx.clone(),
+        );
+
+        let stream_result = stream_child_output(
+            child,
+            inputs.feedback_tx,
+            Arc::clone(&inputs.log_file),
+            true,
+            inputs.cancel_token,
+        )
+        .await;
+        drop(progress_monitor);
+
+        let (status, stderr_tail) = match stream_result {
+            Ok(result) => result,
+            Err(stream_err) => {
+                // A `--force` supersede SIGKILL'd + reaped the host child
+                // above; now reach into the VM and kill the guest process
+                // group too (no-op on Linux). Reuses the already-initialized
+                // facade. Runs on a blocking thread because the guest kill
+                // shells out to `limactl`.
+                if inputs.cancel_token.is_cancelled()
+                    && let Some(key) = build_key
+                {
+                    match tokio::task::spawn_blocking(move || {
+                        apptainer.kill_guest_process_group(&key)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            debug!("Failed to kill guest process group on build cancellation: {e}")
+                        }
+                        Err(e) => debug!("Guest-kill task failed on build cancellation: {e}"),
+                    }
+                }
+                return Err(stream_err);
+            }
+        };
+
+        if status.success() {
+            return Ok(());
+        }
+
+        if attempt < CONTAINER_BUILD_ATTEMPTS
+            && !inputs.cancel_token.is_cancelled()
+            && failed_fetching_base_image(&stderr_tail)
+        {
+            let delay = CONTAINER_BUILD_RETRY_DELAYS[attempt - 1];
+            let line = format!(
+                "Base image fetch failed; retrying apptainer build in {delay:?} \
+                 (attempt {attempt} of {CONTAINER_BUILD_ATTEMPTS})"
+            );
+            write_feedback_log_line(&inputs.log_file, FeedbackStream::Stdout, &line);
+            let _ = inputs.feedback_tx.send(FeedbackLine {
+                stream: FeedbackStream::Stdout,
+                line,
+            });
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+
         let mut msg = format!("apptainer build failed with status {}", status);
         if !stderr_tail.is_empty() {
             msg.push_str("\n\n--- stderr (last lines) ---\n");
@@ -305,8 +378,6 @@ pub(super) async fn build_container_image(
         }
         return Err(msg);
     }
-
-    Ok(())
 }
 
 /// Expands `${VAR}` references in a string using the provided environment
@@ -623,5 +694,47 @@ mod tests {
         assert_eq!(expand_env_vars("${UNKNOWN}", &env), "${UNKNOWN}");
         // Plain strings pass through unchanged.
         assert_eq!(expand_env_vars("nothing here", &env), "nothing here");
+    }
+
+    /// The exact stderr shape of a registry answering apptainer's image fetch
+    /// with a body it cannot parse, as first seen failing a CI e2e build.
+    #[test]
+    fn unparseable_registry_response_is_a_fetch_failure() {
+        let stderr_tail = [
+            "INFO:    Starting build...",
+            "INFO:    Fetching OCI image...",
+            "FATAL:   While performing build: conveyor failed to get: unexpected end of JSON input",
+        ]
+        .map(String::from);
+        assert!(failed_fetching_base_image(&stderr_tail));
+    }
+
+    /// A transfer the registry dropped mid-stream fails the same conveyor
+    /// phase and must classify the same way.
+    #[test]
+    fn interrupted_transfer_is_a_fetch_failure() {
+        let stderr_tail =
+            ["FATAL:   While performing build: conveyor failed to get: unexpected EOF"]
+                .map(String::from);
+        assert!(failed_fetching_base_image(&stderr_tail));
+    }
+
+    /// Failures from any later phase (`%post`, SIF assembly) carry build work
+    /// a retry would repeat, so they must not classify as fetch failures.
+    #[test]
+    fn post_and_assembly_failures_are_not_fetch_failures() {
+        let stderr_tail = [
+            "INFO:    Starting build...",
+            "INFO:    Fetching OCI image...",
+            "INFO:    Running post scriptlet",
+            "error: linking with `cc` failed: exit status: 1",
+            "FATAL:   While performing build: failed to run %post script: exit status 1",
+        ]
+        .map(String::from);
+        assert!(!failed_fetching_base_image(&stderr_tail));
+
+        // No stderr at all (process killed before logging) is equally not a
+        // fetch signature.
+        assert!(!failed_fetching_base_image(&[]));
     }
 }
