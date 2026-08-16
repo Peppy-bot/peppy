@@ -141,8 +141,8 @@ where
 
 /// One rule about which selections this launcher refuses to be: `when` a
 /// guard holds, the selection must also satisfy at least one `requires`
-/// alternative, or the whole selection is refused before anything is pinned
-/// or started.
+/// alternative and match no `forbids` entry, or the whole selection is
+/// refused before anything is pinned or started.
 ///
 /// Constraints exist for the members of a family that FLATTEN cleanly into a
 /// stack nobody should run: a `when` guard on an adjustment can only decide
@@ -170,7 +170,20 @@ pub struct SelectionConstraint {
     /// an OR. An unfilled optional axis satisfies no pair, which is exactly
     /// how "this option needs a consumer" is written: require the axes that
     /// can consume it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<BTreeMap<String, String>>,
+    /// The combinations the guarded selections must not contain: each entry
+    /// is an `axis: option` map (an AND), and matching any entry refuses the
+    /// selection. The direct form of "these options never launch together",
+    /// which `requires` cannot say about an OPTIONAL axis's option (nothing
+    /// requirable means "that axis stays off"). Where the axis is required,
+    /// prefer requiring the wanted option instead: `requires` fails closed
+    /// for options added later, while a `forbids` list names today's options
+    /// and stays silent about tomorrow's.
+    ///
+    /// A constraint states at least one of `requires` and `forbids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbids: Vec<BTreeMap<String, String>>,
     /// Why the refused selections must not launch, quoted verbatim in the
     /// refusal. Required, like a vacancy's reason: the engine can render
     /// what was required, but only the author knows what the dead
@@ -628,40 +641,52 @@ pub(crate) fn validate_constraints(
             }
             validate_selection_map(when, axes, "a `when` guard", &origin)?;
         }
-        if constraint.requires.is_empty() {
+        if constraint.requires.is_empty() && constraint.forbids.is_empty() {
             return Err(format!(
-                "{origin} declares no `requires` alternative: a constraint states what the \
-                 guarded selections must also have, and with nothing to require it refuses \
-                 nothing"
+                "{origin} declares neither `requires` nor `forbids`: a constraint states what \
+                 the guarded selections must also have, or must not combine with, and with \
+                 neither it refuses nothing"
             ));
         }
-        let mut seen: Vec<&BTreeMap<String, String>> = Vec::with_capacity(constraint.requires.len());
-        for alternative in &constraint.requires {
-            if alternative.is_empty() {
-                return Err(format!(
-                    "{origin} lists an empty `requires` alternative: an alternative names at \
-                     least one `axis: option` pair"
-                ));
-            }
-            validate_selection_map(alternative, axes, "a `requires` alternative", &origin)?;
-            if let Some(when) = &constraint.when {
-                for axis_name in alternative.keys() {
-                    if when.contains_key(axis_name) {
-                        return Err(format!(
-                            "{origin} requires axis `{axis_name}` inside a constraint whose \
-                             `when` already fixes that axis: under the guard the alternative \
-                             is decided before anything is selected. Restate the requirement \
-                             without it"
-                        ));
+        for (entries, kind, verb) in [
+            (&constraint.requires, "`requires` alternative", "requires"),
+            (&constraint.forbids, "`forbids` entry", "forbids"),
+        ] {
+            let mut seen: Vec<&BTreeMap<String, String>> = Vec::with_capacity(entries.len());
+            for entry in entries {
+                if entry.is_empty() {
+                    return Err(format!(
+                        "{origin} lists an empty {kind}: an entry names at least one \
+                         `axis: option` pair"
+                    ));
+                }
+                validate_selection_map(entry, axes, &format!("a {kind}"), &origin)?;
+                if let Some(when) = &constraint.when {
+                    for axis_name in entry.keys() {
+                        if when.contains_key(axis_name) {
+                            return Err(format!(
+                                "{origin} {verb} axis `{axis_name}` inside a constraint whose \
+                                 `when` already fixes that axis: under the guard the entry is \
+                                 decided before anything is selected. Restate it without the \
+                                 axis"
+                            ));
+                        }
                     }
                 }
+                if seen.contains(&entry) {
+                    return Err(format!("{origin} lists the same {kind} more than once"));
+                }
+                seen.push(entry);
             }
-            if seen.contains(&alternative) {
+        }
+        for alternative in &constraint.requires {
+            if constraint.forbids.contains(alternative) {
                 return Err(format!(
-                    "{origin} lists the same `requires` alternative more than once"
+                    "{origin} lists the same `axis: option` map in `requires` and `forbids`: \
+                     a combination cannot be both what satisfies the constraint and what it \
+                     refuses"
                 ));
             }
-            seen.push(alternative);
         }
         if constraint.reason.trim().is_empty() {
             return Err(format!(
@@ -954,10 +979,73 @@ mod tests {
     }
 
     #[test]
-    fn a_constraint_requiring_nothing_is_refused() {
+    fn a_constraint_enforcing_nothing_is_refused() {
         let error = one_constraint(r#"{ when: { recorder: "on" }, requires: [], reason: "r" }"#)
-            .expect_err("nothing to require refuses nothing");
-        assert!(error.contains("no `requires` alternative"), "got: {error}");
+            .expect_err("nothing to enforce refuses nothing");
+        assert!(
+            error.contains("neither `requires` nor `forbids`"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_forbids_only_constraint_passes() {
+        one_constraint(
+            r#"{ when: { robot: "mujoco" }, forbids: [{ recorder: "on" }],
+                 reason: "the recorder films only the physical rig" }"#,
+        )
+        .expect("an exclusion needs no requires");
+        one_constraint(
+            r#"{ forbids: [{ robot: "mujoco", recorder: "on" }], reason: "why" }"#,
+        )
+        .expect("an unconditional exclusion of one combination");
+    }
+
+    #[test]
+    fn an_empty_forbids_entry_is_refused() {
+        let error = one_constraint(r#"{ when: { robot: "mujoco" }, forbids: [{}], reason: "r" }"#)
+            .expect_err("an empty entry says nothing");
+        assert!(error.contains("empty `forbids` entry"), "got: {error}");
+    }
+
+    #[test]
+    fn a_forbids_entry_on_a_guarded_axis_is_refused() {
+        let error = one_constraint(
+            r#"{ when: { robot: "mujoco" }, forbids: [{ robot: "real" }], reason: "r" }"#,
+        )
+        .expect_err("under the guard the axis is already fixed");
+        assert!(error.contains("already fixes"), "got: {error}");
+    }
+
+    #[test]
+    fn a_duplicated_forbids_entry_is_refused() {
+        let error = one_constraint(
+            r#"{ forbids: [{ recorder: "on" }, { recorder: "on" }], reason: "r" }"#,
+        )
+        .expect_err("a duplicate entry is a mistake");
+        assert!(error.contains("more than once"), "got: {error}");
+    }
+
+    #[test]
+    fn a_map_in_both_requires_and_forbids_is_refused() {
+        let error = one_constraint(
+            r#"{ requires: [{ recorder: "on" }], forbids: [{ recorder: "on" }], reason: "r" }"#,
+        )
+        .expect_err("one map cannot be both the satisfaction and the refusal");
+        assert!(
+            error.contains("both what satisfies"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_forbids_entry_naming_an_unknown_option_is_refused() {
+        let error = one_constraint(
+            r#"{ forbids: [{ robot: "genesis" }], reason: "r" }"#,
+        )
+        .expect_err("an unknown option is a dead reference");
+        assert!(error.contains("`genesis`"), "got: {error}");
+        assert!(error.contains("`forbids` entry"), "got: {error}");
     }
 
     #[test]

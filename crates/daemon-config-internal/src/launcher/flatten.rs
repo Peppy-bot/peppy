@@ -59,18 +59,33 @@ pub enum CompositionError {
     UnresolvedAxis { axis: String, options: String },
 
     #[error(
-        "this launcher refuses the selection ({selection}): {condition} requires \
-         {alternatives}, which this selection does not satisfy. {reason}"
+        "{condition} requires {alternatives}, which this selection ({selection}) does not \
+         satisfy. {reason}"
     )]
-    ConstraintViolated {
-        /// The full resolved selection, with its `(default)` markers: the
-        /// axes the operator did not name are usually the fix.
-        selection: String,
-        /// `selecting axis=option ...`, or `every selection` for an
-        /// unconditional constraint.
+    ConstraintUnsatisfied {
+        /// `selecting axis=option ...`, or `this launcher` for an
+        /// unconditional constraint: the offending choice leads the message.
         condition: String,
         /// The rendered `requires` alternatives.
         alternatives: String,
+        /// The full resolved selection, with its `(default)` markers: the
+        /// axes the operator did not name are usually the fix.
+        selection: String,
+        /// The author's `reason`, verbatim.
+        reason: String,
+    },
+
+    #[error(
+        "{condition} forbids {matched}, which this selection ({selection}) has. {reason}"
+    )]
+    ConstraintForbidden {
+        /// `selecting axis=option ...`, or `this launcher` for an
+        /// unconditional constraint.
+        condition: String,
+        /// The rendered `forbids` entry the selection matched.
+        matched: String,
+        /// The full resolved selection, with its `(default)` markers.
+        selection: String,
         /// The author's `reason`, verbatim.
         reason: String,
     },
@@ -1138,19 +1153,28 @@ fn render_guard(when: &BTreeMap<String, String>) -> String {
 }
 
 /// Whether this selection satisfies one constraint: either the constraint's
-/// guard does not speak about it, or at least one `requires` alternative
-/// holds wholly. Alternatives use the same matching a guard does, so an
-/// unfilled optional axis satisfies no pair on either side.
+/// guard does not speak about it, or it matches no `forbids` entry and (when
+/// any are declared) at least one `requires` alternative holds wholly. Both
+/// lists use the same matching a guard does, so an unfilled optional axis
+/// satisfies no pair on either side.
 fn constraint_satisfied(selection: &ComponentSelection, constraint: &SelectionConstraint) -> bool {
     if let Some(when) = &constraint.when
         && !guard_holds(selection, when)
     {
         return true;
     }
-    constraint
-        .requires
+    if constraint
+        .forbids
         .iter()
-        .any(|alternative| guard_holds(selection, alternative))
+        .any(|entry| guard_holds(selection, entry))
+    {
+        return false;
+    }
+    constraint.requires.is_empty()
+        || constraint
+            .requires
+            .iter()
+            .any(|alternative| guard_holds(selection, alternative))
 }
 
 /// The first declared constraint this selection violates, with its position.
@@ -1168,15 +1192,29 @@ fn first_violated<'a>(
 
 /// The refusal for a selection that violates a constraint, carrying the full
 /// resolved selection (whose `(default)` markers show the axes the operator
-/// did not name), what was required, and the author's reason.
+/// did not name), what was required or forbidden, and the author's reason.
+/// A matched `forbids` entry is the sharper claim, so it is the one
+/// reported when a selection fails on both counts.
 fn constraint_violation(
     constraint: &SelectionConstraint,
     selection: &ComponentSelection,
 ) -> CompositionError {
-    CompositionError::ConstraintViolated {
-        selection: selection.echo(),
+    if let Some(matched) = constraint
+        .forbids
+        .iter()
+        .find(|entry| guard_holds(selection, entry))
+    {
+        return CompositionError::ConstraintForbidden {
+            condition: render_condition(constraint),
+            matched: format!("`{}`", render_guard(matched)),
+            selection: selection.echo(),
+            reason: constraint.reason.clone(),
+        };
+    }
+    CompositionError::ConstraintUnsatisfied {
         condition: render_condition(constraint),
         alternatives: render_alternatives(&constraint.requires),
+        selection: selection.echo(),
         reason: constraint.reason.clone(),
     }
 }
@@ -1184,7 +1222,7 @@ fn constraint_violation(
 fn render_condition(constraint: &SelectionConstraint) -> String {
     match &constraint.when {
         Some(when) => format!("selecting {}", render_guard(when)),
-        None => String::from("every selection"),
+        None => String::from("this launcher"),
     }
 }
 
@@ -1197,6 +1235,28 @@ fn render_alternatives(alternatives: &[BTreeMap<String, String>]) -> String {
         [single] => single.clone(),
         many => format!("one of {}", many.join(", ")),
     }
+}
+
+/// One constraint in a line, for the check-time problems that name a whole
+/// rule rather than one refusal: "selecting cameras=cameras requires
+/// `robot=real`", "this launcher forbids `robot=mujoco recorder=on`".
+fn render_constraint(constraint: &SelectionConstraint) -> String {
+    let mut clauses = Vec::with_capacity(2);
+    if !constraint.requires.is_empty() {
+        clauses.push(format!(
+            "requires {}",
+            render_alternatives(&constraint.requires)
+        ));
+    }
+    if !constraint.forbids.is_empty() {
+        let entries: Vec<String> = constraint
+            .forbids
+            .iter()
+            .map(|entry| format!("`{}`", render_guard(entry)))
+            .collect();
+        clauses.push(format!("forbids {}", entries.join(", ")));
+    }
+    format!("{} {}", render_condition(constraint), clauses.join(" and "))
 }
 
 /// What a slot holds, for the "appending is for array bindings" refusal.
@@ -1322,13 +1382,11 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
     // reads as protection it does not give.
     for (index, refused) in refused_by.iter().enumerate() {
         if *refused == 0 {
-            let constraint = &launcher.constraints[index];
             problems.push(format!(
-                "{label}: constraint {} ({} requires {}) refuses no selection: it is already \
-                 guaranteed by the axes or by an earlier constraint. Tighten it or drop it",
+                "{label}: constraint {} ({}) refuses no selection: it is already guaranteed \
+                 by the axes or by an earlier constraint. Tighten it or drop it",
                 index + 1,
-                render_condition(constraint),
-                render_alternatives(&constraint.requires),
+                render_constraint(&launcher.constraints[index]),
             ));
         }
     }
@@ -1376,11 +1434,10 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
         && let Some((_, constraint)) = first_violated(&launcher.constraints, &default_selection)
     {
         problems.push(format!(
-            "{label}: the default selection ({}) violates constraint `{} requires {}`: a bare \
-             launch with no `--with` must start. Change the axes' defaults or the constraint",
+            "{label}: the default selection ({}) violates constraint `{}`: a bare launch \
+             with no `--with` must start. Change the axes' defaults or the constraint",
             default_selection.echo(),
-            render_condition(constraint),
-            render_alternatives(&constraint.requires),
+            render_constraint(constraint),
         ));
     }
 
@@ -2372,7 +2429,7 @@ mod tests {
             &words(&["mujoco", "on"]),
         )
         .expect_err("the constraint must refuse this member");
-        assert!(matches!(err, CompositionError::ConstraintViolated { .. }));
+        assert!(matches!(err, CompositionError::ConstraintUnsatisfied { .. }));
         let message = err.to_string();
         assert!(message.contains("robot=mujoco  recorder=on"), "got: {message}");
         assert!(message.contains("selecting recorder=on"), "got: {message}");
@@ -2419,6 +2476,58 @@ mod tests {
         );
         compose(&either, Path::new("family.json5"), &words(&["mujoco", "on"]))
             .expect("the required recorder is selected");
+    }
+
+    #[test]
+    fn a_forbidden_combination_is_refused_and_names_the_matched_entry() {
+        let launcher = constrained_launcher(
+            r#"{ when: { robot: "mujoco" }, forbids: [{ recorder: "on" }],
+                 reason: "the recorder films only the physical rig" }"#,
+        );
+        let err = compose(
+            &launcher,
+            Path::new("family.json5"),
+            &words(&["mujoco", "on"]),
+        )
+        .expect_err("the exclusion must refuse this member");
+        assert!(matches!(err, CompositionError::ConstraintForbidden { .. }));
+        let message = err.to_string();
+        assert!(message.contains("selecting robot=mujoco"), "got: {message}");
+        assert!(message.contains("forbids `recorder=on`"), "got: {message}");
+        assert!(
+            message.contains("films only the physical rig"),
+            "got: {message}"
+        );
+        // Either side alone is untouched.
+        compose(&launcher, Path::new("family.json5"), &words(&["mujoco"]))
+            .expect("the sim without the recorder is fine");
+        compose(&launcher, Path::new("family.json5"), &words(&["on"]))
+            .expect("the recorder on the real (default) robot is fine");
+    }
+
+    /// The unconditional form: one entry naming the whole combination, with
+    /// no `when` at all.
+    #[test]
+    fn an_unconditional_forbid_refuses_exactly_its_combination() {
+        let launcher = constrained_launcher(
+            r#"{ forbids: [{ robot: "mujoco", recorder: "on" }],
+                 reason: "the recorder films only the physical rig" }"#,
+        );
+        let err = compose(
+            &launcher,
+            Path::new("family.json5"),
+            &words(&["mujoco", "on"]),
+        )
+        .expect_err("the combination is forbidden");
+        assert!(
+            err.to_string()
+                .contains("this launcher forbids `recorder=on robot=mujoco`"),
+            "got: {err}"
+        );
+        compose(&launcher, Path::new("family.json5"), &words(&["mujoco"]))
+            .expect("half the combination is not the combination");
+        let problems = check_composition(&launcher, Path::new("family.json5"));
+        assert!(problems.is_empty(), "got: {problems:?}");
     }
 
     /// The gap `repo index --check` closes: a selection the constraints
