@@ -31,6 +31,7 @@ _EXCLUDE_PREFIXES: tuple[str, ...] = (
     "docs/",
     "target/",
     ".github/",
+    ".buildkite/",
     "scripts/docs/",
     "scripts/functions/docs.py",
     "scripts/tests/test_docs.py",

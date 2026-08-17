@@ -1,7 +1,7 @@
 name: Latency
 
-# Mirrors docs-drift.yml: runs only for the release PR that merges `dev` into
-# `main`. The base-branch filter restricts to PRs targeting `main`; the
+# Runs only for the release PR that merges `dev` into `main`. The
+# base-branch filter restricts to PRs targeting `main`; the
 # job-level `if` further restricts the head to `dev`, so routine PRs into `dev`
 # (and any PR into other branches) never trigger these heavy real-node tests.
 # The latency tests are `#[ignore]` by default, so the normal `cargo test`
