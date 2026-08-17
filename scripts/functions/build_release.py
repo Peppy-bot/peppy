@@ -8,6 +8,10 @@ the `dev` tip, the release notes are committed on `dev`, and `main` is then
 fast-forwarded to that commit through a refspec push, so the working tree stays
 on `dev` throughout.
 
+Because there is no longer a `dev` -> `main` pull request, the docs freshness
+check that used to run on that PR in CI runs here instead, before the tag is
+typed and the notes are drafted (see `_verify_docs_up_to_date`).
+
 Requires:
   - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token) -- not needed with --local
   - git, cargo, rustc on PATH
@@ -56,6 +60,7 @@ from .github import (
     replace_and_upload_asset,
 )
 from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl, stop_lima_vm
+from .docs import RequiredChange, check_docs, update_docs
 from .verify_release import verify_all_releases
 from .release_notes import (
     ReleaseNotesInput,
@@ -67,6 +72,7 @@ from .docker import main as build_base_images_main
 from .repo import (
     commit_paths,
     fetch_remote_branches,
+    force_push_branch,
     get_commit,
     get_commit_subjects,
     get_current_branch,
@@ -77,6 +83,8 @@ from .repo import (
     is_branch_checked_out,
     push_branch,
     set_branch_ref,
+    switch_branch,
+    switch_to_new_branch,
 )
 
 # A full release is cut from RELEASE_BRANCH, and ALIGNED_BRANCH is fast-forwarded
@@ -85,6 +93,15 @@ from .repo import (
 GIT_REMOTE = "origin"
 RELEASE_BRANCH = "dev"
 ALIGNED_BRANCH = "main"
+
+# The directory the docs check owns end to end: it is regenerated wholesale and
+# committed on a branch of its own when the release finds it stale.
+DOCS_DIR = "docs"
+
+# Prefix of the throwaway branch carrying a regenerated docs tree. The release
+# commit is appended, so re-running the release for the same commit reuses the
+# branch (and its open pull request) rather than piling up new ones.
+DOCS_SYNC_BRANCH_PREFIX = "auto/docs-update-"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -109,6 +126,16 @@ def _parse_args() -> argparse.Namespace:
             "prod check still runs. Only use when the prod routers are known-good "
             "or not yet publicly trusted; the shipped CLI cannot federate to "
             "routers that are not publicly trusted."
+        ),
+    )
+    parser.add_argument(
+        "--skip-docs-check",
+        action="store_true",
+        help=(
+            "Skip the docs freshness gate. Only use when the check is wrong "
+            "about a change, or when the docs are being updated separately; a "
+            "release shipped this way can document behaviour that no longer "
+            "exists."
         ),
     )
     return parser.parse_args()
@@ -392,6 +419,180 @@ def _verify_release_branch_state() -> str:
     return release_commit
 
 
+def _docs_sync_pr_body(
+    release_commit: str,
+    changes: tuple[RequiredChange, ...],
+) -> str:
+    """Render the body of the docs-sync pull request."""
+    lines = [
+        "Automated docs update produced by the release script "
+        "(`scripts/functions/docs.py`), which found `docs/` lagging the code "
+        "at the commit the release was being cut from.",
+        "",
+        f"Release commit: {release_commit}",
+    ]
+    if changes:
+        lines += ["", "Gaps the check reported:", ""]
+        lines += [f"- `{c.file}`: {c.change}" for c in changes]
+    lines += [
+        "",
+        f"Merge this into `{RELEASE_BRANCH}`, then re-run the release.",
+    ]
+    return "\n".join(lines)
+
+
+def _find_open_docs_sync_pr(
+    client: httpx.Client,
+    slug: RepoSlug,
+    branch: str,
+) -> str | None:
+    """Return the URL of an open pull request from *branch*, or None.
+
+    A previous release attempt on the same commit already opened one; the
+    force-push has just refreshed its content, so it is reported again instead
+    of failing on GitHub's "a pull request already exists" rejection.
+    """
+    response = github_api(
+        client,
+        "GET",
+        f"https://api.github.com/repos/{slug.full}/pulls"
+        f"?head={slug.owner}:{branch}&base={RELEASE_BRANCH}&state=open",
+    )
+    if not isinstance(response, list):
+        return None
+    for pull in response:
+        if isinstance(pull, dict) and pull.get("html_url"):
+            return str(pull["html_url"])
+    return None
+
+
+def _push_docs_sync_branch(branch: str, docs_dir: Path) -> None:
+    """Commit the regenerated docs onto *branch* and push it.
+
+    The branch is cut from the release commit and carries the working-tree edits
+    over, so its single commit holds the docs changes and nothing else. The
+    checkout returns to `dev` in a `finally`, so a failed commit or push never
+    strands the working tree on the throwaway branch, and the docs edits leave
+    the tree with it: they live on the branch from here on.
+    """
+    switch_to_new_branch(branch)
+    try:
+        commit_paths([docs_dir], "docs: sync with the code being released")
+        console.print(f"Pushing '{branch}' to {GIT_REMOTE}...")
+        force_push_branch(GIT_REMOTE, branch, branch)
+    finally:
+        switch_branch(RELEASE_BRANCH)
+
+
+def _open_docs_sync_pr(
+    client: httpx.Client,
+    slug: RepoSlug,
+    branch: str,
+    release_commit: str,
+    changes: tuple[RequiredChange, ...],
+) -> str:
+    """Open (or find) the pull request carrying the regenerated docs.
+
+    Returns the pull request URL.
+    """
+    existing = _find_open_docs_sync_pr(client, slug, branch)
+    if existing:
+        console.print(
+            "[yellow]A docs pull request was already open for this commit; "
+            "its branch now carries the regenerated docs.[/yellow]"
+        )
+        return existing
+
+    response = github_api(
+        client,
+        "POST",
+        f"https://api.github.com/repos/{slug.full}/pulls",
+        json_data={
+            "title": f"docs: sync with the code being released ({release_commit[:12]})",
+            "head": branch,
+            "base": RELEASE_BRANCH,
+            "body": _docs_sync_pr_body(release_commit, changes),
+        },
+    )
+    if not isinstance(response, dict) or not response.get("html_url"):
+        raise ReleaseError(
+            f"unexpected GitHub API response when opening the docs pull "
+            f"request: {response!r}"
+        )
+    return str(response["html_url"])
+
+
+def _verify_docs_up_to_date(
+    client: httpx.Client,
+    slug: RepoSlug,
+    release_commit: str,
+    repo_root: Path,
+) -> None:
+    """Stop the release while `docs/` lags the code about to ship.
+
+    This is the check CI used to run on the `dev` -> `main` release pull
+    request. Releases are cut straight from `dev` now, so no such pull request
+    exists and the check lives here, ahead of the tag prompt and the drafted
+    notes: everything past this point is slow or publishes something, and a
+    release must not ship documentation for behaviour that changed.
+
+    `origin/main` is the diff base because `main` is fast-forwarded to the
+    release commit at the end of every release, so it names the last shipped
+    commit exactly; `_verify_release_branch_state` has already fetched it and
+    proved it is an ancestor of the release commit.
+
+    When the docs are stale, Claude regenerates them, the result is pushed to a
+    throwaway branch, a pull request against `dev` is opened, and the release
+    stops: the docs land through review like any other change rather than being
+    folded into a release nobody reads.
+    """
+    docs_dir = repo_root / DOCS_DIR
+    if has_changes_in_paths([docs_dir]):
+        raise ReleaseError(
+            f"'{DOCS_DIR}/' has uncommitted changes. The docs check regenerates "
+            f"that directory and commits it onto a branch of its own, which "
+            f"would sweep those edits into the pull request. Commit or stash "
+            f"them and retry."
+        )
+
+    base = f"{GIT_REMOTE}/{ALIGNED_BRANCH}"
+    console.print(
+        f"Checking '{DOCS_DIR}/' covers the code changes since {base}..."
+    )
+    result = check_docs(base, release_commit)
+    if result.up_to_date:
+        console.print(f"[green]'{DOCS_DIR}/' is up to date.[/green]")
+        return
+
+    console.print(f"[yellow]'{DOCS_DIR}/' is out of date:[/yellow]")
+    for change in result.required_changes:
+        console.print(f"  [bold]{change.file}[/bold]: {change.change}")
+
+    console.print("Asking Claude to update the docs...")
+    console.print(update_docs(base, release_commit))
+
+    if not has_changes_in_paths([docs_dir]):
+        raise ReleaseError(
+            f"the check reported '{DOCS_DIR}/' as out of date but the update "
+            f"changed nothing there, so there is no pull request to open. "
+            f"Update the docs by hand and push them to '{RELEASE_BRANCH}', or "
+            f"re-run with --skip-docs-check if the report is wrong."
+        )
+
+    branch = f"{DOCS_SYNC_BRANCH_PREFIX}{release_commit[:12]}"
+    _push_docs_sync_branch(branch, docs_dir)
+    pr_url = _open_docs_sync_pr(
+        client, slug, branch, release_commit, result.required_changes
+    )
+
+    console.print(
+        f"\n[yellow]Release stopped: the docs have to be updated first.[/yellow]\n"
+        f"Review and merge {pr_url}\n"
+        f"then pull '{RELEASE_BRANCH}' and re-run the release."
+    )
+    sys.exit(1)
+
+
 def _commit_notes_and_align_main(notes_path: Path, tag: str) -> None:
     """Commit the release notes on `dev`, push it, and fast-forward `main`.
 
@@ -450,7 +651,10 @@ def _run_local() -> None:
         console.print(f"[green]Built:[/green] {artifact.asset_path}")
 
 
-def _run_full(skip_prod_cert_check: bool = False) -> None:
+def _run_full(
+    skip_prod_cert_check: bool = False,
+    skip_docs_check: bool = False,
+) -> None:
     """Build all 3 targets and publish a full GitHub release from `dev`.
 
     Only allowed on macOS ARM64, because a complete release requires
@@ -479,16 +683,26 @@ def _run_full(skip_prod_cert_check: bool = False) -> None:
         ):
             sys.exit(1)
 
+    # Resolve the repo slug and client up front: the docs gate below may have to
+    # open a pull request, and the release notes are drafted from the changes
+    # since the last release and reviewed, all before the long cross-compile.
+    slug = github_repo_slug()
+    client = build_github_client(token)
+
+    if skip_docs_check:
+        console.print(
+            "[yellow]WARNING: skipping the docs freshness check "
+            "(--skip-docs-check). This release may document behaviour that no "
+            "longer matches the code.[/yellow]"
+        )
+    else:
+        _verify_docs_up_to_date(client, slug, release_commit, repo_root)
+
     # The tag is the only value typed by hand; Claude writes the rest.
     tag = prompt("Tag of the release (example: v0.0.1)")
     if not tag:
         raise ReleaseError("release tag cannot be empty")
 
-    # Resolve the repo slug and client up front so the release notes can be
-    # drafted from the changes since the last release, and reviewed, before
-    # the long cross-compile starts.
-    slug = github_repo_slug()
-    client = build_github_client(token)
     content = _prepare_release_content(client, slug, tag, repo_root)
 
     # Build and package all targets
@@ -584,4 +798,6 @@ def main() -> None:
     elif args.local:
         run_with_error_handling(_run_local)
     else:
-        run_with_error_handling(lambda: _run_full(args.skip_prod_cert_check))
+        run_with_error_handling(
+            lambda: _run_full(args.skip_prod_cert_check, args.skip_docs_check)
+        )

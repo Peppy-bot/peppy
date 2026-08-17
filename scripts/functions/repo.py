@@ -201,6 +201,66 @@ def push_branch(remote: str, local_branch: str, remote_branch: str) -> None:
         )
 
 
+def force_push_branch(remote: str, local_branch: str, remote_branch: str) -> None:
+    """Force-push *local_branch* to ``{remote}/{remote_branch}``.
+
+    Kept separate from `push_branch` so that overwriting remote history is
+    always visible at the call site: the only caller is the throwaway docs-sync
+    branch, whose content is regenerated from scratch on every release attempt
+    and must replace whatever a previous attempt left behind.
+
+    Raises ReleaseError if the push fails.
+    """
+    result = subprocess.run(
+        ["git", "push", "--force", remote, f"{local_branch}:refs/heads/{remote_branch}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to force-push '{local_branch}' to '{remote}/{remote_branch}': "
+            f"{result.stderr.strip()}"
+        )
+
+
+def switch_to_new_branch(branch: str) -> None:
+    """Create or reset *branch* at HEAD and check it out, keeping the tree.
+
+    ``git switch -C`` resets an existing branch instead of refusing, so a branch
+    left over from an earlier attempt is reused rather than colliding. The
+    working tree is carried over, which is the point: the caller has just edited
+    files and wants them committed here rather than on the current branch.
+
+    Raises ReleaseError if the branch cannot be checked out (for example when
+    another worktree already has it).
+    """
+    result = subprocess.run(
+        ["git", "switch", "-C", branch],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to switch to a new branch '{branch}': {result.stderr.strip()}"
+        )
+
+
+def switch_branch(branch: str) -> None:
+    """Check out an existing *branch*, carrying uncommitted changes over.
+
+    Raises ReleaseError if the branch cannot be checked out.
+    """
+    result = subprocess.run(
+        ["git", "switch", branch],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to switch back to '{branch}': {result.stderr.strip()}"
+        )
+
+
 def is_branch_checked_out(branch: str) -> bool:
     """Return True if *branch* is the checked-out branch of any worktree.
 

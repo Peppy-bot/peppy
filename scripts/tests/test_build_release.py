@@ -13,15 +13,20 @@ from functions.build_release import (
     _build_release_payload,
     _commit_notes_and_align_main,
     _confirm_release_content,
+    _open_docs_sync_pr,
     _open_editor,
     _parse_editable,
     _prepare_release_content,
+    _push_docs_sync_branch,
     _render_editable,
     _run_full,
     _run_local,
+    _verify_docs_up_to_date,
     _verify_release_branch_state,
 )
 from functions.cli import ReleaseError
+from functions.docs import CheckResult, RequiredChange
+from functions.github import RepoSlug
 from functions.release_summary import ReleaseContent
 
 DEV_COMMIT = "1111111111111111111111111111111111111111"
@@ -272,6 +277,7 @@ def _setup_run_full_mocks(
     )
 
 
+@patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._commit_notes_and_align_main")
 @patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.generate_release_notes_file")
@@ -313,6 +319,7 @@ def test_run_full_uploads_all_artifacts(
     mock_gen_notes: MagicMock,
     mock_prepare: MagicMock,
     mock_align: MagicMock,
+    mock_docs_gate: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -335,6 +342,11 @@ def test_run_full_uploads_all_artifacts(
     _run_full()
 
     mock_validate.assert_called_once()
+    # The docs gate is handed the dev commit being released and runs before
+    # anything is typed, drafted, or built.
+    mock_docs_gate.assert_called_once_with(
+        mock_client.return_value, mock_slug.return_value, DEV_COMMIT, tmp_path
+    )
     assert mock_upload.call_count == 3
     mock_publish.assert_called_once_with(mock_client.return_value, 1, mock_slug.return_value)
     mock_gen_notes.assert_called_once()
@@ -360,6 +372,7 @@ def test_run_full_uploads_all_artifacts(
     assert "untagged" not in captured.err
 
 
+@patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.delete_release")
 @patch("functions.build_release.publish_release")
@@ -397,6 +410,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_publish: MagicMock,
     mock_delete_release: MagicMock,
     mock_prepare: MagicMock,
+    mock_docs_gate: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -423,6 +437,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_publish.assert_not_called()
 
 
+@patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.delete_release")
 @patch("functions.build_release.publish_release")
@@ -460,6 +475,7 @@ def test_run_full_warns_on_cleanup_failure(
     mock_publish: MagicMock,
     mock_delete_release: MagicMock,
     mock_prepare: MagicMock,
+    mock_docs_gate: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -486,6 +502,7 @@ def test_run_full_warns_on_cleanup_failure(
     mock_publish.assert_not_called()
 
 
+@patch("functions.build_release._verify_docs_up_to_date")
 @patch(
     "functions.build_release._commit_notes_and_align_main",
     side_effect=ReleaseError("failed to push 'dev' to 'origin/main': rejected"),
@@ -530,6 +547,7 @@ def test_run_full_reports_manual_steps_when_git_align_fails(
     mock_gen_notes: MagicMock,
     mock_prepare: MagicMock,
     mock_align: MagicMock,
+    mock_docs_gate: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -692,6 +710,229 @@ def test_verify_release_branch_state_rejects_main_ahead_of_dev(
 
     with pytest.raises(ReleaseError, match="'main' cannot fast-forward to it"):
         _verify_release_branch_state()
+
+
+# --- the docs freshness gate ---
+
+
+def _docs_gate(
+    client: MagicMock | None = None,
+    slug: MagicMock | None = None,
+    repo_root: Path | None = None,
+) -> None:
+    """Invoke the gate with placeholder GitHub handles."""
+    _verify_docs_up_to_date(
+        client or MagicMock(),
+        slug or RepoSlug(owner="test-owner", repo="test-repo"),
+        DEV_COMMIT,
+        repo_root or Path("/repo"),
+    )
+
+
+@patch("functions.build_release.update_docs")
+@patch(
+    "functions.build_release.check_docs",
+    return_value=CheckResult(up_to_date=True, required_changes=()),
+)
+@patch("functions.build_release.has_changes_in_paths", return_value=False)
+def test_docs_gate_passes_and_diffs_against_origin_main(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+) -> None:
+    _docs_gate(repo_root=Path("/repo"))
+
+    # origin/main is the last shipped commit, so it is the base the docs have
+    # to cover; the head is the dev commit being released.
+    mock_check.assert_called_once_with("origin/main", DEV_COMMIT)
+    mock_update.assert_not_called()
+
+
+@patch("functions.build_release.check_docs")
+@patch("functions.build_release.has_changes_in_paths", return_value=True)
+def test_docs_gate_rejects_a_dirty_docs_tree_before_asking_claude(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+) -> None:
+    # Those edits would be swept into the sync commit, so refuse up front rather
+    # than after a multi-minute check.
+    with pytest.raises(ReleaseError, match="'docs/' has uncommitted changes"):
+        _docs_gate()
+
+    mock_check.assert_not_called()
+
+
+@patch("functions.build_release._open_docs_sync_pr")
+@patch("functions.build_release._push_docs_sync_branch")
+@patch("functions.build_release.update_docs", return_value="edited 2 files")
+@patch("functions.build_release.check_docs")
+@patch("functions.build_release.has_changes_in_paths")
+def test_docs_gate_opens_a_pr_and_stops_the_release(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+    mock_push_branch: MagicMock,
+    mock_open_pr: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    changes = (RequiredChange(file="docs/x.mdx", change="document --verbose"),)
+    mock_check.return_value = CheckResult(up_to_date=False, required_changes=changes)
+    # Clean before the update, dirty after it: claude rewrote the docs.
+    mock_has_changes.side_effect = [False, True]
+    mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
+
+    with pytest.raises(SystemExit) as excinfo:
+        _docs_gate(repo_root=Path("/repo"))
+
+    assert excinfo.value.code == 1
+    mock_update.assert_called_once_with("origin/main", DEV_COMMIT)
+    # The branch is named after the release commit, so re-running the release
+    # for the same commit reuses it instead of opening a second pull request.
+    branch = f"auto/docs-update-{DEV_COMMIT[:12]}"
+    mock_push_branch.assert_called_once_with(branch, Path("/repo/docs"))
+    assert mock_open_pr.call_args.args[2] == branch
+    # The user is pointed at the pull request that has to merge first.
+    assert "pull/7" in capfd.readouterr().err
+
+
+@patch("functions.build_release._push_docs_sync_branch")
+@patch("functions.build_release.update_docs", return_value="nothing to do")
+@patch("functions.build_release.check_docs")
+@patch("functions.build_release.has_changes_in_paths", return_value=False)
+def test_docs_gate_raises_when_the_update_changes_nothing(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+    mock_push_branch: MagicMock,
+) -> None:
+    # Stale docs with no regenerated content leave nothing to put in a pull
+    # request, so the release stops with the manual route spelled out.
+    mock_check.return_value = CheckResult(
+        up_to_date=False,
+        required_changes=(RequiredChange(file="docs/x.mdx", change="document it"),),
+    )
+
+    with pytest.raises(ReleaseError, match="changed nothing there"):
+        _docs_gate()
+
+    mock_push_branch.assert_not_called()
+
+
+@patch("functions.build_release.switch_branch")
+@patch("functions.build_release.force_push_branch")
+@patch("functions.build_release.commit_paths")
+@patch("functions.build_release.switch_to_new_branch")
+def test_push_docs_sync_branch_returns_to_dev(
+    mock_switch_new: MagicMock,
+    mock_commit: MagicMock,
+    mock_force_push: MagicMock,
+    mock_switch: MagicMock,
+) -> None:
+    _push_docs_sync_branch("auto/docs-update-abc", Path("/repo/docs"))
+
+    mock_switch_new.assert_called_once_with("auto/docs-update-abc")
+    mock_commit.assert_called_once_with(
+        [Path("/repo/docs")], "docs: sync with the code being released"
+    )
+    mock_force_push.assert_called_once_with(
+        "origin", "auto/docs-update-abc", "auto/docs-update-abc"
+    )
+    mock_switch.assert_called_once_with("dev")
+
+
+@patch("functions.build_release.switch_branch")
+@patch("functions.build_release.force_push_branch", side_effect=ReleaseError("rejected"))
+@patch("functions.build_release.commit_paths")
+@patch("functions.build_release.switch_to_new_branch")
+def test_push_docs_sync_branch_returns_to_dev_when_the_push_fails(
+    mock_switch_new: MagicMock,
+    mock_commit: MagicMock,
+    mock_force_push: MagicMock,
+    mock_switch: MagicMock,
+) -> None:
+    # A failed push must never strand the working tree on the throwaway branch.
+    with pytest.raises(ReleaseError, match="rejected"):
+        _push_docs_sync_branch("auto/docs-update-abc", Path("/repo/docs"))
+
+    mock_switch.assert_called_once_with("dev")
+
+
+@patch("functions.build_release.github_api")
+def test_open_docs_sync_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None:
+    slug = RepoSlug(owner="test-owner", repo="test-repo")
+    mock_api.side_effect = [
+        [],  # no pull request open for this branch yet
+        {"html_url": "https://github.com/test-owner/test-repo/pull/9"},
+    ]
+
+    url = _open_docs_sync_pr(
+        MagicMock(),
+        slug,
+        "auto/docs-update-abc",
+        DEV_COMMIT,
+        (RequiredChange(file="docs/x.mdx", change="document --verbose"),),
+    )
+
+    assert url == "https://github.com/test-owner/test-repo/pull/9"
+    payload = mock_api.call_args_list[1].kwargs["json_data"]
+    assert payload["head"] == "auto/docs-update-abc"
+    assert payload["base"] == "dev"
+    assert "docs/x.mdx" in payload["body"]
+    assert DEV_COMMIT in payload["body"]
+
+
+@patch("functions.build_release.github_api")
+def test_open_docs_sync_pr_reuses_an_already_open_pr(mock_api: MagicMock) -> None:
+    # The branch was force-pushed with the fresh docs, so the existing pull
+    # request is up to date; opening a second one would be rejected anyway.
+    mock_api.return_value = [
+        {"html_url": "https://github.com/test-owner/test-repo/pull/4"}
+    ]
+
+    url = _open_docs_sync_pr(
+        MagicMock(),
+        RepoSlug(owner="test-owner", repo="test-repo"),
+        "auto/docs-update-abc",
+        DEV_COMMIT,
+        (),
+    )
+
+    assert url == "https://github.com/test-owner/test-repo/pull/4"
+    assert mock_api.call_count == 1
+
+
+@patch("functions.build_release._verify_docs_up_to_date")
+@patch("functions.build_release.build_github_client")
+@patch("functions.build_release.github_repo_slug")
+@patch("functions.build_release.prompt", return_value="")
+@patch("functions.build_release.has_uncommitted_changes", return_value=False)
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
+@patch("functions.build_release.get_repo_root")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
+@patch("functions.build_release.is_macos_arm64", return_value=True)
+def test_run_full_skips_the_docs_gate_when_asked(
+    mock_platform: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_branch_state: MagicMock,
+    mock_uncommitted: MagicMock,
+    mock_prompt: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    mock_docs_gate: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    mock_repo_root.return_value = tmp_path
+
+    # The empty tag aborts right after the gate would have run.
+    with pytest.raises(ReleaseError, match="release tag cannot be empty"):
+        _run_full(skip_docs_check=True)
+
+    mock_docs_gate.assert_not_called()
+    assert "skipping the docs freshness check" in capfd.readouterr().err
 
 
 # --- committing the notes and aligning main ---
