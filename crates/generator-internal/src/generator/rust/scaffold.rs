@@ -453,6 +453,11 @@ impl ModuleCategory {
             Self::ExposedActions => "ExposedActions",
             Self::ConsumedActions => "ConsumedActions",
             Self::PairedTopics => "PairedTopics",
+            // Names generated code must never use: write_leaf_module dissolves
+            // `impl <struct_name()>` blocks into free items, so a real
+            // generated `impl Mock` would be destroyed if these collided.
+            Self::Mock => "MockCategoryNeverGenerated",
+            Self::Fixtures => "FixturesCategoryNeverGenerated",
         }
     }
 
@@ -465,6 +470,8 @@ impl ModuleCategory {
             Self::ExposedActions => "exposed actions",
             Self::ConsumedActions => "consumed actions",
             Self::PairedTopics => "paired topics",
+            Self::Mock => "test mocks",
+            Self::Fixtures => "test fixtures",
         }
     }
 }
@@ -701,7 +708,7 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
     }))
 }
 
-fn sanitize_rust_module_name(raw: &str) -> String {
+pub(super) fn sanitize_rust_module_name(raw: &str) -> String {
     let mut out = sanitize_component(raw);
     if out.is_empty() {
         return "node".to_string();

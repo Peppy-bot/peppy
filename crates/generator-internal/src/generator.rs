@@ -7,6 +7,7 @@ pub(crate) mod scaffold_tree;
 mod test_helpers;
 pub mod python;
 pub mod rust;
+pub(crate) mod testgen;
 pub mod types;
 
 use crate::error::{Error, Result};
@@ -96,6 +97,10 @@ pub fn generate_peppygen_lib(
         PeppygenLanguage::Rust => {
             let mut rust_generator = RustGenerator::new();
             rust_generator.set_parameters(execution.parameters);
+            rust_generator.set_node_identity(
+                node_config.manifest.name.as_str(),
+                node_config.manifest.tag.as_str(),
+            );
             generate_with_backend(
                 rust_generator,
                 &interfaces,
