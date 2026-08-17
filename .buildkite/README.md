@@ -1,9 +1,15 @@
 # Buildkite CI
 
 Replaces the GitHub Actions workflows in `.github/workflows/` (`tests.yml`,
-`latency.yml`, `docs-drift.yml`). The step definitions live in
-[pipeline.yml](pipeline.yml); each step runs the matching script in
-[scripts/](scripts/).
+`latency.yml`). The step definitions live in [pipeline.yml](pipeline.yml); each
+step runs the matching script in [scripts/](scripts/).
+
+The docs freshness check used to be a third step here. It ran only on the
+`dev` → `main` release pull request, and releases are now cut straight from
+`dev`, so that pull request no longer exists. The check moved into the release
+script itself (`_verify_docs_up_to_date` in
+`scripts/functions/build_release.py`), which opens the follow-up docs pull
+request against `dev` and stops the release until it is merged.
 
 ## One-time setup
 
@@ -41,33 +47,21 @@ Replaces the GitHub Actions workflows in `.github/workflows/` (`tests.yml`,
 
 4. **Agent** — run a Buildkite agent on the machine that hosted the
    self-hosted Actions runner; it needs the same toolchain (cargo, pixi, uv,
-   the container runtime) plus the **`gh` CLI**, which docs-drift uses in
-   place of the `peter-evans/create-pull-request` action. Keep one agent per
-   host so the latency medians are not skewed by a concurrent tests job. Do
-   not configure shallow clones (`--depth` in `BUILDKITE_GIT_CLONE_FLAGS`) —
-   the doc scripts and the scripts-changed check need history
-   (`fetch-depth: 0` parity).
+   the container runtime). Keep one agent per host so the latency medians are
+   not skewed by a concurrent tests job. Do not configure shallow clones
+   (`--depth` in `BUILDKITE_GIT_CLONE_FLAGS`) — the scripts-changed check needs
+   history (`fetch-depth: 0` parity).
 
-5. **Secret** — docs-drift needs the bot token that was
-   `secrets.PEPPY_BOT_TOKEN`: either create a Buildkite secret named
-   `peppy_bot_token`, or export `PEPPY_BOT_TOKEN` from the agent's
-   `environment` hook.
-
-6. **Branch protection** — swap the required status checks from the Actions
-   check names to the Buildkite contexts `tests`, `latency`, and `docs-drift`
-   (set per step via `notify: github_commit_status` in pipeline.yml). Only
-   `tests` should be required on ordinary PRs: `latency` and `docs-drift`
-   report solely on the dev → main release PR.
+5. **Branch protection** — swap the required status checks from the Actions
+   check names to the Buildkite contexts `tests` and `latency` (set per step
+   via `notify: github_commit_status` in pipeline.yml). Only `tests` should be
+   required on ordinary PRs; `latency` reports solely on the dev → main
+   release PR.
 
 ## Behavior differences vs. Actions
 
-- **docs-drift** ran only on PR opened/reopened; Buildkite does not expose the
-  PR action type, so the script now runs on every release-PR build and is
-  idempotent: it force-pushes `auto/docs-update-<n>` and only creates the
-  follow-up PR when none is open. Net effect: the docs PR stays in sync with
-  later pushes instead of going stale.
 - Actions tested the synthetic PR **merge commit**; Buildkite builds the PR
-  **head commit** (what `latency.yml`/`docs-drift.yml` already did via
+  **head commit** (what `latency.yml` already did via
   `ref: pull_request.head.sha`).
 - The `scripts/` change detection (was `dorny/paths-filter`) diffs against the
   merge base for PR builds, and against `HEAD^` for pushes to `main` — one

@@ -18,6 +18,8 @@ from functions.repo import (
     is_branch_checked_out,
     push_branch,
     set_branch_ref,
+    switch_branch,
+    switch_to_new_branch,
 )
 
 
@@ -183,6 +185,35 @@ def test_push_branch_raises_when_rejected() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
         with pytest.raises(ReleaseError, match="failed to push 'dev' to 'origin/main'"):
             push_branch("origin", "dev", "main")
+
+
+# --- switching branches ---
+
+
+def test_switch_to_new_branch_resets_an_existing_branch() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
+        switch_to_new_branch("auto/docs-update-abc")
+    # -C, not -c: a branch left over from an earlier attempt is reset, not a
+    # collision.
+    assert run.call_args.args[0] == ["git", "switch", "-C", "auto/docs-update-abc"]
+
+
+def test_switch_to_new_branch_raises_when_checked_out_elsewhere() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
+        with pytest.raises(ReleaseError, match="failed to switch to a new branch"):
+            switch_to_new_branch("auto/docs-update-abc")
+
+
+def test_switch_branch_checks_out_an_existing_branch() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
+        switch_branch("dev")
+    assert run.call_args.args[0] == ["git", "switch", "dev"]
+
+
+def test_switch_branch_raises_on_failure() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
+        with pytest.raises(ReleaseError, match="failed to switch back to 'dev'"):
+            switch_branch("dev")
 
 
 # --- local branch refs ---

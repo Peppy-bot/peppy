@@ -201,6 +201,46 @@ def push_branch(remote: str, local_branch: str, remote_branch: str) -> None:
         )
 
 
+def switch_to_new_branch(branch: str) -> None:
+    """Create or reset *branch* at HEAD and check it out, keeping the tree.
+
+    ``git switch -C`` resets an existing branch instead of refusing, so a local
+    branch left over from an earlier attempt is reused rather than colliding.
+    Only the local ref moves; nothing published is rewritten, and the push that
+    follows is a plain one that fails if the remote has diverged. The working
+    tree is carried over, which is the point: the caller has just edited files
+    and wants them committed here rather than on the current branch.
+
+    Raises ReleaseError if the branch cannot be checked out (for example when
+    another worktree already has it).
+    """
+    result = subprocess.run(
+        ["git", "switch", "-C", branch],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to switch to a new branch '{branch}': {result.stderr.strip()}"
+        )
+
+
+def switch_branch(branch: str) -> None:
+    """Check out an existing *branch*, carrying uncommitted changes over.
+
+    Raises ReleaseError if the branch cannot be checked out.
+    """
+    result = subprocess.run(
+        ["git", "switch", branch],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to switch back to '{branch}': {result.stderr.strip()}"
+        )
+
+
 def is_branch_checked_out(branch: str) -> bool:
     """Return True if *branch* is the checked-out branch of any worktree.
 
