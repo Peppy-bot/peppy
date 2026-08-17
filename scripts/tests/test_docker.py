@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,7 +16,6 @@ from functions.docker import (
     DOCKER_HUB_ACCOUNT,
     DOCKER_HUB_REGISTRY,
     DOCKER_PLATFORMS,
-    BaseImage,
     _ensure_buildx_builder,
     _get_docker_hub_username,
     _get_username_from_cred_store,
