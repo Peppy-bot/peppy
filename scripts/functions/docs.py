@@ -2,10 +2,16 @@
 
 Two entry points:
 
-- ``check_main``: diff two git refs, ask claude whether ``docs/`` is up to
-  date, and exit non-zero with a list of required edits if not.
-- ``update_main``: same diff, but let claude edit files under ``docs/``
-  in place.
+- ``check_main``: diff two git refs, ask claude whether ``docs/`` has any
+  blocking gap for the changes, and exit non-zero with the list if so.
+- ``update_main``: same diff, then let claude close exactly the blocking
+  gaps the check found by editing files under ``docs/`` in place.
+
+A gap is *blocking* only when the docs now state something false or a
+user-facing change is entirely undocumented. Wording, clarity, and other
+nice-to-haves are reported as *minor* and never fail the check or feed the
+updater: tooling must not generate wording churn, and a release must not
+hinge on how the model would phrase a sentence today.
 
 Both require ``claude`` and ``git`` on PATH. No special auth handling —
 the invoking environment must already have claude authenticated.
@@ -14,13 +20,12 @@ the invoking environment must already have claude authenticated.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .claude import run_claude, strip_code_fence
+from .claude import run_claude
 from .cli import ReleaseError, console, need_cmd, run_with_error_handling
 from .repo import get_repo_root
 
@@ -39,17 +44,106 @@ _EXCLUDE_PREFIXES: tuple[str, ...] = (
 
 _MAX_DIFF_BYTES = 400_000
 
+SEVERITY_BLOCKING = "blocking"
+SEVERITY_MINOR = "minor"
+
+STATUS_IMPLEMENTED = "implemented"
+STATUS_ALREADY_COVERED = "already_covered"
+
+# Schema for the check verdict, enforced CLI-side via --json-schema. There is
+# deliberately no up-to-date boolean: pass/fail is derived from the list, so
+# the model cannot contradict itself, and the severity split gives it an
+# outlet for borderline observations without inflating them into blockers.
+_CHECK_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "required_changes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string"},
+                    "change": {"type": "string"},
+                    "severity": {"enum": [SEVERITY_BLOCKING, SEVERITY_MINOR]},
+                },
+                "required": ["file", "change", "severity"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["required_changes"],
+    "additionalProperties": False,
+}
+
+# Schema for the update report: one entry per requested change, so the caller
+# can tell "nothing to do, docs already cover it" apart from a silent no-op.
+_UPDATE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string"},
+                    "change": {"type": "string"},
+                    "status": {
+                        "enum": [STATUS_IMPLEMENTED, STATUS_ALREADY_COVERED]
+                    },
+                },
+                "required": ["file", "change", "status"],
+                "additionalProperties": False,
+            },
+        },
+        "summary": {"type": "string"},
+    },
+    "required": ["results", "summary"],
+    "additionalProperties": False,
+}
+
 
 @dataclass(frozen=True)
 class RequiredChange:
     file: str
     change: str
+    severity: str
 
 
 @dataclass(frozen=True)
 class CheckResult:
-    up_to_date: bool
-    required_changes: tuple[RequiredChange, ...]
+    changes: tuple[RequiredChange, ...]
+
+    @property
+    def blocking(self) -> tuple[RequiredChange, ...]:
+        return tuple(c for c in self.changes if c.severity == SEVERITY_BLOCKING)
+
+    @property
+    def minor(self) -> tuple[RequiredChange, ...]:
+        return tuple(c for c in self.changes if c.severity == SEVERITY_MINOR)
+
+
+@dataclass(frozen=True)
+class UpdateOutcome:
+    file: str
+    change: str
+    status: str
+
+
+@dataclass(frozen=True)
+class UpdateResult:
+    results: tuple[UpdateOutcome, ...]
+    summary: str
+
+    @property
+    def all_already_covered(self) -> bool:
+        """True when the updater accounted for every gap as already documented.
+
+        An empty report does not count: the updater must name what it checked,
+        otherwise a malfunctioning run would read as a clean verdict.
+        """
+        return bool(self.results) and all(
+            r.status == STATUS_ALREADY_COVERED for r in self.results
+        )
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
@@ -97,23 +191,28 @@ def _truncate_diff(diff: str) -> str:
 
 
 _CHECK_PROMPT = """\
-You are validating whether the documentation in `docs/src/content/docs/` is up
-to date with a set of code changes. The project is "peppy" — an Astro Starlight
-documentation site paired with Rust crates under `crates/`.
+You are judging whether the documentation in `docs/src/content/docs/` covers a
+set of code changes. The project is "peppy" — an Astro Starlight documentation
+site paired with Rust crates under `crates/`.
 
 Your task:
-1. Use Read/Grep/Glob to explore `docs/src/content/docs/` and identify any
-   user-facing changes in the diff below that require doc updates — CLI
-   flags and subcommands, `peppy.json5` schema, message formats, guide
-   steps, concepts, container workflows, etc.
-2. Ignore purely internal changes: refactors, tests, private APIs, build/CI
+1. Use Read/Grep/Glob to explore `docs/src/content/docs/` and compare it
+   against the diff below. Judge only what this diff changes — this is not a
+   general documentation audit.
+2. Report every documentation gap the diff creates as an entry in
+   `required_changes` (the doc file path, a one-sentence description of the
+   edit needed, and a severity):
+   - "blocking": the docs now state something false, or a user-facing change
+     in the diff (a CLI flag or subcommand, a `peppy.json5` schema key, a
+     message format, a step in a guide or workflow) is entirely undocumented.
+   - "minor": everything else — wording, clarity, style, restructuring,
+     extra cross-references, nice-to-have examples, mentioning a feature in
+     more places. Docs being improvable is not the same as docs being out of
+     date. When unsure between the two severities, choose "minor".
+3. Ignore purely internal changes: refactors, tests, private APIs, build/CI
    changes, log strings, dependency bumps.
-3. Return a JSON verdict as your final assistant message. No prose, no
-   code fence, no explanation — exactly this shape:
 
-{{"up_to_date": <bool>, "required_changes": [{{"file": "<doc path>", "change": "<one-sentence description>"}}]}}
-
-If `up_to_date` is true, `required_changes` must be `[]`.
+An empty `required_changes` means the docs fully cover the diff.
 
 Changed paths:
 {paths}
@@ -124,21 +223,25 @@ Unified diff:
 
 
 _UPDATE_PROMPT = """\
-You are updating the documentation in `docs/src/content/docs/` to reflect a
-set of code changes. The project is "peppy" — an Astro Starlight
-documentation site paired with Rust crates under `crates/`.
+You are updating the documentation in `docs/src/content/docs/` to close a
+fixed list of gaps left by a set of code changes. The project is "peppy" — an
+Astro Starlight documentation site paired with Rust crates under `crates/`.
+
+Gaps to close — implement exactly these, nothing else:
+{changes}
 
 Your task:
-1. Use Read/Grep/Glob to explore `docs/src/content/docs/` and identify any
-   user-facing changes in the diff below that require doc updates — CLI
-   flags and subcommands, `peppy.json5` schema, message formats, guide
-   steps, concepts, container workflows, etc.
-2. Edit docs files directly using Edit/Write. Only touch files under
-   `docs/src/content/docs/`. Do not modify `.astro` config, `package.json`,
-   or anything outside `docs/`.
-3. Keep edits minimal and focused — do not rewrite prose that is still
-   accurate, and do not fabricate features.
-4. After editing, summarize the files you changed in a few bullet points.
+1. For each listed gap, Read the named doc file (and any closely related
+   pages) and make the smallest edit that closes it. The diff below is the
+   source of truth for the facts — never state behaviour it does not show.
+2. If on inspection the docs already cover a listed gap, skip it and edit
+   nothing for it.
+3. Only touch files under `docs/src/content/docs/`. Do not reword,
+   restructure, or "improve" prose that is still accurate, and do not modify
+   `.astro` config, `package.json`, or anything outside `docs/`.
+4. Report one `results` entry per listed gap — its file, its change text,
+   and a status of "implemented" or "already_covered" — plus a short overall
+   `summary`.
 
 Changed paths:
 {paths}
@@ -148,22 +251,14 @@ Unified diff:
 """
 
 
-def _parse_check_response(text: str) -> CheckResult:
-    stripped = strip_code_fence(text)
-    try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError as e:
-        raise ReleaseError(
-            f"claude verdict was not valid JSON ({e}); text={text[:500]!r}"
-        )
-    if not isinstance(payload, dict):
-        raise ReleaseError(f"claude verdict must be an object: {payload!r}")
-    up_to_date = payload.get("up_to_date")
-    if not isinstance(up_to_date, bool):
-        raise ReleaseError(
-            f"claude verdict missing boolean 'up_to_date': {payload!r}"
-        )
-    raw_changes = payload.get("required_changes", [])
+def _parse_check_response(payload: dict) -> CheckResult:
+    """Validate the check verdict object into a CheckResult.
+
+    The CLI already validated the payload against ``_CHECK_SCHEMA``, but that
+    enforcement lives in an unpinned external tool; re-checking here keeps a
+    drifted CLI surfacing as a ReleaseError instead of a stray KeyError.
+    """
+    raw_changes = payload.get("required_changes")
     if not isinstance(raw_changes, list):
         raise ReleaseError(
             f"claude verdict 'required_changes' must be a list: {payload!r}"
@@ -176,12 +271,52 @@ def _parse_check_response(text: str) -> CheckResult:
             )
         file = item.get("file")
         change = item.get("change")
+        severity = item.get("severity")
         if not isinstance(file, str) or not isinstance(change, str):
             raise ReleaseError(
                 f"claude verdict change entry missing file/change: {item!r}"
             )
-        changes.append(RequiredChange(file=file, change=change))
-    return CheckResult(up_to_date=up_to_date, required_changes=tuple(changes))
+        if severity not in (SEVERITY_BLOCKING, SEVERITY_MINOR):
+            raise ReleaseError(
+                f"claude verdict change entry has unknown severity: {item!r}"
+            )
+        changes.append(
+            RequiredChange(file=file, change=change, severity=severity)
+        )
+    return CheckResult(changes=tuple(changes))
+
+
+def _parse_update_response(payload: dict) -> UpdateResult:
+    """Validate the update report object into an UpdateResult."""
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        raise ReleaseError(
+            f"claude update report 'results' must be a list: {payload!r}"
+        )
+    summary = payload.get("summary")
+    if not isinstance(summary, str):
+        raise ReleaseError(
+            f"claude update report missing string 'summary': {payload!r}"
+        )
+    results: list[UpdateOutcome] = []
+    for item in raw_results:
+        if not isinstance(item, dict):
+            raise ReleaseError(
+                f"claude update report entry must be an object: {item!r}"
+            )
+        file = item.get("file")
+        change = item.get("change")
+        status = item.get("status")
+        if not isinstance(file, str) or not isinstance(change, str):
+            raise ReleaseError(
+                f"claude update report entry missing file/change: {item!r}"
+            )
+        if status not in (STATUS_IMPLEMENTED, STATUS_ALREADY_COVERED):
+            raise ReleaseError(
+                f"claude update report entry has unknown status: {item!r}"
+            )
+        results.append(UpdateOutcome(file=file, change=change, status=status))
+    return UpdateResult(results=tuple(results), summary=summary)
 
 
 def check_docs(base: str, head: str) -> CheckResult:
@@ -189,39 +324,64 @@ def check_docs(base: str, head: str) -> CheckResult:
     repo_root = get_repo_root()
     diff, paths = get_code_diff(base, head, repo_root)
     if not paths:
-        return CheckResult(up_to_date=True, required_changes=())
+        return CheckResult(changes=())
     prompt = _CHECK_PROMPT.format(
         paths="\n".join(paths),
         diff=_truncate_diff(diff),
     )
-    text = run_claude(
+    # tools (not just allowed_tools) is restricted: under bypassPermissions
+    # the allowlist approves rather than limits, and the check must stay
+    # read-only.
+    payload = run_claude(
         prompt,
         allowed_tools="Read Grep Glob",
         permission_mode="bypassPermissions",
         cwd=repo_root,
+        json_schema=_CHECK_SCHEMA,
+        tools="Read Grep Glob",
     )
-    return _parse_check_response(text)
+    return _parse_check_response(payload)
 
 
-def update_docs(base: str, head: str) -> str:
-    """Invoke claude to update ``docs/`` for code changes between base and head.
+def update_docs(
+    base: str, head: str, changes: tuple[RequiredChange, ...]
+) -> UpdateResult:
+    """Have claude close exactly *changes* in ``docs/`` for the base..head diff.
 
-    Returns the summary text claude produced.
+    The change list scopes the edits: the updater implements those gaps and
+    nothing else, so the resulting diff is derived from the verdict rather
+    than from a free-form re-audit of the docs.
     """
+    if not changes:
+        raise ReleaseError("update_docs called with no changes to implement")
     repo_root = get_repo_root()
     diff, paths = get_code_diff(base, head, repo_root)
-    if not paths:
-        return "no code changes — nothing to update"
     prompt = _UPDATE_PROMPT.format(
+        changes="\n".join(f"- `{c.file}`: {c.change}" for c in changes),
         paths="\n".join(paths),
         diff=_truncate_diff(diff),
     )
-    return run_claude(
+    payload = run_claude(
         prompt,
         allowed_tools="Read Edit Write Grep Glob",
         permission_mode="acceptEdits",
         cwd=repo_root,
+        json_schema=_UPDATE_SCHEMA,
+        tools="Read Edit Write Grep Glob",
     )
+    return _parse_update_response(payload)
+
+
+def print_minor_changes(minor: tuple[RequiredChange, ...]) -> None:
+    """Print minor doc suggestions as information; they never gate anything."""
+    if not minor:
+        return
+    console.print(
+        f"[dim]{len(minor)} minor doc suggestion(s) noted "
+        f"(never block anything):[/dim]"
+    )
+    for change in minor:
+        console.print(f"  [dim]{change.file}: {change.change}[/dim]")
 
 
 def _parse_args(prog: str) -> argparse.Namespace:
@@ -236,11 +396,12 @@ def _run_check() -> None:
     need_cmd("claude")
     args = _parse_args("is-doc-up-to-date")
     result = check_docs(args.base, args.head)
-    if result.up_to_date:
+    print_minor_changes(result.minor)
+    if not result.blocking:
         console.print("[green]docs are up to date[/green]")
         return
-    console.print("[red]docs are out of date — required changes:[/red]")
-    for change in result.required_changes:
+    console.print("[red]docs are out of date — blocking changes:[/red]")
+    for change in result.blocking:
         console.print(f"  [bold]{change.file}[/bold]: {change.change}")
     sys.exit(1)
 
@@ -249,8 +410,17 @@ def _run_update() -> None:
     need_cmd("git")
     need_cmd("claude")
     args = _parse_args("update-docs")
-    summary = update_docs(args.base, args.head)
-    console.print(summary)
+    check = check_docs(args.base, args.head)
+    print_minor_changes(check.minor)
+    if not check.blocking:
+        console.print("[green]docs are up to date — nothing to update[/green]")
+        return
+    update = update_docs(args.base, args.head, check.blocking)
+    for outcome in update.results:
+        console.print(
+            f"  [bold]{outcome.file}[/bold] ({outcome.status}): {outcome.change}"
+        )
+    console.print(update.summary)
 
 
 def check_main() -> None:

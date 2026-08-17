@@ -2,9 +2,10 @@
 
 Both the docs freshness pipeline (``docs.py``) and the release-notes
 generator (``release_summary.py``) invoke Claude the same way: run
-``claude -p`` with a pinned model and effort, capture the JSON envelope, and
-return the final assistant text. This module is the single source of truth for
-that invocation so the model pin and response parsing live in one place.
+``claude -p`` with a pinned model and effort, a JSON Schema for the response,
+and capture the schema-validated structured output from the JSON envelope.
+This module is the single source of truth for that invocation so the model pin
+and response parsing live in one place.
 
 Requires ``claude`` on PATH, already authenticated in the invoking environment.
 """
@@ -41,10 +42,18 @@ def run_claude(
     allowed_tools: str,
     permission_mode: str,
     cwd: Path,
+    json_schema: dict,
     tools: str | None = None,
     effort: str = CLAUDE_EFFORT,
-) -> str:
-    """Run ``claude -p`` and return the final assistant text.
+) -> dict:
+    """Run ``claude -p`` and return its schema-validated structured output.
+
+    ``json_schema`` is passed to the CLI via ``--json-schema``, which forces
+    the final response through a validated structured-output tool call: a
+    prose-only answer cannot reach the caller, and the parsed object arrives
+    in the envelope's ``structured_output`` field. Callers still validate the
+    object's contents — the CLI is not pinned, so its enforcement is a
+    convenience, not a contract.
 
     ``tools`` controls which built-in tools exist for the run: pass "" to
     disable all tools (a pure text transformation), or a space/comma list to
@@ -67,6 +76,8 @@ def run_claude(
         "json",
         "--permission-mode",
         permission_mode,
+        "--json-schema",
+        json.dumps(json_schema),
     ]
     if tools is not None:
         cmd += ["--tools", tools]
@@ -86,20 +97,13 @@ def run_claude(
         raise ReleaseError(
             f"claude did not return valid JSON ({e}); stdout={result.stdout[:500]!r}"
         )
-    final_text = payload.get("result")
-    if not isinstance(final_text, str):
+    if not isinstance(payload, dict):
+        raise ReleaseError(f"claude response is not an object: {payload!r}")
+    structured = payload.get("structured_output")
+    if not isinstance(structured, dict):
+        text = payload.get("result")
         raise ReleaseError(
-            f"claude response missing 'result' string: {payload!r}"
+            f"claude response missing 'structured_output' object; "
+            f"result text={str(text)[:500]!r}"
         )
-    return final_text
-
-
-def strip_code_fence(text: str) -> str:
-    """Strip a leading/trailing Markdown code fence from a model response."""
-    text = text.strip()
-    if not text.startswith("```"):
-        return text
-    lines = text.splitlines()[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
+    return structured

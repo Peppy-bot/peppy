@@ -60,7 +60,12 @@ from .github import (
     replace_and_upload_asset,
 )
 from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl, stop_lima_vm
-from .docs import RequiredChange, check_docs, update_docs
+from .docs import (
+    RequiredChange,
+    check_docs,
+    print_minor_changes,
+    update_docs,
+)
 from .verify_release import verify_all_releases
 from .release_notes import (
     ReleaseNotesInput,
@@ -549,12 +554,19 @@ def _verify_docs_up_to_date(
     commit exactly; `_verify_release_branch_state` has already fetched it and
     proved it is an ancestor of the release commit.
 
-    When the docs are stale, Claude regenerates them, the result is pushed to a
-    branch named after the release commit, a pull request against `dev` is
-    opened, and the release stops: the docs land through review like any other
-    change rather than being folded into a release nobody reads. A retry on the
-    same commit finds that pull request and stops on it, so nothing published is
-    ever rewritten.
+    Only blocking gaps stop the release: docs that now state something false,
+    or a user-facing change with no documentation at all. Minor suggestions
+    (wording, clarity, nice-to-haves) are printed and ignored, so a release is
+    never held hostage by how the model would phrase a sentence today.
+
+    When a blocking gap exists, Claude closes exactly the reported gaps, the
+    result is pushed to a branch named after the release commit, a pull
+    request against `dev` is opened, and the release stops: the docs land
+    through review like any other change rather than being folded into a
+    release nobody reads. A retry on the same commit finds that pull request
+    and stops on it, so nothing published is ever rewritten. When the updater
+    instead verifies every reported gap is already documented, the check's
+    findings were noise and the release continues.
     """
     docs_dir = repo_root / DOCS_DIR
     if has_changes_in_paths([docs_dir]):
@@ -570,12 +582,14 @@ def _verify_docs_up_to_date(
         f"Checking '{DOCS_DIR}/' covers the code changes since {base}..."
     )
     result = check_docs(base, release_commit)
-    if result.up_to_date:
+    print_minor_changes(result.minor)
+    blocking = result.blocking
+    if not blocking:
         console.print(f"[green]'{DOCS_DIR}/' is up to date.[/green]")
         return
 
     console.print(f"[yellow]'{DOCS_DIR}/' is out of date:[/yellow]")
-    for change in result.required_changes:
+    for change in blocking:
         console.print(f"  [bold]{change.file}[/bold]: {change.change}")
 
     # An earlier attempt on this same commit already did the work. Report that
@@ -591,19 +605,35 @@ def _verify_docs_up_to_date(
         _stop_for_docs_pr(pr_url)
 
     console.print("Asking Claude to update the docs...")
-    console.print(update_docs(base, release_commit))
+    update = update_docs(base, release_commit, blocking)
+    console.print(update.summary)
 
     if not has_changes_in_paths([docs_dir]):
+        if update.all_already_covered:
+            # The check and the updater disagree, and the updater had to Read
+            # the docs to say so: the reported gaps were noise, not real.
+            console.print(
+                "[yellow]The updater verified every reported gap is already "
+                "documented:[/yellow]"
+            )
+            for outcome in update.results:
+                console.print(f"  [bold]{outcome.file}[/bold]: {outcome.change}")
+            console.print(
+                f"[green]'{DOCS_DIR}/' already covers the release; "
+                f"continuing.[/green]"
+            )
+            return
         raise ReleaseError(
-            f"the check reported '{DOCS_DIR}/' as out of date but the update "
-            f"changed nothing there, so there is no pull request to open. "
-            f"Update the docs by hand and push them to '{RELEASE_BRANCH}', or "
-            f"re-run with --skip-docs-check if the report is wrong."
+            f"the check reported '{DOCS_DIR}/' as out of date and the update "
+            f"claimed to close gaps, but nothing changed there, so there is "
+            f"no pull request to open. Update the docs by hand and push them "
+            f"to '{RELEASE_BRANCH}', or re-run with --skip-docs-check if the "
+            f"report is wrong."
         )
 
     _push_docs_sync_branch(branch, docs_dir)
     pr_url = _open_docs_sync_pr(
-        client, slug, branch, release_commit, result.required_changes
+        client, slug, branch, release_commit, blocking
     )
     _stop_for_docs_pr(pr_url)
 

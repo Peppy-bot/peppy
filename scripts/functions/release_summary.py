@@ -9,14 +9,27 @@ reorganization, dependency bumps, build and codegen changes) is left out.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .claude import run_claude, strip_code_fence
+from .claude import run_claude
 from .cli import ReleaseError
 
 _FIELDS: tuple[str, ...] = ("title", "description", "notes")
+
+# Enforced CLI-side via --json-schema. minLength keeps a blank field from
+# passing validation, but whitespace-only strings still need the Python-side
+# check in _parse_release_content.
+_CONTENT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "notes": {"type": "string", "minLength": 1},
+    },
+    "required": ["title", "description", "notes"],
+    "additionalProperties": False,
+}
 
 _PROMPT = """\
 You are writing the public release notes for "peppy", a developer tool shipped
@@ -27,12 +40,8 @@ Below is the exhaustive list of commits merged since the previous release
 (commit subjects, one per line). It is the only source of truth. Do not invent
 changes that are not listed.
 
-Respond with a single JSON object and nothing else. Do not explain your
-reasoning, do not narrate, do not add any text before or after the object, and
-do not wrap it in a code fence. Your entire response must be valid JSON that a
-strict parser accepts, exactly this shape:
-
-{{"title": "<headline>", "description": "<one sentence>", "notes": "<markdown>"}}
+Respond with the three fields "title" (a headline), "description" (one
+sentence), and "notes" (Markdown).
 
 Write for a user of the peppy tool, and include only changes such a user would
 notice or care about: new or changed CLI commands and flags, the `peppy.json5`
@@ -109,22 +118,21 @@ def generate_release_content(
     prompt = _PROMPT.format(tag=tag, changes=changes)
     # No tools: this is a pure transformation of the commit list. Giving Claude
     # repository access leads it to explore git history and answer with an
-    # analysis narrative instead of the JSON object.
-    text = run_claude(
+    # analysis narrative instead of the release content.
+    payload = run_claude(
         prompt,
         allowed_tools="",
         permission_mode="bypassPermissions",
         cwd=repo_root,
+        json_schema=_CONTENT_SCHEMA,
         tools="",
         effort="xhigh",
     )
-    return _parse_release_content(text)
+    return _parse_release_content(payload)
 
 
-def _parse_release_content(text: str) -> ReleaseContent:
-    """Parse and validate Claude's JSON response into a ReleaseContent."""
-    payload = _decode_json_object(text)
-
+def _parse_release_content(payload: dict) -> ReleaseContent:
+    """Validate Claude's structured output into a ReleaseContent."""
     values: dict[str, str] = {}
     for field in _FIELDS:
         value = payload.get(field)
@@ -134,62 +142,3 @@ def _parse_release_content(text: str) -> ReleaseContent:
             )
         values[field] = value.strip()
     return ReleaseContent(**values)
-
-
-def _decode_json_object(text: str) -> dict:
-    """Decode Claude's response into a JSON object, tolerating a stray preamble.
-
-    Tries the whole (de-fenced) response first, then falls back to the first
-    balanced ``{...}`` substring. Raises ReleaseError if neither is a JSON
-    object.
-    """
-    stripped = strip_code_fence(text)
-    candidates = [stripped]
-    extracted = _first_json_object(stripped)
-    if extracted is not None and extracted != stripped:
-        candidates.append(extracted)
-
-    for candidate in candidates:
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-        raise ReleaseError(f"claude release notes must be a JSON object: {payload!r}")
-
-    raise ReleaseError(
-        f"claude release notes were not valid JSON; text={text[:500]!r}"
-    )
-
-
-def _first_json_object(text: str) -> str | None:
-    """Return the first balanced top-level ``{...}`` substring, or None.
-
-    String-aware, so braces inside JSON string values do not unbalance the scan.
-    """
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(text)):
-        char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : index + 1]
-    return None
