@@ -473,7 +473,7 @@ def _docs_polish_pr_body(
     lines += [
         "",
         "This pull request does not block the release it was cut from; merge "
-        "or close it on its own schedule.",
+        + "or close it on its own schedule.",
     ]
     return "\n".join(lines)
 
