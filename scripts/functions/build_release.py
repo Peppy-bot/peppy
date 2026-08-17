@@ -424,9 +424,11 @@ def _docs_sync_pr_body(
 ) -> str:
     """Render the body of the docs-sync pull request."""
     lines = [
-        "Automated docs update produced by the release script "
-        "(`scripts/functions/docs.py`), which found `docs/` lagging the code "
-        "at the commit the release was being cut from.",
+        (
+            "Automated docs update produced by the release script "
+            + "(`scripts/functions/docs.py`), which found `docs/` lagging the code "
+            + "at the commit the release was being cut from."
+        ),
         "",
         f"Release commit: {release_commit}",
     ]
