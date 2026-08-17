@@ -8,8 +8,11 @@ The docs freshness check used to be a third step here. It ran only on the
 `dev` → `main` release pull request, and releases are now cut straight from
 `dev`, so that pull request no longer exists. The check moved into the release
 script itself (`_verify_docs_up_to_date` in
-`scripts/functions/build_release.py`), which opens the follow-up docs pull
-request against `dev` and stops the release until it is merged.
+`scripts/functions/build_release.py`). When the check finds a blocking gap
+(docs stating something false, or a user-facing change with no documentation
+at all), it opens the follow-up docs pull request against `dev` and stops the
+release until it is merged; minor wording-level suggestions are printed and
+never block.
 
 ## One-time setup
 

@@ -26,7 +26,12 @@ from functions.build_release import (
     _verify_release_branch_state,
 )
 from functions.cli import ReleaseError
-from functions.docs import CheckResult, RequiredChange
+from functions.docs import (
+    CheckResult,
+    RequiredChange,
+    UpdateOutcome,
+    UpdateResult,
+)
 from functions.github import RepoSlug
 from functions.release_summary import ReleaseContent
 
@@ -716,6 +721,14 @@ def test_verify_release_branch_state_rejects_main_ahead_of_dev(
 # --- the docs freshness gate ---
 
 
+_BLOCKING_CHANGE = RequiredChange(
+    file="docs/x.mdx", change="document --verbose", severity="blocking"
+)
+_MINOR_CHANGE = RequiredChange(
+    file="docs/y.mdx", change="reword the intro", severity="minor"
+)
+
+
 def _docs_gate(
     client: MagicMock | None = None,
     slug: MagicMock | None = None,
@@ -733,7 +746,7 @@ def _docs_gate(
 @patch("functions.build_release.update_docs")
 @patch(
     "functions.build_release.check_docs",
-    return_value=CheckResult(up_to_date=True, required_changes=()),
+    return_value=CheckResult(changes=()),
 )
 @patch("functions.build_release.has_changes_in_paths", return_value=False)
 def test_docs_gate_passes_and_diffs_against_origin_main(
@@ -747,6 +760,31 @@ def test_docs_gate_passes_and_diffs_against_origin_main(
     # to cover; the head is the dev commit being released.
     mock_check.assert_called_once_with("origin/main", DEV_COMMIT)
     mock_update.assert_not_called()
+
+
+@patch("functions.build_release._find_open_docs_sync_pr")
+@patch("functions.build_release.update_docs")
+@patch(
+    "functions.build_release.check_docs",
+    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
+)
+@patch("functions.build_release.has_changes_in_paths", return_value=False)
+def test_docs_gate_passes_on_minor_only_suggestions(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+    mock_find_pr: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # Wording-level suggestions must never regenerate docs, open a pull
+    # request, or stop a release: they are printed and the release moves on.
+    _docs_gate(repo_root=Path("/repo"))
+
+    mock_update.assert_not_called()
+    mock_find_pr.assert_not_called()
+    err = capfd.readouterr().err
+    assert "reword the intro" in err
+    assert "up to date" in err
 
 
 @patch("functions.build_release.check_docs")
@@ -766,7 +804,7 @@ def test_docs_gate_rejects_a_dirty_docs_tree_before_asking_claude(
 @patch("functions.build_release._open_docs_sync_pr")
 @patch("functions.build_release._push_docs_sync_branch")
 @patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
-@patch("functions.build_release.update_docs", return_value="edited 2 files")
+@patch("functions.build_release.update_docs")
 @patch("functions.build_release.check_docs")
 @patch("functions.build_release.has_changes_in_paths")
 def test_docs_gate_opens_a_pr_and_stops_the_release(
@@ -778,8 +816,17 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
     mock_open_pr: MagicMock,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    changes = (RequiredChange(file="docs/x.mdx", change="document --verbose"),)
-    mock_check.return_value = CheckResult(up_to_date=False, required_changes=changes)
+    mock_check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
+    mock_update.return_value = UpdateResult(
+        results=(
+            UpdateOutcome(
+                file="docs/x.mdx",
+                change="document --verbose",
+                status="implemented",
+            ),
+        ),
+        summary="edited 2 files",
+    )
     # Clean before the update, dirty after it: claude rewrote the docs.
     mock_has_changes.side_effect = [False, True]
     mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
@@ -788,7 +835,9 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
         _docs_gate(repo_root=Path("/repo"))
 
     assert excinfo.value.code == 1
-    mock_update.assert_called_once_with("origin/main", DEV_COMMIT)
+    mock_update.assert_called_once_with(
+        "origin/main", DEV_COMMIT, (_BLOCKING_CHANGE,)
+    )
     # The branch is named after the release commit, so a retry on that commit
     # finds the pull request instead of producing a second one.
     branch = f"auto/docs-update-{DEV_COMMIT[:12]}"
@@ -796,6 +845,49 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
     assert mock_open_pr.call_args.args[2] == branch
     # The user is pointed at the pull request that has to merge first.
     assert "pull/7" in capfd.readouterr().err
+
+
+@patch("functions.build_release._open_docs_sync_pr")
+@patch("functions.build_release._push_docs_sync_branch")
+@patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
+@patch("functions.build_release.update_docs")
+@patch("functions.build_release.check_docs")
+@patch("functions.build_release.has_changes_in_paths")
+def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+    mock_find_pr: MagicMock,
+    mock_push_branch: MagicMock,
+    mock_open_pr: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # A mixed verdict: the blocking gap drives the update and the pull
+    # request; the minor one is only printed.
+    mock_check.return_value = CheckResult(
+        changes=(_MINOR_CHANGE, _BLOCKING_CHANGE)
+    )
+    mock_update.return_value = UpdateResult(
+        results=(
+            UpdateOutcome(
+                file="docs/x.mdx",
+                change="document --verbose",
+                status="implemented",
+            ),
+        ),
+        summary="edited 1 file",
+    )
+    mock_has_changes.side_effect = [False, True]
+    mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/7"
+
+    with pytest.raises(SystemExit):
+        _docs_gate(repo_root=Path("/repo"))
+
+    mock_update.assert_called_once_with(
+        "origin/main", DEV_COMMIT, (_BLOCKING_CHANGE,)
+    )
+    assert mock_open_pr.call_args.args[4] == (_BLOCKING_CHANGE,)
+    assert "reword the intro" in capfd.readouterr().err
 
 
 @patch("functions.build_release._push_docs_sync_branch")
@@ -817,10 +909,7 @@ def test_docs_gate_stops_on_the_pr_an_earlier_attempt_opened(
     # Re-running the release on a commit whose docs pull request is still open
     # must point at that pull request, not spend another Claude run deriving a
     # branch that would then have to replace the one under review.
-    mock_check.return_value = CheckResult(
-        up_to_date=False,
-        required_changes=(RequiredChange(file="docs/x.mdx", change="document it"),),
-    )
+    mock_check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
 
     with pytest.raises(SystemExit) as excinfo:
         _docs_gate()
@@ -833,26 +922,71 @@ def test_docs_gate_stops_on_the_pr_an_earlier_attempt_opened(
     assert "pull/7" in capfd.readouterr().err
 
 
+@patch("functions.build_release._open_docs_sync_pr")
 @patch("functions.build_release._push_docs_sync_branch")
 @patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
-@patch("functions.build_release.update_docs", return_value="nothing to do")
+@patch("functions.build_release.update_docs")
 @patch("functions.build_release.check_docs")
 @patch("functions.build_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_raises_when_the_update_changes_nothing(
+def test_docs_gate_continues_when_the_updater_finds_gaps_already_covered(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+    mock_find_pr: MagicMock,
+    mock_push_branch: MagicMock,
+    mock_open_pr: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # The check claimed a gap; the updater read the docs and verified each
+    # reported gap is already documented. That is the check being noisy, not
+    # the docs being stale, and it must not block the release.
+    mock_check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
+    mock_update.return_value = UpdateResult(
+        results=(
+            UpdateOutcome(
+                file="docs/x.mdx",
+                change="document --verbose",
+                status="already_covered",
+            ),
+        ),
+        summary="everything already documented",
+    )
+
+    _docs_gate(repo_root=Path("/repo"))
+
+    mock_push_branch.assert_not_called()
+    mock_open_pr.assert_not_called()
+    assert "already" in capfd.readouterr().err
+
+
+@patch("functions.build_release._push_docs_sync_branch")
+@patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
+@patch("functions.build_release.update_docs")
+@patch("functions.build_release.check_docs")
+@patch("functions.build_release.has_changes_in_paths", return_value=False)
+def test_docs_gate_raises_when_the_update_claims_edits_but_changed_nothing(
     mock_has_changes: MagicMock,
     mock_check: MagicMock,
     mock_update: MagicMock,
     mock_find_pr: MagicMock,
     mock_push_branch: MagicMock,
 ) -> None:
-    # Stale docs with no regenerated content leave nothing to put in a pull
-    # request, so the release stops with the manual route spelled out.
-    mock_check.return_value = CheckResult(
-        up_to_date=False,
-        required_changes=(RequiredChange(file="docs/x.mdx", change="document it"),),
+    # An "implemented" claim with a clean docs tree is a malfunctioning
+    # updater, not a noisy check; passing silently would make the gate
+    # unfalsifiable, so the release stops with the manual route spelled out.
+    mock_check.return_value = CheckResult(changes=(_BLOCKING_CHANGE,))
+    mock_update.return_value = UpdateResult(
+        results=(
+            UpdateOutcome(
+                file="docs/x.mdx",
+                change="document --verbose",
+                status="implemented",
+            ),
+        ),
+        summary="edited 1 file",
     )
 
-    with pytest.raises(ReleaseError, match="changed nothing there"):
+    with pytest.raises(ReleaseError, match="nothing changed there"):
         _docs_gate()
 
     mock_push_branch.assert_not_called()
@@ -916,7 +1050,11 @@ def test_open_docs_sync_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None
         slug,
         "auto/docs-update-abc",
         DEV_COMMIT,
-        (RequiredChange(file="docs/x.mdx", change="document --verbose"),),
+        (
+            RequiredChange(
+                file="docs/x.mdx", change="document --verbose", severity="blocking"
+            ),
+        ),
     )
 
     assert url == "https://github.com/test-owner/test-repo/pull/9"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,48 +9,42 @@ import pytest
 
 from functions.cli import ReleaseError
 from functions.release_summary import (
+    _CONTENT_SCHEMA,
     ReleaseContent,
     _parse_release_content,
     generate_release_content,
 )
 
 
+# --- _CONTENT_SCHEMA ---
+
+
+def test_content_schema_requires_all_fields_non_empty() -> None:
+    # The Python validator and the CLI-side schema must not drift.
+    assert _CONTENT_SCHEMA["required"] == ["title", "description", "notes"]
+    for field in ("title", "description", "notes"):
+        assert _CONTENT_SCHEMA["properties"][field]["minLength"] == 1
+
+
 # --- _parse_release_content ---
 
 
 def test_parse_release_content_valid() -> None:
-    text = json.dumps(
-        {
-            "title": "Topics hardening",
-            "description": "Fixed deadlocks.",
-            "notes": "## What's Changed\n- x",
-        }
-    )
-    assert _parse_release_content(text) == ReleaseContent(
+    payload = {
+        "title": "Topics hardening",
+        "description": "Fixed deadlocks.",
+        "notes": "## What's Changed\n- x",
+    }
+    assert _parse_release_content(payload) == ReleaseContent(
         title="Topics hardening",
         description="Fixed deadlocks.",
         notes="## What's Changed\n- x",
     )
 
 
-def test_parse_release_content_strips_code_fence() -> None:
-    text = '```json\n{"title": "T", "description": "D", "notes": "N"}\n```'
-    assert _parse_release_content(text) == ReleaseContent("T", "D", "N")
-
-
 def test_parse_release_content_strips_whitespace() -> None:
     payload = {"title": "  T  ", "description": " D ", "notes": " N "}
-    assert _parse_release_content(json.dumps(payload)) == ReleaseContent("T", "D", "N")
-
-
-def test_parse_release_content_invalid_json() -> None:
-    with pytest.raises(ReleaseError, match="not valid JSON"):
-        _parse_release_content("not json at all")
-
-
-def test_parse_release_content_not_object() -> None:
-    with pytest.raises(ReleaseError, match="must be a JSON object"):
-        _parse_release_content("[]")
+    assert _parse_release_content(payload) == ReleaseContent("T", "D", "N")
 
 
 @pytest.mark.parametrize("missing", ["title", "description", "notes"])
@@ -59,36 +52,23 @@ def test_parse_release_content_missing_field(missing: str) -> None:
     payload = {"title": "T", "description": "D", "notes": "N"}
     del payload[missing]
     with pytest.raises(ReleaseError, match=f"missing non-empty '{missing}'"):
-        _parse_release_content(json.dumps(payload))
+        _parse_release_content(payload)
 
 
 @pytest.mark.parametrize("field", ["title", "description", "notes"])
 def test_parse_release_content_blank_field(field: str) -> None:
+    # minLength in the schema cannot catch whitespace-only strings; the
+    # Python-side check must.
     payload = {"title": "T", "description": "D", "notes": "N"}
     payload[field] = "   "
     with pytest.raises(ReleaseError, match=f"missing non-empty '{field}'"):
-        _parse_release_content(json.dumps(payload))
+        _parse_release_content(payload)
 
 
 def test_parse_release_content_non_string_field() -> None:
     payload: dict[str, object] = {"title": "T", "description": "D", "notes": 123}
     with pytest.raises(ReleaseError, match="missing non-empty 'notes'"):
-        _parse_release_content(json.dumps(payload))
-
-
-def test_parse_release_content_tolerates_preamble() -> None:
-    # Claude occasionally prefixes the object with a sentence; extract anyway.
-    text = 'Here are the notes:\n{"title": "T", "description": "D", "notes": "N"}'
-    assert _parse_release_content(text) == ReleaseContent("T", "D", "N")
-
-
-def test_parse_release_content_extracts_object_with_braces_in_notes() -> None:
-    # Braces inside the notes string must not unbalance the extraction.
-    notes = "Use `cfg{}` blocks"
-    text = "noise " + json.dumps(
-        {"title": "T", "description": "D", "notes": notes}
-    )
-    assert _parse_release_content(text) == ReleaseContent("T", "D", notes)
+        _parse_release_content(payload)
 
 
 # --- generate_release_content (mocked run_claude) ---
@@ -103,16 +83,18 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
         allowed_tools: str,
         permission_mode: str,
         cwd: Path,
+        json_schema: dict,
         tools: str | None = None,
         effort: str = "max",
-    ) -> str:
+    ) -> dict:
         captured["prompt"] = prompt
         captured["allowed_tools"] = allowed_tools
         captured["permission_mode"] = permission_mode
         captured["cwd"] = cwd
+        captured["json_schema"] = json_schema
         captured["tools"] = tools
         captured["effort"] = effort
-        return json.dumps({"title": "T", "description": "D", "notes": "N"})
+        return {"title": "T", "description": "D", "notes": "N"}
 
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
         result = generate_release_content(
@@ -127,6 +109,8 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
     assert captured["allowed_tools"] == ""
     assert captured["effort"] == "xhigh"
     assert captured["cwd"] == tmp_path
+    # The response shape is enforced CLI-side.
+    assert captured["json_schema"] == _CONTENT_SCHEMA
     # The commit subjects and tag are interpolated into the prompt.
     assert "- fix(apptainer): pre-flight bind mounts" in captured["prompt"]
     assert "v0.12.0" in captured["prompt"]
@@ -135,9 +119,9 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
 def test_generate_release_content_handles_no_commits(tmp_path: Path) -> None:
     captured: dict[str, str] = {}
 
-    def _fake_run_claude(prompt: str, **kwargs: object) -> str:
+    def _fake_run_claude(prompt: str, **kwargs: object) -> dict:
         captured["prompt"] = prompt
-        return json.dumps({"title": "T", "description": "D", "notes": "N"})
+        return {"title": "T", "description": "D", "notes": "N"}
 
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
         generate_release_content([], "v0.1.0", tmp_path)
