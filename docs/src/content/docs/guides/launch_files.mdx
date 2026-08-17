@@ -377,17 +377,17 @@ The ownership rule of thumb: if a value is something the operator genuinely deci
 
 ## Constraints
 
-Adjustments change what a selection builds; a **constraint** refuses selections nobody should run. Some members of a family are stacks no operator should be able to name: the recorder that films only the physical rig must not launch against the simulator. Those members flatten cleanly, so neither `provides` (which only promises ids exist) nor an adjustment's `when` guard (which only decides whether one adjustment applies inside a legal selection) can say it. A constraint can, and it only ever refuses: a violating selection is rejected before anything is pinned or started. It never picks an option to satisfy itself, because a `--with` whose meaning shifted as constraints evolve would launch stacks the operator did not name.
+Adjustments change what a selection builds; a **constraint** refuses selections nobody should run. Some members of a family are stacks no operator should be able to name: the ZED camera that films only the physical rig must not launch against the simulator. Those members flatten cleanly, so neither `provides` (which only promises ids exist) nor an adjustment's `when` guard (which only decides whether one adjustment applies inside a legal selection) can say it. A constraint can, and it only ever refuses: a violating selection is rejected before anything is pinned or started. It never picks an option to satisfy itself, because a `--with` whose meaning shifted as constraints evolve would launch stacks the operator did not name.
 
 ```json5
 constraints: [
-  // With the recorder selected, the robot must be the real one.
-  { when: { recorder: "lerobot_recorder" }, requires: [{ robot: "real" }],
-    reason: "the recorder films the physical rig" },
+  // With the ZED camera selected, the robot must be the real one.
+  { when: { camera: "zed" }, requires: [{ robot: "real" }],
+    reason: "the ZED films the physical rig" },
 
   // The whole combination is refused, no guard needed.
-  { forbids: [{ robot: "mujoco", recorder: "lerobot_recorder" }],
-    reason: "the dataset recorder pairs with the real rig only" },
+  { forbids: [{ robot: "mujoco", camera: "zed" }],
+    reason: "the stereo camera pairs with the real rig only" },
 ]
 ```
 
@@ -400,7 +400,7 @@ constraints: [
 
 A constraint states at least one of `requires` and `forbids`; with neither it refuses nothing, and the launcher is refused when it is read. The rest of the shape is held to the same standard: `when` and every entry name at least one `axis: option` pair, an entry may not repeat an axis the guard already fixes (under the guard that axis is decided before anything is selected), the same map may not be listed twice in one list, and one map may not appear in both lists.
 
-Matching treats an unfilled optional axis as matching no pair, on either side: a guard on `recorder: "lerobot_recorder"` stays quiet when the recorder axis is off, and a `requires` alternative naming that option is satisfied only by selecting it, never by leaving the axis unfilled. That asymmetry is the tool for optional features: `requires` is how an option demands company, while `forbids` is the only way to say an optional option never launches with another one (nothing requirable means "that axis stays off"). Where the axis is required, prefer `requires` of the wanted option instead: `requires` fails closed for options added later, while a `forbids` list names today's options and stays silent about tomorrow's.
+Matching treats an unfilled optional axis as matching no pair, on either side: a guard on `camera: "zed"` stays quiet when the camera axis is off, and a `requires` alternative naming that option is satisfied only by selecting it, never by leaving the axis unfilled. That asymmetry is the tool for optional features: `requires` is how an option demands company, while `forbids` is the only way to say an optional option never launches with another one (nothing requirable means "that axis stays off"). Where the axis is required, prefer `requires` of the wanted option instead: `requires` fails closed for options added later, while a `forbids` list names today's options and stays silent about tomorrow's.
 
 The refusal happens at selection time and names the full resolution (with its `(default)` markers showing the axes the operator never named), what was required or forbidden, and the author's `reason`. When several constraints overlap, the first declared one refuses, so the author controls which reason the operator reads.
 
