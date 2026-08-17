@@ -4227,7 +4227,9 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
 /// candidates (one of which is absent in any given selection, so the launch
 /// also exercises the skip). `--with` picks beta and the extras; what runs
 /// is the flattened single deployment, and the coordinator echoes the full
-/// resolution before anything starts.
+/// resolution before anything starts. The launcher also declares a
+/// constraint this selection satisfies, so a satisfied constraint is shown
+/// not to stand in a real launch's way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stack_launch_flattens_a_composed_launcher() {
     let serve = ServeCommandEmulation::with_mock()
@@ -4332,6 +4334,10 @@ async fn stack_launch_flattens_a_composed_launcher() {
                         on: "fragments/extras.json5",
                     }},
                 }},
+            ],
+            constraints: [
+                {{ when: {{ extras: "on" }}, requires: [{{ backend: "beta" }}],
+                   reason: "the extras tune only the beta backend" }},
             ],
             deployments: [],
         }}"#,
@@ -4501,6 +4507,79 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         msg.contains("robot") && msg.contains("`mujoco`") && msg.contains("`real`"),
         "the refusal should name the axis and both options: {msg}"
     );
+
+    // A selection the launcher's `constraints` refuse is caught by the same
+    // caller-side preflight: the message opens with the choice that brought
+    // the rule in, marks the axes the operator never named, and quotes the
+    // author's reason. Here the violating axis is a DEFAULT: the operator
+    // only typed `on`.
+    let requires_launcher = nodes_dir.path().join("requires.json5");
+    fs::write(
+        &requires_launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", default: "real",
+                  options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
+                { name: "recorder", optional: true,
+                  options: { on: { deployments: [] } } },
+            ],
+            constraints: [
+                { when: { recorder: "on" }, requires: [{ robot: "mujoco" }],
+                  reason: "this recorder observes only the simulated arm" },
+            ],
+            deployments: [],
+        }"#,
+    )
+    .expect("constrained launcher should be writable");
+    let msg = launch_with(vec!["on".to_owned()], requires_launcher)
+        .expect_err("a constraint-violating selection must be refused")
+        .to_string();
+    assert!(
+        msg.contains("selecting recorder=on") && msg.contains("`robot=mujoco`"),
+        "the refusal should name the guard and the requirement: {msg}"
+    );
+    assert!(
+        msg.contains("robot=real (default)"),
+        "the echo should mark the defaulted axis the operator never typed: {msg}"
+    );
+    assert!(
+        msg.contains("observes only the simulated arm"),
+        "the author's reason should reach the operator: {msg}"
+    );
+
+    // The `forbids` form refuses a combination directly.
+    let forbids_launcher = nodes_dir.path().join("forbids.json5");
+    fs::write(
+        &forbids_launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", default: "real",
+                  options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
+                { name: "recorder", optional: true,
+                  options: { on: { deployments: [] } } },
+            ],
+            constraints: [
+                { when: { robot: "mujoco" }, forbids: [{ recorder: "on" }],
+                  reason: "the recorder films only the physical rig" },
+            ],
+            deployments: [],
+        }"#,
+    )
+    .expect("constrained launcher should be writable");
+    let msg = launch_with(
+        vec!["mujoco".to_owned(), "on".to_owned()],
+        forbids_launcher,
+    )
+    .expect_err("a forbidden combination must be refused")
+    .to_string();
+    assert!(
+        msg.contains("selecting robot=mujoco")
+            && msg.contains("forbids `recorder=on`")
+            && msg.contains("films only the physical rig"),
+        "the refusal should name the guard, the matched entry, and the reason: {msg}"
+    );
 }
 
 /// `peppy stack resolve` needs no daemon: for a filesystem launcher it reads
@@ -4585,5 +4664,66 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     assert!(
         report_text.contains("sim_inst") && report_text.contains("not in this selection"),
         "the base's sleeping adjustment is listed as skipped: {report_text}"
+    );
+}
+
+/// A constraint refusal reaches `stack resolve` through the same `compose`
+/// a launch runs, with no daemon involved; a legal sibling still flattens,
+/// and the flat document carries no composition keys.
+#[test]
+fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let launcher = dir.path().join("family.json5");
+    std::fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", default: "real",
+                  options: {
+                      real: { deployments: [
+                          { source: { name: "arm", tag: "v1" },
+                            instances: [{ instance_id: "arm_inst" }] } ] },
+                      mujoco: { deployments: [
+                          { source: { name: "sim", tag: "v1" },
+                            instances: [{ instance_id: "arm_inst" }] } ] },
+                  } },
+                { name: "cameras", optional: true,
+                  options: { cameras: { deployments: [
+                      { source: { name: "cam", tag: "v1" },
+                        instances: [{ instance_id: "cam_inst" }] } ] } } },
+            ],
+            constraints: [
+                { when: { cameras: "cameras" }, requires: [{ robot: "real" }],
+                  reason: "the cameras film the physical rig" },
+            ],
+            deployments: [],
+        }"#,
+    )
+    .expect("launcher");
+
+    let err = peppy::commands::stack::resolve_rendered(
+        launcher.clone(),
+        &["mujoco".to_owned(), "cameras".to_owned()],
+    )
+    .expect_err("the refused member must not resolve");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("selecting cameras=cameras")
+            && msg.contains("`robot=real`")
+            && msg.contains("film the physical rig"),
+        "the refusal names the guard, the requirement, and the reason: {msg}"
+    );
+
+    let (document, _report) =
+        peppy::commands::stack::resolve_rendered(launcher, &["cameras".to_owned()])
+            .expect("the legal sibling resolves");
+    assert!(
+        document.contains("cam_inst") && document.contains("arm_inst"),
+        "the flat document carries the selected options: {document}"
+    );
+    assert!(
+        !document.contains("constraints"),
+        "the flat document is an ordinary launcher with no composition keys: {document}"
     );
 }

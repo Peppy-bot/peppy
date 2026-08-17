@@ -139,6 +139,58 @@ where
     PeppySchema::deserialize_expecting(deserializer, PeppySchema::LauncherFragmentV1)
 }
 
+/// One rule about which selections this launcher refuses to be: `when` a
+/// guard holds, the selection must also satisfy at least one `requires`
+/// alternative and match no `forbids` entry, or the whole selection is
+/// refused before anything is pinned or started.
+///
+/// Constraints exist for the members of a family that FLATTEN cleanly into a
+/// stack nobody should run: a `when` guard on an adjustment can only decide
+/// whether that adjustment applies inside a legal selection, and `provides`
+/// only promises ids exist. Neither can say "this option needs another axis
+/// filled". A constraint can, and it only ever refuses: it never picks an
+/// option to satisfy itself, because a `--with` whose meaning shifts as
+/// constraints evolve would launch stacks the operator did not name.
+///
+/// Constraints live in the launcher, not in fragments: they speak in axis
+/// and option names, which are the launcher's vocabulary (fragments are
+/// deliberately reusable across launchers whose axes differ).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionConstraint {
+    /// Guard: the selections this constraint speaks about, in the same
+    /// `axis: option` grammar as an adjustment's `when` (several pairs are an
+    /// AND). Absent means every selection; an unfilled optional axis matches
+    /// no pair, so a constraint guarded on its option stays quiet when the
+    /// axis is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<BTreeMap<String, String>>,
+    /// The alternatives, at least one of which the selection must satisfy
+    /// wholly: each is an `axis: option` map (an AND), and listing several is
+    /// an OR. An unfilled optional axis satisfies no pair, which is exactly
+    /// how "this option needs a consumer" is written: require the axes that
+    /// can consume it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<BTreeMap<String, String>>,
+    /// The combinations the guarded selections must not contain: each entry
+    /// is an `axis: option` map (an AND), and matching any entry refuses the
+    /// selection. The direct form of "these options never launch together",
+    /// which `requires` cannot say about an OPTIONAL axis's option (nothing
+    /// requirable means "that axis stays off"). Where the axis is required,
+    /// prefer requiring the wanted option instead: `requires` fails closed
+    /// for options added later, while a `forbids` list names today's options
+    /// and stays silent about tomorrow's.
+    ///
+    /// A constraint states at least one of `requires` and `forbids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forbids: Vec<BTreeMap<String, String>>,
+    /// Why the refused selections must not launch, quoted verbatim in the
+    /// refusal. Required, like a vacancy's reason: the engine can render
+    /// what was required, but only the author knows what the dead
+    /// combination would have done.
+    pub reason: String,
+}
+
 /// One change to an instance defined elsewhere, in the base or in another
 /// selected fragment. Every change names its operation; nothing is inferred
 /// from a value's JSON type.
@@ -537,19 +589,109 @@ pub(crate) fn validate_guard(
     axes: &[ComponentAxis],
     origin: &str,
 ) -> Result<(), String> {
-    for (axis_name, option_name) in when {
+    validate_selection_map(when, axes, "a `when` guard", origin)
+}
+
+/// The shared half of guard and constraint validation: every `axis: option`
+/// pair names an axis this launcher declares and an option that axis
+/// declares. `what` names the map's role in the error (a `when` guard, a
+/// `requires` alternative), which is all that differs between them.
+fn validate_selection_map(
+    map: &BTreeMap<String, String>,
+    axes: &[ComponentAxis],
+    what: &str,
+    origin: &str,
+) -> Result<(), String> {
+    for (axis_name, option_name) in map {
         let Some(axis) = axes.iter().find(|axis| axis.name == *axis_name) else {
             return Err(format!(
-                "a `when` guard in {origin} names axis `{axis_name}`, which this launcher does \
+                "{what} in {origin} names axis `{axis_name}`, which this launcher does \
                  not declare. Axes: {}",
                 crate::error::format_quoted_list(axes.iter().map(ComponentAxis::as_str))
             ));
         };
         if !axis.options.contains_key(option_name) {
             return Err(format!(
-                "a `when` guard in {origin} names option `{option_name}` on axis \
+                "{what} in {origin} names option `{option_name}` on axis \
                  `{axis_name}`, which the axis does not declare. Its options: {}",
                 crate::error::format_quoted_list(axis.options.keys())
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The launcher-local checks on a `constraints` list: shapes that say
+/// something and references that resolve. Selection-independent, so it runs
+/// while the launcher document parses; whether a given selection violates a
+/// constraint is [`super::flatten`]'s question.
+pub(crate) fn validate_constraints(
+    constraints: &[SelectionConstraint],
+    axes: &[ComponentAxis],
+) -> Result<(), String> {
+    for (index, constraint) in constraints.iter().enumerate() {
+        let origin = format!("the launcher's `constraints` entry {}", index + 1);
+        if let Some(when) = &constraint.when {
+            if when.is_empty() {
+                return Err(format!(
+                    "{origin} declares an empty `when`: a guard names at least one \
+                     `axis: option` pair, or omits `when` entirely to speak about every \
+                     selection"
+                ));
+            }
+            validate_selection_map(when, axes, "a `when` guard", &origin)?;
+        }
+        if constraint.requires.is_empty() && constraint.forbids.is_empty() {
+            return Err(format!(
+                "{origin} declares neither `requires` nor `forbids`: a constraint states what \
+                 the guarded selections must also have, or must not combine with, and with \
+                 neither it refuses nothing"
+            ));
+        }
+        for (entries, kind, verb) in [
+            (&constraint.requires, "`requires` alternative", "requires"),
+            (&constraint.forbids, "`forbids` entry", "forbids"),
+        ] {
+            let mut seen: Vec<&BTreeMap<String, String>> = Vec::with_capacity(entries.len());
+            for entry in entries {
+                if entry.is_empty() {
+                    return Err(format!(
+                        "{origin} lists an empty {kind}: an entry names at least one \
+                         `axis: option` pair"
+                    ));
+                }
+                validate_selection_map(entry, axes, &format!("a {kind}"), &origin)?;
+                if let Some(when) = &constraint.when {
+                    for axis_name in entry.keys() {
+                        if when.contains_key(axis_name) {
+                            return Err(format!(
+                                "{origin} {verb} axis `{axis_name}` inside a constraint whose \
+                                 `when` already fixes that axis: under the guard the entry is \
+                                 decided before anything is selected. Restate it without the \
+                                 axis"
+                            ));
+                        }
+                    }
+                }
+                if seen.contains(&entry) {
+                    return Err(format!("{origin} lists the same {kind} more than once"));
+                }
+                seen.push(entry);
+            }
+        }
+        for alternative in &constraint.requires {
+            if constraint.forbids.contains(alternative) {
+                return Err(format!(
+                    "{origin} lists the same `axis: option` map in `requires` and `forbids`: \
+                     a combination cannot be both what satisfies the constraint and what it \
+                     refuses"
+                ));
+            }
+        }
+        if constraint.reason.trim().is_empty() {
+            return Err(format!(
+                "{origin} has an empty `reason`: the refusal quotes it to the operator, and \
+                 only the author knows why the refused combinations must not launch"
             ));
         }
     }
@@ -787,6 +929,203 @@ mod tests {
         .expect_err("a bare --with word must resolve to one thing");
         assert!(error.contains("`robot`"), "got: {error}");
         assert!(error.contains("`real`"), "got: {error}");
+    }
+
+    // -- validate_constraints -----------------------------------------------
+
+    /// Two axes shaped like the cases constraints exist for: a defaulted
+    /// choice and an optional feature toggle.
+    fn constraint_axes() -> Vec<ComponentAxis> {
+        serde_json5::from_str(
+            r#"[
+                { name: "robot", default: "real",
+                  options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
+                { name: "recorder", optional: true,
+                  options: { on: { deployments: [] } } },
+            ]"#,
+        )
+        .expect("axes parse")
+    }
+
+    fn one_constraint(body: &str) -> Result<(), String> {
+        let constraints: Vec<SelectionConstraint> =
+            serde_json5::from_str(&format!("[{body}]")).map_err(|e| e.to_string())?;
+        validate_constraints(&constraints, &constraint_axes())
+    }
+
+    #[test]
+    fn a_well_formed_constraint_passes() {
+        one_constraint(
+            r#"{ when: { recorder: "on" },
+                 requires: [{ robot: "real" }],
+                 reason: "the recorder films the physical rig" }"#,
+        )
+        .expect("valid constraint");
+    }
+
+    #[test]
+    fn an_unconditional_constraint_passes() {
+        one_constraint(
+            r#"{ requires: [{ robot: "real" }, { recorder: "on" }], reason: "why" }"#,
+        )
+        .expect("a constraint without `when` speaks about every selection");
+    }
+
+    #[test]
+    fn an_empty_constraint_guard_is_refused() {
+        let error = one_constraint(r#"{ when: {}, requires: [{ robot: "real" }], reason: "r" }"#)
+            .expect_err("an empty guard means nothing");
+        assert!(error.contains("empty `when`"), "got: {error}");
+    }
+
+    #[test]
+    fn a_constraint_enforcing_nothing_is_refused() {
+        let error = one_constraint(r#"{ when: { recorder: "on" }, requires: [], reason: "r" }"#)
+            .expect_err("nothing to enforce refuses nothing");
+        assert!(
+            error.contains("neither `requires` nor `forbids`"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_forbids_only_constraint_passes() {
+        one_constraint(
+            r#"{ when: { robot: "mujoco" }, forbids: [{ recorder: "on" }],
+                 reason: "the recorder films only the physical rig" }"#,
+        )
+        .expect("an exclusion needs no requires");
+        one_constraint(
+            r#"{ forbids: [{ robot: "mujoco", recorder: "on" }], reason: "why" }"#,
+        )
+        .expect("an unconditional exclusion of one combination");
+    }
+
+    #[test]
+    fn an_empty_forbids_entry_is_refused() {
+        let error = one_constraint(r#"{ when: { robot: "mujoco" }, forbids: [{}], reason: "r" }"#)
+            .expect_err("an empty entry says nothing");
+        assert!(error.contains("empty `forbids` entry"), "got: {error}");
+    }
+
+    #[test]
+    fn a_forbids_entry_on_a_guarded_axis_is_refused() {
+        let error = one_constraint(
+            r#"{ when: { robot: "mujoco" }, forbids: [{ robot: "real" }], reason: "r" }"#,
+        )
+        .expect_err("under the guard the axis is already fixed");
+        assert!(error.contains("already fixes"), "got: {error}");
+    }
+
+    #[test]
+    fn a_duplicated_forbids_entry_is_refused() {
+        let error = one_constraint(
+            r#"{ forbids: [{ recorder: "on" }, { recorder: "on" }], reason: "r" }"#,
+        )
+        .expect_err("a duplicate entry is a mistake");
+        assert!(error.contains("more than once"), "got: {error}");
+    }
+
+    #[test]
+    fn a_map_in_both_requires_and_forbids_is_refused() {
+        let error = one_constraint(
+            r#"{ requires: [{ recorder: "on" }], forbids: [{ recorder: "on" }], reason: "r" }"#,
+        )
+        .expect_err("one map cannot be both the satisfaction and the refusal");
+        assert!(
+            error.contains("both what satisfies"),
+            "got: {error}"
+        );
+    }
+
+    /// The conflict is the IDENTICAL map in both lists: different maps may
+    /// share one constraint, each list keeping its own meaning.
+    #[test]
+    fn requires_and_forbids_with_different_maps_coexist() {
+        one_constraint(
+            r#"{ requires: [{ robot: "real" }], forbids: [{ recorder: "on" }],
+                 reason: "the rig runs unrecorded" }"#,
+        )
+        .expect("only the identical map in both lists is a conflict");
+    }
+
+    #[test]
+    fn a_forbids_entry_naming_an_unknown_option_is_refused() {
+        let error = one_constraint(
+            r#"{ forbids: [{ robot: "genesis" }], reason: "r" }"#,
+        )
+        .expect_err("an unknown option is a dead reference");
+        assert!(error.contains("`genesis`"), "got: {error}");
+        assert!(error.contains("`forbids` entry"), "got: {error}");
+    }
+
+    #[test]
+    fn an_empty_requires_alternative_is_refused() {
+        let error =
+            one_constraint(r#"{ when: { recorder: "on" }, requires: [{}], reason: "r" }"#)
+                .expect_err("an empty alternative says nothing");
+        assert!(error.contains("empty `requires` alternative"), "got: {error}");
+    }
+
+    #[test]
+    fn a_requires_alternative_on_a_guarded_axis_is_refused() {
+        let error = one_constraint(
+            r#"{ when: { robot: "mujoco" }, requires: [{ robot: "real" }], reason: "r" }"#,
+        )
+        .expect_err("under the guard the axis is already fixed");
+        assert!(error.contains("already fixes"), "got: {error}");
+    }
+
+    #[test]
+    fn a_duplicated_requires_alternative_is_refused() {
+        let error = one_constraint(
+            r#"{ when: { recorder: "on" },
+                 requires: [{ robot: "real" }, { robot: "real" }], reason: "r" }"#,
+        )
+        .expect_err("a duplicate alternative is a mistake");
+        assert!(error.contains("more than once"), "got: {error}");
+    }
+
+    #[test]
+    fn a_blank_constraint_reason_is_refused() {
+        let error = one_constraint(
+            r#"{ when: { recorder: "on" }, requires: [{ robot: "real" }], reason: "   " }"#,
+        )
+        .expect_err("the refusal quotes the reason");
+        assert!(error.contains("empty `reason`"), "got: {error}");
+    }
+
+    #[test]
+    fn a_constraint_without_a_reason_does_not_parse() {
+        let error =
+            one_constraint(r#"{ when: { recorder: "on" }, requires: [{ robot: "real" }] }"#)
+                .expect_err("reason is required");
+        assert!(error.contains("reason"), "got: {error}");
+    }
+
+    #[test]
+    fn a_constraint_naming_an_unknown_axis_or_option_is_refused() {
+        let error = one_constraint(
+            r#"{ when: { commander: "web" }, requires: [{ robot: "real" }], reason: "r" }"#,
+        )
+        .expect_err("an unknown axis is a dead reference");
+        assert!(error.contains("`commander`"), "got: {error}");
+
+        let error = one_constraint(
+            r#"{ when: { recorder: "on" }, requires: [{ robot: "sim" }], reason: "r" }"#,
+        )
+        .expect_err("an unknown option is a dead reference");
+        assert!(error.contains("`sim`"), "got: {error}");
+        assert!(error.contains("`requires` alternative"), "got: {error}");
+    }
+
+    #[test]
+    fn a_misspelled_constraint_field_is_refused() {
+        let error = one_constraint(
+            r#"{ when: { recorder: "on" }, requires: [{ robot: "real" }], reasn: "r" }"#,
+        )
+        .expect_err("a misspelled field must not silently vanish");
+        assert!(error.contains("reasn"), "got: {error}");
     }
 
     // -- validate_adjustment ------------------------------------------------

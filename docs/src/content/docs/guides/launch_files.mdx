@@ -375,6 +375,37 @@ An adjustment whose target the current selection does not define is **skipped**,
 
 The ownership rule of thumb: if a value is something the operator genuinely decides, make it another option on the axis, visible in the command line. If it is a *consequence* of a choice already made, write the adjustment into that option's own fragment, where it needs no guard: it runs exactly when its fragment is selected and skips when its target is absent.
 
+## Constraints
+
+Adjustments change what a selection builds; a **constraint** refuses selections nobody should run. Some members of a family are stacks no operator should be able to name: the ZED camera that films only the physical rig must not launch against the simulator. Those members flatten cleanly, so neither `provides` (which only promises ids exist) nor an adjustment's `when` guard (which only decides whether one adjustment applies inside a legal selection) can say it. A constraint can, and it only ever refuses: a violating selection is rejected before anything is pinned or started. It never picks an option to satisfy itself, because a `--with` whose meaning shifted as constraints evolve would launch stacks the operator did not name.
+
+```json5
+constraints: [
+  // With the ZED camera selected, the robot must be the real one.
+  { when: { camera: "zed" }, requires: [{ robot: "real" }],
+    reason: "the ZED films the physical rig" },
+
+  // The whole combination is refused, no guard needed.
+  { forbids: [{ robot: "mujoco", camera: "zed" }],
+    reason: "the stereo camera pairs with the real rig only" },
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `when` | The guard: the selections this constraint speaks about, in the same `axis: option` grammar as an adjustment's `when`, every named axis matching (an AND). Omit it to speak about every selection. |
+| `requires` | What the guarded selections must also contain: a list of alternatives, at least one of which must match wholly. Each alternative is an `axis: option` map where every pair must match (an AND); listing several alternatives is an OR. |
+| `forbids` | What the guarded selections must not contain: a list of `axis: option` maps, and matching any one of them (each an AND of its pairs) refuses the selection outright. |
+| `reason` | Why the refused selections must not run. Required, and quoted verbatim in the refusal: peppy can render what was required or forbidden, but only the author knows what the dead combination would have done. |
+
+A constraint states at least one of `requires` and `forbids`; with neither it refuses nothing, and the launcher is refused when it is read. The rest of the shape is held to the same standard: `when` and every entry name at least one `axis: option` pair, an entry may not repeat an axis the guard already fixes (under the guard that axis is decided before anything is selected), the same map may not be listed twice in one list, and one map may not appear in both lists.
+
+Matching treats an unfilled optional axis as matching no pair, on either side: a guard on `camera: "zed"` stays quiet when the camera axis is off, and a `requires` alternative naming that option is satisfied only by selecting it, never by leaving the axis unfilled. That asymmetry is the tool for optional features: `requires` is how an option demands company, while `forbids` is the only way to say an optional option never launches with another one (nothing requirable means "that axis stays off"). Where the axis is required, prefer `requires` of the wanted option instead: `requires` fails closed for options added later, while a `forbids` list names today's options and stays silent about tomorrow's.
+
+The refusal happens at selection time and names the full resolution (with its `(default)` markers showing the axes the operator never named), what was required or forbidden, and the author's `reason`. When several constraints overlap, the first declared one refuses, so the author controls which reason the operator reads.
+
+Constraints live in the launcher, not in fragments: they speak in axis and option names, the launcher's vocabulary, while fragments are deliberately reusable across launchers whose axes differ. `peppy repo index --check` holds them to leaving a usable family behind: a constraint that refuses no selection, an option no legal selection can pick, and a default selection that violates a constraint are each reported when the launcher is indexed.
+
 ## Fragments: splitting a launcher across files
 
 An option's body can live in its own file, called a **fragment**. This is an organizational choice, never a requirement: a launcher whose options are all inline is self-contained. Extract a fragment once a second launcher wants the same body, so the body is stated once.

@@ -1,4 +1,4 @@
-use super::composition::{Adjustment, ComponentAxis};
+use super::composition::{Adjustment, ComponentAxis, SelectionConstraint};
 use crate::error::StructuredError;
 use crate::internal::contract::validate_named_items;
 use crate::internal::core_node_name::{CoreNodeName, SELF_CORE_NODE};
@@ -48,6 +48,13 @@ pub struct PeppyLauncher {
     /// adjustment is indirection around a file the author can edit directly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub adjustments: Vec<Adjustment>,
+    /// The selections this family refuses to be: rules that a resolved
+    /// selection must satisfy or the launch is refused before anything is
+    /// pinned or started. How a family excludes members that would flatten
+    /// cleanly into a stack nobody should run. Requires `components`: with
+    /// nothing to select there is no selection to refuse.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<SelectionConstraint>,
 }
 
 /// Custom deserialization for [`PeppyLauncher`] that, after the default
@@ -79,6 +86,8 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             components: Vec<ComponentAxis>,
             #[serde(default)]
             adjustments: Vec<Adjustment>,
+            #[serde(default)]
+            constraints: Vec<SelectionConstraint>,
         }
 
         let raw = RawPeppyLauncher::deserialize(deserializer)?;
@@ -99,6 +108,18 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
         }
         super::composition::validate_launcher_adjustments(&raw.adjustments, &raw.components)
             .map_err(de::Error::custom)?;
+        // Same shape of refusal as the adjustments one above: a constraint
+        // speaks in axis and option names, so without axes it refers to
+        // nothing.
+        if raw.components.is_empty() && !raw.constraints.is_empty() {
+            return Err(de::Error::custom(
+                "this launcher declares `constraints` but no `components`: with nothing to \
+                 select there is no selection to refuse. Declare the axes the constraints \
+                 speak about, or drop them",
+            ));
+        }
+        super::composition::validate_constraints(&raw.constraints, &raw.components)
+            .map_err(de::Error::custom)?;
 
         if raw.components.is_empty() {
             cross_check_flat_document(&raw.deployments, &raw.core_nodes)
@@ -111,6 +132,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             deployments: raw.deployments,
             components: raw.components,
             adjustments: raw.adjustments,
+            constraints: raw.constraints,
         })
     }
 }

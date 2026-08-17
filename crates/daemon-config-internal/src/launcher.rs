@@ -14,7 +14,7 @@ mod types;
 pub use bindings::{BindingValidationItem, ValidatedBindings, validate_bindings};
 pub use composition::{
     Adjustment, ComponentAxis, Fragment, FragmentPart, FragmentSpec, LauncherFragment,
-    LauncherFragmentParser,
+    LauncherFragmentParser, SelectionConstraint,
 };
 pub use flatten::{
     AppliedAdjustment, AppliedChange, ComponentSelection, CompositionError, FlattenReport,
