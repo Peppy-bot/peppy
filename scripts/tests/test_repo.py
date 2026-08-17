@@ -11,7 +11,6 @@ from functions.cli import ReleaseError
 from functions.repo import (
     commit_paths,
     fetch_remote_branches,
-    force_push_branch,
     get_commit,
     get_commit_subjects,
     has_changes_in_paths,
@@ -186,24 +185,6 @@ def test_push_branch_raises_when_rejected() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
         with pytest.raises(ReleaseError, match="failed to push 'dev' to 'origin/main'"):
             push_branch("origin", "dev", "main")
-
-
-def test_force_push_branch_overwrites_the_remote_branch() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
-        force_push_branch("origin", "auto/docs-update-abc", "auto/docs-update-abc")
-    assert run.call_args.args[0] == [
-        "git",
-        "push",
-        "--force",
-        "origin",
-        "auto/docs-update-abc:refs/heads/auto/docs-update-abc",
-    ]
-
-
-def test_force_push_branch_raises_when_rejected() -> None:
-    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
-        with pytest.raises(ReleaseError, match="failed to force-push 'docs'"):
-            force_push_branch("origin", "docs", "docs")
 
 
 # --- switching branches ---

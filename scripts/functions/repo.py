@@ -201,35 +201,15 @@ def push_branch(remote: str, local_branch: str, remote_branch: str) -> None:
         )
 
 
-def force_push_branch(remote: str, local_branch: str, remote_branch: str) -> None:
-    """Force-push *local_branch* to ``{remote}/{remote_branch}``.
-
-    Kept separate from `push_branch` so that overwriting remote history is
-    always visible at the call site: the only caller is the throwaway docs-sync
-    branch, whose content is regenerated from scratch on every release attempt
-    and must replace whatever a previous attempt left behind.
-
-    Raises ReleaseError if the push fails.
-    """
-    result = subprocess.run(
-        ["git", "push", "--force", remote, f"{local_branch}:refs/heads/{remote_branch}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ReleaseError(
-            f"failed to force-push '{local_branch}' to '{remote}/{remote_branch}': "
-            f"{result.stderr.strip()}"
-        )
-
-
 def switch_to_new_branch(branch: str) -> None:
     """Create or reset *branch* at HEAD and check it out, keeping the tree.
 
-    ``git switch -C`` resets an existing branch instead of refusing, so a branch
-    left over from an earlier attempt is reused rather than colliding. The
-    working tree is carried over, which is the point: the caller has just edited
-    files and wants them committed here rather than on the current branch.
+    ``git switch -C`` resets an existing branch instead of refusing, so a local
+    branch left over from an earlier attempt is reused rather than colliding.
+    Only the local ref moves; nothing published is rewritten, and the push that
+    follows is a plain one that fails if the remote has diverged. The working
+    tree is carried over, which is the point: the caller has just edited files
+    and wants them committed here rather than on the current branch.
 
     Raises ReleaseError if the branch cannot be checked out (for example when
     another worktree already has it).

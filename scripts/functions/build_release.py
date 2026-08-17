@@ -72,7 +72,6 @@ from .docker import main as build_base_images_main
 from .repo import (
     commit_paths,
     fetch_remote_branches,
-    force_push_branch,
     get_commit,
     get_commit_subjects,
     get_current_branch,
@@ -448,9 +447,10 @@ def _find_open_docs_sync_pr(
 ) -> str | None:
     """Return the URL of an open pull request from *branch*, or None.
 
-    A previous release attempt on the same commit already opened one; the
-    force-push has just refreshed its content, so it is reported again instead
-    of failing on GitHub's "a pull request already exists" rejection.
+    The branch name pins the release commit, so an open pull request from it
+    means an earlier attempt on this same commit already produced the docs
+    update. That one is reported as-is: it is the fix, and re-deriving it would
+    only overwrite work a reviewer may have already added to it.
     """
     response = github_api(
         client,
@@ -474,12 +474,26 @@ def _push_docs_sync_branch(branch: str, docs_dir: Path) -> None:
     checkout returns to `dev` in a `finally`, so a failed commit or push never
     strands the working tree on the throwaway branch, and the docs edits leave
     the tree with it: they live on the branch from here on.
+
+    The push is a plain one. An open pull request for this release commit has
+    already been ruled out by the caller, so a rejection here means a branch was
+    left behind by an attempt whose pull request is gone, and the fix is to say
+    so rather than to overwrite whatever is on it.
     """
     switch_to_new_branch(branch)
     try:
         commit_paths([docs_dir], "docs: sync with the code being released")
         console.print(f"Pushing '{branch}' to {GIT_REMOTE}...")
-        force_push_branch(GIT_REMOTE, branch, branch)
+        try:
+            push_branch(GIT_REMOTE, branch, branch)
+        except ReleaseError as e:
+            raise ReleaseError(
+                f"{e}\n"
+                f"'{GIT_REMOTE}/{branch}' already holds different commits and no "
+                f"pull request is open for it, so it is left over from an earlier "
+                f"attempt. Inspect it, then delete it with "
+                f"`git push {GIT_REMOTE} --delete {branch}` and retry."
+            ) from e
     finally:
         switch_branch(RELEASE_BRANCH)
 
@@ -491,18 +505,10 @@ def _open_docs_sync_pr(
     release_commit: str,
     changes: tuple[RequiredChange, ...],
 ) -> str:
-    """Open (or find) the pull request carrying the regenerated docs.
+    """Open the pull request carrying the regenerated docs.
 
     Returns the pull request URL.
     """
-    existing = _find_open_docs_sync_pr(client, slug, branch)
-    if existing:
-        console.print(
-            "[yellow]A docs pull request was already open for this commit; "
-            "its branch now carries the regenerated docs.[/yellow]"
-        )
-        return existing
-
     response = github_api(
         client,
         "POST",
@@ -542,9 +548,11 @@ def _verify_docs_up_to_date(
     proved it is an ancestor of the release commit.
 
     When the docs are stale, Claude regenerates them, the result is pushed to a
-    throwaway branch, a pull request against `dev` is opened, and the release
-    stops: the docs land through review like any other change rather than being
-    folded into a release nobody reads.
+    branch named after the release commit, a pull request against `dev` is
+    opened, and the release stops: the docs land through review like any other
+    change rather than being folded into a release nobody reads. A retry on the
+    same commit finds that pull request and stops on it, so nothing published is
+    ever rewritten.
     """
     docs_dir = repo_root / DOCS_DIR
     if has_changes_in_paths([docs_dir]):
@@ -568,6 +576,18 @@ def _verify_docs_up_to_date(
     for change in result.required_changes:
         console.print(f"  [bold]{change.file}[/bold]: {change.change}")
 
+    # An earlier attempt on this same commit already did the work. Report that
+    # pull request and stop: re-deriving the docs would only spend another
+    # Claude run to arrive at a branch that has to replace the one under review.
+    branch = f"{DOCS_SYNC_BRANCH_PREFIX}{release_commit[:12]}"
+    pr_url = _find_open_docs_sync_pr(client, slug, branch)
+    if pr_url:
+        console.print(
+            "[yellow]A docs pull request is already open for this "
+            "commit.[/yellow]"
+        )
+        _stop_for_docs_pr(pr_url)
+
     console.print("Asking Claude to update the docs...")
     console.print(update_docs(base, release_commit))
 
@@ -579,12 +599,15 @@ def _verify_docs_up_to_date(
             f"re-run with --skip-docs-check if the report is wrong."
         )
 
-    branch = f"{DOCS_SYNC_BRANCH_PREFIX}{release_commit[:12]}"
     _push_docs_sync_branch(branch, docs_dir)
     pr_url = _open_docs_sync_pr(
         client, slug, branch, release_commit, result.required_changes
     )
+    _stop_for_docs_pr(pr_url)
 
+
+def _stop_for_docs_pr(pr_url: str) -> None:
+    """Point the user at the docs pull request and end the release."""
     console.print(
         f"\n[yellow]Release stopped: the docs have to be updated first.[/yellow]\n"
         f"Review and merge {pr_url}\n"
