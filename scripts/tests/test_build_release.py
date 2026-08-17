@@ -14,7 +14,7 @@ from functions.build_release import (
     _commit_notes_and_align_main,
     _confirm_release_content,
     _find_open_docs_sync_pr,
-    _open_docs_sync_pr,
+    _open_docs_pr,
     _open_editor,
     _parse_editable,
     _prepare_release_content,
@@ -762,28 +762,159 @@ def test_docs_gate_passes_and_diffs_against_origin_main(
     mock_update.assert_not_called()
 
 
-@patch("functions.build_release._find_open_docs_sync_pr")
+@patch("functions.build_release.prompt_yn", return_value=False)
+@patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
 @patch("functions.build_release.update_docs")
 @patch(
     "functions.build_release.check_docs",
     return_value=CheckResult(changes=(_MINOR_CHANGE,)),
 )
 @patch("functions.build_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_passes_on_minor_only_suggestions(
+def test_docs_gate_passes_on_minor_only_suggestions_when_declined(
     mock_has_changes: MagicMock,
     mock_check: MagicMock,
     mock_update: MagicMock,
     mock_find_pr: MagicMock,
+    mock_prompt_yn: MagicMock,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    # Wording-level suggestions must never regenerate docs, open a pull
-    # request, or stop a release: they are printed and the release moves on.
+    # Wording-level suggestions never stop a release: they are printed, the
+    # user is offered an optional pull request, and declining it leaves no
+    # trace — no update run, no branch, and the release moves on.
     _docs_gate(repo_root=Path("/repo"))
 
+    mock_prompt_yn.assert_called_once()
+    assert (
+        mock_find_pr.call_args.args[2] == f"auto/docs-polish-{DEV_COMMIT[:12]}"
+    )
     mock_update.assert_not_called()
-    mock_find_pr.assert_not_called()
     err = capfd.readouterr().err
     assert "reword the intro" in err
+    assert "up to date" in err
+
+
+@patch("functions.build_release._open_docs_pr")
+@patch("functions.build_release._push_docs_sync_branch")
+@patch("functions.build_release.prompt_yn", return_value=True)
+@patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
+@patch("functions.build_release.update_docs")
+@patch(
+    "functions.build_release.check_docs",
+    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
+)
+@patch("functions.build_release.has_changes_in_paths")
+def test_docs_gate_opens_an_optional_polish_pr_and_continues(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+    mock_find_pr: MagicMock,
+    mock_prompt_yn: MagicMock,
+    mock_push_branch: MagicMock,
+    mock_open_pr: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # Accepting the offer opens the pull request on the side; the gate still
+    # returns normally so the release flows on to the tag prompt.
+    mock_update.return_value = UpdateResult(
+        results=(
+            UpdateOutcome(
+                file="docs/y.mdx",
+                change="reword the intro",
+                status="implemented",
+            ),
+        ),
+        summary="polished 1 file",
+    )
+    # Clean at the gate's dirty check, dirty after the polish update.
+    mock_has_changes.side_effect = [False, True]
+    mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/8"
+
+    _docs_gate(repo_root=Path("/repo"))
+
+    mock_update.assert_called_once_with(
+        "origin/main", DEV_COMMIT, (_MINOR_CHANGE,)
+    )
+    branch = f"auto/docs-polish-{DEV_COMMIT[:12]}"
+    mock_push_branch.assert_called_once_with(
+        branch, Path("/repo/docs"), "docs: minor polish"
+    )
+    assert mock_open_pr.call_args.args[2] == branch
+    assert "minor polish" in mock_open_pr.call_args.args[3]
+    assert "reword the intro" in mock_open_pr.call_args.args[4]
+    err = capfd.readouterr().err
+    assert "pull/8" in err
+    assert "does not block" in err
+
+
+@patch("functions.build_release._open_docs_pr")
+@patch("functions.build_release._push_docs_sync_branch")
+@patch("functions.build_release.prompt_yn", return_value=True)
+@patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
+@patch("functions.build_release.update_docs")
+@patch(
+    "functions.build_release.check_docs",
+    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
+)
+@patch("functions.build_release.has_changes_in_paths", return_value=False)
+def test_docs_gate_skips_the_polish_pr_when_the_update_changes_nothing(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_update: MagicMock,
+    mock_find_pr: MagicMock,
+    mock_prompt_yn: MagicMock,
+    mock_push_branch: MagicMock,
+    mock_open_pr: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # An accepted offer whose update produces no docs edits leaves nothing to
+    # open; the release just moves on — this path never hard-fails.
+    mock_update.return_value = UpdateResult(
+        results=(
+            UpdateOutcome(
+                file="docs/y.mdx",
+                change="reword the intro",
+                status="already_covered",
+            ),
+        ),
+        summary="nothing to polish",
+    )
+
+    _docs_gate(repo_root=Path("/repo"))
+
+    mock_push_branch.assert_not_called()
+    mock_open_pr.assert_not_called()
+    err = capfd.readouterr().err
+    assert "no pull request to open" in err
+    assert "up to date" in err
+
+
+@patch("functions.build_release.prompt_yn")
+@patch("functions.build_release.update_docs")
+@patch(
+    "functions.build_release._find_open_docs_sync_pr",
+    return_value="https://github.com/test-owner/test-repo/pull/8",
+)
+@patch(
+    "functions.build_release.check_docs",
+    return_value=CheckResult(changes=(_MINOR_CHANGE,)),
+)
+@patch("functions.build_release.has_changes_in_paths", return_value=False)
+def test_docs_gate_reports_an_open_polish_pr_without_prompting(
+    mock_has_changes: MagicMock,
+    mock_check: MagicMock,
+    mock_find_pr: MagicMock,
+    mock_update: MagicMock,
+    mock_prompt_yn: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # A polish pull request from an earlier attempt on this commit is
+    # reported, not re-derived — and there is nothing to ask the user.
+    _docs_gate(repo_root=Path("/repo"))
+
+    mock_prompt_yn.assert_not_called()
+    mock_update.assert_not_called()
+    err = capfd.readouterr().err
+    assert "pull/8" in err
     assert "up to date" in err
 
 
@@ -801,7 +932,7 @@ def test_docs_gate_rejects_a_dirty_docs_tree_before_asking_claude(
     mock_check.assert_not_called()
 
 
-@patch("functions.build_release._open_docs_sync_pr")
+@patch("functions.build_release._open_docs_pr")
 @patch("functions.build_release._push_docs_sync_branch")
 @patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
 @patch("functions.build_release.update_docs")
@@ -841,13 +972,16 @@ def test_docs_gate_opens_a_pr_and_stops_the_release(
     # The branch is named after the release commit, so a retry on that commit
     # finds the pull request instead of producing a second one.
     branch = f"auto/docs-update-{DEV_COMMIT[:12]}"
-    mock_push_branch.assert_called_once_with(branch, Path("/repo/docs"))
+    mock_push_branch.assert_called_once_with(
+        branch, Path("/repo/docs"), "docs: sync with the code being released"
+    )
     assert mock_open_pr.call_args.args[2] == branch
     # The user is pointed at the pull request that has to merge first.
     assert "pull/7" in capfd.readouterr().err
 
 
-@patch("functions.build_release._open_docs_sync_pr")
+@patch("functions.build_release.prompt_yn")
+@patch("functions.build_release._open_docs_pr")
 @patch("functions.build_release._push_docs_sync_branch")
 @patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
 @patch("functions.build_release.update_docs")
@@ -860,10 +994,12 @@ def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
     mock_find_pr: MagicMock,
     mock_push_branch: MagicMock,
     mock_open_pr: MagicMock,
+    mock_prompt_yn: MagicMock,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
     # A mixed verdict: the blocking gap drives the update and the pull
-    # request; the minor one is only printed.
+    # request; the minor one is only printed — the optional-polish offer
+    # belongs to minor-only verdicts, so nothing is asked here.
     mock_check.return_value = CheckResult(
         changes=(_MINOR_CHANGE, _BLOCKING_CHANGE)
     )
@@ -886,7 +1022,10 @@ def test_docs_gate_feeds_only_blocking_changes_to_the_update_and_pr(
     mock_update.assert_called_once_with(
         "origin/main", DEV_COMMIT, (_BLOCKING_CHANGE,)
     )
-    assert mock_open_pr.call_args.args[4] == (_BLOCKING_CHANGE,)
+    body = mock_open_pr.call_args.args[4]
+    assert "docs/x.mdx" in body
+    assert "reword the intro" not in body
+    mock_prompt_yn.assert_not_called()
     assert "reword the intro" in capfd.readouterr().err
 
 
@@ -922,7 +1061,7 @@ def test_docs_gate_stops_on_the_pr_an_earlier_attempt_opened(
     assert "pull/7" in capfd.readouterr().err
 
 
-@patch("functions.build_release._open_docs_sync_pr")
+@patch("functions.build_release._open_docs_pr")
 @patch("functions.build_release._push_docs_sync_branch")
 @patch("functions.build_release._find_open_docs_sync_pr", return_value=None)
 @patch("functions.build_release.update_docs")
@@ -1002,7 +1141,11 @@ def test_push_docs_sync_branch_pushes_without_force_and_returns_to_dev(
     mock_push: MagicMock,
     mock_switch: MagicMock,
 ) -> None:
-    _push_docs_sync_branch("auto/docs-update-abc", Path("/repo/docs"))
+    _push_docs_sync_branch(
+        "auto/docs-update-abc",
+        Path("/repo/docs"),
+        "docs: sync with the code being released",
+    )
 
     mock_switch_new.assert_called_once_with("auto/docs-update-abc")
     mock_commit.assert_called_once_with(
@@ -1030,7 +1173,9 @@ def test_push_docs_sync_branch_explains_a_rejected_push_and_returns_to_dev(
     # request is gone; say how to clear it instead of overwriting it. And a
     # failed push must never strand the working tree on the throwaway branch.
     with pytest.raises(ReleaseError) as excinfo:
-        _push_docs_sync_branch("auto/docs-update-abc", Path("/repo/docs"))
+        _push_docs_sync_branch(
+            "auto/docs-update-abc", Path("/repo/docs"), "docs: minor polish"
+        )
 
     message = str(excinfo.value)
     assert "non-fast-forward" in message
@@ -1039,28 +1184,25 @@ def test_push_docs_sync_branch_explains_a_rejected_push_and_returns_to_dev(
 
 
 @patch("functions.build_release.github_api")
-def test_open_docs_sync_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None:
+def test_open_docs_pr_creates_a_pr_against_dev(mock_api: MagicMock) -> None:
     slug = RepoSlug(owner="test-owner", repo="test-repo")
     mock_api.return_value = {
         "html_url": "https://github.com/test-owner/test-repo/pull/9"
     }
 
-    url = _open_docs_sync_pr(
+    url = _open_docs_pr(
         MagicMock(),
         slug,
         "auto/docs-update-abc",
-        DEV_COMMIT,
-        (
-            RequiredChange(
-                file="docs/x.mdx", change="document --verbose", severity="blocking"
-            ),
-        ),
+        "docs: sync with the code being released (abc)",
+        f"body mentioning docs/x.mdx at {DEV_COMMIT}",
     )
 
     assert url == "https://github.com/test-owner/test-repo/pull/9"
     payload = mock_api.call_args.kwargs["json_data"]
     assert payload["head"] == "auto/docs-update-abc"
     assert payload["base"] == "dev"
+    assert payload["title"] == "docs: sync with the code being released (abc)"
     assert "docs/x.mdx" in payload["body"]
     assert DEV_COMMIT in payload["body"]
 

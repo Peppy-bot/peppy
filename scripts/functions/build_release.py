@@ -107,6 +107,11 @@ DOCS_DIR = "docs"
 # branch (and its open pull request) rather than piling up new ones.
 DOCS_SYNC_BRANCH_PREFIX = "auto/docs-update-"
 
+# Prefix of the branch carrying optional minor doc polish the user asked for.
+# Separate from the sync prefix so a rerun that finds a blocking gap never
+# mistakes an open wording-level pull request for the fix it has to wait on.
+DOCS_POLISH_BRANCH_PREFIX = "auto/docs-polish-"
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -447,6 +452,32 @@ def _docs_sync_pr_body(
     return "\n".join(lines)
 
 
+def _docs_polish_pr_body(
+    release_commit: str,
+    changes: tuple[RequiredChange, ...],
+) -> str:
+    """Render the body of the optional docs-polish pull request."""
+    lines = [
+        (
+            "Optional docs polish produced by the release script "
+            + "(`scripts/functions/docs.py`): the docs check reported only minor "
+            + "suggestions, and the user chose to apply them anyway."
+        ),
+        "",
+        f"Release commit: {release_commit}",
+        "",
+        "Suggestions applied:",
+        "",
+    ]
+    lines += [f"- `{c.file}`: {c.change}" for c in changes]
+    lines += [
+        "",
+        "This pull request does not block the release it was cut from; merge "
+        + "or close it on its own schedule.",
+    ]
+    return "\n".join(lines)
+
+
 def _find_open_docs_sync_pr(
     client: httpx.Client,
     slug: RepoSlug,
@@ -473,8 +504,8 @@ def _find_open_docs_sync_pr(
     return None
 
 
-def _push_docs_sync_branch(branch: str, docs_dir: Path) -> None:
-    """Commit the regenerated docs onto *branch* and push it.
+def _push_docs_sync_branch(branch: str, docs_dir: Path, message: str) -> None:
+    """Commit the regenerated docs onto *branch* as *message* and push it.
 
     The branch is cut from the release commit and carries the working-tree edits
     over, so its single commit holds the docs changes and nothing else. The
@@ -489,7 +520,7 @@ def _push_docs_sync_branch(branch: str, docs_dir: Path) -> None:
     """
     switch_to_new_branch(branch)
     try:
-        commit_paths([docs_dir], "docs: sync with the code being released")
+        commit_paths([docs_dir], message)
         console.print(f"Pushing '{branch}' to {GIT_REMOTE}...")
         try:
             push_branch(GIT_REMOTE, branch, branch)
@@ -505,14 +536,14 @@ def _push_docs_sync_branch(branch: str, docs_dir: Path) -> None:
         switch_branch(RELEASE_BRANCH)
 
 
-def _open_docs_sync_pr(
+def _open_docs_pr(
     client: httpx.Client,
     slug: RepoSlug,
     branch: str,
-    release_commit: str,
-    changes: tuple[RequiredChange, ...],
+    title: str,
+    body: str,
 ) -> str:
-    """Open the pull request carrying the regenerated docs.
+    """Open a docs pull request from *branch* into the release branch.
 
     Returns the pull request URL.
     """
@@ -521,10 +552,10 @@ def _open_docs_sync_pr(
         "POST",
         f"https://api.github.com/repos/{slug.full}/pulls",
         json_data={
-            "title": f"docs: sync with the code being released ({release_commit[:12]})",
+            "title": title,
             "head": branch,
             "base": RELEASE_BRANCH,
-            "body": _docs_sync_pr_body(release_commit, changes),
+            "body": body,
         },
     )
     if not isinstance(response, dict) or not response.get("html_url"):
@@ -533,6 +564,59 @@ def _open_docs_sync_pr(
             f"request: {response!r}"
         )
     return str(response["html_url"])
+
+
+def _offer_minor_docs_pr(
+    client: httpx.Client,
+    slug: RepoSlug,
+    release_commit: str,
+    repo_root: Path,
+    minor: tuple[RequiredChange, ...],
+) -> None:
+    """Offer to apply minor doc suggestions in an optional pull request.
+
+    Minor suggestions never gate anything, so nothing on this path stops the
+    release: when the user wants the pull request it is opened on the side and
+    the flow continues to the tag prompt. An earlier polish pull request for
+    this commit is reported instead of re-derived, and an update that ends up
+    changing nothing simply leaves nothing to open.
+    """
+    branch = f"{DOCS_POLISH_BRANCH_PREFIX}{release_commit[:12]}"
+    pr_url = _find_open_docs_sync_pr(client, slug, branch)
+    if pr_url:
+        console.print(
+            f"[yellow]A docs-polish pull request is already open for this "
+            f"commit: {pr_url}[/yellow]"
+        )
+        return
+    if not prompt_yn(
+        "Open a pull request applying these minor suggestions anyway? "
+        "The release continues either way."
+    ):
+        return
+
+    console.print("Asking Claude to apply the minor suggestions...")
+    base = f"{GIT_REMOTE}/{ALIGNED_BRANCH}"
+    update = update_docs(base, release_commit, minor)
+    console.print(update.summary)
+
+    docs_dir = repo_root / DOCS_DIR
+    if not has_changes_in_paths([docs_dir]):
+        console.print(
+            f"[yellow]The update changed nothing under '{DOCS_DIR}/'; there "
+            f"is no pull request to open.[/yellow]"
+        )
+        return
+
+    _push_docs_sync_branch(branch, docs_dir, "docs: minor polish")
+    pr_url = _open_docs_pr(
+        client,
+        slug,
+        branch,
+        f"docs: minor polish ({release_commit[:12]})",
+        _docs_polish_pr_body(release_commit, minor),
+    )
+    console.print(f"Opened {pr_url}; it does not block this release.")
 
 
 def _verify_docs_up_to_date(
@@ -556,8 +640,10 @@ def _verify_docs_up_to_date(
 
     Only blocking gaps stop the release: docs that now state something false,
     or a user-facing change with no documentation at all. Minor suggestions
-    (wording, clarity, nice-to-haves) are printed and ignored, so a release is
-    never held hostage by how the model would phrase a sentence today.
+    (wording, clarity, nice-to-haves) are printed, and the user is offered an
+    optional side pull request applying them; the release continues either
+    way, so it is never held hostage by how the model would phrase a sentence
+    today.
 
     When a blocking gap exists, Claude closes exactly the reported gaps, the
     result is pushed to a branch named after the release commit, a pull
@@ -585,6 +671,10 @@ def _verify_docs_up_to_date(
     print_minor_changes(result.minor)
     blocking = result.blocking
     if not blocking:
+        if result.minor:
+            _offer_minor_docs_pr(
+                client, slug, release_commit, repo_root, result.minor
+            )
         console.print(f"[green]'{DOCS_DIR}/' is up to date.[/green]")
         return
 
@@ -631,9 +721,15 @@ def _verify_docs_up_to_date(
             f"report is wrong."
         )
 
-    _push_docs_sync_branch(branch, docs_dir)
-    pr_url = _open_docs_sync_pr(
-        client, slug, branch, release_commit, blocking
+    _push_docs_sync_branch(
+        branch, docs_dir, "docs: sync with the code being released"
+    )
+    pr_url = _open_docs_pr(
+        client,
+        slug,
+        branch,
+        f"docs: sync with the code being released ({release_commit[:12]})",
+        _docs_sync_pr_body(release_commit, blocking),
     )
     _stop_for_docs_pr(pr_url)
 
