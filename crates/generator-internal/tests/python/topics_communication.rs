@@ -254,12 +254,12 @@ if __name__ == "__main__":
 
     println!(
         "User node receiver PEPPY_RUNTIME_CONFIG=\"{}\"",
-        &receiver_runtime_config_path.display()
+        receiver_runtime_config_path.display()
     );
     println!("User node receiver = {}", user_node_receiver.display());
     println!(
         "User node emitter PEPPY_RUNTIME_CONFIG=\"{}\"",
-        &emitter_runtime_config_path.display()
+        emitter_runtime_config_path.display()
     );
     println!("User node emitter = {}", user_node_emitter.display());
 

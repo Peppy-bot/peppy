@@ -1076,7 +1076,7 @@ impl LanguageGenerator for RustGenerator {
 
         // Feedback → `GoalContext::publish_feedback`.
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let label = format!("publish_feedback {}", &action.name);
+            let label = format!("publish_feedback {}", action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
             let feedback_schema_name = format!("{base_name}_feedback");
             let format_artifacts =
