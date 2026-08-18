@@ -198,54 +198,49 @@ fn render_emitted_topic(
         "_deserialize_message",
     )?;
 
-    builder.line("class Subscription:");
-    builder.indent();
-    builder.line("\"\"\"A held subscription to the node's emissions on this topic.\"\"\"");
-    builder.blank_line();
-    builder.line("def __init__(self, inner) -> None:");
-    builder.indent();
-    builder.line("self._inner = inner");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def next(self) -> Optional[Message]:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Awaits the node's next message on this topic; `None` once the fixture \
-         session closes.\"\"\"",
-    );
-    builder.line("message = await self._inner.on_next_message()");
-    builder.line("if message is None:");
-    builder.indent();
-    builder.line("return None");
-    builder.dedent();
-    builder.line("return _deserialize_message(message.payload)");
-    builder.dedent();
-    builder.dedent();
+    builder.py(r#"
+class Subscription:
+    """A held subscription to the node's emissions on this topic."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    async def next(self) -> Optional[Message]:
+        """Awaits the node's next message on this topic; `None` once the fixture session closes."""
+        message = await self._inner.on_next_message()
+        if message is None:
+            return None
+        return _deserialize_message(message.payload)
+"#);
     builder.blank_line();
 
-    builder.line("async def subscribe(session, node_instance_id: str) -> Subscription:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Opens the observation subscription, pinned to the node under test; the \
-         harness calls this before the node boots and barriers on it, so the node's \
-         very first publish is captured.\"\"\"",
+    builder.block(
+        "async def subscribe(session, node_instance_id: str) -> Subscription:",
+        |builder| {
+            builder.docstring(
+                "Opens the observation subscription, pinned to the node under test; the \
+                 harness calls this before the node boots and barriers on it, so the node's \
+                 very first publish is captured.",
+            );
+            builder.line(
+                "producer = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)",
+            );
+            builder.call(
+                "inner = await peppylib.TopicMessenger.subscribe(",
+                &[
+                    "session,",
+                    "FIXTURE_CORE_NODE,",
+                    "FIXTURE_INSTANCE_ID,",
+                    &format!("{target},"),
+                    "TOPIC_NAME,",
+                    "producer,",
+                    &format!("{qos},"),
+                ],
+                ")",
+            );
+            builder.line("return Subscription(inner)");
+        },
     );
-    builder.line(
-        "producer = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)",
-    );
-    builder.line("inner = await peppylib.TopicMessenger.subscribe(");
-    builder.indent();
-    builder.line("session,");
-    builder.line("FIXTURE_CORE_NODE,");
-    builder.line("FIXTURE_INSTANCE_ID,");
-    builder.line(&format!("{target},"));
-    builder.line("TOPIC_NAME,");
-    builder.line("producer,");
-    builder.line(&format!("{qos},"));
-    builder.dedent();
-    builder.line(")");
-    builder.line("return Subscription(inner)");
-    builder.dedent();
 
     let mut module_path = vec!["emitted_topics".to_string()];
     match &spec.origin {
@@ -354,55 +349,59 @@ fn render_exposed_service(
         "None"
     };
 
-    builder.line(&format!(
-        "async def poll(harness{request_param}, timeout: float) -> {return_ty}:"
-    ));
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"Polls the node's exposed service `{service_name}` once from the fixture \
-         session (a fresh, identity-explicit caller pinned to the node under test), \
-         gating on reachability first. `timeout` bounds the reachability gate and the \
-         poll individually.\"\"\""
-    ));
-    builder.line("producer = harness.node_producer_ref()");
-    builder.line("await peppylib.testing.wait_service_reachable(");
-    builder.indent();
-    builder.line("harness.session,");
-    builder.line("FIXTURE_CORE_NODE,");
-    builder.line("FIXTURE_INSTANCE_ID,");
-    builder.line(&format!("{target},"));
-    builder.line("SERVICE_NAME,");
-    builder.line("producer,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-    let request_payload = if spec.request.is_some() {
-        "_serialize_request(request)"
-    } else {
-        "b\"\""
-    };
-    if spec.response.is_some() {
-        builder.line("response_message = await peppylib.ServiceMessenger.poll(");
-    } else {
-        builder.line("await peppylib.ServiceMessenger.poll(");
-    }
-    builder.indent();
-    builder.line("harness.session,");
-    builder.line("FIXTURE_CORE_NODE,");
-    builder.line("FIXTURE_INSTANCE_ID,");
-    builder.line(&format!("{target},"));
-    builder.line("SERVICE_NAME,");
-    builder.line("producer,");
-    builder.line(&format!("{request_payload},"));
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-    if spec.response.is_some() {
-        builder.line("return _deserialize_response(response_message.payload)");
-    } else {
-        builder.line("return None");
-    }
-    builder.dedent();
+    builder.block(
+        &format!("async def poll(harness{request_param}, timeout: float) -> {return_ty}:"),
+        |builder| {
+            builder.docstring(&format!(
+                "Polls the node's exposed service `{service_name}` once from the fixture \
+                 session (a fresh, identity-explicit caller pinned to the node under test), \
+                 gating on reachability first. `timeout` bounds the reachability gate and the \
+                 poll individually."
+            ));
+            builder.line("producer = harness.node_producer_ref()");
+            builder.call(
+                "await peppylib.testing.wait_service_reachable(",
+                &[
+                    "harness.session,",
+                    "FIXTURE_CORE_NODE,",
+                    "FIXTURE_INSTANCE_ID,",
+                    &format!("{target},"),
+                    "SERVICE_NAME,",
+                    "producer,",
+                    "timeout,",
+                ],
+                ")",
+            );
+            let request_payload = if spec.request.is_some() {
+                "_serialize_request(request)"
+            } else {
+                "b\"\""
+            };
+            builder.call(
+                if spec.response.is_some() {
+                    "response_message = await peppylib.ServiceMessenger.poll("
+                } else {
+                    "await peppylib.ServiceMessenger.poll("
+                },
+                &[
+                    "harness.session,",
+                    "FIXTURE_CORE_NODE,",
+                    "FIXTURE_INSTANCE_ID,",
+                    &format!("{target},"),
+                    "SERVICE_NAME,",
+                    "producer,",
+                    &format!("{request_payload},"),
+                    "timeout,",
+                ],
+                ")",
+            );
+            builder.line(if spec.response.is_some() {
+                "return _deserialize_response(response_message.payload)"
+            } else {
+                "return None"
+            });
+        },
+    );
 
     let doc = format!(
         "Identity-explicit caller for the node's exposed service `{service_name}`: \
@@ -489,12 +488,12 @@ fn render_exposed_action(
 
     // Cancel-ack states, mirroring the runtime's framework envelope (decoded
     // engine-side; no per-action schema).
-    builder.line("class CancelState(IntEnum):");
-    builder.indent();
-    builder.line("SIGNALLED = 0");
-    builder.line("ALREADY_TERMINAL = 1");
-    builder.line("UNKNOWN = 2");
-    builder.dedent();
+    builder.py(r#"
+class CancelState(IntEnum):
+    SIGNALLED = 0
+    ALREADY_TERMINAL = 1
+    UNKNOWN = 2
+"#);
     builder.blank_line();
     builder.dataclass(
         "CancelResponse",
@@ -505,13 +504,13 @@ fn render_exposed_action(
         ],
     );
 
-    builder.line("class ResultStatus(IntEnum):");
-    builder.indent();
-    builder.line("COMPLETED = 0");
-    builder.line("CANCELLED = 1");
-    builder.line("ABANDONED = 2");
-    builder.line("EXPIRED = 3");
-    builder.dedent();
+    builder.py(r#"
+class ResultStatus(IntEnum):
+    COMPLETED = 0
+    CANCELLED = 1
+    ABANDONED = 2
+    EXPIRED = 3
+"#);
     builder.blank_line();
 
     // Result data: fixtures deserialize; production defines no struct.
@@ -559,89 +558,86 @@ fn render_exposed_action(
         )?;
     }
 
-    builder.line("class GoalHandle:");
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"A goal in flight against the node's action `{action_name}`; construct \
-         with `send_goal`. Attributes: `accepted` (whether the node admitted the \
-         goal), `reason` (optional human-readable rejection reason){}.\"\"\"",
-        if spec.goal_response.is_some() {
-            ", `data` (the decoded goal response; `None` when a rejection carried no payload)"
-        } else {
-            ""
+    builder.block("class GoalHandle:", |builder| {
+        builder.docstring(&format!(
+            "A goal in flight against the node's action `{action_name}`; construct \
+             with `send_goal`. Attributes: `accepted` (whether the node admitted the \
+             goal), `reason` (optional human-readable rejection reason){}.",
+            if spec.goal_response.is_some() {
+                ", `data` (the decoded goal response; `None` when a rejection carried no payload)"
+            } else {
+                ""
+            }
+        ));
+        builder.blank_line();
+        if spec.feedback.is_some() {
+            builder.py(r#"
+async def on_next_feedback(self) -> Feedback:
+    """Receives the next decoded feedback message for this goal.
+
+    Raises RuntimeError when the node closed the stream cleanly
+    (end-of-stream sentinel) and ConnectionError when the node instance
+    disappeared without closing it; in the latter case get_result
+    resolves to ResultStatus.ABANDONED.
+    """
+    feedback = await self._inner.on_next_feedback()
+    return _deserialize_feedback(feedback.payload)
+"#);
+            builder.blank_line();
         }
-    ));
-    builder.blank_line();
-    if spec.feedback.is_some() {
-        builder.line("async def on_next_feedback(self) -> Feedback:");
-        builder.indent();
-        builder.line("\"\"\"Receives the next decoded feedback message for this goal.");
+        builder.py(r#"
+async def cancel_goal(self, timeout: float) -> CancelResponse:
+    """Requests cancellation of this goal."""
+    reply = await peppylib.ActionMessenger.cancel_goal(
+        self._messenger,
+        self._inner,
+        timeout,
+    )
+    return CancelResponse(
+        core_node=reply.core_node,
+        instance_id=reply.instance_id,
+        state=CancelState(reply.state),
+    )
+"#);
         builder.blank_line();
-        builder.line("Raises RuntimeError when the node closed the stream cleanly");
-        builder.line("(end-of-stream sentinel) and ConnectionError when the node instance");
-        builder.line("disappeared without closing it; in the latter case get_result");
-        builder.line("resolves to ResultStatus.ABANDONED.");
-        builder.line("\"\"\"");
-        builder.line("feedback = await self._inner.on_next_feedback()");
-        builder.line("return _deserialize_feedback(feedback.payload)");
-        builder.dedent();
-        builder.blank_line();
-    }
-    builder.line("async def cancel_goal(self, timeout: float) -> CancelResponse:");
-    builder.indent();
-    builder.line("\"\"\"Requests cancellation of this goal.\"\"\"");
-    builder.line("reply = await peppylib.ActionMessenger.cancel_goal(");
-    builder.indent();
-    builder.line("self._messenger,");
-    builder.line("self._inner,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return CancelResponse(");
-    builder.indent();
-    builder.line("core_node=reply.core_node,");
-    builder.line("instance_id=reply.instance_id,");
-    builder.line("state=CancelState(reply.state),");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def get_result(self, timeout: float) -> ResultResponse:");
-    builder.indent();
-    builder.line("\"\"\"Retrieves the goal's terminal result.\"\"\"");
-    builder.line("reply = await peppylib.ActionMessenger.request_result(");
-    builder.indent();
-    builder.line("self._messenger,");
-    builder.line("self._inner,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("status = ResultStatus(reply.status)");
-    if spec.result.is_some() {
-        builder.line("data = None");
-        builder.line("if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):");
-        builder.indent();
-        builder.line("data = _deserialize_result(reply.body)");
-        builder.dedent();
-        builder.line("return ResultResponse(");
-        builder.indent();
-        builder.line("core_node=reply.core_node,");
-        builder.line("instance_id=reply.instance_id,");
-        builder.line("status=status,");
-        builder.line("data=data,");
-        builder.dedent();
-        builder.line(")");
-    } else {
-        builder.line("return ResultResponse(");
-        builder.indent();
-        builder.line("core_node=reply.core_node,");
-        builder.line("instance_id=reply.instance_id,");
-        builder.line("status=status,");
-        builder.dedent();
-        builder.line(")");
-    }
-    builder.dedent();
-    builder.dedent();
+        builder.block(
+            "async def get_result(self, timeout: float) -> ResultResponse:",
+            |builder| {
+                builder.py(r#"
+"""Retrieves the goal's terminal result."""
+reply = await peppylib.ActionMessenger.request_result(
+    self._messenger,
+    self._inner,
+    timeout,
+)
+status = ResultStatus(reply.status)
+"#);
+                // A result-bearing action decodes the body, and only on the two
+                // terminal states that carry one.
+                if spec.result.is_some() {
+                    builder.py(r#"
+data = None
+if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):
+    data = _deserialize_result(reply.body)
+return ResultResponse(
+    core_node=reply.core_node,
+    instance_id=reply.instance_id,
+    status=status,
+    data=data,
+)
+"#);
+                } else {
+                    builder.py(r#"
+return ResultResponse(
+    core_node=reply.core_node,
+    instance_id=reply.instance_id,
+    status=status,
+)
+"#);
+                }
+            },
+        );
+    });
     builder.blank_line();
 
     let request_param = if spec.goal_request.is_some() {
@@ -649,60 +645,70 @@ fn render_exposed_action(
     } else {
         ""
     };
-    builder.line(&format!(
-        "async def send_goal(harness{request_param}, feedback_qos: peppylib.QoSProfile, \
-         timeout: float) -> GoalHandle:"
-    ));
-    builder.indent();
-    builder.line(
-        "\"\"\"Sends a goal to the node from the fixture session (a fresh, \
-         identity-explicit caller pinned to the node under test), gating on \
-         reachability first, and decodes the admission reply.\"\"\"",
+    builder.block(
+        &format!(
+            "async def send_goal(harness{request_param}, feedback_qos: peppylib.QoSProfile, \
+             timeout: float) -> GoalHandle:"
+        ),
+        |builder| {
+            builder.docstring(
+                "Sends a goal to the node from the fixture session (a fresh, \
+                 identity-explicit caller pinned to the node under test), gating on \
+                 reachability first, and decodes the admission reply.",
+            );
+            builder.line("producer = harness.node_producer_ref()");
+            builder.call(
+                "await peppylib.testing.wait_action_reachable(",
+                &[
+                    "harness.session,",
+                    "FIXTURE_CORE_NODE,",
+                    "FIXTURE_INSTANCE_ID,",
+                    &format!("{target},"),
+                    "ACTION_NAME,",
+                    "producer,",
+                    "timeout,",
+                ],
+                ")",
+            );
+            builder.line(if spec.goal_request.is_some() {
+                "user_goal_payload = _serialize_goal_request(request)"
+            } else {
+                "user_goal_payload = b\"\""
+            });
+            builder.call(
+                "inner = await peppylib.ActionMessenger.send_goal(",
+                &[
+                    "harness.session,",
+                    "FIXTURE_CORE_NODE,",
+                    "FIXTURE_INSTANCE_ID,",
+                    &format!("{target},"),
+                    "ACTION_NAME,",
+                    "producer,",
+                    "user_goal_payload,",
+                    "feedback_qos,",
+                    "timeout,",
+                ],
+                ")",
+            );
+            builder.py(r#"
+handle = GoalHandle()
+handle._messenger = harness.session
+handle._inner = inner
+handle.accepted = inner.accepted
+handle.reason = inner.reason
+"#);
+            if spec.goal_response.is_some() {
+                // An empty body means no response was supplied (a declared
+                // response serializes to a non-empty capnp message), which only
+                // a reject can produce.
+                builder.py(r#"
+body = inner.goal_reply_body
+handle.data = _deserialize_goal_response(body) if body else None
+"#);
+            }
+            builder.line("return handle");
+        },
     );
-    builder.line("producer = harness.node_producer_ref()");
-    builder.line("await peppylib.testing.wait_action_reachable(");
-    builder.indent();
-    builder.line("harness.session,");
-    builder.line("FIXTURE_CORE_NODE,");
-    builder.line("FIXTURE_INSTANCE_ID,");
-    builder.line(&format!("{target},"));
-    builder.line("ACTION_NAME,");
-    builder.line("producer,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-    if spec.goal_request.is_some() {
-        builder.line("user_goal_payload = _serialize_goal_request(request)");
-    } else {
-        builder.line("user_goal_payload = b\"\"");
-    }
-    builder.line("inner = await peppylib.ActionMessenger.send_goal(");
-    builder.indent();
-    builder.line("harness.session,");
-    builder.line("FIXTURE_CORE_NODE,");
-    builder.line("FIXTURE_INSTANCE_ID,");
-    builder.line(&format!("{target},"));
-    builder.line("ACTION_NAME,");
-    builder.line("producer,");
-    builder.line("user_goal_payload,");
-    builder.line("feedback_qos,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("handle = GoalHandle()");
-    builder.line("handle._messenger = harness.session");
-    builder.line("handle._inner = inner");
-    builder.line("handle.accepted = inner.accepted");
-    builder.line("handle.reason = inner.reason");
-    if spec.goal_response.is_some() {
-        // An empty body means no response was supplied (a declared response
-        // serializes to a non-empty capnp message), which only a reject can
-        // produce.
-        builder.line("body = inner.goal_reply_body");
-        builder.line("handle.data = _deserialize_goal_response(body) if body else None");
-    }
-    builder.line("return handle");
-    builder.dedent();
 
     let doc = format!(
         "Identity-explicit caller for the node's exposed action `{action_name}`: drives \
@@ -786,21 +792,20 @@ fn emit_namespace_class(
     doc: &str,
     attrs: &[String],
 ) {
-    builder.line(&format!("class {class_name}:"));
-    builder.indent();
-    builder.line(&format!("\"\"\"{doc}\"\"\""));
-    if !attrs.is_empty() {
-        builder.blank_line();
-        let mut params = vec!["self".to_string()];
-        params.extend(attrs.iter().cloned());
-        builder.line(&format!("def __init__({}) -> None:", params.join(", ")));
-        builder.indent();
-        for attr in attrs {
-            builder.line(&format!("self.{attr} = {attr}"));
+    builder.block(&format!("class {class_name}:"), |builder| {
+        builder.docstring(doc);
+        if !attrs.is_empty() {
+            builder.blank_line();
+            let mut params = vec!["self".to_string()];
+            params.extend(attrs.iter().cloned());
+            builder.block(
+                &format!("def __init__({}) -> None:", params.join(", ")),
+                |builder| {
+                    builder.lines(attrs.iter().map(|attr| format!("self.{attr} = {attr}")));
+                },
+            );
         }
-        builder.dedent();
-    }
-    builder.dedent();
+    });
     builder.blank_line();
 }
 
@@ -1014,82 +1019,62 @@ fn render_harness(
     builder.line(&format!("_SYNC_TIME_NODE_DIR = {node_dir:?}"));
     match default_parameters_literal(parameters) {
         Some(literal) => builder.line(&format!("_DEFAULT_PARAMETERS = {literal}")),
-        None => {
-            builder.line("# At least one parameter has no schema default: `parameters=None`");
-            builder.line("# defers to the node's own boot validation, which raises the");
-            builder.line("# canonical missing-parameter error before `setup` runs.");
-            builder.line("_DEFAULT_PARAMETERS = None");
-        }
+        None => builder.py(r#"
+# At least one parameter has no schema default: `parameters=None`
+# defers to the node's own boot validation, which raises the
+# canonical missing-parameter error before `setup` runs.
+_DEFAULT_PARAMETERS = None
+"#),
     }
     builder.blank_line();
 
-    builder.line("def _resolve_node_dir(node_dir):");
-    builder.indent();
-    builder.line("\"\"\"The node directory holding peppy.json5, resolved from: the explicit");
-    builder.line("`node_dir` argument, else the nearest peppy.json5 walking up from the");
-    builder.line("current working directory, else the absolute path baked at sync time.\"\"\"");
-    builder.line("if node_dir is not None:");
-    builder.indent();
-    builder.line("candidate = os.path.abspath(os.fspath(node_dir))");
-    builder.line("if os.path.isfile(os.path.join(candidate, _NODE_CONFIG_FILE)):");
-    builder.indent();
-    builder.line("return candidate");
-    builder.dedent();
-    builder.line("raise RuntimeError(");
-    builder.indent();
-    builder.line("f\"node_dir {candidate!r} does not contain {_NODE_CONFIG_FILE}; pass \"");
-    builder.line("\"the directory that holds the node's peppy.json5\"");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
-    builder.line("current = os.getcwd()");
-    builder.line("while True:");
-    builder.indent();
-    builder.line("if os.path.isfile(os.path.join(current, _NODE_CONFIG_FILE)):");
-    builder.indent();
-    builder.line("return current");
-    builder.dedent();
-    builder.line("parent = os.path.dirname(current)");
-    builder.line("if parent == current:");
-    builder.indent();
-    builder.line("break");
-    builder.dedent();
-    builder.line("current = parent");
-    builder.dedent();
-    builder.line("if os.path.isfile(os.path.join(_SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)):");
-    builder.indent();
-    builder.line("return _SYNC_TIME_NODE_DIR");
-    builder.dedent();
-    builder.line("raise RuntimeError(");
-    builder.indent();
-    builder.line("\"could not locate the node's peppy.json5 from any source: \"");
-    builder.line("\"(1) no explicit node_dir= was passed to start(), so pass the node \"");
-    builder.line("\"directory explicitly; \"");
-    builder.line("f\"(2) no {_NODE_CONFIG_FILE} was found walking up from the current \"");
-    builder.line("f\"working directory {os.getcwd()!r}, so run the tests from inside the \"");
-    builder.line("\"node directory; \"");
-    builder.line("f\"(3) the sync-time path {_SYNC_TIME_NODE_DIR!r} no longer holds one, \"");
-    builder.line("\"so the node has moved since generation; re-run peppy node sync\"");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
+    builder.py(r#"
+def _resolve_node_dir(node_dir):
+    """The node directory holding peppy.json5, resolved from: the explicit
+    `node_dir` argument, else the nearest peppy.json5 walking up from the
+    current working directory, else the absolute path baked at sync time."""
+    if node_dir is not None:
+        candidate = os.path.abspath(os.fspath(node_dir))
+        if os.path.isfile(os.path.join(candidate, _NODE_CONFIG_FILE)):
+            return candidate
+        raise RuntimeError(
+            f"node_dir {candidate!r} does not contain {_NODE_CONFIG_FILE}; pass "
+            "the directory that holds the node's peppy.json5"
+        )
+    current = os.getcwd()
+    while True:
+        if os.path.isfile(os.path.join(current, _NODE_CONFIG_FILE)):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    if os.path.isfile(os.path.join(_SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)):
+        return _SYNC_TIME_NODE_DIR
+    raise RuntimeError(
+        "could not locate the node's peppy.json5 from any source: "
+        "(1) no explicit node_dir= was passed to start(), so pass the node "
+        "directory explicitly; "
+        f"(2) no {_NODE_CONFIG_FILE} was found walking up from the current "
+        f"working directory {os.getcwd()!r}, so run the tests from inside the "
+        "node directory; "
+        f"(3) the sync-time path {_SYNC_TIME_NODE_DIR!r} no longer holds one, "
+        "so the node has moved since generation; re-run peppy node sync"
+    )
+"#);
     builder.blank_line();
 
-    builder.line("def _hydrate_parameters(parameters):");
-    builder.indent();
-    builder.line("\"\"\"The typed Parameters `setup` receives: the caller's override");
-    builder.line("verbatim, or the schema defaults hydrated the way `NodeBuilder().run`");
-    builder.line("would hydrate them.\"\"\"");
-    builder.line("if parameters is not None:");
-    builder.indent();
-    builder.line("return parameters");
-    builder.dedent();
-    builder.line("if _DEFAULT_PARAMETERS is None:");
-    builder.indent();
-    builder.line("return None");
-    builder.dedent();
-    builder.line("return _parameters.Parameters.from_dict(_DEFAULT_PARAMETERS)");
-    builder.dedent();
+    builder.py(r#"
+def _hydrate_parameters(parameters):
+    """The typed Parameters `setup` receives: the caller's override
+    verbatim, or the schema defaults hydrated the way `NodeBuilder().run`
+    would hydrate them."""
+    if parameters is not None:
+        return parameters
+    if _DEFAULT_PARAMETERS is None:
+        return None
+    return _parameters.Parameters.from_dict(_DEFAULT_PARAMETERS)
+"#);
     builder.blank_line();
 
     emit_namespace_class(
@@ -1111,46 +1096,31 @@ fn render_harness(
         &observed_attrs,
     );
 
-    builder.line("class Mocks:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Every started mock, grouped by namespace (`deps` / `pairings` / \
-         `observed`), one attribute per link. A test can consume an individual mock \
-         (`await mock.stop()` is producer-loss) without giving up the harness.\"\"\"",
-    );
-    builder.blank_line();
-    builder.line("def __init__(self, deps, pairings, observed) -> None:");
-    builder.indent();
-    builder.line("self.deps = deps");
-    builder.line("self.pairings = pairings");
-    builder.line("self.observed = observed");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def _stop_all(self) -> None:");
-    builder.indent();
-    builder.line("for group in (self.deps, self.pairings, self.observed):");
-    builder.indent();
-    builder.line("for value in vars(group).values():");
-    builder.indent();
-    builder.line("if value is None:");
-    builder.indent();
-    builder.line("continue");
-    builder.dedent();
-    builder.line("if isinstance(value, list):");
-    builder.indent();
-    builder.line("for mock in value:");
-    builder.indent();
-    builder.line("await mock.stop()");
-    builder.dedent();
-    builder.dedent();
-    builder.line("else:");
-    builder.indent();
-    builder.line("await value.stop()");
-    builder.dedent();
-    builder.dedent();
-    builder.dedent();
-    builder.dedent();
-    builder.dedent();
+    builder.block("class Mocks:", |builder| {
+        builder.docstring(
+            "Every started mock, grouped by namespace (`deps` / `pairings` / \
+             `observed`), one attribute per link. A test can consume an individual mock \
+             (`await mock.stop()` is producer-loss) without giving up the harness.",
+        );
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, deps, pairings, observed) -> None:
+    self.deps = deps
+    self.pairings = pairings
+    self.observed = observed
+
+async def _stop_all(self) -> None:
+    for group in (self.deps, self.pairings, self.observed):
+        for value in vars(group).values():
+            if value is None:
+                continue
+            if isinstance(value, list):
+                for mock in value:
+                    await mock.stop()
+            else:
+                await value.stop()
+"#);
+    });
     builder.blank_line();
 
     emit_namespace_class(
@@ -1161,113 +1131,87 @@ fn render_harness(
         &emitted_attrs,
     );
 
-    builder.line("class Harness:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Generated test harness: ephemeral router + started mocks + seeded \
-         `StandaloneConfig` + the node running in-process behind the readiness \
-         barriers. Construct with `start(...)`; tear down with `await shutdown()` (or \
-         let `async with start(...)` do it).\"\"\"",
-    );
-    builder.blank_line();
-    builder.line("def __init__(self, core, mocks, emitted, session, router, instance_id) -> None:");
-    builder.indent();
-    builder.line("self._core = core");
-    builder.line("#: Every started mock, one attribute-group per namespace.");
-    builder.line("self.mocks = mocks");
-    builder.line("#: Observation subscriptions to the node's own emissions.");
-    builder.line("self.emitted = emitted");
-    builder.line("#: The fixture caller/observer session (not the node's).");
-    builder.line("self.session = session");
-    builder.line("self._router = router");
-    builder.line("#: The node-under-test's instance id.");
-    builder.line("self.instance_id = instance_id");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("@property");
-    builder.line("def node_runner(self):");
-    builder.indent();
-    builder.line("\"\"\"The running node, for calling its runtime surface directly.\"\"\"");
-    builder.line("return self._core.node_runner");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def node_producer_ref(self) -> peppylib.ProducerRef:");
-    builder.indent();
-    builder.line("\"\"\"The node-under-test's wire identity.\"\"\"");
-    builder.line("return peppylib.ProducerRef(self._core.bound_core_node(), self.instance_id)");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def setup_finished(self) -> bool:");
-    builder.indent();
-    builder.line("\"\"\"Whether the node's `setup` has returned.\"\"\"");
-    builder.line("return self._core.setup_finished()");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def shutdown(self) -> None:");
-    builder.indent();
-    builder.line("\"\"\"Tears the fixture down in lifecycle order: node convergence");
-    builder.line("(cancel -> bounded setup await -> shutdown hooks, propagating a setup");
-    builder.line("error), then the fixture session and the mocks, then the router.\"\"\"");
-    builder.line("try:");
-    builder.indent();
-    builder.line("await self._core.shutdown()");
-    builder.dedent();
-    builder.line("finally:");
-    builder.indent();
-    builder.line("self.emitted = None");
-    builder.line("self.session = None");
-    builder.line("mocks = self.mocks");
-    builder.line("self.mocks = None");
-    builder.line("if mocks is not None:");
-    builder.indent();
-    builder.line("await mocks._stop_all()");
-    builder.dedent();
-    builder.line("router = self._router");
-    builder.line("self._router = None");
-    builder.line("if router is not None:");
-    builder.indent();
-    builder.line("await router.shutdown()");
-    builder.dedent();
-    builder.dedent();
-    builder.dedent();
-    builder.dedent();
+    builder.block("class Harness:", |builder| {
+        builder.docstring(
+            "Generated test harness: ephemeral router + started mocks + seeded \
+             `StandaloneConfig` + the node running in-process behind the readiness \
+             barriers. Construct with `start(...)`; tear down with `await shutdown()` (or \
+             let `async with start(...)` do it).",
+        );
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, core, mocks, emitted, session, router, instance_id) -> None:
+    self._core = core
+    #: Every started mock, one attribute-group per namespace.
+    self.mocks = mocks
+    #: Observation subscriptions to the node's own emissions.
+    self.emitted = emitted
+    #: The fixture caller/observer session (not the node's).
+    self.session = session
+    self._router = router
+    #: The node-under-test's instance id.
+    self.instance_id = instance_id
+
+@property
+def node_runner(self):
+    """The running node, for calling its runtime surface directly."""
+    return self._core.node_runner
+
+def node_producer_ref(self) -> peppylib.ProducerRef:
+    """The node-under-test's wire identity."""
+    return peppylib.ProducerRef(self._core.bound_core_node(), self.instance_id)
+
+def setup_finished(self) -> bool:
+    """Whether the node's `setup` has returned."""
+    return self._core.setup_finished()
+
+async def shutdown(self) -> None:
+    """Tears the fixture down in lifecycle order: node convergence
+    (cancel -> bounded setup await -> shutdown hooks, propagating a setup
+    error), then the fixture session and the mocks, then the router."""
+    try:
+        await self._core.shutdown()
+    finally:
+        self.emitted = None
+        self.session = None
+        mocks = self.mocks
+        self.mocks = None
+        if mocks is not None:
+            await mocks._stop_all()
+        router = self._router
+        self._router = None
+        if router is not None:
+            await router.shutdown()
+"#);
+    });
     builder.blank_line();
 
-    builder.line("class _HarnessStart:");
-    builder.indent();
-    builder.line(
-        "\"\"\"What `start` returns: awaitable (`harness = await start(...)`) and async \
-         context manager (`async with start(...) as harness:`, shutdown runs even \
-         when the test body fails).\"\"\"",
-    );
-    builder.blank_line();
-    builder.line("def __init__(self, coro) -> None:");
-    builder.indent();
-    builder.line("self._coro = coro");
-    builder.line("self._harness = None");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def __await__(self):");
-    builder.indent();
-    builder.line("return self._coro.__await__()");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def __aenter__(self) -> Harness:");
-    builder.indent();
-    builder.line("self._harness = await self._coro");
-    builder.line("return self._harness");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def __aexit__(self, exc_type, exc, tb) -> None:");
-    builder.indent();
-    builder.line("harness = self._harness");
-    builder.line("self._harness = None");
-    builder.line("if harness is not None:");
-    builder.indent();
-    builder.line("await harness.shutdown()");
-    builder.dedent();
-    builder.dedent();
-    builder.dedent();
+    builder.block("class _HarnessStart:", |builder| {
+        builder.docstring(
+            "What `start` returns: awaitable (`harness = await start(...)`) and async \
+             context manager (`async with start(...) as harness:`, shutdown runs even \
+             when the test body fails).",
+        );
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, coro) -> None:
+    self._coro = coro
+    self._harness = None
+
+def __await__(self):
+    return self._coro.__await__()
+
+async def __aenter__(self) -> Harness:
+    self._harness = await self._coro
+    return self._harness
+
+async def __aexit__(self, exc_type, exc, tb) -> None:
+    harness = self._harness
+    self._harness = None
+    if harness is not None:
+        await harness.shutdown()
+"#);
+    });
     builder.blank_line();
 
     // ---- start() + _start() -----------------------------------------
@@ -1278,136 +1222,131 @@ fn render_harness(
         kwarg_args.push_str(&format!(", {}", kwarg.name));
     }
 
-    builder.line(&format!(
-        "def start(setup, *, parameters=None, instance_id=None, node_dir=None{kwarg_params}):"
-    ));
-    builder.indent();
-    builder.line("\"\"\"Boots the full fixture: ephemeral router + started mocks + seeded");
-    builder.line("StandaloneConfig + the node running in-process behind the readiness");
-    builder.line("barriers. `setup` is the node's real entry point (the exact");
-    builder.line("`async def setup(params, node_runner)` shape `NodeBuilder().run`");
-    builder.line("takes), spawned only after every readiness barrier passed.");
-    builder.blank_line();
-    builder.line("Usable both ways:");
-    builder.blank_line();
-    builder.line("    harness = await start(setup)   # then: await harness.shutdown()");
-    builder.line("    async with start(setup) as harness: ...   # shutdown on exit");
-    builder.blank_line();
-    builder.line("`parameters` is the typed `peppygen.parameters.Parameters` override");
-    builder.line("(`None` uses the schema defaults); `instance_id` overrides the unique");
-    builder.line("generated one; `node_dir` points at the directory holding the node's");
-    builder.line("peppy.json5 when neither the working directory nor the sync-time path");
-    builder.line("resolves it.");
-    if !slot_kwargs.is_empty() {
-        builder.blank_line();
-        for kwarg in &slot_kwargs {
-            builder.line(&kwarg.doc);
-        }
-    }
-    builder.line("\"\"\"");
-    builder.line(&format!(
-        "return _HarnessStart(_start(setup, parameters, instance_id, node_dir{kwarg_args}))"
-    ));
-    builder.dedent();
+    builder.block(
+        &format!(
+            "def start(setup, *, parameters=None, instance_id=None, node_dir=None{kwarg_params}):"
+        ),
+        |builder| {
+            builder.py(r#"
+"""Boots the full fixture: ephemeral router + started mocks + seeded
+StandaloneConfig + the node running in-process behind the readiness
+barriers. `setup` is the node's real entry point (the exact
+`async def setup(params, node_runner)` shape `NodeBuilder().run`
+takes), spawned only after every readiness barrier passed.
+
+Usable both ways:
+
+    harness = await start(setup)   # then: await harness.shutdown()
+    async with start(setup) as harness: ...   # shutdown on exit
+
+`parameters` is the typed `peppygen.parameters.Parameters` override
+(`None` uses the schema defaults); `instance_id` overrides the unique
+generated one; `node_dir` points at the directory holding the node's
+peppy.json5 when neither the working directory nor the sync-time path
+resolves it.
+"#);
+            // One paragraph per slot the deployment lets a test vary.
+            if !slot_kwargs.is_empty() {
+                builder.blank_line();
+                builder.lines(slot_kwargs.iter().map(|kwarg| &kwarg.doc));
+            }
+            builder.line("\"\"\"");
+            builder.line(&format!(
+                "return _HarnessStart(_start(setup, parameters, instance_id, node_dir{kwarg_args}))"
+            ));
+        },
+    );
     builder.blank_line();
 
-    builder.line(&format!(
-        "async def _start(setup, parameters, instance_id, node_dir{kwarg_args}) -> Harness:"
-    ));
-    builder.indent();
-    builder.line("node_dir = _resolve_node_dir(node_dir)");
-    builder.line("if instance_id is None:");
-    builder.indent();
-    builder.line("instance_id = peppylib.testing.unique_test_instance_id()");
-    builder.dedent();
-    builder.line("router = await peppylib.testing.EphemeralRouter.start()");
-    builder.line("try:");
-    builder.indent();
-    for line in &mock_starts {
-        builder.line(line);
-    }
-    builder.line("session = await router.connect()");
-    for line in &emitted_subscribes {
-        builder.line(line);
-    }
-    builder.line("standalone = (");
-    builder.indent();
-    builder.line("peppylib.StandaloneConfig()");
-    builder.line(".with_messaging(router.host, router.port)");
-    builder.line(".with_instance_id(instance_id)");
-    builder.dedent();
-    builder.line(")");
-    builder.line("if parameters is not None:");
-    builder.indent();
-    builder.line("standalone = standalone.with_parameters(parameters)");
-    builder.dedent();
-    for line in &seeding {
-        builder.line(line);
-    }
-    if publisher_readiness.is_empty() {
-        builder.line("publisher_readiness = []");
-    } else {
-        builder.line("publisher_readiness = [");
-        builder.indent();
-        for entry in &publisher_readiness {
-            for line in entry {
-                builder.line(line);
-            }
-        }
-        builder.dedent();
-        builder.line("]");
-    }
-    builder.line("service_readiness = []");
-    for line in &service_readiness {
-        builder.line(line);
-    }
-    builder.line("core = await peppylib.testing.HarnessCore.start(");
-    builder.indent();
-    builder.line("os.path.join(node_dir, _NODE_CONFIG_FILE),");
-    builder.line("standalone,");
-    builder.line("publisher_readiness,");
-    builder.line("setup,");
-    builder.line("parameters=_hydrate_parameters(parameters),");
-    builder.line("service_readiness=service_readiness,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return Harness(");
-    builder.indent();
-    builder.line("core=core,");
-    builder.line("mocks=Mocks(");
-    builder.indent();
-    builder.line(&format!(
-        "deps=DepMocks({}),",
-        mock_kwargs(&dep_attrs, "dep")
-    ));
-    builder.line(&format!(
-        "pairings=PairingMocks({}),",
-        mock_kwargs(&pairing_attrs, "pair")
-    ));
-    builder.line(&format!(
-        "observed=ObservedMocks({}),",
-        mock_kwargs(&observed_attrs, "obs")
-    ));
-    builder.dedent();
-    builder.line("),");
-    builder.line(&format!(
-        "emitted=Emitted({}),",
-        mock_kwargs(&emitted_attrs, "emitted")
-    ));
-    builder.line("session=session,");
-    builder.line("router=router,");
-    builder.line("instance_id=instance_id,");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
-    builder.line("except BaseException:");
-    builder.indent();
-    // A failed boot must still release the router (and its mesh-serialization
-    // lock); Rust gets this from Drop, Python has no async drop hook.
-    builder.line("await router.shutdown()");
-    builder.line("raise");
-    builder.dedent();
-    builder.dedent();
+    builder.block(
+        &format!(
+            "async def _start(setup, parameters, instance_id, node_dir{kwarg_args}) -> Harness:"
+        ),
+        |builder| {
+            builder.py(r#"
+node_dir = _resolve_node_dir(node_dir)
+if instance_id is None:
+    instance_id = peppylib.testing.unique_test_instance_id()
+router = await peppylib.testing.EphemeralRouter.start()
+"#);
+            builder.block("try:", |builder| {
+                builder.lines(&mock_starts);
+                builder.line("session = await router.connect()");
+                builder.lines(&emitted_subscribes);
+                builder.py(r#"
+standalone = (
+    peppylib.StandaloneConfig()
+    .with_messaging(router.host, router.port)
+    .with_instance_id(instance_id)
+)
+if parameters is not None:
+    standalone = standalone.with_parameters(parameters)
+"#);
+                builder.lines(&seeding);
+                if publisher_readiness.is_empty() {
+                    builder.line("publisher_readiness = []");
+                } else {
+                    builder.block("publisher_readiness = [", |builder| {
+                        for entry in &publisher_readiness {
+                            builder.lines(entry);
+                        }
+                    });
+                    builder.line("]");
+                }
+                builder.line("service_readiness = []");
+                builder.lines(&service_readiness);
+                builder.call(
+                    "core = await peppylib.testing.HarnessCore.start(",
+                    &[
+                        "os.path.join(node_dir, _NODE_CONFIG_FILE),",
+                        "standalone,",
+                        "publisher_readiness,",
+                        "setup,",
+                        "parameters=_hydrate_parameters(parameters),",
+                        "service_readiness=service_readiness,",
+                    ],
+                    ")",
+                );
+                builder.block("return Harness(", |builder| {
+                    builder.line("core=core,");
+                    builder.call(
+                        "mocks=Mocks(",
+                        &[
+                            &format!("deps=DepMocks({}),", mock_kwargs(&dep_attrs, "dep")),
+                            &format!(
+                                "pairings=PairingMocks({}),",
+                                mock_kwargs(&pairing_attrs, "pair")
+                            ),
+                            &format!(
+                                "observed=ObservedMocks({}),",
+                                mock_kwargs(&observed_attrs, "obs")
+                            ),
+                        ],
+                        "),",
+                    );
+                    builder.line(&format!(
+                        "emitted=Emitted({}),",
+                        mock_kwargs(&emitted_attrs, "emitted")
+                    ));
+                    builder.lines([
+                        "session=session,",
+                        "router=router,",
+                        "instance_id=instance_id,",
+                    ]);
+                });
+                builder.line(")");
+            });
+            builder.block("except BaseException:", |builder| {
+                // A failed boot must still release the router (and its
+                // mesh-serialization lock); Rust gets this from Drop, Python has
+                // no async drop hook.
+                builder.py(r#"
+await router.shutdown()
+raise
+"#);
+            });
+        },
+    );
 
     let doc = "Generated test harness: ephemeral router + started mocks + seeded \
                StandaloneConfig + the node running in-process behind the readiness \
