@@ -210,6 +210,7 @@ fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
+        optional: false,
     };
     generator.add_peer_emitted_topic(&commands, &peer).unwrap();
     generator.add_peer_consumed_topic(&states, &peer).unwrap();

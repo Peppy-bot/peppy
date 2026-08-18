@@ -842,10 +842,32 @@ fn render_harness(
         ));
         let local = format!("pair_{attr}");
         mock_starts.push(format!("{local} = await {alias}.Mock.start(router, instance_id)"));
-        seeding.push(format!(
-            "standalone = standalone.with_peer_pin({link_id:?}, {alias}.MOCK_CORE_NODE, \
-             {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
-        ));
+        if spec.optional {
+            // The mock still starts when vacant: its pinned subscription is
+            // what resolves the publisher-readiness barrier, and an unpaired
+            // node's publishes on the slot are legal no-ops — so only the
+            // pin seeding is withheld.
+            let kwarg = format!("{attr}_vacant");
+            slot_kwargs.push(SlotKwarg {
+                name: kwarg.clone(),
+                default: "False".to_string(),
+                doc: format!(
+                    "{kwarg}: boot with the optional `{link_id}` pairing slot \
+                     unpaired (the peer pin is not seeded; the still-started \
+                     mock's subscriptions stay silent)."
+                ),
+            });
+            seeding.push(format!("if not {kwarg}:"));
+            seeding.push(format!(
+                "    standalone = standalone.with_peer_pin({link_id:?}, \
+                 {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
+            ));
+        } else {
+            seeding.push(format!(
+                "standalone = standalone.with_peer_pin({link_id:?}, {alias}.MOCK_CORE_NODE, \
+                 {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
+            ));
+        }
         // The mock subscribes to every topic the node emits on this slot;
         // barrier on each so the node's first publish routes.
         let pairing_target = target_python_expr(&TargetSpec::Pairing {

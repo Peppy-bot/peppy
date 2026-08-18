@@ -885,15 +885,40 @@ fn render_harness(
         mock_starts.push(quote! {
             let #field = #module::Mock::start(&router, &instance_id).await?;
         });
-        pairing_mock_inits.push(field);
-        seeding.push(quote! {
+        pairing_mock_inits.push(field.clone());
+        let seed_pin = quote! {
             standalone = standalone.with_peer_pin(
                 #link_id,
                 #module::MOCK_CORE_NODE,
                 #module::MOCK_INSTANCE_ID,
                 #module::PEER_LINK_ID,
             );
-        });
+        };
+        if spec.optional {
+            // The mock still starts when vacant: its pinned subscription is
+            // what resolves the publisher-readiness barrier, and an unpaired
+            // node's publishes on the slot are legal no-ops — so only the
+            // pin seeding is withheld.
+            let vacant_field = Ident::new(&format!("{field}_vacant"), Span::call_site());
+            let vacant_doc = format!(
+                "Boot with the optional `{link_id}` pairing slot unpaired: \
+                 the peer pin is not seeded, so the node's `paired()` stays \
+                 false, its publishes on this slot are no-ops, and the \
+                 still-started mock's subscriptions stay silent."
+            );
+            config_fields.push(quote! {
+                #[doc = #vacant_doc]
+                pub #vacant_field: bool
+            });
+            config_defaults.push(quote!(#vacant_field: false));
+            seeding.push(quote! {
+                if !config.#vacant_field {
+                    #seed_pin
+                }
+            });
+        } else {
+            seeding.push(seed_pin);
+        }
         // The mock subscribes to every topic the node emits on this slot;
         // barrier on each so the node's first publish routes.
         for topic in &spec.node_emits {

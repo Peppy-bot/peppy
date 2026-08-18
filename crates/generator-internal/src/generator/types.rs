@@ -117,6 +117,11 @@ pub struct PeerContext {
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
+    /// Whether a deployment may run this slot with no peer
+    /// (`depends_on.pairings[].optional`; always false for observer slots,
+    /// whose vacancy is expressed through cardinality instead). The generated
+    /// test harness offers a vacant-boot knob only for optional slots.
+    pub optional: bool,
 }
 
 impl PeerContext {
