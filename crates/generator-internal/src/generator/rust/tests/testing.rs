@@ -4,7 +4,8 @@
 //! required slot gets none.
 
 use super::*;
-use crate::generator::testgen::{PairingLinkSpec, TestGenRegistry};
+use crate::generator::testgen::{DepLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry};
+use config::node::Cardinality;
 
 fn registry_with_pairing(optional: bool) -> TestGenRegistry {
     let mut registry = TestGenRegistry::default();
@@ -48,6 +49,37 @@ fn optional_pairing_slot_gets_a_vacant_knob_guarding_only_the_pin() {
     assert!(
         !rendered.contains("if config.backbone_vacant"),
         "the mock must start unconditionally; only the pin seeding is guarded"
+    );
+}
+
+#[test]
+fn multi_instance_dep_slot_gets_an_instance_id_override() {
+    let mut registry = TestGenRegistry::default();
+    registry.record_node_identity("relay_node", "v1");
+    registry.deps.insert(
+        "motor_health".to_string(),
+        DepLinkSpec {
+            producer_name: "motor_health".to_string(),
+            target: TargetSpec::Contract {
+                name: "motor_health".to_string(),
+                tag: "v1".to_string(),
+            },
+            cardinality: Cardinality::ZeroOrMore,
+            topics: Vec::new(),
+            services: Vec::new(),
+            actions: Vec::new(),
+        },
+    );
+    let rendered = rendered_harness(&registry);
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub motor_health_instances: usize",
+            "pub motor_health_instance_ids: Vec<String>",
+            "motor_health_instance_ids: Vec::new()",
+            "let motor_health_member_ids: Vec<String>",
+            "config.motor_health_instance_ids",
+        ],
     );
 }
 

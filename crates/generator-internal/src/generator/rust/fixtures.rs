@@ -999,30 +999,47 @@ fn render_harness(
                 let count_doc = format!(
                     "How many mock sources to start for the `{link_id}` observer slot."
                 );
+                let ids_field =
+                    Ident::new(&format!("{field}_instance_ids"), Span::call_site());
+                let ids_doc = format!(
+                    "Explicit instance ids for the `{link_id}` mock sources, \
+                     overriding `{count_field}` when non-empty. For nodes that \
+                     classify sources by instance name."
+                );
+                let ids_local =
+                    Ident::new(&format!("{field}_member_ids"), Span::call_site());
                 config_fields.push(quote! {
                     #[doc = #count_doc]
                     pub #count_field: usize
                 });
+                config_fields.push(quote! {
+                    #[doc = #ids_doc]
+                    pub #ids_field: Vec<String>
+                });
                 config_defaults.push(quote!(#count_field: #default_count));
+                config_defaults.push(quote!(#ids_field: Vec::new()));
                 observed_mock_fields.push(quote!(pub #field: Vec<#module::Mock>));
                 mock_starts.push(quote! {
+                    let #ids_local: Vec<String> = if config.#ids_field.is_empty() {
+                        (0..config.#count_field)
+                            .map(|index| format!("{}-{}", #module::MOCK_INSTANCE_ID, index))
+                            .collect()
+                    } else {
+                        config.#ids_field.clone()
+                    };
                     let mut #field = Vec::new();
-                    for index in 0..config.#count_field {
-                        let member_instance_id =
-                            format!("{}-{}", #module::MOCK_INSTANCE_ID, index);
+                    for member_instance_id in &#ids_local {
                         #field.push(
-                            #module::Mock::start_as(&router, &member_instance_id).await?,
+                            #module::Mock::start_as(&router, member_instance_id).await?,
                         );
                     }
                 });
                 seeding.push(quote! {
-                    for index in 0..config.#count_field {
-                        let member_instance_id =
-                            format!("{}-{}", #module::MOCK_INSTANCE_ID, index);
+                    for member_instance_id in &#ids_local {
                         standalone = standalone.with_observed_source(
                             #link_id,
                             #module::MOCK_CORE_NODE,
-                            member_instance_id,
+                            member_instance_id.clone(),
                             #module::SOURCE_LINK_ID,
                         );
                     }
@@ -1397,40 +1414,55 @@ fn render_dep_harness_parts(
                 "How many mock producer instances to start and bind for the \
                  `{link_id}` dependency slot."
             );
+            let ids_field = Ident::new(&format!("{field}_instance_ids"), Span::call_site());
+            let ids_doc = format!(
+                "Explicit instance ids for the `{link_id}` mock producers, \
+                 overriding `{count_field}` when non-empty. For nodes that \
+                 classify producers by instance name."
+            );
+            let ids_local = Ident::new(&format!("{field}_member_ids"), Span::call_site());
             config_fields.push(quote! {
                 #[doc = #count_doc]
                 pub #count_field: usize
             });
+            config_fields.push(quote! {
+                #[doc = #ids_doc]
+                pub #ids_field: Vec<String>
+            });
             config_defaults.push(quote!(#count_field: #default_count));
+            config_defaults.push(quote!(#ids_field: Vec::new()));
             dep_mock_fields.push(quote!(pub #field: Vec<#module::Mock>));
             mock_starts.push(quote! {
+                let #ids_local: Vec<String> = if config.#ids_field.is_empty() {
+                    (0..config.#count_field)
+                        .map(|index| format!("{}-{}", #module::MOCK_INSTANCE_ID, index))
+                        .collect()
+                } else {
+                    config.#ids_field.clone()
+                };
                 let mut #field = Vec::new();
-                for index in 0..config.#count_field {
-                    let member_instance_id =
-                        format!("{}-{}", #module::MOCK_INSTANCE_ID, index);
-                    #field.push(#module::Mock::start_as(&router, &member_instance_id).await?);
+                for member_instance_id in &#ids_local {
+                    #field.push(#module::Mock::start_as(&router, member_instance_id).await?);
                 }
             });
             let entries = per_instance_readiness(quote!(member_instance_id));
             seeding.push(quote! {
-                for index in 0..config.#count_field {
-                    let member_instance_id =
-                        format!("{}-{}", #module::MOCK_INSTANCE_ID, index);
+                for member_instance_id in &#ids_local {
                     standalone = standalone.with_bound_producer(
                         #link_id,
                         #module::MOCK_CORE_NODE,
-                        member_instance_id,
+                        member_instance_id.clone(),
                     );
                 }
             });
-            service_readiness.push(quote! {
-                for index in 0..config.#count_field {
-                    let member_instance_id =
-                        format!("{}-{}", #module::MOCK_INSTANCE_ID, index);
-                    let member_instance_id = member_instance_id.as_str();
-                    #( #entries )*
-                }
-            });
+            if !entries.is_empty() {
+                service_readiness.push(quote! {
+                    for member_instance_id in &#ids_local {
+                        let member_instance_id = member_instance_id.as_str();
+                        #( #entries )*
+                    }
+                });
+            }
             dep_mock_inits.push(field);
         }
     }

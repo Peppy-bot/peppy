@@ -936,18 +936,28 @@ fn render_harness(
                          observer slot."
                     ),
                 });
-                mock_starts.push(format!("{local} = []"));
-                mock_starts.push(format!("for index in range({kwarg}):"));
+                let ids_kwarg = format!("{attr}_instance_ids");
+                slot_kwargs.push(SlotKwarg {
+                    name: ids_kwarg.clone(),
+                    default: "None".to_string(),
+                    doc: format!(
+                        "{ids_kwarg}: explicit instance ids for the `{link_id}` mock \
+                         sources, overriding `{kwarg}` when given. For nodes that \
+                         classify sources by instance name."
+                    ),
+                });
+                let ids_local = format!("{local}_member_ids");
                 mock_starts.push(format!(
-                    "    member_instance_id = f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\""
+                    "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
+                     [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in \
+                     range({kwarg})]"
                 ));
+                mock_starts.push(format!("{local} = []"));
+                mock_starts.push(format!("for member_instance_id in {ids_local}:"));
                 mock_starts.push(format!(
                     "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
                 ));
-                seeding.push(format!("for index in range({kwarg}):"));
-                seeding.push(format!(
-                    "    member_instance_id = f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\""
-                ));
+                seeding.push(format!("for member_instance_id in {ids_local}:"));
                 seeding.push(format!(
                     "    standalone = standalone.with_observed_source({link_id:?}, \
                      {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.SOURCE_LINK_ID)"
@@ -1494,28 +1504,34 @@ fn render_dep_harness_parts(
                      the `{link_id}` dependency slot."
                 ),
             });
-            mock_starts.push(format!("{local} = []"));
-            mock_starts.push(format!("for index in range({kwarg}):"));
+            let ids_kwarg = format!("{attr}_instance_ids");
+            slot_kwargs.push(SlotKwarg {
+                name: ids_kwarg.clone(),
+                default: "None".to_string(),
+                doc: format!(
+                    "{ids_kwarg}: explicit instance ids for the `{link_id}` mock \
+                     producers, overriding `{kwarg}` when given. For nodes that \
+                     classify producers by instance name."
+                ),
+            });
+            let ids_local = format!("{local}_member_ids");
             mock_starts.push(format!(
-                "    member_instance_id = f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\""
+                "{ids_local} = list({ids_kwarg}) if {ids_kwarg} is not None else \
+                 [f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\" for index in range({kwarg})]"
             ));
+            mock_starts.push(format!("{local} = []"));
+            mock_starts.push(format!("for member_instance_id in {ids_local}:"));
             mock_starts.push(format!(
                 "    {local}.append(await {alias}.Mock.start(router, member_instance_id))"
             ));
-            seeding.push(format!("for index in range({kwarg}):"));
-            seeding.push(format!(
-                "    member_instance_id = f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\""
-            ));
+            seeding.push(format!("for member_instance_id in {ids_local}:"));
             seeding.push(format!(
                 "    standalone = standalone.with_bound_producer({link_id:?}, \
                  {alias}.MOCK_CORE_NODE, member_instance_id)"
             ));
             let entries = per_instance_readiness("member_instance_id", "    ");
             if !entries.is_empty() {
-                service_readiness.push(format!("for index in range({kwarg}):"));
-                service_readiness.push(format!(
-                    "    member_instance_id = f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\""
-                ));
+                service_readiness.push(format!("for member_instance_id in {ids_local}:"));
                 service_readiness.extend(entries);
             }
         }
