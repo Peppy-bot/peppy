@@ -139,17 +139,25 @@ pub(super) fn emit_value_serializer(
     value_type: &str,
 ) -> Result<()> {
     let info = register_with_loader(generator, builder, emitted_loaders, schema_key, format)?;
-    builder.line(&format!("def {fn_name}(value: {value_type}) -> bytes:"));
-    builder.indent();
-    builder.line(&format!(
-        "capnp_msg = {}().{}.new_message()",
-        capnp_loader_fn_name(&info),
-        info.struct_name
-    ));
-    let mut counter = 0u32;
-    serialization::emit_capnp_assignments(builder, "capnp_msg", format, "value", &mut counter);
-    builder.line("return capnp_msg.to_bytes()");
-    builder.dedent();
+    builder.block(
+        &format!("def {fn_name}(value: {value_type}) -> bytes:"),
+        |builder| {
+            builder.line(&format!(
+                "capnp_msg = {}().{}.new_message()",
+                capnp_loader_fn_name(&info),
+                info.struct_name
+            ));
+            let mut counter = 0u32;
+            serialization::emit_capnp_assignments(
+                builder,
+                "capnp_msg",
+                format,
+                "value",
+                &mut counter,
+            );
+            builder.line("return capnp_msg.to_bytes()");
+        },
+    );
     builder.blank_line();
     Ok(())
 }
@@ -231,70 +239,66 @@ fn emit_mock_class(
     start_prologue: &[String],
     members: &[MockMember],
 ) {
-    builder.line("class Mock:");
-    builder.indent();
-    builder.line(&format!("\"\"\"{doc}\"\"\""));
-    builder.blank_line();
+    builder.block("class Mock:", |builder| {
+        builder.docstring(doc);
+        builder.blank_line();
 
-    let mut init_params = vec!["self".to_string(), "session".to_string()];
-    init_params.extend(members.iter().map(|member| member.attr.clone()));
-    builder.line(&format!(
-        "def __init__({}) -> None:",
-        init_params.join(", ")
-    ));
-    builder.indent();
-    builder.line("self._session = session");
-    builder.line("self._stopped = False");
-    for member in members {
-        builder.line(&format!("self.{attr} = {attr}", attr = member.attr));
-    }
-    builder.dedent();
-    builder.blank_line();
+        let mut init_params = vec!["self".to_string(), "session".to_string()];
+        init_params.extend(members.iter().map(|member| member.attr.clone()));
+        builder.block(
+            &format!("def __init__({}) -> None:", init_params.join(", ")),
+            |builder| {
+                builder.lines(["self._session = session", "self._stopped = False"]);
+                builder.lines(
+                    members
+                        .iter()
+                        .map(|member| format!("self.{attr} = {attr}", attr = member.attr)),
+                );
+            },
+        );
+        builder.blank_line();
 
-    builder.line("@classmethod");
-    builder.line(&format!("async def start({start_params}) -> \"Mock\":"));
-    builder.indent();
-    builder.line(&format!("\"\"\"{start_doc}\"\"\""));
-    for line in start_prologue {
-        builder.line(line);
-    }
-    builder.line("session = await router.connect()");
-    for member in members {
-        builder.line(&member.construct);
-    }
-    let mut construct_args = vec!["session".to_string()];
-    construct_args.extend(members.iter().map(|member| member.attr.clone()));
-    builder.line(&format!("return cls({})", construct_args.join(", ")));
-    builder.dedent();
-    builder.blank_line();
+        builder.line("@classmethod");
+        builder.block(
+            &format!("async def start({start_params}) -> \"Mock\":"),
+            |builder| {
+                builder.docstring(start_doc);
+                builder.lines(start_prologue);
+                builder.line("session = await router.connect()");
+                builder.lines(members.iter().map(|member| &member.construct));
+                let mut construct_args = vec!["session".to_string()];
+                construct_args.extend(members.iter().map(|member| member.attr.clone()));
+                builder.line(&format!("return cls({})", construct_args.join(", ")));
+            },
+        );
+        builder.blank_line();
 
-    builder.line("async def stop(self) -> None:");
-    builder.indent();
-    builder.line(&format!("\"\"\"{stop_doc}\"\"\""));
-    builder.line("if self._stopped:");
-    builder.indent();
-    builder.line("return");
-    builder.dedent();
-    builder.line("self._stopped = True");
-    // Rust ordering: live action goals are disarmed first, then everything
-    // drops. Python adds the service pump teardown (no Drop hook exists), and
-    // CPython refcounting releases the declarations and the session.
-    for member in members {
-        if let Some(stop) = &member.action_stop {
-            builder.line(stop);
-        }
-    }
-    for member in members {
-        if let Some(close) = &member.service_close {
-            builder.line(close);
-        }
-    }
-    for member in members {
-        builder.line(&format!("self.{} = None", member.attr));
-    }
-    builder.line("self._session = None");
-    builder.dedent();
-    builder.dedent();
+        builder.block("async def stop(self) -> None:", |builder| {
+            builder.docstring(stop_doc);
+            builder.block("if self._stopped:", |builder| builder.line("return"));
+            builder.line("self._stopped = True");
+            // Rust ordering: live action goals are disarmed first, then
+            // everything drops. Python adds the service pump teardown (no Drop
+            // hook exists), and CPython refcounting releases the declarations
+            // and the session.
+            builder.lines(
+                members
+                    .iter()
+                    .filter_map(|member| member.action_stop.as_ref()),
+            );
+            builder.lines(
+                members
+                    .iter()
+                    .filter_map(|member| member.service_close.as_ref()),
+            );
+            builder.lines(
+                members
+                    .iter()
+                    .map(|member| format!("self.{} = None", member.attr)),
+            );
+            builder.line("self._session = None");
+        });
+    });
     builder.blank_line();
 }
 
@@ -316,24 +320,25 @@ fn render_dep_link(
     let target = target_python_expr(&spec.target);
     let default_instance = mock_instance_id(link_id);
 
-    builder.line(&format!("LINK_ID = {link_id:?}"));
-    builder.line(&format!("MOCK_CORE_NODE = {MOCK_CORE_NODE:?}"));
-    builder.line(&format!("MOCK_INSTANCE_ID = {default_instance:?}"));
+    builder.lines([
+        format!("LINK_ID = {link_id:?}"),
+        format!("MOCK_CORE_NODE = {MOCK_CORE_NODE:?}"),
+        format!("MOCK_INSTANCE_ID = {default_instance:?}"),
+    ]);
     builder.blank_line();
 
-    builder.line("def producer_ref() -> peppylib.ProducerRef:");
-    builder.indent();
-    builder.line("\"\"\"The default mock's wire identity, as the harness seeds it.\"\"\"");
-    builder.line("return producer_ref_for(MOCK_INSTANCE_ID)");
-    builder.dedent();
+    builder.py(r#"
+def producer_ref() -> peppylib.ProducerRef:
+    """The default mock's wire identity, as the harness seeds it."""
+    return producer_ref_for(MOCK_INSTANCE_ID)
+"#);
     builder.blank_line();
 
-    builder.line("def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:");
-    builder.indent();
-    builder
-        .line("\"\"\"`producer_ref` under an explicit instance id (multi-instance slots).\"\"\"");
-    builder.line("return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)");
-    builder.dedent();
+    builder.py(r#"
+def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
+    """`producer_ref` under an explicit instance id (multi-instance slots)."""
+    return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
+"#);
     builder.blank_line();
 
     let mut members: Vec<MockMember> = Vec::new();
@@ -440,58 +445,63 @@ fn render_dep_topic(
     builder.line(&format!("{camel}Message = {alias}.Message"));
     builder.blank_line();
 
-    builder.line(&format!("class {camel}Publisher:"));
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"Typed mock publisher for the consumed topic `{topic_name}`: publishes over \
-         the real wire as this mock's identity; the first publish waits for the node's \
-         subscription to match (no sleeps), and no subscriber within the readiness \
-         timeout is a loud error.\"\"\""
-    ));
-    builder.blank_line();
-    builder.line("def __init__(self, core) -> None:");
-    builder.indent();
-    builder.line("self._core = core");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("@classmethod");
-    builder.line("async def _declare(cls, session, instance_id):");
-    builder.indent();
-    builder.line("core = await peppylib.testing.TestTopicPublisher.declare(");
-    builder.indent();
-    builder.line("session,");
-    builder.line("MOCK_CORE_NODE,");
-    builder.line("instance_id,");
-    builder.line(&format!("{target},"));
-    builder.line(&format!("{topic_name:?},"));
-    builder.line("peppylib.QoSProfile.Standard,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return cls(core)");
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!(
-        "async def publish(self, message: {alias}.Message) -> None:"
-    ));
-    builder.indent();
-    builder.line(
-        "\"\"\"Publishes one typed message; lazily waits for the node's subscription \
-         before the first delivery.\"\"\"",
-    );
-    builder.line(&format!(
-        "await self._core.publish({serialize_fn}(message))"
-    ));
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def wait_for_subscriber(self, timeout: float) -> bool:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Waits until the node's subscription for this topic is visible; returns \
-         whether it matched within `timeout`.\"\"\"",
-    );
-    builder.line("return await self._core.wait_for_subscriber(timeout)");
-    builder.dedent();
-    builder.dedent();
+    builder.block(&format!("class {camel}Publisher:"), |builder| {
+        builder.docstring(&format!(
+            "Typed mock publisher for the consumed topic `{topic_name}`: publishes over \
+             the real wire as this mock's identity; the first publish waits for the node's \
+             subscription to match (no sleeps), and no subscriber within the readiness \
+             timeout is a loud error."
+        ));
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, core) -> None:
+    self._core = core
+"#);
+        builder.blank_line();
+        builder.line("@classmethod");
+        builder.block(
+            "async def _declare(cls, session, instance_id):",
+            |builder| {
+                builder.call(
+                    "core = await peppylib.testing.TestTopicPublisher.declare(",
+                    &[
+                        "session,",
+                        "MOCK_CORE_NODE,",
+                        "instance_id,",
+                        &format!("{target},"),
+                        &format!("{topic_name:?},"),
+                        "peppylib.QoSProfile.Standard,",
+                    ],
+                    ")",
+                );
+                builder.line("return cls(core)");
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            &format!("async def publish(self, message: {alias}.Message) -> None:"),
+            |builder| {
+                builder.docstring(
+                    "Publishes one typed message; lazily waits for the node's subscription \
+                     before the first delivery.",
+                );
+                builder.line(&format!(
+                    "await self._core.publish({serialize_fn}(message))"
+                ));
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            "async def wait_for_subscriber(self, timeout: float) -> bool:",
+            |builder| {
+                builder.docstring(
+                    "Waits until the node's subscription for this topic is visible; returns \
+                     whether it matched within `timeout`.",
+                );
+                builder.line("return await self._core.wait_for_subscriber(timeout)");
+            },
+        );
+    });
     builder.blank_line();
 
     Ok(MockMember {
@@ -564,141 +574,150 @@ fn render_dep_service(
 
     // Responder first, so the Service annotations referencing it resolve at
     // definition time.
-    builder.line(&format!("class {camel}Responder:"));
-    builder.indent();
-    builder.line("\"\"\"Answers exactly one parked request; consumed by use.\"\"\"");
-    builder.blank_line();
-    builder.line("def __init__(self, inner) -> None:");
-    builder.indent();
-    builder.line("self._inner = inner");
-    builder.dedent();
-    builder.blank_line();
-    if response_param.is_empty() {
-        builder.line("async def respond(self) -> None:");
+    // A response-less service takes no `response` parameter at all, so the
+    // parameter list is spliced rather than each signature written twice.
+    let response_arg = if response_param.is_empty() {
+        String::new()
     } else {
-        builder.line(&format!(
-            "async def respond(self, {response_param}) -> None:"
-        ));
-    }
-    builder.indent();
-    builder.line("\"\"\"Sends the typed response for the parked request.\"\"\"");
-    builder.line(&format!("await self._inner.respond({response_payload})"));
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def respond_error(self, reason: str) -> None:");
-    builder.indent();
-    builder.line("\"\"\"Fails the parked request with a handler-error reason.\"\"\"");
-    builder.line("await self._inner.respond_error(reason)");
-    builder.dedent();
-    builder.dedent();
-    builder.blank_line();
-
-    builder.line(&format!("class {camel}Service:"));
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"Typed mock server for the consumed service `{service_name}`: a background \
-         pump captures every request; scripted responses serve automatically, unscripted \
-         requests park for `next_request`.\"\"\""
-    ));
-    builder.blank_line();
-    builder.line("def __init__(self, core) -> None:");
-    builder.indent();
-    builder.line("self._core = core");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("@classmethod");
-    builder.line("async def _listen(cls, session, instance_id):");
-    builder.indent();
-    builder.line("core = await peppylib.testing.MockServiceCore.listen(");
-    builder.indent();
-    builder.line("session,");
-    builder.line("MOCK_CORE_NODE,");
-    builder.line("instance_id,");
-    builder.line(&format!("{target},"));
-    builder.line(&format!("{service_name:?},"));
-    builder.dedent();
-    builder.line(")");
-    builder.line("return cls(core)");
-    builder.dedent();
+        format!(", {response_param}")
+    };
+    builder.block(&format!("class {camel}Responder:"), |builder| {
+        builder.docstring("Answers exactly one parked request; consumed by use.");
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, inner) -> None:
+    self._inner = inner
+"#);
+        builder.blank_line();
+        builder.block(
+            &format!("async def respond(self{response_arg}) -> None:"),
+            |builder| {
+                builder.docstring("Sends the typed response for the parked request.");
+                builder.line(&format!("await self._inner.respond({response_payload})"));
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            "async def respond_error(self, reason: str) -> None:",
+            |builder| {
+                builder.docstring("Fails the parked request with a handler-error reason.");
+                builder.line("await self._inner.respond_error(reason)");
+            },
+        );
+    });
     builder.blank_line();
 
     if spec.request.is_some() {
         builder.add_import("from typing import Tuple");
-        builder.line(&format!(
-            "async def next_request(self, timeout: float) -> Tuple[{alias}.Request, {camel}Responder]:"
-        ));
-        builder.indent();
-        builder.line(
-            "\"\"\"The next unscripted request, decoded, with the responder the test must \
-             use to answer it. Errors after `timeout`.\"\"\"",
-        );
-        builder.line("context, responder = await self._core.next_request(timeout)");
-        builder.line(&format!("request = {deserialize_fn}(context.payload)"));
-        builder.line(&format!("return request, {camel}Responder(responder)"));
-        builder.dedent();
-        builder.blank_line();
-    } else {
-        builder.line(&format!(
-            "async def next_request(self, timeout: float) -> {camel}Responder:"
-        ));
-        builder.indent();
-        builder.line(
-            "\"\"\"Parks until the node's next unscripted call, returning the responder \
-             the test must use to answer it. Errors after `timeout`.\"\"\"",
-        );
-        builder.line("_context, responder = await self._core.next_request(timeout)");
-        builder.line(&format!("return {camel}Responder(responder)"));
-        builder.dedent();
-        builder.blank_line();
-    }
-
-    if response_param.is_empty() {
-        builder.line("def enqueue_response(self) -> None:");
-    } else {
-        builder.line(&format!(
-            "def enqueue_response(self, {response_param}) -> None:"
-        ));
-    }
-    builder.indent();
-    builder.line(
-        "\"\"\"Enqueues one response to be served automatically to the next inbound \
-         request (FIFO across repeated calls); only unscripted requests park for \
-         `next_request`.\"\"\"",
-    );
-    builder.line(&format!("self._core.enqueue_response({response_payload})"));
-    builder.dedent();
-    builder.blank_line();
-
-    if spec.request.is_some() {
         builder.add_import("from typing import List");
-        builder.line(&format!("def captured(self) -> List[{alias}.Request]:"));
-        builder.indent();
-        builder.line(
-            "\"\"\"Every request received so far (scripted and manual alike), decoded, \
-             in arrival order.\"\"\"",
-        );
-        builder.line("return [");
-        builder.indent();
-        builder.line(&format!("{deserialize_fn}(captured.payload)"));
-        builder.line("for captured in self._core.captured()");
-        builder.dedent();
-        builder.line("]");
-        builder.dedent();
-        builder.blank_line();
-    } else {
-        builder.line("def captured_count(self) -> int:");
-        builder.indent();
-        builder.line("\"\"\"How many calls the node has made so far.\"\"\"");
-        builder.line("return len(self._core.captured())");
-        builder.dedent();
-        builder.blank_line();
     }
+    builder.block(&format!("class {camel}Service:"), |builder| {
+        builder.docstring(&format!(
+            "Typed mock server for the consumed service `{service_name}`: a background \
+             pump captures every request; scripted responses serve automatically, unscripted \
+             requests park for `next_request`."
+        ));
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, core) -> None:
+    self._core = core
+"#);
+        builder.blank_line();
+        builder.line("@classmethod");
+        builder.block("async def _listen(cls, session, instance_id):", |builder| {
+            builder.call(
+                "core = await peppylib.testing.MockServiceCore.listen(",
+                &[
+                    "session,",
+                    "MOCK_CORE_NODE,",
+                    "instance_id,",
+                    &format!("{target},"),
+                    &format!("{service_name:?},"),
+                ],
+                ")",
+            );
+            builder.line("return cls(core)");
+        });
+        builder.blank_line();
 
-    builder.line("async def _close(self) -> None:");
-    builder.indent();
-    builder.line("await self._core.close()");
-    builder.dedent();
-    builder.dedent();
+        // With a request body the parked request is handed over decoded, so
+        // `next_request` yields a pair; without one there is nothing to decode
+        // and it yields the responder alone.
+        if spec.request.is_some() {
+            builder.block(
+                &format!(
+                    "async def next_request(self, timeout: float) -> Tuple[{alias}.Request, {camel}Responder]:"
+                ),
+                |builder| {
+                    builder.docstring(
+                        "The next unscripted request, decoded, with the responder the test must \
+                         use to answer it. Errors after `timeout`.",
+                    );
+                    builder.line("context, responder = await self._core.next_request(timeout)");
+                    builder.line(&format!("request = {deserialize_fn}(context.payload)"));
+                    builder.line(&format!("return request, {camel}Responder(responder)"));
+                },
+            );
+        } else {
+            builder.block(
+                &format!("async def next_request(self, timeout: float) -> {camel}Responder:"),
+                |builder| {
+                    builder.docstring(
+                        "Parks until the node's next unscripted call, returning the responder \
+                         the test must use to answer it. Errors after `timeout`.",
+                    );
+                    builder.line("_context, responder = await self._core.next_request(timeout)");
+                    builder.line(&format!("return {camel}Responder(responder)"));
+                },
+            );
+        }
+        builder.blank_line();
+
+        builder.block(
+            &format!("def enqueue_response(self{response_arg}) -> None:"),
+            |builder| {
+                builder.docstring(
+                    "Enqueues one response to be served automatically to the next inbound \
+                     request (FIFO across repeated calls); only unscripted requests park for \
+                     `next_request`.",
+                );
+                builder.line(&format!("self._core.enqueue_response({response_payload})"));
+            },
+        );
+        builder.blank_line();
+
+        // Same split: capture reads back decoded requests when there is a body
+        // to decode, and degrades to a bare count when there is not.
+        if spec.request.is_some() {
+            builder.block(
+                &format!("def captured(self) -> List[{alias}.Request]:"),
+                |builder| {
+                    builder.docstring(
+                        "Every request received so far (scripted and manual alike), decoded, \
+                         in arrival order.",
+                    );
+                    builder.call(
+                        "return [",
+                        &[
+                            &format!("{deserialize_fn}(captured.payload)"),
+                            "for captured in self._core.captured()",
+                        ],
+                        "]",
+                    );
+                },
+            );
+        } else {
+            builder.block("def captured_count(self) -> int:", |builder| {
+                builder.docstring("How many calls the node has made so far.");
+                builder.line("return len(self._core.captured())");
+            });
+        }
+        builder.blank_line();
+
+        builder.block("async def _close(self) -> None:", |builder| {
+            builder.line("await self._core.close()");
+        });
+    });
     builder.blank_line();
 
     Ok(MockMember {
@@ -801,182 +820,185 @@ fn render_dep_action(
 
     // ActiveGoal first, then PendingGoal, then Action: annotations resolve at
     // definition time without forward references.
-    builder.line(&format!("class {camel}ActiveGoal:"));
-    builder.indent();
-    builder.line("\"\"\"An accepted goal: drives feedback and terminal completion.\"\"\"");
-    builder.blank_line();
-    builder.line("def __init__(self, context) -> None:");
-    builder.indent();
-    builder.line("self._context = context");
-    builder.dedent();
-    builder.blank_line();
-    if has_feedback {
-        builder.line(&format!(
-            "async def publish_feedback(self, feedback: {alias}.FeedbackMessage) -> None:"
-        ));
-        builder.indent();
-        builder.line("\"\"\"Publishes one typed feedback message for this goal.\"\"\"");
-        builder.line(&format!(
-            "await self._context.publish_feedback({serialize_feedback_fn}(feedback))"
-        ));
-        builder.dedent();
-        builder.blank_line();
-    }
-    builder.line("async def cancel_signal(self) -> None:");
-    builder.indent();
-    builder.line("\"\"\"Resolves when the node requests cancellation of this goal.\"\"\"");
-    builder.line("await self._context.cancel_signal()");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def is_cancelled(self) -> bool:");
-    builder.indent();
-    builder.line("\"\"\"Whether cancellation has been requested for this goal.\"\"\"");
-    builder.line("return self._context.is_cancelled()");
-    builder.dedent();
-    builder.blank_line();
-    for method in ["complete", "complete_cancelled"] {
-        let doc = if method == "complete" {
-            "Completes the goal successfully."
-        } else {
-            "Completes the goal as cancelled."
-        };
-        if complete_param.is_empty() {
-            builder.line(&format!("async def {method}(self) -> None:"));
-        } else {
-            builder.line(&format!(
-                "async def {method}(self, {complete_param}) -> None:"
-            ));
-        }
-        builder.indent();
-        builder.line(&format!("\"\"\"{doc}\"\"\""));
-        builder.line(&format!("await self._context.{method}({complete_payload})"));
-        builder.dedent();
-        builder.blank_line();
-    }
-    builder.dedent();
-    builder.blank_line();
-
-    builder.line(&format!("class {camel}PendingGoal:"));
-    builder.indent();
-    builder.line("\"\"\"A goal received by the mock, awaiting accept/reject.\"\"\"");
-    builder.blank_line();
-    if spec.messages.goal_request.is_some() {
-        builder.line("def __init__(self, pending, request) -> None:");
-        builder.indent();
-        builder.line("self._pending = pending");
-        builder.line("#: The decoded goal request.");
-        builder.line("self.request = request");
-        builder.dedent();
+    // A result-less action takes no `result` parameter at all, so the
+    // parameter list is spliced rather than each signature written twice.
+    let complete_arg = if complete_param.is_empty() {
+        String::new()
     } else {
-        builder.line("def __init__(self, pending) -> None:");
-        builder.indent();
-        builder.line("self._pending = pending");
-        builder.dedent();
-    }
-    builder.blank_line();
-    builder.line("@property");
-    builder.line("def goal_id(self) -> str:");
-    builder.indent();
-    builder.line("\"\"\"The client-generated correlation id for this goal.\"\"\"");
-    builder.line("return self._pending.goal_id");
-    builder.dedent();
-    builder.blank_line();
-    let (accept_param, accept_payload, reject_param, reject_payload) = if spec
-        .messages
-        .goal_response
-        .is_some()
-    {
-        (
-            format!(", response: {alias}.GoalResponseData"),
-            format!("{serialize_response_fn}(response)"),
-            format!(
-                ", reason: Optional[str] = None, response: Optional[{alias}.GoalResponseData] = None"
-            ),
-            format!("{serialize_response_fn}(response) if response is not None else b\"\""),
-        )
-    } else {
-        (
-            String::new(),
-            "b\"\"".to_string(),
-            ", reason: Optional[str] = None".to_string(),
-            "b\"\"".to_string(),
-        )
+        format!(", {complete_param}")
     };
-    builder.line(&format!(
-        "async def accept(self{accept_param}) -> {camel}ActiveGoal:"
-    ));
-    builder.indent();
-    builder
-        .line("\"\"\"Accepts the goal; the returned handle drives feedback and completion.\"\"\"");
-    builder.line(&format!(
-        "context = await self._pending.accept({accept_payload})"
-    ));
-    builder.line(&format!("return {camel}ActiveGoal(context)"));
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!("async def reject(self{reject_param}) -> None:"));
-    builder.indent();
-    builder.line("\"\"\"Rejects the goal with an optional human-readable reason.\"\"\"");
-    builder.line(&format!(
-        "await self._pending.reject(reason, {reject_payload})"
-    ));
-    builder.dedent();
-    builder.dedent();
+    builder.block(&format!("class {camel}ActiveGoal:"), |builder| {
+        builder.docstring("An accepted goal: drives feedback and terminal completion.");
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, context) -> None:
+    self._context = context
+"#);
+        builder.blank_line();
+        if has_feedback {
+            builder.block(
+                &format!(
+                    "async def publish_feedback(self, feedback: {alias}.FeedbackMessage) -> None:"
+                ),
+                |builder| {
+                    builder.docstring("Publishes one typed feedback message for this goal.");
+                    builder.line(&format!(
+                        "await self._context.publish_feedback({serialize_feedback_fn}(feedback))"
+                    ));
+                },
+            );
+            builder.blank_line();
+        }
+        builder.block("async def cancel_signal(self) -> None:", |builder| {
+            builder.docstring("Resolves when the node requests cancellation of this goal.");
+            builder.line("await self._context.cancel_signal()");
+        });
+        builder.blank_line();
+        builder.block("def is_cancelled(self) -> bool:", |builder| {
+            builder.docstring("Whether cancellation has been requested for this goal.");
+            builder.line("return self._context.is_cancelled()");
+        });
+        builder.blank_line();
+        for method in ["complete", "complete_cancelled"] {
+            let doc = if method == "complete" {
+                "Completes the goal successfully."
+            } else {
+                "Completes the goal as cancelled."
+            };
+            builder.block(
+                &format!("async def {method}(self{complete_arg}) -> None:"),
+                |builder| {
+                    builder.docstring(doc);
+                    builder.line(&format!("await self._context.{method}({complete_payload})"));
+                },
+            );
+            builder.blank_line();
+        }
+    });
     builder.blank_line();
 
-    builder.line(&format!("class {camel}Action:"));
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"Typed mock action server for the consumed action `{action_name}`, on the \
-         real `ConcurrentAction` engine: identical goal lifecycle to a production \
-         producer, plus deterministic producer-loss via the owning mock's `stop()`.\"\"\""
-    ));
+    builder.block(&format!("class {camel}PendingGoal:"), |builder| {
+        builder.docstring("A goal received by the mock, awaiting accept/reject.");
+        builder.blank_line();
+        if spec.messages.goal_request.is_some() {
+            builder.py(r#"
+def __init__(self, pending, request) -> None:
+    self._pending = pending
+    #: The decoded goal request.
+    self.request = request
+"#);
+        } else {
+            builder.py(r#"
+def __init__(self, pending) -> None:
+    self._pending = pending
+"#);
+        }
+        builder.blank_line();
+        builder.py(r#"
+@property
+def goal_id(self) -> str:
+    """The client-generated correlation id for this goal."""
+    return self._pending.goal_id
+"#);
+        builder.blank_line();
+        let (accept_param, accept_payload, reject_param, reject_payload) = if spec
+            .messages
+            .goal_response
+            .is_some()
+        {
+            (
+                format!(", response: {alias}.GoalResponseData"),
+                format!("{serialize_response_fn}(response)"),
+                format!(
+                    ", reason: Optional[str] = None, response: Optional[{alias}.GoalResponseData] = None"
+                ),
+                format!("{serialize_response_fn}(response) if response is not None else b\"\""),
+            )
+        } else {
+            (
+                String::new(),
+                "b\"\"".to_string(),
+                ", reason: Optional[str] = None".to_string(),
+                "b\"\"".to_string(),
+            )
+        };
+        builder.block(
+            &format!("async def accept(self{accept_param}) -> {camel}ActiveGoal:"),
+            |builder| {
+                builder.docstring(
+                    "Accepts the goal; the returned handle drives feedback and completion.",
+                );
+                builder.line(&format!(
+                    "context = await self._pending.accept({accept_payload})"
+                ));
+                builder.line(&format!("return {camel}ActiveGoal(context)"));
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            &format!("async def reject(self{reject_param}) -> None:"),
+            |builder| {
+                builder.docstring("Rejects the goal with an optional human-readable reason.");
+                builder.line(&format!(
+                    "await self._pending.reject(reason, {reject_payload})"
+                ));
+            },
+        );
+    });
     builder.blank_line();
-    builder.line("def __init__(self, core) -> None:");
-    builder.indent();
-    builder.line("self._core = core");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("@classmethod");
-    builder.line("async def _expose(cls, session, instance_id):");
-    builder.indent();
-    builder.line("core = await peppylib.testing.MockActionServerCore.expose(");
-    builder.indent();
-    builder.line("session,");
-    builder.line("MOCK_CORE_NODE,");
-    builder.line("instance_id,");
-    builder.line(&format!("{target},"));
-    builder.line(&format!("{action_name:?},"));
-    builder.line(if has_feedback { "True," } else { "False," });
-    builder.dedent();
-    builder.line(")");
-    builder.line("return cls(core)");
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!(
-        "async def next_goal(self, timeout: float) -> {camel}PendingGoal:"
-    ));
-    builder.indent();
-    builder.line(
-        "\"\"\"Parks until the node sends a goal, bounded by `timeout`; the returned \
-         goal awaits the test's admission decision.\"\"\"",
-    );
-    builder.line("pending = await self._core.next_goal(timeout)");
-    if spec.messages.goal_request.is_some() {
-        builder.line(&format!(
-            "request = {deserialize_request_fn}(pending.request_bytes)"
+
+    builder.block(&format!("class {camel}Action:"), |builder| {
+        builder.docstring(&format!(
+            "Typed mock action server for the consumed action `{action_name}`, on the \
+             real `ConcurrentAction` engine: identical goal lifecycle to a production \
+             producer, plus deterministic producer-loss via the owning mock's `stop()`."
         ));
-        builder.line(&format!("return {camel}PendingGoal(pending, request)"));
-    } else {
-        builder.line(&format!("return {camel}PendingGoal(pending)"));
-    }
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def _stop(self) -> None:");
-    builder.indent();
-    builder.line("self._core.stop()");
-    builder.dedent();
-    builder.dedent();
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, core) -> None:
+    self._core = core
+"#);
+        builder.blank_line();
+        builder.line("@classmethod");
+        builder.block("async def _expose(cls, session, instance_id):", |builder| {
+            builder.call(
+                "core = await peppylib.testing.MockActionServerCore.expose(",
+                &[
+                    "session,",
+                    "MOCK_CORE_NODE,",
+                    "instance_id,",
+                    &format!("{target},"),
+                    &format!("{action_name:?},"),
+                    if has_feedback { "True," } else { "False," },
+                ],
+                ")",
+            );
+            builder.line("return cls(core)");
+        });
+        builder.blank_line();
+        builder.block(
+            &format!("async def next_goal(self, timeout: float) -> {camel}PendingGoal:"),
+            |builder| {
+                builder.docstring(
+                    "Parks until the node sends a goal, bounded by `timeout`; the returned \
+                     goal awaits the test's admission decision.",
+                );
+                builder.line("pending = await self._core.next_goal(timeout)");
+                if spec.messages.goal_request.is_some() {
+                    builder.line(&format!(
+                        "request = {deserialize_request_fn}(pending.request_bytes)"
+                    ));
+                    builder.line(&format!("return {camel}PendingGoal(pending, request)"));
+                } else {
+                    builder.line(&format!("return {camel}PendingGoal(pending)"));
+                }
+            },
+        );
+        builder.blank_line();
+        builder.block("def _stop(self) -> None:", |builder| {
+            builder.line("self._core.stop()");
+        });
+    });
     builder.blank_line();
 
     Ok(MockMember {
@@ -1007,29 +1029,30 @@ fn render_pairing_link(
     });
     let default_instance = mock_instance_id(link_id);
 
-    builder.line(&format!("LINK_ID = {link_id:?}"));
-    builder.line(&format!("PAIRING_NAME = {:?}", spec.pairing_name));
-    builder.line(&format!("PAIRING_TAG = {:?}", spec.pairing_tag));
-    builder.line(&format!("PEER_LINK_ID = {MOCK_PEER_LINK_ID:?}"));
-    builder.line(&format!("MOCK_CORE_NODE = {MOCK_CORE_NODE:?}"));
-    builder.line(&format!("MOCK_INSTANCE_ID = {default_instance:?}"));
+    builder.lines([
+        format!("LINK_ID = {link_id:?}"),
+        format!("PAIRING_NAME = {:?}", spec.pairing_name),
+        format!("PAIRING_TAG = {:?}", spec.pairing_tag),
+        format!("PEER_LINK_ID = {MOCK_PEER_LINK_ID:?}"),
+        format!("MOCK_CORE_NODE = {MOCK_CORE_NODE:?}"),
+        format!("MOCK_INSTANCE_ID = {default_instance:?}"),
+    ]);
     builder.blank_line();
 
-    builder.line("def producer_ref() -> peppylib.ProducerRef:");
-    builder.indent();
-    builder.line("\"\"\"The mock peer's wire identity.\"\"\"");
-    builder.line("return peppylib.ProducerRef(MOCK_CORE_NODE, MOCK_INSTANCE_ID)");
-    builder.dedent();
+    builder.py(r#"
+def producer_ref() -> peppylib.ProducerRef:
+    """The mock peer's wire identity."""
+    return peppylib.ProducerRef(MOCK_CORE_NODE, MOCK_INSTANCE_ID)
+"#);
     builder.blank_line();
 
-    builder.line("def peer_info() -> peppylib.PeerInfo:");
-    builder.indent();
-    builder.line(
-        "\"\"\"The full pin identity the harness seeds for this slot: what the node's \
-         `paired()` / `wait_paired()` resolve to.\"\"\"",
-    );
-    builder.line("return peppylib.PeerInfo(producer_ref(), PEER_LINK_ID)");
-    builder.dedent();
+    builder.block("def peer_info() -> peppylib.PeerInfo:", |builder| {
+        builder.docstring(
+            "The full pin identity the harness seeds for this slot: what the node's \
+             `paired()` / `wait_paired()` resolve to.",
+        );
+        builder.line("return peppylib.PeerInfo(producer_ref(), PEER_LINK_ID)");
+    });
     builder.blank_line();
 
     let mut members: Vec<MockMember> = Vec::new();
@@ -1111,58 +1134,60 @@ fn render_pair_publisher(
     builder.line(&format!("{camel}Message = {alias}.Message"));
     builder.blank_line();
 
-    builder.line(&format!("class {camel}Publisher:"));
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"Typed peer publisher for `{topic_name}` (the node consumes this \
-         direction): publishes under the mock peer's identity and slot id, so the \
-         node's triple-pinned subscription receives it.\"\"\""
-    ));
-    builder.blank_line();
-    builder.line("def __init__(self, core) -> None:");
-    builder.indent();
-    builder.line("self._core = core");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("@classmethod");
-    builder.line("async def _declare(cls, session):");
-    builder.indent();
-    builder.line("core = await peppylib.testing.TestTopicPublisher.declare(");
-    builder.indent();
-    builder.line("session,");
-    builder.line("MOCK_CORE_NODE,");
-    builder.line("MOCK_INSTANCE_ID,");
-    builder.line(&format!("{pairing_target},"));
-    builder.line(&format!("{topic_name:?},"));
-    builder.line(&format!("{qos},"));
-    builder.line("link_id=PEER_LINK_ID,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return cls(core)");
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!(
-        "async def publish(self, message: {alias}.Message) -> None:"
-    ));
-    builder.indent();
-    builder.line(
-        "\"\"\"Publishes one typed message; lazily waits for the node's pinned \
-         subscription before the first delivery.\"\"\"",
-    );
-    builder.line(&format!(
-        "await self._core.publish({serialize_fn}(message))"
-    ));
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def wait_for_subscriber(self, timeout: float) -> bool:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Waits until the node's pinned subscription is visible; returns whether \
-         it matched within `timeout`.\"\"\"",
-    );
-    builder.line("return await self._core.wait_for_subscriber(timeout)");
-    builder.dedent();
-    builder.dedent();
+    builder.block(&format!("class {camel}Publisher:"), |builder| {
+        builder.docstring(&format!(
+            "Typed peer publisher for `{topic_name}` (the node consumes this \
+             direction): publishes under the mock peer's identity and slot id, so the \
+             node's triple-pinned subscription receives it."
+        ));
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, core) -> None:
+    self._core = core
+"#);
+        builder.blank_line();
+        builder.line("@classmethod");
+        builder.block("async def _declare(cls, session):", |builder| {
+            builder.call(
+                "core = await peppylib.testing.TestTopicPublisher.declare(",
+                &[
+                    "session,",
+                    "MOCK_CORE_NODE,",
+                    "MOCK_INSTANCE_ID,",
+                    &format!("{pairing_target},"),
+                    &format!("{topic_name:?},"),
+                    &format!("{qos},"),
+                    "link_id=PEER_LINK_ID,",
+                ],
+                ")",
+            );
+            builder.line("return cls(core)");
+        });
+        builder.blank_line();
+        builder.block(
+            &format!("async def publish(self, message: {alias}.Message) -> None:"),
+            |builder| {
+                builder.docstring(
+                    "Publishes one typed message; lazily waits for the node's pinned \
+                     subscription before the first delivery.",
+                );
+                builder.line(&format!(
+                    "await self._core.publish({serialize_fn}(message))"
+                ));
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            "async def wait_for_subscriber(self, timeout: float) -> bool:",
+            |builder| {
+                builder.docstring(
+                    "Waits until the node's pinned subscription is visible; returns whether \
+                     it matched within `timeout`.",
+                );
+                builder.line("return await self._core.wait_for_subscriber(timeout)");
+            },
+        );
+    });
     builder.blank_line();
 
     Ok(MockMember {
@@ -1201,60 +1226,63 @@ fn render_pair_subscription(
     )?;
     builder.add_import("from typing import Optional");
 
-    builder.line(&format!("class {camel}Subscription:"));
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"Typed subscription to `{topic_name}` (the node emits this direction): \
-         pinned to the node's identity and slot id exactly as a real paired peer \
-         would be.\"\"\""
-    ));
-    builder.blank_line();
-    builder.line("def __init__(self, inner) -> None:");
-    builder.indent();
-    builder.line("self._inner = inner");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("@classmethod");
-    builder.line("async def _open(cls, session, node_instance_id):");
-    builder.indent();
-    builder.line("# The exact wire shape of a paired peer's subscription: node");
-    builder.line("# identity, pairing target, and the node's own slot link_id all");
-    builder.line("# pinned. No pin-following: the mock's peer (the node under test)");
-    builder.line("# is known from construction.");
-    builder.line(
-        "node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)",
-    );
-    builder.line("inner = await peppylib.TopicMessenger.subscribe_peer_pinned(");
-    builder.indent();
-    builder.line("session,");
-    builder.line("MOCK_CORE_NODE,");
-    builder.line("MOCK_INSTANCE_ID,");
-    builder.line(&format!("{pairing_target},"));
-    builder.line("node,");
-    builder.line("LINK_ID,");
-    builder.line(&format!("{topic_name:?},"));
-    builder.line(&format!("{qos},"));
-    builder.dedent();
-    builder.line(")");
-    builder.line("return cls(inner)");
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!(
-        "async def next(self) -> Optional[{message_class}]:"
-    ));
-    builder.indent();
-    builder.line(
-        "\"\"\"Awaits the node's next message on this topic; `None` once the mock's \
-         session closes.\"\"\"",
-    );
-    builder.line("message = await self._inner.on_next_message()");
-    builder.line("if message is None:");
-    builder.indent();
-    builder.line("return None");
-    builder.dedent();
-    builder.line(&format!("return {deserialize_fn}(message.payload)"));
-    builder.dedent();
-    builder.dedent();
+    builder.block(&format!("class {camel}Subscription:"), |builder| {
+        builder.docstring(&format!(
+            "Typed subscription to `{topic_name}` (the node emits this direction): \
+             pinned to the node's identity and slot id exactly as a real paired peer \
+             would be."
+        ));
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, inner) -> None:
+    self._inner = inner
+"#);
+        builder.blank_line();
+        builder.line("@classmethod");
+        builder.block(
+            "async def _open(cls, session, node_instance_id):",
+            |builder| {
+                builder.py(r#"
+# The exact wire shape of a paired peer's subscription: node
+# identity, pairing target, and the node's own slot link_id all
+# pinned. No pin-following: the mock's peer (the node under test)
+# is known from construction.
+node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)
+"#);
+                builder.call(
+                    "inner = await peppylib.TopicMessenger.subscribe_peer_pinned(",
+                    &[
+                        "session,",
+                        "MOCK_CORE_NODE,",
+                        "MOCK_INSTANCE_ID,",
+                        &format!("{pairing_target},"),
+                        "node,",
+                        "LINK_ID,",
+                        &format!("{topic_name:?},"),
+                        &format!("{qos},"),
+                    ],
+                    ")",
+                );
+                builder.line("return cls(inner)");
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            &format!("async def next(self) -> Optional[{message_class}]:"),
+            |builder| {
+                builder.docstring(
+                    "Awaits the node's next message on this topic; `None` once the mock's \
+                     session closes.",
+                );
+                builder.py(r#"
+message = await self._inner.on_next_message()
+if message is None:
+    return None
+"#);
+                builder.line(&format!("return {deserialize_fn}(message.payload)"));
+            },
+        );
+    });
     builder.blank_line();
 
     Ok(MockMember {
@@ -1286,31 +1314,31 @@ fn render_observed_link(
     });
     let default_instance = mock_instance_id(link_id);
 
-    builder.line(&format!("LINK_ID = {link_id:?}"));
-    builder.line(&format!("PAIRING_NAME = {:?}", spec.pairing_name));
-    builder.line(&format!("PAIRING_TAG = {:?}", spec.pairing_tag));
-    builder.line(&format!("SOURCE_LINK_ID = {MOCK_SOURCE_LINK_ID:?}"));
-    builder.line(&format!("MOCK_CORE_NODE = {MOCK_CORE_NODE:?}"));
-    builder.line(&format!("MOCK_INSTANCE_ID = {default_instance:?}"));
+    builder.lines([
+        format!("LINK_ID = {link_id:?}"),
+        format!("PAIRING_NAME = {:?}", spec.pairing_name),
+        format!("PAIRING_TAG = {:?}", spec.pairing_tag),
+        format!("SOURCE_LINK_ID = {MOCK_SOURCE_LINK_ID:?}"),
+        format!("MOCK_CORE_NODE = {MOCK_CORE_NODE:?}"),
+        format!("MOCK_INSTANCE_ID = {default_instance:?}"),
+    ]);
     builder.blank_line();
 
-    builder.line("def source() -> peppylib.ObservedSource:");
-    builder.indent();
-    builder.line("\"\"\"The default mock source, as the harness seeds it.\"\"\"");
-    builder.line("return source_for(MOCK_INSTANCE_ID)");
-    builder.dedent();
+    builder.py(r#"
+def source() -> peppylib.ObservedSource:
+    """The default mock source, as the harness seeds it."""
+    return source_for(MOCK_INSTANCE_ID)
+"#);
     builder.blank_line();
 
-    builder.line("def source_for(instance_id: str) -> peppylib.ObservedSource:");
-    builder.indent();
-    builder.line("\"\"\"`source` under an explicit instance id (multi-member slots).\"\"\"");
-    builder.line("return peppylib.ObservedSource(");
-    builder.indent();
-    builder.line("peppylib.ProducerRef(MOCK_CORE_NODE, instance_id),");
-    builder.line("SOURCE_LINK_ID,");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
+    builder.py(r#"
+def source_for(instance_id: str) -> peppylib.ObservedSource:
+    """`source` under an explicit instance id (multi-member slots)."""
+    return peppylib.ObservedSource(
+        peppylib.ProducerRef(MOCK_CORE_NODE, instance_id),
+        SOURCE_LINK_ID,
+    )
+"#);
     builder.blank_line();
 
     let mut members: Vec<MockMember> = Vec::new();
@@ -1383,58 +1411,63 @@ fn render_observed_publisher(
     builder.line(&format!("{camel}Message = {alias}.Message"));
     builder.blank_line();
 
-    builder.line(&format!("class {camel}Publisher:"));
-    builder.indent();
-    builder.line(&format!(
-        "\"\"\"Typed source publisher for the observed topic `{topic_name}`: publishes \
-         under the mock source's identity and source link_id, so the node's \
-         generation-checked observation subscription receives it.\"\"\""
-    ));
-    builder.blank_line();
-    builder.line("def __init__(self, core) -> None:");
-    builder.indent();
-    builder.line("self._core = core");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("@classmethod");
-    builder.line("async def _declare(cls, session, instance_id):");
-    builder.indent();
-    builder.line("core = await peppylib.testing.TestTopicPublisher.declare(");
-    builder.indent();
-    builder.line("session,");
-    builder.line("MOCK_CORE_NODE,");
-    builder.line("instance_id,");
-    builder.line(&format!("{pairing_target},"));
-    builder.line(&format!("{topic_name:?},"));
-    builder.line(&format!("{qos},"));
-    builder.line("link_id=SOURCE_LINK_ID,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return cls(core)");
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!(
-        "async def publish(self, message: {alias}.Message) -> None:"
-    ));
-    builder.indent();
-    builder.line(
-        "\"\"\"Publishes one typed message; lazily waits for the node's observation \
-         subscription before the first delivery.\"\"\"",
-    );
-    builder.line(&format!(
-        "await self._core.publish({serialize_fn}(message))"
-    ));
-    builder.dedent();
-    builder.blank_line();
-    builder.line("async def wait_for_subscriber(self, timeout: float) -> bool:");
-    builder.indent();
-    builder.line(
-        "\"\"\"Waits until the node's observation subscription is visible; returns \
-         whether it matched within `timeout`.\"\"\"",
-    );
-    builder.line("return await self._core.wait_for_subscriber(timeout)");
-    builder.dedent();
-    builder.dedent();
+    builder.block(&format!("class {camel}Publisher:"), |builder| {
+        builder.docstring(&format!(
+            "Typed source publisher for the observed topic `{topic_name}`: publishes \
+             under the mock source's identity and source link_id, so the node's \
+             generation-checked observation subscription receives it."
+        ));
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, core) -> None:
+    self._core = core
+"#);
+        builder.blank_line();
+        builder.line("@classmethod");
+        builder.block(
+            "async def _declare(cls, session, instance_id):",
+            |builder| {
+                builder.call(
+                    "core = await peppylib.testing.TestTopicPublisher.declare(",
+                    &[
+                        "session,",
+                        "MOCK_CORE_NODE,",
+                        "instance_id,",
+                        &format!("{pairing_target},"),
+                        &format!("{topic_name:?},"),
+                        &format!("{qos},"),
+                        "link_id=SOURCE_LINK_ID,",
+                    ],
+                    ")",
+                );
+                builder.line("return cls(core)");
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            &format!("async def publish(self, message: {alias}.Message) -> None:"),
+            |builder| {
+                builder.docstring(
+                    "Publishes one typed message; lazily waits for the node's observation \
+                     subscription before the first delivery.",
+                );
+                builder.line(&format!(
+                    "await self._core.publish({serialize_fn}(message))"
+                ));
+            },
+        );
+        builder.blank_line();
+        builder.block(
+            "async def wait_for_subscriber(self, timeout: float) -> bool:",
+            |builder| {
+                builder.docstring(
+                    "Waits until the node's observation subscription is visible; returns \
+                     whether it matched within `timeout`.",
+                );
+                builder.line("return await self._core.wait_for_subscriber(timeout)");
+            },
+        );
+    });
     builder.blank_line();
 
     Ok(MockMember {
