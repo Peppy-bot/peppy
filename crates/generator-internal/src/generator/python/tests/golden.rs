@@ -125,6 +125,15 @@ const EXPOSED_ACTION_FEEDBACK_ONLY: &str = r#"
 }
 "#;
 
+/// An action with no result service at all, the one exposed-action branch the
+/// three above miss: `complete` / `complete_cancelled` are not generated.
+const EXPOSED_ACTION_NO_RESULT: &str = r#"
+{
+  name: "nudge",
+  goal_service: {}
+}
+"#;
+
 const CONSUMED_TOPIC: &str = r#"
 {
   link_id: "uvc_camera",
@@ -270,6 +279,7 @@ fn render_everything(node_dir: &Path) -> Vec<InterfaceArtifact> {
         EXPOSED_ACTION_FULL,
         EXPOSED_ACTION_BARE,
         EXPOSED_ACTION_FEEDBACK_ONLY,
+        EXPOSED_ACTION_NO_RESULT,
     ] {
         let action: NativeExposedAction = parse(example);
         generator.add_exposed_action(&action, None).unwrap();
@@ -356,6 +366,55 @@ fn render_everything(node_dir: &Path) -> Vec<InterfaceArtifact> {
     generator.into_artifacts()
 }
 
+/// A dependency slot whose service and action declare no message bodies at
+/// all. Every consumer-side renderer distinguishes "declared but empty" from
+/// "carries a payload", and the maximal scenario above only ever reaches the
+/// second half: here the consumed service drops its `request` parameter and
+/// its `Response`, the consumed action drops its goal, feedback and result
+/// bodies, and the mock swaps `captured`/`next_request -> Tuple` for
+/// `captured_count`/`next_request -> Responder` and takes the no-argument
+/// `respond`/`enqueue_response`. No format anywhere also means no capnp
+/// preamble, which nothing else in this file renders.
+fn render_bodyless_surface(node_dir: &Path) -> Vec<InterfaceArtifact> {
+    let mut generator = PythonGenerator::new();
+    generator.set_node_identity("relay_node", "v1");
+    let dependency =
+        DependencyContext::native("bare_producer", "v1", "bare_link", Cardinality::One);
+
+    let mut service: ConsumedService = parse(CONSUMED_SERVICE);
+    service.link_id = "bare_link".to_string();
+    service.name = "ping".to_string();
+    generator
+        .add_consumed_service(
+            &service,
+            &MessageFormat::default(),
+            &MessageFormat::default(),
+            &dependency,
+        )
+        .unwrap();
+
+    let mut action: ConsumedAction = parse(CONSUMED_ACTION);
+    action.link_id = "bare_link".to_string();
+    action.name = "home_all".to_string();
+    generator
+        .add_consumed_action(
+            &action,
+            &ConsumedActionMessage {
+                goal_request: None,
+                goal_response: None,
+                feedback: None,
+                result_response: None,
+            },
+            &dependency,
+        )
+        .unwrap();
+
+    let registry = std::mem::take(&mut generator.testgen);
+    super::super::mock::render(&mut generator, &registry).unwrap();
+    super::super::fixtures::render(&mut generator, &registry, node_dir).unwrap();
+    generator.into_artifacts()
+}
+
 /// The two harness branches no dependency-bearing node reaches: a node with
 /// no slots and no own surface at all, and a parameter schema with an
 /// undefaulted leaf.
@@ -396,6 +455,7 @@ fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> Stri
 fn python_renderers_emit_the_golden_document() {
     let node_dir = TempDir::new().unwrap();
     let mut artifacts = render_everything(node_dir.path());
+    artifacts.extend(render_bodyless_surface(node_dir.path()));
     artifacts.extend(render_bare_harness(node_dir.path()));
     let rendered = rendered_document(node_dir.path(), artifacts);
 
@@ -428,6 +488,7 @@ fn python_renderers_emit_the_golden_document() {
 fn no_emitted_line_has_trailing_whitespace() {
     let node_dir = TempDir::new().unwrap();
     let mut artifacts = render_everything(node_dir.path());
+    artifacts.extend(render_bodyless_surface(node_dir.path()));
     artifacts.extend(render_bare_harness(node_dir.path()));
     for artifact in artifacts {
         for (index, line) in artifact.code_output.lines().enumerate() {

@@ -699,6 +699,76 @@ class GoalContext:
         await self._inner.complete_cancelled(payload)
 
 ================================================================
+ExposedAction :: nudge
+================================================================
+from dataclasses import dataclass
+from typing import Callable
+from typing import Self
+import peppylib
+
+ACTION_NAME = "nudge"
+
+@dataclass
+class GoalRequest:
+    instance_id: str
+    core_node: str
+
+class GoalDecision:
+    def __init__(self, accepted: bool, reason=None):
+        self.accepted = accepted
+        self.reason = reason
+    @staticmethod
+    def accept():
+        return GoalDecision(True)
+    @staticmethod
+    def reject(reason=None):
+        return GoalDecision(False, reason=reason)
+
+class ActionHandle:
+    @classmethod
+    async def expose(cls, node_runner: peppylib.NodeRunner) -> Self:
+        inner = await peppylib.ConcurrentAction.expose(
+            node_runner.messenger(),
+            node_runner.bound_core_node(),
+            node_runner.bound_instance_id(),
+            peppylib.SenderTarget.node(node_runner.node_name(), node_runner.node_tag()),
+            ACTION_NAME,
+            False,
+        )
+        handle = cls()
+        handle._inner = inner
+        return handle
+
+    async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> "GoalContext | None":
+        while True:
+            pending = await self._inner.recv_next_goal()
+            if pending is None:
+                return None  # goal stream closed (node shutting down)
+            request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)
+            decision = handler(request)
+            if hasattr(decision, "__await__"):
+                decision = await decision
+            response_bytes = b""
+            if decision.accepted:
+                ctx = await pending.accept(response_bytes)
+                return GoalContext(ctx, request)
+            await pending.reject(decision.reason, response_bytes)
+
+class GoalContext:
+    def __init__(self, inner, request: GoalRequest):
+        self._inner = inner
+        self._request = request
+
+    def request(self) -> GoalRequest:
+        return self._request
+    def goal_id(self) -> str:
+        return self._inner.goal_id
+    async def cancel_signal(self) -> None:
+        await self._inner.cancel_signal()
+    def is_cancelled(self) -> bool:
+        return self._inner.is_cancelled()
+
+================================================================
 ExposedAction :: feed/move_arm
 ================================================================
 from dataclasses import dataclass
@@ -4664,6 +4734,105 @@ async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) 
     return handle
 
 ================================================================
+Fixture :: exposed_actions/nudge
+================================================================
+"""Identity-explicit caller for the node's exposed action `nudge`: drives the full goal lifecycle from the fixture session, pinned to the node under test, gating on reachability first."""
+
+from dataclasses import dataclass
+from enum import IntEnum
+from peppygen.exposed_actions import nudge as _production
+import peppylib
+import peppylib.testing
+
+ACTION_NAME = "nudge"
+FIXTURE_CORE_NODE = "fixture-core"
+FIXTURE_INSTANCE_ID = "fixture-observer"
+
+class CancelState(IntEnum):
+    SIGNALLED = 0
+    ALREADY_TERMINAL = 1
+    UNKNOWN = 2
+
+@dataclass
+class CancelResponse:
+    core_node: str
+    instance_id: str
+    state: CancelState
+
+class ResultStatus(IntEnum):
+    COMPLETED = 0
+    CANCELLED = 1
+    ABANDONED = 2
+    EXPIRED = 3
+
+@dataclass
+class ResultResponse:
+    core_node: str
+    instance_id: str
+    status: ResultStatus
+
+class GoalHandle:
+    """A goal in flight against the node's action `nudge`; construct with `send_goal`. Attributes: `accepted` (whether the node admitted the goal), `reason` (optional human-readable rejection reason)."""
+
+    async def cancel_goal(self, timeout: float) -> CancelResponse:
+        """Requests cancellation of this goal."""
+        reply = await peppylib.ActionMessenger.cancel_goal(
+            self._messenger,
+            self._inner,
+            timeout,
+        )
+        return CancelResponse(
+            core_node=reply.core_node,
+            instance_id=reply.instance_id,
+            state=CancelState(reply.state),
+        )
+
+    async def get_result(self, timeout: float) -> ResultResponse:
+        """Retrieves the goal's terminal result."""
+        reply = await peppylib.ActionMessenger.request_result(
+            self._messenger,
+            self._inner,
+            timeout,
+        )
+        status = ResultStatus(reply.status)
+        return ResultResponse(
+            core_node=reply.core_node,
+            instance_id=reply.instance_id,
+            status=status,
+        )
+
+async def send_goal(harness, feedback_qos: peppylib.QoSProfile, timeout: float) -> GoalHandle:
+    """Sends a goal to the node from the fixture session (a fresh, identity-explicit caller pinned to the node under test), gating on reachability first, and decodes the admission reply."""
+    producer = harness.node_producer_ref()
+    await peppylib.testing.wait_action_reachable(
+        harness.session,
+        FIXTURE_CORE_NODE,
+        FIXTURE_INSTANCE_ID,
+        peppylib.SenderTarget.node("relay_node", "v1"),
+        ACTION_NAME,
+        producer,
+        timeout,
+    )
+    user_goal_payload = b""
+    inner = await peppylib.ActionMessenger.send_goal(
+        harness.session,
+        FIXTURE_CORE_NODE,
+        FIXTURE_INSTANCE_ID,
+        peppylib.SenderTarget.node("relay_node", "v1"),
+        ACTION_NAME,
+        producer,
+        user_goal_payload,
+        feedback_qos,
+        timeout,
+    )
+    handle = GoalHandle()
+    handle._messenger = harness.session
+    handle._inner = inner
+    handle.accepted = inner.accepted
+    handle.reason = inner.reason
+    return handle
+
+================================================================
 Fixture :: exposed_actions/feed/move_arm
 ================================================================
 """Identity-explicit caller for the node's exposed action `move_arm`: drives the full goal lifecycle from the fixture session, pinned to the node under test, gating on reachability first."""
@@ -5184,6 +5353,542 @@ async def _start(setup, parameters, instance_id, node_dir, spare_camera_vacant, 
                 observed=ObservedMocks(watchers=obs_watchers, spare_watcher=obs_spare_watcher, watcher_bank=obs_watcher_bank, watcher_pool=obs_watcher_pool),
             ),
             emitted=Emitted(video_stream=emitted_video_stream, feed_video_stream=emitted_feed_video_stream, heartbeat=emitted_heartbeat),
+            session=session,
+            router=router,
+            instance_id=instance_id,
+        )
+    except BaseException:
+        await router.shutdown()
+        raise
+
+================================================================
+ConsumedService :: bare_link/ping
+================================================================
+import peppylib
+
+NODE_NAME = "bare_producer"
+SERVICE_NAME = "ping"
+LINK_ID = "bare_link"
+
+
+
+def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:
+    """The producer bound to this module's slot.
+
+    The binding is fixed when the node starts (no live discovery; a
+    producer disconnecting never rebinds it) and shared by every
+    generated module referencing this slot. This slot declares
+    cardinality `one`: launch validation resolved exactly one producer,
+    so the accessor is singular and infallible.
+    """
+    return node_runner.bound_producer("bare_link")
+
+async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float) -> None:
+    """Polls this service on `target`, a member of the slot's bound set.
+
+    A target outside the set fails before anything reaches the wire.
+    This slot declares cardinality `one`: `target` is its sole bound
+    producer, returned by `bound_producer()`; the explicit parameter
+    keeps call sites uniform across cardinalities.
+    """
+    node_runner.ensure_target_bound(LINK_ID, target)
+    request_payload = b""
+    await peppylib.ServiceMessenger.poll(
+        node_runner.messenger(),
+        node_runner.bound_core_node(),
+        node_runner.bound_instance_id(),
+        peppylib.SenderTarget.node(NODE_NAME, "v1"),
+        SERVICE_NAME,
+        target,
+        request_payload,
+        timeout,
+    )
+
+================================================================
+ConsumedAction :: bare_link/home_all
+================================================================
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Self
+import peppylib
+
+TARGET_NODE_NAME = "bare_producer"
+TARGET_ACTION_NAME = "home_all"
+LINK_ID = "bare_link"
+
+class CancelState(IntEnum):
+    SIGNALLED = 0
+    ALREADY_TERMINAL = 1
+    UNKNOWN = 2
+
+@dataclass
+class CancelResponse:
+    core_node: str
+    instance_id: str
+    state: CancelState
+
+class ResultStatus(IntEnum):
+    COMPLETED = 0
+    CANCELLED = 1
+    ABANDONED = 2
+    EXPIRED = 3
+
+@dataclass
+class ResultResponse:
+    core_node: str
+    instance_id: str
+    status: ResultStatus
+
+
+def bound_producer(node_runner: peppylib.NodeRunner) -> peppylib.ProducerRef:
+    """The producer bound to this module's slot.
+
+    The binding is fixed when the node starts (no live discovery; a
+    producer disconnecting never rebinds it) and shared by every
+    generated module referencing this slot. This slot declares
+    cardinality `one`: launch validation resolved exactly one producer,
+    so the accessor is singular and infallible.
+    """
+    return node_runner.bound_producer("bare_link")
+
+
+class ActionHandle:
+    @classmethod
+    async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:
+        """Fires this goal at `target`, a member of the slot's bound set.
+
+        A target outside the set fails before anything reaches the wire. The
+        handle retains the target: feedback, result, and cancel stay pinned
+        to it.
+        This slot declares cardinality `one`: `target` is its sole bound
+        producer, returned by `bound_producer()`; the explicit parameter
+        keeps call sites uniform across cardinalities.
+        """
+        node_runner.ensure_target_bound(LINK_ID, target)
+        user_goal_payload = b""
+        action_handle = await peppylib.ActionMessenger.send_goal(
+            node_runner.messenger(),
+            node_runner.bound_core_node(),
+            node_runner.bound_instance_id(),
+            peppylib.SenderTarget.node(TARGET_NODE_NAME, "v1"),
+            TARGET_ACTION_NAME,
+            target,
+            user_goal_payload,
+            feedback_qos,
+            timeout,
+        )
+        handle = cls()
+        handle._messenger = node_runner.messenger()
+        handle._inner = action_handle
+        handle.accepted = action_handle.accepted
+        handle.reason = action_handle.reason
+        return handle
+
+    async def cancel_goal(self, timeout: float) -> CancelResponse:
+        reply = await peppylib.ActionMessenger.cancel_goal(
+            self._messenger,
+            self._inner,
+            timeout,
+        )
+        return CancelResponse(core_node=reply.core_node, instance_id=reply.instance_id, state=CancelState(reply.state))
+
+    async def get_result(self, timeout: float) -> ResultResponse:
+        reply = await peppylib.ActionMessenger.request_result(
+            self._messenger,
+            self._inner,
+            timeout,
+        )
+        status = ResultStatus(reply.status)
+        return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status)
+
+================================================================
+Mock :: deps/bare_link
+================================================================
+"""Mock producer for the `bare_link` dependency slot (generated; see `Mock`)."""
+
+from peppygen.consumed_actions.bare_link import home_all as _home_all
+from peppygen.consumed_services.bare_link import ping as _ping
+from typing import Optional
+import peppylib
+import peppylib.testing
+
+LINK_ID = "bare_link"
+MOCK_CORE_NODE = "mock-core"
+MOCK_INSTANCE_ID = "mock-bare_link"
+
+def producer_ref() -> peppylib.ProducerRef:
+    """The default mock's wire identity, as the harness seeds it."""
+    return producer_ref_for(MOCK_INSTANCE_ID)
+
+def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
+    """`producer_ref` under an explicit instance id (multi-instance slots)."""
+    return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
+
+class PingResponder:
+    """Answers exactly one parked request; consumed by use."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    async def respond(self) -> None:
+        """Sends the typed response for the parked request."""
+        await self._inner.respond(b"")
+
+    async def respond_error(self, reason: str) -> None:
+        """Fails the parked request with a handler-error reason."""
+        await self._inner.respond_error(reason)
+
+class PingService:
+    """Typed mock server for the consumed service `ping`: a background pump captures every request; scripted responses serve automatically, unscripted requests park for `next_request`."""
+
+    def __init__(self, core) -> None:
+        self._core = core
+
+    @classmethod
+    async def _listen(cls, session, instance_id):
+        core = await peppylib.testing.MockServiceCore.listen(
+            session,
+            MOCK_CORE_NODE,
+            instance_id,
+            peppylib.SenderTarget.node("bare_producer", "v1"),
+            "ping",
+        )
+        return cls(core)
+
+    async def next_request(self, timeout: float) -> PingResponder:
+        """Parks until the node's next unscripted call, returning the responder the test must use to answer it. Errors after `timeout`."""
+        _context, responder = await self._core.next_request(timeout)
+        return PingResponder(responder)
+
+    def enqueue_response(self) -> None:
+        """Enqueues one response to be served automatically to the next inbound request (FIFO across repeated calls); only unscripted requests park for `next_request`."""
+        self._core.enqueue_response(b"")
+
+    def captured_count(self) -> int:
+        """How many calls the node has made so far."""
+        return len(self._core.captured())
+
+    async def _close(self) -> None:
+        await self._core.close()
+
+class HomeAllActiveGoal:
+    """An accepted goal: drives feedback and terminal completion."""
+
+    def __init__(self, context) -> None:
+        self._context = context
+
+    async def cancel_signal(self) -> None:
+        """Resolves when the node requests cancellation of this goal."""
+        await self._context.cancel_signal()
+
+    def is_cancelled(self) -> bool:
+        """Whether cancellation has been requested for this goal."""
+        return self._context.is_cancelled()
+
+    async def complete(self) -> None:
+        """Completes the goal successfully."""
+        await self._context.complete(b"")
+
+    async def complete_cancelled(self) -> None:
+        """Completes the goal as cancelled."""
+        await self._context.complete_cancelled(b"")
+
+
+class HomeAllPendingGoal:
+    """A goal received by the mock, awaiting accept/reject."""
+
+    def __init__(self, pending) -> None:
+        self._pending = pending
+
+    @property
+    def goal_id(self) -> str:
+        """The client-generated correlation id for this goal."""
+        return self._pending.goal_id
+
+    async def accept(self) -> HomeAllActiveGoal:
+        """Accepts the goal; the returned handle drives feedback and completion."""
+        context = await self._pending.accept(b"")
+        return HomeAllActiveGoal(context)
+
+    async def reject(self, reason: Optional[str] = None) -> None:
+        """Rejects the goal with an optional human-readable reason."""
+        await self._pending.reject(reason, b"")
+
+class HomeAllAction:
+    """Typed mock action server for the consumed action `home_all`, on the real `ConcurrentAction` engine: identical goal lifecycle to a production producer, plus deterministic producer-loss via the owning mock's `stop()`."""
+
+    def __init__(self, core) -> None:
+        self._core = core
+
+    @classmethod
+    async def _expose(cls, session, instance_id):
+        core = await peppylib.testing.MockActionServerCore.expose(
+            session,
+            MOCK_CORE_NODE,
+            instance_id,
+            peppylib.SenderTarget.node("bare_producer", "v1"),
+            "home_all",
+            False,
+        )
+        return cls(core)
+
+    async def next_goal(self, timeout: float) -> HomeAllPendingGoal:
+        """Parks until the node sends a goal, bounded by `timeout`; the returned goal awaits the test's admission decision."""
+        pending = await self._core.next_goal(timeout)
+        return HomeAllPendingGoal(pending)
+
+    def _stop(self) -> None:
+        self._core.stop()
+
+class Mock:
+    """Mock producer for the `bare_link` dependency slot: plays the dependency over the real wire under the identity the harness seeds into the slot's bound set. One messaging session per mock, so `stop()` is a whole-producer loss."""
+
+    def __init__(self, session, ping, home_all) -> None:
+        self._session = session
+        self._stopped = False
+        self.ping = ping
+        self.home_all = home_all
+
+    @classmethod
+    async def start(cls, router: peppylib.testing.EphemeralRouter, instance_id: Optional[str] = None) -> "Mock":
+        """Connects a dedicated session and declares every interface of this dependency now (publishers, queryables, action engines), under `MOCK_INSTANCE_ID` unless an explicit instance id is given (multi-instance slots)."""
+        if instance_id is None:
+            instance_id = MOCK_INSTANCE_ID
+        session = await router.connect()
+        ping = await PingService._listen(session, instance_id)
+        home_all = await HomeAllAction._expose(session, instance_id)
+        return cls(session, ping, home_all)
+
+    async def stop(self) -> None:
+        """Simulates this producer dying mid-flight, deterministically: live action goals are disarmed (their eventual release emits no clean close), then every declaration and the session are released, dropping the liveliness tokens consumers latch on."""
+        if self._stopped:
+            return
+        self._stopped = True
+        self.home_all._stop()
+        await self.ping._close()
+        self.ping = None
+        self.home_all = None
+        self._session = None
+
+
+================================================================
+Fixture :: harness
+================================================================
+"""Generated test harness: ephemeral router + started mocks + seeded StandaloneConfig + the node running in-process behind the readiness barriers. Construct with `start(...)`."""
+
+from peppygen import parameters as _parameters
+from peppygen.mock.deps import bare_link as _dep_bare_link
+import os
+import peppylib
+import peppylib.testing
+
+FIXTURE_CORE_NODE = "fixture-core"
+FIXTURE_INSTANCE_ID = "fixture-observer"
+NODE_NAME = "relay_node"
+NODE_TAG = "v1"
+_NODE_CONFIG_FILE = "peppy.json5"
+_SYNC_TIME_NODE_DIR = "<NODE_DIR>"
+_DEFAULT_PARAMETERS = {}
+
+def _resolve_node_dir(node_dir):
+    """The node directory holding peppy.json5, resolved from: the explicit
+    `node_dir` argument, else the nearest peppy.json5 walking up from the
+    current working directory, else the absolute path baked at sync time."""
+    if node_dir is not None:
+        candidate = os.path.abspath(os.fspath(node_dir))
+        if os.path.isfile(os.path.join(candidate, _NODE_CONFIG_FILE)):
+            return candidate
+        raise RuntimeError(
+            f"node_dir {candidate!r} does not contain {_NODE_CONFIG_FILE}; pass "
+            "the directory that holds the node's peppy.json5"
+        )
+    current = os.getcwd()
+    while True:
+        if os.path.isfile(os.path.join(current, _NODE_CONFIG_FILE)):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    if os.path.isfile(os.path.join(_SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)):
+        return _SYNC_TIME_NODE_DIR
+    raise RuntimeError(
+        "could not locate the node's peppy.json5 from any source: "
+        "(1) no explicit node_dir= was passed to start(), so pass the node "
+        "directory explicitly; "
+        f"(2) no {_NODE_CONFIG_FILE} was found walking up from the current "
+        f"working directory {os.getcwd()!r}, so run the tests from inside the "
+        "node directory; "
+        f"(3) the sync-time path {_SYNC_TIME_NODE_DIR!r} no longer holds one, "
+        "so the node has moved since generation; re-run peppy node sync"
+    )
+
+def _hydrate_parameters(parameters):
+    """The typed Parameters `setup` receives: the caller's override
+    verbatim, or the schema defaults hydrated the way `NodeBuilder().run`
+    would hydrate them."""
+    if parameters is not None:
+        return parameters
+    if _DEFAULT_PARAMETERS is None:
+        return None
+    return _parameters.Parameters.from_dict(_DEFAULT_PARAMETERS)
+
+class DepMocks:
+    """One attribute per mocked dependency slot."""
+
+    def __init__(self, bare_link) -> None:
+        self.bare_link = bare_link
+
+class PairingMocks:
+    """One attribute per mocked pairing slot."""
+
+class ObservedMocks:
+    """One attribute per mocked observer slot."""
+
+class Mocks:
+    """Every started mock, grouped by namespace (`deps` / `pairings` / `observed`), one attribute per link. A test can consume an individual mock (`await mock.stop()` is producer-loss) without giving up the harness."""
+
+    def __init__(self, deps, pairings, observed) -> None:
+        self.deps = deps
+        self.pairings = pairings
+        self.observed = observed
+
+    async def _stop_all(self) -> None:
+        for group in (self.deps, self.pairings, self.observed):
+            for value in vars(group).values():
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    for mock in value:
+                        await mock.stop()
+                else:
+                    await value.stop()
+
+class Emitted:
+    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured)."""
+
+class Harness:
+    """Generated test harness: ephemeral router + started mocks + seeded `StandaloneConfig` + the node running in-process behind the readiness barriers. Construct with `start(...)`; tear down with `await shutdown()` (or let `async with start(...)` do it)."""
+
+    def __init__(self, core, mocks, emitted, session, router, instance_id) -> None:
+        self._core = core
+        #: Every started mock, one attribute-group per namespace.
+        self.mocks = mocks
+        #: Observation subscriptions to the node's own emissions.
+        self.emitted = emitted
+        #: The fixture caller/observer session (not the node's).
+        self.session = session
+        self._router = router
+        #: The node-under-test's instance id.
+        self.instance_id = instance_id
+
+    @property
+    def node_runner(self):
+        """The running node, for calling its runtime surface directly."""
+        return self._core.node_runner
+
+    def node_producer_ref(self) -> peppylib.ProducerRef:
+        """The node-under-test's wire identity."""
+        return peppylib.ProducerRef(self._core.bound_core_node(), self.instance_id)
+
+    def setup_finished(self) -> bool:
+        """Whether the node's `setup` has returned."""
+        return self._core.setup_finished()
+
+    async def shutdown(self) -> None:
+        """Tears the fixture down in lifecycle order: node convergence
+        (cancel -> bounded setup await -> shutdown hooks, propagating a setup
+        error), then the fixture session and the mocks, then the router."""
+        try:
+            await self._core.shutdown()
+        finally:
+            self.emitted = None
+            self.session = None
+            mocks = self.mocks
+            self.mocks = None
+            if mocks is not None:
+                await mocks._stop_all()
+            router = self._router
+            self._router = None
+            if router is not None:
+                await router.shutdown()
+
+class _HarnessStart:
+    """What `start` returns: awaitable (`harness = await start(...)`) and async context manager (`async with start(...) as harness:`, shutdown runs even when the test body fails)."""
+
+    def __init__(self, coro) -> None:
+        self._coro = coro
+        self._harness = None
+
+    def __await__(self):
+        return self._coro.__await__()
+
+    async def __aenter__(self) -> Harness:
+        self._harness = await self._coro
+        return self._harness
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        harness = self._harness
+        self._harness = None
+        if harness is not None:
+            await harness.shutdown()
+
+def start(setup, *, parameters=None, instance_id=None, node_dir=None):
+    """Boots the full fixture: ephemeral router + started mocks + seeded
+    StandaloneConfig + the node running in-process behind the readiness
+    barriers. `setup` is the node's real entry point (the exact
+    `async def setup(params, node_runner)` shape `NodeBuilder().run`
+    takes), spawned only after every readiness barrier passed.
+
+    Usable both ways:
+
+        harness = await start(setup)   # then: await harness.shutdown()
+        async with start(setup) as harness: ...   # shutdown on exit
+
+    `parameters` is the typed `peppygen.parameters.Parameters` override
+    (`None` uses the schema defaults); `instance_id` overrides the unique
+    generated one; `node_dir` points at the directory holding the node's
+    peppy.json5 when neither the working directory nor the sync-time path
+    resolves it.
+    """
+    return _HarnessStart(_start(setup, parameters, instance_id, node_dir))
+
+async def _start(setup, parameters, instance_id, node_dir) -> Harness:
+    node_dir = _resolve_node_dir(node_dir)
+    if instance_id is None:
+        instance_id = peppylib.testing.unique_test_instance_id()
+    router = await peppylib.testing.EphemeralRouter.start()
+    try:
+        dep_bare_link = await _dep_bare_link.Mock.start(router)
+        session = await router.connect()
+        standalone = (
+            peppylib.StandaloneConfig()
+            .with_messaging(router.host, router.port)
+            .with_instance_id(instance_id)
+        )
+        if parameters is not None:
+            standalone = standalone.with_parameters(parameters)
+        standalone = standalone.with_bound_producer("bare_link", _dep_bare_link.MOCK_CORE_NODE, _dep_bare_link.MOCK_INSTANCE_ID)
+        publisher_readiness = []
+        service_readiness = []
+        service_readiness.append(peppylib.testing.ServiceReadiness(target=peppylib.SenderTarget.node("bare_producer", "v1"), name="ping", producer=_dep_bare_link.producer_ref_for(_dep_bare_link.MOCK_INSTANCE_ID), kind="service"))
+        service_readiness.append(peppylib.testing.ServiceReadiness(target=peppylib.SenderTarget.node("bare_producer", "v1"), name="home_all", producer=_dep_bare_link.producer_ref_for(_dep_bare_link.MOCK_INSTANCE_ID), kind="action"))
+        core = await peppylib.testing.HarnessCore.start(
+            os.path.join(node_dir, _NODE_CONFIG_FILE),
+            standalone,
+            publisher_readiness,
+            setup,
+            parameters=_hydrate_parameters(parameters),
+            service_readiness=service_readiness,
+        )
+        return Harness(
+            core=core,
+            mocks=Mocks(
+                deps=DepMocks(bare_link=dep_bare_link),
+                pairings=PairingMocks(),
+                observed=ObservedMocks(),
+            ),
+            emitted=Emitted(),
             session=session,
             router=router,
             instance_id=instance_id,
