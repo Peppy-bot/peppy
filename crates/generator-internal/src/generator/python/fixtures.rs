@@ -1029,42 +1029,6 @@ _DEFAULT_PARAMETERS = None
     builder.blank_line();
 
     builder.py(r#"
-def _resolve_node_dir(node_dir):
-    """The node directory holding peppy.json5, resolved from: the explicit
-    `node_dir` argument, else the nearest peppy.json5 walking up from the
-    current working directory, else the absolute path baked at sync time."""
-    if node_dir is not None:
-        candidate = os.path.abspath(os.fspath(node_dir))
-        if os.path.isfile(os.path.join(candidate, _NODE_CONFIG_FILE)):
-            return candidate
-        raise RuntimeError(
-            f"node_dir {candidate!r} does not contain {_NODE_CONFIG_FILE}; pass "
-            "the directory that holds the node's peppy.json5"
-        )
-    current = os.getcwd()
-    while True:
-        if os.path.isfile(os.path.join(current, _NODE_CONFIG_FILE)):
-            return current
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-    if os.path.isfile(os.path.join(_SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)):
-        return _SYNC_TIME_NODE_DIR
-    raise RuntimeError(
-        "could not locate the node's peppy.json5 from any source: "
-        "(1) no explicit node_dir= was passed to start(), so pass the node "
-        "directory explicitly; "
-        f"(2) no {_NODE_CONFIG_FILE} was found walking up from the current "
-        f"working directory {os.getcwd()!r}, so run the tests from inside the "
-        "node directory; "
-        f"(3) the sync-time path {_SYNC_TIME_NODE_DIR!r} no longer holds one, "
-        "so the node has moved since generation; re-run peppy node sync"
-    )
-"#);
-    builder.blank_line();
-
-    builder.py(r#"
 def _hydrate_parameters(parameters):
     """The typed Parameters `setup` receives: the caller's override
     verbatim, or the schema defaults hydrated the way `NodeBuilder().run`
@@ -1096,31 +1060,12 @@ def _hydrate_parameters(parameters):
         &observed_attrs,
     );
 
-    builder.block("class Mocks:", |builder| {
-        builder.docstring(
-            "Every started mock, grouped by namespace (`deps` / `pairings` / \
-             `observed`), one attribute per link. A test can consume an individual mock \
-             (`await mock.stop()` is producer-loss) without giving up the harness.",
-        );
-        builder.blank_line();
-        builder.py(r#"
-def __init__(self, deps, pairings, observed) -> None:
-    self.deps = deps
-    self.pairings = pairings
-    self.observed = observed
-
-async def _stop_all(self) -> None:
-    for group in (self.deps, self.pairings, self.observed):
-        for value in vars(group).values():
-            if value is None:
-                continue
-            if isinstance(value, list):
-                for mock in value:
-                    await mock.stop()
-            else:
-                await value.stop()
+    builder.py(r#"
+# Aggregates the three namespace classes above and tears the whole set down.
+# Node-invariant, so it lives in peppylib.testing; bound here under its
+# historical name so `harness.mocks`'s type stays importable from this module.
+Mocks = peppylib.testing.Mocks
 "#);
-    });
     builder.blank_line();
 
     emit_namespace_class(
@@ -1177,7 +1122,7 @@ async def shutdown(self) -> None:
         mocks = self.mocks
         self.mocks = None
         if mocks is not None:
-            await mocks._stop_all()
+            await mocks.stop_all()
         router = self._router
         self._router = None
         if router is not None:
@@ -1264,7 +1209,7 @@ resolves it.
         ),
         |builder| {
             builder.py(r#"
-node_dir = _resolve_node_dir(node_dir)
+node_dir = peppylib.testing.resolve_node_dir(node_dir, _SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)
 if instance_id is None:
     instance_id = peppylib.testing.unique_test_instance_id()
 router = await peppylib.testing.EphemeralRouter.start()

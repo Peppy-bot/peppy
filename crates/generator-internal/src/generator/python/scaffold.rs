@@ -287,6 +287,40 @@ mod tests {
         assert_eq!(sanitize_python_module_name("from"), "from_");
     }
 
+    /// The generated fixtures harness calls into `peppylib.testing` by name,
+    /// and the copy a node actually receives is the one embedded here — which
+    /// outside the superproject comes from the *pinned* public-peppy-libs
+    /// revision, not from anyone's working tree. Nothing else in this repo
+    /// executes generated Python, so without this assertion a peppy that
+    /// emits a call the pinned peppylib cannot answer builds green and fails
+    /// only in a user's node test run, after `peppy node sync`.
+    ///
+    /// Add a name here whenever the harness starts calling a new one; a
+    /// failure means `Cargo.lock` has not been bumped past the
+    /// public-peppy-libs commit that added it.
+    #[test]
+    fn embedded_peppylib_testing_defines_every_member_the_harness_calls() {
+        let testing = EmbeddedPeppylibPy::get("testing.py")
+            .expect("peppylib/testing.py is embedded from $PEPPY_SHARED_DIR");
+        let source =
+            std::str::from_utf8(testing.data.as_ref()).expect("peppylib/testing.py is valid UTF-8");
+        for definition in [
+            "def unique_test_instance_id(",
+            "def resolve_node_dir(",
+            "class Mocks:",
+            "    async def stop_all(",
+            "class HarnessCore:",
+            "class EphemeralRouter:",
+        ] {
+            assert!(
+                source.contains(definition),
+                "the embedded peppylib.testing is missing `{definition}`, which the \
+                 generated harness calls; bump Cargo.lock past the public-peppy-libs \
+                 commit that adds it"
+            );
+        }
+    }
+
     #[test]
     fn write_tree_node_escapes_keyword_module_in_init_import() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
