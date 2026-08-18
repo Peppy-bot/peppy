@@ -21,11 +21,24 @@ use crate::helpers::{
     test_peppy_dirs, test_wrapper_crate_name,
 };
 
+// The manifest must declare the slots the generated code addresses: the
+// standalone processor sizes its bound/peer sets from `depends_on`, and the
+// harness seeding calls are warn-skipped for undeclared slots (the runtime
+// then refuses the mismatched generated code as version skew).
 const NODE_CONFIG: &str = r#"{
   peppy_schema: "node/v1",
   manifest: {
     name: "generated_node",
-    tag: "v1"
+    tag: "v1",
+    depends_on: {
+      nodes: [
+        { name: "uvc_camera", tag: "v1", link_id: "camera" },
+        { name: "brain", tag: "v1", link_id: "brain" }
+      ],
+      pairings: [
+        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+      ]
+    }
   },
   execution: {
     language: "rust",
