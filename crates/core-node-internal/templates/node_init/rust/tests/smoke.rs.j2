@@ -1,0 +1,18 @@
+//! Smoke test scaffolded by `peppy node init`: boots the node in-process
+//! under the generated test harness (ephemeral router + seeded standalone
+//! config + readiness barriers) and converges cleanly. Extend it — or add
+//! sibling files — as the node grows interfaces; `peppy node sync`
+//! regenerates typed mocks for every dependency under `peppygen::mock`.
+
+use peppygen::fixtures::harness::Harness;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_boots_and_shuts_down_cleanly() {
+    let (harness, _mocks) = Harness::start({{ crate_ident }}::setup)
+        .await
+        .expect("the harness should boot the node");
+    harness
+        .shutdown()
+        .await
+        .expect("the node should shut down cleanly");
+}

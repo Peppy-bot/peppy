@@ -31,6 +31,22 @@ pub struct PythonPyprojectToml<'a> {
     pub python_max_version: &'a str,
 }
 
+/// Template for the Rust `src/main.rs`: a thin delegate into the library
+/// crate's `setup`, which is what makes the node importable by its tests.
+#[derive(Template)]
+#[template(path = "node_init/rust/src/main.rs.j2")]
+pub struct RustMainRs<'a> {
+    pub crate_ident: &'a str,
+}
+
+/// Template for the Rust `tests/smoke.rs`: boots the node through the
+/// generated test harness.
+#[derive(Template)]
+#[template(path = "node_init/rust/tests/smoke.rs.j2")]
+pub struct RustSmokeTest<'a> {
+    pub crate_ident: &'a str,
+}
+
 /// Template for Rust peppy.json5 file
 #[derive(Template)]
 #[template(path = "node_init/rust/peppy.json5.j2")]
@@ -45,6 +61,14 @@ pub struct RustPeppyJson5<'a> {
 pub struct PythonPeppyJson5<'a> {
     pub node_name: &'a str,
     pub with_container: bool,
+}
+
+/// Template for the Python `tests/test_smoke.py`: boots the node through the
+/// generated test harness.
+#[derive(Template)]
+#[template(path = "node_init/python/tests/test_smoke.py.j2")]
+pub struct PythonSmokeTest<'a> {
+    pub node_name: &'a str,
 }
 
 #[derive(Template)]
@@ -96,7 +120,8 @@ fn copy_embedded_static_files(prefix: &str, dest_dir: &Path) -> Result<()> {
 
 /// Applies templates and copies static files for Rust node initialization
 pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bool) -> Result<()> {
-    // Copy all static files (non-.j2 files) recursively
+    // Copy all static files (non-.j2 files) recursively — src/lib.rs (the
+    // importable `setup`) among them.
     copy_embedded_static_files("node_init/rust", node_dir)?;
 
     // Apply Cargo.toml template
@@ -106,6 +131,21 @@ pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bo
         pepylib_path: daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
     };
     std::fs::write(node_dir.join("Cargo.toml"), cargo_toml.render()?)?;
+
+    // main.rs delegates to the library's `setup`; tests/smoke.rs boots it
+    // through the generated harness. Both name the library crate, whose
+    // ident is the package name with `-` mapped to `_`.
+    let crate_ident = node_name.replace('-', "_");
+    let main_rs = RustMainRs {
+        crate_ident: &crate_ident,
+    };
+    std::fs::create_dir_all(node_dir.join("src"))?;
+    std::fs::write(node_dir.join("src/main.rs"), main_rs.render()?)?;
+    let smoke_test = RustSmokeTest {
+        crate_ident: &crate_ident,
+    };
+    std::fs::create_dir_all(node_dir.join("tests"))?;
+    std::fs::write(node_dir.join("tests/smoke.rs"), smoke_test.render()?)?;
 
     // Apply peppy.json5 template
     let peppy_json5 = RustPeppyJson5 {
@@ -167,16 +207,25 @@ pub fn apply_python_templates(
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
 
-def setup(params: Parameters, node_runner: NodeRunner):
+
+async def setup(params: Parameters, node_runner: NodeRunner):
     pass
+
 
 def main():
     NodeBuilder().run(setup)
+
 
 if __name__ == "__main__":
     main()
 "#,
     )?;
+
+    // The scaffolded smoke test boots the node through the generated
+    // harness; pyproject's dev group carries pytest + pytest-asyncio.
+    let smoke_test = PythonSmokeTest { node_name };
+    std::fs::create_dir_all(node_dir.join("tests"))?;
+    std::fs::write(node_dir.join("tests/test_smoke.py"), smoke_test.render()?)?;
 
     if with_container {
         let apptainer_def = ApptainerPythonDef {

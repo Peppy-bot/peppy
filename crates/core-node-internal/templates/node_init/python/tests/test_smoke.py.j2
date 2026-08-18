@@ -1,0 +1,14 @@
+"""Smoke test scaffolded by `peppy node init`: boots the node in-process
+under the generated test harness (ephemeral router + seeded standalone
+config + readiness barriers) and converges cleanly. Extend it — or add
+sibling files — as the node grows interfaces; `peppy node sync` regenerates
+typed mocks for every dependency under `peppygen.mock`."""
+
+from peppygen.fixtures import harness
+
+from {{ node_name }}.__main__ import setup
+
+
+async def test_node_boots_and_shuts_down_cleanly():
+    async with harness.start(setup) as h:
+        assert h.instance_id
