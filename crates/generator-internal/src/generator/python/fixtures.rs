@@ -30,6 +30,32 @@ use config::node::Cardinality;
 use std::collections::HashSet;
 use std::path::Path;
 
+/// One `PublisherReadiness(...)` entry's source lines: `link_id` only for
+/// pairing-slot topics (the mock's own subscription link).
+fn publisher_readiness_lines(target: &str, topic: &str, link_id: Option<&str>) -> Vec<String> {
+    let mut lines = vec![
+        "peppylib.testing.PublisherReadiness(".to_string(),
+        format!("    target={target},"),
+        format!("    topic={topic:?},"),
+    ];
+    if let Some(link_id) = link_id {
+        lines.push(format!("    link_id={link_id:?},"));
+    }
+    lines.push("),".to_string());
+    lines
+}
+
+/// `attr=local` kwargs for one mocks group: every local binding is the
+/// group-prefixed attr (`dep_x = ...`), so the pair derives from the attr
+/// alone instead of being tracked in a parallel vector.
+fn mock_kwargs(attrs: &[String], prefix: &str) -> String {
+    attrs
+        .iter()
+        .map(|attr| format!("{attr}={prefix}_{attr}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub(super) fn render(
     generator: &mut PythonGenerator,
     registry: &TestGenRegistry,
@@ -215,7 +241,7 @@ fn render_emitted_topic(
          harness calls this before the node boots and barriers on it, so the node's \
          very first publish is captured.\"\"\"",
     );
-    builder.line("producer = peppylib.ProducerRef(\"standalone-core\", node_instance_id)");
+    builder.line("producer = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)");
     builder.line("inner = await peppylib.TopicMessenger.subscribe(");
     builder.indent();
     builder.line("session,");
@@ -792,7 +818,6 @@ fn render_harness(
     node_dir: &str,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
-    builder.add_import("import itertools");
     builder.add_import("import os");
     builder.add_import("import peppylib");
     builder.add_import("import peppylib.testing");
@@ -804,11 +829,8 @@ fn render_harness(
     let mut publisher_readiness: Vec<Vec<String>> = Vec::new();
     let mut service_readiness: Vec<String> = Vec::new();
     let mut dep_attrs: Vec<String> = Vec::new();
-    let mut dep_locals: Vec<String> = Vec::new();
     let mut pairing_attrs: Vec<String> = Vec::new();
-    let mut pairing_locals: Vec<String> = Vec::new();
     let mut observed_attrs: Vec<String> = Vec::new();
-    let mut observed_locals: Vec<String> = Vec::new();
 
     for (link_id, spec) in &registry.deps {
         let attr = sanitize_python_module_name(link_id);
@@ -830,7 +852,6 @@ fn render_harness(
             &mut service_readiness,
         );
         dep_attrs.push(attr);
-        dep_locals.push(local);
     }
 
     for (link_id, spec) in &registry.pairings {
@@ -875,16 +896,13 @@ fn render_harness(
             tag: spec.pairing_tag.clone(),
         });
         for topic in &spec.node_emits {
-            publisher_readiness.push(vec![
-                "peppylib.testing.PublisherReadiness(".to_string(),
-                format!("    target={pairing_target},"),
-                format!("    topic={:?},", topic.name),
-                format!("    link_id={link_id:?},"),
-                "),".to_string(),
-            ]);
+            publisher_readiness.push(publisher_readiness_lines(
+                &pairing_target,
+                &topic.name,
+                Some(link_id),
+            ));
         }
         pairing_attrs.push(attr);
-        pairing_locals.push(local);
     }
 
     for (link_id, spec) in &registry.observed {
@@ -965,14 +983,12 @@ fn render_harness(
             }
         }
         observed_attrs.push(attr);
-        observed_locals.push(local);
     }
 
     // Emitted-topic subscriptions: opened on the fixture session before the
     // node boots, then barriered on.
     let mut emitted_subscribes: Vec<String> = Vec::new();
     let mut emitted_attrs: Vec<String> = Vec::new();
-    let mut emitted_locals: Vec<String> = Vec::new();
     for member in emitted_members {
         let alias = format!("_emit_{}", member.attr);
         builder.add_import(&production_import_line(&member.module, &alias));
@@ -980,14 +996,12 @@ fn render_harness(
         emitted_subscribes.push(format!(
             "{local} = await {alias}.subscribe(session, instance_id)"
         ));
-        publisher_readiness.push(vec![
-            "peppylib.testing.PublisherReadiness(".to_string(),
-            format!("    target={},", member.target_expr),
-            format!("    topic={:?},", member.topic),
-            "),".to_string(),
-        ]);
+        publisher_readiness.push(publisher_readiness_lines(
+            &member.target_expr,
+            &member.topic,
+            None,
+        ));
         emitted_attrs.push(member.attr.clone());
-        emitted_locals.push(local);
     }
 
     // -----------------------------------------------------------------
@@ -1009,14 +1023,6 @@ fn render_harness(
             builder.line("_DEFAULT_PARAMETERS = None");
         }
     }
-    builder.blank_line();
-    builder.line("_INSTANCE_COUNTER = itertools.count()");
-    builder.blank_line();
-
-    builder.line("def _unique_instance_id() -> str:");
-    builder.indent();
-    builder.line("return f\"test-{os.getpid()}-{next(_INSTANCE_COUNTER)}\"");
-    builder.dedent();
     builder.blank_line();
 
     builder.line("def _resolve_node_dir(node_dir):");
@@ -1190,7 +1196,7 @@ fn render_harness(
     builder.line("def node_producer_ref(self) -> peppylib.ProducerRef:");
     builder.indent();
     builder.line("\"\"\"The node-under-test's wire identity.\"\"\"");
-    builder.line("return peppylib.ProducerRef(\"standalone-core\", self.instance_id)");
+    builder.line("return peppylib.ProducerRef(self._core.bound_core_node(), self.instance_id)");
     builder.dedent();
     builder.blank_line();
     builder.line("def setup_finished(self) -> bool:");
@@ -1314,7 +1320,7 @@ fn render_harness(
     builder.line("node_dir = _resolve_node_dir(node_dir)");
     builder.line("if instance_id is None:");
     builder.indent();
-    builder.line("instance_id = _unique_instance_id()");
+    builder.line("instance_id = peppylib.testing.unique_test_instance_id()");
     builder.dedent();
     builder.line("router = await peppylib.testing.EphemeralRouter.start()");
     builder.line("try:");
@@ -1372,32 +1378,12 @@ fn render_harness(
     builder.line("core=core,");
     builder.line("mocks=Mocks(");
     builder.indent();
-    let dep_args: Vec<String> = dep_attrs
-        .iter()
-        .zip(&dep_locals)
-        .map(|(attr, local)| format!("{attr}={local}"))
-        .collect();
-    builder.line(&format!("deps=DepMocks({}),", dep_args.join(", ")));
-    let pairing_args: Vec<String> = pairing_attrs
-        .iter()
-        .zip(&pairing_locals)
-        .map(|(attr, local)| format!("{attr}={local}"))
-        .collect();
-    builder.line(&format!("pairings=PairingMocks({}),", pairing_args.join(", ")));
-    let observed_args: Vec<String> = observed_attrs
-        .iter()
-        .zip(&observed_locals)
-        .map(|(attr, local)| format!("{attr}={local}"))
-        .collect();
-    builder.line(&format!("observed=ObservedMocks({}),", observed_args.join(", ")));
+    builder.line(&format!("deps=DepMocks({}),", mock_kwargs(&dep_attrs, "dep")));
+    builder.line(&format!("pairings=PairingMocks({}),", mock_kwargs(&pairing_attrs, "pair")));
+    builder.line(&format!("observed=ObservedMocks({}),", mock_kwargs(&observed_attrs, "obs")));
     builder.dedent();
     builder.line("),");
-    let emitted_args: Vec<String> = emitted_attrs
-        .iter()
-        .zip(&emitted_locals)
-        .map(|(attr, local)| format!("{attr}={local}"))
-        .collect();
-    builder.line(&format!("emitted=Emitted({}),", emitted_args.join(", ")));
+    builder.line(&format!("emitted=Emitted({}),", mock_kwargs(&emitted_attrs, "emitted")));
     builder.line("session=session,");
     builder.line("router=router,");
     builder.line("instance_id=instance_id,");

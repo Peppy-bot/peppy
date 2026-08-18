@@ -11,7 +11,7 @@
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, mock_instance_id,
+    TestGenRegistry, dep_member_name, mock_instance_id,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::qos_profile_tokens;
@@ -114,18 +114,10 @@ fn claim_member_name(
 /// consumer-side link_id equals the dependency slot's, link-qualified
 /// otherwise (a slot can bind several same-name interfaces through distinct
 /// manifest entries).
-fn dep_member_name(dep_link_id: &str, module_link: &str, name: &str) -> String {
-    if module_link == dep_link_id {
-        name.to_string()
-    } else {
-        format!("{module_link}_{name}")
-    }
-}
-
 /// A `fn #fn_ident(value: &#ty) -> crate::Result<peppylib::Payload>`
 /// serializer over an existing struct, registered on `schema_key` (dedupes
 /// onto the production schema file).
-fn build_struct_serializer(
+pub(super) fn build_struct_serializer(
     generator: &mut RustGenerator,
     fn_ident: &Ident,
     schema_key: &str,
@@ -154,7 +146,7 @@ fn build_struct_serializer(
 /// constructing `#return_ty { … }`. `nested_prefix` must match the prefix the
 /// module defining `#return_ty` used for its nested companion structs, so the
 /// emitted references resolve (the veneer glob-imports that module).
-fn build_struct_deserializer(
+pub(super) fn build_struct_deserializer(
     generator: &mut RustGenerator,
     fn_ident: &Ident,
     schema_key: &str,
@@ -185,7 +177,7 @@ fn build_struct_deserializer(
 /// A locally-defined `Message` struct (plus nested companions) and its
 /// deserializer, for directions where production defines no struct (topics
 /// the node emits: the producer side only serializes).
-fn build_local_message_with_deserializer(
+pub(super) fn build_local_message_with_deserializer(
     generator: &mut RustGenerator,
     schema_key: &str,
     struct_prefix: &str,
@@ -247,6 +239,32 @@ struct MemberModule {
     construct: TokenStream,
 }
 
+/// The four derived lists every mock-module assembly needs, from one
+/// `members` vector — one helper so a new derived list lands in all three
+/// mock kinds (deps, pairings, observed) at once.
+struct MemberParts<'a> {
+    modules: Vec<&'a TokenStream>,
+    fields: Vec<TokenStream>,
+    constructs: Vec<&'a TokenStream>,
+    field_names: Vec<&'a Ident>,
+}
+
+fn member_parts(members: &[MemberModule]) -> MemberParts<'_> {
+    MemberParts {
+        modules: members.iter().map(|member| &member.module).collect(),
+        fields: members
+            .iter()
+            .map(|member| {
+                let name = &member.module_ident;
+                let ty = &member.field_ty;
+                quote!(pub #name: #ty)
+            })
+            .collect(),
+        constructs: members.iter().map(|member| &member.construct).collect(),
+        field_names: members.iter().map(|member| &member.module_ident).collect(),
+    }
+}
+
 fn render_dep_link(
     generator: &mut RustGenerator,
     link_id: &str,
@@ -295,17 +313,12 @@ fn render_dep_link(
     }
 
     let default_instance = mock_instance_id(link_id);
-    let modules: Vec<&TokenStream> = members.iter().map(|member| &member.module).collect();
-    let fields: Vec<TokenStream> = members
-        .iter()
-        .map(|member| {
-            let name = &member.module_ident;
-            let ty = &member.field_ty;
-            quote!(pub #name: #ty)
-        })
-        .collect();
-    let constructs: Vec<&TokenStream> = members.iter().map(|member| &member.construct).collect();
-    let field_names: Vec<&Ident> = members.iter().map(|member| &member.module_ident).collect();
+    let MemberParts {
+        modules,
+        fields,
+        constructs,
+        field_names,
+    } = member_parts(&members);
     let action_stops: Vec<TokenStream> = spec
         .actions
         .iter()
@@ -993,17 +1006,12 @@ fn render_pairing_link(
     let default_instance = mock_instance_id(link_id);
     let pairing_name = spec.pairing_name.as_str();
     let pairing_tag = spec.pairing_tag.as_str();
-    let modules: Vec<&TokenStream> = members.iter().map(|member| &member.module).collect();
-    let fields: Vec<TokenStream> = members
-        .iter()
-        .map(|member| {
-            let name = &member.module_ident;
-            let ty = &member.field_ty;
-            quote!(pub #name: #ty)
-        })
-        .collect();
-    let constructs: Vec<&TokenStream> = members.iter().map(|member| &member.construct).collect();
-    let field_names: Vec<&Ident> = members.iter().map(|member| &member.module_ident).collect();
+    let MemberParts {
+        modules,
+        fields,
+        constructs,
+        field_names,
+    } = member_parts(&members);
 
     let doc = format!(
         "Mock peer for the `{link_id}` pairing slot: publishes the topics the node \
@@ -1202,7 +1210,7 @@ fn render_pair_subscription(
                     // link_id all pinned. No pin-following — the mock's peer
                     // (the node under test) is known from construction.
                     let node = peppylib::messaging::ProducerRef::new(
-                        "standalone-core",
+                        peppylib::testing::STANDALONE_CORE_NODE,
                         node_instance_id,
                     );
                     let inner = peppylib::testing::subscribe_peer_pinned(
@@ -1276,17 +1284,12 @@ fn render_observed_link(
     let default_instance = mock_instance_id(link_id);
     let pairing_name = spec.pairing_name.as_str();
     let pairing_tag = spec.pairing_tag.as_str();
-    let modules: Vec<&TokenStream> = members.iter().map(|member| &member.module).collect();
-    let fields: Vec<TokenStream> = members
-        .iter()
-        .map(|member| {
-            let name = &member.module_ident;
-            let ty = &member.field_ty;
-            quote!(pub #name: #ty)
-        })
-        .collect();
-    let constructs: Vec<&TokenStream> = members.iter().map(|member| &member.construct).collect();
-    let field_names: Vec<&Ident> = members.iter().map(|member| &member.module_ident).collect();
+    let MemberParts {
+        modules,
+        fields,
+        constructs,
+        field_names,
+    } = member_parts(&members);
 
     let doc = format!(
         "Mock observed source for the `{link_id}` observer slot: a publish-only pairing \

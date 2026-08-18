@@ -15,7 +15,10 @@ use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
     FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry,
 };
-use super::mock::{production_module, target_expr};
+use super::mock::{
+    build_local_message_with_deserializer, build_struct_deserializer,
+    build_struct_serializer, production_module, target_expr,
+};
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::qos_profile_tokens;
 use super::{
@@ -124,7 +127,7 @@ fn render_emitted_topic(
     let deserialize_ident = Ident::new("deserialize_message", Span::call_site());
     // The emitted direction has no production consumer struct (the node-side
     // module only serializes), so the fixtures module defines its own.
-    let message_and_deserializer = build_local_message(
+    let message_and_deserializer = build_local_message_with_deserializer(
         generator,
         &schema_key,
         &schema_prefix,
@@ -151,7 +154,7 @@ fn render_emitted_topic(
             node_instance_id: &str,
         ) -> crate::Result<Subscription> {
             let producer = peppylib::messaging::ProducerRef::new(
-                "standalone-core",
+                peppylib::testing::STANDALONE_CORE_NODE,
                 node_instance_id,
             );
             let inner = peppylib::TopicMessenger::subscribe(
@@ -219,107 +222,6 @@ fn render_emitted_topic(
             topic: topic_name.to_string(),
             origin_target: own_target_expr(node_name, node_tag, spec.origin.as_ref()),
         },
-    ))
-}
-
-/// A locally-defined `Message` struct (plus nested companions) and a
-/// deserializer for it.
-fn build_local_message(
-    generator: &mut RustGenerator,
-    schema_key: &str,
-    struct_prefix: &str,
-    format: &MessageFormat,
-    fn_ident: &Ident,
-    context_label: &str,
-) -> Result<TokenStream> {
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
-    let mut context = GenerationContext::default();
-    let message_ident = Ident::new("Message", Span::call_site());
-    let params = collect_function_params(Some(&artifacts), None, "Message", &mut context, None)?;
-    let fields: Vec<(Ident, TokenStream)> = params
-        .iter()
-        .map(|param| (param.ident.clone(), param.ty.clone()))
-        .collect();
-    context.add_struct(message_ident, fields);
-    let struct_tokens = context.into_tokens();
-
-    let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
-    let reader_type = info.reader_type_tokens();
-    let context_expr = quote!(String::from(#context_label));
-    let (field_statements, field_inits, _) =
-        deserialize_format_fields(format, "Message", &context_expr)?;
-    let return_ty = quote!(Message);
-    let result_expr = quote!(Message { #(#field_inits),* });
-    let deserializer = build_deserialize_fn(
-        fn_ident,
-        &reader_type,
-        &context_expr,
-        &return_ty,
-        &field_statements,
-        &result_expr,
-    );
-    Ok(quote! {
-        #( #struct_tokens )*
-        #deserializer
-    })
-}
-
-/// A serializer function over an existing struct (same shape as the mock
-/// renderer's; kept separate because fixtures glob-import different modules).
-fn build_struct_serializer(
-    generator: &mut RustGenerator,
-    fn_ident: &Ident,
-    schema_key: &str,
-    struct_prefix: &str,
-    format: &MessageFormat,
-    value_ty: &TokenStream,
-    context_label: &str,
-) -> Result<TokenStream> {
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
-    let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
-    let builder_type = info.builder_type_tokens();
-    let builder_ident = Ident::new("root", Span::call_site());
-    let value_ident = Ident::new("value", Span::call_site());
-    let assignments = generate_assignments_from_struct(&builder_ident, format, &value_ident)?;
-    let error_context = quote!(String::from(#context_label));
-    let body = build_serialize_payload(&builder_type, &[], &assignments, &error_context);
-    Ok(quote! {
-        fn #fn_ident(value: &#value_ty) -> crate::Result<peppylib::Payload> {
-            Ok(#body)
-        }
-    })
-}
-
-/// A deserializer into an existing (production) struct; `nested_prefix` must
-/// match that module's nested companion prefix.
-#[allow(clippy::too_many_arguments)]
-fn build_struct_deserializer(
-    generator: &mut RustGenerator,
-    fn_ident: &Ident,
-    schema_key: &str,
-    struct_prefix: &str,
-    format: &MessageFormat,
-    return_ty: &TokenStream,
-    nested_prefix: &str,
-    context_label: &str,
-) -> Result<TokenStream> {
-    let artifacts = map_message_format(schema_key, Some(format))?
-        .expect("non-empty message format maps to schema artifacts");
-    let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
-    let reader_type = info.reader_type_tokens();
-    let context_expr = quote!(String::from(#context_label));
-    let (field_statements, field_inits, _) =
-        deserialize_format_fields(format, nested_prefix, &context_expr)?;
-    let result_expr = quote!(#return_ty { #(#field_inits),* });
-    Ok(build_deserialize_fn(
-        fn_ident,
-        &reader_type,
-        &context_expr,
-        return_ty,
-        &field_statements,
-        &result_expr,
     ))
 }
 
@@ -935,7 +837,6 @@ fn render_harness(
                 },
             });
         }
-        let _ = &spec.node_consumes;
     }
 
     for (link_id, spec) in &registry.observed {
@@ -1098,16 +999,6 @@ fn render_harness(
         pub const PEPPY_CONFIG_PATH: &str =
             concat!(env!("CARGO_MANIFEST_DIR"), "/../../../peppy.json5");
 
-        fn unique_instance_id() -> String {
-            static COUNTER: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(0);
-            format!(
-                "test-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            )
-        }
-
         /// Optional overrides for [`Harness::start_with`].
         pub struct Config {
             /// Typed parameters for the node; `None` uses the schema
@@ -1197,19 +1088,19 @@ fn render_harness(
                 let instance_id = config
                     .instance_id
                     .clone()
-                    .unwrap_or_else(unique_instance_id);
+                    .unwrap_or_else(peppylib::testing::unique_test_instance_id);
 
                 #( #mock_starts )*
 
                 let session = router.connect().await?;
                 #( #emitted_subscribes )*
 
+                #[allow(unused_mut)]
                 let mut standalone = peppylib::runtime::StandaloneConfig::new()
                     .with_messaging(router.host(), router.port())
                     .with_instance_id(instance_id.clone());
                 #parameters_seed
                 #( #seeding )*
-                let _ = &mut standalone;
 
                 let publisher_readiness = vec![
                     #( #publisher_readiness )*
@@ -1268,7 +1159,10 @@ fn render_harness(
 
             /// The node-under-test's wire identity.
             pub fn node_producer_ref(&self) -> peppylib::messaging::ProducerRef {
-                peppylib::messaging::ProducerRef::new("standalone-core", &self.instance_id)
+                peppylib::messaging::ProducerRef::new(
+                    self.core.bound_core_node(),
+                    &self.instance_id,
+                )
             }
 
             /// Whether the node's `setup` has returned.
@@ -1317,36 +1211,36 @@ fn render_dep_harness_parts(
     let target = target_expr(&spec.target);
 
     // One ServiceReadiness entry per served interface per mock instance,
-    // probed from the node's session before its setup runs.
+    // probed from the node's session before its setup runs; services first,
+    // then actions, mirroring the mock's member layout.
     let per_instance_readiness = |instance_expr: TokenStream| -> Vec<TokenStream> {
-        let mut entries = Vec::new();
-        for service in &spec.services {
-            let name = service.name.as_str();
-            let target = target.clone();
-            let instance_expr = instance_expr.clone();
-            entries.push(quote! {
-                service_readiness.push(peppylib::testing::ServiceReadiness {
-                    target: #target,
-                    name: #name.to_string(),
-                    producer: #module::producer_ref_for(#instance_expr),
-                    kind: peppylib::testing::ServiceReadinessKind::Service,
-                });
-            });
-        }
-        for action in &spec.actions {
-            let name = action.name.as_str();
-            let target = target.clone();
-            let instance_expr = instance_expr.clone();
-            entries.push(quote! {
-                service_readiness.push(peppylib::testing::ServiceReadiness {
-                    target: #target,
-                    name: #name.to_string(),
-                    producer: #module::producer_ref_for(#instance_expr),
-                    kind: peppylib::testing::ServiceReadinessKind::Action,
-                });
-            });
-        }
-        entries
+        spec.services
+            .iter()
+            .map(|service| {
+                (
+                    service.name.as_str(),
+                    quote!(peppylib::testing::ServiceReadinessKind::Service),
+                )
+            })
+            .chain(spec.actions.iter().map(|action| {
+                (
+                    action.name.as_str(),
+                    quote!(peppylib::testing::ServiceReadinessKind::Action),
+                )
+            }))
+            .map(|(name, kind)| {
+                let target = target.clone();
+                let instance_expr = instance_expr.clone();
+                quote! {
+                    service_readiness.push(peppylib::testing::ServiceReadiness {
+                        target: #target,
+                        name: #name.to_string(),
+                        producer: #module::producer_ref_for(#instance_expr),
+                        kind: #kind,
+                    });
+                }
+            })
+            .collect()
     };
 
     match spec.cardinality {

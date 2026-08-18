@@ -16,7 +16,7 @@ use super::super::naming::to_camel_case;
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, mock_instance_id,
+    TestGenRegistry, dep_member_name, mock_instance_id,
 };
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
@@ -98,18 +98,6 @@ pub(super) fn production_import_line(dotted: &str, alias: &str) -> String {
 /// inside one link mock; a collision (e.g. a topic and a service sharing a
 /// name on one link) is a hard error naming both, mirroring the scaffold's
 /// collision policy.
-
-/// The member name for a dep-link interface: plain when the interface's own
-/// consumer-side link_id equals the dependency slot's, link-qualified
-/// otherwise (a slot can bind several same-name interfaces through distinct
-/// manifest entries).
-fn dep_member_name(dep_link_id: &str, module_link: &str, name: &str) -> String {
-    if module_link == dep_link_id {
-        name.to_string()
-    } else {
-        format!("{module_link}_{name}")
-    }
-}
 
 fn claim_member_name(
     link_id: &str,
@@ -1236,7 +1224,7 @@ fn render_pair_subscription(
     builder.line("# identity, pairing target, and the node's own slot link_id all");
     builder.line("# pinned. No pin-following: the mock's peer (the node under test)");
     builder.line("# is known from construction.");
-    builder.line("node = peppylib.ProducerRef(\"standalone-core\", node_instance_id)");
+    builder.line("node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)");
     builder.line("inner = await peppylib.TopicMessenger.subscribe_peer_pinned(");
     builder.indent();
     builder.line("session,");

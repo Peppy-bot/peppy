@@ -33,6 +33,26 @@ pub(crate) fn mock_instance_id(link_id: &str) -> String {
     format!("mock-{link_id}")
 }
 
+/// The instance id for the `index`-th mock of a multi-instance slot: the
+/// single-instance id with an instance suffix, so ids minted by different
+/// slots (or repeated harness starts) can never collide on the wire.
+pub(crate) fn mock_instance_id_at(link_id: &str, index: usize) -> String {
+    format!("{}-{index}", mock_instance_id(link_id))
+}
+
+/// The member name for a dep-link interface: plain when the interface's own
+/// consumer-side link_id equals the dependency slot's, link-qualified
+/// otherwise (a slot can bind several same-name interfaces through distinct
+/// manifest entries). Shared by both backends — the member-naming rule must
+/// not drift between languages.
+pub(crate) fn dep_member_name(dep_link_id: &str, module_link: &str, name: &str) -> String {
+    if module_link == dep_link_id {
+        name.to_string()
+    } else {
+        format!("{module_link}_{name}")
+    }
+}
+
 /// The identity a mock's calls impersonate: the dependency's node or, for
 /// contract-routed links, the contract itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
