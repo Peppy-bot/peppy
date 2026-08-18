@@ -309,6 +309,34 @@ async fn node_sync_python_command_succeeds() {
         goodbye_world_contents.contains("goodbye_world"),
         "goodbye_world.py should contain topic name"
     );
+
+    // The test surfaces generate for Python too — inert (never imported by
+    // peppygen/__init__.py) but present for the node's own test suite.
+    let peppygen_pkg = node_path
+        .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+        .join("peppygen");
+    let harness_path = peppygen_pkg.join("fixtures/harness.py");
+    assert!(
+        harness_path.exists(),
+        "the fixtures harness should be generated at {}",
+        harness_path.display()
+    );
+    assert!(
+        peppygen_pkg
+            .join("fixtures/emitted_topics/goodbye_world.py")
+            .exists(),
+        "an emitted-topic observation client should be generated"
+    );
+    assert!(
+        peppygen_pkg.join("mock/__init__.py").exists(),
+        "the mock package should be generated (empty for a dep-less node)"
+    );
+    let init = std::fs::read_to_string(peppygen_pkg.join("__init__.py"))
+        .expect("peppygen __init__.py should be readable");
+    assert!(
+        !init.contains("mock") && !init.contains("fixtures"),
+        "peppygen/__init__.py must not import the test surfaces:\n{init}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

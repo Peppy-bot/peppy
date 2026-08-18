@@ -7,7 +7,7 @@ sidebar:
 
 import { Code, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-import helloReceiverRust from './snippets/rust/hello_receiver/src/main.rs?raw';
+import helloReceiverRust from './snippets/rust/hello_receiver/src/lib.rs?raw';
 import helloReceiverRustNodeConfig from './snippets/rust/hello_receiver/peppy.json5?raw';
 
 import helloReceiverPython from './snippets/python/hello_receiver/src/hello_receiver/__main__.py?raw';
@@ -144,9 +144,11 @@ and the following source file:
     <Code code={helloReceiverPython} lang="python" title="src/hello_receiver/__main__.py" />
   </TabItem>
   <TabItem label="Rust">
-    <Code code={helloReceiverRust} lang="rust" title="src/main.rs" />
+    <Code code={helloReceiverRust} lang="rust" title="src/lib.rs" />
   </TabItem>
 </Tabs>
+
+For Rust, `peppy node init` scaffolds the node's logic in `src/lib.rs` with a `src/main.rs` that only delegates to it (`peppygen::NodeBuilder::new().run(hello_receiver::setup)`); the split makes `setup` importable, so the [generated test harness](/advanced_guides/testing/) can boot the same node in-process.
 
 Finally, add this new node to the stack:
 

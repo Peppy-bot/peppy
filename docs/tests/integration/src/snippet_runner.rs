@@ -1,10 +1,10 @@
 use crate::{peppy_binary, workspace_root};
-use config::node::NodeConfigParser;
+use config::node::{NodeConfigParser, PeppygenLanguage};
 use peppy::test_support::{ServeCommandEmulation, wait_for_log};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 struct NodeSetup {
@@ -268,6 +268,93 @@ fn assert_run_log_contains(daemon_root: &Path, instance_id: &str, expected: &[&s
             line,
             std::time::Duration::from_secs(30),
         );
+    }
+}
+
+/// Runs a snippet's own node-author test suite (its `tests/` directory,
+/// written against the generated `peppygen::mock` / `peppygen.mock` and
+/// `fixtures` surfaces): syncs the snippet (adding each entry of `deps` to
+/// the stack first, so its `depends_on` slots resolve at sync time), then
+/// runs `cargo test` (Rust snippets) or `uv run --group dev pytest` (Python
+/// snippets) inside the snippet directory. The dependency nodes are never
+/// built or run — the whole point of the generated harness is that the tests
+/// boot the node in-process against mocks of them.
+pub fn run_node_tests(snippets_root: &str, snippet_name: &str, deps: &[&str]) {
+    let peppy = peppy_binary();
+    let node_dir = snippet_dir(snippets_root, snippet_name);
+
+    let setup = setup_env(peppy, &node_dir);
+
+    // Add dependencies to the stack so the main node's sync resolves their
+    // interfaces (a `depends_on.nodes` slot reads the producer's manifest at
+    // sync time, whether or not an instance ever runs).
+    for dep in deps {
+        let dep_dir = snippet_dir(snippets_root, dep);
+        let _dep_dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &dep_dir, dep, &[]);
+    }
+
+    // Hold the snippet directory's guard through the test run: the suite
+    // compiles against the sources this sync just generated.
+    let _dir_guard = sync_and_add_node(peppy, &setup.daemon_root, &node_dir, snippet_name, &[]);
+
+    let node_config = NodeConfigParser::from_path(node_dir.join("peppy.json5"))
+        .expect("failed to parse peppy.json5");
+    let output = match node_config.execution.language {
+        PeppygenLanguage::Rust => run_cargo_node_tests(&node_dir, snippet_name),
+        PeppygenLanguage::Python => run_pytest_node_tests(&node_dir),
+    };
+    assert_success(&output, &format!("node tests for {snippet_name}"));
+}
+
+/// `cargo test` inside a synced Rust snippet, mirroring how the generator's
+/// own node-test helper invokes cargo: offline (everything the snippet needs
+/// is vendored or cached), against a stable shared target dir so dependency
+/// artifacts survive across runs. The dir is per snippet because every
+/// snippet's generated library is named `peppygen`: sharing one target dir
+/// across snippets would let cargo link one snippet's cached `peppygen` rlib
+/// into another.
+fn run_cargo_node_tests(node_dir: &Path, snippet_name: &str) -> Output {
+    let target_dir = workspace_root()
+        .join("target")
+        .join("docs-snippet-node-tests")
+        .join(snippet_name);
+    fs::create_dir_all(&target_dir).expect("failed to create shared snippet test target dir");
+
+    let mut command = Command::new("cargo");
+    command
+        .arg("test")
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .current_dir(node_dir)
+        .stdin(Stdio::null());
+    forward_resolved_zenohd(&mut command);
+    command.output().expect("failed to invoke cargo test on snippet node")
+}
+
+/// `uv run --group dev pytest` inside a synced Python snippet: the snippet's
+/// `dev` dependency group carries pytest + pytest-asyncio, and `uv run` syncs
+/// the project environment (including the vendored `.peppy/libs` path
+/// dependencies the sync just generated) before running. The uv cache is
+/// already shared: the workspace `.cargo/config.toml` points `UV_CACHE_DIR`
+/// under `target/` for every process cargo runs, and this child inherits it.
+fn run_pytest_node_tests(node_dir: &Path) -> Output {
+    let mut command = Command::new("uv");
+    command
+        .args(["run", "--group", "dev", "pytest"])
+        .current_dir(node_dir)
+        .stdin(Stdio::null());
+    forward_resolved_zenohd(&mut command);
+    command.output().expect("failed to invoke uv run pytest on snippet node")
+}
+
+/// Forwards the zenohd binary this test toolchain resolved to the node test
+/// suite via `PEPPY_ZENOHD_PATH`: the generated harness starts an ephemeral
+/// router per test, and the snippet's vendored pmi is built without
+/// `build_zenoh`, so inside the test environment (no `peppy` on PATH) it has
+/// nothing else to resolve.
+fn forward_resolved_zenohd(command: &mut Command) {
+    if let Some(zenohd) = pmi::ZenohdFacade::resolved_zenohd_binary() {
+        command.env(pmi::ZENOHD_PATH_VAR, zenohd);
     }
 }
 

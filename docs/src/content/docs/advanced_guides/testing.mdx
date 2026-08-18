@@ -1,0 +1,536 @@
+---
+title: Testing
+description: "Test a node without standing up its real dependencies: generated typed mocks and an in-process harness over the real wire, with deterministic readiness and no sleeps"
+sidebar:
+  order: 5
+---
+
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+
+import helloReceiverRustLib from '../guides/snippets/rust/hello_receiver/src/lib.rs?raw';
+import helloReceiverRustTest from '../guides/snippets/rust/hello_receiver/tests/hello.rs?raw';
+import helloReceiverPythonMain from '../guides/snippets/python/hello_receiver/src/hello_receiver/__main__.py?raw';
+import helloReceiverPythonTest from '../guides/snippets/python/hello_receiver/tests/test_hello.py?raw';
+
+A node is rarely testable on its own: it consumes topics, polls services, and fires actions against dependency nodes that a unit test has no business standing up. `peppy node sync` therefore generates a **test surface** alongside the production bindings: typed **mocks** that play each dependency slot over the real wire, and a **harness** that boots your node in-process against them.
+
+The tests this enables are not simulations of the messaging layer. The mocks publish real Cap'n Proto payloads through a real (ephemeral, per-test) Zenoh router, the node runs its real `setup` against its real generated bindings, and services and actions run on the same engines a production producer uses. What you save is everything else: no daemon, no stack, no dependency binaries — and no sleeps, because every step of the boot is gated on a deterministic readiness barrier rather than a timer.
+
+## What sync generates
+
+After `peppy node sync`, two module trees sit next to the production bindings, regenerated on every sync:
+
+- `peppygen.mock` (Python) / `peppygen::mock` (Rust) — one module per dependency, pairing, and observer slot, named by `link_id` and grouped by namespace: `mock.deps.<link_id>`, `mock.pairings.<link_id>`, `mock.observed.<link_id>`. Each holds a `Mock` with one typed sub-surface per interface the slot carries.
+- `peppygen.fixtures` (Python) / `peppygen::fixtures` (Rust) — the harness (`fixtures.harness`), plus typed observation of the node's **own** surface: `fixtures.emitted_topics.<topic>`, `fixtures.exposed_services.<service>`, `fixtures.exposed_actions.<action>`.
+
+Neither tree can leak into a production build:
+
+- In Rust, the modules compile only under peppygen's `testing` feature, and sync enables that feature from the node's **dev-dependencies**:
+
+  ```toml
+  [dev-dependencies]
+  peppygen = { path = ".peppy/libs/peppygen", features = ["testing"] }
+  ```
+
+  `cargo build` never resolves dev-dependencies, so `cargo test` is the only place the test surfaces exist; production binaries cannot reach them even by accident. Sync writes and maintains this entry for you.
+- In Python, the `mock` and `fixtures` packages ship inert: `peppygen/__init__.py` never imports them, so nothing loads unless a test file imports them explicitly.
+
+### The lib/main split
+
+The harness boots your node by calling its `setup` function directly, so `setup` must be importable from test code. `peppy node init` scaffolds this from the start:
+
+- **Python** already has it: `setup` lives in `src/<node>/__main__.py`, importable as `from <node>.__main__ import setup`.
+- **Rust** gets a lib/main split: `src/lib.rs` holds `pub async fn setup(...)`, and `src/main.rs` only delegates:
+
+  ```rust
+  fn main() -> peppygen::Result<()> {
+      peppygen::NodeBuilder::new().run(my_node::setup)
+  }
+  ```
+
+An existing Rust node adopts the same split when it adds tests: move the setup closure into `src/lib.rs` as a named `pub async fn setup`, and pass it to `NodeBuilder::new().run` from `main.rs`. `init` also scaffolds a smoke test (`tests/smoke.rs` / `tests/test_smoke.py`) that boots the node through the harness and shuts it down cleanly, plus — for Python — a `dev` dependency group carrying `pytest` and `pytest-asyncio` with `asyncio_mode = "auto"`.
+
+## A first test
+
+The [`hello_receiver`](/guides/communication/#consumed-interfaces) node consumes one topic, `message_stream`, from its `hello_world_param` dependency slot. Its node code:
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={helloReceiverPythonMain} lang="python" title="src/hello_receiver/__main__.py" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={helloReceiverRustLib} lang="rust" title="src/lib.rs" />
+  </TabItem>
+</Tabs>
+
+And its complete test, runnable with `cargo test` / `uv run --group dev pytest` with nothing else running on the machine:
+
+<Tabs>
+  <TabItem label="Python">
+    <Code code={helloReceiverPythonTest} lang="python" title="tests/test_hello.py" />
+  </TabItem>
+  <TabItem label="Rust">
+    <Code code={helloReceiverRustTest} lang="rust" title="tests/hello.rs" />
+  </TabItem>
+</Tabs>
+
+Note what is absent: no `hello_world_param` process, no daemon, no launcher, and no sleep before the publish. The mock's first publish waits for the node's subscription to become visible on the router, so "the node is ready" is observed, never assumed.
+
+## The harness lifecycle
+
+`start` takes your `setup` function — the exact shape `NodeBuilder().run` takes — and returns with the node running:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.fixtures import harness
+
+from my_node.__main__ import setup
+
+async def test_something():
+    # As a context manager, shutdown runs even when the test body fails:
+    async with harness.start(setup) as h:
+        ...
+    # Or awaited directly, with an explicit shutdown:
+    h = await harness.start(setup)
+    ...
+    await h.shutdown()
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::fixtures::harness::Harness;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_something() -> peppygen::Result<()> {
+    let (mut harness, mut mocks) = Harness::start(my_node::setup).await?;
+    // ...
+    harness.shutdown().await?;
+    Ok(())
+}
+```
+  </TabItem>
+</Tabs>
+
+By the time `start` returns, all of the following happened, in order:
+
+1. **An ephemeral Zenoh router started** on a free port, private to this harness. Every test gets its own; tests in one binary run in parallel without sharing state.
+2. **One mock started per slot** — every dependency, pairing, and observer link — each on its own messaging session, with every publisher, service queryable, and action engine declared up front. In Rust the started mocks come back as the second element of the `start` tuple (`mocks.deps.<link_id>`, `mocks.pairings.<link_id>`, `mocks.observed.<link_id>`); in Python they hang off the harness as `h.mocks.deps.<link_id>` and so on.
+3. **The harness subscribed to every topic the node emits**, before the node booted, so even the very first message your setup publishes is captured.
+4. **A standalone configuration was seeded** so the node boots exactly as if a launcher had wired it: the router's address, a unique instance id, your parameters, and — per slot — a bound producer, peer pin, or observed source pointing at the matching mock's wire identity.
+5. **Readiness barriers passed**: the harness's subscriptions to the node's emitted topics are visible from the node's session, and every mock service and action answers a reachability probe. Only then does the node's `setup` run — so a setup that immediately polls a dependency service cannot race the mock's declaration.
+
+`shutdown` tears down in lifecycle order: it cancels the node and awaits its convergence (a `setup` that returned an error propagates that error out of `shutdown`, and [shutdown hooks](/advanced_guides/shutdown/) run, bounded exactly as in production), then closes the observation session and the mocks, then stops the router. In Python the `async with` form calls it for you; in Rust, dropping the harness without calling `shutdown` leaks nothing but skips the error propagation, so tests should end with `harness.shutdown().await`.
+
+The harness also exposes the running node directly: `node_runner()` (`h.node_runner`) for calling its runtime surface in-process, `instance_id()` (`h.instance_id`) for the generated instance id, and `setup_finished()` to ask whether `setup` has returned.
+
+## Driving each surface
+
+The sections below use one example node: it consumes a `video_stream` topic and an `enable_camera` service from a `camera` slot, a `plan_motion` action from a `brain` slot, participates in an `arm` pairing (emits `joint_commands`, consumes `joint_states`), observes the same pairing through an `observed_arm` observer slot, and exposes a `status` emitted topic, a `ping` service, and a `move_arm` action of its own.
+
+### Consumed topics
+
+Each consumed topic gets a typed publisher on the slot's mock. Messages are the same generated `Message` type the node's subscription yields:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.consumed_topics.camera import video_stream
+
+await h.mocks.deps.camera.video_stream.publish(
+    video_stream.Message(width=640, frame=b"\x01\x02")
+)
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::mock::deps::camera::video_stream;
+
+mocks
+    .deps
+    .camera
+    .video_stream
+    .publish(&video_stream::Message { width: 640, frame: vec![1, 2] })
+    .await?;
+```
+  </TabItem>
+</Tabs>
+
+The first `publish` lazily waits for the node's subscription to match before delivering, so the first message is never lost to a subscribe race — and a node that never subscribes turns the publish into a loud readiness-timeout error rather than a silent drop. To separate "the node is subscribed" from "deliver now", `wait_for_subscriber(timeout)` waits for the match alone and returns whether it happened.
+
+### Consumed services
+
+Each consumed service gets a typed mock server. A background pump captures every inbound request, and you answer them in one of two modes:
+
+**Manual**: `next_request` parks until the node polls, then hands you the decoded request and a one-shot responder:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.consumed_services.camera import enable_camera
+
+request, responder = await h.mocks.deps.camera.enable_camera.next_request(10.0)
+assert request.enable
+await responder.respond(enable_camera.ResponseData(enabled=True))
+# or: await responder.respond_error("hardware fault")
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::mock::deps::camera::enable_camera;
+use std::time::Duration;
+
+let (request, responder) = mocks
+    .deps
+    .camera
+    .enable_camera
+    .next_request(Duration::from_secs(10))
+    .await?;
+assert!(request.enable);
+responder.respond(enable_camera::ResponseData::new(true)).await?;
+// or: responder.respond_error("hardware fault").await?;
+```
+  </TabItem>
+</Tabs>
+
+**Scripted**: `enqueue_response` queues typed responses served automatically, FIFO, to the next inbound requests. Only unscripted requests park for `next_request`, so a test that does not care about per-request choreography scripts the answers up front and asserts afterwards:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+h.mocks.deps.camera.enable_camera.enqueue_response(
+    enable_camera.ResponseData(enabled=True)
+)
+# ... let the node run ...
+requests = h.mocks.deps.camera.enable_camera.captured()
+assert [r.enable for r in requests] == [True]
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+mocks
+    .deps
+    .camera
+    .enable_camera
+    .enqueue_response(enable_camera::ResponseData::new(true))?;
+// ... let the node run ...
+let requests = mocks.deps.camera.enable_camera.captured()?;
+assert_eq!(requests.len(), 1);
+```
+  </TabItem>
+</Tabs>
+
+`captured()` decodes every request received so far — scripted and manual alike, in arrival order — so both modes leave a complete audit trail.
+
+### Consumed actions
+
+Each consumed action gets a mock server on the real action engine, so the goal lifecycle is exactly the production one. The test plays the producer's side of it: receive the goal, admit it, feed it, finish it.
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.consumed_actions.brain import plan_motion
+
+pending = await h.mocks.deps.brain.plan_motion.next_goal(10.0)
+assert pending.request.arm_id == 7
+
+active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
+# or: await pending.reject("busy", plan_motion.GoalResponseData(accepted=False))
+
+await active.publish_feedback(plan_motion.FeedbackMessage(progress=0.5))
+await active.complete(plan_motion.ResultResponseData(success=True))
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::mock::deps::brain::plan_motion;
+use std::time::Duration;
+
+let pending = mocks
+    .deps
+    .brain
+    .plan_motion
+    .next_goal(Duration::from_secs(10))
+    .await?;
+assert_eq!(pending.request.arm_id, 7);
+
+let active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
+// or: pending.reject(Some("busy"), None).await?;
+
+active.publish_feedback(&plan_motion::FeedbackMessage { progress: 0.5 }).await?;
+active.complete(&plan_motion::ResultResponseData::new(true)).await?;
+```
+  </TabItem>
+</Tabs>
+
+`next_goal` parks until the node fires a goal (bounded by the timeout) and returns it with the decoded `request`. `accept` returns the active goal handle; from there `publish_feedback` streams typed feedback, and `complete` / `complete_cancelled` terminate it. To test your node's cancellation path, await `cancel_signal()` on the active goal — it resolves when the node requests cancellation — then answer with `complete_cancelled`. `is_cancelled()` polls the same state non-blocking.
+
+### Pairing peers
+
+A [pairing](/advanced_guides/pairing/) slot's mock is a peer: it publishes the topics your node consumes on the slot and subscribes to the topics your node emits on it, pinned to your node's identity exactly as a real paired peer would be. The harness seeds the peer pin, so from the node's point of view the pairing is established at boot: `paired()` / `wait_paired()` resolve immediately to the mock's identity, exposed as `peer_info()` on the mock module.
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.mock.pairings import arm as mock_arm
+from peppygen.paired_topics.arm import joint_states
+
+# What the node's paired() resolves to under the harness.
+assert mock_arm.peer_info().peer_link_id == mock_arm.PEER_LINK_ID
+
+# The direction the node consumes: publish as the peer.
+await h.mocks.pairings.arm.joint_states.publish(
+    joint_states.Message(positions=[0.0, 0.5, 1.0])
+)
+
+# The direction the node emits: receive as the peer.
+command = await h.mocks.pairings.arm.joint_commands.next()
+assert command.max_velocity == 0.5
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::mock::pairings::arm as mock_arm;
+use peppygen::paired_topics::arm::joint_states;
+
+// What the node's paired() resolves to under the harness.
+assert_eq!(mock_arm::peer_info().peer_link_id, mock_arm::PEER_LINK_ID);
+
+// The direction the node consumes: publish as the peer.
+mocks
+    .pairings
+    .arm
+    .joint_states
+    .publish(&joint_states::Message { positions: [0.0, 0.5, 1.0] })
+    .await?;
+
+// The direction the node emits: receive as the peer.
+let command = mocks
+    .pairings
+    .arm
+    .joint_commands
+    .next()
+    .await?
+    .expect("pairing subscription should be open");
+assert!((command.max_velocity - 0.5).abs() < f64::EPSILON);
+```
+  </TabItem>
+</Tabs>
+
+Both directions carry the pairing's deterministic delivery guarantees: the consuming direction's first publish waits for the node's pinned subscription, and the emitting direction's subscription was opened before the node booted.
+
+### Observed sources
+
+An [observer slot](/advanced_guides/pairing/#observing-several-pairings-through-one-slot)'s mock is a source: it publishes the observed topics under the identity the harness seeded into the slot, so the node's `source()` / `sources()` accessor and observation subscription see it as a live member.
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.paired_topics.observed_arm import joint_states
+
+await h.mocks.observed.observed_arm.joint_states.publish(
+    joint_states.Message(positions=[0.0, 0.5, 1.0])
+)
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::paired_topics::observed_arm::joint_states;
+
+mocks
+    .observed
+    .observed_arm
+    .joint_states
+    .publish(&joint_states::Message { positions: [0.0, 0.5, 1.0] })
+    .await?;
+```
+  </TabItem>
+</Tabs>
+
+A multi-cardinality observer slot starts as many mock sources as the [configuration](#configuration) asks for; they arrive as a list (`h.mocks.observed.fleet_arms[0]` / `mocks.observed.fleet_arms[0]`), each publishing under its own instance identity, in the same order the node's `sources()` reports them.
+
+### The node's own emitted topics
+
+The harness subscribes to every topic the node emits **before the node boots**, and barriers on those subscriptions being visible — so the very first message your setup publishes is captured, not raced. Each emitted topic is a typed subscription on `harness.emitted`:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+status = await h.emitted.status.next()
+assert status.outcome == "done"
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+let status = harness
+    .emitted
+    .status
+    .next()
+    .await?
+    .expect("status subscription should be open");
+assert_eq!(status.outcome, "done");
+```
+  </TabItem>
+</Tabs>
+
+`next` awaits the node's next message on the topic, in order, and returns `None` once the harness's session closes.
+
+### The node's own services and actions
+
+The `fixtures` callers drive the node's exposed surface from the outside, as a fresh consumer with its own wire identity — the same path a real consumer node would take. Every call gates on a reachability probe first, so a test cannot race the node's own declaration of the service:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.fixtures.exposed_actions import move_arm
+from peppygen.fixtures.exposed_services import ping
+import peppylib
+
+# Poll the node's service once.
+response = await ping.poll(h, ping.RequestData(value=21), 10.0)
+assert response.doubled == 42
+
+# Drive the node's action through its full lifecycle.
+goal = await move_arm.send_goal(
+    h, move_arm.GoalRequestData(arm_id=7), peppylib.QoSProfile.Reliable, 10.0
+)
+assert goal.accepted
+feedback = await goal.on_next_feedback()
+assert feedback.progress > 0.0
+result = await goal.get_result(10.0)
+assert result.status == move_arm.ResultStatus.COMPLETED
+assert result.data.success
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::fixtures::exposed_actions::move_arm;
+use peppygen::fixtures::exposed_services::ping;
+use std::time::Duration;
+
+// Poll the node's service once.
+let response = ping::poll(
+    &harness,
+    &ping::RequestData { value: 21 },
+    Duration::from_secs(10),
+)
+.await?;
+assert_eq!(response.doubled, 42);
+
+// Drive the node's action through its full lifecycle.
+let mut goal = move_arm::send_goal(
+    &harness,
+    &move_arm::GoalRequestData { arm_id: 7 },
+    peppygen::QoSProfile::Reliable,
+    Duration::from_secs(10),
+)
+.await?;
+assert!(goal.accepted);
+let feedback = goal.on_next_feedback().await?;
+assert!(feedback.progress > 0.0);
+let result = goal.get_result(Duration::from_secs(10)).await?;
+assert!(matches!(
+    result.outcome,
+    move_arm::ResultOutcome::Completed(move_arm::ResultData { success: true })
+));
+```
+  </TabItem>
+</Tabs>
+
+The goal handle carries the decoded admission reply (`accepted`, the optional rejection `reason`, and the typed goal-response `data`), streams typed feedback with `on_next_feedback`, and finishes with `get_result` — whose outcome distinguishes completed, cancelled, abandoned, and expired terminally, with the typed result payload on the first two. `cancel_goal(timeout)` requests cancellation, exercising the `cancel_signal` path in your node's goal handler.
+
+## Producer loss, deterministically
+
+Every mock owns one messaging session, so `stop()` is a whole-producer loss: every declaration and the session drop together, releasing the liveliness the node's subscriptions and calls latch on. Live action goals are disarmed first so their teardown emits **no clean close** — the node observes exactly what it would observe if the producer process died mid-goal, and observes it deterministically rather than after an arbitrary timeout.
+
+<Tabs>
+  <TabItem label="Python">
+```python
+pending = await h.mocks.deps.brain.plan_motion.next_goal(10.0)
+active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
+
+# The producer dies with the goal still active. The node's
+# on_next_feedback_message raises ConnectionError — not a clean
+# end-of-stream, and not a hang.
+await h.mocks.deps.brain.stop()
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+let pending = mocks
+    .deps
+    .brain
+    .plan_motion
+    .next_goal(Duration::from_secs(10))
+    .await?;
+let _active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
+
+// The producer dies with the goal still active. The node's
+// on_next_feedback_message returns
+// Err(Error::ActionFeedbackProducerGone { .. }) — not a clean close,
+// and not a hang.
+mocks.deps.brain.stop();
+```
+  </TabItem>
+</Tabs>
+
+On the node side the loss is typed: a feedback drain loop in Rust distinguishes `Error::ActionFeedbackChannelClosed` (the producer closed the stream cleanly) from `Error::ActionFeedbackProducerGone` (the producer instance disappeared without closing it); Python raises `RuntimeError` for the clean close and `ConnectionError` for the loss. Your node's recovery branch for a dead dependency — usually untestable without killing processes — becomes an ordinary assertion.
+
+A stopped mock stays stopped for the rest of the test; the bound set never rebinds, exactly as in [production](/advanced_guides/topics/#dependency-cardinality).
+
+## Configuration
+
+`start` with no configuration uses the schema-default parameters, a unique generated instance id, one mock per slot, and zero mock sources for `zero_or_more` observer slots. Every knob is an override:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.parameters import Parameters
+
+async with harness.start(
+    setup,
+    parameters=Parameters(gain=2.5),  # typed override; None uses schema defaults
+    instance_id="my_test_node",       # explicit instead of generated
+    fleet_arms_instances=2,           # per multi-cardinality slot: mock count
+    # per zero_or_one dependency slot: boot the slot vacant, no mock started
+    # <link_id>_vacant=True,
+    node_dir="/path/to/node",         # see below
+) as h:
+    ...
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::fixtures::harness::{Config, Harness};
+
+let (mut harness, mut mocks) = Harness::start_with(
+    Config {
+        parameters: Some(peppygen::Parameters { gain: 2.5 }),
+        instance_id: Some("my_test_node".to_string()),
+        fleet_arms_instances: 2,
+        // per zero_or_one dependency slot: boot the slot vacant,
+        // no mock started
+        // <link_id>_vacant: true,
+        ..Config::default()
+    },
+    my_node::setup,
+)
+.await?;
+```
+  </TabItem>
+</Tabs>
+
+- **`parameters`** is the node's typed `Parameters`; leaving it unset hydrates the schema defaults exactly as a launch would (a required parameter without a default is then an error at boot, as in production).
+- **`instance_id`** replaces the generated unique id (`test-<pid>-<counter>`). The node's wire identity under the harness is `("standalone-core", <instance_id>)`, returned by `harness.node_producer_ref()`.
+- **`<link_id>_vacant`** (per `zero_or_one` dependency slot) boots the slot [written vacant](/advanced_guides/topics/#dependency-cardinality): no mock is started (the mock field is `None`), and the node's `bound_producer()` accessor answers `None` — the branch this cardinality exists for.
+- **`<link_id>_instances`** (per multi-cardinality dependency or observer slot) sets how many mock instances to start, each under its own instance identity, delivered as a list. The default is 1 for `one_or_more` and 0 for `zero_or_more`.
+- **`node_dir`** (Python only) points at the directory holding the node's `peppy.json5` when neither of the automatic resolutions finds it: the harness first walks up from the current working directory to the nearest `peppy.json5`, then falls back to the absolute node path baked in at sync time. Running `pytest` from anywhere inside the node directory needs nothing; a runner with a foreign working directory on a moved checkout passes `node_dir` explicitly. The error on failure names all three sources. (Rust needs no equivalent: the config path is resolved from the generated crate's own manifest directory at compile time.)
+
+## Caveats
+
+:::caution
+- **No daemon clock exists under the harness.** Do not call `peppylib::clock::synchronize` (or `peppylib.clock.synchronize`) from code running under it — there is no core-node `clock` service to answer. `peppygen::clock::init` + `now_ns` are fine: standalone mode forces the wall-clock source, where `init` is a no-op wrapper. By the same token, sim time is not supported standalone; nodes that must be tested under sim time need a real stack.
+- **`cargo test` and `cargo build` compile peppygen differently.** The `testing` feature is on for test builds (via the dev-dependency) and off for production builds, so alternating between `cargo build` and `cargo test` recompiles peppygen each time. This is the cost of the guarantee that test surfaces cannot reach production binaries; it does not affect correctness.
+:::
+
+Everything under `peppygen::mock` and `peppygen::fixtures` is regenerated by every `peppy node sync`, like the rest of peppygen: add an interface to your `peppy.json5`, re-sync, and its mock and fixtures appear with it. Never edit the generated files; your tests, like your node, live outside `.peppy/`.

@@ -2,7 +2,7 @@
 title: Daemon configuration
 description: Configure a Peppy-managed or operator-run Zenoh router, messaging behavior, and node lifecycle grace periods through peppy_config.json5
 sidebar:
-  order: 9
+  order: 10
 ---
 
 By default, the Peppy daemon reads one global configuration file, `~/.peppy/conf/peppy_config.json5`. It sets the daemon's core-node name, selects either a Peppy-managed or operator-run Zenoh router, controls the managed router's messaging behavior, and defines the grace periods that govern node lifecycle. The daemon applies it to its own core-node session and to every node it spawns. The same file also records the backend resource-server URL the `peppy platform login` / `whoami` / `list` / `logout` commands talk to; that block is read by the CLI, not the daemon. [`PEPPY_CONFIG`](#override-with-peppy_config) can supply a read-only alternative source.
