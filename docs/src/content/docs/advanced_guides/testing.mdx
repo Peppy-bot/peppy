@@ -114,15 +114,15 @@ async fn test_something() -> peppygen::Result<()> {
 
 By the time `start` returns, all of the following happened, in order:
 
-1. **An ephemeral Zenoh router started** on a free port, private to this harness. Every test gets its own; tests in one binary run in parallel without sharing state.
-2. **One mock started per slot** (every dependency, pairing, and observer link), each on its own messaging session, with every publisher, service queryable, and action engine declared up front. In Rust the started mocks come back as the second element of the `start` tuple (`mocks.deps.<link_id>`, `mocks.pairings.<link_id>`, `mocks.observed.<link_id>`); in Python they hang off the harness as `h.mocks.deps.<link_id>` and so on.
+1. **An ephemeral Zenoh router started** on a free port, private to this harness. Every test gets its own router and shares no messaging state with any other test. Routers within one test binary are serialized by a process-wide guard (running several peer meshes at once makes gossip discovery flaky), so parallel tests queue on `start` instead of contending.
+2. **One mock started per link** (dependency, pairing, and observer slots alike; a `zero_or_more` slot starts none by default, see [Configuration](#configuration)), each on its own messaging session, with every publisher, service queryable, and action engine declared up front. In Rust the started mocks come back as the second element of the `start` tuple (`mocks.deps.<link_id>`, `mocks.pairings.<link_id>`, `mocks.observed.<link_id>`); in Python they hang off the harness as `h.mocks.deps.<link_id>` and so on.
 3. **The harness subscribed to every topic the node emits**, before the node booted, so even the very first message your setup publishes is captured.
 4. **A standalone configuration was seeded** so the node boots exactly as if a launcher had wired it: the router's address, a unique instance id, your parameters, and, per slot, a bound producer, peer pin, or observed source pointing at the matching mock's wire identity.
 5. **Readiness barriers passed**: the harness's subscriptions to the node's emitted topics are visible from the node's session, and every mock service and action answers a reachability probe. Only then does the node's `setup` run, so a setup that immediately polls a dependency service cannot race the mock's declaration.
 
-`shutdown` tears down in lifecycle order: it cancels the node and awaits its convergence (a `setup` that returned an error propagates that error out of `shutdown`, and [shutdown hooks](/advanced_guides/shutdown/) run, bounded exactly as in production), then closes the observation session and the mocks, then stops the router. In Python the `async with` form calls it for you; in Rust, dropping the harness without calling `shutdown` leaks nothing but skips the error propagation, so tests should end with `harness.shutdown().await`.
+`shutdown` tears down in lifecycle order: it cancels the node and awaits its convergence (a `setup` that returned an error propagates that error out of `shutdown`, and [shutdown hooks](/advanced_guides/shutdown/) run, bounded exactly as in production), then closes the observation session and the mocks, then stops the router. In Python the `async with` form calls it for you; in Rust, dropping the harness without calling `shutdown` still cancels and aborts the node, but skips the error propagation and the shutdown hooks, so tests should end with `harness.shutdown().await`.
 
-The harness also exposes the running node directly: `node_runner()` (`h.node_runner`) for calling its runtime surface in-process, `instance_id()` (`h.instance_id`) for the generated instance id, and `setup_finished()` to ask whether `setup` has returned.
+The harness also exposes the running node directly: `node_runner()` (`h.node_runner`) for calling its runtime surface in-process, `instance_id()` (`h.instance_id`) for the generated instance id, `setup_finished()` to ask whether `setup` has returned, and `session()` (`h.session`), the fixture caller/observer session the `fixtures` callers drive the node through.
 
 ## Driving each surface
 
@@ -156,7 +156,7 @@ mocks
   </TabItem>
 </Tabs>
 
-The first `publish` lazily waits for the node's subscription to match before delivering, so the first message is never lost to a subscribe race, and a node that never subscribes turns the publish into a loud readiness-timeout error rather than a silent drop. To separate "the node is subscribed" from "deliver now", `wait_for_subscriber(timeout)` waits for the match alone and returns whether it happened.
+The first `publish` lazily waits for the node's subscription to match before delivering, so the first message is never lost to a subscribe race, and a node that never subscribes turns the publish into a loud error after the readiness timeout (10 seconds) rather than a silent drop. To separate "the node is subscribed" from "deliver now", `wait_for_subscriber(timeout)` waits for the match alone and returns whether it happened.
 
 ### Consumed services
 
@@ -220,7 +220,7 @@ assert_eq!(requests.len(), 1);
   </TabItem>
 </Tabs>
 
-`captured()` decodes every request received so far, scripted and manual alike, in arrival order, so both modes leave a complete audit trail.
+`captured()` decodes every request received so far, scripted and manual alike, in arrival order, so both modes leave a complete audit trail. A mock torn down with parked requests, or with scripted responses the node never consumed, reports them loudly at teardown, so a call the test forgot to answer cannot pass silently.
 
 ### Consumed actions
 
@@ -437,7 +437,7 @@ assert!(matches!(
   </TabItem>
 </Tabs>
 
-The goal handle carries the decoded admission reply (`accepted`, the optional rejection `reason`, and the typed goal-response `data`), streams typed feedback with `on_next_feedback`, and finishes with `get_result`, whose outcome distinguishes completed, cancelled, abandoned, and expired terminally, with the typed result payload on the first two. `cancel_goal(timeout)` requests cancellation, exercising the `cancel_signal` path in your node's goal handler.
+The goal handle carries the decoded admission reply (`accepted`, the optional rejection `reason`, and the typed goal-response `data`), streams typed feedback with `on_next_feedback`, and finishes with `get_result`, whose outcome is one of completed, cancelled, abandoned, or expired, with the typed result payload on the first two. `cancel_goal(timeout)` requests cancellation, exercising the `cancel_signal` path in your node's goal handler.
 
 ## Producer loss, deterministically
 
@@ -480,7 +480,7 @@ A stopped mock stays stopped for the rest of the test; the bound set never rebin
 
 ## Configuration
 
-`start` with no configuration uses the schema-default parameters, a unique generated instance id, one mock per slot, and zero mock sources for `zero_or_more` observer slots. Every knob is an override:
+`start` with no configuration uses the schema-default parameters, a unique generated instance id, one mock per `one`, `zero_or_one`, and `one_or_more` slot, and no mocks for `zero_or_more` slots. Every knob is an override:
 
 <Tabs>
   <TabItem label="Python">
@@ -492,7 +492,8 @@ async with harness.start(
     parameters=Parameters(gain=2.5),  # typed override; None uses schema defaults
     instance_id="my_test_node",       # explicit instead of generated
     fleet_arms_instances=2,           # per multi-cardinality slot: mock count
-    # per zero_or_one dependency slot: boot the slot vacant, no mock started
+    # per zero_or_one dependency or observer slot: boot the slot
+    # empty, no mock started
     # <link_id>_vacant=True,
     node_dir="/path/to/node",         # see below
 ) as h:
@@ -508,8 +509,8 @@ let (mut harness, mut mocks) = Harness::start_with(
         parameters: Some(peppygen::Parameters { gain: 2.5 }),
         instance_id: Some("my_test_node".to_string()),
         fleet_arms_instances: 2,
-        // per zero_or_one dependency slot: boot the slot vacant,
-        // no mock started
+        // per zero_or_one dependency or observer slot: boot the
+        // slot empty, no mock started
         // <link_id>_vacant: true,
         ..Config::default()
     },
@@ -522,7 +523,7 @@ let (mut harness, mut mocks) = Harness::start_with(
 
 - **`parameters`** is the node's typed `Parameters`; leaving it unset hydrates the schema defaults exactly as a launch would (a required parameter without a default is then an error at boot, as in production).
 - **`instance_id`** replaces the generated unique id (`test-<pid>-<counter>`). The node's wire identity under the harness is `("standalone-core", <instance_id>)`, returned by `harness.node_producer_ref()`.
-- **`<link_id>_vacant`** (per `zero_or_one` dependency slot) boots the slot [written vacant](/advanced_guides/topics/#dependency-cardinality): no mock is started (the mock field is `None`), and the node's `bound_producer()` accessor answers `None`, the branch this cardinality exists for.
+- **`<link_id>_vacant`** (per `zero_or_one` dependency or observer slot) boots the slot [written vacant](/advanced_guides/topics/#dependency-cardinality): no mock is started (the mock field is `None`), and the node's `bound_producer()` / `source()` accessor answers `None`, the branch this cardinality exists for.
 - **`<link_id>_instances`** (per multi-cardinality dependency or observer slot) sets how many mock instances to start, each under its own instance identity, delivered as a list. The default is 1 for `one_or_more` and 0 for `zero_or_more`.
 - **`<link_id>_instance_ids`** (same slots) names those instances explicitly, overriding the count when set. Reach for it when the node classifies producers by instance name (a health monitor keying reports on `left_arm`/`right_gripper` identities, a recorder naming limbs after its sources), so the mocks wear identities the node's classifier accepts.
 - **`<link_id>_vacant`** (per `optional: true` pairing slot) boots the slot unpaired: the peer pin is never seeded, so the node's `paired()` stays `false`, `wait_paired()` pends, and its publishes on the slot are no-ops. The peer mock still starts; its subscriptions simply stay silent (and publishing from it reaches nothing), so a test can assert the slot's silence. Required pairing slots offer no such knob.
