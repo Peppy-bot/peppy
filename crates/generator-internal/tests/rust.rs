@@ -19,6 +19,8 @@ mod multi_binding_communication;
 mod pairing_lib;
 #[path = "rust/services_communication.rs"]
 mod services_communication;
+#[path = "rust/testing_lib.rs"]
+mod testing_lib;
 #[path = "rust/services_implements.rs"]
 mod services_implements;
 #[path = "rust/topics_communication.rs"]

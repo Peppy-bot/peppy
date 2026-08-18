@@ -342,6 +342,60 @@ pub fn rename_peppygen_package(user_node_dir: &Path) {
         .expect("failed to rewrite peppygen Cargo.toml package name");
 }
 
+/// The node-manifest dependency line for this crate dir's per-test-unique
+/// peppygen package, aliased back to `peppygen`.
+pub fn peppygen_dependency_line(crate_dir: &Path) -> String {
+    format!(
+        "peppygen = {{ package = \"{}\", path = \"{}\" }}",
+        peppygen_crate_name(crate_dir),
+        PEPPYGEN_OUTPUT_PATH,
+    )
+}
+
+/// The dev-dependency section enabling the generated test surfaces
+/// (`peppygen::mock` / `peppygen::fixtures`) the way `peppy node sync`
+/// writes it into real node manifests.
+pub fn peppygen_dev_dependency_line(crate_dir: &Path) -> String {
+    format!(
+        "[dev-dependencies]\npeppygen = {{ package = \"{}\", path = \"{}\", features = [\"testing\"] }}",
+        peppygen_crate_name(crate_dir),
+        PEPPYGEN_OUTPUT_PATH,
+    )
+}
+
+/// Runs `cargo test` inside a generated node crate (the node-author loop the
+/// generated mock/fixtures surfaces exist for), against the shared test
+/// target dir. Forwards the zenohd binary this test toolchain resolved: the
+/// node's vendored pmi is built without `build_zenoh`, so inside the test
+/// environment (no `peppy` on PATH) it has nothing else to resolve.
+pub fn run_cargo_test(dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
+    let target_dir = stable_test_target_dir();
+    fs::create_dir_all(&target_dir).expect("failed to create stable test target directory");
+    rename_peppygen_package(dir);
+
+    let mut command = Command::new("cargo");
+    command
+        .arg("test")
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .current_dir(dir)
+        .stdin(Stdio::null());
+    if let Some(zenohd) = pmi::ZenohdFacade::resolved_zenohd_binary() {
+        command.env(pmi::ZENOHD_PATH_VAR, zenohd);
+    }
+    let output = command
+        .output()
+        .expect("failed to invoke cargo test on generated node crate");
+    assert!(
+        output.status.success(),
+        "cargo test failed for generated node crate with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 pub fn executable_filename(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }

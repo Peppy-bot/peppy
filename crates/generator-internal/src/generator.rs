@@ -235,6 +235,25 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
         );
     }
 
+    // The generated test surfaces (`peppygen::mock` / `peppygen::fixtures`)
+    // compile only under peppygen's `testing` feature, enabled from
+    // dev-dependencies so `cargo build` can never resolve it into a
+    // production binary.
+    if !doc.contains_key("dev-dependencies") {
+        doc.insert("dev-dependencies", Item::Table(Table::new()));
+    }
+    if let Some(dev_dependencies) = doc
+        .get_mut("dev-dependencies")
+        .and_then(|d| d.as_table_mut())
+    {
+        set_path_dependency_with_features(
+            dev_dependencies,
+            "peppygen",
+            config::consts::PEPPYGEN_OUTPUT_PATH,
+            &["testing"],
+        );
+    }
+
     let rendered = doc.to_string();
     write_if_changed(&cargo_toml_path, rendered.as_bytes())?;
 
@@ -244,6 +263,19 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
 fn set_path_dependency(dependencies: &mut toml_edit::Table, name: &str, path: &str) {
     let mut dependency = toml_edit::InlineTable::new();
     dependency.insert("path", path.into());
+    dependencies.insert(name, toml_edit::value(dependency));
+}
+
+fn set_path_dependency_with_features(
+    dependencies: &mut toml_edit::Table,
+    name: &str,
+    path: &str,
+    features: &[&str],
+) {
+    let mut dependency = toml_edit::InlineTable::new();
+    dependency.insert("path", path.into());
+    let features: toml_edit::Array = features.iter().copied().collect();
+    dependency.insert("features", toml_edit::Value::Array(features));
     dependencies.insert(name, toml_edit::value(dependency));
 }
 
@@ -267,6 +299,26 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use toml::Value;
+
+    /// Asserts the dev-dependency the testing feature rides in on.
+    fn assert_testing_dev_dependency(doc: &Value) {
+        let dev = doc
+            .get("dev-dependencies")
+            .and_then(|d| d.get("peppygen"))
+            .expect("should have a peppygen dev-dependency");
+        assert_eq!(
+            dev.get("path").and_then(|p| p.as_str()),
+            Some(config::consts::PEPPYGEN_OUTPUT_PATH),
+        );
+        let features: Vec<&str> = dev
+            .get("features")
+            .and_then(|f| f.as_array())
+            .expect("dev-dependency should carry features")
+            .iter()
+            .filter_map(|f| f.as_str())
+            .collect();
+        assert_eq!(features, ["testing"]);
+    }
 
     #[test]
     fn ensure_node_cargo_toml_creates_new_file_with_peppygen_and_peppylib_dependencies() {
@@ -305,6 +357,8 @@ mod tests {
             .and_then(|p| p.as_str())
             .expect("should have peppylib dependency with path");
         assert_eq!(peppylib_path, daemon_config::consts::PEPPYLIB_OUTPUT_PATH);
+
+        assert_testing_dev_dependency(&doc);
     }
 
     #[test]
@@ -358,6 +412,8 @@ mod tests {
             .and_then(|p| p.as_str())
             .expect("should have peppylib dependency with path");
         assert_eq!(peppylib_path, daemon_config::consts::PEPPYLIB_OUTPUT_PATH);
+
+        assert_testing_dev_dependency(&doc);
     }
 
     #[test]
@@ -432,6 +488,8 @@ mod tests {
             daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
             "stale peppylib path should be overwritten"
         );
+    
+        assert_testing_dev_dependency(&doc);
     }
 
     #[test]
