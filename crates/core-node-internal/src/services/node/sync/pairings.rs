@@ -261,7 +261,12 @@ pub fn collect_pairing_interfaces(
     }
     for observer in &depends_on.pairing_observers {
         // Observer vacancy is expressed through cardinality, never `optional`.
-        let context = context_of(observer.name.as_str(), &observer.tag, &observer.link_id, false);
+        let context = context_of(
+            observer.name.as_str(),
+            &observer.tag,
+            &observer.link_id,
+            false,
+        );
         let mismatch = collect_observer_slot(
             observer,
             doc_of(&observer.link_id),

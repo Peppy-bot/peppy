@@ -310,7 +310,7 @@ async fn node_sync_python_command_succeeds() {
         "goodbye_world.py should contain topic name"
     );
 
-    // The test surfaces generate for Python too — inert (never imported by
+    // The test surfaces generate for Python too, inert (never imported by
     // peppygen/__init__.py) but present for the node's own test suite.
     let peppygen_pkg = node_path
         .join(config::consts::PEPPYGEN_OUTPUT_PATH)

@@ -120,7 +120,7 @@ fn copy_embedded_static_files(prefix: &str, dest_dir: &Path) -> Result<()> {
 
 /// Applies templates and copies static files for Rust node initialization
 pub fn apply_rust_templates(node_name: &str, node_dir: &Path, with_container: bool) -> Result<()> {
-    // Copy all static files (non-.j2 files) recursively — src/lib.rs (the
+    // Copy all static files (non-.j2 files) recursively, src/lib.rs (the
     // importable `setup`) among them.
     copy_embedded_static_files("node_init/rust", node_dir)?;
 

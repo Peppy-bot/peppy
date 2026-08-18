@@ -1191,7 +1191,8 @@ impl LanguageGenerator for RustGenerator {
         arguments: MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        self.testgen.record_consumed_topic(topic, &arguments, dependency);
+        self.testgen
+            .record_consumed_topic(topic, &arguments, dependency);
         let node_name = topic.link_id.as_str();
 
         let node_component = sanitize_component(node_name);
@@ -1281,8 +1282,12 @@ impl LanguageGenerator for RustGenerator {
         response_arguments: &MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        self.testgen
-            .record_consumed_service(service, request_arguments, response_arguments, dependency);
+        self.testgen.record_consumed_service(
+            service,
+            request_arguments,
+            response_arguments,
+            dependency,
+        );
         let dependency_node_name = dependency.producer_name.as_str();
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
@@ -1612,7 +1617,8 @@ impl LanguageGenerator for RustGenerator {
         observer: &crate::generator::types::PeerContext,
         cardinality: Cardinality,
     ) -> Result<()> {
-        self.testgen.record_observed_topic(topic, observer, cardinality);
+        self.testgen
+            .record_observed_topic(topic, observer, cardinality);
         self.add_pair_topic_consumer(
             topic,
             observer,
@@ -1626,7 +1632,8 @@ impl LanguageGenerator for RustGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        self.testgen.record_consumed_action(action, messages, dependency);
+        self.testgen
+            .record_consumed_action(action, messages, dependency);
         let dependency_node_name = dependency.producer_name.as_str();
         let action_prefix =
             identifiers::consumed_action_type_prefix(dependency_node_name, action.name.as_str());

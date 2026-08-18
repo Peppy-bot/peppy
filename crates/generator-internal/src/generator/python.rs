@@ -293,7 +293,8 @@ impl LanguageGenerator for PythonGenerator {
         arguments: MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        self.testgen.record_consumed_topic(topic, &arguments, dependency);
+        self.testgen
+            .record_consumed_topic(topic, &arguments, dependency);
         let schema_key = crate::generator::naming::consumed_topic_schema_key(
             topic.link_id.as_str(),
             topic.name.as_str(),
@@ -315,8 +316,12 @@ impl LanguageGenerator for PythonGenerator {
         response_arguments: &MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        self.testgen
-            .record_consumed_service(service, request_arguments, response_arguments, dependency);
+        self.testgen.record_consumed_service(
+            service,
+            request_arguments,
+            response_arguments,
+            dependency,
+        );
         let producer_name = dependency.producer_name.as_str();
         let request_schema_info = self.register_optional_schema(
             crate::generator::naming::consumed_service_request_schema_key(
@@ -393,7 +398,8 @@ impl LanguageGenerator for PythonGenerator {
         observer: &crate::generator::types::PeerContext,
         cardinality: Cardinality,
     ) -> Result<()> {
-        self.testgen.record_observed_topic(topic, observer, cardinality);
+        self.testgen
+            .record_observed_topic(topic, observer, cardinality);
         self.add_pair_topic_consumer(
             topic,
             observer,
@@ -407,7 +413,8 @@ impl LanguageGenerator for PythonGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()> {
-        self.testgen.record_consumed_action(action, messages, dependency);
+        self.testgen
+            .record_consumed_action(action, messages, dependency);
         let action_schema_keys = crate::generator::naming::consumed_action_schema_keys(
             dependency.producer_name.as_str(),
             action.name.as_str(),

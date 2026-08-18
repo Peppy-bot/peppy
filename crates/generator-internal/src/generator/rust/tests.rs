@@ -1,8 +1,8 @@
 mod actions;
-mod testing;
 mod pairings;
 mod parameters;
 mod services;
+mod testing;
 mod topics;
 
 use super::*;

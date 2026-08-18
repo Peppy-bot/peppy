@@ -1,7 +1,7 @@
 //! End-to-end proof of the generated test surfaces (Rust): generate a
 //! consumer node with topic + service + action + pairing links, write a real
 //! node (`lib.rs` setup) and a real test using `fixtures::harness::Harness` +
-//! the per-link mocks, then run `cargo test` in the node — the full loop over
+//! the per-link mocks, then run `cargo test` in the node: the full loop over
 //! real zenoh: mock publish → node consumes → node polls the mock service →
 //! node drives the mock action (accept → feedback → complete) → node's own
 //! emissions observed via fixtures (emitted topic + pairing slot), plus the
@@ -10,8 +10,8 @@
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat,
-    NativeEmittedTopic, NativeExposedService,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    NativeExposedService,
 };
 use generator::{ConsumedActionMessage, DependencyContext, LanguageGenerator, PeerContext};
 use std::fs;
@@ -308,11 +308,9 @@ async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
         .await
         .expect("complete should succeed");
 
-    let status = harness
-        .emitted
-        .status
-        .next()
+    let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
         .await
+        .expect("the node should publish its first status")
         .expect("status should decode")
         .expect("status subscription should be open");
     assert_eq!(status.outcome, "done fb=0.5 ok=true");
@@ -368,16 +366,14 @@ async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
         .accept(mock_plan::GoalResponseData::new(true))
         .await
         .expect("accept should succeed");
-    // Stop the whole brain mock with the goal context still held — the
+    // Stop the whole brain mock with the goal context still held: the
     // producer-loss shape. The node must observe the typed loss, not a
     // clean close and not a hang.
     mocks.deps.brain.stop();
 
-    let status = harness
-        .emitted
-        .status
-        .next()
+    let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
         .await
+        .expect("the node should report the producer loss on its status topic")
         .expect("status should decode")
         .expect("status subscription should be open");
     assert_eq!(status.outcome, "producer-gone");

@@ -8,31 +8,31 @@
 //! codecs on the production schema keys.
 //!
 //! Skipped entirely when the backend was driven without
-//! [`set_node_identity`](super::RustGenerator::set_node_identity) — the
+//! [`set_node_identity`](super::RustGenerator::set_node_identity): the
 //! harness cannot pin the node's own targets without the manifest identity.
 
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
-    FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry,
+    FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry, claim_sanitized_name,
 };
 use super::mock::{
-    build_local_message_with_deserializer, build_struct_deserializer,
+    CodecSpec, build_local_message_with_deserializer, build_struct_deserializer,
     build_struct_serializer, production_module, target_expr,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::qos_profile_tokens;
 use super::{
-    GenerationContext, RustGenerator, build_deserialize_fn, build_serialize_payload,
-    collect_function_params, deserialize_format_fields, generate_assignments_from_struct,
-    map_message_format, prefixed_ident, render_tokens,
+    GenerationContext, RustGenerator, build_deserialize_fn, collect_function_params,
+    deserialize_format_fields, map_message_format, prefixed_ident, render_tokens,
 };
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::generator::naming::{non_empty_str, to_camel_case};
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
-use config::node::{Cardinality, MessageFormat};
+use config::node::Cardinality;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::path::Path;
 
 pub(super) fn render(generator: &mut RustGenerator, registry: &TestGenRegistry) -> Result<()> {
     let Some((node_name, node_tag)) = registry.node_identity.clone() else {
@@ -40,12 +40,17 @@ pub(super) fn render(generator: &mut RustGenerator, registry: &TestGenRegistry) 
     };
 
     let mut emitted_members: Vec<EmittedMember> = Vec::new();
-    let mut seen = HashSet::new();
+    let mut owners: HashMap<String, String> = HashMap::new();
     for spec in &registry.own.emitted {
         let (artifact, member) = render_emitted_topic(generator, &node_name, &node_tag, spec)?;
         // The field ident is origin-scoped (contract-backed topics share
         // leaf names across links), so it doubles as the uniqueness key.
-        claim(&mut seen, &member.field.to_string(), "fixtures emitted", &spec.name)?;
+        claim_sanitized_name(
+            &mut owners,
+            &member.field.to_string(),
+            "fixtures emitted",
+            &spec.name,
+        )?;
         generator.push_section(artifact);
         emitted_members.push(member);
     }
@@ -66,18 +71,6 @@ pub(super) fn render(generator: &mut RustGenerator, registry: &TestGenRegistry) 
         kind: InterfaceKind::Fixture,
         code_output: harness,
     });
-    Ok(())
-}
-
-fn claim(seen: &mut HashSet<String>, sanitized: &str, category: &str, raw: &str) -> Result<()> {
-    if !seen.insert(sanitized.to_string()) {
-        return Err(Error::ModuleNameCollision {
-            category: category.to_string(),
-            first: sanitized.to_string(),
-            second: raw.to_string(),
-            sanitized: sanitized.to_string(),
-        });
-    }
     Ok(())
 }
 
@@ -129,11 +122,13 @@ fn render_emitted_topic(
     // module only serializes), so the fixtures module defines its own.
     let message_and_deserializer = build_local_message_with_deserializer(
         generator,
-        &schema_key,
-        &schema_prefix,
-        &spec.format,
+        CodecSpec {
+            schema_key: &schema_key,
+            struct_prefix: &schema_prefix,
+            format: &spec.format,
+            context_label: &format!("fixtures observe {topic_name}"),
+        },
         &deserialize_ident,
-        &format!("fixtures observe {topic_name}"),
     )?;
 
     let doc = format!(
@@ -198,10 +193,7 @@ fn render_emitted_topic(
         Some(origin) => format!("{}_{}", origin.link_id, topic_name),
         None => topic_name.to_string(),
     };
-    let field = Ident::new(
-        &sanitize_rust_module_name(&field_name),
-        Span::call_site(),
-    );
+    let field = Ident::new(&sanitize_rust_module_name(&field_name), Span::call_site());
     let production_path = {
         let segments: Vec<&str> = module_path[1..].iter().map(String::as_str).collect();
         production_module("fixtures", &{
@@ -266,13 +258,18 @@ fn render_exposed_service(
             codecs.push(build_struct_serializer(
                 generator,
                 &serialize_ident,
-                &request_key,
-                &schema_prefix,
-                format,
+                CodecSpec {
+                    schema_key: &request_key,
+                    struct_prefix: &schema_prefix,
+                    format,
+                    context_label: &format!("fixtures poll {service_name}"),
+                },
                 &quote!(RequestData),
-                &format!("fixtures poll {service_name}"),
             )?);
-            (quote!(request: &RequestData,), quote!(serialize_request(request)?))
+            (
+                quote!(request: &RequestData,),
+                quote!(serialize_request(request)?),
+            )
         }
         None => (quote!(), quote!(peppylib::Payload::new())),
     };
@@ -283,16 +280,20 @@ fn render_exposed_service(
             codecs.push(build_struct_deserializer(
                 generator,
                 &deserialize_ident,
-                &response_key,
-                &format!("{schema_prefix}Response"),
-                format,
+                CodecSpec {
+                    schema_key: &response_key,
+                    struct_prefix: &format!("{schema_prefix}Response"),
+                    format,
+                    context_label: &format!("fixtures poll {service_name} response"),
+                },
                 &quote!(Response),
                 "Response",
-                &format!("fixtures poll {service_name} response"),
             )?);
             (
                 quote!(Response),
-                quote!(deserialize_response(response_message.payload_bytes().as_ref())),
+                quote!(deserialize_response(
+                    response_message.payload_bytes().as_ref()
+                )),
             )
         }
         None => (
@@ -380,8 +381,10 @@ fn render_exposed_action(
         scoped_schema_key(spec.origin.as_ref(), &format!("{base_name}_goal_response"));
     let feedback_key =
         scoped_schema_key(spec.origin.as_ref(), &format!("emit_{base_name}_feedback"));
-    let result_key =
-        scoped_schema_key(spec.origin.as_ref(), &format!("{base_name}_result_response"));
+    let result_key = scoped_schema_key(
+        spec.origin.as_ref(),
+        &format!("{base_name}_result_response"),
+    );
     let action_prefix = to_camel_case(&base_name);
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
 
@@ -409,11 +412,13 @@ fn render_exposed_action(
             codecs.push(build_struct_serializer(
                 generator,
                 &fn_ident,
-                &goal_key,
-                &format!("{action_prefix}Goal"),
-                format,
+                CodecSpec {
+                    schema_key: &goal_key,
+                    struct_prefix: &format!("{action_prefix}Goal"),
+                    format,
+                    context_label: &format!("fixtures send_goal {action_name}"),
+                },
                 &quote!(GoalRequestData),
-                &format!("fixtures send_goal {action_name}"),
             )?);
             (
                 quote!(request: &GoalRequestData,),
@@ -431,12 +436,14 @@ fn render_exposed_action(
             codecs.push(build_struct_deserializer(
                 generator,
                 &fn_ident,
-                &goal_response_key,
-                &format!("{action_prefix}GoalResponse"),
-                format,
+                CodecSpec {
+                    schema_key: &goal_response_key,
+                    struct_prefix: &format!("{action_prefix}GoalResponse"),
+                    format,
+                    context_label: &format!("fixtures {action_name} goal response"),
+                },
                 &quote!(GoalResponse),
                 "GoalResponse",
-                &format!("fixtures {action_name} goal response"),
             )?);
             (
                 quote! {
@@ -799,7 +806,7 @@ fn render_harness(
         if spec.optional {
             // The mock still starts when vacant: its pinned subscription is
             // what resolves the publisher-readiness barrier, and an unpaired
-            // node's publishes on the slot are legal no-ops — so only the
+            // node's publishes on the slot are legal no-ops, so only the
             // pin seeding is withheld.
             let vacant_field = Ident::new(&format!("{field}_vacant"), Span::call_site());
             let vacant_doc = format!(
@@ -859,8 +866,7 @@ fn render_harness(
                 observed_mock_inits.push(field);
             }
             Cardinality::ZeroOrOne => {
-                let vacant_field =
-                    Ident::new(&format!("{field}_vacant"), Span::call_site());
+                let vacant_field = Ident::new(&format!("{field}_vacant"), Span::call_site());
                 let vacant_doc = format!(
                     "Leave the `{link_id}` observer slot empty (its cardinality \
                      admits an empty set)."
@@ -891,24 +897,20 @@ fn render_harness(
                 observed_mock_inits.push(field);
             }
             Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
-                let count_field =
-                    Ident::new(&format!("{field}_instances"), Span::call_site());
+                let count_field = Ident::new(&format!("{field}_instances"), Span::call_site());
                 let default_count: usize = match spec.cardinality {
                     Cardinality::OneOrMore => 1,
                     _ => 0,
                 };
-                let count_doc = format!(
-                    "How many mock sources to start for the `{link_id}` observer slot."
-                );
-                let ids_field =
-                    Ident::new(&format!("{field}_instance_ids"), Span::call_site());
+                let count_doc =
+                    format!("How many mock sources to start for the `{link_id}` observer slot.");
+                let ids_field = Ident::new(&format!("{field}_instance_ids"), Span::call_site());
                 let ids_doc = format!(
                     "Explicit instance ids for the `{link_id}` mock sources, \
                      overriding `{count_field}` when non-empty. For nodes that \
                      classify sources by instance name."
                 );
-                let ids_local =
-                    Ident::new(&format!("{field}_member_ids"), Span::call_site());
+                let ids_local = Ident::new(&format!("{field}_member_ids"), Span::call_site());
                 config_fields.push(quote! {
                     #[doc = #count_doc]
                     pub #count_field: usize
@@ -980,6 +982,19 @@ fn render_harness(
         }
     };
 
+    // `<node>/peppy.json5` reached from the generated crate's manifest dir:
+    // one `..` per component of the peppygen output path, then the config
+    // file name, so the two consts stay the single source of the layout.
+    let config_path_suffix = format!(
+        "/{}/{}",
+        Path::new(config::consts::PEPPYGEN_OUTPUT_PATH)
+            .components()
+            .map(|_| "..")
+            .collect::<Vec<_>>()
+            .join("/"),
+        config::consts::NODE_CONFIG_FILE,
+    );
+
     let doc = "Generated test harness: ephemeral router + started mocks + seeded \
                `StandaloneConfig` + the node running in-process behind the readiness \
                barriers. Construct with [`Harness::start`] (or [`Harness::start_with`] \
@@ -997,7 +1012,7 @@ fn render_harness(
         /// The node's `peppy.json5`, resolved relative to the generated
         /// crate's manifest (always `<node>/.peppy/libs/peppygen`).
         pub const PEPPY_CONFIG_PATH: &str =
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../../peppy.json5");
+            concat!(env!("CARGO_MANIFEST_DIR"), #config_path_suffix);
 
         /// Optional overrides for [`Harness::start_with`].
         pub struct Config {

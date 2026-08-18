@@ -415,7 +415,6 @@ pub fn init_cargo_user_node(to_dir: impl AsRef<Path>) {
     // Depend on the per-test-unique peppygen package, aliased back to `peppygen`
     // so the generated `use peppygen::…` code is unchanged. `compile_project`
     // renames the peppygen crate to match before building.
-    let peppygen_name = peppygen_crate_name(crate_dir);
     let manifest = format!(
         r#"[package]
 name = "{crate_name}"
@@ -428,8 +427,9 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = {{ version = "1", features = ["macros", "rt-multi-thread", "time"] }}
-peppygen = {{ package = "{peppygen_name}", path = "{PEPPYGEN_OUTPUT_PATH}" }}
-"#
+{peppygen_dep}
+"#,
+        peppygen_dep = peppygen_dependency_line(crate_dir),
     );
 
     let should_write_manifest = match fs::read_to_string(&cargo_toml_path) {

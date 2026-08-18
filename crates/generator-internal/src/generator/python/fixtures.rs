@@ -1,5 +1,5 @@
 //! Python renderer for the generated `fixtures` category: the per-node
-//! harness (`fixtures/harness.py` — ephemeral router + started mocks + seeded
+//! harness (`fixtures/harness.py`: ephemeral router + started mocks + seeded
 //! `StandaloneConfig` + running node behind the readiness barriers) and typed
 //! observation clients for the node's own surface (`emitted_topics`
 //! subscriptions, `exposed_services` / `exposed_actions` identity-explicit
@@ -8,13 +8,13 @@
 //! readiness lists, and typed codecs on the production schema keys.
 //!
 //! Skipped entirely when the backend was driven without
-//! [`set_node_identity`](super::PythonGenerator::set_node_identity) — the
+//! [`set_node_identity`](super::PythonGenerator::set_node_identity): the
 //! harness cannot pin the node's own targets without the manifest identity.
 
 use super::super::naming::non_empty_str;
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
-    FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry,
+    FIXTURE_INSTANCE_ID, TargetSpec, TestGenRegistry, claim_sanitized_name,
 };
 use super::PythonGenerator;
 use super::code_builder::PythonCodeBuilder;
@@ -24,10 +24,10 @@ use super::mock::{
 };
 use super::scaffold::sanitize_python_module_name;
 use super::type_mapping::qos_profile_python;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind, scoped_schema_key};
 use config::node::Cardinality;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// One `PublisherReadiness(...)` entry's source lines: `link_id` only for
@@ -66,10 +66,10 @@ pub(super) fn render(
     };
 
     let mut emitted_members: Vec<EmittedMember> = Vec::new();
-    let mut seen = HashSet::new();
+    let mut owners: HashMap<String, String> = HashMap::new();
     for spec in &registry.own.emitted {
         let (artifact, member) = render_emitted_topic(generator, &node_name, &node_tag, spec)?;
-        claim(&mut seen, &member.attr, "fixtures emitted", &spec.name)?;
+        claim_sanitized_name(&mut owners, &member.attr, "fixtures emitted", &spec.name)?;
         generator.push_section(artifact);
         emitted_members.push(member);
     }
@@ -101,18 +101,6 @@ pub(super) fn render(
     Ok(())
 }
 
-fn claim(seen: &mut HashSet<String>, sanitized: &str, category: &str, raw: &str) -> Result<()> {
-    if !seen.insert(sanitized.to_string()) {
-        return Err(Error::ModuleNameCollision {
-            category: category.to_string(),
-            first: sanitized.to_string(),
-            second: raw.to_string(),
-            sanitized: sanitized.to_string(),
-        });
-    }
-    Ok(())
-}
-
 /// The absolute node directory baked at generation time: the canonicalized
 /// output path minus the trailing `.peppy/libs/peppygen`. Last-resort
 /// fallback for the harness's node-dir resolution (after the explicit
@@ -122,7 +110,11 @@ fn sync_time_node_dir(to_path: &Path) -> String {
     let node_dir = if canonical.ends_with(config::consts::PEPPYGEN_OUTPUT_PATH) {
         canonical
             .ancestors()
-            .nth(Path::new(config::consts::PEPPYGEN_OUTPUT_PATH).components().count())
+            .nth(
+                Path::new(config::consts::PEPPYGEN_OUTPUT_PATH)
+                    .components()
+                    .count(),
+            )
             .map(Path::to_path_buf)
             .unwrap_or_else(|| canonical.clone())
     } else {
@@ -179,11 +171,8 @@ fn render_emitted_topic(
     // Key derivation copied from the Rust fixtures renderer, which itself
     // copies the production emitted-topic key: both resolve to the same capnp
     // file stem, so no new schema file appears.
-    let fn_name = crate::generator::rust::identifiers::prefixed_name(
-        "",
-        non_empty_str(topic_name),
-        "topic",
-    );
+    let fn_name =
+        crate::generator::rust::identifiers::prefixed_name("", non_empty_str(topic_name), "topic");
     let schema_key = scoped_schema_key(spec.origin.as_ref(), &fn_name);
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
     let qos = qos_profile_python(&spec.qos);
@@ -241,7 +230,9 @@ fn render_emitted_topic(
          harness calls this before the node boots and barriers on it, so the node's \
          very first publish is captured.\"\"\"",
     );
-    builder.line("producer = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)");
+    builder.line(
+        "producer = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)",
+    );
     builder.line("inner = await peppylib.TopicMessenger.subscribe(");
     builder.indent();
     builder.line("session,");
@@ -438,11 +429,15 @@ fn render_exposed_action(
     let action_name = spec.name.as_str();
     // Same keys the Python production module registered.
     let goal_key = scoped_schema_key(spec.origin.as_ref(), &format!("{action_name}_goal_request"));
-    let goal_response_key =
-        scoped_schema_key(spec.origin.as_ref(), &format!("{action_name}_goal_response"));
+    let goal_response_key = scoped_schema_key(
+        spec.origin.as_ref(),
+        &format!("{action_name}_goal_response"),
+    );
     let feedback_key = scoped_schema_key(spec.origin.as_ref(), &format!("{action_name}_feedback"));
-    let result_key =
-        scoped_schema_key(spec.origin.as_ref(), &format!("{action_name}_result_response"));
+    let result_key = scoped_schema_key(
+        spec.origin.as_ref(),
+        &format!("{action_name}_result_response"),
+    );
     let target = own_target_expr(node_name, node_tag, spec.origin.as_ref());
 
     let mut module_path = vec!["exposed_actions".to_string()];
@@ -774,11 +769,12 @@ fn default_spec_literal(spec: &config::ParameterSpec) -> Option<String> {
 }
 
 /// A JSON value as a Python literal (JSON string/number literals are valid
-/// Python; only the booleans differ).
+/// Python; the booleans and null differ).
 fn python_json_literal(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Bool(true) => "True".to_string(),
         serde_json::Value::Bool(false) => "False".to_string(),
+        serde_json::Value::Null => "None".to_string(),
         other => other.to_string(),
     }
 }
@@ -862,11 +858,13 @@ fn render_harness(
             &alias,
         ));
         let local = format!("pair_{attr}");
-        mock_starts.push(format!("{local} = await {alias}.Mock.start(router, instance_id)"));
+        mock_starts.push(format!(
+            "{local} = await {alias}.Mock.start(router, instance_id)"
+        ));
         if spec.optional {
             // The mock still starts when vacant: its pinned subscription is
             // what resolves the publisher-readiness barrier, and an unpaired
-            // node's publishes on the slot are legal no-ops — so only the
+            // node's publishes on the slot are legal no-ops, so only the
             // pin seeding is withheld.
             let kwarg = format!("{attr}_vacant");
             slot_kwargs.push(SlotKwarg {
@@ -1065,13 +1063,13 @@ fn render_harness(
     builder.line("raise RuntimeError(");
     builder.indent();
     builder.line("\"could not locate the node's peppy.json5 from any source: \"");
-    builder.line("\"(1) no explicit node_dir= was passed to start() — pass the node \"");
+    builder.line("\"(1) no explicit node_dir= was passed to start(), so pass the node \"");
     builder.line("\"directory explicitly; \"");
     builder.line("f\"(2) no {_NODE_CONFIG_FILE} was found walking up from the current \"");
-    builder.line("f\"working directory {os.getcwd()!r} — run the tests from inside the \"");
+    builder.line("f\"working directory {os.getcwd()!r}, so run the tests from inside the \"");
     builder.line("\"node directory; \"");
-    builder.line("f\"(3) the sync-time path {_SYNC_TIME_NODE_DIR!r} no longer holds one \"");
-    builder.line("\"— the node has moved since generation; re-run peppy sync\"");
+    builder.line("f\"(3) the sync-time path {_SYNC_TIME_NODE_DIR!r} no longer holds one, \"");
+    builder.line("\"so the node has moved since generation; re-run peppy node sync\"");
     builder.dedent();
     builder.line(")");
     builder.dedent();
@@ -1239,7 +1237,7 @@ fn render_harness(
     builder.indent();
     builder.line(
         "\"\"\"What `start` returns: awaitable (`harness = await start(...)`) and async \
-         context manager (`async with start(...) as harness:` — shutdown runs even \
+         context manager (`async with start(...) as harness:`, shutdown runs even \
          when the test body fails).\"\"\"",
     );
     builder.blank_line();
@@ -1378,12 +1376,24 @@ fn render_harness(
     builder.line("core=core,");
     builder.line("mocks=Mocks(");
     builder.indent();
-    builder.line(&format!("deps=DepMocks({}),", mock_kwargs(&dep_attrs, "dep")));
-    builder.line(&format!("pairings=PairingMocks({}),", mock_kwargs(&pairing_attrs, "pair")));
-    builder.line(&format!("observed=ObservedMocks({}),", mock_kwargs(&observed_attrs, "obs")));
+    builder.line(&format!(
+        "deps=DepMocks({}),",
+        mock_kwargs(&dep_attrs, "dep")
+    ));
+    builder.line(&format!(
+        "pairings=PairingMocks({}),",
+        mock_kwargs(&pairing_attrs, "pair")
+    ));
+    builder.line(&format!(
+        "observed=ObservedMocks({}),",
+        mock_kwargs(&observed_attrs, "obs")
+    ));
     builder.dedent();
     builder.line("),");
-    builder.line(&format!("emitted=Emitted({}),", mock_kwargs(&emitted_attrs, "emitted")));
+    builder.line(&format!(
+        "emitted=Emitted({}),",
+        mock_kwargs(&emitted_attrs, "emitted")
+    ));
     builder.line("session=session,");
     builder.line("router=router,");
     builder.line("instance_id=instance_id,");
@@ -1427,7 +1437,11 @@ fn render_dep_harness_parts(
             .services
             .iter()
             .map(|service| (service.name.as_str(), "service"))
-            .chain(spec.actions.iter().map(|action| (action.name.as_str(), "action")))
+            .chain(
+                spec.actions
+                    .iter()
+                    .map(|action| (action.name.as_str(), "action")),
+            )
         {
             entries.push(format!(
                 "{indent}service_readiness.append(peppylib.testing.ServiceReadiness(\
@@ -1445,8 +1459,10 @@ fn render_dep_harness_parts(
                 "standalone = standalone.with_bound_producer({link_id:?}, \
                  {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID)"
             ));
-            service_readiness
-                .extend(per_instance_readiness(&format!("{alias}.MOCK_INSTANCE_ID"), ""));
+            service_readiness.extend(per_instance_readiness(
+                &format!("{alias}.MOCK_INSTANCE_ID"),
+                "",
+            ));
         }
         Cardinality::ZeroOrOne => {
             let kwarg = format!("{attr}_vacant");

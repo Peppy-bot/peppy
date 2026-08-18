@@ -240,9 +240,9 @@ fn ensure_node_cargo_toml(node_dir: &Path, node_name: &str) -> Result<()> {
     }
 
     // The generated test surfaces (`peppygen::mock` / `peppygen::fixtures`)
-    // compile only under peppygen's `testing` feature, enabled from
-    // dev-dependencies so `cargo build` can never resolve it into a
-    // production binary.
+    // compile only under peppygen's `testing` feature, enabled from the
+    // node's dev-dependencies. A plain `cargo build` resolves no top-level
+    // dev-dependency, so it leaves the feature off.
     if !doc.contains_key("dev-dependencies") {
         doc.insert("dev-dependencies", Item::Table(Table::new()));
     }
@@ -492,7 +492,7 @@ mod tests {
             daemon_config::consts::PEPPYLIB_OUTPUT_PATH,
             "stale peppylib path should be overwritten"
         );
-    
+
         assert_testing_dev_dependency(&doc);
     }
 

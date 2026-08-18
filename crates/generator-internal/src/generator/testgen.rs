@@ -7,15 +7,17 @@
 //! existing `add_*` method, cloning the already-validated inputs. Renderers
 //! re-derive schema keys with the same `naming` functions production used,
 //! so codecs land on the identical capnp files (schema registries dedupe by
-//! file stem — zero duplicated schemas).
+//! file stem, zero duplicated schemas).
 
 use config::node::{
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat,
-    NativeEmittedTopic, NativeExposedAction, NativeExposedService, QoSProfile,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    NativeExposedAction, NativeExposedService, QoSProfile,
 };
 use indexmap::IndexMap;
+use std::collections::HashMap;
 
 use super::types::{ConsumedActionMessage, ContractOrigin, DependencyContext, PeerContext};
+use crate::error::{Error, Result};
 
 /// Core-node segment every mock publishes/serves under.
 pub(crate) const MOCK_CORE_NODE: &str = "mock-core";
@@ -33,17 +35,63 @@ pub(crate) fn mock_instance_id(link_id: &str) -> String {
     format!("mock-{link_id}")
 }
 
-/// The instance id for the `index`-th mock of a multi-instance slot: the
-/// single-instance id with an instance suffix, so ids minted by different
-/// slots (or repeated harness starts) can never collide on the wire.
-pub(crate) fn mock_instance_id_at(link_id: &str, index: usize) -> String {
-    format!("{}-{index}", mock_instance_id(link_id))
+/// Names a generated mock aggregate binds for itself: its constructor and
+/// `start` parameters, the locals `start` binds before the member constructs
+/// run, and the aggregate's own methods. A member sanitizing onto one of
+/// these would emit a duplicate parameter or shadow a value the later
+/// constructs read, so both backends claim them before any member. Shared so
+/// the member names the two languages accept cannot drift apart.
+const RESERVED_MEMBER_NAMES: &[&str] = &[
+    "cls",
+    "instance_id",
+    "node_instance_id",
+    "router",
+    "self",
+    "session",
+    "start",
+    "stop",
+];
+
+/// A fresh owner map for one mock aggregate, with [`RESERVED_MEMBER_NAMES`]
+/// already claimed by the aggregate itself.
+pub(crate) fn reserved_member_owners() -> HashMap<String, String> {
+    RESERVED_MEMBER_NAMES
+        .iter()
+        .map(|reserved| {
+            (
+                (*reserved).to_string(),
+                format!("the generated mock's own {reserved}"),
+            )
+        })
+        .collect()
+}
+
+/// Claims `sanitized` for `owner` within one generated surface. A second
+/// owner landing on an already-claimed identifier is a hard error naming
+/// both, so the operator sees which two inputs clashed rather than the
+/// sanitized identifier twice.
+pub(crate) fn claim_sanitized_name(
+    owners: &mut HashMap<String, String>,
+    sanitized: &str,
+    category: &str,
+    owner: &str,
+) -> Result<()> {
+    if let Some(first) = owners.get(sanitized) {
+        return Err(Error::ModuleNameCollision {
+            category: category.to_string(),
+            first: first.clone(),
+            second: owner.to_string(),
+            sanitized: sanitized.to_string(),
+        });
+    }
+    owners.insert(sanitized.to_string(), owner.to_string());
+    Ok(())
 }
 
 /// The member name for a dep-link interface: plain when the interface's own
 /// consumer-side link_id equals the dependency slot's, link-qualified
 /// otherwise (a slot can bind several same-name interfaces through distinct
-/// manifest entries). Shared by both backends — the member-naming rule must
+/// manifest entries). Shared by both backends, so the member-naming rule must
 /// not drift between languages.
 pub(crate) fn dep_member_name(dep_link_id: &str, module_link: &str, name: &str) -> String {
     if module_link == dep_link_id {
@@ -116,7 +164,7 @@ pub(crate) struct DepActionSpec {
 /// `stop()` is the realistic whole-producer loss.
 #[derive(Debug, Clone)]
 pub(crate) struct DepLinkSpec {
-    /// The dependency's producer node name — feeds the schema-key naming
+    /// The dependency's producer node name, which feeds the schema-key naming
     /// functions even for contract-routed links (whose wire target is the
     /// contract).
     pub producer_name: String,
@@ -207,8 +255,8 @@ pub(crate) struct OwnSurfaceSpec {
 pub(crate) struct TestGenRegistry {
     /// The node's manifest identity, set by `generate_peppygen_lib` from the
     /// parsed `peppy.json5`. The `fixtures` renderer needs it (the harness
-    /// pins the node's own targets); when absent — a backend driven directly
-    /// by `add_*` calls without it — `fixtures` is skipped and only `mock`
+    /// pins the node's own targets); when absent (a backend driven directly
+    /// by `add_*` calls without it), `fixtures` is skipped and only `mock`
     /// renders.
     pub node_identity: Option<(String, String)>,
     pub deps: IndexMap<String, DepLinkSpec>,

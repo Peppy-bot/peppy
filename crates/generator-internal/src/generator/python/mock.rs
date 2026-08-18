@@ -16,7 +16,8 @@ use super::super::naming::to_camel_case;
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, dep_member_name, mock_instance_id,
+    TestGenRegistry, claim_sanitized_name, dep_member_name, mock_instance_id,
+    reserved_member_owners,
 };
 use super::code_builder::{PythonCodeBuilder, emit_format_as_dataclass};
 use super::deserialization;
@@ -25,7 +26,7 @@ use super::serialization;
 use super::topics::{capnp_loader_fn_name, emit_capnp_loader_fn, emit_capnp_preamble};
 use super::type_mapping::qos_profile_python;
 use super::{PythonGenerator, PythonSchemaInfo};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind};
 use config::node::MessageFormat;
 use std::collections::{HashMap, HashSet};
@@ -98,26 +99,13 @@ pub(super) fn production_import_line(dotted: &str, alias: &str) -> String {
 /// inside one link mock; a collision (e.g. a topic and a service sharing a
 /// name on one link) is a hard error naming both, mirroring the scaffold's
 /// collision policy.
-
 fn claim_member_name(
     link_id: &str,
     raw: &str,
-    seen: &mut HashSet<String>,
-    first_owner: &mut HashMap<String, String>,
+    owners: &mut HashMap<String, String>,
 ) -> Result<String> {
     let sanitized = sanitize_python_module_name(raw);
-    if !seen.insert(sanitized.clone()) {
-        return Err(Error::ModuleNameCollision {
-            category: "mock".to_string(),
-            first: first_owner
-                .get(&sanitized)
-                .cloned()
-                .unwrap_or_else(|| raw.to_string()),
-            second: format!("{link_id}/{raw}"),
-            sanitized,
-        });
-    }
-    first_owner.insert(sanitized.clone(), format!("{link_id}/{raw}"));
+    claim_sanitized_name(owners, &sanitized, "mock", &format!("{link_id}/{raw}"))?;
     Ok(sanitized)
 }
 
@@ -250,7 +238,10 @@ fn emit_mock_class(
 
     let mut init_params = vec!["self".to_string(), "session".to_string()];
     init_params.extend(members.iter().map(|member| member.attr.clone()));
-    builder.line(&format!("def __init__({}) -> None:", init_params.join(", ")));
+    builder.line(&format!(
+        "def __init__({}) -> None:",
+        init_params.join(", ")
+    ));
     builder.indent();
     builder.line("self._session = session");
     builder.line("self._stopped = False");
@@ -321,8 +312,7 @@ fn render_dep_link(
     builder.add_import("import peppylib.testing");
     builder.add_import("from typing import Optional");
     let mut loaders = HashSet::new();
-    let mut seen = HashSet::new();
-    let mut owners = HashMap::new();
+    let mut owners = reserved_member_owners();
     let target = target_python_expr(&spec.target);
     let default_instance = mock_instance_id(link_id);
 
@@ -340,9 +330,8 @@ fn render_dep_link(
 
     builder.line("def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:");
     builder.indent();
-    builder.line(
-        "\"\"\"`producer_ref` under an explicit instance id (multi-instance slots).\"\"\"",
-    );
+    builder
+        .line("\"\"\"`producer_ref` under an explicit instance id (multi-instance slots).\"\"\"");
     builder.line("return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)");
     builder.dedent();
     builder.blank_line();
@@ -350,7 +339,7 @@ fn render_dep_link(
     let mut members: Vec<MockMember> = Vec::new();
     for topic in &spec.topics {
         let member = dep_member_name(link_id, &topic.module_link, &topic.name);
-        let attr = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
+        let attr = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_topic(
             generator,
             &mut builder,
@@ -363,7 +352,7 @@ fn render_dep_link(
     }
     for service in &spec.services {
         let member = dep_member_name(link_id, &service.module_link, &service.name);
-        let attr = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
+        let attr = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_service(
             generator,
             &mut builder,
@@ -377,7 +366,7 @@ fn render_dep_link(
     }
     for action in &spec.actions {
         let member = dep_member_name(link_id, &action.module_link, &action.name);
-        let attr = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
+        let attr = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_action(
             generator,
             &mut builder,
@@ -406,13 +395,15 @@ fn render_dep_link(
          declaration and the session are released, dropping the liveliness tokens \
          consumers latch on.",
         "cls, router: peppylib.testing.EphemeralRouter, instance_id: Optional[str] = None",
-        &["if instance_id is None:".to_string(), "    instance_id = MOCK_INSTANCE_ID".to_string()],
+        &[
+            "if instance_id is None:".to_string(),
+            "    instance_id = MOCK_INSTANCE_ID".to_string(),
+        ],
         &members,
     );
 
-    let module_doc = format!(
-        "Mock producer for the `{link_id}` dependency slot (generated; see `Mock`)."
-    );
+    let module_doc =
+        format!("Mock producer for the `{link_id}` dependency slot (generated; see `Mock`).");
     Ok(format!("\"\"\"{module_doc}\"\"\"\n\n{}", builder.build()))
 }
 
@@ -487,7 +478,9 @@ fn render_dep_topic(
         "\"\"\"Publishes one typed message; lazily waits for the node's subscription \
          before the first delivery.\"\"\"",
     );
-    builder.line(&format!("await self._core.publish({serialize_fn}(message))"));
+    builder.line(&format!(
+        "await self._core.publish({serialize_fn}(message))"
+    ));
     builder.dedent();
     builder.blank_line();
     builder.line("async def wait_for_subscriber(self, timeout: float) -> bool:");
@@ -526,14 +519,10 @@ fn render_dep_service(
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
-    let request_key = crate::generator::naming::consumed_service_request_schema_key(
-        producer_name,
-        service_name,
-    );
-    let response_key = crate::generator::naming::consumed_service_response_schema_key(
-        producer_name,
-        service_name,
-    );
+    let request_key =
+        crate::generator::naming::consumed_service_request_schema_key(producer_name, service_name);
+    let response_key =
+        crate::generator::naming::consumed_service_response_schema_key(producer_name, service_name);
     let deserialize_fn = format!("_deserialize_{attr}_request");
     let serialize_fn = format!("_serialize_{attr}_response");
 
@@ -587,7 +576,9 @@ fn render_dep_service(
     if response_param.is_empty() {
         builder.line("async def respond(self) -> None:");
     } else {
-        builder.line(&format!("async def respond(self, {response_param}) -> None:"));
+        builder.line(&format!(
+            "async def respond(self, {response_param}) -> None:"
+        ));
     }
     builder.indent();
     builder.line("\"\"\"Sends the typed response for the parked request.\"\"\"");
@@ -664,7 +655,9 @@ fn render_dep_service(
     if response_param.is_empty() {
         builder.line("def enqueue_response(self) -> None:");
     } else {
-        builder.line(&format!("def enqueue_response(self, {response_param}) -> None:"));
+        builder.line(&format!(
+            "def enqueue_response(self, {response_param}) -> None:"
+        ));
     }
     builder.indent();
     builder.line(
@@ -728,13 +721,11 @@ fn render_dep_action(
     attr: String,
 ) -> Result<MockMember> {
     let action_name = spec.name.as_str();
-    let production =
-        production_module_path("consumed_actions", &[&spec.module_link, action_name]);
+    let production = production_module_path("consumed_actions", &[&spec.module_link, action_name]);
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
-    let keys =
-        crate::generator::naming::consumed_action_schema_keys(producer_name, action_name);
+    let keys = crate::generator::naming::consumed_action_schema_keys(producer_name, action_name);
     let has_feedback = spec.messages.feedback.is_some();
 
     let deserialize_request_fn = format!("_deserialize_{attr}_goal_request");
@@ -765,7 +756,9 @@ fn render_dep_action(
             format,
             &format!("{alias}.GoalResponseData"),
         )?;
-        builder.line(&format!("{camel}GoalResponseData = {alias}.GoalResponseData"));
+        builder.line(&format!(
+            "{camel}GoalResponseData = {alias}.GoalResponseData"
+        ));
         builder.blank_line();
     }
     if let Some(format) = &spec.messages.feedback {
@@ -850,7 +843,9 @@ fn render_dep_action(
         if complete_param.is_empty() {
             builder.line(&format!("async def {method}(self) -> None:"));
         } else {
-            builder.line(&format!("async def {method}(self, {complete_param}) -> None:"));
+            builder.line(&format!(
+                "async def {method}(self, {complete_param}) -> None:"
+            ));
         }
         builder.indent();
         builder.line(&format!("\"\"\"{doc}\"\"\""));
@@ -886,33 +881,33 @@ fn render_dep_action(
     builder.line("return self._pending.goal_id");
     builder.dedent();
     builder.blank_line();
-    let (accept_param, accept_payload, reject_param, reject_payload) =
-        if spec.messages.goal_response.is_some() {
-            (
-                format!(", response: {alias}.GoalResponseData"),
-                format!("{serialize_response_fn}(response)"),
-                format!(
-                    ", reason: Optional[str] = None, response: Optional[{alias}.GoalResponseData] = None"
-                ),
-                format!(
-                    "{serialize_response_fn}(response) if response is not None else b\"\""
-                ),
-            )
-        } else {
-            (
-                String::new(),
-                "b\"\"".to_string(),
-                ", reason: Optional[str] = None".to_string(),
-                "b\"\"".to_string(),
-            )
-        };
+    let (accept_param, accept_payload, reject_param, reject_payload) = if spec
+        .messages
+        .goal_response
+        .is_some()
+    {
+        (
+            format!(", response: {alias}.GoalResponseData"),
+            format!("{serialize_response_fn}(response)"),
+            format!(
+                ", reason: Optional[str] = None, response: Optional[{alias}.GoalResponseData] = None"
+            ),
+            format!("{serialize_response_fn}(response) if response is not None else b\"\""),
+        )
+    } else {
+        (
+            String::new(),
+            "b\"\"".to_string(),
+            ", reason: Optional[str] = None".to_string(),
+            "b\"\"".to_string(),
+        )
+    };
     builder.line(&format!(
         "async def accept(self{accept_param}) -> {camel}ActiveGoal:"
     ));
     builder.indent();
-    builder.line(
-        "\"\"\"Accepts the goal; the returned handle drives feedback and completion.\"\"\"",
-    );
+    builder
+        .line("\"\"\"Accepts the goal; the returned handle drives feedback and completion.\"\"\"");
     builder.line(&format!(
         "context = await self._pending.accept({accept_payload})"
     ));
@@ -922,7 +917,9 @@ fn render_dep_action(
     builder.line(&format!("async def reject(self{reject_param}) -> None:"));
     builder.indent();
     builder.line("\"\"\"Rejects the goal with an optional human-readable reason.\"\"\"");
-    builder.line(&format!("await self._pending.reject(reason, {reject_payload})"));
+    builder.line(&format!(
+        "await self._pending.reject(reason, {reject_payload})"
+    ));
     builder.dedent();
     builder.dedent();
     builder.blank_line();
@@ -1003,8 +1000,7 @@ fn render_pairing_link(
     builder.add_import("import peppylib");
     builder.add_import("import peppylib.testing");
     let mut loaders = HashSet::new();
-    let mut seen = HashSet::new();
-    let mut owners = HashMap::new();
+    let mut owners = reserved_member_owners();
     let pairing_target = target_python_expr(&TargetSpec::Pairing {
         name: spec.pairing_name.clone(),
         tag: spec.pairing_tag.clone(),
@@ -1039,7 +1035,7 @@ fn render_pairing_link(
     let mut members: Vec<MockMember> = Vec::new();
     // Topics the node consumes: the mock publishes as the paired peer.
     for topic in &spec.node_consumes {
-        let attr = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let attr = claim_member_name(link_id, &topic.name, &mut owners)?;
         members.push(render_pair_publisher(
             generator,
             &mut builder,
@@ -1052,7 +1048,7 @@ fn render_pairing_link(
     }
     // Topics the node emits: the mock subscribes, triple-pinned to the node.
     for topic in &spec.node_emits {
-        let attr = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let attr = claim_member_name(link_id, &topic.name, &mut owners)?;
         members.push(render_pair_subscription(
             generator,
             &mut builder,
@@ -1082,8 +1078,7 @@ fn render_pairing_link(
         &members,
     );
 
-    let module_doc =
-        format!("Mock peer for the `{link_id}` pairing slot (generated; see `Mock`).");
+    let module_doc = format!("Mock peer for the `{link_id}` pairing slot (generated; see `Mock`).");
     Ok(format!("\"\"\"{module_doc}\"\"\"\n\n{}", builder.build()))
 }
 
@@ -1154,7 +1149,9 @@ fn render_pair_publisher(
         "\"\"\"Publishes one typed message; lazily waits for the node's pinned \
          subscription before the first delivery.\"\"\"",
     );
-    builder.line(&format!("await self._core.publish({serialize_fn}(message))"));
+    builder.line(&format!(
+        "await self._core.publish({serialize_fn}(message))"
+    ));
     builder.dedent();
     builder.blank_line();
     builder.line("async def wait_for_subscriber(self, timeout: float) -> bool:");
@@ -1224,7 +1221,9 @@ fn render_pair_subscription(
     builder.line("# identity, pairing target, and the node's own slot link_id all");
     builder.line("# pinned. No pin-following: the mock's peer (the node under test)");
     builder.line("# is known from construction.");
-    builder.line("node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)");
+    builder.line(
+        "node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)",
+    );
     builder.line("inner = await peppylib.TopicMessenger.subscribe_peer_pinned(");
     builder.indent();
     builder.line("session,");
@@ -1280,8 +1279,7 @@ fn render_observed_link(
     builder.add_import("import peppylib.testing");
     builder.add_import("from typing import Optional");
     let mut loaders = HashSet::new();
-    let mut seen = HashSet::new();
-    let mut owners = HashMap::new();
+    let mut owners = reserved_member_owners();
     let pairing_target = target_python_expr(&TargetSpec::Pairing {
         name: spec.pairing_name.clone(),
         tag: spec.pairing_tag.clone(),
@@ -1317,7 +1315,7 @@ fn render_observed_link(
 
     let mut members: Vec<MockMember> = Vec::new();
     for topic in &spec.topics {
-        let attr = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let attr = claim_member_name(link_id, &topic.name, &mut owners)?;
         members.push(render_observed_publisher(
             generator,
             &mut builder,
@@ -1344,13 +1342,15 @@ fn render_observed_link(
          released. (Standalone observation liveness never changes, so the node keeps \
          observing; messages simply stop.)",
         "cls, router: peppylib.testing.EphemeralRouter, instance_id: Optional[str] = None",
-        &["if instance_id is None:".to_string(), "    instance_id = MOCK_INSTANCE_ID".to_string()],
+        &[
+            "if instance_id is None:".to_string(),
+            "    instance_id = MOCK_INSTANCE_ID".to_string(),
+        ],
         &members,
     );
 
-    let module_doc = format!(
-        "Mock observed source for the `{link_id}` observer slot (generated; see `Mock`)."
-    );
+    let module_doc =
+        format!("Mock observed source for the `{link_id}` observer slot (generated; see `Mock`).");
     Ok(format!("\"\"\"{module_doc}\"\"\"\n\n{}", builder.build()))
 }
 
@@ -1421,7 +1421,9 @@ fn render_observed_publisher(
         "\"\"\"Publishes one typed message; lazily waits for the node's observation \
          subscription before the first delivery.\"\"\"",
     );
-    builder.line(&format!("await self._core.publish({serialize_fn}(message))"));
+    builder.line(&format!(
+        "await self._core.publish({serialize_fn}(message))"
+    ));
     builder.dedent();
     builder.blank_line();
     builder.line("async def wait_for_subscriber(self, timeout: float) -> bool:");

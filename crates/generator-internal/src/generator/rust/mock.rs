@@ -11,7 +11,8 @@
 use super::super::testgen::{
     DepActionSpec, DepLinkSpec, DepServiceSpec, DepTopicSpec, MOCK_CORE_NODE, MOCK_PEER_LINK_ID,
     MOCK_SOURCE_LINK_ID, ObservedLinkSpec, PairTopicSpec, PairingLinkSpec, TargetSpec,
-    TestGenRegistry, dep_member_name, mock_instance_id,
+    TestGenRegistry, claim_sanitized_name, dep_member_name, mock_instance_id,
+    reserved_member_owners,
 };
 use super::scaffold::sanitize_rust_module_name;
 use super::topics::qos_profile_tokens;
@@ -20,13 +21,12 @@ use super::{
     collect_function_params, deserialize_format_fields, generate_assignments_from_struct,
     identifiers, map_message_format, render_tokens,
 };
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::generator::naming::to_camel_case;
 use crate::generator::types::{InterfaceArtifact, InterfaceKind};
 use config::node::{MessageFormat, QoSProfile};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
-use std::collections::HashSet;
 
 pub(super) fn render(generator: &mut RustGenerator, registry: &TestGenRegistry) -> Result<()> {
     for (link_id, spec) in &registry.deps {
@@ -90,42 +90,38 @@ pub(super) fn production_module(category: &str, segments: &[&str]) -> TokenStrea
 fn claim_member_name(
     link_id: &str,
     raw: &str,
-    seen: &mut HashSet<String>,
-    first_owner: &mut std::collections::HashMap<String, String>,
+    owners: &mut std::collections::HashMap<String, String>,
 ) -> Result<Ident> {
     let sanitized = sanitize_rust_module_name(raw);
-    if !seen.insert(sanitized.clone()) {
-        return Err(Error::ModuleNameCollision {
-            category: "mock".to_string(),
-            first: first_owner
-                .get(&sanitized)
-                .cloned()
-                .unwrap_or_else(|| raw.to_string()),
-            second: format!("{link_id}/{raw}"),
-            sanitized,
-        });
-    }
-    first_owner.insert(sanitized.clone(), format!("{link_id}/{raw}"));
+    claim_sanitized_name(owners, &sanitized, "mock", &format!("{link_id}/{raw}"))?;
     Ok(Ident::new(&sanitized, Span::call_site()))
 }
 
+/// The schema-side inputs every generated codec shares: the schema key it
+/// registers on, the struct prefix its capnp artifacts carry, the message
+/// format it walks, and the label its errors carry.
+pub(super) struct CodecSpec<'a> {
+    pub schema_key: &'a str,
+    pub struct_prefix: &'a str,
+    pub format: &'a MessageFormat,
+    pub context_label: &'a str,
+}
 
-/// The member name for a dep-link interface: plain when the interface's own
-/// consumer-side link_id equals the dependency slot's, link-qualified
-/// otherwise (a slot can bind several same-name interfaces through distinct
-/// manifest entries).
 /// A `fn #fn_ident(value: &#ty) -> crate::Result<peppylib::Payload>`
-/// serializer over an existing struct, registered on `schema_key` (dedupes
-/// onto the production schema file).
+/// serializer over an existing struct, registered on the spec's schema key
+/// (dedupes onto the production schema file).
 pub(super) fn build_struct_serializer(
     generator: &mut RustGenerator,
     fn_ident: &Ident,
-    schema_key: &str,
-    struct_prefix: &str,
-    format: &MessageFormat,
+    spec: CodecSpec<'_>,
     value_ty: &TokenStream,
-    context_label: &str,
 ) -> Result<TokenStream> {
+    let CodecSpec {
+        schema_key,
+        struct_prefix,
+        format,
+        context_label,
+    } = spec;
     let artifacts = map_message_format(schema_key, Some(format))?
         .expect("non-empty message format maps to schema artifacts");
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
@@ -149,13 +145,16 @@ pub(super) fn build_struct_serializer(
 pub(super) fn build_struct_deserializer(
     generator: &mut RustGenerator,
     fn_ident: &Ident,
-    schema_key: &str,
-    struct_prefix: &str,
-    format: &MessageFormat,
+    spec: CodecSpec<'_>,
     return_ty: &TokenStream,
     nested_prefix: &str,
-    context_label: &str,
 ) -> Result<TokenStream> {
+    let CodecSpec {
+        schema_key,
+        struct_prefix,
+        format,
+        context_label,
+    } = spec;
     let artifacts = map_message_format(schema_key, Some(format))?
         .expect("non-empty message format maps to schema artifacts");
     let info = generator.register_schema(schema_key, struct_prefix, &artifacts)?;
@@ -179,23 +178,20 @@ pub(super) fn build_struct_deserializer(
 /// the node emits: the producer side only serializes).
 pub(super) fn build_local_message_with_deserializer(
     generator: &mut RustGenerator,
-    schema_key: &str,
-    struct_prefix: &str,
-    format: &MessageFormat,
+    spec: CodecSpec<'_>,
     fn_ident: &Ident,
-    context_label: &str,
 ) -> Result<TokenStream> {
+    let CodecSpec {
+        schema_key,
+        struct_prefix,
+        format,
+        context_label,
+    } = spec;
     let artifacts = map_message_format(schema_key, Some(format))?
         .expect("non-empty message format maps to schema artifacts");
     let mut context = GenerationContext::default();
     let message_ident = Ident::new("Message", Span::call_site());
-    let params = collect_function_params(
-        Some(&artifacts),
-        None,
-        "Message",
-        &mut context,
-        None,
-    )?;
+    let params = collect_function_params(Some(&artifacts), None, "Message", &mut context, None)?;
     let fields: Vec<(Ident, TokenStream)> = params
         .iter()
         .map(|param| (param.ident.clone(), param.ty.clone()))
@@ -240,7 +236,7 @@ struct MemberModule {
 }
 
 /// The four derived lists every mock-module assembly needs, from one
-/// `members` vector — one helper so a new derived list lands in all three
+/// `members` vector, one helper so a new derived list lands in all three
 /// mock kinds (deps, pairings, observed) at once.
 struct MemberParts<'a> {
     modules: Vec<&'a TokenStream>,
@@ -270,14 +266,13 @@ fn render_dep_link(
     link_id: &str,
     spec: &DepLinkSpec,
 ) -> Result<String> {
-    let mut seen = HashSet::new();
-    let mut owners = std::collections::HashMap::new();
+    let mut owners = reserved_member_owners();
     let mut members: Vec<MemberModule> = Vec::new();
     let target = target_expr(&spec.target);
 
     for topic in &spec.topics {
         let member = dep_member_name(link_id, &topic.module_link, &topic.name);
-        let module_ident = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
+        let module_ident = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_topic(
             generator,
             link_id,
@@ -289,7 +284,7 @@ fn render_dep_link(
     }
     for service in &spec.services {
         let member = dep_member_name(link_id, &service.module_link, &service.name);
-        let module_ident = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
+        let module_ident = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_service(
             generator,
             link_id,
@@ -301,7 +296,7 @@ fn render_dep_link(
     }
     for action in &spec.actions {
         let member = dep_member_name(link_id, &action.module_link, &action.name);
-        let module_ident = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
+        let module_ident = claim_member_name(link_id, &member, &mut owners)?;
         members.push(render_dep_action(
             generator,
             link_id,
@@ -413,18 +408,22 @@ fn render_dep_topic(
         crate::generator::naming::consumed_topic_schema_key(&spec.module_link, topic_name);
     let struct_prefix = format!(
         "{}{}",
-        to_camel_case(&crate::generator::naming::sanitize_component(&spec.module_link)),
+        to_camel_case(&crate::generator::naming::sanitize_component(
+            &spec.module_link
+        )),
         to_camel_case(&crate::generator::naming::sanitize_component(topic_name)),
     );
     let serialize_ident = Ident::new("serialize_message", Span::call_site());
     let serializer = build_struct_serializer(
         generator,
         &serialize_ident,
-        &schema_key,
-        &struct_prefix,
-        &spec.format,
+        CodecSpec {
+            schema_key: &schema_key,
+            struct_prefix: &struct_prefix,
+            format: &spec.format,
+            context_label: &format!("mock publish {topic_name}"),
+        },
         &quote!(Message),
-        &format!("mock publish {topic_name}"),
     )?;
 
     let doc = format!(
@@ -501,14 +500,10 @@ fn render_dep_service(
 ) -> Result<MemberModule> {
     let service_name = spec.name.as_str();
     let production = production_module("consumed_services", &[&spec.module_link, service_name]);
-    let request_key = crate::generator::naming::consumed_service_request_schema_key(
-        producer_name,
-        service_name,
-    );
-    let response_key = crate::generator::naming::consumed_service_response_schema_key(
-        producer_name,
-        service_name,
-    );
+    let request_key =
+        crate::generator::naming::consumed_service_request_schema_key(producer_name, service_name);
+    let response_key =
+        crate::generator::naming::consumed_service_response_schema_key(producer_name, service_name);
     let struct_prefix = identifiers::consumed_service_struct_prefix(service_name);
 
     let deserialize_ident = Ident::new("deserialize_request", Span::call_site());
@@ -518,12 +513,14 @@ fn render_dep_service(
         Some(format) => Some(build_struct_deserializer(
             generator,
             &deserialize_ident,
-            &request_key,
-            &struct_prefix,
-            format,
+            CodecSpec {
+                schema_key: &request_key,
+                struct_prefix: &struct_prefix,
+                format,
+                context_label: &format!("mock {service_name} request"),
+            },
             &quote!(Request),
             &struct_prefix,
-            &format!("mock {service_name} request"),
         )?),
         None => None,
     };
@@ -531,11 +528,13 @@ fn render_dep_service(
         Some(format) => Some(build_struct_serializer(
             generator,
             &serialize_ident,
-            &response_key,
-            &struct_prefix,
-            format,
+            CodecSpec {
+                schema_key: &response_key,
+                struct_prefix: &struct_prefix,
+                format,
+                context_label: &format!("mock {service_name} response"),
+            },
             &quote!(ResponseData),
-            &format!("mock {service_name} response"),
         )?),
         None => None,
     };
@@ -704,8 +703,7 @@ fn render_dep_action(
 ) -> Result<MemberModule> {
     let action_name = spec.name.as_str();
     let production = production_module("consumed_actions", &[&spec.module_link, action_name]);
-    let keys =
-        crate::generator::naming::consumed_action_schema_keys(producer_name, action_name);
+    let keys = crate::generator::naming::consumed_action_schema_keys(producer_name, action_name);
     let action_struct_name = format!(
         "{}Action",
         identifiers::consumed_action_type_prefix(producer_name, action_name)
@@ -735,12 +733,14 @@ fn render_dep_action(
         codecs.push(build_struct_deserializer(
             generator,
             &fn_ident,
-            &keys.goal_request,
-            &format!("{action_struct_name}GoalMessage"),
-            format,
+            CodecSpec {
+                schema_key: &keys.goal_request,
+                struct_prefix: &format!("{action_struct_name}GoalMessage"),
+                format,
+                context_label: &format!("mock {action_name} goal request"),
+            },
             &quote!(GoalRequest),
             &format!("{action_struct_name}Goal"),
-            &format!("mock {action_name} goal request"),
         )?);
         Some(quote! {
             /// The decoded goal request.
@@ -768,11 +768,13 @@ fn render_dep_action(
             codecs.push(build_struct_serializer(
                 generator,
                 &fn_ident,
-                &keys.goal_response,
-                &format!("{action_struct_name}GoalResponse"),
-                format,
+                CodecSpec {
+                    schema_key: &keys.goal_response,
+                    struct_prefix: &format!("{action_struct_name}GoalResponse"),
+                    format,
+                    context_label: &format!("mock {action_name} goal response"),
+                },
                 &quote!(GoalResponseData),
-                &format!("mock {action_name} goal response"),
             )?);
             (
                 quote!(response: GoalResponseData),
@@ -799,11 +801,13 @@ fn render_dep_action(
         codecs.push(build_struct_serializer(
             generator,
             &fn_ident,
-            &keys.feedback,
-            &format!("{action_struct_name}FeedbackMessage"),
-            format,
+            CodecSpec {
+                schema_key: &keys.feedback,
+                struct_prefix: &format!("{action_struct_name}FeedbackMessage"),
+                format,
+                context_label: &format!("mock {action_name} feedback"),
+            },
             &quote!(FeedbackMessage),
-            &format!("mock {action_name} feedback"),
         )?);
         quote! {
             /// Publishes one typed feedback message for this goal.
@@ -830,13 +834,18 @@ fn render_dep_action(
         codecs.push(build_struct_serializer(
             generator,
             &fn_ident,
-            &keys.result_response,
-            &format!("{action_struct_name}ResultResponse"),
-            format,
+            CodecSpec {
+                schema_key: &keys.result_response,
+                struct_prefix: &format!("{action_struct_name}ResultResponse"),
+                format,
+                context_label: &format!("mock {action_name} result"),
+            },
             &quote!(ResultResponseData),
-            &format!("mock {action_name} result"),
         )?);
-        (quote!(result: &ResultResponseData), quote!(serialize_result(result)?))
+        (
+            quote!(result: &ResultResponseData),
+            quote!(serialize_result(result)?),
+        )
     } else {
         (quote!(), quote!(peppylib::Payload::new()))
     };
@@ -972,8 +981,7 @@ fn render_pairing_link(
     link_id: &str,
     spec: &PairingLinkSpec,
 ) -> Result<String> {
-    let mut seen = HashSet::new();
-    let mut owners = std::collections::HashMap::new();
+    let mut owners = reserved_member_owners();
     let mut members: Vec<MemberModule> = Vec::new();
     let pairing_target = target_expr(&TargetSpec::Pairing {
         name: spec.pairing_name.clone(),
@@ -982,7 +990,7 @@ fn render_pairing_link(
 
     // Topics the node consumes: the mock publishes as the paired peer.
     for topic in &spec.node_consumes {
-        let module_ident = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let module_ident = claim_member_name(link_id, &topic.name, &mut owners)?;
         members.push(render_pair_publisher(
             generator,
             link_id,
@@ -993,7 +1001,7 @@ fn render_pairing_link(
     }
     // Topics the node emits: the mock subscribes, triple-pinned to the node.
     for topic in &spec.node_emits {
-        let module_ident = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let module_ident = claim_member_name(link_id, &topic.name, &mut owners)?;
         members.push(render_pair_subscription(
             generator,
             link_id,
@@ -1096,11 +1104,13 @@ fn render_pair_publisher(
     let serializer = build_struct_serializer(
         generator,
         &serialize_ident,
-        &schema_key,
-        &schema_prefix,
-        &spec.format,
+        CodecSpec {
+            schema_key: &schema_key,
+            struct_prefix: &schema_prefix,
+            format: &spec.format,
+            context_label: &format!("mock peer publish {topic_name}"),
+        },
         &quote!(Message),
-        &format!("mock peer publish {topic_name}"),
     )?;
 
     let doc = format!(
@@ -1181,11 +1191,13 @@ fn render_pair_subscription(
     // production module only serializes), so the veneer defines its own.
     let message_and_deserializer = build_local_message_with_deserializer(
         generator,
-        &schema_key,
-        &schema_prefix,
-        &spec.format,
+        CodecSpec {
+            schema_key: &schema_key,
+            struct_prefix: &schema_prefix,
+            format: &spec.format,
+            context_label: &format!("mock peer receive {topic_name}"),
+        },
         &deserialize_ident,
-        &format!("mock peer receive {topic_name}"),
     )?;
 
     let doc = format!(
@@ -1207,7 +1219,7 @@ fn render_pair_subscription(
                 ) -> crate::Result<Self> {
                     // The exact wire shape of a paired peer's subscription:
                     // node identity, pairing target, and the node's own slot
-                    // link_id all pinned. No pin-following — the mock's peer
+                    // link_id all pinned. No pin-following, since the mock's peer
                     // (the node under test) is known from construction.
                     let node = peppylib::messaging::ProducerRef::new(
                         peppylib::testing::STANDALONE_CORE_NODE,
@@ -1262,8 +1274,7 @@ fn render_observed_link(
     link_id: &str,
     spec: &ObservedLinkSpec,
 ) -> Result<String> {
-    let mut seen = HashSet::new();
-    let mut owners = std::collections::HashMap::new();
+    let mut owners = reserved_member_owners();
     let mut members: Vec<MemberModule> = Vec::new();
     let pairing_target = target_expr(&TargetSpec::Pairing {
         name: spec.pairing_name.clone(),
@@ -1271,7 +1282,7 @@ fn render_observed_link(
     });
 
     for topic in &spec.topics {
-        let module_ident = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let module_ident = claim_member_name(link_id, &topic.name, &mut owners)?;
         members.push(render_observed_publisher(
             generator,
             link_id,
@@ -1380,11 +1391,13 @@ fn render_observed_publisher(
     let serializer = build_struct_serializer(
         generator,
         &serialize_ident,
-        &schema_key,
-        &schema_prefix,
-        &spec.format,
+        CodecSpec {
+            schema_key: &schema_key,
+            struct_prefix: &schema_prefix,
+            format: &spec.format,
+            context_label: &format!("mock observed publish {topic_name}"),
+        },
         &quote!(Message),
-        &format!("mock observed publish {topic_name}"),
     )?;
 
     let doc = format!(

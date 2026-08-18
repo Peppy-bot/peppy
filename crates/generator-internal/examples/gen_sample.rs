@@ -1,5 +1,5 @@
 //! Dev tool: generate a sample peppygen crate (both languages) covering every
-//! interface kind, into /tmp/sample_node, for inspecting the emitted surface —
+//! interface kind, into /tmp/sample_node, for inspecting the emitted surface,
 //! including the `mock`/`fixtures` test surfaces.
 //!
 //! ```sh
@@ -7,8 +7,8 @@
 //! ```
 
 use config::node::{
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat,
-    NativeEmittedTopic, NativeExposedAction, NativeExposedService,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
+    NativeExposedAction, NativeExposedService,
 };
 use generator::{ConsumedActionMessage, DependencyContext, LanguageGenerator, PeerContext};
 use std::fs;
@@ -47,8 +47,7 @@ const EXPOSED_ACTION: &str = r#"{
 }"#;
 
 const CONSUMED_TOPIC: &str = r#"{ link_id: "camera", name: "video_stream" }"#;
-const CONSUMED_TOPIC_FORMAT: &str =
-    r#"{ width: "u32", frame: { $type: "array", $items: "u8" } }"#;
+const CONSUMED_TOPIC_FORMAT: &str = r#"{ width: "u32", frame: { $type: "array", $items: "u8" } }"#;
 
 const CONSUMED_SERVICE: &str = r#"{ link_id: "camera", name: "enable_camera" }"#;
 const CONSUMED_SERVICE_REQ: &str = r#"{ enable: "bool" }"#;
@@ -155,7 +154,11 @@ fn prepare(root: &Path) -> std::path::PathBuf {
     let output_dir = user_node.join(config::consts::PEPPYGEN_OUTPUT_PATH);
     let _ = fs::remove_dir_all(&user_node);
     fs::create_dir_all(&output_dir).unwrap();
-    fs::write(user_node.join(config::consts::NODE_CONFIG_FILE), NODE_CONFIG).unwrap();
+    fs::write(
+        user_node.join(config::consts::NODE_CONFIG_FILE),
+        NODE_CONFIG,
+    )
+    .unwrap();
     fs::write(
         output_dir.join(config::consts::NODE_CONFIG_FILE),
         NODE_CONFIG,

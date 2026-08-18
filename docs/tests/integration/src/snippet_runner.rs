@@ -277,7 +277,7 @@ fn assert_run_log_contains(daemon_root: &Path, instance_id: &str, expected: &[&s
 /// the stack first, so its `depends_on` slots resolve at sync time), then
 /// runs `cargo test` (Rust snippets) or `uv run --group dev pytest` (Python
 /// snippets) inside the snippet directory. The dependency nodes are never
-/// built or run — the whole point of the generated harness is that the tests
+/// built or run: the whole point of the generated harness is that the tests
 /// boot the node in-process against mocks of them.
 pub fn run_node_tests(snippets_root: &str, snippet_name: &str, deps: &[&str]) {
     let peppy = peppy_binary();
@@ -328,7 +328,9 @@ fn run_cargo_node_tests(node_dir: &Path, snippet_name: &str) -> Output {
         .current_dir(node_dir)
         .stdin(Stdio::null());
     forward_resolved_zenohd(&mut command);
-    command.output().expect("failed to invoke cargo test on snippet node")
+    command
+        .output()
+        .expect("failed to invoke cargo test on snippet node")
 }
 
 /// `uv run --group dev pytest` inside a synced Python snippet: the snippet's
@@ -344,7 +346,9 @@ fn run_pytest_node_tests(node_dir: &Path) -> Output {
         .current_dir(node_dir)
         .stdin(Stdio::null());
     forward_resolved_zenohd(&mut command);
-    command.output().expect("failed to invoke uv run pytest on snippet node")
+    command
+        .output()
+        .expect("failed to invoke uv run pytest on snippet node")
 }
 
 /// Forwards the zenohd binary this test toolchain resolved to the node test

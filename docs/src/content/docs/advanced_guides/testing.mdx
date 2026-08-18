@@ -48,7 +48,7 @@ The harness boots your node by calling its `setup` function directly, so `setup`
   }
   ```
 
-An existing Rust node adopts the same split when it adds tests: move the setup closure into `src/lib.rs` as a named `pub async fn setup`, and pass it to `NodeBuilder::new().run` from `main.rs`. `init` also scaffolds a smoke test (`tests/smoke.rs` / `tests/test_smoke.py`) that boots the node through the harness and shuts it down cleanly, plus, for Python, a `dev` dependency group carrying `pytest` and `pytest-asyncio` with `asyncio_mode = "auto"`.
+`init` also scaffolds a smoke test (`tests/smoke.rs` / `tests/test_smoke.py`) that boots the node through the harness and shuts it down cleanly, plus, for Python, a `dev` dependency group carrying `pytest` and `pytest-asyncio` with `asyncio_mode = "auto"`.
 
 ## A first test
 

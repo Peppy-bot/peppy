@@ -99,9 +99,9 @@ pub mod launcher {
         PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing,
         Selection, SelectionConstraint, SelectionEntry, SelectionSource, SkipReason,
         SkippedAdjustment, VacantReason, ValidatedBindings, ValidatedLinkPlan,
-        ValidatedObservations, ValidatedPairings,
-        check_composition, compose, participant_vacancies, split_link_target, validate_bindings,
-        validate_link_plan, validate_link_slots, validate_observations, validate_pairings,
+        ValidatedObservations, ValidatedPairings, check_composition, compose,
+        participant_vacancies, split_link_target, validate_bindings, validate_link_plan,
+        validate_link_slots, validate_observations, validate_pairings,
     };
 }
 

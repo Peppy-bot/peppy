@@ -96,13 +96,15 @@ fn node_cargo_init_command_success() {
     let smoke = std::fs::read_to_string(created_node_dir.join("tests/smoke.rs"))
         .expect("tests/smoke.rs should exist in the node directory");
     assert!(
-        smoke.contains("fixtures::harness::Harness") && smoke.contains(&format!("{node_name}::setup")),
+        smoke.contains("fixtures::harness::Harness")
+            && smoke.contains(&format!("{node_name}::setup")),
         "tests/smoke.rs should boot the node through the generated harness:\n{smoke}"
     );
     let cargo_toml = std::fs::read_to_string(created_node_dir.join("Cargo.toml"))
         .expect("Cargo.toml should be readable");
     assert!(
-        cargo_toml.contains("[dev-dependencies]") && cargo_toml.contains(r#"features = ["testing"]"#),
+        cargo_toml.contains("[dev-dependencies]")
+            && cargo_toml.contains(r#"features = ["testing"]"#),
         "Cargo.toml should carry the testing-featured peppygen dev-dependency:\n{cargo_toml}"
     );
 
@@ -279,7 +281,8 @@ fn node_uv_init_command_success() {
     let smoke = std::fs::read_to_string(created_node_dir.join("tests/test_smoke.py"))
         .expect("tests/test_smoke.py should exist in the node directory");
     assert!(
-        smoke.contains("peppygen.fixtures") && smoke.contains(&format!("from {node_name}.__main__ import setup")),
+        smoke.contains("peppygen.fixtures")
+            && smoke.contains(&format!("from {node_name}.__main__ import setup")),
         "tests/test_smoke.py should boot the node through the generated harness:\n{smoke}"
     );
     let pyproject = std::fs::read_to_string(created_node_dir.join("pyproject.toml"))

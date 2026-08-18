@@ -1,11 +1,13 @@
 //! Harness Config rendering for pairing-slot vacancy: an optional slot gets
 //! a `<link>_vacant` knob guarding only the peer-pin seeding (the mock still
-//! starts — its pinned subscription resolves the readiness barrier); a
+//! starts, its pinned subscription resolves the readiness barrier); a
 //! required slot gets none.
 
 use super::*;
-use crate::generator::testgen::{DepLinkSpec, PairingLinkSpec, TargetSpec, TestGenRegistry};
-use config::node::Cardinality;
+use crate::generator::testgen::{
+    DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
+};
+use config::node::{Cardinality, MessageFormat};
 
 fn registry_with_pairing(optional: bool) -> TestGenRegistry {
     let mut registry = TestGenRegistry::default();
@@ -90,5 +92,41 @@ fn required_pairing_slot_has_no_vacancy_knob() {
     assert!(
         !rendered.contains("backbone_vacant"),
         "a slot the deployment cannot leave unpaired must not offer a vacant boot"
+    );
+}
+
+#[test]
+fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
+    let mut registry = TestGenRegistry::default();
+    registry.record_node_identity("relay_node", "v1");
+    registry.deps.insert(
+        "camera".to_string(),
+        DepLinkSpec {
+            producer_name: "uvc_camera".to_string(),
+            target: TargetSpec::Node {
+                name: "uvc_camera".to_string(),
+                tag: "v1".to_string(),
+            },
+            cardinality: Cardinality::One,
+            topics: vec![DepTopicSpec {
+                name: "session".to_string(),
+                module_link: "camera".to_string(),
+                format: MessageFormat::default(),
+            }],
+            services: Vec::new(),
+            actions: Vec::new(),
+        },
+    );
+
+    let mut generator = RustGenerator::new();
+    let error = super::super::mock::render(&mut generator, &registry)
+        .expect_err("a member named after the mock's own `session` must not render");
+    assert!(
+        matches!(
+            &error,
+            crate::error::Error::ModuleNameCollision { sanitized, second, .. }
+                if sanitized == "session" && second == "camera/session"
+        ),
+        "expected a collision against the mock's own `session`, got: {error}"
     );
 }
