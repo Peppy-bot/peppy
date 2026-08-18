@@ -63,6 +63,11 @@ impl TargetSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepTopicSpec {
     pub name: String,
+    /// The topic's own consumer-side link_id: the production module nests
+    /// under it (and the topic schema key derives from it). Usually equal to
+    /// the dependency slot's link_id, but the manifest can bind several
+    /// same-producer topics through distinct entries on one slot.
+    pub module_link: String,
     pub format: MessageFormat,
 }
 
@@ -71,6 +76,8 @@ pub(crate) struct DepTopicSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepServiceSpec {
     pub name: String,
+    /// The service's own consumer-side link_id (module nesting).
+    pub module_link: String,
     pub request: Option<MessageFormat>,
     pub response: Option<MessageFormat>,
 }
@@ -79,6 +86,8 @@ pub(crate) struct DepServiceSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct DepActionSpec {
     pub name: String,
+    /// The action's own consumer-side link_id (module nesting).
+    pub module_link: String,
     pub messages: ConsumedActionMessage,
 }
 
@@ -228,6 +237,7 @@ impl TestGenRegistry {
     ) {
         self.dep_entry(dependency).topics.push(DepTopicSpec {
             name: topic.name.clone(),
+            module_link: topic.link_id.clone(),
             format: format.clone(),
         });
     }
@@ -241,6 +251,7 @@ impl TestGenRegistry {
     ) {
         self.dep_entry(dependency).services.push(DepServiceSpec {
             name: service.name.clone(),
+            module_link: service.link_id.clone(),
             request: non_empty(Some(request)),
             response: non_empty(Some(response)),
         });
@@ -254,6 +265,7 @@ impl TestGenRegistry {
     ) {
         self.dep_entry(dependency).actions.push(DepActionSpec {
             name: action.name.clone(),
+            module_link: action.link_id.clone(),
             messages: ConsumedActionMessage {
                 goal_request: non_empty(messages.goal_request.as_ref()),
                 goal_response: non_empty(messages.goal_response.as_ref()),

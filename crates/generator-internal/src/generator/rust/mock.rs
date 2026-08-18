@@ -109,6 +109,19 @@ fn claim_member_name(
     Ok(Ident::new(&sanitized, Span::call_site()))
 }
 
+
+/// The member name for a dep-link interface: plain when the interface's own
+/// consumer-side link_id equals the dependency slot's, link-qualified
+/// otherwise (a slot can bind several same-name interfaces through distinct
+/// manifest entries).
+fn dep_member_name(dep_link_id: &str, module_link: &str, name: &str) -> String {
+    if module_link == dep_link_id {
+        name.to_string()
+    } else {
+        format!("{module_link}_{name}")
+    }
+}
+
 /// A `fn #fn_ident(value: &#ty) -> crate::Result<peppylib::Payload>`
 /// serializer over an existing struct, registered on `schema_key` (dedupes
 /// onto the production schema file).
@@ -245,7 +258,8 @@ fn render_dep_link(
     let target = target_expr(&spec.target);
 
     for topic in &spec.topics {
-        let module_ident = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let member = dep_member_name(link_id, &topic.module_link, &topic.name);
+        let module_ident = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
         members.push(render_dep_topic(
             generator,
             link_id,
@@ -256,7 +270,8 @@ fn render_dep_link(
         )?);
     }
     for service in &spec.services {
-        let module_ident = claim_member_name(link_id, &service.name, &mut seen, &mut owners)?;
+        let member = dep_member_name(link_id, &service.module_link, &service.name);
+        let module_ident = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
         members.push(render_dep_service(
             generator,
             link_id,
@@ -267,7 +282,8 @@ fn render_dep_link(
         )?);
     }
     for action in &spec.actions {
-        let module_ident = claim_member_name(link_id, &action.name, &mut seen, &mut owners)?;
+        let member = dep_member_name(link_id, &action.module_link, &action.name);
+        let module_ident = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
         members.push(render_dep_action(
             generator,
             link_id,
@@ -294,10 +310,8 @@ fn render_dep_link(
         .actions
         .iter()
         .map(|action| {
-            let ident = Ident::new(
-                &sanitize_rust_module_name(&action.name),
-                Span::call_site(),
-            );
+            let member = dep_member_name(link_id, &action.module_link, &action.name);
+            let ident = Ident::new(&sanitize_rust_module_name(&member), Span::call_site());
             quote!(self.#ident.stop();)
         })
         .collect();
@@ -374,19 +388,19 @@ fn render_dep_link(
 
 fn render_dep_topic(
     generator: &mut RustGenerator,
-    link_id: &str,
+    _link_id: &str,
     _producer_name: &str,
     spec: &DepTopicSpec,
     target: &TokenStream,
     module_ident: Ident,
 ) -> Result<MemberModule> {
     let topic_name = spec.name.as_str();
-    let production = production_module("consumed_topics", &[link_id, topic_name]);
+    let production = production_module("consumed_topics", &[&spec.module_link, topic_name]);
     let schema_key =
-        crate::generator::naming::consumed_topic_schema_key(link_id, topic_name);
+        crate::generator::naming::consumed_topic_schema_key(&spec.module_link, topic_name);
     let struct_prefix = format!(
         "{}{}",
-        to_camel_case(&crate::generator::naming::sanitize_component(link_id)),
+        to_camel_case(&crate::generator::naming::sanitize_component(&spec.module_link)),
         to_camel_case(&crate::generator::naming::sanitize_component(topic_name)),
     );
     let serialize_ident = Ident::new("serialize_message", Span::call_site());
@@ -466,14 +480,14 @@ fn render_dep_topic(
 
 fn render_dep_service(
     generator: &mut RustGenerator,
-    link_id: &str,
+    _link_id: &str,
     producer_name: &str,
     spec: &DepServiceSpec,
     target: &TokenStream,
     module_ident: Ident,
 ) -> Result<MemberModule> {
     let service_name = spec.name.as_str();
-    let production = production_module("consumed_services", &[link_id, service_name]);
+    let production = production_module("consumed_services", &[&spec.module_link, service_name]);
     let request_key = crate::generator::naming::consumed_service_request_schema_key(
         producer_name,
         service_name,
@@ -669,14 +683,14 @@ fn render_dep_service(
 
 fn render_dep_action(
     generator: &mut RustGenerator,
-    link_id: &str,
+    _link_id: &str,
     producer_name: &str,
     spec: &DepActionSpec,
     target: &TokenStream,
     module_ident: Ident,
 ) -> Result<MemberModule> {
     let action_name = spec.name.as_str();
-    let production = production_module("consumed_actions", &[link_id, action_name]);
+    let production = production_module("consumed_actions", &[&spec.module_link, action_name]);
     let keys =
         crate::generator::naming::consumed_action_schema_keys(producer_name, action_name);
     let action_struct_name = format!(

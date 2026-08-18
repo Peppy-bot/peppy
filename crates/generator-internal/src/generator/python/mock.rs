@@ -98,6 +98,19 @@ pub(super) fn production_import_line(dotted: &str, alias: &str) -> String {
 /// inside one link mock; a collision (e.g. a topic and a service sharing a
 /// name on one link) is a hard error naming both, mirroring the scaffold's
 /// collision policy.
+
+/// The member name for a dep-link interface: plain when the interface's own
+/// consumer-side link_id equals the dependency slot's, link-qualified
+/// otherwise (a slot can bind several same-name interfaces through distinct
+/// manifest entries).
+fn dep_member_name(dep_link_id: &str, module_link: &str, name: &str) -> String {
+    if module_link == dep_link_id {
+        name.to_string()
+    } else {
+        format!("{module_link}_{name}")
+    }
+}
+
 fn claim_member_name(
     link_id: &str,
     raw: &str,
@@ -348,7 +361,8 @@ fn render_dep_link(
 
     let mut members: Vec<MockMember> = Vec::new();
     for topic in &spec.topics {
-        let attr = claim_member_name(link_id, &topic.name, &mut seen, &mut owners)?;
+        let member = dep_member_name(link_id, &topic.module_link, &topic.name);
+        let attr = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
         members.push(render_dep_topic(
             generator,
             &mut builder,
@@ -360,7 +374,8 @@ fn render_dep_link(
         )?);
     }
     for service in &spec.services {
-        let attr = claim_member_name(link_id, &service.name, &mut seen, &mut owners)?;
+        let member = dep_member_name(link_id, &service.module_link, &service.name);
+        let attr = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
         members.push(render_dep_service(
             generator,
             &mut builder,
@@ -373,7 +388,8 @@ fn render_dep_link(
         )?);
     }
     for action in &spec.actions {
-        let attr = claim_member_name(link_id, &action.name, &mut seen, &mut owners)?;
+        let member = dep_member_name(link_id, &action.module_link, &action.name);
+        let attr = claim_member_name(link_id, &member, &mut seen, &mut owners)?;
         members.push(render_dep_action(
             generator,
             &mut builder,
@@ -417,17 +433,18 @@ fn render_dep_topic(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    link_id: &str,
+    _link_id: &str,
     spec: &DepTopicSpec,
     target: &str,
     attr: String,
 ) -> Result<MockMember> {
     let topic_name = spec.name.as_str();
-    let production = production_module_path("consumed_topics", &[link_id, topic_name]);
+    let production = production_module_path("consumed_topics", &[&spec.module_link, topic_name]);
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
-    let schema_key = crate::generator::naming::consumed_topic_schema_key(link_id, topic_name);
+    let schema_key =
+        crate::generator::naming::consumed_topic_schema_key(&spec.module_link, topic_name);
     let serialize_fn = format!("_serialize_{attr}_message");
     emit_value_serializer(
         generator,
@@ -509,14 +526,15 @@ fn render_dep_service(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    link_id: &str,
+    _link_id: &str,
     producer_name: &str,
     spec: &DepServiceSpec,
     target: &str,
     attr: String,
 ) -> Result<MockMember> {
     let service_name = spec.name.as_str();
-    let production = production_module_path("consumed_services", &[link_id, service_name]);
+    let production =
+        production_module_path("consumed_services", &[&spec.module_link, service_name]);
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
@@ -715,14 +733,15 @@ fn render_dep_action(
     generator: &mut PythonGenerator,
     builder: &mut PythonCodeBuilder,
     loaders: &mut HashSet<String>,
-    link_id: &str,
+    _link_id: &str,
     producer_name: &str,
     spec: &DepActionSpec,
     target: &str,
     attr: String,
 ) -> Result<MockMember> {
     let action_name = spec.name.as_str();
-    let production = production_module_path("consumed_actions", &[link_id, action_name]);
+    let production =
+        production_module_path("consumed_actions", &[&spec.module_link, action_name]);
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);

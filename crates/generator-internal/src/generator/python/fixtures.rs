@@ -48,26 +48,12 @@ pub(super) fn render(
         emitted_members.push(member);
     }
 
-    let mut seen = HashSet::new();
     for spec in &registry.own.services {
-        claim(
-            &mut seen,
-            &sanitize_python_module_name(&spec.name),
-            "fixtures exposed_services",
-            &spec.name,
-        )?;
         let artifact = render_exposed_service(generator, &node_name, &node_tag, spec)?;
         generator.push_section(artifact);
     }
 
-    let mut seen = HashSet::new();
     for spec in &registry.own.actions {
-        claim(
-            &mut seen,
-            &sanitize_python_module_name(&spec.name),
-            "fixtures exposed_actions",
-            &spec.name,
-        )?;
         let artifact = render_exposed_action(generator, &node_name, &node_tag, spec)?;
         generator.push_section(artifact);
     }
@@ -266,7 +252,15 @@ fn render_emitted_topic(
             code_output: code,
         },
         EmittedMember {
-            attr: sanitize_python_module_name(topic_name),
+            // Contract-backed topics nest under their link_id in the tree;
+            // the flat Emitted attr mirrors that scoping so same-name topics
+            // from different links coexist.
+            attr: match &spec.origin {
+                Some(origin) => {
+                    sanitize_python_module_name(&format!("{}_{}", origin.link_id, topic_name))
+                }
+                None => sanitize_python_module_name(topic_name),
+            },
             module,
             topic: topic_name.to_string(),
             target_expr: target,

@@ -1,6 +1,10 @@
-//! Scratch: generate a sample peppygen crate (both languages) covering every
-//! interface kind, into /tmp/sample_node, for inspecting the emitted surface.
-//! NOT for commit.
+//! Dev tool: generate a sample peppygen crate (both languages) covering every
+//! interface kind, into /tmp/sample_node, for inspecting the emitted surface —
+//! including the `mock`/`fixtures` test surfaces.
+//!
+//! ```sh
+//! cargo run -p generator --example gen_sample
+//! ```
 
 use config::node::{
     Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat,
