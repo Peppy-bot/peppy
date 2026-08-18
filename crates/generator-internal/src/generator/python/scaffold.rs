@@ -264,7 +264,7 @@ impl TreeWriter for PythonTreeWriter {
     }
 }
 
-fn sanitize_python_module_name(raw: &str) -> String {
+pub(super) fn sanitize_python_module_name(raw: &str) -> String {
     let mut out = sanitize_component(raw);
     if out.is_empty() {
         return "module".to_string();

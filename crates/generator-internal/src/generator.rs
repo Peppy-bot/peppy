@@ -116,6 +116,10 @@ pub fn generate_peppygen_lib(
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(execution.parameters);
             python_generator.set_container(execution.container.is_some());
+            python_generator.set_node_identity(
+                node_config.manifest.name.as_str(),
+                node_config.manifest.tag.as_str(),
+            );
             generate_with_backend(
                 python_generator,
                 &interfaces,

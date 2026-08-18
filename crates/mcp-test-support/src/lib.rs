@@ -49,9 +49,11 @@ pub fn compile_node(node_dir: &Path, built_binary: &str, installed_binary: &str)
 
     let manifest_path = node_dir.join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("node manifest exists");
+    // Prefix-based so it aliases every peppygen path entry — the main
+    // dependency and the testing-featured dev-dependency sync writes.
     let aliased = manifest.replace(
-        "peppygen = { path = \".peppy/libs/peppygen\" }",
-        &format!("peppygen = {{ package = \"{unique}\", path = \".peppy/libs/peppygen\" }}"),
+        "peppygen = { path = \".peppy/libs/peppygen\"",
+        &format!("peppygen = {{ package = \"{unique}\", path = \".peppy/libs/peppygen\""),
     );
     assert_ne!(
         aliased, manifest,

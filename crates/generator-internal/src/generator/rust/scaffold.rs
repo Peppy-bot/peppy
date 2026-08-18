@@ -182,6 +182,20 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
         }
     }
 
+    // Vendored crates never run their own tests, and their dev-dependencies
+    // can break resolution in the flat layout (peppylib-rs's cyclic
+    // self-dev-dependency stops resolving once the package is renamed to
+    // `peppylib`). Strip them, including target-specific tables.
+    doc.remove("dev-dependencies");
+    if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_mut()) {
+        let target_keys: Vec<String> = targets.iter().map(|(key, _)| key.to_string()).collect();
+        for key in target_keys {
+            if let Some(target) = targets.get_mut(&key).and_then(|t| t.as_table_mut()) {
+                target.remove("dev-dependencies");
+            }
+        }
+    }
+
     normalize_vendored_path_deps(&mut doc);
 
     fs::write(cargo_toml_path, doc.to_string())?;

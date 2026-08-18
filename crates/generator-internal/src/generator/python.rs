@@ -4,7 +4,9 @@ mod tests;
 mod actions;
 mod code_builder;
 mod deserialization;
+mod fixtures;
 mod identifiers;
+mod mock;
 mod parameters;
 mod ruff;
 mod scaffold;
@@ -42,11 +44,18 @@ pub struct PythonGenerator {
     parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
     is_container: bool,
+    testgen: crate::generator::testgen::TestGenRegistry,
 }
 
 impl PythonGenerator {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets the node's manifest identity, enabling the generated `fixtures`
+    /// surface (the harness pins the node's own targets with it).
+    pub fn set_node_identity(&mut self, name: &str, tag: &str) {
+        self.testgen.record_node_identity(name, tag);
     }
 
     fn make_artifact(
@@ -173,6 +182,7 @@ impl LanguageGenerator for PythonGenerator {
         topic: &NativeEmittedTopic,
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
+        self.testgen.record_emitted_topic(topic, origin);
         let scoped_key = scoped_schema_key(origin, &topic.name);
         let schema_info = topic
             .message_format
@@ -195,6 +205,7 @@ impl LanguageGenerator for PythonGenerator {
         service: &NativeExposedService,
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
+        self.testgen.record_exposed_service(service, origin);
         let request_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_request", service.name)),
             service.request_message_format.as_ref(),
@@ -224,6 +235,7 @@ impl LanguageGenerator for PythonGenerator {
         action: &NativeExposedAction,
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
+        self.testgen.record_exposed_action(action, origin);
         let goal_request_schema_info = self.register_optional_schema(
             scoped_schema_key(origin, &format!("{}_goal_request", action.name)),
             action
@@ -281,6 +293,7 @@ impl LanguageGenerator for PythonGenerator {
         arguments: MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        self.testgen.record_consumed_topic(topic, &arguments, dependency);
         let schema_key = crate::generator::naming::consumed_topic_schema_key(
             topic.link_id.as_str(),
             topic.name.as_str(),
@@ -302,6 +315,8 @@ impl LanguageGenerator for PythonGenerator {
         response_arguments: &MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        self.testgen
+            .record_consumed_service(service, request_arguments, response_arguments, dependency);
         let producer_name = dependency.producer_name.as_str();
         let request_schema_info = self.register_optional_schema(
             crate::generator::naming::consumed_service_request_schema_key(
@@ -339,6 +354,7 @@ impl LanguageGenerator for PythonGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
+        self.testgen.record_peer_emitted_topic(topic, peer);
         let schema_key = crate::generator::naming::peer_schema_key(&peer.link_id, &topic.name);
         let schema_info = topic
             .message_format
@@ -367,6 +383,7 @@ impl LanguageGenerator for PythonGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
+        self.testgen.record_peer_consumed_topic(topic, peer);
         self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
     }
 
@@ -376,6 +393,7 @@ impl LanguageGenerator for PythonGenerator {
         observer: &crate::generator::types::PeerContext,
         cardinality: Cardinality,
     ) -> Result<()> {
+        self.testgen.record_observed_topic(topic, observer, cardinality);
         self.add_pair_topic_consumer(
             topic,
             observer,
@@ -389,6 +407,7 @@ impl LanguageGenerator for PythonGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        self.testgen.record_consumed_action(action, messages, dependency);
         let action_schema_keys = crate::generator::naming::consumed_action_schema_keys(
             dependency.producer_name.as_str(),
             action.name.as_str(),
@@ -433,13 +452,20 @@ impl LanguageGenerator for PythonGenerator {
     }
 
     fn build(
-        self,
+        mut self,
         to_path: impl AsRef<Path>,
         peppy_dirs: &daemon_config::consts::PeppyDirs,
         _deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
         let to_path = to_path.as_ref();
         std::fs::create_dir_all(to_path)?;
+
+        // Render the test surfaces first: their codecs register on the same
+        // schema keys production used (dedupe by file stem), so this must run
+        // before the schema set is written.
+        let registry = std::mem::take(&mut self.testgen);
+        mock::render(&mut self, &registry)?;
+        fixtures::render(&mut self, &registry, to_path)?;
 
         scaffold::add_peppylib_dependencies(to_path, peppy_dirs, self.is_container)?;
         scaffold::add_capnp_schemas(&self.schemas, to_path)?;

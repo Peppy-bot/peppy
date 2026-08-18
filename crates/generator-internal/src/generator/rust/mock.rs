@@ -1175,47 +1175,41 @@ fn render_pair_subscription(
         pub mod #module_ident {
             /// A held subscription to the node's emissions on this slot.
             pub struct Subscription {
-                inner: peppylib::runtime::PeerSubscription,
-                _pin: tokio::sync::watch::Sender<peppylib::messaging::PeerPinState>,
+                inner: peppylib::messaging::Subscription,
             }
 
             impl Subscription {
-                pub(super) fn open(
+                pub(super) async fn open(
                     session: &peppylib::MessengerHandle,
                     node_instance_id: &str,
                 ) -> crate::Result<Self> {
-                    // A pre-paired pin at sequence 1: the mock knows its peer
-                    // (the node under test) from construction; the sender is
-                    // held so the pin never reads as closed.
-                    let (pin_tx, pin_rx) = tokio::sync::watch::channel(
-                        peppylib::messaging::PeerPinState {
-                            sequence: 1,
-                            pin: Some(peppylib::messaging::PeerInfo {
-                                producer: peppylib::messaging::ProducerRef::new(
-                                    "standalone-core",
-                                    node_instance_id,
-                                ),
-                                peer_link_id: super::LINK_ID.to_string(),
-                            }),
-                        },
+                    // The exact wire shape of a paired peer's subscription:
+                    // node identity, pairing target, and the node's own slot
+                    // link_id all pinned. No pin-following — the mock's peer
+                    // (the node under test) is known from construction.
+                    let node = peppylib::messaging::ProducerRef::new(
+                        "standalone-core",
+                        node_instance_id,
                     );
-                    let inner = peppylib::runtime::subscribe_peer_with_watch(
-                        session.clone(),
-                        super::MOCK_CORE_NODE.to_string(),
-                        super::MOCK_INSTANCE_ID.to_string(),
-                        pin_rx,
+                    let inner = peppylib::testing::subscribe_peer_pinned(
+                        session,
+                        super::MOCK_CORE_NODE,
+                        super::MOCK_INSTANCE_ID,
                         #pairing_target,
-                        #topic_name.to_string(),
+                        &node,
+                        super::LINK_ID,
+                        #topic_name,
                         #qos,
-                    );
-                    Ok(Self { inner, _pin: pin_tx })
+                    )
+                    .await?;
+                    Ok(Self { inner })
                 }
 
                 /// Awaits the node's next message on this topic; `Ok(None)`
                 /// once the mock's session closes.
                 #[allow(clippy::should_implement_trait)]
                 pub async fn next(&mut self) -> crate::Result<Option<Message>> {
-                    let Some((_peer, message)) = self.inner.on_next_message().await else {
+                    let Some(message) = self.inner.on_next_message().await else {
                         return Ok(None);
                     };
                     let message = deserialize_message(message.payload_bytes().as_ref())?;
@@ -1230,7 +1224,8 @@ fn render_pair_subscription(
         module,
         field_ty: quote!(#module_ident::Subscription),
         construct: quote! {
-            let #module_ident = #module_ident::Subscription::open(&session, node_instance_id)?;
+            let #module_ident =
+                #module_ident::Subscription::open(&session, node_instance_id).await?;
         },
         module_ident,
     })

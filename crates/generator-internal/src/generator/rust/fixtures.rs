@@ -40,31 +40,19 @@ pub(super) fn render(generator: &mut RustGenerator, registry: &TestGenRegistry) 
     let mut seen = HashSet::new();
     for spec in &registry.own.emitted {
         let (artifact, member) = render_emitted_topic(generator, &node_name, &node_tag, spec)?;
+        // The field ident is origin-scoped (contract-backed topics share
+        // leaf names across links), so it doubles as the uniqueness key.
         claim(&mut seen, &member.field.to_string(), "fixtures emitted", &spec.name)?;
         generator.push_section(artifact);
         emitted_members.push(member);
     }
 
-    let mut seen = HashSet::new();
     for spec in &registry.own.services {
-        claim(
-            &mut seen,
-            &sanitize_rust_module_name(&spec.name),
-            "fixtures exposed_services",
-            &spec.name,
-        )?;
         let artifact = render_exposed_service(generator, &node_name, &node_tag, spec)?;
         generator.push_section(artifact);
     }
 
-    let mut seen = HashSet::new();
     for spec in &registry.own.actions {
-        claim(
-            &mut seen,
-            &sanitize_rust_module_name(&spec.name),
-            "fixtures exposed_actions",
-            &spec.name,
-        )?;
         let artifact = render_exposed_action(generator, &node_name, &node_tag, spec)?;
         generator.push_section(artifact);
     }
@@ -200,8 +188,15 @@ fn render_emitted_topic(
         Some(origin) => module_path.extend(origin.module_path_for(topic_name)),
         None => module_path.push(topic_name.to_string()),
     }
+    // Contract-backed topics nest under their link_id in the tree; the flat
+    // Emitted field mirrors that scoping so same-name topics from different
+    // links coexist.
+    let field_name = match &spec.origin {
+        Some(origin) => format!("{}_{}", origin.link_id, topic_name),
+        None => topic_name.to_string(),
+    };
     let field = Ident::new(
-        &sanitize_rust_module_name(topic_name),
+        &sanitize_rust_module_name(&field_name),
         Span::call_site(),
     );
     let production_path = {
