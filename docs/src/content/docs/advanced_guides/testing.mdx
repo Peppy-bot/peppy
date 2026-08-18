@@ -14,14 +14,14 @@ import helloReceiverPythonTest from '../guides/snippets/python/hello_receiver/te
 
 A node is rarely testable on its own: it consumes topics, polls services, and fires actions against dependency nodes that a unit test has no business standing up. `peppy node sync` therefore generates a **test surface** alongside the production bindings: typed **mocks** that play each dependency slot over the real wire, and a **harness** that boots your node in-process against them.
 
-The tests this enables are not simulations of the messaging layer. The mocks publish real Cap'n Proto payloads through a real (ephemeral, per-test) Zenoh router, the node runs its real `setup` against its real generated bindings, and services and actions run on the same engines a production producer uses. What you save is everything else: no daemon, no stack, no dependency binaries — and no sleeps, because every step of the boot is gated on a deterministic readiness barrier rather than a timer.
+The tests this enables are not simulations of the messaging layer. The mocks publish real Cap'n Proto payloads through a real (ephemeral, per-test) Zenoh router, the node runs its real `setup` against its real generated bindings, and services and actions run on the same engines a production producer uses. What you save is everything else: no daemon, no stack, no dependency binaries, and no sleeps, because every step of the boot is gated on a deterministic readiness barrier rather than a timer.
 
 ## What sync generates
 
 After `peppy node sync`, two module trees sit next to the production bindings, regenerated on every sync:
 
-- `peppygen.mock` (Python) / `peppygen::mock` (Rust) — one module per dependency, pairing, and observer slot, named by `link_id` and grouped by namespace: `mock.deps.<link_id>`, `mock.pairings.<link_id>`, `mock.observed.<link_id>`. Each holds a `Mock` with one typed sub-surface per interface the slot carries.
-- `peppygen.fixtures` (Python) / `peppygen::fixtures` (Rust) — the harness (`fixtures.harness`), plus typed observation of the node's **own** surface: `fixtures.emitted_topics.<topic>`, `fixtures.exposed_services.<service>`, `fixtures.exposed_actions.<action>`.
+- `peppygen.mock` (Python) / `peppygen::mock` (Rust) provides one module per dependency, pairing, and observer slot, named by `link_id` and grouped by namespace: `mock.deps.<link_id>`, `mock.pairings.<link_id>`, `mock.observed.<link_id>`. Each holds a `Mock` with one typed sub-surface per interface the slot carries.
+- `peppygen.fixtures` (Python) / `peppygen::fixtures` (Rust) provides the harness (`fixtures.harness`), plus typed observation of the node's **own** surface: `fixtures.emitted_topics.<topic>`, `fixtures.exposed_services.<service>`, `fixtures.exposed_actions.<action>`.
 
 Neither tree can leak into a production build:
 
@@ -48,7 +48,7 @@ The harness boots your node by calling its `setup` function directly, so `setup`
   }
   ```
 
-An existing Rust node adopts the same split when it adds tests: move the setup closure into `src/lib.rs` as a named `pub async fn setup`, and pass it to `NodeBuilder::new().run` from `main.rs`. `init` also scaffolds a smoke test (`tests/smoke.rs` / `tests/test_smoke.py`) that boots the node through the harness and shuts it down cleanly, plus — for Python — a `dev` dependency group carrying `pytest` and `pytest-asyncio` with `asyncio_mode = "auto"`.
+An existing Rust node adopts the same split when it adds tests: move the setup closure into `src/lib.rs` as a named `pub async fn setup`, and pass it to `NodeBuilder::new().run` from `main.rs`. `init` also scaffolds a smoke test (`tests/smoke.rs` / `tests/test_smoke.py`) that boots the node through the harness and shuts it down cleanly, plus, for Python, a `dev` dependency group carrying `pytest` and `pytest-asyncio` with `asyncio_mode = "auto"`.
 
 ## A first test
 
@@ -78,7 +78,7 @@ Note what is absent: no `hello_world_param` process, no daemon, no launcher, and
 
 ## The harness lifecycle
 
-`start` takes your `setup` function — the exact shape `NodeBuilder().run` takes — and returns with the node running:
+`start` takes your `setup` function, the exact shape `NodeBuilder().run` takes, and returns with the node running:
 
 <Tabs>
   <TabItem label="Python">
@@ -115,10 +115,10 @@ async fn test_something() -> peppygen::Result<()> {
 By the time `start` returns, all of the following happened, in order:
 
 1. **An ephemeral Zenoh router started** on a free port, private to this harness. Every test gets its own; tests in one binary run in parallel without sharing state.
-2. **One mock started per slot** — every dependency, pairing, and observer link — each on its own messaging session, with every publisher, service queryable, and action engine declared up front. In Rust the started mocks come back as the second element of the `start` tuple (`mocks.deps.<link_id>`, `mocks.pairings.<link_id>`, `mocks.observed.<link_id>`); in Python they hang off the harness as `h.mocks.deps.<link_id>` and so on.
+2. **One mock started per slot** (every dependency, pairing, and observer link), each on its own messaging session, with every publisher, service queryable, and action engine declared up front. In Rust the started mocks come back as the second element of the `start` tuple (`mocks.deps.<link_id>`, `mocks.pairings.<link_id>`, `mocks.observed.<link_id>`); in Python they hang off the harness as `h.mocks.deps.<link_id>` and so on.
 3. **The harness subscribed to every topic the node emits**, before the node booted, so even the very first message your setup publishes is captured.
-4. **A standalone configuration was seeded** so the node boots exactly as if a launcher had wired it: the router's address, a unique instance id, your parameters, and — per slot — a bound producer, peer pin, or observed source pointing at the matching mock's wire identity.
-5. **Readiness barriers passed**: the harness's subscriptions to the node's emitted topics are visible from the node's session, and every mock service and action answers a reachability probe. Only then does the node's `setup` run — so a setup that immediately polls a dependency service cannot race the mock's declaration.
+4. **A standalone configuration was seeded** so the node boots exactly as if a launcher had wired it: the router's address, a unique instance id, your parameters, and, per slot, a bound producer, peer pin, or observed source pointing at the matching mock's wire identity.
+5. **Readiness barriers passed**: the harness's subscriptions to the node's emitted topics are visible from the node's session, and every mock service and action answers a reachability probe. Only then does the node's `setup` run, so a setup that immediately polls a dependency service cannot race the mock's declaration.
 
 `shutdown` tears down in lifecycle order: it cancels the node and awaits its convergence (a `setup` that returned an error propagates that error out of `shutdown`, and [shutdown hooks](/advanced_guides/shutdown/) run, bounded exactly as in production), then closes the observation session and the mocks, then stops the router. In Python the `async with` form calls it for you; in Rust, dropping the harness without calling `shutdown` leaks nothing but skips the error propagation, so tests should end with `harness.shutdown().await`.
 
@@ -156,7 +156,7 @@ mocks
   </TabItem>
 </Tabs>
 
-The first `publish` lazily waits for the node's subscription to match before delivering, so the first message is never lost to a subscribe race — and a node that never subscribes turns the publish into a loud readiness-timeout error rather than a silent drop. To separate "the node is subscribed" from "deliver now", `wait_for_subscriber(timeout)` waits for the match alone and returns whether it happened.
+The first `publish` lazily waits for the node's subscription to match before delivering, so the first message is never lost to a subscribe race, and a node that never subscribes turns the publish into a loud readiness-timeout error rather than a silent drop. To separate "the node is subscribed" from "deliver now", `wait_for_subscriber(timeout)` waits for the match alone and returns whether it happened.
 
 ### Consumed services
 
@@ -220,7 +220,7 @@ assert_eq!(requests.len(), 1);
   </TabItem>
 </Tabs>
 
-`captured()` decodes every request received so far — scripted and manual alike, in arrival order — so both modes leave a complete audit trail.
+`captured()` decodes every request received so far, scripted and manual alike, in arrival order, so both modes leave a complete audit trail.
 
 ### Consumed actions
 
@@ -263,7 +263,7 @@ active.complete(&plan_motion::ResultResponseData::new(true)).await?;
   </TabItem>
 </Tabs>
 
-`next_goal` parks until the node fires a goal (bounded by the timeout) and returns it with the decoded `request`. `accept` returns the active goal handle; from there `publish_feedback` streams typed feedback, and `complete` / `complete_cancelled` terminate it. To test your node's cancellation path, await `cancel_signal()` on the active goal — it resolves when the node requests cancellation — then answer with `complete_cancelled`. `is_cancelled()` polls the same state non-blocking.
+`next_goal` parks until the node fires a goal (bounded by the timeout) and returns it with the decoded `request`. `accept` returns the active goal handle; from there `publish_feedback` streams typed feedback, and `complete` / `complete_cancelled` terminate it. To test your node's cancellation path, await `cancel_signal()` on the active goal (it resolves when the node requests cancellation), then answer with `complete_cancelled`. `is_cancelled()` polls the same state non-blocking.
 
 ### Pairing peers
 
@@ -351,7 +351,7 @@ A multi-cardinality observer slot starts as many mock sources as the [configurat
 
 ### The node's own emitted topics
 
-The harness subscribes to every topic the node emits **before the node boots**, and barriers on those subscriptions being visible — so the very first message your setup publishes is captured, not raced. Each emitted topic is a typed subscription on `harness.emitted`:
+The harness subscribes to every topic the node emits **before the node boots**, and barriers on those subscriptions being visible, so the very first message your setup publishes is captured, not raced. Each emitted topic is a typed subscription on `harness.emitted`:
 
 <Tabs>
   <TabItem label="Python">
@@ -377,7 +377,7 @@ assert_eq!(status.outcome, "done");
 
 ### The node's own services and actions
 
-The `fixtures` callers drive the node's exposed surface from the outside, as a fresh consumer with its own wire identity — the same path a real consumer node would take. Every call gates on a reachability probe first, so a test cannot race the node's own declaration of the service:
+The `fixtures` callers drive the node's exposed surface from the outside, as a fresh consumer with its own wire identity, the same path a real consumer node would take. Every call gates on a reachability probe first, so a test cannot race the node's own declaration of the service:
 
 <Tabs>
   <TabItem label="Python">
@@ -437,11 +437,11 @@ assert!(matches!(
   </TabItem>
 </Tabs>
 
-The goal handle carries the decoded admission reply (`accepted`, the optional rejection `reason`, and the typed goal-response `data`), streams typed feedback with `on_next_feedback`, and finishes with `get_result` — whose outcome distinguishes completed, cancelled, abandoned, and expired terminally, with the typed result payload on the first two. `cancel_goal(timeout)` requests cancellation, exercising the `cancel_signal` path in your node's goal handler.
+The goal handle carries the decoded admission reply (`accepted`, the optional rejection `reason`, and the typed goal-response `data`), streams typed feedback with `on_next_feedback`, and finishes with `get_result`, whose outcome distinguishes completed, cancelled, abandoned, and expired terminally, with the typed result payload on the first two. `cancel_goal(timeout)` requests cancellation, exercising the `cancel_signal` path in your node's goal handler.
 
 ## Producer loss, deterministically
 
-Every mock owns one messaging session, so `stop()` is a whole-producer loss: every declaration and the session drop together, releasing the liveliness the node's subscriptions and calls latch on. Live action goals are disarmed first so their teardown emits **no clean close** — the node observes exactly what it would observe if the producer process died mid-goal, and observes it deterministically rather than after an arbitrary timeout.
+Every mock owns one messaging session, so `stop()` is a whole-producer loss: every declaration and the session drop together, releasing the liveliness the node's subscriptions and calls latch on. Live action goals are disarmed first so their teardown emits **no clean close**: the node observes exactly what it would observe if the producer process died mid-goal, and observes it deterministically rather than after an arbitrary timeout.
 
 <Tabs>
   <TabItem label="Python">
@@ -450,7 +450,7 @@ pending = await h.mocks.deps.brain.plan_motion.next_goal(10.0)
 active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
 
 # The producer dies with the goal still active. The node's
-# on_next_feedback_message raises ConnectionError — not a clean
+# on_next_feedback_message raises ConnectionError: not a clean
 # end-of-stream, and not a hang.
 await h.mocks.deps.brain.stop()
 ```
@@ -467,14 +467,14 @@ let _active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
 
 // The producer dies with the goal still active. The node's
 // on_next_feedback_message returns
-// Err(Error::ActionFeedbackProducerGone { .. }) — not a clean close,
+// Err(Error::ActionFeedbackProducerGone { .. }): not a clean close,
 // and not a hang.
 mocks.deps.brain.stop();
 ```
   </TabItem>
 </Tabs>
 
-On the node side the loss is typed: a feedback drain loop in Rust distinguishes `Error::ActionFeedbackChannelClosed` (the producer closed the stream cleanly) from `Error::ActionFeedbackProducerGone` (the producer instance disappeared without closing it); Python raises `RuntimeError` for the clean close and `ConnectionError` for the loss. Your node's recovery branch for a dead dependency — usually untestable without killing processes — becomes an ordinary assertion.
+On the node side the loss is typed: a feedback drain loop in Rust distinguishes `Error::ActionFeedbackChannelClosed` (the producer closed the stream cleanly) from `Error::ActionFeedbackProducerGone` (the producer instance disappeared without closing it); Python raises `RuntimeError` for the clean close and `ConnectionError` for the loss. Your node's recovery branch for a dead dependency, usually untestable without killing processes, becomes an ordinary assertion.
 
 A stopped mock stays stopped for the rest of the test; the bound set never rebinds, exactly as in [production](/advanced_guides/topics/#dependency-cardinality).
 
@@ -522,16 +522,16 @@ let (mut harness, mut mocks) = Harness::start_with(
 
 - **`parameters`** is the node's typed `Parameters`; leaving it unset hydrates the schema defaults exactly as a launch would (a required parameter without a default is then an error at boot, as in production).
 - **`instance_id`** replaces the generated unique id (`test-<pid>-<counter>`). The node's wire identity under the harness is `("standalone-core", <instance_id>)`, returned by `harness.node_producer_ref()`.
-- **`<link_id>_vacant`** (per `zero_or_one` dependency slot) boots the slot [written vacant](/advanced_guides/topics/#dependency-cardinality): no mock is started (the mock field is `None`), and the node's `bound_producer()` accessor answers `None` — the branch this cardinality exists for.
+- **`<link_id>_vacant`** (per `zero_or_one` dependency slot) boots the slot [written vacant](/advanced_guides/topics/#dependency-cardinality): no mock is started (the mock field is `None`), and the node's `bound_producer()` accessor answers `None`, the branch this cardinality exists for.
 - **`<link_id>_instances`** (per multi-cardinality dependency or observer slot) sets how many mock instances to start, each under its own instance identity, delivered as a list. The default is 1 for `one_or_more` and 0 for `zero_or_more`.
-- **`<link_id>_instance_ids`** (same slots) names those instances explicitly, overriding the count when set. Reach for it when the node classifies producers by instance name — a health monitor keying reports on `left_arm`/`right_gripper` identities, a recorder naming limbs after its sources — so the mocks wear identities the node's classifier accepts.
-- **`<link_id>_vacant`** (per `optional: true` pairing slot) boots the slot unpaired: the peer pin is never seeded, so the node's `paired()` stays `false`, `wait_paired()` pends, and its publishes on the slot are no-ops. The peer mock still starts — its subscriptions simply stay silent (and publishing from it reaches nothing), so a test can assert the slot's silence. Required pairing slots offer no such knob.
+- **`<link_id>_instance_ids`** (same slots) names those instances explicitly, overriding the count when set. Reach for it when the node classifies producers by instance name (a health monitor keying reports on `left_arm`/`right_gripper` identities, a recorder naming limbs after its sources), so the mocks wear identities the node's classifier accepts.
+- **`<link_id>_vacant`** (per `optional: true` pairing slot) boots the slot unpaired: the peer pin is never seeded, so the node's `paired()` stays `false`, `wait_paired()` pends, and its publishes on the slot are no-ops. The peer mock still starts; its subscriptions simply stay silent (and publishing from it reaches nothing), so a test can assert the slot's silence. Required pairing slots offer no such knob.
 - **`node_dir`** (Python only) points at the directory holding the node's `peppy.json5` when neither of the automatic resolutions finds it: the harness first walks up from the current working directory to the nearest `peppy.json5`, then falls back to the absolute node path baked in at sync time. Running `pytest` from anywhere inside the node directory needs nothing; a runner with a foreign working directory on a moved checkout passes `node_dir` explicitly. The error on failure names all three sources. (Rust needs no equivalent: the config path is resolved from the generated crate's own manifest directory at compile time.)
 
 ## Caveats
 
 :::caution
-- **No daemon clock exists under the harness.** Do not call `peppylib::clock::synchronize` (or `peppylib.clock.synchronize`) from code running under it — there is no core-node `clock` service to answer. `peppygen::clock::init` + `now_ns` are fine: standalone mode forces the wall-clock source, where `init` is a no-op wrapper. By the same token, sim time is not supported standalone; nodes that must be tested under sim time need a real stack.
+- **No daemon clock exists under the harness.** Do not call `peppylib::clock::synchronize` (or `peppylib.clock.synchronize`) from code running under it, since there is no core-node `clock` service to answer. `peppygen::clock::init` + `now_ns` are fine: standalone mode forces the wall-clock source, where `init` is a no-op wrapper. By the same token, sim time is not supported standalone; nodes that must be tested under sim time need a real stack.
 - **`cargo test` and `cargo build` compile peppygen differently.** The `testing` feature is on for test builds (via the dev-dependency) and off for production builds, so alternating between `cargo build` and `cargo test` recompiles peppygen each time. This is the cost of the guarantee that test surfaces cannot reach production binaries; it does not affect correctness.
 :::
 
