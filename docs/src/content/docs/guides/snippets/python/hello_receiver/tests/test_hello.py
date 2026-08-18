@@ -17,3 +17,7 @@ async def test_receives_a_message_from_the_mocked_producer():
         await h.mocks.deps.hello_world_param.message_stream.publish(
             message_stream.Message(message="hello from the mock")
         )
+        # The matched subscription is opened by the task `setup` spawned,
+        # and that task cannot run before `setup` returned: a returned
+        # publish proves the node's setup finished.
+        assert h.setup_finished()

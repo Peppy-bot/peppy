@@ -25,6 +25,14 @@ async fn receives_a_message_from_the_mocked_producer() {
         .await
         .expect("the node's subscription should receive the message");
 
+    // The matched subscription is opened by the task `setup` spawned, and
+    // that task cannot run before `setup` returned: a returned publish
+    // proves the node's setup finished.
+    assert!(
+        harness.setup_finished(),
+        "the matched publish proves setup returned"
+    );
+
     harness
         .shutdown()
         .await

@@ -76,6 +76,8 @@ And its complete test, runnable with `cargo test` / `uv run --group dev pytest` 
 
 Note what is absent: no `hello_world_param` process, no daemon, no launcher, and no sleep before the publish. The mock's first publish waits for the node's subscription to become visible on the router, so "the node is ready" is observed, never assumed.
 
+Even the assertion is deterministic, not a hope: the publish can only return once the node's subscription matched, that subscription is opened by the task `setup` spawns, and that task cannot run before `setup` returned. A returned publish therefore proves `setup` finished, which is exactly what `setup_finished()` asserts. (For a node whose `setup` itself loops forever, `setup_finished()` stays `false` by design; assert on the surfaces instead.)
+
 ## The harness lifecycle
 
 `start` takes your `setup` function, the exact shape `NodeBuilder().run` takes, and returns with the node running:
@@ -90,7 +92,8 @@ from my_node.__main__ import setup
 async def test_something():
     # As a context manager, shutdown runs even when the test body fails:
     async with harness.start(setup) as h:
-        ...
+        assert h.instance_id  # the generated unique id
+        ...  # drive the node; assert on the mocks and h.emitted
     # Or awaited directly, with an explicit shutdown:
     h = await harness.start(setup)
     ...
@@ -104,7 +107,8 @@ use peppygen::fixtures::harness::Harness;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_something() -> peppygen::Result<()> {
     let (mut harness, mut mocks) = Harness::start(my_node::setup).await?;
-    // ...
+    assert!(harness.instance_id().starts_with("test-"));
+    // ... drive the node through `mocks` / `harness.emitted`, asserting as you go ...
     harness.shutdown().await?;
     Ok(())
 }
@@ -122,11 +126,52 @@ By the time `start` returns, all of the following happened, in order:
 
 `shutdown` tears down in lifecycle order: it cancels the node and awaits its convergence (a `setup` that returned an error propagates that error out of `shutdown`, and [shutdown hooks](/advanced_guides/shutdown/) run, bounded exactly as in production), then closes the observation session and the mocks, then stops the router. In Python the `async with` form calls it for you; in Rust, dropping the harness without calling `shutdown` still cancels and aborts the node, but skips the error propagation and the shutdown hooks, so tests should end with `harness.shutdown().await`.
 
+That propagation is itself a plain assertion: `start` returns normally even when `setup` is doomed, because `setup` has only been spawned; the error surfaces out of `shutdown` instead.
+
+<Tabs>
+  <TabItem label="Python">
+```python
+import pytest
+
+from peppygen.fixtures import harness
+
+async def broken_setup(_params, _node_runner):
+    raise RuntimeError("hardware missing")
+
+async def test_a_failing_setup_fails_through_shutdown():
+    h = await harness.start(broken_setup)  # returns normally
+    with pytest.raises(RuntimeError, match="hardware missing"):
+        await h.shutdown()
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::fixtures::harness::Harness;
+
+async fn broken_setup(
+    _parameters: peppygen::Parameters,
+    _node_runner: std::sync::Arc<peppygen::NodeRunner>,
+) -> peppygen::Result<()> {
+    Err(peppygen::Error::Io(std::io::Error::other("hardware missing")))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_setup_fails_through_shutdown() {
+    let (harness, _mocks) = Harness::start(broken_setup).await.unwrap(); // normal
+    let error = harness.shutdown().await.expect_err("the setup error surfaces here");
+    assert!(error.to_string().contains("hardware missing"));
+}
+```
+  </TabItem>
+</Tabs>
+
 The harness also exposes the running node directly: `node_runner()` (`h.node_runner`) for calling its runtime surface in-process, `instance_id()` (`h.instance_id`) for the generated instance id, `setup_finished()` to ask whether `setup` has returned, and `session()` (`h.session`), the fixture caller/observer session the `fixtures` callers drive the node through.
 
 ## Driving each surface
 
 The sections below use one example node: it consumes a `video_stream` topic and an `enable_camera` service from a `camera` slot, a `plan_motion` action from a `brain` slot, participates in an `arm` pairing (emits `joint_commands`, consumes `joint_states`), observes the same pairing through an `observed_arm` observer slot, and exposes a `status` emitted topic, a `ping` service, and a `move_arm` action of its own.
+
+Every fragment in the rest of this page is the body of a test with the harness running as [the lifecycle](#the-harness-lifecycle) starts it: `h` in Python (`async with harness.start(setup) as h:`), `harness` and `mocks` in Rust (`let (mut harness, mut mocks) = Harness::start(setup).await?;`). The `assert`s and `?`s land where they would in that test.
 
 ### Consumed topics
 
@@ -137,6 +182,10 @@ Each consumed topic gets a typed publisher on the slot's mock. Messages are the 
 ```python
 from peppygen.consumed_topics.camera import video_stream
 
+# Wait for the node's subscription alone; the publish below then skips
+# its own lazy wait:
+assert await h.mocks.deps.camera.video_stream.wait_for_subscriber(10.0)
+
 await h.mocks.deps.camera.video_stream.publish(
     video_stream.Message(width=640, frame=b"\x01\x02")
 )
@@ -145,6 +194,18 @@ await h.mocks.deps.camera.video_stream.publish(
   <TabItem label="Rust">
 ```rust
 use peppygen::mock::deps::camera::video_stream;
+use std::time::Duration;
+
+// Wait for the node's subscription alone; the publish below then skips
+// its own lazy wait:
+assert!(
+    mocks
+        .deps
+        .camera
+        .video_stream
+        .wait_for_subscriber(Duration::from_secs(10))
+        .await?
+);
 
 mocks
     .deps
@@ -326,7 +387,11 @@ An [observer slot](/advanced_guides/pairing/#observing-several-pairings-through-
 <Tabs>
   <TabItem label="Python">
 ```python
+from peppygen.mock.observed import observed_arm as mock_arm
 from peppygen.paired_topics.observed_arm import joint_states
+
+# The node's source() resolves to the mock's seeded identity:
+assert joint_states.source(h.node_runner) == mock_arm.source()
 
 await h.mocks.observed.observed_arm.joint_states.publish(
     joint_states.Message(positions=[0.0, 0.5, 1.0])
@@ -335,7 +400,14 @@ await h.mocks.observed.observed_arm.joint_states.publish(
   </TabItem>
   <TabItem label="Rust">
 ```rust
+use peppygen::mock::observed::observed_arm as mock_arm;
 use peppygen::paired_topics::observed_arm::joint_states;
+
+// The node's source() resolves to the mock's seeded identity:
+assert_eq!(
+    joint_states::source(harness.node_runner())?,
+    mock_arm::source()
+);
 
 mocks
     .observed
@@ -349,7 +421,7 @@ mocks
 
 A multi-cardinality observer slot starts as many mock sources as the [configuration](#configuration) asks for; they arrive as a list (`h.mocks.observed.fleet_arms[0]` / `mocks.observed.fleet_arms[0]`), each publishing under its own instance identity, in the same order the node's `sources()` reports them.
 
-### The node's own emitted topics
+### Emitted topics
 
 The harness subscribes to every topic the node emits **before the node boots**, and barriers on those subscriptions being visible, so the very first message your setup publishes is captured, not raced. Each emitted topic is a typed subscription on `harness.emitted`:
 
@@ -375,22 +447,49 @@ assert_eq!(status.outcome, "done");
 
 `next` awaits the node's next message on the topic, in order, and returns `None` once the harness's session closes.
 
-### The node's own services and actions
+### Exposed services
 
 The `fixtures` callers drive the node's exposed surface from the outside, as a fresh consumer with its own wire identity, the same path a real consumer node would take. Every call gates on a reachability probe first, so a test cannot race the node's own declaration of the service:
 
 <Tabs>
   <TabItem label="Python">
 ```python
-from peppygen.fixtures.exposed_actions import move_arm
 from peppygen.fixtures.exposed_services import ping
-import peppylib
 
 # Poll the node's service once.
 response = await ping.poll(h, ping.RequestData(value=21), 10.0)
 assert response.doubled == 42
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::fixtures::exposed_services::ping;
+use std::time::Duration;
 
-# Drive the node's action through its full lifecycle.
+// Poll the node's service once.
+let response = ping::poll(
+    &harness,
+    &ping::RequestData { value: 21 },
+    Duration::from_secs(10),
+)
+.await?;
+assert_eq!(response.doubled, 42);
+```
+  </TabItem>
+</Tabs>
+
+`poll` sends one request and awaits the node's typed response; `timeout` bounds the reachability gate and the poll individually.
+
+### Exposed actions
+
+The node's exposed actions get the same treatment from the fixture session: `send_goal` gates on the reachability probe, then drives the goal through its full lifecycle:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+from peppygen.fixtures.exposed_actions import move_arm
+import peppylib
+
 goal = await move_arm.send_goal(
     h, move_arm.GoalRequestData(arm_id=7), peppylib.QoSProfile.Reliable, 10.0
 )
@@ -405,19 +504,8 @@ assert result.data.success
   <TabItem label="Rust">
 ```rust
 use peppygen::fixtures::exposed_actions::move_arm;
-use peppygen::fixtures::exposed_services::ping;
 use std::time::Duration;
 
-// Poll the node's service once.
-let response = ping::poll(
-    &harness,
-    &ping::RequestData { value: 21 },
-    Duration::from_secs(10),
-)
-.await?;
-assert_eq!(response.doubled, 42);
-
-// Drive the node's action through its full lifecycle.
 let mut goal = move_arm::send_goal(
     &harness,
     &move_arm::GoalRequestData { arm_id: 7 },
@@ -453,6 +541,11 @@ active = await pending.accept(plan_motion.GoalResponseData(accepted=True))
 # on_next_feedback_message raises ConnectionError: not a clean
 # end-of-stream, and not a hang.
 await h.mocks.deps.brain.stop()
+
+# The node's recovery branch ran and reported the loss on its status
+# topic, so the branch is an ordinary assertion:
+status = await h.emitted.status.next()
+assert status.outcome == "producer-gone"
 ```
   </TabItem>
   <TabItem label="Rust">
@@ -470,6 +563,16 @@ let _active = pending.accept(plan_motion::GoalResponseData::new(true)).await?;
 // Err(Error::ActionFeedbackProducerGone { .. }): not a clean close,
 // and not a hang.
 mocks.deps.brain.stop();
+
+// The node's recovery branch ran and reported the loss on its status
+// topic, so the branch is an ordinary assertion:
+let status = harness
+    .emitted
+    .status
+    .next()
+    .await?
+    .expect("status subscription should be open");
+assert_eq!(status.outcome, "producer-gone");
 ```
   </TabItem>
 </Tabs>
