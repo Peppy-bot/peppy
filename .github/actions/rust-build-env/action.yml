@@ -27,11 +27,23 @@ runs:
     # images, so the container tests need it even though its absence is only a
     # warning at build time. Go is absent because the build script downloads its
     # own pinned toolchain.
+    #
+    # The install pulls newer libc, libcurl and ca-certificates into the runner
+    # image, and needrestart's automatic mode then restarts every service linked
+    # against them, systemd-journald, systemd-networkd, systemd-resolved and
+    # systemd-udevd among them, underneath the running job. Restarting the
+    # logging, networking and device stack out from under the Actions runner is
+    # one of the causes GitHub names for "the runner lost communication with the
+    # server", so the drop-in holds needrestart to listing what it would restart
+    # and the runner keeps the services it booted with.
     - name: Install apptainer build and runtime dependencies
       shell: bash
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
+        sudo mkdir -p /etc/needrestart/conf.d
+        printf '$nrconf{restart} = "l";\n' \
+          | sudo tee /etc/needrestart/conf.d/90-no-service-restarts.conf > /dev/null
         sudo apt-get update -qq
         sudo apt-get install -y -qq \
           make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates \
