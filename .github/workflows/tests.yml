@@ -56,6 +56,16 @@ jobs:
       # compiles apptainer against. Must precede every cargo step.
       - uses: ./.github/actions/rust-build-env
 
+      # Split from the test execution so the whole doubled build (this step
+      # compiles the workspace and, via generator-internal's build script,
+      # the inner peppylib build) lives in a step of its own: a completed
+      # step uploads its logs even when a later step loses the runner, and
+      # the second step's cargo reuses this step's target directory.
+      - name: Build the test binaries
+        run: |
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test --locked --no-run
+
       - name: Run tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
