@@ -2,7 +2,8 @@ name: Rust build environment
 description: >-
   Installs the Rust toolchain, the system packages every cargo step in this
   repository builds against, and the pixi and uv tools the build scripts and
-  Python test scenarios execute.
+  Python test scenarios execute, then clears the kernel restriction that would
+  stop apptainer from creating unprivileged user namespaces.
 
 runs:
   using: composite
@@ -49,6 +50,28 @@ runs:
           make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates \
           libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
           liblzma-dev libzstd-dev fuse2fs
+
+    # Apptainer is built without setuid and creates its user namespaces
+    # unprivileged, through fakeroot. Ubuntu 24.04 images ship
+    # kernel.apparmor_restrict_unprivileged_userns=1, which denies that to any
+    # binary without a matching AppArmor profile, so every test that builds or
+    # runs a container fails with "Apptainer's user namespace prerequisites are
+    # not met" and a fix script naming the starter binary. Clearing the knob is
+    # what peppy itself does inside the Lima guest it provisions (see
+    # apptainer/lima.rs), and on a runner discarded at the end of the job it
+    # costs nothing, whereas installing the per-installation AppArmor profile
+    # would have to be redone for every apptainer version the build cache
+    # holds. Images predating the restriction (Ubuntu 22.04) never expose the
+    # knob, hence the existence check.
+    - name: Allow unprivileged user namespaces
+      shell: bash
+      run: |
+        knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        if [ ! -e "$knob" ]; then
+          echo "kernel does not restrict unprivileged user namespaces"
+          exit 0
+        fi
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
     # The runner image ships neither pixi nor uv. generator-internal's build
     # script builds the embedded peppylib .so through a bare `pixi run` and,
