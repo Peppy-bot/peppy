@@ -49,6 +49,7 @@ fn controller_peer_context() -> PeerContext {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
+        optional: false,
     }
 }
 
@@ -166,6 +167,7 @@ fn recorder_observer_context() -> PeerContext {
         link_id: "observed_arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
+        optional: false,
     }
 }
 
@@ -176,6 +178,7 @@ fn commander_observer_context() -> PeerContext {
         link_id: "observed_arms".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
+        optional: false,
     }
 }
 
@@ -200,6 +203,7 @@ fn generated_observer_modules_compile_against_peppylib() {
                 link_id: "maybe_observed_arm".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
+                optional: false,
             },
             Cardinality::ZeroOrOne,
         )
@@ -319,6 +323,7 @@ fn generated_multi_observer_modules_compile_against_peppylib() {
                 link_id: "spare_arms".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
+                optional: false,
             },
             Cardinality::ZeroOrMore,
         )

@@ -84,24 +84,24 @@ pub(crate) fn emit_bound_producer_accessor_fn(
 
     let doc = dependency.bound_producers_doc();
     builder.blank_line();
-    builder.line(&format!(
-        "def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"
-    ));
-    builder.indent();
-    builder.line(&format!("\"\"\"{}", doc[0]));
-    builder.blank_line();
-    for line in &doc[1..] {
-        builder.line(line);
-    }
-    if let Some(note) = api_note {
-        builder.line(note);
-    }
-    builder.line("\"\"\"");
-    builder.line(&format!(
-        "return node_runner.{runtime_method}({:?})",
-        dependency.link_id
-    ));
-    builder.dedent();
+    builder.block(
+        &format!("def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"),
+        |builder| {
+            // A multi-paragraph docstring, so it opens and closes by hand
+            // rather than through `docstring`.
+            builder.line(&format!("\"\"\"{}", doc[0]));
+            builder.blank_line();
+            builder.lines(&doc[1..]);
+            if let Some(note) = api_note {
+                builder.line(note);
+            }
+            builder.line("\"\"\"");
+            builder.line(&format!(
+                "return node_runner.{runtime_method}({:?})",
+                dependency.link_id
+            ));
+        },
+    );
     builder.blank_line();
 }
 
@@ -186,101 +186,103 @@ pub fn build_exposed_service(
     let handler_type = format!("Callable[[Request], {handler_return_type}]");
     builder.add_import("from typing import Callable");
 
-    // _handle_request_payload helper
+    // _handle_request_payload helper. A body-less service takes no `payload`
+    // parameter at all, so the parameter list is spliced rather than the whole
+    // signature written twice.
     builder.blank_line();
-    if has_request {
-        builder.line(&format!(
-            "async def _handle_request_payload(payload: bytes, handler: {handler_type}, core_node: str, instance_id: str) -> bytes:"
-        ));
-    } else {
-        builder.line(&format!(
-            "async def _handle_request_payload(handler: {handler_type}, core_node: str, instance_id: str) -> bytes:"
-        ));
-    }
-    builder.indent();
+    let payload_param = if has_request { "payload: bytes, " } else { "" };
+    builder.block(
+        &format!(
+            "async def _handle_request_payload({payload_param}handler: {handler_type}, core_node: str, instance_id: str) -> bytes:"
+        ),
+        |builder| {
+            if has_request {
+                builder.py(r#"
+request_data = _deserialize_request(payload)
+request = Request(instance_id=instance_id, core_node=core_node, data=request_data)
+"#);
+            } else {
+                builder.line("request = Request(instance_id=instance_id, core_node=core_node)");
+            }
 
-    if has_request {
-        builder.line("request_data = _deserialize_request(payload)");
-        builder.line(
-            "request = Request(instance_id=instance_id, core_node=core_node, data=request_data)",
-        );
-    } else {
-        builder.line("request = Request(instance_id=instance_id, core_node=core_node)");
-    }
+            let Some((resp_fmt, resp_info)) = service
+                .response_message_format
+                .as_ref()
+                .filter(|f| !f.0.is_empty())
+                .zip(response_schema_info)
+            else {
+                builder.py(r#"
+maybe_response = handler(request)
+if hasattr(maybe_response, "__await__"):
+    await maybe_response
+return b""
+"#);
+                return;
+            };
 
-    if let Some((resp_fmt, resp_info)) = service
-        .response_message_format
-        .as_ref()
-        .filter(|f| !f.0.is_empty())
-        .zip(response_schema_info)
-    {
-        builder.line("response = handler(request)");
-        builder.line("if hasattr(response, \"__await__\"):");
-        builder.indent();
-        builder.line("response = await response");
-        builder.dedent();
-        let loader_fn_name = capnp_loader_fn_name(resp_info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            resp_info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(
-            &mut builder,
-            "capnp_msg",
-            resp_fmt,
-            "response",
-            &mut counter,
-        );
-        builder.line("return capnp_msg.to_bytes()");
-    } else {
-        builder.line("maybe_response = handler(request)");
-        builder.line("if hasattr(maybe_response, \"__await__\"):");
-        builder.indent();
-        builder.line("await maybe_response");
-        builder.dedent();
-        builder.line("return b\"\"");
-    }
-    builder.dedent();
+            builder.py(r#"
+response = handler(request)
+if hasattr(response, "__await__"):
+    response = await response
+"#);
+            let loader_fn_name = capnp_loader_fn_name(resp_info);
+            builder.line(&format!(
+                "capnp_msg = {loader_fn_name}().{}.new_message()",
+                resp_info.struct_name
+            ));
+            let mut counter = 0u32;
+            serialization::emit_capnp_assignments(
+                builder,
+                "capnp_msg",
+                resp_fmt,
+                "response",
+                &mut counter,
+            );
+            builder.line("return capnp_msg.to_bytes()");
+        },
+    );
 
     // handle_next_request async function
     builder.add_import("import peppylib");
     builder.blank_line();
-    builder.line(&format!(
-        "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
-    ));
-    builder.indent();
     let target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
-    builder.line("endpoint = await peppylib.ServiceMessenger.listen(");
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
-    builder.line(&format!("{target_expr},"));
-    builder.line("SERVICE_NAME,");
-    builder.dedent();
-    builder.line(")");
+    builder.block(
+        &format!(
+            "async def handle_next_request(node_runner: peppylib.NodeRunner, handler: {handler_type}) -> None:"
+        ),
+        |builder| {
+            builder.call(
+                "endpoint = await peppylib.ServiceMessenger.listen(",
+                &[
+                    "node_runner.messenger(),",
+                    "node_runner.bound_core_node(),",
+                    "node_runner.bound_instance_id(),",
+                    &format!("{target_expr},"),
+                    "SERVICE_NAME,",
+                ],
+                ")",
+            );
 
-    // _on_request wrapper
-    builder.line("async def _on_request(request_context):");
-    builder.indent();
-    builder.line("message = request_context.message");
-    if has_request {
-        builder.line("payload = message.payload");
-    }
-    builder.line("core_node = message.core_node");
-    builder.line("instance_id = message.instance_id");
-    if has_request {
-        builder
-            .line("return await _handle_request_payload(payload, handler, core_node, instance_id)");
-    } else {
-        builder.line("return await _handle_request_payload(handler, core_node, instance_id)");
-    }
-    builder.dedent();
+            // _on_request wrapper
+            builder.block("async def _on_request(request_context):", |builder| {
+                builder.line("message = request_context.message");
+                if has_request {
+                    builder.line("payload = message.payload");
+                }
+                builder.lines([
+                    "core_node = message.core_node",
+                    "instance_id = message.instance_id",
+                ]);
+                let payload_argument = if has_request { "payload, " } else { "" };
+                builder.line(&format!(
+                    "return await _handle_request_payload({payload_argument}handler, core_node, instance_id)"
+                ));
+            });
 
-    builder.line("await endpoint.handle_next_request(_on_request)");
-    builder.dedent();
+            builder.line("await endpoint.handle_next_request(_on_request)");
+        },
+    );
 
     Ok(builder.build())
 }
@@ -371,67 +373,63 @@ pub fn build_consumed_service(
             "async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float){return_type}:"
         )
     };
-    builder.line(&signature);
-    builder.indent();
-    builder.line("\"\"\"Polls this service on `target`, a member of the slot's bound set.");
-    builder.blank_line();
-    builder.line("A target outside the set fails before anything reaches the wire.");
-    for doc_line in dependency.target_selection_doc() {
-        builder.line(doc_line);
-    }
-    builder.line("\"\"\"");
-    emit_target_membership_check(&mut builder);
-
-    // Serialize the request payload
-    if let Some((fmt, info)) = request_format.zip(request_schema_info) {
-        let loader_fn_name = capnp_loader_fn_name(info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(
-            &mut builder,
-            "capnp_msg",
-            fmt,
-            "request",
-            &mut counter,
-        );
-        builder.line("request_payload = capnp_msg.to_bytes()");
-    } else {
-        builder.line("request_payload = b\"\"");
-    }
-
-    if has_response {
-        builder.line("response_message = await peppylib.ServiceMessenger.poll(");
-    } else {
-        builder.line("await peppylib.ServiceMessenger.poll(");
-    }
     let target_expr = sender_target_python_expr(
         dependency.origin.as_ref(),
         "NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
-    builder.line(&format!("{target_expr},"));
-    builder.line("SERVICE_NAME,");
-    builder.line("target,");
-    builder.line("request_payload,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
+    builder.block(&signature, |builder| {
+        // A multi-paragraph docstring, so it opens and closes by hand rather
+        // than through `docstring`.
+        builder.line("\"\"\"Polls this service on `target`, a member of the slot's bound set.");
+        builder.blank_line();
+        builder.line("A target outside the set fails before anything reaches the wire.");
+        builder.lines(dependency.target_selection_doc());
+        builder.line("\"\"\"");
+        emit_target_membership_check(builder);
 
-    // Deserialize response and return
-    if has_response {
-        builder.line("payload = response_message.payload");
-        builder.line("response_data = _deserialize_response(payload)");
-        builder.line("return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)");
-    }
+        // Serialize the request payload
+        if let Some((fmt, info)) = request_format.zip(request_schema_info) {
+            let loader_fn_name = capnp_loader_fn_name(info);
+            builder.line(&format!(
+                "capnp_msg = {loader_fn_name}().{}.new_message()",
+                info.struct_name
+            ));
+            let mut counter = 0u32;
+            serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "request", &mut counter);
+            builder.line("request_payload = capnp_msg.to_bytes()");
+        } else {
+            builder.line("request_payload = b\"\"");
+        }
 
-    builder.dedent();
+        builder.call(
+            if has_response {
+                "response_message = await peppylib.ServiceMessenger.poll("
+            } else {
+                "await peppylib.ServiceMessenger.poll("
+            },
+            &[
+                "node_runner.messenger(),",
+                "node_runner.bound_core_node(),",
+                "node_runner.bound_instance_id(),",
+                &format!("{target_expr},"),
+                "SERVICE_NAME,",
+                "target,",
+                "request_payload,",
+                "timeout,",
+            ],
+            ")",
+        );
+
+        // Deserialize response and return
+        if has_response {
+            builder.py(r#"
+payload = response_message.payload
+response_data = _deserialize_response(payload)
+return Response(core_node=response_message.core_node, instance_id=response_message.instance_id, data=response_data)
+"#);
+        }
+    });
 
     Ok(builder.build())
 }

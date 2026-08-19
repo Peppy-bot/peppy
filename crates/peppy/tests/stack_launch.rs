@@ -4568,12 +4568,9 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         }"#,
     )
     .expect("constrained launcher should be writable");
-    let msg = launch_with(
-        vec!["mujoco".to_owned(), "on".to_owned()],
-        forbids_launcher,
-    )
-    .expect_err("a forbidden combination must be refused")
-    .to_string();
+    let msg = launch_with(vec!["mujoco".to_owned(), "on".to_owned()], forbids_launcher)
+        .expect_err("a forbidden combination must be refused")
+        .to_string();
     assert!(
         msg.contains("selecting robot=mujoco")
             && msg.contains("forbids `recorder=on`")

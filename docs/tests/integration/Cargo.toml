@@ -8,6 +8,12 @@ publish = false
 peppy = { path = "../../../crates/peppy", features = ["test-support"] }
 config = { workspace = true }
 daemon-config = { workspace = true }
+# `snippet_runner::run_node_tests` forwards the zenohd binary this test
+# toolchain resolved (via `PEPPY_ZENOHD_PATH`) to the node-author test suites
+# it spawns: the snippet's vendored pmi is built without `build_zenoh`, so
+# inside the test environment (no `peppy` on PATH) it has nothing else to
+# resolve. Lives in [dependencies] because the helper is in the lib target.
+pmi = { workspace = true, features = ["zenoh", "build_zenoh"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tempfile = "3"

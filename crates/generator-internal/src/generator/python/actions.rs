@@ -107,48 +107,36 @@ pub fn build_exposed_action(
     // envelope independently of the declared response payload. An accept
     // carries the declared GoalResponse when one exists; a reject carries an
     // optional human-readable reason and an optional response.
-    builder.line("class GoalDecision:");
-    builder.indent();
-    if has_goal_response {
-        builder.line("def __init__(self, accepted: bool, reason=None, response=None):");
-        builder.indent();
-        builder.line("self.accepted = accepted");
-        builder.line("self.reason = reason");
-        builder.line("self.response = response");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def accept(response):");
-        builder.indent();
-        builder.line("if response is None:");
-        builder.indent();
-        builder
-            .line("raise ValueError(\"GoalDecision.accept requires the declared GoalResponse\")");
-        builder.dedent();
-        builder.line("return GoalDecision(True, response=response)");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def reject(reason=None, response=None):");
-        builder.indent();
-        builder.line("return GoalDecision(False, reason=reason, response=response)");
-        builder.dedent();
-    } else {
-        builder.line("def __init__(self, accepted: bool, reason=None):");
-        builder.indent();
-        builder.line("self.accepted = accepted");
-        builder.line("self.reason = reason");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def accept():");
-        builder.indent();
-        builder.line("return GoalDecision(True)");
-        builder.dedent();
-        builder.line("@staticmethod");
-        builder.line("def reject(reason=None):");
-        builder.indent();
-        builder.line("return GoalDecision(False, reason=reason)");
-        builder.dedent();
-    }
-    builder.dedent();
+    builder.block("class GoalDecision:", |builder| {
+        if has_goal_response {
+            builder.py(r#"
+def __init__(self, accepted: bool, reason=None, response=None):
+    self.accepted = accepted
+    self.reason = reason
+    self.response = response
+@staticmethod
+def accept(response):
+    if response is None:
+        raise ValueError("GoalDecision.accept requires the declared GoalResponse")
+    return GoalDecision(True, response=response)
+@staticmethod
+def reject(reason=None, response=None):
+    return GoalDecision(False, reason=reason, response=response)
+"#);
+        } else {
+            builder.py(r#"
+def __init__(self, accepted: bool, reason=None):
+    self.accepted = accepted
+    self.reason = reason
+@staticmethod
+def accept():
+    return GoalDecision(True)
+@staticmethod
+def reject(reason=None):
+    return GoalDecision(False, reason=reason)
+"#);
+        }
+    });
     builder.blank_line();
 
     // ---------------------------------------------------------------
@@ -196,189 +184,191 @@ pub fn build_exposed_action(
     builder.add_import("import peppylib");
     builder.add_import("from typing import Self");
     builder.add_import("from typing import Callable");
-    builder.line("class ActionHandle:");
-    builder.indent();
-
-    // expose
-    builder.line("@classmethod");
-    builder.line("async def expose(cls, node_runner: peppylib.NodeRunner) -> Self:");
-    builder.indent();
     let expose_target_expr =
         sender_target_python_expr(origin, "node_runner.node_name()", "node_runner.node_tag()");
     let has_feedback_py = if has_feedback { "True" } else { "False" };
-    builder.line("inner = await peppylib.ConcurrentAction.expose(");
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
-    builder.line(&format!("{expose_target_expr},"));
-    builder.line("ACTION_NAME,");
-    builder.line(&format!("{has_feedback_py},"));
-    builder.dedent();
-    builder.line(")");
-    builder.line("handle = cls()");
-    builder.line("handle._inner = inner");
-    builder.line("return handle");
-    builder.dedent();
-    builder.blank_line();
+    builder.block("class ActionHandle:", |builder| {
+        // expose
+        builder.line("@classmethod");
+        builder.block(
+            "async def expose(cls, node_runner: peppylib.NodeRunner) -> Self:",
+            |builder| {
+                builder.call(
+                    "inner = await peppylib.ConcurrentAction.expose(",
+                    &[
+                        "node_runner.messenger(),",
+                        "node_runner.bound_core_node(),",
+                        "node_runner.bound_instance_id(),",
+                        &format!("{expose_target_expr},"),
+                        "ACTION_NAME,",
+                        &format!("{has_feedback_py},"),
+                    ],
+                    ")",
+                );
+                builder.py(r#"
+handle = cls()
+handle._inner = inner
+return handle
+"#);
+            },
+        );
+        builder.blank_line();
 
-    // handle_goal_next_request
-    builder.line(
-        "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
-    );
-    builder.indent();
-    builder.line("while True:");
-    builder.indent();
-    builder.line("pending = await self._inner.recv_next_goal()");
-    builder.line("if pending is None:");
-    builder.indent();
-    builder.line("return None  # goal stream closed (node shutting down)");
-    builder.dedent();
-    if has_goal_request {
-        builder.line("request_data = _deserialize_goal_request(pending.request_bytes)");
-        builder.line(
-            "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
+        // handle_goal_next_request
+        builder.block(
+            "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
+            |builder| {
+                builder.block("while True:", |builder| {
+                    builder.py(r#"
+pending = await self._inner.recv_next_goal()
+if pending is None:
+    return None  # goal stream closed (node shutting down)
+"#);
+                    if has_goal_request {
+                        builder.py(r#"
+request_data = _deserialize_goal_request(pending.request_bytes)
+request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
+"#);
+                    } else {
+                        builder.line(
+                            "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)",
+                        );
+                    }
+                    builder.py(r#"
+decision = handler(request)
+if hasattr(decision, "__await__"):
+    decision = await decision
+"#);
+                    // Serialize the declared GoalResponse when the decision
+                    // carries one; a reject without a response replies with an
+                    // empty body.
+                    if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
+                        builder.line("response = decision.response");
+                        builder.block("if response is not None:", |builder| {
+                            let loader_fn_name = capnp_loader_fn_name(info);
+                            builder.line(&format!(
+                                "capnp_msg = {loader_fn_name}().{}.new_message()",
+                                info.struct_name
+                            ));
+                            let mut counter = 0u32;
+                            serialization::emit_capnp_assignments(
+                                builder,
+                                "capnp_msg",
+                                fmt,
+                                "response",
+                                &mut counter,
+                            );
+                            builder.line("response_bytes = capnp_msg.to_bytes()");
+                        });
+                        builder.block("else:", |builder| {
+                            builder.line("response_bytes = b\"\"");
+                        });
+                    } else {
+                        builder.line("response_bytes = b\"\"");
+                    }
+                    builder.py(r#"
+if decision.accepted:
+    ctx = await pending.accept(response_bytes)
+    return GoalContext(ctx, request)
+"#);
+                    // Rejected: answer the client and keep polling for the next
+                    // goal (the accept branch above returns, so this runs only
+                    // when not accepted).
+                    builder.line("await pending.reject(decision.reason, response_bytes)");
+                });
+            },
         );
-    } else {
-        builder.line(
-            "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node)",
-        );
-    }
-    builder.line("decision = handler(request)");
-    builder.line("if hasattr(decision, \"__await__\"):");
-    builder.indent();
-    builder.line("decision = await decision");
-    builder.dedent();
-    // Serialize the declared GoalResponse when the decision carries one; a
-    // reject without a response replies with an empty body.
-    if let Some((fmt, info)) = goal_response_format.zip(goal_response_schema_info) {
-        builder.line("response = decision.response");
-        builder.line("if response is not None:");
-        builder.indent();
-        let loader_fn_name = capnp_loader_fn_name(info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(
-            &mut builder,
-            "capnp_msg",
-            fmt,
-            "response",
-            &mut counter,
-        );
-        builder.line("response_bytes = capnp_msg.to_bytes()");
-        builder.dedent();
-        builder.line("else:");
-        builder.indent();
-        builder.line("response_bytes = b\"\"");
-        builder.dedent();
-    } else {
-        builder.line("response_bytes = b\"\"");
-    }
-    builder.line("if decision.accepted:");
-    builder.indent();
-    builder.line("ctx = await pending.accept(response_bytes)");
-    builder.line("return GoalContext(ctx, request)");
-    builder.dedent();
-    // Rejected: answer the client and keep polling for the next goal (the
-    // accept branch above returns, so this runs only when not accepted).
-    builder.line("await pending.reject(decision.reason, response_bytes)");
-    builder.dedent(); // end while loop
-    builder.dedent(); // end handle_goal_next_request
-
-    builder.dedent(); // end class ActionHandle
+    });
     builder.blank_line();
 
     // ---------------------------------------------------------------
     // GoalContext class
     // ---------------------------------------------------------------
 
-    builder.line("class GoalContext:");
-    builder.indent();
-    builder.line("def __init__(self, inner, request: GoalRequest):");
-    builder.indent();
-    builder.line("self._inner = inner");
-    builder.line("self._request = request");
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def request(self) -> GoalRequest:");
-    builder.indent();
-    builder.line("return self._request");
-    builder.dedent();
-    builder.line("def goal_id(self) -> str:");
-    builder.indent();
-    builder.line("return self._inner.goal_id");
-    builder.dedent();
-    builder.line("async def cancel_signal(self) -> None:");
-    builder.indent();
-    builder.line("await self._inner.cancel_signal()");
-    builder.dedent();
-    builder.line("def is_cancelled(self) -> bool:");
-    builder.indent();
-    builder.line("return self._inner.is_cancelled()");
-    builder.dedent();
+    builder.block("class GoalContext:", |builder| {
+        builder.py(r#"
+def __init__(self, inner, request: GoalRequest):
+    self._inner = inner
+    self._request = request
+"#);
+        builder.blank_line();
+        builder.py(r#"
+def request(self) -> GoalRequest:
+    return self._request
+def goal_id(self) -> str:
+    return self._inner.goal_id
+async def cancel_signal(self) -> None:
+    await self._inner.cancel_signal()
+def is_cancelled(self) -> bool:
+    return self._inner.is_cancelled()
+"#);
 
-    // publish_feedback
-    if let Some((fmt, info)) = feedback_format.zip(feedback_schema_info) {
-        let mut params = vec![String::from("self")];
-        for field in &feedback_fields {
-            params.push(format!("{}: {}", field.name, field.type_str));
-        }
-        builder.line(&format!(
-            "async def publish_feedback({}) -> None:",
-            params.join(", ")
-        ));
-        builder.indent();
-        let loader_fn_name = capnp_loader_fn_name(info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(&mut builder, "capnp_msg", fmt, "", &mut counter);
-        builder.line("payload = capnp_msg.to_bytes()");
-        builder.line("await self._inner.publish_feedback(payload)");
-        builder.dedent();
-    }
-
-    // complete / complete_cancelled
-    if has_result {
-        for method in ["complete", "complete_cancelled"] {
+        // publish_feedback
+        if let Some((fmt, info)) = feedback_format.zip(feedback_schema_info) {
             let mut params = vec![String::from("self")];
-            for field in &result_fields {
+            for field in &feedback_fields {
                 params.push(format!("{}: {}", field.name, field.type_str));
             }
-            builder.line(&format!(
-                "async def {method}({}) -> None:",
-                params.join(", ")
-            ));
-            builder.indent();
-            if let Some((fmt, info)) = result_response_format.zip(result_response_schema_info) {
-                let loader_fn_name = capnp_loader_fn_name(info);
-                builder.line(&format!(
-                    "capnp_msg = {loader_fn_name}().{}.new_message()",
-                    info.struct_name
-                ));
-                let mut counter = 0u32;
-                serialization::emit_capnp_assignments(
-                    &mut builder,
-                    "capnp_msg",
-                    fmt,
-                    "",
-                    &mut counter,
-                );
-                builder.line("payload = capnp_msg.to_bytes()");
-            } else {
-                builder.line("payload = b\"\"");
-            }
-            builder.line(&format!("await self._inner.{method}(payload)"));
-            builder.dedent();
+            builder.block(
+                &format!("async def publish_feedback({}) -> None:", params.join(", ")),
+                |builder| {
+                    let loader_fn_name = capnp_loader_fn_name(info);
+                    builder.line(&format!(
+                        "capnp_msg = {loader_fn_name}().{}.new_message()",
+                        info.struct_name
+                    ));
+                    let mut counter = 0u32;
+                    serialization::emit_capnp_assignments(
+                        builder,
+                        "capnp_msg",
+                        fmt,
+                        "",
+                        &mut counter,
+                    );
+                    builder.py(r#"
+payload = capnp_msg.to_bytes()
+await self._inner.publish_feedback(payload)
+"#);
+                },
+            );
         }
-    }
 
-    builder.dedent(); // end class GoalContext
+        // complete / complete_cancelled
+        if has_result {
+            for method in ["complete", "complete_cancelled"] {
+                let mut params = vec![String::from("self")];
+                for field in &result_fields {
+                    params.push(format!("{}: {}", field.name, field.type_str));
+                }
+                builder.block(
+                    &format!("async def {method}({}) -> None:", params.join(", ")),
+                    |builder| {
+                        if let Some((fmt, info)) =
+                            result_response_format.zip(result_response_schema_info)
+                        {
+                            let loader_fn_name = capnp_loader_fn_name(info);
+                            builder.line(&format!(
+                                "capnp_msg = {loader_fn_name}().{}.new_message()",
+                                info.struct_name
+                            ));
+                            let mut counter = 0u32;
+                            serialization::emit_capnp_assignments(
+                                builder,
+                                "capnp_msg",
+                                fmt,
+                                "",
+                                &mut counter,
+                            );
+                            builder.line("payload = capnp_msg.to_bytes()");
+                        } else {
+                            builder.line("payload = b\"\"");
+                        }
+                        builder.line(&format!("await self._inner.{method}(payload)"));
+                    },
+                );
+            }
+        }
+    });
 
     Ok(builder.build())
 }
@@ -434,9 +424,11 @@ pub fn build_consumed_action(
     }
 
     // Constants
-    builder.line(&format!("TARGET_NODE_NAME = \"{}\"", dependency_node_name));
-    builder.line(&format!("TARGET_ACTION_NAME = \"{}\"", action.name));
-    builder.line(&format!("LINK_ID = \"{}\"", dependency.link_id));
+    builder.lines([
+        format!("TARGET_NODE_NAME = \"{dependency_node_name}\""),
+        format!("TARGET_ACTION_NAME = \"{}\"", action.name),
+        format!("LINK_ID = \"{}\"", dependency.link_id),
+    ]);
     builder.blank_line();
 
     // GoalRequest class
@@ -452,12 +444,12 @@ pub fn build_consumed_action(
     // cancel-ack, decoded Rust-side (`cancel_goal` returns a typed reply); Python
     // just maps the typed `state` tag. No per-action cancel payload schema.
     builder.add_import("from enum import IntEnum");
-    builder.line("class CancelState(IntEnum):");
-    builder.indent();
-    builder.line("SIGNALLED = 0");
-    builder.line("ALREADY_TERMINAL = 1");
-    builder.line("UNKNOWN = 2");
-    builder.dedent();
+    builder.py(r#"
+class CancelState(IntEnum):
+    SIGNALLED = 0
+    ALREADY_TERMINAL = 1
+    UNKNOWN = 2
+"#);
     builder.blank_line();
     builder.dataclass(
         "CancelResponse",
@@ -471,13 +463,13 @@ pub fn build_consumed_action(
     // ResultStatus enum + ResultResponseData + ResultResponse. The result reply
     // is framed by the engine as a status tag + body, stripped Rust-side; Python
     // maps the typed status and decodes the body only for Completed/Cancelled.
-    builder.line("class ResultStatus(IntEnum):");
-    builder.indent();
-    builder.line("COMPLETED = 0");
-    builder.line("CANCELLED = 1");
-    builder.line("ABANDONED = 2");
-    builder.line("EXPIRED = 3");
-    builder.dedent();
+    builder.py(r#"
+class ResultStatus(IntEnum):
+    COMPLETED = 0
+    CANCELLED = 1
+    ABANDONED = 2
+    EXPIRED = 3
+"#);
     builder.blank_line();
     if let Some(fmt) = result_response_format {
         emit_format_as_dataclass(&mut builder, "ResultResponseData", fmt)?;
@@ -563,152 +555,166 @@ pub fn build_consumed_action(
     crate::generator::python::services::emit_bound_producer_accessor_fn(&mut builder, dependency);
     builder.blank_line();
 
-    builder.line("class ActionHandle:");
-    builder.indent();
-
-    // fire_goal @classmethod
-    builder.line("@classmethod");
-    if has_goal_request {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: GoalRequest, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
-    } else {
-        builder.line("async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:");
-    }
-    builder.indent();
-    builder.line("\"\"\"Fires this goal at `target`, a member of the slot's bound set.");
-    builder.blank_line();
-    builder.line("A target outside the set fails before anything reaches the wire. The");
-    builder.line("handle retains the target: feedback, result, and cancel stay pinned");
-    builder.line("to it.");
-    for doc_line in dependency.target_selection_doc() {
-        builder.line(doc_line);
-    }
-    builder.line("\"\"\"");
-    crate::generator::python::services::emit_target_membership_check(&mut builder);
-
-    // Serialize request payload
-    if let Some((fmt, info)) = goal_request_format.zip(schema_info.goal_request) {
-        let loader_fn_name = capnp_loader_fn_name(info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(
-            &mut builder,
-            "capnp_msg",
-            fmt,
-            "request",
-            &mut counter,
-        );
-        builder.line("user_goal_payload = capnp_msg.to_bytes()");
-    } else {
-        builder.line("user_goal_payload = b\"\"");
-    }
-
     let send_goal_target_expr = sender_target_python_expr(
         dependency.origin.as_ref(),
         "TARGET_NODE_NAME",
         &format!("{:?}", dependency.producer_tag),
     );
-    builder.line("action_handle = await peppylib.ActionMessenger.send_goal(");
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
-    builder.line(&format!("{send_goal_target_expr},"));
-    builder.line("TARGET_ACTION_NAME,");
-    builder.line("target,");
-    builder.line("user_goal_payload,");
-    builder.line("feedback_qos,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-
-    // Construct ActionHandle instance. Admission and the optional rejection
-    // reason come from the framework goal-ack envelope, decoded engine-side.
-    builder.line("handle = cls()");
-    builder.line("handle._messenger = node_runner.messenger()");
-    builder.line("handle._inner = action_handle");
-    builder.line("handle.accepted = action_handle.accepted");
-    builder.line("handle.reason = action_handle.reason");
-    if has_goal_response {
-        // An empty body means no response was supplied (a declared response
-        // serializes to a non-empty capnp message), which only a reject can
-        // produce.
-        builder.line("body = action_handle.goal_reply_body");
-        builder.line("handle.data = _deserialize_goal_response(body) if body else None");
-    }
-    builder.line("return handle");
-
-    builder.dedent();
-    builder.blank_line();
-
-    // cancel_goal method
-    builder.line("async def cancel_goal(self, timeout: float) -> CancelResponse:");
-    builder.indent();
-    builder.line("reply = await peppylib.ActionMessenger.cancel_goal(");
-    builder.indent();
-    builder.line("self._messenger,");
-    builder.line("self._inner,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-
-    builder.line("return CancelResponse(core_node=reply.core_node, instance_id=reply.instance_id, state=CancelState(reply.state))");
-
-    builder.dedent();
-    builder.blank_line();
-
-    // on_next_feedback_message (only when feedback format exists)
-    if feedback_format.is_some() {
-        builder.line("async def on_next_feedback_message(self) -> FeedbackMessage:");
-        builder.indent();
-        builder.line("\"\"\"Receive the next feedback message for this goal.");
-        builder.blank_line();
-        builder.line("Raises RuntimeError when the producer closed the stream cleanly");
-        builder.line("(end-of-stream sentinel) and ConnectionError when the producer");
-        builder.line("instance disappeared without closing it (process killed, crashed);");
-        builder.line("in the latter case get_result resolves to ResultStatus.ABANDONED.");
-        builder.line("\"\"\"");
-        builder.line("feedback = await self._inner.on_next_feedback()");
-        if schema_info.feedback.is_some() {
-            builder.line("payload = feedback.payload");
-            builder.line("return _deserialize_feedback_payload(payload)");
-        } else {
-            builder.line("return feedback");
-        }
-        builder.dedent();
-        builder.blank_line();
-    }
-
-    // get_result method
-    builder.line("async def get_result(self, timeout: float) -> ResultResponse:");
-    builder.indent();
-    builder.line("reply = await peppylib.ActionMessenger.request_result(");
-    builder.indent();
-    builder.line("self._messenger,");
-    builder.line("self._inner,");
-    builder.line("timeout,");
-    builder.dedent();
-    builder.line(")");
-
-    builder.line("status = ResultStatus(reply.status)");
-    if has_result_response {
-        builder.line("data = None");
-        builder.line("if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):");
-        builder.indent();
-        builder.line("data = _deserialize_result_response(reply.body)");
-        builder.dedent();
-        builder.line("return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, data=data)");
+    // A body-less goal takes no `request` parameter at all, so the parameter
+    // list is spliced rather than the whole signature written twice.
+    let request_param = if has_goal_request {
+        "request: GoalRequest, "
     } else {
-        builder.line(
-            "return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status)",
+        ""
+    };
+    builder.block("class ActionHandle:", |builder| {
+        // fire_goal @classmethod
+        builder.line("@classmethod");
+        builder.block(
+            &format!(
+                "async def fire_goal(cls, node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, {request_param}timeout: float, feedback_qos: peppylib.QoSProfile) -> Self:"
+            ),
+            |builder| {
+                // A multi-paragraph docstring, so it opens and closes by hand
+                // rather than through `docstring`.
+                builder.py(r#"
+"""Fires this goal at `target`, a member of the slot's bound set.
+
+A target outside the set fails before anything reaches the wire. The
+handle retains the target: feedback, result, and cancel stay pinned
+to it.
+"#);
+                builder.lines(dependency.target_selection_doc());
+                builder.line("\"\"\"");
+                crate::generator::python::services::emit_target_membership_check(builder);
+
+                // Serialize request payload
+                if let Some((fmt, info)) = goal_request_format.zip(schema_info.goal_request) {
+                    let loader_fn_name = capnp_loader_fn_name(info);
+                    builder.line(&format!(
+                        "capnp_msg = {loader_fn_name}().{}.new_message()",
+                        info.struct_name
+                    ));
+                    let mut counter = 0u32;
+                    serialization::emit_capnp_assignments(
+                        builder,
+                        "capnp_msg",
+                        fmt,
+                        "request",
+                        &mut counter,
+                    );
+                    builder.line("user_goal_payload = capnp_msg.to_bytes()");
+                } else {
+                    builder.line("user_goal_payload = b\"\"");
+                }
+
+                builder.call(
+                    "action_handle = await peppylib.ActionMessenger.send_goal(",
+                    &[
+                        "node_runner.messenger(),",
+                        "node_runner.bound_core_node(),",
+                        "node_runner.bound_instance_id(),",
+                        &format!("{send_goal_target_expr},"),
+                        "TARGET_ACTION_NAME,",
+                        "target,",
+                        "user_goal_payload,",
+                        "feedback_qos,",
+                        "timeout,",
+                    ],
+                    ")",
+                );
+
+                // Construct ActionHandle instance. Admission and the optional
+                // rejection reason come from the framework goal-ack envelope,
+                // decoded engine-side.
+                builder.py(r#"
+handle = cls()
+handle._messenger = node_runner.messenger()
+handle._inner = action_handle
+handle.accepted = action_handle.accepted
+handle.reason = action_handle.reason
+"#);
+                if has_goal_response {
+                    // An empty body means no response was supplied (a declared
+                    // response serializes to a non-empty capnp message), which
+                    // only a reject can produce.
+                    builder.py(r#"
+body = action_handle.goal_reply_body
+handle.data = _deserialize_goal_response(body) if body else None
+"#);
+                }
+                builder.line("return handle");
+            },
         );
-    }
+        builder.blank_line();
 
-    builder.dedent();
+        // cancel_goal method
+        builder.block(
+            "async def cancel_goal(self, timeout: float) -> CancelResponse:",
+            |builder| {
+                builder.call(
+                    "reply = await peppylib.ActionMessenger.cancel_goal(",
+                    &["self._messenger,", "self._inner,", "timeout,"],
+                    ")",
+                );
+                builder.line("return CancelResponse(core_node=reply.core_node, instance_id=reply.instance_id, state=CancelState(reply.state))");
+            },
+        );
+        builder.blank_line();
 
-    builder.dedent(); // end of class ActionHandle
+        // on_next_feedback_message (only when feedback format exists)
+        if feedback_format.is_some() {
+            builder.block(
+                "async def on_next_feedback_message(self) -> FeedbackMessage:",
+                |builder| {
+                    builder.py(r#"
+"""Receive the next feedback message for this goal.
+
+Raises RuntimeError when the producer closed the stream cleanly
+(end-of-stream sentinel) and ConnectionError when the producer
+instance disappeared without closing it (process killed, crashed);
+in the latter case get_result resolves to ResultStatus.ABANDONED.
+"""
+feedback = await self._inner.on_next_feedback()
+"#);
+                    if schema_info.feedback.is_some() {
+                        builder.py(r#"
+payload = feedback.payload
+return _deserialize_feedback_payload(payload)
+"#);
+                    } else {
+                        builder.line("return feedback");
+                    }
+                },
+            );
+            builder.blank_line();
+        }
+
+        // get_result method
+        builder.block(
+            "async def get_result(self, timeout: float) -> ResultResponse:",
+            |builder| {
+                builder.call(
+                    "reply = await peppylib.ActionMessenger.request_result(",
+                    &["self._messenger,", "self._inner,", "timeout,"],
+                    ")",
+                );
+                builder.line("status = ResultStatus(reply.status)");
+                if has_result_response {
+                    builder.py(r#"
+data = None
+if status in (ResultStatus.COMPLETED, ResultStatus.CANCELLED):
+    data = _deserialize_result_response(reply.body)
+return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status, data=data)
+"#);
+                } else {
+                    builder.line(
+                        "return ResultResponse(core_node=reply.core_node, instance_id=reply.instance_id, status=status)",
+                    );
+                }
+            },
+        );
+    });
 
     Ok(builder.build())
 }

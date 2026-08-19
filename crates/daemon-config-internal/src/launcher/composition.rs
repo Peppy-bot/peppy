@@ -965,10 +965,8 @@ mod tests {
 
     #[test]
     fn an_unconditional_constraint_passes() {
-        one_constraint(
-            r#"{ requires: [{ robot: "real" }, { recorder: "on" }], reason: "why" }"#,
-        )
-        .expect("a constraint without `when` speaks about every selection");
+        one_constraint(r#"{ requires: [{ robot: "real" }, { recorder: "on" }], reason: "why" }"#)
+            .expect("a constraint without `when` speaks about every selection");
     }
 
     #[test]
@@ -995,10 +993,8 @@ mod tests {
                  reason: "the recorder films only the physical rig" }"#,
         )
         .expect("an exclusion needs no requires");
-        one_constraint(
-            r#"{ forbids: [{ robot: "mujoco", recorder: "on" }], reason: "why" }"#,
-        )
-        .expect("an unconditional exclusion of one combination");
+        one_constraint(r#"{ forbids: [{ robot: "mujoco", recorder: "on" }], reason: "why" }"#)
+            .expect("an unconditional exclusion of one combination");
     }
 
     #[test]
@@ -1019,10 +1015,9 @@ mod tests {
 
     #[test]
     fn a_duplicated_forbids_entry_is_refused() {
-        let error = one_constraint(
-            r#"{ forbids: [{ recorder: "on" }, { recorder: "on" }], reason: "r" }"#,
-        )
-        .expect_err("a duplicate entry is a mistake");
+        let error =
+            one_constraint(r#"{ forbids: [{ recorder: "on" }, { recorder: "on" }], reason: "r" }"#)
+                .expect_err("a duplicate entry is a mistake");
         assert!(error.contains("more than once"), "got: {error}");
     }
 
@@ -1032,10 +1027,7 @@ mod tests {
             r#"{ requires: [{ recorder: "on" }], forbids: [{ recorder: "on" }], reason: "r" }"#,
         )
         .expect_err("one map cannot be both the satisfaction and the refusal");
-        assert!(
-            error.contains("both what satisfies"),
-            "got: {error}"
-        );
+        assert!(error.contains("both what satisfies"), "got: {error}");
     }
 
     /// The conflict is the IDENTICAL map in both lists: different maps may
@@ -1051,20 +1043,20 @@ mod tests {
 
     #[test]
     fn a_forbids_entry_naming_an_unknown_option_is_refused() {
-        let error = one_constraint(
-            r#"{ forbids: [{ robot: "genesis" }], reason: "r" }"#,
-        )
-        .expect_err("an unknown option is a dead reference");
+        let error = one_constraint(r#"{ forbids: [{ robot: "genesis" }], reason: "r" }"#)
+            .expect_err("an unknown option is a dead reference");
         assert!(error.contains("`genesis`"), "got: {error}");
         assert!(error.contains("`forbids` entry"), "got: {error}");
     }
 
     #[test]
     fn an_empty_requires_alternative_is_refused() {
-        let error =
-            one_constraint(r#"{ when: { recorder: "on" }, requires: [{}], reason: "r" }"#)
-                .expect_err("an empty alternative says nothing");
-        assert!(error.contains("empty `requires` alternative"), "got: {error}");
+        let error = one_constraint(r#"{ when: { recorder: "on" }, requires: [{}], reason: "r" }"#)
+            .expect_err("an empty alternative says nothing");
+        assert!(
+            error.contains("empty `requires` alternative"),
+            "got: {error}"
+        );
     }
 
     #[test]

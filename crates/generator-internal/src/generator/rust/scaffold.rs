@@ -182,6 +182,20 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
         }
     }
 
+    // Vendored crates never run their own tests, and their dev-dependencies
+    // can break resolution in the flat layout (peppylib-rs's cyclic
+    // self-dev-dependency stops resolving once the package is renamed to
+    // `peppylib`). Strip them, including target-specific tables.
+    doc.remove("dev-dependencies");
+    if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_mut()) {
+        let target_keys: Vec<String> = targets.iter().map(|(key, _)| key.to_string()).collect();
+        for key in target_keys {
+            if let Some(target) = targets.get_mut(&key).and_then(|t| t.as_table_mut()) {
+                target.remove("dev-dependencies");
+            }
+        }
+    }
+
     normalize_vendored_path_deps(&mut doc);
 
     fs::write(cargo_toml_path, doc.to_string())?;
@@ -453,6 +467,11 @@ impl ModuleCategory {
             Self::ExposedActions => "ExposedActions",
             Self::ConsumedActions => "ConsumedActions",
             Self::PairedTopics => "PairedTopics",
+            // Names generated code must never use: write_leaf_module dissolves
+            // `impl <struct_name()>` blocks into free items, so a real
+            // generated `impl Mock` would be destroyed if these collided.
+            Self::Mock => "MockCategoryNeverGenerated",
+            Self::Fixtures => "FixturesCategoryNeverGenerated",
         }
     }
 
@@ -465,6 +484,8 @@ impl ModuleCategory {
             Self::ExposedActions => "exposed actions",
             Self::ConsumedActions => "consumed actions",
             Self::PairedTopics => "paired topics",
+            Self::Mock => "test mocks",
+            Self::Fixtures => "test fixtures",
         }
     }
 }
@@ -701,7 +722,7 @@ fn as_function_item(item: ImplItem) -> Option<Item> {
     }))
 }
 
-fn sanitize_rust_module_name(raw: &str) -> String {
+pub(super) fn sanitize_rust_module_name(raw: &str) -> String {
     let mut out = sanitize_component(raw);
     if out.is_empty() {
         return "node".to_string();

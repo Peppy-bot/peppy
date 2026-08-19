@@ -47,6 +47,7 @@ fn arm_peer_context() -> PeerContext {
         link_id: "controller".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
+        optional: false,
     }
 }
 
@@ -169,6 +170,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "observed_arm".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
+                optional: false,
             },
             Cardinality::One,
         )
@@ -180,6 +182,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "maybe_observed_arm".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
+                optional: false,
             },
             Cardinality::ZeroOrOne,
         )
@@ -191,6 +194,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "observed_arms".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
+                optional: false,
             },
             Cardinality::OneOrMore,
         )
@@ -202,6 +206,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "spare_arms".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
+                optional: false,
             },
             Cardinality::ZeroOrMore,
         )

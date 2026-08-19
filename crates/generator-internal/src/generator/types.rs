@@ -22,6 +22,10 @@ pub enum InterfaceKind {
     PeerEmittedTopic,
     PeerConsumedTopic,
     ObservedTopic,
+    /// Test-only per-link mock surface (`mock::deps/pairings/observed`).
+    Mock,
+    /// Test-only harness + own-surface observation clients (`fixtures`).
+    Fixture,
 }
 
 /// The message formats a consumer needs to talk to a producer's action.
@@ -113,6 +117,11 @@ pub struct PeerContext {
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
+    /// Whether a deployment may run this slot with no peer
+    /// (`depends_on.pairings[].optional`; always false for observer slots,
+    /// whose vacancy is expressed through cardinality instead). The generated
+    /// test harness offers a vacant-boot knob only for optional slots.
+    pub optional: bool,
 }
 
 impl PeerContext {
@@ -1292,10 +1301,17 @@ pub(crate) enum ModuleCategory {
     ConsumedActions,
     /// Both directions of every pairing slot: `paired_topics/<link_id>/<topic>`.
     PairedTopics,
+    /// Test-only per-link mocks: `mock/{deps,pairings,observed}/<link_id>`.
+    /// Compilation is gated behind the peppygen `testing` cargo feature.
+    Mock,
+    /// Test-only harness + own-surface observation clients:
+    /// `fixtures/{harness,emitted_topics,exposed_services,exposed_actions}`.
+    /// Compilation is gated behind the peppygen `testing` cargo feature.
+    Fixtures,
 }
 
 impl ModuleCategory {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::EmittedTopics,
         Self::ConsumedTopics,
         Self::ExposedServices,
@@ -1303,6 +1319,8 @@ impl ModuleCategory {
         Self::ExposedActions,
         Self::ConsumedActions,
         Self::PairedTopics,
+        Self::Mock,
+        Self::Fixtures,
     ];
 
     pub fn from_kind(kind: InterfaceKind) -> Self {
@@ -1316,6 +1334,8 @@ impl ModuleCategory {
             InterfaceKind::PeerEmittedTopic
             | InterfaceKind::PeerConsumedTopic
             | InterfaceKind::ObservedTopic => Self::PairedTopics,
+            InterfaceKind::Mock => Self::Mock,
+            InterfaceKind::Fixture => Self::Fixtures,
         }
     }
 
@@ -1328,6 +1348,8 @@ impl ModuleCategory {
             Self::ExposedActions => "exposed_actions",
             Self::ConsumedActions => "consumed_actions",
             Self::PairedTopics => "paired_topics",
+            Self::Mock => "mock",
+            Self::Fixtures => "fixtures",
         }
     }
 }

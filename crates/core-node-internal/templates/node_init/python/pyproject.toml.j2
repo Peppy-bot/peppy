@@ -16,7 +16,11 @@ dependencies = ["peppygen", "peppylib"]
 packages = ["src/{{ node_name }}"]
 
 [dependency-groups]
-dev = []
+dev = ["pytest>=8", "pytest-asyncio>=0.25"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 
 [tool.uv.sources]
 peppygen = { path = "{{ pepygen_path }}" }

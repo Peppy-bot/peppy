@@ -2,6 +2,7 @@ mod actions;
 mod pairings;
 mod parameters;
 mod services;
+mod testing;
 mod topics;
 
 use super::*;

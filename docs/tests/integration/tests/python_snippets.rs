@@ -1,5 +1,5 @@
 use docs_integration_tests::snippet_runner::{
-    run_snippet, run_snippet_with_contract_repo, run_snippet_with_deps,
+    run_node_tests, run_snippet, run_snippet_with_contract_repo, run_snippet_with_deps,
     run_snippet_with_deps_asserting_output,
 };
 
@@ -35,6 +35,17 @@ fn hello_world_param_and_hello_receiver() {
         &["--link", "hello_world_param@hello_world_param_1"],
         &[("hello_world_param", &["name=planet"])],
     );
+}
+
+// The testing guide's node-author loop: sync generates `peppygen.mock` /
+// `peppygen.fixtures` for the snippet, and its `tests/test_hello.py` boots
+// the node in-process through the generated harness and drives one message
+// through the mocked producer slot. The producer node is added to the stack
+// (sync resolves the slot's interfaces from its manifest) but never built or
+// run: the harness mocks it.
+#[test]
+fn hello_receiver_node_tests() {
+    run_node_tests(SNIPPETS_ROOT, "hello_receiver", &["hello_world_param"]);
 }
 
 // The paired duo from the "Pairing" guide. Each side declares one pairing slot
