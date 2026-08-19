@@ -16,6 +16,7 @@
 - Never merge PRs in the remote repository without my consent
 - Never add "Co-Authored-By" trailers crediting an LLM (e.g., Claude) to commit messages; commits are authored by me alone
 - When tests are written, never make them time-based, they should be deterministic and should not depend on the speed of the host
+- When opening a PR, always use the repository's default branch as the base branch.
 
 ---
 
