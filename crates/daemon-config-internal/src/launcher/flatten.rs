@@ -75,9 +75,7 @@ pub enum CompositionError {
         reason: String,
     },
 
-    #[error(
-        "{condition} forbids {matched}, which this selection ({selection}) has. {reason}"
-    )]
+    #[error("{condition} forbids {matched}, which this selection ({selection}) has. {reason}")]
     ConstraintForbidden {
         /// `selecting axis=option ...`, or `this launcher` for an
         /// unconditional constraint.
@@ -1430,9 +1428,9 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
                      constraints (constraint {} refuses them first)",
                     first + 1
                 ),
-                None => String::from(
-                    "it is already guaranteed by the axes or by an earlier constraint",
-                ),
+                None => {
+                    String::from("it is already guaranteed by the axes or by an earlier constraint")
+                }
             };
             problems.push(format!(
                 "{label}: constraint {} ({}) refuses no selection: {why}. Tighten it or drop it",
@@ -1447,8 +1445,11 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
     // and an optional axis that can never stay off is `optional` in name
     // only.
     for axis in &launcher.components {
-        let mut states: Vec<Option<&str>> =
-            axis.options.keys().map(|option| Some(option.as_str())).collect();
+        let mut states: Vec<Option<&str>> = axis
+            .options
+            .keys()
+            .map(|option| Some(option.as_str()))
+            .collect();
         if axis.optional {
             states.push(None);
         }
@@ -2464,9 +2465,15 @@ mod tests {
             &words(&["mujoco", "on"]),
         )
         .expect_err("the constraint must refuse this member");
-        assert!(matches!(err, CompositionError::ConstraintUnsatisfied { .. }));
+        assert!(matches!(
+            err,
+            CompositionError::ConstraintUnsatisfied { .. }
+        ));
         let message = err.to_string();
-        assert!(message.contains("robot=mujoco  recorder=on"), "got: {message}");
+        assert!(
+            message.contains("robot=mujoco  recorder=on"),
+            "got: {message}"
+        );
         assert!(message.contains("selecting recorder=on"), "got: {message}");
         assert!(message.contains("`robot=real`"), "got: {message}");
         assert!(
@@ -2509,8 +2516,12 @@ mod tests {
             r#"{ when: { robot: "mujoco" }, requires: [{ recorder: "on" }],
                  reason: "the sim exists to produce datasets" }"#,
         );
-        compose(&either, Path::new("family.json5"), &words(&["mujoco", "on"]))
-            .expect("the required recorder is selected");
+        compose(
+            &either,
+            Path::new("family.json5"),
+            &words(&["mujoco", "on"]),
+        )
+        .expect("the required recorder is selected");
     }
 
     #[test]

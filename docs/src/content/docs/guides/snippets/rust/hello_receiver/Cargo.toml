@@ -9,4 +9,12 @@ peppylib = { path = ".peppy/libs/peppylib" }
 tokio = { version = "1", features = ["rt"] }
 tracing = "0.1"
 
+# The generated test surfaces (`peppygen::mock` / `peppygen::fixtures`)
+# compile only under peppygen's `testing` feature, enabled from
+# dev-dependencies so `cargo build` can never resolve it into a
+# production binary. `peppy node sync` maintains the peppygen entry.
+[dev-dependencies]
+peppygen = { path = ".peppy/libs/peppygen", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
 [workspace]

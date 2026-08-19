@@ -12,3 +12,9 @@ bytes = "1"
 thiserror = "2.0"
 serde = "1.0"
 schemars = "1.2"
+
+[features]
+# Enable from the node's [dev-dependencies] only: unlocks the generated
+# `mock` and `fixtures` modules (cargo build never resolves dev-deps, so
+# production binaries can never contain them).
+testing = ["peppylib/testing"]

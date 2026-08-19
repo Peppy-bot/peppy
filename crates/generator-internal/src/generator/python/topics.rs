@@ -35,13 +35,15 @@ pub(crate) fn emit_capnp_loader_fn(
 ) {
     let loader_fn_name = capnp_loader_fn_name(schema_info);
     builder.line("@lru_cache(maxsize=1)");
-    builder.line(&format!("def {loader_fn_name}() -> types.ModuleType:"));
-    builder.indent();
-    builder.line(&format!(
-        "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"{}.capnp\"))",
-        schema_info.file_stem
-    ));
-    builder.dedent();
+    builder.block(
+        &format!("def {loader_fn_name}() -> types.ModuleType:"),
+        |builder| {
+            builder.line(&format!(
+                "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"{}.capnp\"))",
+                schema_info.file_stem
+            ));
+        },
+    );
     builder.blank_line();
 }
 
@@ -70,24 +72,23 @@ fn emit_build_message_fn(
         .iter()
         .map(|field| format!("{}: {}", field.name, field.type_str))
         .collect();
-    builder.line(&format!(
-        "def build_message({}) -> bytes:",
-        field_params.join(", ")
-    ));
-    builder.indent();
-    if let (Some(info), Some(fmt)) = (schema_info, message_format) {
-        let loader_fn_name = capnp_loader_fn_name(info);
-        builder.line(&format!(
-            "capnp_msg = {loader_fn_name}().{}.new_message()",
-            info.struct_name
-        ));
-        let mut counter = 0u32;
-        serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "", &mut counter);
-        builder.line("return capnp_msg.to_bytes()");
-    } else {
-        builder.line("return b\"\"");
-    }
-    builder.dedent();
+    builder.block(
+        &format!("def build_message({}) -> bytes:", field_params.join(", ")),
+        |builder| {
+            let Some((info, fmt)) = schema_info.zip(message_format) else {
+                builder.line("return b\"\"");
+                return;
+            };
+            let loader_fn_name = capnp_loader_fn_name(info);
+            builder.line(&format!(
+                "capnp_msg = {loader_fn_name}().{}.new_message()",
+                info.struct_name
+            ));
+            let mut counter = 0u32;
+            serialization::emit_capnp_assignments(builder, "capnp_msg", fmt, "", &mut counter);
+            builder.line("return capnp_msg.to_bytes()");
+        },
+    );
     builder.blank_line();
 }
 
@@ -107,46 +108,45 @@ fn tag_annotation(tag: SubscriptionTag) -> &'static str {
 fn emit_subscription_class(builder: &mut PythonCodeBuilder, docstring: &str, tag: SubscriptionTag) {
     let annotation = tag_annotation(tag);
     let binding = tag.binding();
-    builder.line("class Subscription:");
-    builder.indent();
-    builder.line(&format!("\"\"\"{docstring}\"\"\""));
-    builder.blank_line();
-    builder.line("def __init__(self, inner) -> None:");
-    builder.indent();
-    builder.line("self._inner = inner");
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!(
-        "async def next(self) -> Optional[Tuple[{annotation}, Message]]:"
-    ));
-    builder.indent();
-    builder.line("item = await self._inner.on_next_message()");
-    builder.line("if item is None:");
-    builder.indent();
-    builder.line("return None");
-    builder.dedent();
-    builder.line(&format!("{binding}, raw_message = item"));
-    builder.line("message = _deserialize_payload(raw_message.payload)");
-    builder.line(&format!("return {binding}, message"));
-    builder.dedent();
-    builder.blank_line();
-    builder.line("def __aiter__(self) -> \"Subscription\":");
-    builder.indent();
-    builder.line("return self");
-    builder.dedent();
-    builder.blank_line();
-    builder.line(&format!(
-        "async def __anext__(self) -> Tuple[{annotation}, Message]:"
-    ));
-    builder.indent();
-    builder.line("result = await self.next()");
-    builder.line("if result is None:");
-    builder.indent();
-    builder.line("raise StopAsyncIteration");
-    builder.dedent();
-    builder.line("return result");
-    builder.dedent();
-    builder.dedent();
+    builder.block("class Subscription:", |builder| {
+        builder.docstring(docstring);
+        builder.blank_line();
+        builder.py(r#"
+def __init__(self, inner) -> None:
+    self._inner = inner
+"#);
+        builder.blank_line();
+        builder.block(
+            &format!("async def next(self) -> Optional[Tuple[{annotation}, Message]]:"),
+            |builder| {
+                builder.py(r#"
+item = await self._inner.on_next_message()
+if item is None:
+    return None
+"#);
+                builder.line(&format!("{binding}, raw_message = item"));
+                builder.line("message = _deserialize_payload(raw_message.payload)");
+                builder.line(&format!("return {binding}, message"));
+            },
+        );
+        builder.blank_line();
+        builder.py(r#"
+def __aiter__(self) -> "Subscription":
+    return self
+"#);
+        builder.blank_line();
+        builder.block(
+            &format!("async def __anext__(self) -> Tuple[{annotation}, Message]:"),
+            |builder| {
+                builder.py(r#"
+result = await self.next()
+if result is None:
+    raise StopAsyncIteration
+return result
+"#);
+            },
+        );
+    });
 }
 
 /// Generates Python code for an emitted (publishing) topic.
@@ -201,21 +201,23 @@ pub fn build_emitted_topic(
     // lock-free publisher whose publish(payload) never re-takes that lock.
     // Declare once, then publish per message (a camera streaming frames, a
     // sensor at rate), paired with build_message.
-    builder.line(
+    builder.block(
         "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
+        |builder| {
+            builder.call(
+                "return await peppylib.TopicMessenger.declare_publisher(",
+                &[
+                    "node_runner.messenger(),",
+                    "node_runner.bound_core_node(),",
+                    "node_runner.bound_instance_id(),",
+                    &format!("{target_expr},"),
+                    "TOPIC_NAME,",
+                    "QOS,",
+                ],
+                ")",
+            );
+        },
     );
-    builder.indent();
-    builder.line("return await peppylib.TopicMessenger.declare_publisher(");
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
-    builder.line(&format!("{target_expr},"));
-    builder.line("TOPIC_NAME,");
-    builder.line("QOS,");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
 
     Ok(builder.build())
 }
@@ -230,25 +232,31 @@ fn emit_peer_module_header(
 ) {
     builder.add_import("import peppylib");
     builder.add_import("from typing import Optional");
-    builder.line(&format!("TOPIC_NAME = \"{topic_name}\""));
-    builder.line(&format!("LINK_ID = \"{}\"", peer.link_id));
-    builder.line(&format!("PAIRING_NAME = \"{}\"", peer.pairing_name));
-    builder.line(&format!("PAIRING_TAG = \"{}\"", peer.pairing_tag));
-    builder.line(&format!("QOS = {qos}"));
+    builder.lines([
+        format!("TOPIC_NAME = \"{topic_name}\""),
+        format!("LINK_ID = \"{}\"", peer.link_id),
+        format!("PAIRING_NAME = \"{}\"", peer.pairing_name),
+        format!("PAIRING_TAG = \"{}\"", peer.pairing_tag),
+        format!("QOS = {qos}"),
+    ]);
     builder.blank_line();
 
-    builder.line("def paired(node_runner: peppylib.NodeRunner) -> Optional[peppylib.PeerInfo]:");
-    builder.indent();
-    builder.line("\"\"\"The peer currently paired on this slot, or None while unpaired.\"\"\"");
-    builder.line("return node_runner.peer(LINK_ID).paired()");
-    builder.dedent();
+    builder.block(
+        "def paired(node_runner: peppylib.NodeRunner) -> Optional[peppylib.PeerInfo]:",
+        |builder| {
+            builder.docstring("The peer currently paired on this slot, or None while unpaired.");
+            builder.line("return node_runner.peer(LINK_ID).paired()");
+        },
+    );
     builder.blank_line();
 
-    builder.line("async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:");
-    builder.indent();
-    builder.line("\"\"\"Wait until a peer is paired on this slot and return its identity.\"\"\"");
-    builder.line("return await node_runner.peer(LINK_ID).wait_paired()");
-    builder.dedent();
+    builder.block(
+        "async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:",
+        |builder| {
+            builder.docstring("Wait until a peer is paired on this slot and return its identity.");
+            builder.line("return await node_runner.peer(LINK_ID).wait_paired()");
+        },
+    );
     builder.blank_line();
 }
 
@@ -291,22 +299,24 @@ pub fn build_peer_emitted_topic(
     // Slot-scoped publisher: publishing while unpaired is a legal no-op (the
     // mesh drops it); the paired peer's triple-pinned subscription receives
     // every publish made while the pair is live.
-    builder.line(
+    builder.block(
         "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
+        |builder| {
+            builder.call(
+                "return await peppylib.TopicMessenger.declare_publisher(",
+                &[
+                    "node_runner.messenger(),",
+                    "node_runner.bound_core_node(),",
+                    "node_runner.bound_instance_id(),",
+                    "peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),",
+                    "TOPIC_NAME,",
+                    "QOS,",
+                    "link_id=LINK_ID,",
+                ],
+                ")",
+            );
+        },
     );
-    builder.indent();
-    builder.line("return await peppylib.TopicMessenger.declare_publisher(");
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
-    builder.line("peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),");
-    builder.line("TOPIC_NAME,");
-    builder.line("QOS,");
-    builder.line("link_id=LINK_ID,");
-    builder.dedent();
-    builder.line(")");
-    builder.dedent();
 
     Ok(builder.build())
 }
@@ -335,11 +345,13 @@ fn emit_observer_module_header(
     cardinality: Cardinality,
 ) {
     builder.add_import("import peppylib");
-    builder.line(&format!("TOPIC_NAME = \"{topic_name}\""));
-    builder.line(&format!("LINK_ID = \"{}\"", observer.link_id));
-    builder.line(&format!("PAIRING_NAME = \"{}\"", observer.pairing_name));
-    builder.line(&format!("PAIRING_TAG = \"{}\"", observer.pairing_tag));
-    builder.line(&format!("QOS = {qos}"));
+    builder.lines([
+        format!("TOPIC_NAME = \"{topic_name}\""),
+        format!("LINK_ID = \"{}\"", observer.link_id),
+        format!("PAIRING_NAME = \"{}\"", observer.pairing_name),
+        format!("PAIRING_TAG = \"{}\"", observer.pairing_tag),
+        format!("QOS = {qos}"),
+    ]);
     builder.blank_line();
 
     let (fn_name, runtime_method, return_type, typing_import) = match cardinality {
@@ -375,20 +387,20 @@ fn emit_observer_module_header(
         cardinality,
         crate::generator::types::DocLanguage::Python,
     );
-    builder.line(&format!(
-        "def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"
-    ));
-    builder.indent();
-    builder.line(&format!("\"\"\"{}", doc.summary));
-    builder.blank_line();
-    for line in doc.body_lines() {
-        builder.line(line);
-    }
-    builder.line("\"\"\"");
-    builder.line(&format!(
-        "return node_runner.{handle}(LINK_ID).{runtime_method}()"
-    ));
-    builder.dedent();
+    builder.block(
+        &format!("def {fn_name}(node_runner: peppylib.NodeRunner) -> {return_type}:"),
+        |builder| {
+            // A multi-paragraph docstring, so it opens and closes by hand
+            // rather than through `docstring`.
+            builder.line(&format!("\"\"\"{}", doc.summary));
+            builder.blank_line();
+            builder.lines(doc.body_lines());
+            builder.line("\"\"\"");
+            builder.line(&format!(
+                "return node_runner.{handle}(LINK_ID).{runtime_method}()"
+            ));
+        },
+    );
     builder.blank_line();
 }
 
@@ -438,7 +450,7 @@ pub fn build_pair_topic_consumer(
             (
                 "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired. Each message is tagged with the PeerInfo of the paired peer, the same identity paired() returns.",
                 SubscriptionTag::Peer,
-                "\"\"\"Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.\"\"\"",
+                "Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.",
                 "subscribe_peer",
             )
         }
@@ -447,7 +459,7 @@ pub fn build_pair_topic_consumer(
             (
                 "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance.",
                 SubscriptionTag::ObservedSource,
-                "\"\"\"Subscribe to this observed pairing topic. Legal before any source is resolved or live: the subscription stays silent until a member emits.\"\"\"",
+                "Subscribe to this observed pairing topic. Legal before any source is resolved or live: the subscription stays silent until a member emits.",
                 "subscribe_observed",
             )
         }
@@ -456,20 +468,24 @@ pub fn build_pair_topic_consumer(
     emit_subscription_class(&mut builder, subscription_doc, subscription_tag);
 
     builder.blank_line();
-    builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
-    builder.indent();
-    builder.line(subscribe_doc);
-    builder.line(&format!("inner = await node_runner.{subscribe_method}("));
-    builder.indent();
-    builder.line("LINK_ID,");
-    builder.line("PAIRING_NAME,");
-    builder.line("PAIRING_TAG,");
-    builder.line("TOPIC_NAME,");
-    builder.line("QOS,");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return Subscription(inner)");
-    builder.dedent();
+    builder.block(
+        "async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:",
+        |builder| {
+            builder.docstring(subscribe_doc);
+            builder.call(
+                &format!("inner = await node_runner.{subscribe_method}("),
+                &[
+                    "LINK_ID,",
+                    "PAIRING_NAME,",
+                    "PAIRING_TAG,",
+                    "TOPIC_NAME,",
+                    "QOS,",
+                ],
+                ")",
+            );
+            builder.line("return Subscription(inner)");
+        },
+    );
 
     Ok(builder.build())
 }
@@ -538,35 +554,37 @@ on the yielded producer to follow a single member.",
     );
 
     builder.blank_line();
-    builder.line("async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:");
-    builder.indent();
-    builder.line(&format!("topic_name = \"{}\"", topic_name));
-    builder.line("inner = await peppylib.TopicMessenger.subscribe_bound_set(");
-    builder.indent();
-    builder.line("node_runner.messenger(),");
-    builder.line("node_runner.bound_core_node(),");
-    builder.line("node_runner.bound_instance_id(),");
     let from_target = sender_target_python_expr(
         dependency.origin.as_ref(),
         &format!("{:?}", dependency.producer_name),
         &format!("{:?}", dependency.producer_tag),
     );
-    builder.line(&format!("{from_target},"));
-    builder.line("topic_name,");
-    // The slot's complete bound producer set: sized per the declared
-    // cardinality at launch, re-validated at node startup. It is empty on a
-    // zero_or_more slot bound to nothing and on a vacant zero_or_one slot,
-    // where the subscription yields nothing until shutdown.
-    builder.line(&format!(
-        "node_runner.bound_producers({:?}),",
-        dependency.link_id
-    ));
-    builder.line("peppylib.QoSProfile.Standard,");
-    builder.line("node_runner.cancellation_token(),");
-    builder.dedent();
-    builder.line(")");
-    builder.line("return Subscription(inner)");
-    builder.dedent();
+    builder.block(
+        "async def subscribe(node_runner: peppylib.NodeRunner) -> Subscription:",
+        |builder| {
+            builder.line(&format!("topic_name = \"{topic_name}\""));
+            builder.call(
+                "inner = await peppylib.TopicMessenger.subscribe_bound_set(",
+                &[
+                    "node_runner.messenger(),",
+                    "node_runner.bound_core_node(),",
+                    "node_runner.bound_instance_id(),",
+                    &format!("{from_target},"),
+                    "topic_name,",
+                    // The slot's complete bound producer set: sized per the
+                    // declared cardinality at launch, re-validated at node
+                    // startup. It is empty on a zero_or_more slot bound to
+                    // nothing and on a vacant zero_or_one slot, where the
+                    // subscription yields nothing until shutdown.
+                    &format!("node_runner.bound_producers({:?}),", dependency.link_id),
+                    "peppylib.QoSProfile.Standard,",
+                    "node_runner.cancellation_token(),",
+                ],
+                ")",
+            );
+            builder.line("return Subscription(inner)");
+        },
+    );
 
     Ok(builder.build())
 }

@@ -2,7 +2,7 @@
 title: Repositories
 description: Manage where Peppy discovers nodes, launchers, contracts, pairings, and MCP exposures
 sidebar:
-  order: 8
+  order: 9
 ---
 
 Repositories tell Peppy where to look for nodes, launchers, contracts, pairings, and MCP exposures. Each repository states what it publishes through a committed [`peppy_repository.json5`](#the-repository-index) at its root; `peppy repo refresh` reads that index from every configured repository and caches the result. The index itself is written by [`peppy repo index`](#index-a-repository), which walks the tree and records:

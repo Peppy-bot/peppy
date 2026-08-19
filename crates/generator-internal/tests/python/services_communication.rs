@@ -211,12 +211,12 @@ if __name__ == "__main__":
 
     println!(
         "User node consumer PEPPY_RUNTIME_CONFIG=\"{}\"",
-        &consumer_runtime_config_path.display()
+        consumer_runtime_config_path.display()
     );
     println!("User node consumer = {}", user_node_consumer.display());
     println!(
         "User node exposer PEPPY_RUNTIME_CONFIG=\"{}\"",
-        &exposer_runtime_config_path.display()
+        exposer_runtime_config_path.display()
     );
     println!("User node exposer = {}", user_node_exposer.display());
 

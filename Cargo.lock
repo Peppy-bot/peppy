@@ -587,7 +587,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "sha2",
 ]
@@ -785,7 +785,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "askama",
  "git2",
@@ -930,7 +930,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -1344,6 +1344,7 @@ dependencies = [
  "daemon-config",
  "peppy",
  "peppy-config-model",
+ "pmi",
  "serde",
  "serde_json5",
  "tempfile",
@@ -1930,9 +1931,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.15"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2686,7 +2687,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "serde",
  "serde_json",
@@ -3512,7 +3513,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "capnp",
  "clap",
@@ -3531,7 +3532,7 @@ dependencies = [
 [[package]]
 name = "peppy-mcp-catalog"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "serde",
  "serde_json",
@@ -3540,7 +3541,7 @@ dependencies = [
 [[package]]
 name = "peppy-mcp-runtime"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3562,7 +3563,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3757,12 +3758,13 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#3c2986192b7bfb5b11a108af6cbe3648a2b857bb"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#2f4de55b5dad56fd3bee6c204a8e35a9138557f6"
 dependencies = [
  "build-helpers",
  "bytes",
  "derive_more",
  "flume 0.12.0",
+ "libc",
  "peppy-config-model",
  "rand 0.10.2",
  "rustls-native-certs",
@@ -3957,9 +3959,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.16"
+version = "0.11.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
+checksum = "04759210543be93709136e28212294a659ef5001836ff4eab4d663e4529bba83"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -4256,9 +4258,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.1.2"
+version = "3.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8dddc5b1924b9a59fba420166160ca2c4663a4e01803e52eda33070f56d63c8"
+checksum = "5f17072af977b0f86f714dbd64b3d37d0715bb63064f9d13483f0a1775813374"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -4268,6 +4270,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "indexmap 2.14.0",
  "pastey",
  "pin-project-lite",
  "rand 0.10.2",
@@ -7034,9 +7037,9 @@ dependencies = [
 
 [[package]]
 name = "zerovec-derive"
-version = "0.11.4"
+version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47402523226a02bfe5230160dc3ccc089aa6f6f19e7fcbb4e6f824bbb1b4aa62"
+checksum = "9f212a141d820099d57ffafb9569be9617a6f27d3dc881fbee8fb56642f917a9"
 dependencies = [
  "proc-macro2",
  "quote",

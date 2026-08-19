@@ -4,7 +4,9 @@ mod tests;
 mod actions;
 mod context;
 mod deserialization;
+mod fixtures;
 pub(crate) mod identifiers;
+mod mock;
 mod parameters;
 mod scaffold;
 mod serialization;
@@ -68,6 +70,7 @@ pub struct RustGenerator {
     sections: Vec<InterfaceArtifact>,
     schemas: HashMap<String, CapnpSchema>,
     parameters: config::ParameterSchema,
+    testgen: crate::generator::testgen::TestGenRegistry,
 }
 
 impl RustGenerator {
@@ -88,6 +91,12 @@ impl RustGenerator {
     /// Sets the node parameters for code generation.
     pub fn set_parameters(&mut self, parameters: config::ParameterSchema) {
         self.parameters = parameters;
+    }
+
+    /// Sets the node's manifest identity, enabling the generated `fixtures`
+    /// surface (the harness pins the node's own targets with it).
+    pub fn set_node_identity(&mut self, name: &str, tag: &str) {
+        self.testgen.record_node_identity(name, tag);
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {
@@ -766,6 +775,7 @@ impl LanguageGenerator for RustGenerator {
         topic: &NativeEmittedTopic,
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
+        self.testgen.record_emitted_topic(topic, origin);
         let fn_name = prefixed_ident("", non_empty_str(topic.name.as_str()), "topic");
         let fn_name_str = fn_name.to_string();
 
@@ -817,6 +827,7 @@ impl LanguageGenerator for RustGenerator {
         service: &NativeExposedService,
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
+        self.testgen.record_exposed_service(service, origin);
         let fn_name = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
         let fn_name_str = fn_name.to_string();
         let struct_prefix = to_camel_case(&fn_name_str);
@@ -937,6 +948,7 @@ impl LanguageGenerator for RustGenerator {
         action: &NativeExposedAction,
         origin: Option<&ContractOrigin>,
     ) -> Result<()> {
+        self.testgen.record_exposed_action(action, origin);
         let base_ident = prefixed_ident("", non_empty_str(&action.name), "action");
         let base_name = base_ident.to_string();
         let action_prefix = to_camel_case(&base_name);
@@ -1064,7 +1076,7 @@ impl LanguageGenerator for RustGenerator {
 
         // Feedback → `GoalContext::publish_feedback`.
         if let Some(feedback) = action.feedback_topic.as_ref() {
-            let label = format!("publish_feedback {}", &action.name);
+            let label = format!("publish_feedback {}", action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
             let feedback_schema_name = format!("{base_name}_feedback");
             let format_artifacts =
@@ -1179,6 +1191,8 @@ impl LanguageGenerator for RustGenerator {
         arguments: MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        self.testgen
+            .record_consumed_topic(topic, &arguments, dependency);
         let node_name = topic.link_id.as_str();
 
         let node_component = sanitize_component(node_name);
@@ -1268,6 +1282,12 @@ impl LanguageGenerator for RustGenerator {
         response_arguments: &MessageFormat,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        self.testgen.record_consumed_service(
+            service,
+            request_arguments,
+            response_arguments,
+            dependency,
+        );
         let dependency_node_name = dependency.producer_name.as_str();
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
@@ -1533,6 +1553,7 @@ impl LanguageGenerator for RustGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
+        self.testgen.record_peer_emitted_topic(topic, peer);
         let topic_component = sanitize_component(topic.name.as_str());
         let schema_key =
             crate::generator::naming::peer_schema_key(&peer.link_id, topic.name.as_str());
@@ -1586,6 +1607,7 @@ impl LanguageGenerator for RustGenerator {
         topic: &NativeEmittedTopic,
         peer: &crate::generator::types::PeerContext,
     ) -> Result<()> {
+        self.testgen.record_peer_consumed_topic(topic, peer);
         self.add_pair_topic_consumer(topic, peer, PairTopicConsumerKind::Peer)
     }
 
@@ -1595,6 +1617,8 @@ impl LanguageGenerator for RustGenerator {
         observer: &crate::generator::types::PeerContext,
         cardinality: Cardinality,
     ) -> Result<()> {
+        self.testgen
+            .record_observed_topic(topic, observer, cardinality);
         self.add_pair_topic_consumer(
             topic,
             observer,
@@ -1608,6 +1632,8 @@ impl LanguageGenerator for RustGenerator {
         messages: &ConsumedActionMessage,
         dependency: &DependencyContext,
     ) -> Result<()> {
+        self.testgen
+            .record_consumed_action(action, messages, dependency);
         let dependency_node_name = dependency.producer_name.as_str();
         let action_prefix =
             identifiers::consumed_action_type_prefix(dependency_node_name, action.name.as_str());
@@ -1750,11 +1776,17 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn build(
-        self,
+        mut self,
         to_path: impl AsRef<Path>,
         peppy_dirs: &daemon_config::consts::PeppyDirs,
         deploy_mode: crate::generator::common::CrateDeployMode,
     ) -> Result<()> {
+        // Render the test surfaces first: their codecs register on the same
+        // schema keys production used (dedupe by file stem), so this must run
+        // before the schema set is written.
+        let registry = std::mem::take(&mut self.testgen);
+        mock::render(&mut self, &registry)?;
+        fixtures::render(&mut self, &registry)?;
         scaffold::add_peppylib_dependencies(&to_path, peppy_dirs, deploy_mode)?;
         scaffold::add_capnp_schemas(&self.schemas, to_path.as_ref())?;
         scaffold::add_artifacts_to_lib(&to_path, self.sections)?;

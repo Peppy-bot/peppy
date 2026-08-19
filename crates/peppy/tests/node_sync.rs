@@ -149,6 +149,46 @@ async fn node_sync_rust_command_succeeds() {
         goodbye_world_contents.contains("goodbye_world"),
         "goodbye_world.rs should contain topic name"
     );
+
+    // The test surfaces: fixtures (harness + emitted observation) always
+    // generate, the crate gates them behind the `testing` feature, and the
+    // node's manifest gains the dev-dependency that enables it.
+    let peppygen_dir = node_path.join(config::consts::PEPPYGEN_OUTPUT_PATH);
+    let harness_path = peppygen_dir.join("src/fixtures/harness.rs");
+    assert!(
+        harness_path.exists(),
+        "the fixtures harness should be generated at {}",
+        harness_path.display()
+    );
+    assert!(
+        peppygen_dir
+            .join("src/fixtures/emitted_topics/goodbye_world.rs")
+            .exists(),
+        "an emitted-topic observation client should be generated"
+    );
+    assert!(
+        peppygen_dir.join("src/mock.rs").exists(),
+        "the mock category module should be generated (empty for a dep-less node)"
+    );
+    let generated_lib = std::fs::read_to_string(peppygen_dir.join("src/lib.rs"))
+        .expect("generated lib.rs should be readable");
+    assert!(
+        generated_lib.contains("#[cfg(feature = \"testing\")]"),
+        "generated lib.rs should gate the test modules behind the testing feature:\n{generated_lib}"
+    );
+    let generated_manifest = std::fs::read_to_string(peppygen_dir.join("Cargo.toml"))
+        .expect("generated Cargo.toml should be readable");
+    assert!(
+        generated_manifest.contains("testing = [\"peppylib/testing\"]"),
+        "generated Cargo.toml should declare the testing feature:\n{generated_manifest}"
+    );
+    let node_manifest = std::fs::read_to_string(node_path.join("Cargo.toml"))
+        .expect("node Cargo.toml should be readable");
+    assert!(
+        node_manifest.contains("[dev-dependencies]")
+            && node_manifest.contains(r#"features = ["testing"]"#),
+        "sync should write the testing-featured peppygen dev-dependency:\n{node_manifest}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -268,6 +308,34 @@ async fn node_sync_python_command_succeeds() {
     assert!(
         goodbye_world_contents.contains("goodbye_world"),
         "goodbye_world.py should contain topic name"
+    );
+
+    // The test surfaces generate for Python too, inert (never imported by
+    // peppygen/__init__.py) but present for the node's own test suite.
+    let peppygen_pkg = node_path
+        .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+        .join("peppygen");
+    let harness_path = peppygen_pkg.join("fixtures/harness.py");
+    assert!(
+        harness_path.exists(),
+        "the fixtures harness should be generated at {}",
+        harness_path.display()
+    );
+    assert!(
+        peppygen_pkg
+            .join("fixtures/emitted_topics/goodbye_world.py")
+            .exists(),
+        "an emitted-topic observation client should be generated"
+    );
+    assert!(
+        peppygen_pkg.join("mock/__init__.py").exists(),
+        "the mock package should be generated (empty for a dep-less node)"
+    );
+    let init = std::fs::read_to_string(peppygen_pkg.join("__init__.py"))
+        .expect("peppygen __init__.py should be readable");
+    assert!(
+        !init.contains("mock") && !init.contains("fixtures"),
+        "peppygen/__init__.py must not import the test surfaces:\n{init}"
     );
 }
 

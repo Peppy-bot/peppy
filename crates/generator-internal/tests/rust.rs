@@ -21,6 +21,8 @@ mod pairing_lib;
 mod services_communication;
 #[path = "rust/services_implements.rs"]
 mod services_implements;
+#[path = "rust/testing_lib.rs"]
+mod testing_lib;
 #[path = "rust/topics_communication.rs"]
 mod topics_communication;
 #[path = "rust/topics_implements.rs"]

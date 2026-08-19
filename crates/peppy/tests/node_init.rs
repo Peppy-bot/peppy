@@ -78,6 +78,36 @@ fn node_cargo_init_command_success() {
         "src/main.rs should exist in the node directory"
     );
 
+    // The lib/main split: setup lives in src/lib.rs (importable by tests),
+    // main.rs delegates to it, and a smoke test boots the node through the
+    // generated harness.
+    let lib_rs = std::fs::read_to_string(created_node_dir.join("src/lib.rs"))
+        .expect("src/lib.rs should exist in the node directory");
+    assert!(
+        lib_rs.contains("pub async fn setup"),
+        "src/lib.rs should scaffold the importable setup entry point:\n{lib_rs}"
+    );
+    let main_rs = std::fs::read_to_string(created_node_dir.join("src/main.rs"))
+        .expect("src/main.rs should be readable");
+    assert!(
+        main_rs.contains(&format!("{node_name}::setup")),
+        "src/main.rs should delegate to the library's setup:\n{main_rs}"
+    );
+    let smoke = std::fs::read_to_string(created_node_dir.join("tests/smoke.rs"))
+        .expect("tests/smoke.rs should exist in the node directory");
+    assert!(
+        smoke.contains("fixtures::harness::Harness")
+            && smoke.contains(&format!("{node_name}::setup")),
+        "tests/smoke.rs should boot the node through the generated harness:\n{smoke}"
+    );
+    let cargo_toml = std::fs::read_to_string(created_node_dir.join("Cargo.toml"))
+        .expect("Cargo.toml should be readable");
+    assert!(
+        cargo_toml.contains("[dev-dependencies]")
+            && cargo_toml.contains(r#"features = ["testing"]"#),
+        "Cargo.toml should carry the testing-featured peppygen dev-dependency:\n{cargo_toml}"
+    );
+
     // Verify .gitignore was created
     assert!(
         created_node_dir.join(".gitignore").exists(),
@@ -244,6 +274,22 @@ fn node_uv_init_command_success() {
             .join(format!("src/{node_name}/__main__.py"))
             .exists(),
         "src/{node_name}/__main__.py should exist in the node directory"
+    );
+
+    // The scaffolded smoke test boots the node through the generated
+    // harness; pyproject's dev group carries the pytest tooling for it.
+    let smoke = std::fs::read_to_string(created_node_dir.join("tests/test_smoke.py"))
+        .expect("tests/test_smoke.py should exist in the node directory");
+    assert!(
+        smoke.contains("peppygen.fixtures")
+            && smoke.contains(&format!("from {node_name}.__main__ import setup")),
+        "tests/test_smoke.py should boot the node through the generated harness:\n{smoke}"
+    );
+    let pyproject = std::fs::read_to_string(created_node_dir.join("pyproject.toml"))
+        .expect("pyproject.toml should be readable");
+    assert!(
+        pyproject.contains("pytest-asyncio") && pyproject.contains("asyncio_mode = \"auto\""),
+        "pyproject.toml should carry the pytest dev tooling:\n{pyproject}"
     );
 
     assert!(
