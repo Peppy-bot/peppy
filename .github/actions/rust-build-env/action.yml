@@ -1,0 +1,40 @@
+name: Rust build environment
+description: >-
+  Installs the Rust toolchain and the system packages every cargo step in this
+  repository builds against.
+
+runs:
+  using: composite
+  steps:
+    # The runner image's default toolchain trails the workspace's dependency
+    # graph, which requires a newer rustc than the image ships, so the job pins
+    # itself to current stable instead of inheriting the image default. Must
+    # stay ahead of every cargo step: the peppylib build script calls
+    # `rustup target add` for the cross-compiled targets and resolves them
+    # against whichever toolchain is default here.
+    - name: Install Rust toolchain
+      shell: bash
+      run: |
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+        rustc --version
+
+    # containers-internal's build script compiles apptainer and its bundled
+    # squashfuse from source, and refuses to start unless every package in
+    # APPTAINER_BUILD_DEPS (crates/containers-internal/build.rs) is present: a
+    # header it cannot find is silently dropped from the build rather than
+    # reported. The list below mirrors that constant and must be kept in step
+    # with it. fuse2fs is separate: apptainer needs it at run time to mount EXT3
+    # images, so the container tests need it even though its absence is only a
+    # warning at build time. Go is absent because the build script downloads its
+    # own pinned toolchain.
+    - name: Install apptainer build and runtime dependencies
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates \
+          libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
+          liblzma-dev libzstd-dev fuse2fs
