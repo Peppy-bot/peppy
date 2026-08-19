@@ -311,6 +311,8 @@ mod tests {
             "    async def stop_all(",
             "class HarnessCore:",
             "class EphemeralRouter:",
+            "class MockClock:",
+            "MOCK_CLOCK_INSTANCE_ID",
         ] {
             assert!(
                 source.contains(definition),

@@ -85,6 +85,29 @@ fn multi_instance_dep_slot_gets_an_instance_id_override() {
 }
 
 #[test]
+fn every_harness_carries_the_daemon_clock_stand_in() {
+    // The clock is node-invariant, so even a registry with no slots at all
+    // gets the full surface: the sim kwarg, both start modes, the standalone
+    // seeding, and the readiness-barrier entry.
+    let mut registry = TestGenRegistry::default();
+    registry.record_node_identity("relay_node", "v1");
+    let rendered = rendered_harness(&registry);
+    assert_contains_all(
+        &rendered,
+        &[
+            "use_sim_time=False",
+            "if use_sim_time:",
+            "MockClock.start_sim(",
+            "MockClock.start_wall(",
+            "MOCK_CLOCK_INSTANCE_ID",
+            ".with_use_sim_time(use_sim_time)",
+            "service_readiness = [clock.readiness()]",
+            "clock=clock,",
+        ],
+    );
+}
+
+#[test]
 fn required_pairing_slot_has_no_vacancy_kwarg() {
     let rendered = rendered_harness(&registry_with_pairing(false));
     assert!(rendered.contains("with_peer_pin("));

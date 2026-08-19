@@ -6,33 +6,43 @@ daemon-resolved time with a single call::
     await peppygen.clock.init(node_runner)
     t = peppygen.clock.now_ns()
 
-``init`` must be called once before any ``now_ns`` call. Subsequent
-``init`` calls are no-ops, so it is safe to call from both top-level setup
-and helper functions that may be invoked first.
+``init`` must be called before any ``now_ns`` call. It binds the module
+clock to the initializing node: calling it again for the same node is a
+no-op, so it is safe to call from both top-level setup and helper functions
+that may be invoked first. Initializing a different node rebinds, which is
+how consecutive test-harness boots in one process (wall- and sim-time
+alike) each read their own clock; the harness serializes boots, so a
+rebind never races a live node.
 
 In wall mode ``init`` is a no-op wrapper. In sim mode it opens a
 subscription to the ``clock`` topic so the first ``now_ns`` after a tick
 is delivered returns immediately.
 """
 
-import asyncio
-from typing import Optional
+from typing import Optional, Tuple
 
 import peppylib
 
 _clock: Optional["peppylib.clock.PeppyClock"] = None
-_clock_lock = asyncio.Lock()
+#: The owning node's wire identity, so a second ``init`` can tell "same
+#: node again" (no-op) from "new node" (rebind).
+_clock_key: Optional[Tuple[str, str]] = None
 
 
 async def init(node_runner: "peppylib.NodeRunner") -> None:
-    """Build the pre-bound clock for ``node_runner``. Idempotent."""
-    global _clock
-    if _clock is not None:
+    """Build the pre-bound clock for ``node_runner``. Idempotent per node.
+
+    Two helpers of one node racing their first ``init`` both resolve the
+    same clock and the later assignment wins, so the race is benign; no
+    lock is held across the await (an ``asyncio`` lock would pin the loop
+    of whichever test booted first).
+    """
+    global _clock, _clock_key
+    key = (node_runner.bound_core_node(), node_runner.bound_instance_id())
+    if _clock is not None and _clock_key == key:
         return
-    async with _clock_lock:
-        if _clock is not None:
-            return
-        _clock = await peppylib.clock.for_node(node_runner)
+    _clock = await peppylib.clock.for_node(node_runner)
+    _clock_key = key
 
 
 def now_ns() -> int:

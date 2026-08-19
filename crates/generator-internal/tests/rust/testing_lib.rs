@@ -6,7 +6,10 @@
 //! node drives the mock action (accept → feedback → complete) → node's own
 //! emissions observed via fixtures (emitted topic + pairing slot), plus the
 //! deterministic producer-loss path (`Mock::stop` mid-goal → the node sees
-//! `ActionFeedbackProducerGone`, never a hang or clean close).
+//! `ActionFeedbackProducerGone`, never a hang or clean close). A second test
+//! boots the same node in sim time (`Config::use_sim_time`) and drives the
+//! harness clock: every `harness.clock.tick(..)` instant is what the node's
+//! `peppygen::clock::now_ns` observes.
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
@@ -96,6 +99,10 @@ pub async fn setup(
     _parameters: peppygen::Parameters,
     node_runner: Arc<peppygen::NodeRunner>,
 ) -> peppygen::Result<()> {
+    // Wall mode under the harness: init is the no-op wrapper and now_ns
+    // reads the OS clock immediately.
+    peppygen::clock::init(&node_runner).await?;
+    assert!(peppygen::clock::now_ns()? > 0);
     let status =
         peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
     let commands =
@@ -159,6 +166,34 @@ pub async fn setup(
             .await?;
     }
     Ok(())
+}
+
+/// Sim-time entry point: reports every sim-clock value it observes on the
+/// status topic, so the test can assert the exact virtual instants it drove
+/// through `harness.clock.tick(..)`.
+pub async fn setup_sim_clock(
+    _parameters: peppygen::Parameters,
+    node_runner: Arc<peppygen::NodeRunner>,
+) -> peppygen::Result<()> {
+    peppygen::clock::init(&node_runner).await?;
+    let status =
+        peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
+    let mut last = 0u64;
+    loop {
+        // Wait on observation: before the first tick now_ns errors
+        // (ClockNotReady), afterwards it returns the last driven instant.
+        match peppygen::clock::now_ns() {
+            Ok(ns) if ns != last => {
+                last = ns;
+                status
+                    .publish(peppygen::emitted_topics::status::build_message(
+                        format!("t={ns}"),
+                    )?)
+                    .await?;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(5)).await,
+        }
+    }
 }
 "#;
 
@@ -377,6 +412,49 @@ async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
         .expect("status should decode")
         .expect("status subscription should be open");
     assert_eq!(status.outcome, "producer-gone");
+
+    harness.shutdown().await.expect("clean shutdown");
+}}
+
+// Sim time under the harness: the test is the simulator. `use_sim_time`
+// boots the node with the sim-clock source installed, and every virtual
+// instant the test drives through `harness.clock.tick(..)` is what the
+// node's `peppygen::clock::now_ns` observes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sim_time_is_test_driven_under_the_harness() {{
+    let (mut harness, _mocks) = Harness::start_with(
+        peppygen::fixtures::harness::Config {{
+            use_sim_time: true,
+            ..Default::default()
+        }},
+        {crate_name}::setup_sim_clock,
+    )
+    .await
+    .expect("harness should start in sim time");
+
+    // tick() itself waits for the node's clock subscription (opened by
+    // peppygen::clock::init) before publishing, so nothing here sleeps.
+    harness.clock.tick(1_000).await.expect("first tick");
+    let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
+        .await
+        .expect("the node should observe the first sim instant")
+        .expect("status should decode")
+        .expect("status subscription should be open");
+    assert_eq!(status.outcome, "t=1000");
+
+    harness.clock.tick(2_000).await.expect("second tick");
+    let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
+        .await
+        .expect("the node should observe the second sim instant")
+        .expect("status should decode")
+        .expect("status subscription should be open");
+    assert_eq!(status.outcome, "t=2000");
+
+    // Wall-clock knobs are refused in sim mode, loudly.
+    harness
+        .clock
+        .set_offset_ns(1)
+        .expect_err("sim time has no wall offset to skew");
 
     harness.shutdown().await.expect("clean shutdown");
 }}
