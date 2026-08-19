@@ -19,6 +19,15 @@ env:
   # fresh artifacts are reused); it only pays the cross-build cost when the cache
   # is cold. Cross-arch apptainer is separate, gated by PEPPY_CROSS_ARCH.
   PEPPY_CROSS_BUILD: "1"
+  # Bounds every cargo invocation in the job, including the inner peppylib
+  # build that generator-internal's build script runs through pixi and
+  # maturin: build scripts inherit this environment, so the two overlapping
+  # builds cannot each spawn a rustc per vCPU. The uncapped pair (64
+  # concurrent compiler and linker processes on a cold cache) exhausts the
+  # runner VM and takes the runner agent down with it, which GitHub reports
+  # as the runner losing communication. Sixteen per build keeps the pair
+  # within the VM's memory while leaving enough jobs to keep 32 vCPUs busy.
+  CARGO_BUILD_JOBS: "16"
 
 jobs:
   test:
