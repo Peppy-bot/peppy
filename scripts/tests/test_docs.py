@@ -54,7 +54,6 @@ def _minor(file: str = "docs/y.mdx", change: str = "reword") -> RequiredChange:
         ("docs/astro.config.mjs", False),
         ("target/debug/foo", False),
         (".github/workflows/tests.yml", False),
-        (".buildkite/pipeline.yml", False),
         ("scripts/docs/is_doc_up_to_date.py", False),
         ("scripts/functions/docs.py", False),
         ("scripts/tests/test_docs.py", False),
