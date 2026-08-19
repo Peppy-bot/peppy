@@ -45,6 +45,18 @@ jobs:
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
 
+      # The runner image's default toolchain trails the workspace's dependency
+      # graph, which requires a newer rustc than the image ships, so the job
+      # pins itself to current stable instead of inheriting the image default.
+      # Must stay ahead of every cargo step: the peppylib build script calls
+      # `rustup target add` for the cross-compiled targets and resolves them
+      # against whichever toolchain is default here.
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
       - name: Run tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
