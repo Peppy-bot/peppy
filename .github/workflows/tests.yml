@@ -66,25 +66,32 @@ jobs:
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --locked --no-run
 
+      # The teardown paths under test SIGKILL whole process groups, and the
+      # runner agent shares a process group with the step's shell, so a group
+      # signal that escapes the test tree takes the agent down with it and the
+      # job dies with "the self-hosted runner lost communication with the
+      # server". `setsid` gives each cargo run its own session, bounding those
+      # signals to the test tree; `--wait` propagates the exit status so a
+      # failing suite still fails the step.
       - name: Run tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked
+          setsid --wait cargo test --locked
 
       - name: Run container e2e tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked -p core-node --features container_e2e --test container_e2e
+          setsid --wait cargo test --locked -p core-node --features container_e2e --test container_e2e
 
       - name: Run multi-daemon Docker e2e test
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+          setsid --wait cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
       - name: Run documentation integration tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked -p docs-integration-tests
+          setsid --wait cargo test --locked -p docs-integration-tests
 
       - name: Detect scripts/ changes
         id: scripts_changed
