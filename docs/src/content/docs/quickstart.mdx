@@ -45,13 +45,13 @@ The video below is this page in video form: the same three steps, run start to f
 
 ## Step 2: Launch the simulated robot
 
-A launcher is one file listing the nodes that make up a robot. The OpenArm ones ship with peppy and the installer indexed them, so you can start [`openarm_v2_teleop_mujoco`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_v2_teleop_mujoco.json5) by name:
+A launcher is one file listing the nodes that make up a robot, with the parts that vary (which robot fills the arms, which control surface drives them) selected at launch time with `--with`. The OpenArm launchers ship with peppy and the installer indexed them, so you can start [`openarm_v2`](https://github.com/Peppy-bot/launchers-hub/blob/main/openarm/openarm_v2.json5) by name, picking the MuJoCo simulation and the browser control panel:
 
 ```sh
-peppy stack launch openarm_v2_teleop_mujoco
+peppy stack launch openarm_v2 --with=mujoco,web_commander
 ```
 
-That single command adds, builds, and starts every [node](/reference/concepts/#node) in the launcher, in dependency order: eight instances across six node types. The cast is the MuJoCo engine, one relay per limb (two arms, two grippers), the readiness aggregator that waits for every limb's physics to come alive, the backbone that coordinates both arms, and the browser control panel. It prints `Launch complete` when the stack is up.
+That single command adds, builds, and starts every [node](/reference/concepts/#node) in the selection, in dependency order: eight instances across six node types. The cast is the MuJoCo engine, one relay per limb (two arms, two grippers), the readiness aggregator that waits for every limb's physics to come alive, the backbone that coordinates both arms, and the browser control panel. It prints `Launch complete` when the stack is up.
 
 The command then returns; it is not a foreground supervisor. The nodes keep running under the peppy background service, so you can close that terminal without stopping them.
 
@@ -74,7 +74,7 @@ Once the launcher prints `Launch complete`, open two browser tabs:
 | **http://localhost:8080** | the MuJoCo viewer, showing both arms in the simulated world |
 | **http://localhost:8765** | the `openarm_commander` control panel |
 
-Put them side by side. The panel opens in **Streaming** mode, with a card per arm: press **Enable** on one, drag any of its joint sliders or its gripper slider, and that side follows your input live in the viewer. The mode switch has two more modes to try once the arms move: **Actions** for one governed move to a target you compose, and **Gestures** for a baked choreography.
+Put them side by side. The panel opens in **Streaming** mode, with a card per arm: press **Enable** on one, drag any of its joint sliders or its gripper slider, and that side follows your input live in the viewer. The mode switch has three more modes to try once the arms move: **Actions** for one governed move to a target you compose, **Gestures** for a baked choreography, and **Motors** for a read-only view of every motor's health.
 
 ![The MuJoCo viewer showing the simulated bimanual OpenArm, next to the openarm_commander panel playing the wave gesture](../../assets/mujoco_sim1.png)
 
@@ -103,7 +103,7 @@ It prints the instance's state and health plus the path to its run log, which is
 
 **The panel won't load and `commander_inst` is not running.** Port 8765 is taken, usually by an earlier instance that is still up. Find it with `peppy stack list` and stop it with `peppy node stop <instance_id>`, then launch again.
 
-**The viewer isn't on 8080.** Something else holds that port, so the sim took the next free one. Read the port off the sim's run log (`peppy node info openarm_sim_mujoco:v1` prints its path), or pin one by setting `viewer_port` in the sim instance's `arguments` in the launcher.
+**The viewer isn't on 8080.** Something else holds that port, so the sim took the next free one. Read the port off the sim's run log (`peppy node info openarm_sim_mujoco:v1` prints its path), or pin one by setting `viewer_port` in the sim instance's `arguments` (flatten the launcher to a file with `peppy stack resolve openarm_v2 --with=mujoco,web_commander`, edit it, and launch the file).
 
 **A build fails on Linux.** Apptainer needs unprivileged user namespaces, which the installer normally configures. Check with `peppy container status`, and repair it with `peppy container setup` (see [Containers](/advanced_guides/containers/)).
 
