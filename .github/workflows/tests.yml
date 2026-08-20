@@ -35,6 +35,61 @@ jobs:
           # credential sitting in .git/config for every later step to inherit.
           persist-credentials: false
 
+      # Which of the later gated suites have had their inputs touched. The
+      # three filters below mirror the source sets of their suites: the
+      # crates each cargo command compiles from this workspace (the internal
+      # path-dependency closure from the resolve graph, including dev and
+      # build dependencies), plus the repo files those steps read and the
+      # build inputs every cargo step shares. Keep each list in sync with its
+      # command's dependencies: when a crate gains or drops a workspace
+      # dependency, its directory moves between these lists too.
+      - name: Detect changed test inputs
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            container_e2e:
+              - 'crates/core-node-internal/**'
+              - 'crates/containers-internal/**'
+              - 'crates/daemon-config-internal/**'
+              - 'crates/encoding-internal/**'
+              - 'crates/generator-internal/**'
+              - 'crates/latency-report/**'
+              - 'crates/mcp-test-support/**'
+              - 'crates/node-stack-internal/**'
+              - 'crates/peppylib-build-policy/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/config.toml'
+              - '.github/actions/rust-build-env/**'
+              - '.github/workflows/tests.yml'
+            docs_integration:
+              # The suite also walks the docs snippets at runtime, which live
+              # outside this package's directory.
+              - 'docs/tests/integration/**'
+              - 'docs/src/content/docs/guides/snippets/**'
+              - 'crates/auth-internal/**'
+              - 'crates/containers-internal/**'
+              - 'crates/core-node-internal/**'
+              - 'crates/daemon-config-internal/**'
+              - 'crates/daemon-internal/**'
+              - 'crates/encoding-internal/**'
+              - 'crates/generator-internal/**'
+              - 'crates/latency-report/**'
+              - 'crates/mcp-test-support/**'
+              - 'crates/node-stack-internal/**'
+              - 'crates/peppy/**'
+              - 'crates/peppylib-build-policy/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/config.toml'
+              - '.github/actions/rust-build-env/**'
+              - '.github/workflows/tests.yml'
+            scripts:
+              # The release scripts suite is self-contained in scripts/,
+              # toolchain included (pixi.toml, pixi.lock, pyproject.toml).
+              - 'scripts/**'
+
       # Give this run its own peppy data root so the runner does not accumulate
       # or collide on /tmp/.peppy across runs. Only the Rust cargo steps below
       # opt in via env; the release-scripts step is left alone so
@@ -69,6 +124,7 @@ jobs:
           cargo test --locked
 
       - name: Run container e2e tests
+        if: steps.changes.outputs.container_e2e == 'true'
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --locked -p core-node --features container_e2e --test container_e2e
@@ -79,22 +135,15 @@ jobs:
           cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
       - name: Run documentation integration tests
+        if: steps.changes.outputs.docs_integration == 'true'
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --locked -p docs-integration-tests
 
-      - name: Detect scripts/ changes
-        id: scripts_changed
-        uses: dorny/paths-filter@v4
-        with:
-          filters: |
-            scripts:
-              - 'scripts/**'
-
       - name: Run release scripts tests
         if: |
           (github.event_name == 'pull_request' && github.base_ref == 'main')
-          || steps.scripts_changed.outputs.scripts == 'true'
+          || steps.changes.outputs.scripts == 'true'
         run: ./scripts/run_tests.sh --all
 
       # Proves the build consumed the committed lockfile rather than re-resolving
