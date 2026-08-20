@@ -100,7 +100,17 @@ jobs:
         if: |
           (github.event_name == 'pull_request' && github.base_ref == 'main')
           || steps.changes.outputs.scripts == 'true'
-        run: ./scripts/run_tests.sh --all
+        run: |
+          # The install tests boot Lima VMs, whose QEMU the runner image
+          # lacks (limactl itself comes from the pixi environment). The
+          # packages match what the suite's own failure message names. KVM
+          # opens when present but group-inaccessible; without it Lima falls
+          # back to software emulation, which only costs time.
+          sudo apt-get install -y -qq qemu-utils qemu-system
+          if [ -e /dev/kvm ] && ! [ -r /dev/kvm -a -w /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+          fi
+          ./scripts/run_tests.sh --all
 
       # Proves the build consumed the committed lockfile rather than re-resolving
       # it, so the tested dependency graph is the shipped one. Must stay after the
