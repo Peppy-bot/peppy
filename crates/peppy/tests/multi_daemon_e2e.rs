@@ -275,6 +275,7 @@ async fn build_e2e_daemon_image(release: &str) {
                     "buildx",
                     "build",
                     "--load",
+                    "--progress=plain",
                     "--tag",
                     &tag_for_build,
                     "--file",
@@ -294,15 +295,27 @@ async fn build_e2e_daemon_image(release: &str) {
         })
         .await
         .expect("join the blocking e2e image build");
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             output.status.success(),
-            "docker buildx build of the e2e daemon image failed:\n{}",
-            String::from_utf8_lossy(&output.stderr),
+            "docker buildx build of the e2e daemon image failed:\n{stderr}",
         );
-        println!(
-            "built {tag} through the default buildx builder in {:.1}s",
-            built_at.elapsed().as_secs_f32(),
-        );
+        // Plain progress names every step BuildKit served from the layer
+        // cache, so the count is the run-to-run reuse made visible.
+        let cached_steps = stderr.lines().filter(|l| l.contains(" CACHED ")).count();
+        let elapsed = built_at.elapsed().as_secs_f32();
+        println!("built {tag} through the default buildx builder in {elapsed:.1}s ({cached_steps} cached steps)");
+        // The test harness captures stdout, so surface the same numbers in the
+        // GitHub step summary, where a passing run still shows them.
+        if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&summary) {
+                let _ = writeln!(
+                    file,
+                    "e2e daemon image: built in {elapsed:.1}s via buildx, {cached_steps} cached steps"
+                );
+            }
+        }
         return;
     }
 
