@@ -92,6 +92,12 @@ jobs:
               PATH="/home/runner/.cargo/bin:/home/runner/.pixi/bin:/home/runner/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
               "$@"
           EOF
+          echo "workspace: $(stat -c '%U:%G %A' "$GITHUB_WORKSPACE")"
+          sudo -u ci test -w "$GITHUB_WORKSPACE" \
+            && echo "ci can write the workspace" \
+            || echo "ci CANNOT write the workspace"
+          sudo -u ci touch "$GITHUB_WORKSPACE/.ci-write-probe" 2>&1 | head -1 \
+            && sudo rm -f "$GITHUB_WORKSPACE/.ci-write-probe"
           chmod +x "$RUNNER_TEMP/as-ci"
 
       # A runner-owned bystander: if a test's kill sweep still reaches the
