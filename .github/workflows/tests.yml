@@ -107,6 +107,26 @@ jobs:
           EOF
           chmod +x "$RUNNER_TEMP/as-ci"
 
+      # Two of the runner's own supervisors kill by cgroup, not by process, so
+      # either one takes cargo and every test binary at once and leaves the
+      # step with a bare SIGKILL and no output, which is exactly the shape of
+      # the loss this job keeps hitting:
+      #
+      #   - logind tears down a user's slice once that user's last session
+      #     closes, and every cargo step below is its own `sudo` session, so
+      #     the gap between two steps is enough. Lingering holds the slice open
+      #     for the whole job.
+      #   - systemd-oomd kills a whole cgroup on memory *pressure*, well before
+      #     the kernel is out of memory, and reports nothing to the job. The
+      #     kernel OOM killer is left in place, so a genuine runaway still
+      #     fails the job.
+      - name: Keep the runner's supervisors from killing the cargo steps
+        run: |
+          sudo loginctl enable-linger ci
+          if systemctl is-active --quiet systemd-oomd; then
+            sudo systemctl stop systemd-oomd
+          fi
+
       # A runner-owned bystander: if a test's kill sweep still reaches the
       # runner user despite the `ci` split, this process is what dies first
       # and the check below reports it without costing the agent.
@@ -163,6 +183,25 @@ jobs:
           "$RUNNER_TEMP/as-ci" setsid --wait env \
             PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
             cargo test --locked -p docs-integration-tests
+
+      # A cargo step that dies without output was killed by something outside
+      # it, and every candidate names itself in exactly one of these places:
+      # the kernel log (OOM killer), the oomd journal (a pressure kill), the
+      # logind journal (a slice teardown). What survives under `ci` separates a
+      # whole-cgroup kill from one that took only the session leader.
+      - name: Report what killed the cargo step
+        if: failure()
+        run: |
+          free -m
+          cat /proc/pressure/memory
+          echo "--- ci processes still alive ---"
+          pgrep -u ci -a || echo "none"
+          echo "--- kernel log ---"
+          sudo journalctl -k --since "-40 min" --no-pager | tail -80
+          echo "--- systemd-oomd ---"
+          sudo journalctl -u systemd-oomd --since "-40 min" --no-pager | tail -40
+          echo "--- systemd-logind ---"
+          sudo journalctl -u systemd-logind --since "-40 min" --no-pager | tail -40
 
       - name: Check the canary survived the test suite
         if: always()
