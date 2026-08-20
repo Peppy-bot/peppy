@@ -22,19 +22,14 @@ env:
   # Bounds every cargo invocation in the job, including the inner peppylib
   # build that generator-internal's build script runs through pixi and
   # maturin: build scripts inherit this environment, so the two overlapping
-  # builds cannot each spawn a rustc per vCPU. Three per build fits the
-  # 16 GB GitHub-hosted control runner.
-  CARGO_BUILD_JOBS: "3"
+  # builds cannot each spawn a rustc per vCPU. Eight per build keeps the
+  # pair within the 16 vCPU runner's memory while still keeping its CPUs
+  # busy.
+  CARGO_BUILD_JOBS: "8"
 
 jobs:
   test:
-    # TEMPORARY control: the same job has lost its Blacksmith runner six times
-    # mid test execution on both tiers and every parallelism, always with the
-    # step's logs. A GitHub-hosted runner either passes the suite (the loss is
-    # Blacksmith-specific and goes to their support with the evidence) or dies
-    # the same way but keeps per-step logs that name the guilty test. Revert to
-    # the Blacksmith runner once the cause is known.
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     permissions:
       contents: read
       pull-requests: read
