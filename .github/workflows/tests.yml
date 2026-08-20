@@ -79,12 +79,12 @@ jobs:
       - name: Set up the ci user for the cargo steps
         run: |
           sudo useradd -m -s /bin/bash ci
-          # The toolchains live in the runner user's home; the cargo steps
-          # execute them as `ci`, so they need to be world-traversable.
+          # The toolchains and temp dirs live under the runner user's home;
+          # the cargo steps execute them as `ci`, so every level down to them
+          # needs to be world-traversable.
+          sudo chmod a+X /home/runner /home/runner/work
           sudo chmod -R a+rX /home/runner/.cargo /home/runner/.rustup \
             /home/runner/.pixi /home/runner/.local
-          printf 'ci:100000:65536\n' | sudo tee -a /etc/subuid /etc/subgid > /dev/null
-          sudo chown -R ci:ci "$GITHUB_WORKSPACE" "$PEPPY_RUN_HOME"
           cat > "$RUNNER_TEMP/as-ci" <<'EOF'
           #!/bin/bash
           exec sudo --set-home --user ci \
