@@ -103,11 +103,19 @@ Field requirements:
   users. Mention only user-facing themes, so the headline never promises changes
   the notes leave out.
 - "notes": the release body in Markdown, as a bulleted list of the user-facing
-  changes only, one bullet per change, each rewritten as a clear, self-contained
-  sentence. Group related changes under short "### " subheadings when it improves
-  readability. Do NOT include any links, URLs, pull-request or issue numbers (for
-  example "#123"), commit hashes, author or "@" mentions, or a "Full Changelog"
-  line.
+  changes only. Keep it short: one bullet per capability a user gains or loses,
+  written as a single plain sentence of at most about 30 words that says what
+  the user can now do (or must do differently), not how it is implemented or
+  enforced. A capability's details (its options, defaults, error cases,
+  guardrails, and per-language spellings) stay in the documentation unless
+  the sentence has room for one of them; name an API once, in whichever
+  language's spelling reads most naturally, rather than quoting both the
+  Python and the Rust forms. Add
+  short "### " subheadings only when the release spans several unrelated
+  themes (plus the "### Breaking changes" subheading described below whenever
+  it applies); a release with one theme is a flat list. Do NOT include any
+  links, URLs, pull-request or issue numbers (for example "#123"), commit
+  hashes, author or "@" mentions, or a "Full Changelog" line.
 
 Call out backward-incompatible changes. A user-facing change is breaking when a
 user must update their `peppy.json5`, commands, scripts, or workflow to keep
