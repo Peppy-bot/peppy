@@ -65,7 +65,9 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
                 continue
             if expected_machine is None:
                 continue
-            extracted = tar.extractfile(member)
+            # extractfile follows link members to their target's stream, so a
+            # symlink to a valid binary would pass; only a regular file counts.
+            extracted = tar.extractfile(member) if member.isfile() else None
             if extracted is None:
                 problems.append(f"{item} is not a regular file")
                 continue

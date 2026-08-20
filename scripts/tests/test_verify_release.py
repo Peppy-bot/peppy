@@ -155,6 +155,27 @@ def test_verify_archive_rejects_a_wrong_arch_binary(tmp_path: Path) -> None:
     assert any("apptainer" in p and "ELF machine" in p for p in problems), problems
 
 
+def test_verify_archive_rejects_a_link_member(tmp_path: Path) -> None:
+    # extractfile follows a link member to its target's bytes, so a symlink to
+    # a valid ELF would pass the header check; the member's own type is what
+    # proves the required path carries a real file.
+    triple = "x86_64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    with tarfile.open(archive, "w:gz") as tar:
+        data = _binary_for(triple)
+        for name in ("bin/peppy", "bin/zenohd"):
+            info = tarfile.TarInfo(name=f"./{name}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        link = tarfile.TarInfo(name="./bin/apptainer/bin/apptainer")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../peppy"
+        tar.addfile(link)
+
+    problems = verify_release_archive(archive, triple)
+    assert "bin/apptainer/bin/apptainer is not a regular file" in problems
+
+
 def test_verify_archive_rejects_a_binary_that_is_not_elf(tmp_path: Path) -> None:
     triple = "aarch64-unknown-linux-gnu"
     archive = tmp_path / f"peppy-{triple}.tgz"
