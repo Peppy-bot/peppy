@@ -1,67 +1,21 @@
 use crate::Result;
 use config::node::QoSProfile;
-use core_node_api::encoding::{ClockRequest, ClockResponse, ClockTick};
+use core_node_api::encoding::ClockTick;
 use core_node_api::names;
 use core_node_api::{ServiceId, TopicId};
-use peppylib::clock::wall_now_ns;
-use peppylib::messaging::{SenderTarget, ServiceRequestContext, Subscription, TopicPublisher};
-use peppylib::types::Payload;
-use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger, TopicMessenger};
+// The clock-source abstraction and the NTP-style request handler live in
+// `peppylib::clock`, shared with the test harness's clock stand-in
+// (`peppylib::testing::MockClock`) so both serve identical semantics.
+pub use peppylib::clock::{ClockSource, SimClockSource, WallClockSource};
+use peppylib::clock::handle_clock_request;
+use peppylib::messaging::{SenderTarget, Subscription, TopicPublisher};
+use peppylib::{MessengerHandle, ServiceMessenger, TopicMessenger};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
-
-/// Failures observable from a [`ClockSource`]. Wall mode propagates a system
-/// clock error; sim mode reports a missing first tick.
-#[derive(Debug, thiserror::Error)]
-pub enum ClockSourceError {
-    #[error("system clock unavailable: {0}")]
-    Wall(String),
-    #[error("clock not ready: no external tick observed yet (sim mode)")]
-    NotReady,
-}
-
-/// Daemon-internal abstraction over "what time is it". The clock service
-/// handler and the periodic publisher both go through this trait so the
-/// daemon can serve sim/replay timestamps without changing the wire.
-pub trait ClockSource: Send + Sync {
-    fn now_ns(&self) -> std::result::Result<u64, ClockSourceError>;
-}
-
-/// Reads OS wall time. Used when the daemon resolves the clock source to
-/// `wall` (the default).
-pub struct WallClockSource;
-
-impl ClockSource for WallClockSource {
-    fn now_ns(&self) -> std::result::Result<u64, ClockSourceError> {
-        wall_now_ns().map_err(|e| ClockSourceError::Wall(e.to_string()))
-    }
-}
-
-/// Serves timestamps from a daemon-internal cache fed by a subscription to
-/// the `clock` topic. `0` is reserved as "no tick observed yet" so the
-/// handler can return `NotReady` instead of a misleading zero timestamp.
-pub struct SimClockSource {
-    cache: Arc<AtomicU64>,
-}
-
-impl SimClockSource {
-    pub fn new(cache: Arc<AtomicU64>) -> Self {
-        Self { cache }
-    }
-}
-
-impl ClockSource for SimClockSource {
-    fn now_ns(&self) -> std::result::Result<u64, ClockSourceError> {
-        match self.cache.load(Ordering::Relaxed) {
-            0 => Err(ClockSourceError::NotReady),
-            ns => Ok(ns),
-        }
-    }
-}
+use tracing::warn;
 
 pub async fn listen_for_clock(
     messenger: &MessengerHandle,
@@ -90,54 +44,6 @@ pub async fn listen_for_clock(
     });
 
     Ok(handle)
-}
-
-fn handle_clock_request(
-    source: &dyn ClockSource,
-    context: ServiceRequestContext,
-) -> PeppyResult<Payload> {
-    // Stamp t1 first: every line after this point inflates server processing
-    // time and corrupts the offset estimate the client computes.
-    let server_recv_time = source
-        .now_ns()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: context.message().instance_id().to_string(),
-            reason: e.to_string(),
-        })?;
-    let instance_id = context.message().instance_id().to_string();
-    handle_clock_request_inner(source, &context, server_recv_time).map_err(|e| {
-        PeppyError::InvalidServiceRequest {
-            identifier: instance_id,
-            reason: e.to_string(),
-        }
-    })
-}
-
-fn handle_clock_request_inner(
-    source: &dyn ClockSource,
-    context: &ServiceRequestContext,
-    server_recv_time: u64,
-) -> Result<Payload> {
-    let request = ClockRequest::decode(context.message().payload_bytes().as_ref())?;
-
-    debug!(
-        "Received clock request from {}, t0={}",
-        context.message().instance_id(),
-        request.client_send_time,
-    );
-
-    // Stamp t2 last: the response encode + send happens after this point and
-    // is part of the round-trip delay the client measures, not server time.
-    let server_send_time = source
-        .now_ns()
-        .map_err(|e| PeppyError::InvalidServiceRequest {
-            identifier: context.message().instance_id().to_string(),
-            reason: e.to_string(),
-        })?;
-
-    ClockResponse::new(request.client_send_time, server_recv_time, server_send_time)
-        .encode()
-        .map_err(Into::into)
 }
 
 /// Spawns a task that emits a `ClockTick` on the `clock` topic at every
@@ -408,22 +314,4 @@ mod tests {
         outcome.expect("heartbeat should exit Ok after a clean cancel");
     }
 
-    #[test]
-    fn wall_clock_source_returns_a_value() {
-        let now = WallClockSource.now_ns().expect("system clock available");
-        assert!(now > 0);
-    }
-
-    #[test]
-    fn sim_clock_source_reports_not_ready_until_first_tick() {
-        let cache = Arc::new(AtomicU64::new(0));
-        let source = SimClockSource::new(Arc::clone(&cache));
-        let err = source
-            .now_ns()
-            .expect_err("empty cache must surface NotReady");
-        assert!(matches!(err, ClockSourceError::NotReady));
-
-        cache.store(42, Ordering::Relaxed);
-        assert_eq!(source.now_ns().expect("cache populated"), 42);
-    }
 }

@@ -1021,6 +1021,14 @@ fn render_harness(
             pub parameters: Option<crate::Parameters>,
             /// Explicit node instance id; `None` generates a unique one.
             pub instance_id: Option<String>,
+            /// Boot the node in sim time, as a launcher's
+            /// `framework: { use_sim_time: true }` would: the harness clock
+            /// serves sim mode, so `peppygen::clock::now_ns` (and
+            /// `peppylib` `clock::synchronize`) read no time until the test
+            /// advances it with [`Harness::clock`]'s `tick`. `false` (the
+            /// default) is wall mode: the harness clock serves and ticks OS
+            /// wall time like a wall-mode daemon.
+            pub use_sim_time: bool,
             #( #config_fields ),*
         }
 
@@ -1032,6 +1040,7 @@ fn render_harness(
                 Self {
                     parameters: None,
                     instance_id: None,
+                    use_sim_time: false,
                     #( #config_defaults ),*
                 }
             }
@@ -1068,6 +1077,11 @@ fn render_harness(
             core: peppylib::testing::HarnessCore,
             /// Observation subscriptions to the node's own emissions.
             pub emitted: Emitted,
+            /// The daemon-clock stand-in serving `peppylib`'s
+            /// `clock::synchronize` and the `clock` topic: wall mode by
+            /// default (skewable via `set_offset_ns`), sim mode under
+            /// `Config::use_sim_time` (advanced with `tick`).
+            pub clock: peppylib::testing::MockClock,
             session: peppylib::MessengerHandle,
             router: Option<peppylib::testing::EphemeralRouter>,
             instance_id: String,
@@ -1110,19 +1124,39 @@ fn render_harness(
                 let session = router.connect().await?;
                 #( #emitted_subscribes )*
 
+                // The daemon-clock stand-in lives on the fixture session
+                // under the standalone core-node identity, where the node's
+                // `synchronize` polls and its clock subscription listens.
+                let clock = if config.use_sim_time {
+                    peppylib::testing::MockClock::start_sim(
+                        &session,
+                        peppylib::testing::STANDALONE_CORE_NODE,
+                        peppylib::testing::MOCK_CLOCK_INSTANCE_ID,
+                    )
+                    .await?
+                } else {
+                    peppylib::testing::MockClock::start_wall(
+                        &session,
+                        peppylib::testing::STANDALONE_CORE_NODE,
+                        peppylib::testing::MOCK_CLOCK_INSTANCE_ID,
+                    )
+                    .await?
+                };
+
                 #[allow(unused_mut)]
                 let mut standalone = peppylib::runtime::StandaloneConfig::new()
                     .with_messaging(router.host(), router.port())
-                    .with_instance_id(instance_id.clone());
+                    .with_instance_id(instance_id.clone())
+                    .with_use_sim_time(config.use_sim_time);
                 #parameters_seed
                 #( #seeding )*
 
                 let publisher_readiness = vec![
                     #( #publisher_readiness )*
                 ];
-                #[allow(unused_mut)]
                 let mut service_readiness: Vec<peppylib::testing::ServiceReadiness> =
                     Vec::new();
+                service_readiness.push(clock.readiness()?);
                 #( #service_readiness )*
 
                 let core = peppylib::testing::HarnessCore::start::<crate::Parameters, _, _>(
@@ -1139,6 +1173,7 @@ fn render_harness(
                     emitted: Emitted {
                         #( #emitted_inits ),*
                     },
+                    clock,
                     session,
                     router: Some(router),
                     instance_id,
@@ -1187,16 +1222,19 @@ fn render_harness(
 
             /// Tears the fixture down in lifecycle order: node convergence
             /// (cancel → bounded setup await → shutdown hooks, propagating a
-            /// setup error), then the fixture session, then the router.
+            /// setup error), then the clock stand-in, then the fixture
+            /// session, then the router.
             pub async fn shutdown(self) -> crate::Result<()> {
                 let Harness {
                     core,
                     emitted,
+                    clock,
                     session,
                     router,
                     ..
                 } = self;
                 let result = core.shutdown().await;
+                drop(clock);
                 drop(emitted);
                 drop(session);
                 if let Some(router) = router {

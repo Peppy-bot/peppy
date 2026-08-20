@@ -1085,12 +1085,17 @@ Mocks = peppylib.testing.Mocks
         );
         builder.blank_line();
         builder.py(r#"
-def __init__(self, core, mocks, emitted, session, router, instance_id) -> None:
+def __init__(self, core, mocks, emitted, clock, session, router, instance_id) -> None:
     self._core = core
     #: Every started mock, one attribute-group per namespace.
     self.mocks = mocks
     #: Observation subscriptions to the node's own emissions.
     self.emitted = emitted
+    #: The daemon-clock stand-in serving `peppylib.clock.synchronize` and
+    #: the `clock` topic: wall mode by default (skewable via
+    #: `set_offset_ns`), sim mode under `use_sim_time=True` (advanced with
+    #: `await clock.tick(...)`).
+    self.clock = clock
     #: The fixture caller/observer session (not the node's).
     self.session = session
     self._router = router
@@ -1113,10 +1118,15 @@ def setup_finished(self) -> bool:
 async def shutdown(self) -> None:
     """Tears the fixture down in lifecycle order: node convergence
     (cancel -> bounded setup await -> shutdown hooks, propagating a setup
-    error), then the fixture session and the mocks, then the router."""
+    error), then the clock stand-in, the fixture session and the mocks,
+    then the router."""
     try:
         await self._core.shutdown()
     finally:
+        clock = self.clock
+        self.clock = None
+        if clock is not None:
+            await clock.close()
         self.emitted = None
         self.session = None
         mocks = self.mocks
@@ -1169,7 +1179,8 @@ async def __aexit__(self, exc_type, exc, tb) -> None:
 
     builder.block(
         &format!(
-            "def start(setup, *, parameters=None, instance_id=None, node_dir=None{kwarg_params}):"
+            "def start(setup, *, parameters=None, instance_id=None, node_dir=None, \
+             use_sim_time=False{kwarg_params}):"
         ),
         |builder| {
             builder.py(r#"
@@ -1188,7 +1199,10 @@ Usable both ways:
 (`None` uses the schema defaults); `instance_id` overrides the unique
 generated one; `node_dir` points at the directory holding the node's
 peppy.json5 when neither the working directory nor the sync-time path
-resolves it.
+resolves it; `use_sim_time=True` boots the node in sim time, as a
+launcher's `framework: { use_sim_time: true }` would, with the harness
+clock in sim mode so no time exists until the test advances it with
+`await harness.clock.tick(...)`.
 "#);
             // One paragraph per slot the deployment lets a test vary.
             if !slot_kwargs.is_empty() {
@@ -1197,7 +1211,8 @@ resolves it.
             }
             builder.line("\"\"\"");
             builder.line(&format!(
-                "return _HarnessStart(_start(setup, parameters, instance_id, node_dir{kwarg_args}))"
+                "return _HarnessStart(_start(setup, parameters, instance_id, node_dir, \
+                 use_sim_time{kwarg_args}))"
             ));
         },
     );
@@ -1205,7 +1220,8 @@ resolves it.
 
     builder.block(
         &format!(
-            "async def _start(setup, parameters, instance_id, node_dir{kwarg_args}) -> Harness:"
+            "async def _start(setup, parameters, instance_id, node_dir, \
+             use_sim_time{kwarg_args}) -> Harness:"
         ),
         |builder| {
             builder.py(r#"
@@ -1219,10 +1235,26 @@ router = await peppylib.testing.EphemeralRouter.start()
                 builder.line("session = await router.connect()");
                 builder.lines(&emitted_subscribes);
                 builder.py(r#"
+# The daemon-clock stand-in lives on the fixture session under the
+# standalone core-node identity, where the node's `synchronize` polls
+# and its clock subscription listens.
+if use_sim_time:
+    clock = await peppylib.testing.MockClock.start_sim(
+        session,
+        peppylib.testing.STANDALONE_CORE_NODE,
+        peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+    )
+else:
+    clock = await peppylib.testing.MockClock.start_wall(
+        session,
+        peppylib.testing.STANDALONE_CORE_NODE,
+        peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+    )
 standalone = (
     peppylib.StandaloneConfig()
     .with_messaging(router.host, router.port)
     .with_instance_id(instance_id)
+    .with_use_sim_time(use_sim_time)
 )
 if parameters is not None:
     standalone = standalone.with_parameters(parameters)
@@ -1238,7 +1270,7 @@ if parameters is not None:
                     });
                     builder.line("]");
                 }
-                builder.line("service_readiness = []");
+                builder.line("service_readiness = [clock.readiness()]");
                 builder.lines(&service_readiness);
                 builder.call(
                     "core = await peppylib.testing.HarnessCore.start(",
@@ -1274,6 +1306,7 @@ if parameters is not None:
                         mock_kwargs(&emitted_attrs, "emitted")
                     ));
                     builder.lines([
+                        "clock=clock,",
                         "session=session,",
                         "router=router,",
                         "instance_id=instance_id,",

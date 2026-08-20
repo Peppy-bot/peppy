@@ -189,6 +189,8 @@ Resolution order, applied once in the daemon before each spawned node receives i
 1. The instance's `framework.use_sim_time` if it is set.
 2. The daemon's `--clock-source` flag (`wall` is the default).
 
+Standalone (daemon-less) runs resolve the same field from `StandaloneConfig`: `.with_use_sim_time(true)` in Rust, `.with_use_sim_time(True)` in Python (`false`, wall mode, is the default). Under the generated test harness the knob is `use_sim_time` on the harness config, and the harness serves the clock in either mode, with the test playing the external simulator in sim mode; see [the testing guide](/advanced_guides/testing/#the-clock).
+
 The wire format does not change. `ClockTick` and `ClockResponse` carry only timestamps; the daemon decides internally which source feeds them. In wall mode the daemon stamps every `t1`/`t2` and every published tick from its own OS clock. In sim mode the daemon stops publishing, subscribes to the `clock` topic, and answers `synchronize` from a cache populated by an external publisher. 
 Subscribers see the same shape either way. Until that external publisher lands its first tick, sim mode has no time to serve: `synchronize` fails with an error and a `subscribe` stream yields nothing, so both helpers depend on the publisher being up.
 
@@ -218,7 +220,7 @@ Omit `framework` (or omit `use_sim_time` inside it) to fall through to the daemo
 
 For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` (in `peppylib.clock` / `peppylib::clock`) and the generator emits a pre-bound clock module (`peppygen.clock` in Python, `peppygen::clock` in Rust):
 
-- `init(node_runner)`: async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent. Call it once at the top of your setup function.
+- `init(node_runner)`: async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent per node: repeat calls for the same node are no-ops, and initializing a different node rebinds (how consecutive test-harness boots in one process each read their own clock). Call it once at the top of your setup function.
 - `now_ns()`: sync; reads the current core-node-aligned time. Returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) before `init`, and in sim mode before any `ClockTick` has been observed.
 
 <Tabs>
