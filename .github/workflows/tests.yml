@@ -63,42 +63,87 @@ jobs:
       # compiles apptainer against. Must precede every cargo step.
       - uses: ./.github/actions/rust-build-env
 
+      # Every cargo step runs as a second user (`ci`) rather than the
+      # runner's own. The container tests build and run rootless containers,
+      # whose fake-root processes still carry the invoking user's kernel uid:
+      # anything they signal can reach every process of that uid, and on a
+      # hosted runner the Actions agent IS such a process. Seven runs across
+      # both Blacksmith tiers and GitHub's own runners lost the agent a few
+      # minutes into test execution, exactly when the container tests first
+      # exercise user namespaces, and each loss took the step's logs; the
+      # reused self-hosted box ran its agent under a different user, which is
+      # why the same suite passed there for months. Under `ci` the agent is
+      # outside the blast radius, mirroring the self-hosted arrangement. The
+      # subuid/subgid ranges are what apptainer's fakeroot builds map the
+      # container root to.
+      - name: Set up the ci user for the cargo steps
+        run: |
+          sudo useradd -m -s /bin/bash ci
+          printf 'ci:100000:65536\n' | sudo tee -a /etc/subuid /etc/subgid > /dev/null
+          sudo chown -R ci:ci "$GITHUB_WORKSPACE" "$PEPPY_RUN_HOME"
+          cat > "$RUNNER_TEMP/as-ci" <<'EOF'
+          #!/bin/bash
+          exec sudo --set-home --user ci \
+            env HOME=/home/ci RUSTUP_HOME=/home/runner/.rustup \
+              PATH="/home/runner/.cargo/bin:/home/runner/.pixi/bin:/home/runner/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+              "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/as-ci"
+
+      # A runner-owned bystander: if a test's kill sweep still reaches the
+      # runner user despite the `ci` split, this process is what dies first
+      # and the check below reports it without costing the agent.
+      - name: Start a canary owned by the runner user
+        run: |
+          nohup sleep 5400 >/dev/null 2>&1 &
+          echo "CANARY_PID=$!" >> "$GITHUB_ENV"
+
       # Split from the test execution so the whole doubled build (this step
       # compiles the workspace and, via generator-internal's build script,
       # the inner peppylib build) lives in a step of its own: a completed
       # step uploads its logs even when a later step loses the runner, and
       # the second step's cargo reuses this step's target directory.
+      # `setsid` keeps any group-scoped signal inside each cargo run's own
+      # session; `--wait` propagates the exit status so a failing suite
+      # still fails the step.
       - name: Build the test binaries
         run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked --no-run
+          "$RUNNER_TEMP/as-ci" setsid --wait env \
+            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
+            cargo test --locked --no-run
 
-      # The teardown paths under test SIGKILL whole process groups, and the
-      # runner agent shares a process group with the step's shell, so a group
-      # signal that escapes the test tree takes the agent down with it and the
-      # job dies with "the self-hosted runner lost communication with the
-      # server". `setsid` gives each cargo run its own session, bounding those
-      # signals to the test tree; `--wait` propagates the exit status so a
-      # failing suite still fails the step.
       - name: Run tests
         run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          setsid --wait cargo test --locked
+          "$RUNNER_TEMP/as-ci" setsid --wait env \
+            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
+            cargo test --locked
 
       - name: Run container e2e tests
         run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          setsid --wait cargo test --locked -p core-node --features container_e2e --test container_e2e
+          "$RUNNER_TEMP/as-ci" setsid --wait env \
+            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
+            cargo test --locked -p core-node --features container_e2e --test container_e2e
 
       - name: Run multi-daemon Docker e2e test
         run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          setsid --wait cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+          "$RUNNER_TEMP/as-ci" setsid --wait env \
+            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
+            cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
       - name: Run documentation integration tests
         run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          setsid --wait cargo test --locked -p docs-integration-tests
+          "$RUNNER_TEMP/as-ci" setsid --wait env \
+            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
+            cargo test --locked -p docs-integration-tests
+
+      - name: Check the canary survived the test suite
+        if: always()
+        run: |
+          if kill -0 "$CANARY_PID" 2>/dev/null; then
+            echo "canary $CANARY_PID alive: no kill reached the runner user"
+          else
+            echo "::warning::canary $CANARY_PID was killed by the test suite"
+          fi
 
       - name: Detect scripts/ changes
         id: scripts_changed
@@ -112,17 +157,20 @@ jobs:
         if: |
           (github.event_name == 'pull_request' && github.base_ref == 'main')
           || steps.scripts_changed.outputs.scripts == 'true'
-        run: ./scripts/run_tests.sh --all
+        run: |
+          "$RUNNER_TEMP/as-ci" setsid --wait ./scripts/run_tests.sh --all
 
       # Proves the build consumed the committed lockfile rather than re-resolving
       # it, so the tested dependency graph is the shipped one. Must stay after the
       # cargo steps: placed before them it proves nothing.
       - name: Prove CI did not rewrite the shipping lockfile
-        run: git diff --exit-code -- Cargo.lock
+        run: |
+          "$RUNNER_TEMP/as-ci" git -C "$GITHUB_WORKSPACE" diff --exit-code -- Cargo.lock
 
       # Reclaim the per-run data root so disk does not grow on every run. Runs
       # even when a test step failed. The persistent build-tool cache at
       # $HOME/.peppy/tmp is intentionally left in place (see build_helpers::cache_dir).
+      # Owned by `ci` since the setup step, hence the sudo.
       - name: Clean up isolated peppy data root
         if: always()
-        run: rm -rf "$RUNNER_TEMP/peppy-home"
+        run: sudo rm -rf "$RUNNER_TEMP/peppy-home"
