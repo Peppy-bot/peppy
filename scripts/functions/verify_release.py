@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 import tarfile
 from pathlib import Path
 
@@ -13,6 +14,16 @@ REQUIRED_ALL = [
     "bin/apptainer/bin/apptainer",
 ]
 
+# ELF e_machine values for the architectures peppy releases for. Linux
+# binaries are verified against these; a binary whose header names another
+# machine fails the release. The v0.25.3 x86_64 archive shipped an aarch64
+# apptainer through the presence-only check, and every consumer of the
+# tarball (installs, CI runners) broke at exec with no build-time signal.
+ELF_MACHINE_BY_ARCH = {
+    "x86_64": 62,
+    "aarch64": 183,
+}
+
 REQUIRED_MACOS = [
     "bin/lima/bin/limactl",
 ]
@@ -20,25 +31,54 @@ REQUIRED_MACOS = [
 MACOS_TRIPLES = frozenset(t for t in RELEASE_TRIPLES if "apple-darwin" in t)
 
 
+def _elf_machine(header: bytes) -> int | None:
+    """The ELF e_machine of a binary's leading bytes, None when not ELF."""
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        return None
+    return struct.unpack_from("<H", header, 18)[0]
+
+
 def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
-    """Verify a single .tgz archive contains all required binaries.
+    """Verify a single .tgz archive contains all required binaries, and that
+    each Linux binary is built for the triple's architecture.
 
-    Returns a list of missing items (empty if all present).
+    Returns a list of problems (empty if the archive is sound). Presence alone
+    is not enough: a binary for the wrong machine sits at the right path and
+    fails only at exec on the consumer's host.
     """
-    missing: list[str] = []
-
-    with tarfile.open(archive_path, "r:gz") as tar:
-        member_names = {m.name.lstrip("./") for m in tar.getmembers()}
+    problems: list[str] = []
 
     required = list(REQUIRED_ALL)
     if triple in MACOS_TRIPLES:
         required.extend(REQUIRED_MACOS)
 
-    for item in required:
-        if item not in member_names:
-            missing.append(item)
+    expected_machine = (
+        None if triple in MACOS_TRIPLES else ELF_MACHINE_BY_ARCH[triple.split("-")[0]]
+    )
 
-    return missing
+    with tarfile.open(archive_path, "r:gz") as tar:
+        members = {m.name.lstrip("./"): m for m in tar.getmembers()}
+        for item in required:
+            member = members.get(item)
+            if member is None:
+                problems.append(f"missing {item}")
+                continue
+            if expected_machine is None:
+                continue
+            # extractfile follows link members to their target's stream, so a
+            # symlink to a valid binary would pass; only a regular file counts.
+            extracted = tar.extractfile(member) if member.isfile() else None
+            if extracted is None:
+                problems.append(f"{item} is not a regular file")
+                continue
+            machine = _elf_machine(extracted.read(20))
+            if machine != expected_machine:
+                problems.append(
+                    f"{item} is built for ELF machine {machine}, "
+                    f"the {triple} archive needs {expected_machine}"
+                )
+
+    return problems
 
 
 def verify_all_releases(
@@ -50,7 +90,7 @@ def verify_all_releases(
     checked.  Pass an explicit list to verify only a subset (e.g. when
     building on Linux where only the native target is produced).
 
-    Raises ReleaseError with a summary of all missing items.
+    Raises ReleaseError with a summary of every problem found.
     """
     errors: list[str] = []
 
@@ -61,9 +101,8 @@ def verify_all_releases(
             errors.append(f"{triple}: archive not found at {archive}")
             continue
 
-        missing = verify_release_archive(archive, triple)
-        for item in missing:
-            errors.append(f"{triple}: missing {item}")
+        for problem in verify_release_archive(archive, triple):
+            errors.append(f"{triple}: {problem}")
 
     if errors:
         summary = "\n  ".join(errors)

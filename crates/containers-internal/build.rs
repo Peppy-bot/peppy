@@ -261,6 +261,70 @@ mod apptainer_build {
         build_helpers::cache_dir(&format!("apptainer-{}-{}-nosuid", version, arch))
     }
 
+    /// The ELF e_machine a binary for `arch` must carry.
+    fn expected_elf_machine(arch: &str) -> u16 {
+        match arch {
+            "x86_64" => 62,
+            "aarch64" => 183,
+            other => panic!("no ELF machine known for target arch {other}"),
+        }
+    }
+
+    /// The ELF e_machine of the file at `path`, `None` when unreadable or not ELF.
+    fn elf_machine(path: &Path) -> Option<u16> {
+        let mut header = [0u8; 20];
+        let mut file = std::fs::File::open(path).ok()?;
+        std::io::Read::read_exact(&mut file, &mut header).ok()?;
+        (&header[..4] == b"\x7fELF").then(|| u16::from_le_bytes([header[18], header[19]]))
+    }
+
+    /// Whether the apptainer binary under `dir` is built for `arch`.
+    ///
+    /// The cache directory's name states the arch; this reads the binary. The
+    /// two disagreed for weeks on one release machine (an aarch64 apptainer
+    /// under the x86_64 name), and everything downstream trusted the name:
+    /// the sentinel reused the cache, packaging shipped it, and the archive
+    /// verifier checked only that the path existed.
+    fn cache_arch_matches(dir: &Path, arch: &str) -> bool {
+        elf_machine(&dir.join("bin/apptainer")) == Some(expected_elf_machine(arch))
+    }
+
+    /// Remove a finished-looking cache whose binary is for the wrong ISA, so
+    /// the caller falls through to a rebuild instead of trusting the
+    /// directory's name. A cache without a sentinel or binary is left alone:
+    /// it is incomplete, not mislabeled, and the caller already rebuilds it.
+    fn discard_mislabeled_cache(cache_dir: &Path, arch: &str) {
+        let complete = apptainer_cache_sentinel_path(cache_dir, APPTAINER_VERSION).exists()
+            && cache_dir.join("bin/apptainer").exists();
+        if !complete || cache_arch_matches(cache_dir, arch) {
+            return;
+        }
+        println!(
+            "cargo:warning=Cached apptainer at {:?} is not built for {}; discarding it",
+            cache_dir, arch
+        );
+        force_remove_dir(cache_dir);
+    }
+
+    /// Whether the apptainer just installed under `install_dir` is built for
+    /// `target_arch`, warning with the mismatch when it is not. Every build
+    /// strategy ends here, so a new strategy cannot ship a wrong-ISA binary
+    /// by forgetting the check. `how` names the strategy for the warning.
+    fn installed_arch_matches(install_dir: &Path, target_arch: &str, how: &str) -> bool {
+        let built = elf_machine(&install_dir.join("bin/apptainer"));
+        let matches = built == Some(expected_elf_machine(target_arch));
+        if !matches {
+            println!(
+                "cargo:warning=apptainer {} is ELF machine {:?}, but the {} target needs {}",
+                how,
+                built,
+                target_arch,
+                expected_elf_machine(target_arch)
+            );
+        }
+        matches
+    }
+
     /// Remove a directory tree, falling back to `rm -rf` if `std::fs`
     /// fails (e.g. due to root-owned files left by a previous Lima VM build).
     fn force_remove_dir(dir: &Path) {
@@ -1530,7 +1594,14 @@ mod apptainer_build {
         // Compiled here, next to the apptainer build, because it has to match
         // the target ISA and this host build is the only place that ISA is the
         // one being compiled for.
-        build_and_install_squashfuse(install_dir)
+        if !build_and_install_squashfuse(install_dir) {
+            return false;
+        }
+
+        // A native toolchain emits the host's ISA whatever `target_arch` says.
+        // Refusing a mismatched result here turns a wrong-arch build into a
+        // build failure instead of a cache entry every later release reuses.
+        installed_arch_matches(install_dir, target_arch, "built natively")
     }
 
     /// Build apptainer from source inside a Lima VM and copy the result back.
@@ -1627,7 +1698,13 @@ mod apptainer_build {
             return false;
         }
 
-        copy_lima_result_to_host(lima, guest_install_dir, install_dir)
+        if !copy_lima_result_to_host(lima, guest_install_dir, install_dir) {
+            return false;
+        }
+
+        // The strategy table above promises the target ISA; this reads the
+        // binary that came back rather than trusting the promise.
+        installed_arch_matches(install_dir, target_arch, "from the VM build")
     }
 
     /// The apptainer build commands shared by every strategy: install the pinned
@@ -1997,6 +2074,11 @@ echo "=== Apptainer build complete ==="
                 .join(format!(".lima-build-{}.lock", target));
             let _build_lock = build_helpers::acquire_file_lock(&lock_path);
 
+            // A mislabeled cache must fall through to the Lima rebuild here:
+            // this is the one place that can rebuild it for the right ISA.
+            // Left in place, it would sail past this skip, get rejected by
+            // every consumer, and fail the release far from the cause.
+            discard_mislabeled_cache(&target_cache, target);
             if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
                 println!(
                     "cargo:warning=Apptainer {} for {} already cached",
@@ -2062,25 +2144,30 @@ echo "=== Apptainer build complete ==="
 
     /// On Linux inside a Lima VM, the macOS-side cache is accessible at the
     /// same absolute path because Lima mounts the host home directory.
-    /// Scan `/Users/*/` for a cached apptainer build and return its path.
+    /// The host home is not guessable from inside the guest (one release
+    /// machine keeps it on an external volume), so the release driver states
+    /// it explicitly: lima.py exports PEPPY_HOST_HOME into the guest build.
+    /// A build launched without it gets no cache here and falls through to a
+    /// native source build, whose post-build ELF check refuses a wrong-ISA
+    /// result before anything is cached or shipped.
     fn find_macos_cache_fallback(version: &str, arch: &str) -> Option<PathBuf> {
-        let macos_home = Path::new("/Users");
-        if !macos_home.is_dir() {
+        println!("cargo:rerun-if-env-changed=PEPPY_HOST_HOME");
+        let host_home = PathBuf::from(env::var("PEPPY_HOST_HOME").ok()?);
+        let candidate = host_home
+            .join(".peppy/tmp")
+            .join(format!("apptainer-{}-{}-nosuid", version, arch));
+        let sentinel = apptainer_cache_sentinel_path(&candidate, version);
+        let usable = sentinel.exists()
+            && candidate.join("bin/apptainer").exists()
+            && cache_arch_matches(&candidate, arch);
+        if !usable {
             return None;
         }
-        let pattern = format!("apptainer-{}-{}-nosuid", version, arch);
-        for entry in std::fs::read_dir(macos_home).ok()?.flatten() {
-            let candidate = entry.path().join(".peppy/tmp").join(&pattern);
-            let sentinel = apptainer_cache_sentinel_path(&candidate, version);
-            if sentinel.exists() && candidate.join("bin/apptainer").exists() {
-                println!(
-                    "cargo:warning=Using macOS-side cached apptainer from {:?}",
-                    candidate
-                );
-                return Some(candidate);
-            }
-        }
-        None
+        println!(
+            "cargo:warning=Using macOS-side cached apptainer from {:?}",
+            candidate
+        );
+        Some(candidate)
     }
 
     /// Ensure we have a cached apptainer installation for the given arch.
@@ -2090,7 +2177,10 @@ echo "=== Apptainer build complete ==="
         let sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
         let cached_bin = cache_dir.join("bin/apptainer");
 
-        // Check if we already have a valid cache.
+        // Check if we already have a valid cache. The sentinel proves a build
+        // finished; only the binary's own header proves it was for this arch,
+        // so a mislabeled cache is discarded and rebuilt rather than trusted.
+        discard_mislabeled_cache(&cache_dir, arch);
         if sentinel.exists() && cached_bin.exists() {
             println!(
                 "cargo:warning=Using cached apptainer installation from {:?}",
@@ -2108,7 +2198,7 @@ echo "=== Apptainer build complete ==="
             return cache_dir;
         }
 
-        // On Linux, try the macOS-side cache (Lima mounts host home dirs).
+        // On Linux, try the macOS-side cache (Lima mounts the host home).
         if !use_lima && let Some(macos_cache) = find_macos_cache_fallback(APPTAINER_VERSION, arch) {
             force_remove_dir(&cache_dir);
             copy_dir_recursive(&macos_cache, &cache_dir)
