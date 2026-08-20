@@ -28,14 +28,13 @@ env:
 
 jobs:
   test:
-    # Not a Blacksmith runner: their agent dies a few minutes into this
-    # suite's test execution, right as the container tests exercise
-    # unprivileged user namespaces, on both runner tiers and at every build
-    # parallelism, and every death takes the step's logs. The same suite on a
-    # GitHub-hosted runner completes with its logs intact (its only failures
-    # were the AppArmor user-namespace restriction the shared environment
-    # action now lifts). Move back to Blacksmith once their support confirms
-    # their runners survive unprivileged-userns workloads.
+    # A GitHub-hosted runner while the agent loss below is being pinned down.
+    # The loss is not a property of the runner provider: it reproduces here
+    # exactly as it does on both Blacksmith tiers, a few minutes into test
+    # execution and always taking the step's logs, so the only reason this job
+    # is not on Blacksmith with the rest of the workflows is that the two
+    # runners are being compared against each other. The ci-user split below
+    # is what addresses the loss itself.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -78,13 +77,27 @@ jobs:
       # container root to.
       - name: Set up the ci user for the cargo steps
         run: |
-          sudo useradd -m -s /bin/bash ci
+          # In `docker` because the multi-daemon e2e step, like every other
+          # cargo step, runs as `ci` and talks to the daemon socket.
+          sudo useradd -m -s /bin/bash -G docker ci
           # The toolchains and temp dirs live under the runner user's home;
           # the cargo steps execute them as `ci`, so every level down to them
           # needs to be world-traversable.
           sudo chmod a+X /home/runner /home/runner/work
           sudo chmod -R a+rX /home/runner/.cargo /home/runner/.rustup \
             /home/runner/.pixi /home/runner/.local
+          # Everything the cargo steps write is owned by `ci`: the checkout,
+          # because cargo materializes `target/` inside it and creates that
+          # directory through a sibling temp directory in the workspace root,
+          # and the run's peppy data root, which the step above created as the
+          # runner user before `ci` existed.
+          sudo chown -R ci:ci "$GITHUB_WORKSPACE" "$PEPPY_RUN_HOME"
+          # git rejects a repository whose owner is not the calling user, and
+          # the checkout is now read by both: `ci` for the lockfile check, the
+          # runner user for the checkout action's own post step.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sudo --set-home --user ci \
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cat > "$RUNNER_TEMP/as-ci" <<'EOF'
           #!/bin/bash
           exec sudo --set-home --user ci \
@@ -92,12 +105,6 @@ jobs:
               PATH="/home/runner/.cargo/bin:/home/runner/.pixi/bin:/home/runner/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
               "$@"
           EOF
-          echo "workspace: $(stat -c '%U:%G %A' "$GITHUB_WORKSPACE")"
-          sudo -u ci test -w "$GITHUB_WORKSPACE" \
-            && echo "ci can write the workspace" \
-            || echo "ci CANNOT write the workspace"
-          sudo -u ci touch "$GITHUB_WORKSPACE/.ci-write-probe" 2>&1 | head -1 \
-            && sudo rm -f "$GITHUB_WORKSPACE/.ci-write-probe"
           chmod +x "$RUNNER_TEMP/as-ci"
 
       # A runner-owned bystander: if a test's kill sweep still reaches the
