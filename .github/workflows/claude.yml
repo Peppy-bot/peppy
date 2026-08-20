@@ -55,7 +55,7 @@ jobs:
         && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
         && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
 
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: read
     outputs:
@@ -96,7 +96,7 @@ jobs:
     # GitHub-hosted rather than the self-hosted runner the other workflows use.
     # This job installs its own toolchain and would otherwise contend with the
     # long cargo and container builds that already occupy the self-hosted box.
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
 
     permissions:
       contents: write # push the branch when Claude is asked to make a change

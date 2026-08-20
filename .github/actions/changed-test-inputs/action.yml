@@ -1,0 +1,32 @@
+name: Detect changed test inputs
+description: >-
+  Emits one boolean output per conditionally-run suite in tests.yml, true
+  when the change set touches that suite's inputs. The per-suite crate sets
+  are derived from cargo metadata's resolve graph at run time, so newly
+  added or rewired workspace crates are picked up with nothing to maintain
+  here. Fails open: on any detection error every suite runs.
+inputs:
+  base:
+    description: Commit the branch's changes are diffed against (the PR
+      base sha, or the previously pushed sha for push events).
+    required: true
+outputs:
+  container_e2e:
+    description: Whether the container e2e suite's inputs changed.
+    value: ${{ steps.detect.outputs.container_e2e }}
+  docs_integration:
+    description: Whether the docs integration suite's inputs changed.
+    value: ${{ steps.detect.outputs.docs_integration }}
+  scripts:
+    description: Whether the release scripts suite's inputs changed.
+    value: ${{ steps.detect.outputs.scripts }}
+runs:
+  using: composite
+  steps:
+    - id: detect
+      # Needs cargo on PATH for the metadata query, so tests.yml runs this
+      # after rust-build-env.
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/detect.py"
+      env:
+        INPUT_BASE: ${{ inputs.base }}
