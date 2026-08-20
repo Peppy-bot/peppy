@@ -35,61 +35,6 @@ jobs:
           # credential sitting in .git/config for every later step to inherit.
           persist-credentials: false
 
-      # Which of the later gated suites have had their inputs touched. The
-      # three filters below mirror the source sets of their suites: the
-      # crates each cargo command compiles from this workspace (the internal
-      # path-dependency closure from the resolve graph, including dev and
-      # build dependencies), plus the repo files those steps read and the
-      # build inputs every cargo step shares. Keep each list in sync with its
-      # command's dependencies: when a crate gains or drops a workspace
-      # dependency, its directory moves between these lists too.
-      - name: Detect changed test inputs
-        id: changes
-        uses: dorny/paths-filter@v4
-        with:
-          filters: |
-            container_e2e:
-              - 'crates/core-node-internal/**'
-              - 'crates/containers-internal/**'
-              - 'crates/daemon-config-internal/**'
-              - 'crates/encoding-internal/**'
-              - 'crates/generator-internal/**'
-              - 'crates/latency-report/**'
-              - 'crates/mcp-test-support/**'
-              - 'crates/node-stack-internal/**'
-              - 'crates/peppylib-build-policy/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/config.toml'
-              - '.github/actions/rust-build-env/**'
-              - '.github/workflows/tests.yml'
-            docs_integration:
-              # The suite also walks the docs snippets at runtime, which live
-              # outside this package's directory.
-              - 'docs/tests/integration/**'
-              - 'docs/src/content/docs/guides/snippets/**'
-              - 'crates/auth-internal/**'
-              - 'crates/containers-internal/**'
-              - 'crates/core-node-internal/**'
-              - 'crates/daemon-config-internal/**'
-              - 'crates/daemon-internal/**'
-              - 'crates/encoding-internal/**'
-              - 'crates/generator-internal/**'
-              - 'crates/latency-report/**'
-              - 'crates/mcp-test-support/**'
-              - 'crates/node-stack-internal/**'
-              - 'crates/peppy/**'
-              - 'crates/peppylib-build-policy/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/config.toml'
-              - '.github/actions/rust-build-env/**'
-              - '.github/workflows/tests.yml'
-            scripts:
-              # The release scripts suite is self-contained in scripts/,
-              # toolchain included (pixi.toml, pixi.lock, pyproject.toml).
-              - 'scripts/**'
-
       # Give this run its own peppy data root so the runner does not accumulate
       # or collide on /tmp/.peppy across runs. Only the Rust cargo steps below
       # opt in via env; the release-scripts step is left alone so
@@ -103,6 +48,17 @@ jobs:
       # Rust toolchain plus the system libraries the container build script
       # compiles apptainer against. Must precede every cargo step.
       - uses: ./.github/actions/rust-build-env
+
+      # Which of the later gated suites have had their inputs touched. The
+      # per-suite source sets are derived from cargo metadata's resolve graph
+      # at run time (see the action), so added or rewired crates are picked
+      # up with nothing to maintain here. Needs cargo on PATH, hence the
+      # placement after rust-build-env.
+      - name: Detect changed test inputs
+        id: changes
+        uses: ./.github/actions/changed-test-inputs
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
 
       # A persistent Docker builder: setup-docker-builder starts a buildkitd
       # whose layer cache lives on a sticky disk, hydrated from this job's
