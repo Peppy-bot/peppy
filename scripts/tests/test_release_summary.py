@@ -10,10 +10,25 @@ import pytest
 from functions.cli import ReleaseError
 from functions.release_summary import (
     _CONTENT_SCHEMA,
+    PathDiff,
+    ReleaseChanges,
     ReleaseContent,
+    ReleaseDiffs,
     _parse_release_content,
+    collect_release_changes,
     generate_release_content,
 )
+
+
+def _changes(
+    subjects: tuple[str, ...] = ("fix(apptainer): pre-flight bind mounts",),
+    code: PathDiff = PathDiff("+fn main() {}", ("crates/peppy/src/main.rs",)),
+    docs: PathDiff = PathDiff("+## The clock", ("docs/src/content/docs/x.mdx",)),
+) -> ReleaseChanges:
+    return ReleaseChanges(
+        commit_subjects=subjects,
+        diffs=ReleaseDiffs(previous_tag="v0.11.1", code=code, docs=docs),
+    )
 
 
 # --- _CONTENT_SCHEMA ---
@@ -74,6 +89,14 @@ def test_parse_release_content_non_string_field() -> None:
 # --- generate_release_content (mocked run_claude) ---
 
 
+def _capture_prompt(captured: dict[str, object]) -> object:
+    def _fake_run_claude(prompt: str, **kwargs: object) -> dict:
+        captured["prompt"] = prompt
+        return {"title": "T", "description": "D", "notes": "N"}
+
+    return _fake_run_claude
+
+
 def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
@@ -96,12 +119,11 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
         captured["effort"] = effort
         return {"title": "T", "description": "D", "notes": "N"}
 
+    changes = _changes(
+        subjects=("fix(apptainer): pre-flight bind mounts", "refactor: extract helper")
+    )
     with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
-        result = generate_release_content(
-            ["fix(apptainer): pre-flight bind mounts", "refactor: extract helper"],
-            "v0.12.0",
-            tmp_path,
-        )
+        result = generate_release_content(changes, "v0.12.0", tmp_path)
 
     assert result == ReleaseContent("T", "D", "N")
     # Pure transformation: tools disabled so Claude cannot explore and ramble.
@@ -111,19 +133,138 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
     assert captured["cwd"] == tmp_path
     # The response shape is enforced CLI-side.
     assert captured["json_schema"] == _CONTENT_SCHEMA
-    # The commit subjects and tag are interpolated into the prompt.
-    assert "- fix(apptainer): pre-flight bind mounts" in captured["prompt"]
-    assert "v0.12.0" in captured["prompt"]
+    # The tag, the previous tag, and the commit subjects are interpolated.
+    prompt = captured["prompt"]
+    assert isinstance(prompt, str)
+    assert "release\nv0.12.0; the previous release is v0.11.1." in prompt
+    assert "- fix(apptainer): pre-flight bind mounts\n- refactor: extract helper" in prompt
 
 
-def test_generate_release_content_handles_no_commits(tmp_path: Path) -> None:
-    captured: dict[str, str] = {}
+def test_generate_release_content_feeds_both_diffs_and_their_paths(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    changes = _changes(
+        code=PathDiff(
+            "+fn main() {}",
+            ("crates/peppy/src/main.rs", "crates/peppy/src/cli.rs"),
+        ),
+        docs=PathDiff("+## The clock", ("docs/src/content/docs/x.mdx",)),
+    )
+    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
+        generate_release_content(changes, "v0.12.0", tmp_path)
 
-    def _fake_run_claude(prompt: str, **kwargs: object) -> dict:
-        captured["prompt"] = prompt
-        return {"title": "T", "description": "D", "notes": "N"}
+    prompt = captured["prompt"]
+    assert isinstance(prompt, str)
+    assert (
+        "Changed code paths:\ncrates/peppy/src/main.rs\ncrates/peppy/src/cli.rs\n"
+        in prompt
+    )
+    assert "Code diff:\n+fn main() {}\n" in prompt
+    assert "Changed user documentation paths:\ndocs/src/content/docs/x.mdx\n" in prompt
+    assert "User documentation diff:\n+## The clock\n" in prompt
 
-    with patch("functions.release_summary.run_claude", side_effect=_fake_run_claude):
-        generate_release_content([], "v0.1.0", tmp_path)
 
-    assert "no commits since the last release" in captured["prompt"]
+def test_generate_release_content_truncates_each_diff_separately(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    changes = _changes(
+        code=PathDiff("c" * 500_000, ("crates/peppy/src/main.rs",)),
+        docs=PathDiff("d" * 1000, ("docs/src/content/docs/x.mdx",)),
+    )
+    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
+        generate_release_content(changes, "v0.12.0", tmp_path)
+
+    prompt = captured["prompt"]
+    assert isinstance(prompt, str)
+    # The oversized code diff is cut, and the docs diff survives untouched.
+    assert prompt.count("diff truncated") == 1
+    assert "d" * 1000 in prompt
+    assert "c" * 500_000 not in prompt
+
+
+def test_generate_release_content_names_empty_sections(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    changes = _changes(
+        subjects=(),
+        code=PathDiff("", ()),
+        docs=PathDiff("", ()),
+    )
+    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
+        generate_release_content(changes, "v0.12.0", tmp_path)
+
+    prompt = captured["prompt"]
+    assert isinstance(prompt, str)
+    assert "(no commits since the last release)" in prompt
+    assert prompt.count("(no code changes)") == 2
+    assert prompt.count("(no user documentation changes)") == 2
+
+
+def test_generate_release_content_without_a_previous_release(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    changes = ReleaseChanges(commit_subjects=("initial commit",), diffs=None)
+    with patch("functions.release_summary.run_claude", side_effect=_capture_prompt(captured)):
+        generate_release_content(changes, "v0.1.0", tmp_path)
+
+    prompt = captured["prompt"]
+    assert isinstance(prompt, str)
+    assert "the previous release is none: no release has been published yet" in prompt
+    assert "- initial commit" in prompt
+    # Every diff section says why it is empty rather than claiming no changes.
+    assert prompt.count("(no previous release to diff against)") == 4
+    assert "(no code changes)" not in prompt
+    assert "(no user documentation changes)" not in prompt
+
+
+# --- collect_release_changes ---
+
+
+def test_collect_release_changes_gathers_subjects_and_both_diffs(
+    tmp_path: Path,
+) -> None:
+    with patch(
+        "functions.release_summary.get_commit_subjects",
+        return_value=["feat: b", "fix: a"],
+    ) as subjects, patch(
+        "functions.release_summary.get_code_diff",
+        return_value=("CODE", ["crates/peppy/src/main.rs"]),
+    ) as code, patch(
+        "functions.release_summary.get_docs_diff",
+        return_value=("DOCS", ["docs/src/content/docs/x.mdx"]),
+    ) as docs:
+        changes = collect_release_changes("v0.11.1", "abc123", tmp_path)
+
+    assert changes == ReleaseChanges(
+        commit_subjects=("feat: b", "fix: a"),
+        diffs=ReleaseDiffs(
+            previous_tag="v0.11.1",
+            code=PathDiff("CODE", ("crates/peppy/src/main.rs",)),
+            docs=PathDiff("DOCS", ("docs/src/content/docs/x.mdx",)),
+        ),
+    )
+    # Everything is measured over the same range: previous tag to the exact
+    # commit being released.
+    subjects.assert_called_once_with("v0.11.1", "abc123")
+    code.assert_called_once_with("v0.11.1", "abc123", tmp_path)
+    docs.assert_called_once_with("v0.11.1", "abc123", tmp_path)
+
+
+def test_collect_release_changes_skips_diffs_without_a_previous_release(
+    tmp_path: Path,
+) -> None:
+    with patch(
+        "functions.release_summary.get_commit_subjects",
+        return_value=["initial commit"],
+    ) as subjects, patch(
+        "functions.release_summary.get_code_diff"
+    ) as code, patch(
+        "functions.release_summary.get_docs_diff"
+    ) as docs:
+        changes = collect_release_changes(None, "abc123", tmp_path)
+
+    assert changes == ReleaseChanges(commit_subjects=("initial commit",), diffs=None)
+    # The full history is listed; there is no earlier state to diff against.
+    subjects.assert_called_once_with(None, "abc123")
+    code.assert_not_called()
+    docs.assert_not_called()

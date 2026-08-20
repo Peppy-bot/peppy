@@ -21,8 +21,10 @@ from functions.docs import (
     _is_code_path,
     _parse_check_response,
     _parse_update_response,
-    _truncate_diff,
     check_docs,
+    get_code_diff,
+    get_docs_diff,
+    truncate_diff,
     update_docs,
 )
 
@@ -50,6 +52,7 @@ def _minor(file: str = "docs/y.mdx", change: str = "reword") -> RequiredChange:
         ("crates/peppy/src/main.rs", True),
         ("scripts/functions/cli.py", True),
         ("Cargo.toml", True),
+        ("Cargo.lock", False),
         ("docs/src/content/docs/guides/installation.mdx", False),
         ("docs/astro.config.mjs", False),
         ("target/debug/foo", False),
@@ -63,19 +66,110 @@ def test_is_code_path(path: str, expected: bool) -> None:
     assert _is_code_path(path) is expected
 
 
-# --- _truncate_diff ---
+# --- truncate_diff ---
 
 
 def test_truncate_diff_short_unchanged() -> None:
     diff = "a" * 1000
-    assert _truncate_diff(diff) == diff
+    assert truncate_diff(diff) == diff
 
 
 def test_truncate_diff_long_truncated() -> None:
     diff = "a" * 500_000
-    out = _truncate_diff(diff)
+    out = truncate_diff(diff)
     assert len(out) < len(diff)
     assert "diff truncated" in out
+
+
+# --- get_code_diff / get_docs_diff ---
+
+
+def _mock_git_diff(names: str, diff: str = "DIFF", returncode: int = 0) -> MagicMock:
+    """Build a subprocess.run replacement answering the two git diff calls.
+
+    ``--name-only`` returns ``names``; the path-scoped diff returns ``diff``.
+    """
+
+    def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+        assert cmd[:2] == ["git", "diff"], cmd
+        mock = MagicMock()
+        mock.returncode = returncode
+        mock.stdout = names if "--name-only" in cmd else diff
+        mock.stderr = "boom" if returncode else ""
+        return mock
+
+    return MagicMock(side_effect=_run)
+
+
+_CHANGED = (
+    "Cargo.lock\n"
+    "crates/peppy/src/main.rs\n"
+    "crates/generator-internal/templates/peppygen/python/peppygen/clock.py\n"
+    "docs/astro.config.mjs\n"
+    "docs/src/content/docs/advanced_guides/testing.mdx\n"
+    "docs/src/content/docs/guides/snippets/rust/hello_receiver/src/lib.rs\n"
+    "docs/src/content/releases/v0.25.1.html\n"
+    ".github/workflows/ci.yml\n"
+)
+
+
+def test_get_code_diff_keeps_code_paths_only(tmp_path: Path) -> None:
+    run = _mock_git_diff(_CHANGED)
+    with patch("functions.docs.subprocess.run", run):
+        diff, paths = get_code_diff("v0.1.0", "HEAD", tmp_path)
+    assert diff == "DIFF"
+    assert paths == [
+        "crates/peppy/src/main.rs",
+        "crates/generator-internal/templates/peppygen/python/peppygen/clock.py",
+    ]
+    # The diff itself is scoped to the kept paths, so excluded files never
+    # reach the prompt even when they changed.
+    assert run.call_args.args[0] == [
+        "git",
+        "diff",
+        "v0.1.0..HEAD",
+        "--",
+        *paths,
+    ]
+    assert run.call_args.kwargs["cwd"] == tmp_path
+
+
+def test_get_docs_diff_keeps_user_documentation_only(tmp_path: Path) -> None:
+    run = _mock_git_diff(_CHANGED)
+    with patch("functions.docs.subprocess.run", run):
+        diff, paths = get_docs_diff("v0.1.0", "HEAD", tmp_path)
+    assert diff == "DIFF"
+    # Embedded snippets are part of the rendered pages; release notes and the
+    # site configuration are not user documentation.
+    assert paths == [
+        "docs/src/content/docs/advanced_guides/testing.mdx",
+        "docs/src/content/docs/guides/snippets/rust/hello_receiver/src/lib.rs",
+    ]
+    assert run.call_args.args[0] == ["git", "diff", "v0.1.0..HEAD", "--", *paths]
+
+
+@pytest.mark.parametrize(
+    "getter, names",
+    [
+        (get_code_diff, "Cargo.lock\ndocs/src/content/docs/x.mdx\n"),
+        (get_docs_diff, "crates/peppy/src/main.rs\ndocs/astro.config.mjs\n"),
+    ],
+)
+def test_diff_getters_skip_the_diff_when_nothing_matches(
+    getter: object, names: str, tmp_path: Path
+) -> None:
+    run = _mock_git_diff(names)
+    with patch("functions.docs.subprocess.run", run):
+        assert getter("v0.1.0", "HEAD", tmp_path) == ("", [])  # type: ignore[operator]
+    # Only the name listing ran: there is nothing to diff.
+    assert run.call_count == 1
+    assert "--name-only" in run.call_args.args[0]
+
+
+def test_get_code_diff_raises_when_git_fails(tmp_path: Path) -> None:
+    with patch("functions.docs.subprocess.run", _mock_git_diff("", returncode=128)):
+        with pytest.raises(ReleaseError, match="git diff --name-only v9.9.9..HEAD failed"):
+            get_code_diff("v9.9.9", "HEAD", tmp_path)
 
 
 # --- the schemas the CLI enforces ---
