@@ -22,7 +22,7 @@ env:
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     permissions:
       contents: read
       pull-requests: read
@@ -35,15 +35,44 @@ jobs:
           # credential sitting in .git/config for every later step to inherit.
           persist-credentials: false
 
-      # Give this run its own peppy data root so the reused self-hosted runner
-      # does not accumulate or collide on /tmp/.peppy across runs. Only the Rust
-      # cargo steps below opt in via env; the release-scripts step is left alone
-      # so scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
+      # Give this run its own peppy data root so the runner does not accumulate
+      # or collide on /tmp/.peppy across runs. Only the Rust cargo steps below
+      # opt in via env; the release-scripts step is left alone so
+      # scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
       - name: Set up isolated peppy data root
         run: |
           PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
+
+      # Rust toolchain plus the system libraries the container build script
+      # compiles apptainer against. Must precede every cargo step.
+      - uses: ./.github/actions/rust-build-env
+
+      # Which of the later gated suites have had their inputs touched. The
+      # per-suite source sets are derived from cargo metadata's resolve graph
+      # at run time (see the action), so added or rewired crates are picked
+      # up with nothing to maintain here. Needs cargo on PATH, hence the
+      # placement after rust-build-env.
+      - name: Detect changed test inputs
+        id: changes
+        uses: ./.github/actions/changed-test-inputs
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+      # A persistent Docker builder: setup-docker-builder starts a buildkitd
+      # whose layer cache lives on a sticky disk, hydrated from this job's
+      # previous runs and committed back when the job succeeds, and makes it
+      # the default builder for every later `docker buildx` command. The
+      # multi-daemon e2e builds its daemon image through that client, so its
+      # apt and uv layers are built once and reused across runs; the Docker
+      # daemon's own embedded builder would rebuild them from scratch on
+      # every ephemeral runner. One cache key per build workload, per
+      # Blacksmith's scoping guidance.
+      - name: Set up the cached Docker builder
+        uses: useblacksmith/setup-docker-builder@v2
+        with:
+          cache-key: peppy/multi-daemon-e2e-image
 
       - name: Run tests
         run: |
@@ -51,6 +80,7 @@ jobs:
           cargo test --locked
 
       - name: Run container e2e tests
+        if: steps.changes.outputs.container_e2e == 'true'
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --locked -p core-node --features container_e2e --test container_e2e
@@ -61,23 +91,26 @@ jobs:
           cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
       - name: Run documentation integration tests
+        if: steps.changes.outputs.docs_integration == 'true'
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
           cargo test --locked -p docs-integration-tests
 
-      - name: Detect scripts/ changes
-        id: scripts_changed
-        uses: dorny/paths-filter@v4
-        with:
-          filters: |
-            scripts:
-              - 'scripts/**'
-
       - name: Run release scripts tests
         if: |
           (github.event_name == 'pull_request' && github.base_ref == 'main')
-          || steps.scripts_changed.outputs.scripts == 'true'
-        run: ./scripts/run_tests.sh --all
+          || steps.changes.outputs.scripts == 'true'
+        run: |
+          # The install tests boot Lima VMs, whose QEMU the runner image
+          # lacks (limactl itself comes from the pixi environment). The
+          # packages match what the suite's own failure message names. KVM
+          # opens when present but group-inaccessible; without it Lima falls
+          # back to software emulation, which only costs time.
+          sudo apt-get install -y -qq qemu-utils qemu-system
+          if [ -e /dev/kvm ] && ! [ -r /dev/kvm -a -w /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+          fi
+          ./scripts/run_tests.sh --all
 
       # Proves the build consumed the committed lockfile rather than re-resolving
       # it, so the tested dependency graph is the shipped one. Must stay after the
