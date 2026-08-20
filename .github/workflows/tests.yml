@@ -49,6 +49,20 @@ jobs:
       # compiles apptainer against. Must precede every cargo step.
       - uses: ./.github/actions/rust-build-env
 
+      # A persistent Docker builder: setup-docker-builder starts a buildkitd
+      # whose layer cache lives on a sticky disk, hydrated from this job's
+      # previous runs and committed back when the job succeeds, and makes it
+      # the default builder for every later `docker buildx` command. The
+      # multi-daemon e2e builds its daemon image through that client, so its
+      # apt and uv layers are built once and reused across runs; the Docker
+      # daemon's own embedded builder would rebuild them from scratch on
+      # every ephemeral runner. One cache key per build workload, per
+      # Blacksmith's scoping guidance.
+      - name: Set up the cached Docker builder
+        uses: useblacksmith/setup-docker-builder@v2
+        with:
+          cache-key: peppy/multi-daemon-e2e-image
+
       - name: Run tests
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
