@@ -1276,6 +1276,41 @@ pub fn spawn_python_run(dir: &std::path::Path, env_vars: &[(&str, &str)]) -> std
 // live here; per-language fixtures stay inline in their test file.
 // ---------------------------------------------------------------------------
 
+/// A contract member that keeps its joint vectors generic: the length is the
+/// implementing arm's to pin. Shared by the Rust and Python `refine`
+/// wire-compatibility capstones, which are twins of each other — one member,
+/// so the two cannot drift apart and quietly stop testing the same thing.
+pub const JOINTS_CONTRACT_NAME: &str = "limb_motion";
+
+pub const JOINTS_CONTRACT_ACTION: &str = r#"
+{
+  name: "move_arm_joints",
+  goal_service: {
+    request_message_format: {
+      arm_id: "u16",
+      joint_positions: { $type: "array", $items: "f64" }
+    },
+    response_message_format: {
+      accepted: "bool"
+    }
+  },
+  result_service: {
+    response_message_format: {
+      success: "bool",
+      final_joint_positions: { $type: "array", $items: "f64" }
+    }
+  }
+}
+"#;
+
+/// The three-joint implementer's `refine` block for that member.
+pub const JOINTS_REFINEMENT: &str = r#"
+{
+  goal_service: { request_message_format: { joint_positions: { $length: 3 } } },
+  result_service: { response_message_format: { final_joint_positions: { $length: 3 } } }
+}
+"#;
+
 pub const EXPOSED_ACTION_EXAMPLE: &str = r#"
 {
   name: "move_arm",

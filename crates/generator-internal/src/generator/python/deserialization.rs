@@ -1,5 +1,5 @@
 use super::PythonSchemaInfo;
-use super::code_builder::PythonCodeBuilder;
+use super::code_builder::{PythonCodeBuilder, container_name, emit_fixed_length_check};
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
 use crate::generator::naming::{array_item_type_name, sanitize_capnp_field_name, to_camel_case};
 use config::node::{MessageFormat, SchemaType, TypeToken};
@@ -35,28 +35,34 @@ pub fn generate_field_reader_statements(
         SchemaType::Type(_) | SchemaType::Primitive(_) => {
             generate_primitive_reader(builder, reader_var, field_name, counter)
         }
-        SchemaType::Array(array) => match array.items.as_ref() {
-            SchemaType::Object(object) => generate_object_array_reader(
-                builder,
-                reader_var,
-                field_name,
-                &object.fields,
-                struct_prefix,
-                counter,
-                array.length,
-            ),
-            _ => {
-                let is_u8 = matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8));
-                generate_array_reader(
+        SchemaType::Array(array) => {
+            let items = array.items.as_ref();
+            let var = match items {
+                SchemaType::Object(object) => generate_object_array_reader(
                     builder,
                     reader_var,
                     field_name,
-                    is_u8,
-                    array.length,
+                    &object.fields,
+                    struct_prefix,
                     counter,
-                )
+                ),
+                _ => generate_array_reader(
+                    builder,
+                    reader_var,
+                    field_name,
+                    container_name(items),
+                    counter,
+                ),
+            };
+            // A fixed-length array is checked against its declared length
+            // once, whatever its items are, so a payload carrying any other
+            // count fails to decode the way it does in Rust, where the field
+            // is a fixed-size array.
+            if let Some(len) = array.length {
+                emit_fixed_length_check(builder, &var, field_name, container_name(items), len);
             }
-        },
+            var
+        }
         SchemaType::Object(object) => generate_object_reader(
             builder,
             reader_var,
@@ -192,16 +198,13 @@ fn generate_time_reader(
     result_var
 }
 
-/// Reads an array of primitives: `bytes` for `u8` items, a `list` otherwise.
-/// A fixed-length array is checked against its declared length, so a payload
-/// carrying any other count fails to decode the way it does in Rust, where
-/// the field is a fixed-size array.
+/// Reads an array of primitives into `container` — `bytes` for `u8` items,
+/// a `list` otherwise.
 fn generate_array_reader(
     builder: &mut PythonCodeBuilder,
     reader_var: &str,
     field_name: &str,
-    is_u8: bool,
-    length: Option<usize>,
+    container: &str,
     counter: &mut u32,
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
@@ -209,36 +212,11 @@ fn generate_array_reader(
     let idx = *counter;
     *counter += 1;
     let var = format!("{python_name}_{idx}");
-    let (constructor, what) = if is_u8 {
-        ("bytes", "bytes")
-    } else {
-        ("list", "list")
-    };
     builder.line(&format!(
-        "{var} = {constructor}({})",
+        "{var} = {container}({})",
         capnp_read_expr(reader_var, &capnp_name)
     ));
-    if let Some(len) = length {
-        emit_fixed_length_check(builder, &var, field_name, what, len);
-    }
     var
-}
-
-/// Emits the `ValueError` raised when `var` does not hold exactly `len`
-/// items; `what` names the container in the message (`list` or `bytes`).
-pub(crate) fn emit_fixed_length_check(
-    builder: &mut PythonCodeBuilder,
-    var: &str,
-    field_name: &str,
-    what: &str,
-    len: usize,
-) {
-    builder.line(&format!("if len({var}) != {len}:"));
-    builder.indent();
-    builder.line(&format!(
-        "raise ValueError(\"invalid fixed {what} length for field '{field_name}': expected {len}, got \" + str(len({var})))"
-    ));
-    builder.dedent();
 }
 
 fn generate_object_reader(
@@ -293,7 +271,6 @@ fn generate_object_array_reader(
     fields: &IndexMap<String, SchemaType>,
     struct_prefix: &str,
     counter: &mut u32,
-    length: Option<usize>,
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
     let python_name = sanitize_python_identifier(field_name);
@@ -343,29 +320,43 @@ fn generate_object_array_reader(
 
     builder.dedent();
 
-    if let Some(len) = length {
-        emit_fixed_length_check(builder, &result_var, field_name, "list", len);
-    }
-
     result_var
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use config::node::{ArrayKind, ArraySchema, ObjectKind, ObjectSchema};
 
-    fn call_array_reader(is_u8: bool, length: Option<usize>) -> String {
+    /// Both readers are driven through the dispatcher, which is where the
+    /// length check is emitted, so the tests exercise the path the renderers
+    /// actually take.
+    fn read_field(field_name: &str, schema: &SchemaType) -> String {
         let mut builder = PythonCodeBuilder::new();
         let mut counter = 0u32;
-        generate_array_reader(
+        generate_field_reader_statements(
             &mut builder,
             "reader",
-            "joint_positions",
-            is_u8,
-            length,
+            field_name,
+            schema,
+            "Test",
             &mut counter,
         );
         builder.build()
+    }
+
+    fn array_of(items: SchemaType, length: Option<usize>) -> SchemaType {
+        SchemaType::Array(ArraySchema {
+            kind: ArrayKind::Array,
+            items: Box::new(items),
+            length,
+            optional: false,
+        })
+    }
+
+    fn call_array_reader(is_u8: bool, length: Option<usize>) -> String {
+        let item = if is_u8 { TypeToken::U8 } else { TypeToken::F64 };
+        read_field("joint_positions", &array_of(SchemaType::Type(item), length))
     }
 
     #[test]
@@ -408,22 +399,19 @@ mod tests {
     }
 
     fn call_object_array_reader(length: Option<usize>) -> String {
-        let mut builder = PythonCodeBuilder::new();
-        let mut counter = 0u32;
         let mut fields = IndexMap::new();
         fields.insert("x".to_string(), SchemaType::Type(TypeToken::I32));
-
-        generate_object_array_reader(
-            &mut builder,
-            "reader",
+        read_field(
             "frames",
-            &fields,
-            "Test",
-            &mut counter,
-            length,
-        );
-
-        builder.build()
+            &array_of(
+                SchemaType::Object(ObjectSchema {
+                    kind: ObjectKind::Object,
+                    fields,
+                    optional: false,
+                }),
+                length,
+            ),
+        )
     }
 
     #[test]

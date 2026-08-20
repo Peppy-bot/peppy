@@ -3,10 +3,7 @@ use super::deps::{
     build_dependency_offerings,
 };
 use crate::services::repo::cache as repo_cache;
-use config::node::{
-    ActionRefinement, InterfaceKind, LinkedMember, RefinementProblem, ServiceRefinement,
-    TopicRefinement,
-};
+use config::node::{InterfaceKind, LinkedMember, RefinementProblem, refined_ref};
 use config::{ContractCoverageMismatch, RefinementMismatch};
 use daemon_config::consts::PeppyDirs;
 use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
@@ -169,12 +166,8 @@ pub fn collect_consumed_interfaces(
                         .iter()
                         .find(|t| t.name.trim() == name)?;
                     Some(
-                        refine_member(
-                            consumed_topic.refine.as_ref(),
-                            emitted.clone(),
-                            TopicRefinement::apply,
-                        )
-                        .map(|emitted| emitted.message_format.unwrap_or_default()),
+                        refined_ref(consumed_topic.refine.as_deref(), emitted)
+                            .map(|emitted| emitted.message_format.clone().unwrap_or_default()),
                     )
                 },
             )?
@@ -206,17 +199,14 @@ pub fn collect_consumed_interfaces(
                             .iter()
                             .find(|s| s.name.trim() == name)?;
                         Some(
-                            refine_member(
-                                consumed_service.refine.as_ref(),
-                                exposed.clone(),
-                                ServiceRefinement::apply,
-                            )
-                            .map(|exposed| {
-                                (
-                                    exposed.request_message_format.unwrap_or_default(),
-                                    exposed.response_message_format.unwrap_or_default(),
-                                )
-                            }),
+                            refined_ref(consumed_service.refine.as_deref(), exposed).map(
+                                |exposed| {
+                                    (
+                                        exposed.request_message_format.clone().unwrap_or_default(),
+                                        exposed.response_message_format.clone().unwrap_or_default(),
+                                    )
+                                },
+                            ),
                         )
                     },
                 )?
@@ -248,12 +238,8 @@ pub fn collect_consumed_interfaces(
                         .iter()
                         .find(|a| a.name.trim() == name)?;
                     Some(
-                        refine_member(
-                            consumed_action.refine.as_deref(),
-                            exposed.clone(),
-                            ActionRefinement::apply,
-                        )
-                        .map(|exposed| action_message_from_exposed(&exposed)),
+                        refined_ref(consumed_action.refine.as_deref(), exposed)
+                            .map(|exposed| action_message_from_exposed(&exposed)),
                     )
                 },
             )?
@@ -269,25 +255,6 @@ pub fn collect_consumed_interfaces(
     }
 
     Ok(interfaces)
-}
-
-/// The document member as the entry wants it: the entry's `refine` block
-/// applied when it carries one, the member untouched otherwise. An `Err`
-/// lists every pin the member does not admit.
-fn refine_member<M, R>(
-    refinement: Option<&R>,
-    member: M,
-    apply: impl FnOnce(&R, M) -> Result<M, Vec<RefinementProblem>>,
-) -> Result<M, Vec<RefinementProblem>> {
-    match refinement {
-        Some(refinement) => apply(refinement, member),
-        None => Ok(member),
-    }
-}
-
-/// The `document` label a [`RefinementMismatch`] carries for a contract slot.
-fn contract_label(name: &str, tag: &str) -> String {
-    format!("contract `{name}:{tag}`")
 }
 
 impl ResolvedDependencies {
@@ -361,12 +328,12 @@ impl ResolvedDependencies {
                         )
                     })?
                     .map_err(|problems| {
-                        RefinementMismatch {
-                            document: contract_label(&entry.name, &entry.tag),
-                            link_id: link_id.to_string(),
-                            name: lookup_name.to_string(),
+                        RefinementMismatch::for_contract(
+                            (&entry.name, &entry.tag),
+                            link_id,
+                            lookup_name,
                             problems,
-                        }
+                        )
                         .to_string()
                     })?;
                 Ok(Some((
@@ -490,25 +457,11 @@ pub enum ImplementsError {
 impl std::fmt::Display for ImplementsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Coverage(mismatches) => join_mismatches(f, mismatches),
-            Self::Refinement(mismatches) => join_mismatches(f, mismatches),
+            Self::Coverage(mismatches) => config::write_joined(f, mismatches, "; "),
+            Self::Refinement(mismatches) => config::write_joined(f, mismatches, "; "),
             Self::Other(message) => f.write_str(message),
         }
     }
-}
-
-/// Renders aggregated mismatches as one `; `-separated line.
-fn join_mismatches<M: std::fmt::Display>(
-    f: &mut std::fmt::Formatter<'_>,
-    mismatches: &[M],
-) -> std::fmt::Result {
-    for (idx, mismatch) in mismatches.iter().enumerate() {
-        if idx > 0 {
-            f.write_str("; ")?;
-        }
-        write!(f, "{mismatch}")?;
-    }
-    Ok(())
 }
 
 impl std::error::Error for ImplementsError {}
@@ -616,42 +569,36 @@ pub fn resolve_implements(
 
         // `None`: no member of this kind by this name. `Some(Err)`: the
         // member exists but does not admit the entry's `refine` block.
+        // Each arm is the same three steps — select the member by name,
+        // apply the entry's refinement, hand the result to the generator —
+        // over a different section, refinement type, and payload.
+        macro_rules! resolve {
+            ($members:expr, $entry:expr, $build:path) => {
+                $members
+                    .iter()
+                    .find(|member| member.name == name)
+                    .map(|member| {
+                        refined_ref($entry.refine.as_deref(), member)
+                            .map(|member| $build(member.into_owned(), Some(origin)))
+                    })
+            };
+        }
         let resolved = match member {
-            LinkedMember::Topic(entry) => doc
-                .interfaces
-                .topics
-                .iter()
-                .find(|t| t.name == name)
-                .map(|topic| {
-                    refine_member(entry.refine.as_ref(), topic.clone(), TopicRefinement::apply)
-                        .map(|topic| DeploymentInterface::emitted_topic(topic, Some(origin)))
-                }),
-            LinkedMember::Service(entry) => doc
-                .interfaces
-                .services
-                .iter()
-                .find(|s| s.name == name)
-                .map(|service| {
-                    refine_member(
-                        entry.refine.as_ref(),
-                        service.clone(),
-                        ServiceRefinement::apply,
-                    )
-                    .map(|service| DeploymentInterface::exposed_service(service, Some(origin)))
-                }),
-            LinkedMember::Action(entry) => doc
-                .interfaces
-                .actions
-                .iter()
-                .find(|a| a.name == name)
-                .map(|action| {
-                    refine_member(
-                        entry.refine.as_deref(),
-                        action.clone(),
-                        ActionRefinement::apply,
-                    )
-                    .map(|action| DeploymentInterface::exposed_action(action, Some(origin)))
-                }),
+            LinkedMember::Topic(entry) => resolve!(
+                doc.interfaces.topics,
+                entry,
+                DeploymentInterface::emitted_topic
+            ),
+            LinkedMember::Service(entry) => resolve!(
+                doc.interfaces.services,
+                entry,
+                DeploymentInterface::exposed_service
+            ),
+            LinkedMember::Action(entry) => resolve!(
+                doc.interfaces.actions,
+                entry,
+                DeploymentInterface::exposed_action
+            ),
         };
 
         match resolved {
@@ -664,12 +611,12 @@ pub fn resolve_implements(
                     .or_insert(0) += 1;
                 match refined {
                     Ok(interface) => out.push(interface),
-                    Err(problems) => inadmissible.push(RefinementMismatch {
-                        document: contract_label(slot.name.as_str(), &slot.tag),
-                        link_id: slot.link_id.clone(),
-                        name: name.to_string(),
+                    Err(problems) => inadmissible.push(RefinementMismatch::for_contract(
+                        (slot.name.as_str(), &slot.tag),
+                        &slot.link_id,
+                        name,
                         problems,
-                    }),
+                    )),
                 }
             }
             None => {

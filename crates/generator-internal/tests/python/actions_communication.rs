@@ -2934,39 +2934,9 @@ if __name__ == "__main__":
     );
 }
 
-const JOINTS_CONTRACT_NAME: &str = "limb_motion";
+use crate::helpers::{JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT};
+
 const JOINTS_FLOW_DONE_SERVICE: &str = "joints_flow_done";
-
-/// A contract member that keeps its joint vectors generic: the length is the
-/// implementing arm's to pin.
-const JOINTS_CONTRACT_ACTION: &str = r#"
-{
-  name: "move_arm_joints",
-  goal_service: {
-    request_message_format: {
-      arm_id: "u16",
-      joint_positions: { $type: "array", $items: "f64" }
-    },
-    response_message_format: {
-      accepted: "bool"
-    }
-  },
-  result_service: {
-    response_message_format: {
-      success: "bool",
-      final_joint_positions: { $type: "array", $items: "f64" }
-    }
-  }
-}
-"#;
-
-/// The three-joint implementer's `refine` block for that member.
-const JOINTS_REFINEMENT: &str = r#"
-{
-  goal_service: { request_message_format: { joint_positions: { $length: 3 } } },
-  result_service: { response_message_format: { final_joint_positions: { $length: 3 } } }
-}
-"#;
 
 /// Wire-compatibility capstone for `refine`, Python twin of the Rust
 /// `actions_refined_producer_interoperates_with_generic_consumer`: the
@@ -3107,6 +3077,7 @@ if __name__ == "__main__":
     let exposer_instance_id = EXPOSER_INSTANCE_ID;
     let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
         .expect("failed to create temp dir for exposer project");
+    use config::node::Refines;
     let refinement: config::node::ActionRefinement =
         serde_json5::from_str(JOINTS_REFINEMENT).unwrap();
     let exposed_action = refinement

@@ -169,26 +169,14 @@ pub enum PairingError {
 impl std::fmt::Display for PairingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Coverage(mismatches) => join_mismatches(f, mismatches),
-            Self::Refinement(mismatches) => join_mismatches(f, mismatches),
+            Self::Coverage(mismatches) => config::write_joined(f, mismatches, "; "),
+            Self::Refinement(mismatches) => config::write_joined(f, mismatches, "; "),
             Self::Other(reason) => write!(f, "{reason}"),
         }
     }
 }
 
-/// Renders aggregated mismatches as one `; `-separated line.
-fn join_mismatches<M: std::fmt::Display>(
-    f: &mut std::fmt::Formatter<'_>,
-    mismatches: &[M],
-) -> std::fmt::Result {
-    for (idx, mismatch) in mismatches.iter().enumerate() {
-        if idx > 0 {
-            write!(f, "; ")?;
-        }
-        write!(f, "{mismatch}")?;
-    }
-    Ok(())
-}
+impl std::error::Error for PairingError {}
 
 impl From<String> for PairingError {
     fn from(reason: String) -> Self {
@@ -317,11 +305,13 @@ fn collect_participant_slot(
 ) -> PairingCoverageMismatch {
     let role = participant.role.as_str();
     let mut coverage = SlotCoverage::default();
-    let mismatch_for = |name: &str, problems| config::RefinementMismatch {
-        document: pairing_label(participant.name.as_str(), &participant.tag),
-        link_id: participant.link_id.clone(),
-        name: name.to_string(),
-        problems,
+    let mismatch_for = |name: &str, problems| {
+        config::RefinementMismatch::for_pairing(
+            (participant.name.as_str(), &participant.tag),
+            &participant.link_id,
+            name,
+            problems,
+        )
     };
 
     for (name, refine) in declared_topics(interfaces_cfg, &participant.link_id, Direction::Emits) {
@@ -387,6 +377,14 @@ fn collect_observer_slot(
 ) -> PairingCoverageMismatch {
     let observed_role = observer.role.as_str();
     let mut coverage = SlotCoverage::default();
+    let mismatch_for = |name: &str, problems| {
+        config::RefinementMismatch::for_pairing(
+            (observer.name.as_str(), &observer.tag),
+            &observer.link_id,
+            name,
+            problems,
+        )
+    };
 
     // An observer produces nothing; a stray emit entry naming its slot is a
     // hard error rather than a role mismatch.
@@ -420,22 +418,11 @@ fn collect_observer_slot(
                 context.clone(),
                 observer.cardinality,
             )),
-            Err(problems) => inadmissible.push(config::RefinementMismatch {
-                document: pairing_label(observer.name.as_str(), &observer.tag),
-                link_id: observer.link_id.clone(),
-                name: name.to_string(),
-                problems,
-            }),
+            Err(problems) => inadmissible.push(mismatch_for(name, problems)),
         }
     }
 
     build_observer_mismatch(observer, coverage)
-}
-
-/// The `document` label a [`config::RefinementMismatch`] carries for a
-/// pairing slot.
-fn pairing_label(name: &str, tag: &str) -> String {
-    format!("pairing `{name}:{tag}`")
 }
 
 /// Which direction of `interfaces.topics` an entry walk is reading.
@@ -465,14 +452,14 @@ fn declared_topics<'a>(
             .flatten()
             .filter_map(|e| e.as_linked())
             .filter(|e| e.link_id == link_id)
-            .map(|e| (e.name.as_str(), e.refine.as_ref()))
+            .map(|e| (e.name.as_str(), e.refine.as_deref()))
             .collect(),
         Direction::Consumes => topics
             .consumes
             .iter()
             .flatten()
             .filter(|c| c.link_id == link_id)
-            .map(|c| (c.name.as_str(), c.refine.as_ref()))
+            .map(|c| (c.name.as_str(), c.refine.as_deref()))
             .collect(),
     }
 }
@@ -484,15 +471,14 @@ fn native_topic(
     topic: &daemon_config::pairing::PairingTopic,
     refine: Option<&config::node::TopicRefinement>,
 ) -> Result<config::node::NativeEmittedTopic, Vec<config::node::RefinementProblem>> {
-    let native = config::node::NativeEmittedTopic {
-        name: topic.name.clone(),
-        qos_profile: topic.qos_profile.clone(),
-        message_format: topic.message_format.clone(),
-    };
-    match refine {
-        Some(refine) => refine.apply(native),
-        None => Ok(native),
-    }
+    config::node::refined(
+        refine,
+        config::node::NativeEmittedTopic {
+            name: topic.name.clone(),
+            qos_profile: topic.qos_profile.clone(),
+            message_format: topic.message_format.clone(),
+        },
+    )
 }
 
 /// Turns one slot's bookkeeping into its aggregated diff. Only the emit side
