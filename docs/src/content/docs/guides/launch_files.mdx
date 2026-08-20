@@ -201,7 +201,7 @@ A [container node](/advanced_guides/containers/) can also reference these values
 
 Environment variables for this instance's process.
 
-`peppy stack launch` forwards a filtered copy of your shell environment to the instances it starts on the machine you launch from, so a node there already sees your `PATH` and the rest. The filter drops `PWD`, `OLDPWD`, `TMPDIR`, `TEMP`, and `TMP`, plus any name that is not a shell identifier, any value with whitespace or shell metacharacters, and the injection-prone names listed below. An instance placed on another machine receives only its declared `env_vars`. `env_vars` is layered on top of the forwarded set for what differs per instance (a device path, a board serial, a log level), and a name declared here replaces the forwarded value:
+`peppy stack launch` forwards a filtered copy of your shell environment to the instances it starts on the machine you launch from, so a node there already sees your `PATH` and the rest. The filter drops `PWD`, `OLDPWD`, `TMPDIR`, `TEMP`, `TMP`, `PYTHONPATH`, and `PYTHONHOME`, plus any name that is not a shell identifier, any value with whitespace or shell metacharacters, and the injection-prone names listed below. `PYTHONPATH` and `PYTHONHOME` are stripped so a caller shell that exports them cannot displace a container node's vendored `peppylib`/`peppygen` path; a node that genuinely needs either sets it through its own `env_vars`. An instance placed on another machine receives only its declared `env_vars`. `env_vars` is layered on top of the forwarded set for what differs per instance (a device path, a board serial, a log level), and a name declared here replaces the forwarded value:
 
 ```json5
 {

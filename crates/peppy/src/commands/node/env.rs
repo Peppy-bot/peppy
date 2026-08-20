@@ -16,7 +16,27 @@ use daemon_config::env::{is_forbidden_env_name, is_safe_env_value, is_valid_env_
 /// strip. All three are listed because the Rust and Python lookups differ
 /// (`TMPDIR` alone, versus `TMPDIR`, `TEMP`, `TMP` in order) and this stack
 /// runs both kinds of node.
-const CALLER_ONLY_ENV_KEYS: [&str; 5] = ["PWD", "OLDPWD", "TMPDIR", "TEMP", "TMP"];
+///
+/// The Python pair is a third kind: worse than naming host paths the node
+/// cannot see, a forwarded value *displaces* the image's own. Apptainer
+/// gives `--env` precedence over the image's `%environment`, so a caller
+/// shell that exports `PYTHONPATH` (a ROS `setup.bash`, say) erases the
+/// vendored `peppylib`/`peppygen` entries a Python container node boots
+/// from: the node dies at import time with `No module named 'peppylib'`,
+/// and only on machines whose shell exports one, which is why it escapes
+/// local reproduction. `PYTHONHOME` fails harder still: it points the
+/// container's interpreter at a host prefix, and Python cannot even find
+/// its stdlib. A node that genuinely wants either var gets it deliberately,
+/// via the launcher's `env_vars`.
+const CALLER_ONLY_ENV_KEYS: [&str; 7] = [
+    "PWD",
+    "OLDPWD",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "PYTHONPATH",
+    "PYTHONHOME",
+];
 
 /// Whether a caller env var should be forwarded to a spawned node: it must
 /// carry a name and a value a node can receive intact (see [`daemon_config::env`],
@@ -72,12 +92,33 @@ mod tests {
         }
     }
 
+    /// The caller's Python vars describe the caller's interpreter, not the
+    /// node's. Forwarding them is not merely useless: apptainer's `--env`
+    /// outranks the image's `%environment`, so a forwarded `PYTHONPATH`
+    /// replaces the vendored peppylib/peppygen path a Python container node
+    /// imports from (this is how `openarm_sim_mujoco` died with
+    /// `No module named 'peppylib'` on a machine whose shell exported a ROS
+    /// `PYTHONPATH`), and a forwarded `PYTHONHOME` points the interpreter at
+    /// a prefix the guest does not have. Both filters accept the values
+    /// (valid identifiers, path-only values), so they have to be excluded
+    /// by name.
+    #[test]
+    fn drops_caller_python_env_vars() {
+        for key in ["PYTHONPATH", "PYTHONHOME", "pythonpath"] {
+            assert!(
+                !should_forward_env(key, "/opt/ros/jazzy/lib/python3.12/site-packages"),
+                "{key} describes the caller's Python installation and must not reach the node"
+            );
+        }
+    }
+
     /// The exclusion is by whole name, not prefix: a node's own configuration
     /// must survive.
     #[test]
-    fn keeps_env_vars_that_merely_mention_temp() {
+    fn keeps_env_vars_that_merely_mention_excluded_names() {
         assert!(should_forward_env("TMPDIR_OVERRIDE", "/opt/scratch"));
         assert!(should_forward_env("PEPPY_TMP", "/opt/scratch"));
+        assert!(should_forward_env("PYTHONPATH_EXTRA", "/opt/plugins"));
     }
 
     #[test]

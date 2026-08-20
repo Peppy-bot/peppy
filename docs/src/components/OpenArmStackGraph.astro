@@ -1,9 +1,10 @@
 ---
 /*
- * Animated node graph of the openarm_v2_teleop_mujoco launcher, laid out as the
- * bimanual robot it brings up rather than as a left-to-right flow chart. The
- * eight circles are the eight instances the launcher declares, and the arrows
- * are the links between them:
+ * Animated node graph of the stack `peppy stack launch openarm_v2
+ * --with=mujoco,web_commander` brings up, laid out as the bimanual robot
+ * rather than as a left-to-right flow chart. The eight circles are the eight
+ * instances that selection declares, and the arrows are the links between
+ * them:
  *
  *   commander_inst (the browser panel) streams targets down to backbone_inst,
  *   backbone_inst streams governed setpoints out to the four limb relays
@@ -29,8 +30,9 @@
  * Deliberately not drawn: the commander's four observed_* links (it watches
  * each relay's measured state directly). They span the full height of the
  * graph and would bury the command path; the caption covers them instead. Keep
- * the node and link set in step with
- * launchers-hub/openarm/openarm_v2_teleop_mujoco.json5 if that launcher changes.
+ * the node and link set in step with launchers-hub/openarm/openarm_v2.json5
+ * and the fragments its mujoco and web_commander options pull in, if those
+ * change.
  */
 ---
 
@@ -38,7 +40,7 @@
 	class="stack-graph"
 	viewBox="0 -12 660 518"
 	role="img"
-	aria-label="Node graph of the openarm_v2_teleop_mujoco launcher, drawn as a bimanual robot. commander_inst, the browser control panel, sits at the top and streams commands down to backbone_inst, the coordinator. The backbone streams governed setpoints out to four limb relays: left_arm_inst and right_arm_inst on the shoulders, left_grip_inst and right_grip_inst below them. Each of the four relays leads its matching limb inside sim_inst, the MuJoCo engine at the base, and reports readiness to robot_init_inst on the spine, which reports back up to the backbone. Each pairing streams measured state back the other way, and the panel also observes the four relays."
+	aria-label="Node graph of the openarm_v2 launcher with the mujoco and web_commander options, drawn as a bimanual robot. commander_inst, the browser control panel, sits at the top and streams commands down to backbone_inst, the coordinator. The backbone streams governed setpoints out to four limb relays: left_arm_inst and right_arm_inst on the shoulders, left_grip_inst and right_grip_inst below them. Each of the four relays leads its matching limb inside sim_inst, the MuJoCo engine at the base, and reports readiness to robot_init_inst on the spine, which reports back up to the backbone. Each pairing streams measured state back the other way, and the panel also observes the four relays."
 >
 	<defs>
 		<radialGradient id="sgHaloViolet" cx="50%" cy="50%" r="50%">
