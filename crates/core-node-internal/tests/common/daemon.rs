@@ -544,14 +544,16 @@ pub struct TestStartingInstance {
 
 impl Drop for TestStartingInstance {
     fn drop(&mut self) {
-        // Best-effort: by the time a test drops this, teardown has usually
-        // already reaped the group, so silence the expected ESRCH/EPERM noise.
-        let _ = std::process::Command::new("kill")
-            .arg("-KILL")
-            .arg(format!("-{}", self.pid))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        // The syscall, not a `kill -KILL -<pid>` subprocess: util-linux's
+        // `kill` reads a leading-dash pid as an option cluster and keeps only
+        // the first digit, so `-126750` becomes `kill(-1, SIGKILL)`, a
+        // broadcast to every process the user may signal. `killpg` names the
+        // group it means. Best-effort: by the time a test drops this, teardown
+        // has usually already reaped the group, hence the ignored ESRCH.
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(self.pid as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
         self._feedback_drain.abort();
     }
 }
