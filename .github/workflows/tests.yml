@@ -127,6 +127,20 @@ jobs:
             sudo systemctl stop systemd-oomd
           fi
 
+      # The traced run showed the mass SIGKILL arriving from outside the traced
+      # tree: no process under cargo issued it, yet every ci process died at
+      # once. Only two things can do that: the kernel or a ci process that had
+      # already escaped the traced tree by daemonizing. strace cannot see
+      # either; the audit subsystem records every kill syscall on the system
+      # with the issuing uid, pid and command, daemonized or not, so arm a
+      # SIGKILL-only rule ahead of the suite.
+      - name: Arm system-wide SIGKILL auditing
+        run: |
+          sudo auditctl -a always,exit -F arch=b64 -S kill -S tkill -S tgkill \
+            -F a1=9 -k peppy-killtrace \
+            && echo "SIGKILL auditing armed" \
+            || echo "::warning::auditctl unavailable; no system-wide kill audit"
+
       # A runner-owned bystander: if a test's kill sweep still reaches the
       # runner user despite the `ci` split, this process is what dies first
       # and the check below reports it without costing the agent.
@@ -196,9 +210,13 @@ jobs:
 
       # A cargo step that dies without output was killed by something outside
       # it, and every candidate names itself in exactly one of these places:
-      # the kernel log (OOM killer), the oomd journal (a pressure kill), the
-      # logind journal (a slice teardown). What survives under `ci` separates a
-      # whole-cgroup kill from one that took only the session leader.
+      # the audit log (the exact issuing process of every SIGKILL, including
+      # ones that daemonized out of the strace tree), the kernel log (OOM
+      # killer), the oomd journal (a pressure kill), the logind journal (a
+      # slice teardown). The windows are short because the boot's audit and
+      # kernel noise drowns the relevant minutes otherwise. What survives
+      # under `ci` separates a whole-cgroup kill from one that took only the
+      # session leader.
       - name: Report what killed the cargo step
         if: failure()
         run: |
@@ -206,12 +224,16 @@ jobs:
           cat /proc/pressure/memory
           echo "--- ci processes still alive ---"
           pgrep -u ci -a || echo "none"
+          echo "--- audit: every SIGKILL issued on the system ---"
+          sudo ausearch -k peppy-killtrace -i --format text | tail -150 || true
+          echo "--- journal: every unit since fifteen minutes ago ---"
+          sudo journalctl --since "-15 min" --no-pager | grep -viE 'audit|apparmor' | tail -120
           echo "--- kernel log ---"
-          sudo journalctl -k --since "-40 min" --no-pager | tail -80
+          sudo journalctl -k --since "-15 min" --no-pager | tail -60
           echo "--- systemd-oomd ---"
-          sudo journalctl -u systemd-oomd --since "-40 min" --no-pager | tail -40
+          sudo journalctl -u systemd-oomd --since "-15 min" --no-pager | tail -40
           echo "--- systemd-logind ---"
-          sudo journalctl -u systemd-logind --since "-40 min" --no-pager | tail -40
+          sudo journalctl -u systemd-logind --since "-15 min" --no-pager | tail -40
 
       - name: Check the canary survived the test suite
         if: always()
