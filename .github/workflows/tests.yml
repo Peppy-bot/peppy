@@ -158,13 +158,18 @@ jobs:
         run: |
           "$RUNNER_TEMP/as-ci" setsid --wait env \
             PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
-            strace -ff -q -e trace=kill,tgkill,pidfd_send_signal,killpg \
+            strace -ff -q -e trace=kill,tgkill,tkill,pidfd_send_signal \
               -o "$PEPPY_RUN_HOME/kills.trace" -- cargo test --locked
 
+      # `-ff` writes one file per traced pid and puts that pid in the file
+      # name, not in the lines, so the issuing process is only identifiable
+      # with the name attached. `find -exec` rather than a glob: the suite
+      # forks far more processes than one command line can hold.
       - name: Report the kill trace
         if: always()
         run: |
-          sudo sh -c 'cat "$1"/kills.trace* 2>/dev/null | tail -100' _ "$PEPPY_RUN_HOME" || true
+          sudo find "$PEPPY_RUN_HOME" -name 'kills.trace.*' \
+            -exec grep -HE 'SIGKILL|SIGTERM' {} + | tail -200 || true
 
       - name: Run container e2e tests
         run: |
