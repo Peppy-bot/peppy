@@ -120,7 +120,13 @@ pub fn build_goal_decision_enum(has_response: bool) -> TokenStream {
 /// `GoalContext`. The user decider runs on each incoming goal; rejected goals
 /// are answered and skipped transparently (the method keeps polling), so a
 /// returned `Ok(None)` means the goal stream has closed (the node is shutting
-/// down) and the caller should stop its accept loop. Errors propagate as `Err`.
+/// down) and the caller should stop its accept loop. A goal whose request
+/// bytes do not decode into the declared `GoalRequestData` (a field missing,
+/// a fixed-length array of the wrong length) is rejected the same way, with
+/// the decode error as the reason, before the decider ever sees it: the
+/// client sent something this server's shape does not admit, which is the
+/// client's problem to learn about, not a reason to stop serving. Transport
+/// errors propagate as `Err`.
 ///
 /// `response_serialization`, when present, serializes a local `response`
 /// (`GoalResponse`) into a `peppylib::Payload`.
@@ -130,7 +136,17 @@ pub fn build_handle_goal_next_request(
 ) -> TokenStream {
     let decode_and_build_request = if has_request_data {
         quote! {
-            let request_data = deserialize_goal_request(pending.request_bytes())?;
+            let request_data = match deserialize_goal_request(pending.request_bytes()) {
+                Ok(request_data) => request_data,
+                Err(error) => {
+                    // The request does not fit this server's declared shape:
+                    // answer the client with the decode error and keep
+                    // polling for the next goal.
+                    let reason = format!("goal request does not decode: {error}");
+                    pending.reject(Some(&reason), peppylib::Payload::new()).await?;
+                    continue;
+                }
+            };
             let request = GoalRequest {
                 instance_id: pending.instance_id().to_string(),
                 core_node: pending.core_node().to_string(),

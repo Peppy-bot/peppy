@@ -47,7 +47,14 @@ pub fn generate_field_reader_statements(
             ),
             _ => {
                 let is_u8 = matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8));
-                generate_array_reader(builder, reader_var, field_name, is_u8, counter)
+                generate_array_reader(
+                    builder,
+                    reader_var,
+                    field_name,
+                    is_u8,
+                    array.length,
+                    counter,
+                )
             }
         },
         SchemaType::Object(object) => generate_object_reader(
@@ -185,11 +192,16 @@ fn generate_time_reader(
     result_var
 }
 
+/// Reads an array of primitives: `bytes` for `u8` items, a `list` otherwise.
+/// A fixed-length array is checked against its declared length, so a payload
+/// carrying any other count fails to decode the way it does in Rust, where
+/// the field is a fixed-size array.
 fn generate_array_reader(
     builder: &mut PythonCodeBuilder,
     reader_var: &str,
     field_name: &str,
     is_u8: bool,
+    length: Option<usize>,
     counter: &mut u32,
 ) -> String {
     let capnp_name = sanitize_capnp_field_name(field_name);
@@ -197,18 +209,36 @@ fn generate_array_reader(
     let idx = *counter;
     *counter += 1;
     let var = format!("{python_name}_{idx}");
-    if is_u8 {
-        builder.line(&format!(
-            "{var} = bytes({})",
-            capnp_read_expr(reader_var, &capnp_name)
-        ));
+    let (constructor, what) = if is_u8 {
+        ("bytes", "bytes")
     } else {
-        builder.line(&format!(
-            "{var} = list({})",
-            capnp_read_expr(reader_var, &capnp_name)
-        ));
+        ("list", "list")
+    };
+    builder.line(&format!(
+        "{var} = {constructor}({})",
+        capnp_read_expr(reader_var, &capnp_name)
+    ));
+    if let Some(len) = length {
+        emit_fixed_length_check(builder, &var, field_name, what, len);
     }
     var
+}
+
+/// Emits the `ValueError` raised when `var` does not hold exactly `len`
+/// items; `what` names the container in the message (`list` or `bytes`).
+pub(crate) fn emit_fixed_length_check(
+    builder: &mut PythonCodeBuilder,
+    var: &str,
+    field_name: &str,
+    what: &str,
+    len: usize,
+) {
+    builder.line(&format!("if len({var}) != {len}:"));
+    builder.indent();
+    builder.line(&format!(
+        "raise ValueError(\"invalid fixed {what} length for field '{field_name}': expected {len}, got \" + str(len({var})))"
+    ));
+    builder.dedent();
 }
 
 fn generate_object_reader(
@@ -314,12 +344,7 @@ fn generate_object_array_reader(
     builder.dedent();
 
     if let Some(len) = length {
-        builder.line(&format!("if len({result_var}) != {len}:"));
-        builder.indent();
-        builder.line(&format!(
-            "raise ValueError(\"invalid fixed list length for field '{field_name}': expected {len}, got \" + str(len({result_var})))"
-        ));
-        builder.dedent();
+        emit_fixed_length_check(builder, &result_var, field_name, "list", len);
     }
 
     result_var
@@ -328,6 +353,59 @@ fn generate_object_array_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call_array_reader(is_u8: bool, length: Option<usize>) -> String {
+        let mut builder = PythonCodeBuilder::new();
+        let mut counter = 0u32;
+        generate_array_reader(
+            &mut builder,
+            "reader",
+            "joint_positions",
+            is_u8,
+            length,
+            &mut counter,
+        );
+        builder.build()
+    }
+
+    #[test]
+    fn primitive_array_reader_emits_length_check() {
+        let code = call_array_reader(false, Some(7));
+        assert!(
+            code.contains("joint_positions_0 = list(reader.jointPositions)"),
+            "primitive arrays read as lists, got:\n{code}"
+        );
+        assert!(
+            code.contains("if len(joint_positions_0) != 7:")
+                && code.contains(
+                    "invalid fixed list length for field 'joint_positions': expected 7, got "
+                ),
+            "fixed-length path must check the declared length, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn u8_array_reader_emits_bytes_length_check() {
+        let code = call_array_reader(true, Some(4));
+        assert!(
+            code.contains("joint_positions_0 = bytes(reader.jointPositions)")
+                && code.contains(
+                    "invalid fixed bytes length for field 'joint_positions': expected 4, got "
+                ),
+            "fixed u8 arrays read as bytes and check their length, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn primitive_array_reader_no_length_check_when_dynamic() {
+        for is_u8 in [false, true] {
+            let code = call_array_reader(is_u8, None);
+            assert!(
+                !code.contains("raise ValueError"),
+                "dynamic-length path must not raise ValueError, got:\n{code}"
+            );
+        }
+    }
 
     fn call_object_array_reader(length: Option<usize>) -> String {
         let mut builder = PythonCodeBuilder::new();

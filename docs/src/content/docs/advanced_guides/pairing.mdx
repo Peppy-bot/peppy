@@ -66,7 +66,7 @@ After `peppy repo refresh`, the pairing is cached and addressable by `(name, tag
 
 Each node declares a **pairing slot** under `depends_on.pairings`: the contract, the role this node plays, and a `link_id` naming the slot. The `link_id` is how the node's own code and the pairing commands refer to *the other end*; while paired, exactly one peer instance sits behind it.
 
-The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is just `{ link_id, name }`: the pairing document remains the single source of shape and QoS, so an inline `message_format` or `qos_profile` on one of these entries is rejected.
+The slot says *which* conversation the node joins. `interfaces.topics` says *what the node uses through it*, exactly like a contract implementer and a contract consumer. A pairing-backed entry is `{ link_id, name }`, plus an optional `refine` block (see [below](#refining-the-pairings-generic-arrays)): the pairing document remains the single source of shape and QoS, so an inline `message_format` or `qos_profile` on one of these entries is rejected.
 
 <Tabs>
   <TabItem label="Python">
@@ -107,6 +107,23 @@ Every participant slot must be covered: starting the instance without pairing th
 Whether a slot *may* be vacated at all is the node's own call, made once in its manifest with `optional: true` on the `depends_on.pairings` entry. That is the deployment-independent half of the statement: a reader of the node can tell which of its slots run without a peer without sweeping every launcher, and a slot that must never boot unpaired cannot be waived by any deployment. The manifest says "may be empty", the deployment says "is empty here, because", and a slot nobody mentioned is uncovered either way. A vacancy on a required slot is refused with the manifest key that would lift the bar.
 
 Coverage is a launch-time question and has no bearing on what the node declares through the slot: a slot that boots vacant is interface-checked exactly like a paired one.
+
+### Refining the pairing's generic arrays
+
+A pairing between a leader and any jointed device keeps its joint vectors generic (`positions: { $type: "array", $items: "f64" }`, one entry per joint), because the document cannot know every device's joint count. The device node does, and pins it with a `refine` block on its pairing-backed entries, in both directions of the slot:
+
+```json5
+topics: {
+  emits: [
+    { link_id: "leader", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } },
+  ],
+  consumes: [
+    { link_id: "leader", name: "joint_setpoints", refine: { message_format: { positions: { $length: 7 } } } },
+  ],
+},
+```
+
+The generated modules carry the pinned length (`[f64; 7]` in Rust, a length-checked `list[float]` in Python) while the peer, generating from the document as written, stays generic; both encode the array the same way on the wire. An observer's `consumes` entries may refine the observed role's topics the same way. The block's syntax and the rules for what it may pin are those of contract entries, described in [Contract implementation](/advanced_guides/contract_implementation/#refining-the-contracts-generic-arrays); an inadmissible pin is reported per entry once the slot's coverage is clean, naming the pairing the slot resolved through.
 
 ## Establishing pairs
 

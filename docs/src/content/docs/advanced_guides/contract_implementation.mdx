@@ -127,7 +127,7 @@ A producer node claims a contract in `manifest.implements`. Each entry names a c
   </TabItem>
 </Tabs>
 
-A contract-backed entry is exactly `{link_id, name}`. The shape and QoS come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
+A contract-backed entry is `{link_id, name}`, plus an optional `refine` block described [below](#refining-the-contracts-generic-arrays). The shape and QoS come from the contract document, never from the manifest: an inline `message_format`, `qos_profile`, or service/action payload field on a contract-backed entry is rejected at parse time. The `name` is a strict selector, byte-equal to a member the contract declares.
 
 The producer node is named `realsense_d405`, not `depth_camera`. The two names are unrelated. The only thing that makes `realsense_d405` a valid `depth_camera` is the explicit `implements` claim. After `peppy node sync`, code generation emits the same `video_stream` and `video_stream_info` modules that a node declaring the shapes natively would get, nested under the implements slot's `link_id` (`emitted_topics/cam/video_stream`), not the contract's name or tag.
 
@@ -157,6 +157,56 @@ Pick semantic short names for implements link_ids (`cam`, `collision`, `hw_ready
 A single node can implement multiple contracts (e.g. `depth_camera:v1` and `uvc_camera:v1` under distinct link_ids) and then satisfies any consumer slot that asks for either. A node may implement each contract `(name, tag)` at most once; several instances of one capability are the job of node instances and [pairings](/advanced_guides/pairing/), not repeated implements entries. A node may also implement a contract *and* depend on the same contract under a different link_id (the relay shape).
 
 A native entry and a contract-backed entry may share a name on the same producer: the two are namespaced apart in generated modules, schema keys, and wire keys.
+
+#### Refining the contract's generic arrays
+
+A contract keeps an array generic when its length is a property of the implementing device rather than of the interface. A `limb_motion` contract declares `joint_positions: { $type: "array", $items: "f64" }` with "one entry per joint of the arm", because a contract for arms cannot say how many joints every arm has. The node that drives a particular arm knows, and says so with a `refine` block on the entry:
+
+```json5
+actions: {
+  exposes: [
+    {
+      link_id: "moves",
+      name: "move_arm_joints",
+      // This arm has seven joints: pin the contract's generic joint vectors.
+      refine: {
+        goal_service: { request_message_format: { joint_positions: { $length: 7 } } },
+        result_service: { response_message_format: { final_joint_positions: { $length: 7 } } },
+      },
+    },
+  ],
+},
+```
+
+The block mirrors the member's structure down to the array and carries `{ $length: N }` at the leaf: a topic entry refines `message_format`, a service entry `request_message_format` and/or `response_message_format`, an action entry `goal_service`, `feedback_topic`, and/or `result_service`. Nested objects are stepped into by naming their fields, and an array of objects by `$items`:
+
+```json5
+refine: {
+  message_format: {
+    header: { frame: { $length: 4 } },
+    transforms: { $items: { translation: { $length: 3 } } },
+  },
+},
+```
+
+The generated code is the contract's shape with those lengths set and nothing else changed: `[f64; 7]` instead of `Vec<f64>` in Rust, a length-checked `list[float]` in Python, exactly what a native `$length: 7` produces. Consumers keep generating from the contract as written and stay generic. The two interoperate because a fixed-length and a variable-length array share one wire encoding; `$length` only pins the refining node's types and adds its length checks. A goal whose array does not have the pinned length is rejected by the generated action server with the decode error as the reason, before the node's own goal handler runs, and the server keeps serving. Refinements are not visible to anyone else: the MCP exposure schema, `stack benchmark`, and launch-time binding checks all read the contract document.
+
+What a `refine` block may say is checked when the contract resolves, at `node add` / `node sync`, with every problem of an entry reported at once:
+
+- every pinned path must name an array the contract declares, and the array must be generic: an array the contract already pins is refused, whether or not the lengths agree, because the contract is the place where that length lives;
+- the array's items must be scalars (the same rule as a native `$length`): `string`, `bytes`, `time`, and object items cannot be pinned;
+- `$items` steps into an array of objects only, and nested field names step into an object only.
+
+```
+entry `move_arm_joints` (link_id `moves`) refines contract `limb_motion:v1` in ways the document
+does not admit: `goal_service.request_message_format.arm_id`: `$length` and `$items` apply to
+arrays, but the document declares a `u8`; `result_service.response_message_format.position`:
+the document already fixes the length at 3
+```
+
+A coverage failure on the slot is reported first; refinements are checked once the slot lists the right members. The block's own structure (a leaf that is exactly `$length`, no empty block, no shape modifier such as `$type` inside it) is checked at parse time, and `refine` on a native entry is rejected there as well: a native entry owns its shape and sets `$length` in its own `message_format`.
+
+Refinement works the same way on the consuming side: a `depends_on.contracts` entry in `topics.consumes`, `services.consumes`, or `actions.consumes` may carry the same `refine` block, for a consumer that knows the device it will be bound to. A `depends_on.nodes` entry may not: a node dependency resolves to the producer's native shape, which is taken as is. Pairing-backed entries refine their pairing document's topics the same way; see [Pairing](/advanced_guides/pairing/#refining-the-pairings-generic-arrays).
 
 ### 3. A consumer that depends on the contract
 

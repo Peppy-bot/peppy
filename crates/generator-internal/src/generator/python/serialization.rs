@@ -1,4 +1,5 @@
 use super::code_builder::PythonCodeBuilder;
+use super::deserialization::emit_fixed_length_check;
 use super::identifiers::{is_python_keyword, sanitize_python_identifier};
 use crate::generator::naming::sanitize_capnp_field_name;
 use config::node::{MessageFormat, SchemaType, TypeToken};
@@ -76,12 +77,7 @@ fn emit_field_assignment(
                 *counter += 1;
                 let list_builder = format!("list_{idx}");
                 let length_expr = if let Some(len) = array.length {
-                    builder.line(&format!("if len({value_expr}) != {len}:"));
-                    builder.indent();
-                    builder.line(&format!(
-                        "raise ValueError(\"invalid fixed list length for field '{field_name}': expected {len}, got \" + str(len({value_expr})))"
-                    ));
-                    builder.dedent();
+                    emit_fixed_length_check(builder, value_expr, field_name, "list", len);
                     format!("{len}")
                 } else {
                     format!("len({value_expr})")
@@ -112,6 +108,14 @@ fn emit_field_assignment(
                 builder.dedent();
             }
             _ => {
+                // A fixed-length array of primitives is checked before it is
+                // written, so a caller passing any other count fails here
+                // rather than putting a wrong-sized list on the wire.
+                if let Some(len) = array.length {
+                    let is_u8 = matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8));
+                    let what = if is_u8 { "bytes" } else { "list" };
+                    emit_fixed_length_check(builder, value_expr, field_name, what, len);
+                }
                 builder.line(&capnp_assignment_stmt(builder_var, &capnp_name, value_expr));
             }
         },
@@ -172,6 +176,62 @@ mod tests {
     use super::*;
     use config::node::{ArrayKind, ArraySchema, ObjectKind, ObjectSchema};
     use indexmap::IndexMap;
+
+    fn emit_primitive_array(is_u8: bool, length: Option<usize>) -> String {
+        let item = if is_u8 { TypeToken::U8 } else { TypeToken::F64 };
+        let schema = SchemaType::Array(ArraySchema {
+            kind: ArrayKind::Array,
+            items: Box::new(SchemaType::Type(item)),
+            length,
+            optional: false,
+        });
+        let mut builder = PythonCodeBuilder::new();
+        let mut counter = 0u32;
+        emit_field_assignment(
+            &mut builder,
+            "msg",
+            "joint_positions",
+            &schema,
+            "value.joint_positions",
+            &mut counter,
+        );
+        builder.build()
+    }
+
+    /// A fixed-length list of primitives is checked before the assignment,
+    /// with the same message the reader raises, so a wrong-sized list never
+    /// reaches the wire.
+    #[test]
+    fn primitive_array_serialization_checks_fixed_length() {
+        let code = emit_primitive_array(false, Some(7));
+        assert!(
+            code.contains("if len(value.joint_positions) != 7:")
+                && code.contains(
+                    "invalid fixed list length for field 'joint_positions': expected 7, got "
+                )
+                && code.contains("msg.jointPositions = value.joint_positions"),
+            "fixed-length path must check then assign, got:\n{code}"
+        );
+        let code = emit_primitive_array(true, Some(4));
+        assert!(
+            code.contains(
+                "invalid fixed bytes length for field 'joint_positions': expected 4, got "
+            ),
+            "fixed u8 arrays are bytes, got:\n{code}"
+        );
+    }
+
+    #[test]
+    fn primitive_array_serialization_skips_check_when_dynamic() {
+        for is_u8 in [false, true] {
+            let code = emit_primitive_array(is_u8, None);
+            assert!(
+                !code.contains("raise ValueError")
+                    && code.contains("msg.jointPositions = value.joint_positions"),
+                "dynamic-length path assigns without a check, got:\n{code}"
+            );
+        }
+    }
 
     fn emit_object_array(length: Option<usize>) -> String {
         let mut fields = IndexMap::new();
