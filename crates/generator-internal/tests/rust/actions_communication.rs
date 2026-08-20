@@ -3082,3 +3082,372 @@ fn main() -> Result<()> {
         exposer_stderr
     );
 }
+
+use crate::helpers::{JOINTS_CONTRACT_ACTION, JOINTS_CONTRACT_NAME, JOINTS_REFINEMENT};
+
+/// Wire-compatibility capstone for `refine`: the producer generates from the
+/// contract member with its `refine` block applied (`[f64; 3]` on both the
+/// goal and the result), the consumer generates from the member as the
+/// contract declares it (`Vec<f64>`), and the two talk over a live router
+/// through the contract slot. A goal carrying three joints decodes on the
+/// producer and completes with a pinned result the consumer reads as a
+/// generic vector. A goal carrying two joints is valid for the contract but
+/// not for the producer's pinned shape: the generated server answers it with
+/// a rejection carrying the decode error, never hands it to the node's goal
+/// handler, and keeps serving, which a third goal proves. Runs the peer
+/// topology only; the transport topology is orthogonal to what is under
+/// test here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn actions_refined_producer_interoperates_with_generic_consumer() {
+    let topology = crate::helpers::LocalNodesTopology::Peer;
+    let instance = pmi::ZenohAdapter::start_router_ephemeral("127.0.0.1", None)
+        .await
+        .expect("failed to start zenoh router for test");
+    let (router_host, router_port) = (instance.host.clone(), instance.port);
+
+    let contract_action: NativeExposedAction =
+        serde_json5::from_str(JOINTS_CONTRACT_ACTION).unwrap();
+
+    // --- Consumer (client) project: the contract member as written.
+    let consumer_instance_id = CONSUMER_INSTANCE_ID;
+    let temp_dir_consumer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for consumer project");
+    let consumed_action: ConsumedAction =
+        serde_json5::from_str(r#"{ link_id: "arm", name: "move_arm_joints" }"#).unwrap();
+    let action_messages = ConsumedActionMessage::from(&contract_action);
+    let (mut generator, output_dir_consumer, user_node_consumer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(
+            &temp_dir_consumer,
+            &contract_consumer_stub_node_config(
+                JOINTS_CONTRACT_NAME,
+                "v1",
+                "arm",
+                "one",
+                RUST_STUB_EXECUTION,
+            ),
+        );
+    generator
+        .add_consumed_action(
+            &consumed_action,
+            &action_messages,
+            &contract_dep(JOINTS_CONTRACT_NAME, "v1", "arm"),
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_consumer, &output_dir_consumer);
+    generator
+        .build(&output_dir_consumer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let consumer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig::new(Name::new(consumer_instance_id).unwrap()),
+        CONSUMER_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .unwrap();
+    let consumer_runtime_config = bind_slot(
+        consumer_runtime_config,
+        "arm",
+        TEST_CORE_NODE,
+        EXPOSER_INSTANCE_ID,
+    );
+    let consumer_runtime_config = crate::helpers::apply_topology(consumer_runtime_config, topology);
+    let consumer_runtime_config_path = temp_dir_consumer.path().join("peppy_runtime.json5");
+    consumer_runtime_config
+        .save_json5_launch_config(&consumer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_consumer);
+    let consumer_main = r#"
+use peppygen::consumed_actions::arm::move_arm_joints as joints;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use std::time::Duration;
+
+async fn fire(node_runner: &peppygen::NodeRunner, arm_id: u16, joint_positions: Vec<f64>) -> Result<joints::ActionHandle> {
+    joints::ActionHandle::fire_goal(
+        node_runner,
+        joints::bound_producer(node_runner),
+        Duration::from_secs(5),
+        // The consumer's generated request carries the contract's generic
+        // vector; the length is whatever the caller passes.
+        joints::GoalRequest { arm_id, joint_positions },
+        peppygen::QoSProfile::SensorData,
+    ).await
+}
+
+async fn consume_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    // Three joints: the length the producer pins, so the goal decodes there.
+    let mut handle = fire(node_runner, 1, vec![0.1, 0.2, 0.3]).await?;
+    println!("goal 1 accepted={}", handle.accepted);
+    let result = handle.get_result(Duration::from_secs(5)).await?;
+    match result.outcome {
+        joints::ResultOutcome::Completed(data) => println!(
+            "result 1 success={} final={:?}",
+            data.success, data.final_joint_positions
+        ),
+        other => panic!("expected Completed outcome, got {other:?}"),
+    }
+
+    // Two joints: the contract admits it, the producer's pinned shape does
+    // not, and the answer is a rejection carrying the decode error.
+    let rejected = fire(node_runner, 2, vec![0.1, 0.2]).await?;
+    println!(
+        "goal 2 accepted={} reason={:?}",
+        rejected.accepted,
+        rejected.reason.as_deref()
+    );
+
+    // The producer kept serving after the rejection.
+    let mut handle = fire(node_runner, 3, vec![0.4, 0.5, 0.6]).await?;
+    println!("goal 3 accepted={}", handle.accepted);
+    let result = handle.get_result(Duration::from_secs(5)).await?;
+    match result.outcome {
+        joints::ResultOutcome::Completed(data) => println!("result 3 success={}", data.success),
+        other => panic!("expected Completed outcome, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        consume_action(&node_runner).await
+    })
+}
+"#;
+    fs::write(
+        user_node_consumer.join("src").join("main.rs"),
+        consumer_main,
+    )
+    .expect("failed to write consumer main");
+
+    // --- Exposer (server) project: the same member with the implementer's
+    // `refine` block applied, under a `manifest.implements`-shaped origin.
+    let exposer_instance_id = EXPOSER_INSTANCE_ID;
+    let temp_dir_exposer = TempDir::new_in(crate::helpers::test_tmp_root())
+        .expect("failed to create temp dir for exposer project");
+    use config::node::Refines;
+    let refinement: config::node::ActionRefinement =
+        serde_json5::from_str(JOINTS_REFINEMENT).unwrap();
+    let exposed_action = refinement
+        .apply(contract_action)
+        .expect("the contract member admits both pins");
+    let (mut generator, output_dir_exposer, user_node_exposer, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir_exposer, STUB_NODE_CONFIG);
+    generator
+        .add_exposed_action(
+            &exposed_action,
+            Some(&ContractOrigin {
+                link_id: "arm_impl".to_string(),
+                contract_name: JOINTS_CONTRACT_NAME.to_string(),
+                contract_tag: "v1".to_string(),
+            }),
+        )
+        .unwrap();
+    let output_config = copy_config_to_output(&user_node_exposer, &output_dir_exposer);
+    generator
+        .build(&output_dir_exposer, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    let exposer_runtime_config = RuntimeConfig::new(
+        &router_host,
+        router_port,
+        NodeInstanceConfig::new(Name::new(exposer_instance_id).unwrap()),
+        ARM_SERVER_NODE_NAME,
+        "v1",
+        TEST_CORE_NODE,
+    )
+    .unwrap();
+    let exposer_runtime_config = crate::helpers::apply_topology(exposer_runtime_config, topology);
+    let exposer_runtime_config_path = temp_dir_exposer.path().join("peppy_runtime.json5");
+    exposer_runtime_config
+        .save_json5_launch_config(&exposer_runtime_config_path)
+        .unwrap();
+
+    init_cargo_user_node(&user_node_exposer);
+    let exposer_main = r#"
+use peppygen::exposed_actions::arm_impl::move_arm_joints;
+use peppygen::NodeBuilder;
+use peppygen::Result;
+
+async fn expose_action(node_runner: &peppygen::NodeRunner) -> Result<()> {
+    let mut action = move_arm_joints::ActionHandle::expose(&node_runner).await?;
+    tokio::spawn(async move {
+        loop {
+            let maybe_ctx = action
+                .handle_goal_next_request(|request| -> Result<move_arm_joints::GoalDecision> {
+                    // The refined request carries the pinned array type; a goal
+                    // of any other length never reaches this handler.
+                    let joints: [f64; 3] = request.data.joint_positions;
+                    println!("server received goal arm_id={} joints={:?}", request.data.arm_id, joints);
+                    Ok(move_arm_joints::GoalDecision::Accept(move_arm_joints::GoalResponse::new(true)))
+                })
+                .await;
+
+            match maybe_ctx {
+                Ok(Some(ctx)) => {
+                    let final_joint_positions: [f64; 3] = [1.0, 2.0, 3.0];
+                    let _ = ctx.complete(true, final_joint_positions).await;
+                    println!("server completed goal");
+                }
+                _ => break,
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        expose_action(&node_runner).await
+    })
+}
+"#;
+    fs::write(user_node_exposer.join("src").join("main.rs"), exposer_main)
+        .expect("failed to write exposer main");
+
+    compile_project(&user_node_consumer);
+    compile_project(&user_node_exposer);
+
+    let exposer_runtime_config_str = exposer_runtime_config_path.to_str().unwrap().to_owned();
+    let consumer_runtime_config_str = consumer_runtime_config_path.to_str().unwrap().to_owned();
+
+    let messenger = peppylib::MessengerHandle::connect(&router_host, router_port)
+        .await
+        .expect("failed to create messenger for test control");
+
+    let mut exposer_child = spawn_cargo_run(
+        &user_node_exposer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &exposer_runtime_config_str)],
+    );
+
+    let ctx = WaitContext {
+        messenger: &messenger,
+        bound_core_node: TEST_CORE_NODE,
+        caller_instance_id: SHUTDOWN_SENDER_INSTANCE_ID,
+        target_core_node: TEST_CORE_NODE,
+    };
+    wait_for_action_reachable_via_target_or_exit(
+        &ctx,
+        test_contract_target(JOINTS_CONTRACT_NAME),
+        "move_arm_joints",
+        None,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    let mut consumer_child = spawn_cargo_run(
+        &user_node_consumer,
+        &[(RUNTIME_CONFIG_VAR_NAME, &consumer_runtime_config_str)],
+    );
+
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        CONSUMER_NODE_NAME,
+        consumer_instance_id,
+        &mut consumer_child,
+        &user_node_consumer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+    wait_for_health_service_reachable_or_exit(
+        &ctx,
+        ARM_SERVER_NODE_NAME,
+        exposer_instance_id,
+        &mut exposer_child,
+        &user_node_exposer,
+        DEFAULT_WAIT_TIMEOUT,
+    )
+    .await;
+
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        CONSUMER_NODE_NAME,
+        TEST_CORE_NODE,
+        consumer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+    send_shutdown(
+        &messenger,
+        TEST_CORE_NODE,
+        SHUTDOWN_SENDER_INSTANCE_ID,
+        ARM_SERVER_NODE_NAME,
+        TEST_CORE_NODE,
+        exposer_instance_id,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let consumer_output = wait_for_child(
+        &mut consumer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_consumer,
+    );
+    let exposer_output = wait_for_child(
+        &mut exposer_child,
+        Some(Duration::from_secs(10)),
+        &user_node_exposer,
+    );
+
+    let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout).into_owned();
+    let consumer_stderr = String::from_utf8_lossy(&consumer_output.stderr).into_owned();
+    assert!(
+        consumer_output.status.success(),
+        "consumer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        consumer_output.status.code(),
+        consumer_stdout,
+        consumer_stderr
+    );
+    for needle in [
+        "goal 1 accepted=true",
+        "result 1 success=true final=[1.0, 2.0, 3.0]",
+        "goal 2 accepted=false reason=Some(\"goal request does not decode: ",
+        "invalid fixed list length for field 'joint_positions': expected 3, got 2",
+        "goal 3 accepted=true",
+        "result 3 success=true",
+    ] {
+        assert!(
+            consumer_stdout.contains(needle),
+            "consumer stdout lacks `{needle}`.\nstdout:\n{consumer_stdout}\nstderr:\n{consumer_stderr}"
+        );
+    }
+
+    let exposer_stdout = String::from_utf8_lossy(&exposer_output.stdout).into_owned();
+    let exposer_stderr = String::from_utf8_lossy(&exposer_output.stderr).into_owned();
+    assert!(
+        exposer_output.status.success(),
+        "exposer cargo run failed with status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        exposer_output.status.code(),
+        exposer_stdout,
+        exposer_stderr
+    );
+    assert!(
+        exposer_stdout.contains("server received goal arm_id=1 joints=[0.1, 0.2, 0.3]")
+            && exposer_stdout.contains("server received goal arm_id=3 joints=[0.4, 0.5, 0.6]")
+            && exposer_stdout.matches("server completed goal").count() == 2,
+        "exposer did not run exactly the two decodable goals.\nstdout:\n{exposer_stdout}\nstderr:\n{exposer_stderr}"
+    );
+    assert!(
+        !exposer_stdout.contains("arm_id=2"),
+        "the undecodable goal must never reach the goal handler.\nstdout:\n{exposer_stdout}"
+    );
+}

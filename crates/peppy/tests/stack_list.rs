@@ -74,6 +74,7 @@ fn make_consumer_depend_on_provider(
         consumes: Some(vec![ConsumedTopic {
             link_id: provider_name.to_string(),
             name: topic_name.to_string(),
+            refine: None,
         }]),
         ..Default::default()
     });

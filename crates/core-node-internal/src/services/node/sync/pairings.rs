@@ -159,25 +159,24 @@ fn pairing_slots(manifest: &config::node::Manifest) -> Vec<PairingSlotRef<'_>> {
 pub enum PairingError {
     /// One aggregated set-diff per broken slot.
     Coverage(Vec<PairingCoverageMismatch>),
+    /// One aggregated problem list per entry whose `refine` block the
+    /// pairing document does not admit. Reported only once coverage is
+    /// clean.
+    Refinement(Vec<config::RefinementMismatch>),
     Other(String),
 }
 
 impl std::fmt::Display for PairingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Coverage(mismatches) => {
-                for (idx, mismatch) in mismatches.iter().enumerate() {
-                    if idx > 0 {
-                        write!(f, "; ")?;
-                    }
-                    write!(f, "{mismatch}")?;
-                }
-                Ok(())
-            }
+            Self::Coverage(mismatches) => config::write_joined(f, mismatches, "; "),
+            Self::Refinement(mismatches) => config::write_joined(f, mismatches, "; "),
             Self::Other(reason) => write!(f, "{reason}"),
         }
     }
 }
+
+impl std::error::Error for PairingError {}
 
 impl From<String> for PairingError {
     fn from(reason: String) -> Self {
@@ -241,6 +240,7 @@ pub fn collect_pairing_interfaces(
 
     let mut out = Vec::new();
     let mut broken = Vec::new();
+    let mut inadmissible = Vec::new();
     for participant in &depends_on.pairings {
         let context = context_of(
             participant.name.as_str(),
@@ -254,6 +254,7 @@ pub fn collect_pairing_interfaces(
             interfaces_cfg,
             &context,
             &mut out,
+            &mut inadmissible,
         );
         if !mismatch.is_empty() {
             broken.push(mismatch);
@@ -273,6 +274,7 @@ pub fn collect_pairing_interfaces(
             interfaces_cfg,
             &context,
             &mut out,
+            &mut inadmissible,
         );
         if !mismatch.is_empty() {
             broken.push(mismatch);
@@ -282,23 +284,37 @@ pub fn collect_pairing_interfaces(
     if !broken.is_empty() {
         return Err(PairingError::Coverage(broken));
     }
+    if !inadmissible.is_empty() {
+        return Err(PairingError::Refinement(inadmissible));
+    }
     Ok(out)
 }
 
 /// Resolves a participant slot: `topics.emits` become peer-emitted (exact
 /// coverage against the role's topics), `topics.consumes` become peer-consumed
-/// (partial coverage against the counterpart role's topics).
+/// (partial coverage against the counterpart role's topics). An entry whose
+/// `refine` block the topic does not admit counts toward coverage (the topic
+/// exists) and lands in `inadmissible` instead of `out`.
 fn collect_participant_slot(
     participant: &config::node::PairingParticipantDependency,
     doc: &PeppyPairing,
     interfaces_cfg: &config::node::Interfaces,
     context: &generator::PeerContext,
     out: &mut Vec<generator::DeploymentInterface>,
+    inadmissible: &mut Vec<config::RefinementMismatch>,
 ) -> PairingCoverageMismatch {
     let role = participant.role.as_str();
     let mut coverage = SlotCoverage::default();
+    let mismatch_for = |name: &str, problems| {
+        config::RefinementMismatch::for_pairing(
+            (participant.name.as_str(), &participant.tag),
+            &participant.link_id,
+            name,
+            problems,
+        )
+    };
 
-    for name in declared_topic_names(interfaces_cfg, &participant.link_id, Direction::Emits) {
+    for (name, refine) in declared_topics(interfaces_cfg, &participant.link_id, Direction::Emits) {
         let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
             coverage.unknown_emits.push(name.to_string());
             continue;
@@ -310,13 +326,17 @@ fn collect_participant_slot(
             continue;
         }
         *coverage.visited_emits.entry(name.to_string()).or_insert(0) += 1;
-        out.push(generator::DeploymentInterface::peer_emitted_topic(
-            native_topic(topic),
-            context.clone(),
-        ));
+        match native_topic(topic, refine) {
+            Ok(native) => out.push(generator::DeploymentInterface::peer_emitted_topic(
+                native,
+                context.clone(),
+            )),
+            Err(problems) => inadmissible.push(mismatch_for(name, problems)),
+        }
     }
 
-    for name in declared_topic_names(interfaces_cfg, &participant.link_id, Direction::Consumes) {
+    for (name, refine) in declared_topics(interfaces_cfg, &participant.link_id, Direction::Consumes)
+    {
         let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
             coverage.unknown_consumes.push(name.to_string());
             continue;
@@ -331,10 +351,13 @@ fn collect_participant_slot(
             .visited_consumes
             .entry(name.to_string())
             .or_insert(0) += 1;
-        out.push(generator::DeploymentInterface::peer_consumed_topic(
-            native_topic(topic),
-            context.clone(),
-        ));
+        match native_topic(topic, refine) {
+            Ok(native) => out.push(generator::DeploymentInterface::peer_consumed_topic(
+                native,
+                context.clone(),
+            )),
+            Err(problems) => inadmissible.push(mismatch_for(name, problems)),
+        }
     }
 
     build_participant_mismatch(participant, doc, coverage)
@@ -343,26 +366,35 @@ fn collect_participant_slot(
 /// Resolves an observer slot: it emits nothing (any `topics.emits` entry is an
 /// error), and each `topics.consumes` entry taps a topic emitted BY the
 /// observed role, becoming an observed topic. Consume coverage is partial, like
-/// a participant's.
+/// a participant's, and an inadmissible `refine` block is handled the same way.
 fn collect_observer_slot(
     observer: &config::node::PairingObserverDependency,
     doc: &PeppyPairing,
     interfaces_cfg: &config::node::Interfaces,
     context: &generator::PeerContext,
     out: &mut Vec<generator::DeploymentInterface>,
+    inadmissible: &mut Vec<config::RefinementMismatch>,
 ) -> PairingCoverageMismatch {
     let observed_role = observer.role.as_str();
     let mut coverage = SlotCoverage::default();
+    let mismatch_for = |name: &str, problems| {
+        config::RefinementMismatch::for_pairing(
+            (observer.name.as_str(), &observer.tag),
+            &observer.link_id,
+            name,
+            problems,
+        )
+    };
 
     // An observer produces nothing; a stray emit entry naming its slot is a
     // hard error rather than a role mismatch.
-    for name in declared_topic_names(interfaces_cfg, &observer.link_id, Direction::Emits) {
+    for (name, _) in declared_topics(interfaces_cfg, &observer.link_id, Direction::Emits) {
         coverage
             .wrong_role_emits
             .push(format!("{name} (an observer slot emits nothing)"));
     }
 
-    for name in declared_topic_names(interfaces_cfg, &observer.link_id, Direction::Consumes) {
+    for (name, refine) in declared_topics(interfaces_cfg, &observer.link_id, Direction::Consumes) {
         let Some(topic) = doc.topics.iter().find(|t| t.name == name) else {
             coverage.unknown_consumes.push(name.to_string());
             continue;
@@ -380,11 +412,14 @@ fn collect_observer_slot(
             .visited_consumes
             .entry(name.to_string())
             .or_insert(0) += 1;
-        out.push(generator::DeploymentInterface::observed_topic(
-            native_topic(topic),
-            context.clone(),
-            observer.cardinality,
-        ));
+        match native_topic(topic, refine) {
+            Ok(native) => out.push(generator::DeploymentInterface::observed_topic(
+                native,
+                context.clone(),
+                observer.cardinality,
+            )),
+            Err(problems) => inadmissible.push(mismatch_for(name, problems)),
+        }
     }
 
     build_observer_mismatch(observer, coverage)
@@ -397,16 +432,16 @@ enum Direction {
     Consumes,
 }
 
-/// The names declared for one pairing slot in one direction, in manifest
-/// order. Entries naming other slots (contract-backed emits, node-backed
-/// consumes) belong to the implements and consumed collectors and are skipped
-/// here, which is what keeps pairing topics out of `emitted_topics` and
-/// `consumed_topics`.
-fn declared_topic_names<'a>(
+/// The entries declared for one pairing slot in one direction, in manifest
+/// order, as `(name, refine)`. Entries naming other slots (contract-backed
+/// emits, node-backed consumes) belong to the implements and consumed
+/// collectors and are skipped here, which is what keeps pairing topics out of
+/// `emitted_topics` and `consumed_topics`.
+fn declared_topics<'a>(
     interfaces_cfg: &'a config::node::Interfaces,
     link_id: &'a str,
     direction: Direction,
-) -> Vec<&'a str> {
+) -> Vec<(&'a str, Option<&'a config::node::TopicRefinement>)> {
     let Some(topics) = interfaces_cfg.topics.as_ref() else {
         return Vec::new();
     };
@@ -415,27 +450,35 @@ fn declared_topic_names<'a>(
             .emits
             .iter()
             .flatten()
-            .filter(|e| e.link_id() == Some(link_id))
-            .map(|e| e.name())
+            .filter_map(|e| e.as_linked())
+            .filter(|e| e.link_id == link_id)
+            .map(|e| (e.name.as_str(), e.refine.as_deref()))
             .collect(),
         Direction::Consumes => topics
             .consumes
             .iter()
             .flatten()
             .filter(|c| c.link_id == link_id)
-            .map(|c| c.name.as_str())
+            .map(|c| (c.name.as_str(), c.refine.as_deref()))
             .collect(),
     }
 }
 
 /// The generator carries a pairing topic's shape in a `NativeEmittedTopic` in
-/// both directions; the document is the sole source of that shape.
-fn native_topic(topic: &daemon_config::pairing::PairingTopic) -> config::node::NativeEmittedTopic {
-    config::node::NativeEmittedTopic {
-        name: topic.name.clone(),
-        qos_profile: topic.qos_profile.clone(),
-        message_format: topic.message_format.clone(),
-    }
+/// both directions; the document is the sole source of that shape, and the
+/// entry's `refine` block may pin the length of arrays it leaves generic.
+fn native_topic(
+    topic: &daemon_config::pairing::PairingTopic,
+    refine: Option<&config::node::TopicRefinement>,
+) -> Result<config::node::NativeEmittedTopic, Vec<config::node::RefinementProblem>> {
+    config::node::refined(
+        refine,
+        config::node::NativeEmittedTopic {
+            name: topic.name.clone(),
+            qos_profile: topic.qos_profile.clone(),
+            message_format: topic.message_format.clone(),
+        },
+    )
 }
 
 /// Turns one slot's bookkeeping into its aggregated diff. Only the emit side
@@ -617,7 +660,7 @@ mod tests {
     fn coverage(err: PairingError) -> Vec<PairingCoverageMismatch> {
         match err {
             PairingError::Coverage(mismatches) => mismatches,
-            PairingError::Other(reason) => panic!("expected a coverage diff, got: {reason}"),
+            other => panic!("expected a coverage diff, got: {other}"),
         }
     }
 
@@ -663,6 +706,158 @@ mod tests {
         assert_eq!(peer.pairing_name, "arm_link");
         assert_eq!(peer.pairing_tag, "v1");
         assert_eq!(peer.link_id, "controller");
+    }
+
+    /// A pairing keeping its joint vectors generic: the leader streams
+    /// setpoints, the follower streams its state back.
+    const JOINT_LINK_BODY: &str = r#"{
+        peppy_schema: "pairing/v1",
+        manifest: { name: "joint_link", tag: "v1" },
+        roles: ["leader", "follower"],
+        topics: [
+            {
+                emitted_by: "leader",
+                name: "joint_setpoints",
+                message_format: { positions: { $type: "array", $items: "f64" } }
+            },
+            {
+                emitted_by: "follower",
+                name: "joint_states",
+                message_format: { stamp: "time", positions: { $type: "array", $items: "f64" } }
+            }
+        ]
+    }"#;
+
+    fn joint_link_dirs() -> (TempDir, TempDir, PeppyDirs) {
+        let tmp = TempDir::new().expect("temp dir");
+        let entry = seed_pairing(tmp.path(), "joint_link", "v1", JOINT_LINK_BODY);
+        let (cache_tmp, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        (tmp, cache_tmp, dirs)
+    }
+
+    fn positions_length(topic: &config::node::NativeEmittedTopic) -> Option<usize> {
+        let format = topic
+            .message_format
+            .as_ref()
+            .expect("the topic has a format");
+        let config::node::SchemaType::Array(array) = &format.0["positions"] else {
+            panic!("`positions` should be an array");
+        };
+        array.length
+    }
+
+    /// A follower that knows its joint count pins the generic vectors in
+    /// both directions of its slot: the state it emits and the setpoints
+    /// it consumes.
+    #[test]
+    fn refine_pins_generic_arrays_in_both_directions_of_a_participant_slot() {
+        let (_t, _c, dirs) = joint_link_dirs();
+        let follower = manifest(
+            r#"{
+                name: "seven_dof_arm", tag: "v1",
+                depends_on: {
+                    pairings: [{ name: "joint_link", tag: "v1", role: "follower", link_id: "leader" }]
+                }
+            }"#,
+        );
+        let cfg = interfaces(
+            r#"{ topics: {
+                emits: [{ link_id: "leader", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } }],
+                consumes: [{ link_id: "leader", name: "joint_setpoints", refine: { message_format: { positions: { $length: 7 } } } }],
+            } }"#,
+        );
+        let out = collect(&follower, &cfg, &dirs).expect("admissible refinements resolve");
+        assert_eq!(out.len(), 2);
+        for resolved in &out {
+            match resolved.interface() {
+                generator::InterfaceVariant::PeerEmittedTopic { topic, .. }
+                | generator::InterfaceVariant::PeerConsumedTopic { topic, .. } => {
+                    assert_eq!(positions_length(topic), Some(7), "{}", topic.name);
+                }
+                other => panic!("expected a peer topic variant, got {other:?}"),
+            }
+        }
+    }
+
+    /// An observer taps the observed role's topics and may pin them the
+    /// same way.
+    #[test]
+    fn refine_pins_generic_arrays_of_an_observed_topic() {
+        let (_t, _c, dirs) = joint_link_dirs();
+        let recorder = manifest(
+            r#"{
+                name: "recorder", tag: "v1",
+                depends_on: {
+                    pairing_observers: [{ name: "joint_link", tag: "v1", role: "follower", link_id: "watch" }]
+                }
+            }"#,
+        );
+        let cfg = interfaces(
+            r#"{ topics: {
+                consumes: [{ link_id: "watch", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } }],
+            } }"#,
+        );
+        let out = collect(&recorder, &cfg, &dirs).expect("admissible refinements resolve");
+        assert_eq!(out.len(), 1);
+        let generator::InterfaceVariant::ObservedTopic { topic, .. } = out[0].interface() else {
+            panic!("expected an observed topic, got {:?}", out[0]);
+        };
+        assert_eq!(positions_length(topic), Some(7));
+    }
+
+    /// An inadmissible pin is reported for its entry once the slot's
+    /// coverage is clean, naming the pairing the slot resolved through;
+    /// while coverage is broken, the coverage diff is what gets reported.
+    #[test]
+    fn inadmissible_refine_is_reported_after_coverage() {
+        let (_t, _c, dirs) = joint_link_dirs();
+        let follower = manifest(
+            r#"{
+                name: "seven_dof_arm", tag: "v1",
+                depends_on: {
+                    pairings: [{ name: "joint_link", tag: "v1", role: "follower", link_id: "leader" }]
+                }
+            }"#,
+        );
+        let bad_emit = r#"{ link_id: "leader", name: "joint_states", refine: { message_format: { stamp: { $length: 1 } } } }"#;
+
+        let cfg = interfaces(&format!(r#"{{ topics: {{ emits: [{bad_emit}] }} }}"#));
+        let err = collect(&follower, &cfg, &dirs).expect_err("a `time` field has no length to pin");
+        let PairingError::Refinement(mismatches) = err else {
+            panic!("expected a refinement report, got: {err}");
+        };
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].document, "pairing `joint_link:v1`");
+        assert_eq!(mismatches[0].link_id, "leader");
+        assert_eq!(mismatches[0].name, "joint_states");
+        assert_eq!(mismatches[0].problems.len(), 1);
+        assert_eq!(mismatches[0].problems[0].path, "message_format.stamp");
+        assert!(
+            mismatches[0]
+                .to_string()
+                .contains("the document declares a `time`"),
+            "{}",
+            mismatches[0]
+        );
+
+        // The same entry plus a consume entry naming no topic of the pairing:
+        // the coverage diff is reported, the refinement report waits.
+        let cfg = interfaces(&format!(
+            r#"{{ topics: {{
+                emits: [{bad_emit}],
+                consumes: [{{ link_id: "leader", name: "joint_torques" }}],
+            }} }}"#
+        ));
+        let mismatches = coverage(
+            collect(&follower, &cfg, &dirs).expect_err("an unknown consume is a coverage failure"),
+        );
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].unknown_consumes, vec!["joint_torques"]);
+        assert!(
+            mismatches[0].missing_emits.is_empty(),
+            "the refined emit counts as visiting its topic: {:?}",
+            mismatches[0]
+        );
     }
 
     #[test]

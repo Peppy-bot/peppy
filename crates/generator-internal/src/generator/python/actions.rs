@@ -225,8 +225,15 @@ if pending is None:
     return None  # goal stream closed (node shutting down)
 "#);
                     if has_goal_request {
+                        // A request that does not fit this server's declared
+                        // shape is answered with the decode error and skipped;
+                        // the loop keeps polling.
                         builder.py(r#"
-request_data = _deserialize_goal_request(pending.request_bytes)
+try:
+    request_data = _deserialize_goal_request(pending.request_bytes)
+except (ValueError, capnp.KjException) as error:
+    await pending.reject(f"goal request does not decode: {error}", b"")
+    continue
 request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
 "#);
                     } else {

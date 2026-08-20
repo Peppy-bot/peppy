@@ -1,6 +1,6 @@
 use super::type_mapping::{NestedDataclass, collect_fields_from_format, uses_optional};
 use crate::error::Result;
-use config::node::MessageFormat;
+use config::node::{MessageFormat, SchemaType, TypeToken};
 use std::collections::BTreeSet;
 
 /// Emits all nested dataclass definitions collected during field collection.
@@ -237,6 +237,33 @@ impl PythonCodeBuilder {
         result.extend(self.body);
         result.join("\n")
     }
+}
+
+/// The Python container a `$length`-bearing array reads and writes as, and
+/// the word its length-check message names: `bytes` for `u8` items, `list`
+/// for everything else. One mapping, so the reader and the writer cannot
+/// disagree about what they are counting.
+pub fn container_name(items: &SchemaType) -> &'static str {
+    match items.as_type_token() {
+        Some(TypeToken::U8) => "bytes",
+        _ => "list",
+    }
+}
+
+/// Emits the `ValueError` raised when `var` does not hold exactly `len`
+/// items; `container` names it in the message (`list` or `bytes`).
+pub fn emit_fixed_length_check(
+    builder: &mut PythonCodeBuilder,
+    var: &str,
+    field_name: &str,
+    container: &str,
+    len: usize,
+) {
+    builder.block(&format!("if len({var}) != {len}:"), |b| {
+        b.line(&format!(
+            "raise ValueError(\"invalid fixed {container} length for field '{field_name}': expected {len}, got \" + str(len({var})))"
+        ));
+    });
 }
 
 #[cfg(test)]

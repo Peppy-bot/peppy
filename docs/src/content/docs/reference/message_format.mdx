@@ -6,7 +6,7 @@ sidebar:
 ---
 
 The `message_format` defines the structure of messages exchanged between nodes through [topics](/advanced_guides/topics/), [services](/advanced_guides/services/), and [actions](/advanced_guides/actions/).
-It is a map of field names to schema types. A native interface entry declares it inline in `peppy.json5`; an entry that carries a `link_id` into a contract or pairing document takes its shape from that document instead, using the same syntax there, and an inline `message_format` on such an entry is rejected at parse time.
+It is a map of field names to schema types. A native interface entry declares it inline in `peppy.json5`; an entry that carries a `link_id` into a contract or pairing document takes its shape from that document instead, using the same syntax there, and an inline `message_format` on such an entry is rejected at parse time. Such an entry may pin the length of arrays the document leaves generic through a `refine` block; see [Refining the contract's generic arrays](/advanced_guides/contract_implementation/#refining-the-contracts-generic-arrays).
 
 ```json5
 message_format: {
@@ -131,7 +131,7 @@ distances: {
 |-------------|----------|-----------------------------------------------------|
 | `$type`     | Yes      | Must be `"array"`                                   |
 | `$items`    | Yes      | A primitive type or an object schema. Nested arrays (arrays of arrays) are not supported |
-| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive (not supported for `string`, `bytes`, `time`, or object items). Omit for variable-length |
+| `$length`   | No       | Fixed number of elements. Only supported when `$items` is a numeric or boolean primitive (not supported for `string`, `bytes`, `time`, or object items). Omit for variable-length; a node implementing or consuming the document may then pin it through its entry's `refine` block |
 | `$optional` | No       | When `true`, the entire array may be absent          |
 
 ### Fixed-length array
@@ -146,7 +146,7 @@ position: {
 }
 ```
 
-This maps to `[f32; 3]` in Rust and `list[float]` in Python.
+This maps to `[f32; 3]` in Rust and `list[float]` in Python, where the generated code raises a `ValueError` when a list of any other length is encoded or decoded.
 
 ### Variable-length array
 

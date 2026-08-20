@@ -461,6 +461,8 @@ def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
     with _move_arm_goal_request_message_capnp().MoveArmGoalRequestMessage.from_bytes(payload) as capnp_msg:
         arm_id_0 = capnp_msg.armId
         desired_position_1 = list(capnp_msg.desiredPosition)
+        if len(desired_position_1) != 3:
+            raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(desired_position_1)))
         return GoalRequestData(arm_id=arm_id_0, desired_position=desired_position_1)
 
 class ActionHandle:
@@ -483,7 +485,11 @@ class ActionHandle:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
-            request_data = _deserialize_goal_request(pending.request_bytes)
+            try:
+                request_data = _deserialize_goal_request(pending.request_bytes)
+            except (ValueError, capnp.KjException) as error:
+                await pending.reject(f"goal request does not decode: {error}", b"")
+                continue
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
             decision = handler(request)
             if hasattr(decision, "__await__"):
@@ -515,6 +521,8 @@ class GoalContext:
         return self._inner.is_cancelled()
     async def publish_feedback(self, new_position: list[int]) -> None:
         capnp_msg = _move_arm_feedback_message_capnp().MoveArmFeedbackMessage.new_message()
+        if len(new_position) != 3:
+            raise ValueError("invalid fixed list length for field 'new_position': expected 3, got " + str(len(new_position)))
         capnp_msg.newPosition = new_position
         payload = capnp_msg.to_bytes()
         await self._inner.publish_feedback(payload)
@@ -833,6 +841,8 @@ def _deserialize_goal_request(payload: bytes) -> GoalRequestData:
     with _camera_feed_v1_move_arm_goal_request_message_capnp().CameraFeedV1MoveArmGoalRequestMessage.from_bytes(payload) as capnp_msg:
         arm_id_0 = capnp_msg.armId
         desired_position_1 = list(capnp_msg.desiredPosition)
+        if len(desired_position_1) != 3:
+            raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(desired_position_1)))
         return GoalRequestData(arm_id=arm_id_0, desired_position=desired_position_1)
 
 class ActionHandle:
@@ -855,7 +865,11 @@ class ActionHandle:
             pending = await self._inner.recv_next_goal()
             if pending is None:
                 return None  # goal stream closed (node shutting down)
-            request_data = _deserialize_goal_request(pending.request_bytes)
+            try:
+                request_data = _deserialize_goal_request(pending.request_bytes)
+            except (ValueError, capnp.KjException) as error:
+                await pending.reject(f"goal request does not decode: {error}", b"")
+                continue
             request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)
             decision = handler(request)
             if hasattr(decision, "__await__"):
@@ -887,6 +901,8 @@ class GoalContext:
         return self._inner.is_cancelled()
     async def publish_feedback(self, new_position: list[int]) -> None:
         capnp_msg = _camera_feed_v1_move_arm_feedback_message_capnp().CameraFeedV1MoveArmFeedbackMessage.new_message()
+        if len(new_position) != 3:
+            raise ValueError("invalid fixed list length for field 'new_position': expected 3, got " + str(len(new_position)))
         capnp_msg.newPosition = new_position
         payload = capnp_msg.to_bytes()
         await self._inner.publish_feedback(payload)
@@ -1679,6 +1695,8 @@ def _deserialize_goal_response(payload: bytes) -> GoalResponseData:
 def _deserialize_feedback_payload(payload: bytes) -> FeedbackMessage:
     with _arm_control_move_arm_feedback_message_capnp().ArmControlMoveArmFeedbackMessage.from_bytes(payload) as capnp_msg:
         new_position_0 = list(capnp_msg.newPosition)
+        if len(new_position_0) != 3:
+            raise ValueError("invalid fixed list length for field 'new_position': expected 3, got " + str(len(new_position_0)))
         return FeedbackMessage(new_position=new_position_0)
 
 def _deserialize_result_response(payload: bytes) -> ResultResponseData:
@@ -1716,6 +1734,8 @@ class ActionHandle:
         node_runner.ensure_target_bound(LINK_ID, target)
         capnp_msg = _arm_control_move_arm_fire_goal_message_capnp().ArmControlMoveArmFireGoalMessage.new_message()
         capnp_msg.armId = request.arm_id
+        if len(request.desired_position) != 3:
+            raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(request.desired_position)))
         capnp_msg.desiredPosition = request.desired_position
         user_goal_payload = capnp_msg.to_bytes()
         action_handle = await peppylib.ActionMessenger.send_goal(
@@ -1800,6 +1820,8 @@ async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:
 
 def build_message(positions: list[float], timestamp: float) -> bytes:
     capnp_msg = _peer_controller_joint_states_message_capnp().PeerControllerJointStatesMessage.new_message()
+    if len(positions) != 3:
+        raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions)))
     capnp_msg.positions = positions
     timestamp_0 = peppylib.encoding.convert_time(timestamp)
     builder_1 = capnp_msg.init("timestamp")
@@ -1843,6 +1865,8 @@ class Message:
 def _deserialize_payload(payload: bytes) -> Message:
     with _peer_sensor_bus_joint_states_message_capnp().PeerSensorBusJointStatesMessage.from_bytes(payload) as capnp_msg:
         positions_0 = list(capnp_msg.positions)
+        if len(positions_0) != 3:
+            raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions_0)))
         timestamp_1 = capnp_msg.timestamp
         timestamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
         return Message(positions=positions_0, timestamp=timestamp_2)
@@ -1924,6 +1948,8 @@ async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:
 
 def build_message(positions: list[float], timestamp: float) -> bytes:
     capnp_msg = _peer_spare_controller_joint_states_message_capnp().PeerSpareControllerJointStatesMessage.new_message()
+    if len(positions) != 3:
+        raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions)))
     capnp_msg.positions = positions
     timestamp_0 = peppylib.encoding.convert_time(timestamp)
     builder_1 = capnp_msg.init("timestamp")
@@ -1966,6 +1992,8 @@ class Message:
 def _deserialize_payload(payload: bytes) -> Message:
     with _peer_watchers_joint_states_message_capnp().PeerWatchersJointStatesMessage.from_bytes(payload) as capnp_msg:
         positions_0 = list(capnp_msg.positions)
+        if len(positions_0) != 3:
+            raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions_0)))
         timestamp_1 = capnp_msg.timestamp
         timestamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
         return Message(positions=positions_0, timestamp=timestamp_2)
@@ -2046,6 +2074,8 @@ class Message:
 def _deserialize_payload(payload: bytes) -> Message:
     with _peer_spare_watcher_joint_states_message_capnp().PeerSpareWatcherJointStatesMessage.from_bytes(payload) as capnp_msg:
         positions_0 = list(capnp_msg.positions)
+        if len(positions_0) != 3:
+            raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions_0)))
         timestamp_1 = capnp_msg.timestamp
         timestamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
         return Message(positions=positions_0, timestamp=timestamp_2)
@@ -2126,6 +2156,8 @@ class Message:
 def _deserialize_payload(payload: bytes) -> Message:
     with _peer_watcher_bank_joint_states_message_capnp().PeerWatcherBankJointStatesMessage.from_bytes(payload) as capnp_msg:
         positions_0 = list(capnp_msg.positions)
+        if len(positions_0) != 3:
+            raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions_0)))
         timestamp_1 = capnp_msg.timestamp
         timestamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
         return Message(positions=positions_0, timestamp=timestamp_2)
@@ -2207,6 +2239,8 @@ class Message:
 def _deserialize_payload(payload: bytes) -> Message:
     with _peer_watcher_pool_joint_states_message_capnp().PeerWatcherPoolJointStatesMessage.from_bytes(payload) as capnp_msg:
         positions_0 = list(capnp_msg.positions)
+        if len(positions_0) != 3:
+            raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions_0)))
         timestamp_1 = capnp_msg.timestamp
         timestamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
         return Message(positions=positions_0, timestamp=timestamp_2)
@@ -3009,6 +3043,8 @@ def _deserialize_move_arm_goal_request(payload: bytes) -> _move_arm.GoalRequest:
     with _arm_control_move_arm_fire_goal_message_capnp().ArmControlMoveArmFireGoalMessage.from_bytes(payload) as capnp_msg:
         arm_id_0 = capnp_msg.armId
         desired_position_1 = list(capnp_msg.desiredPosition)
+        if len(desired_position_1) != 3:
+            raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(desired_position_1)))
         return _move_arm.GoalRequest(arm_id=arm_id_0, desired_position=desired_position_1)
 
 MoveArmGoalRequest = _move_arm.GoalRequest
@@ -3030,6 +3066,8 @@ def _arm_control_move_arm_feedback_message_capnp() -> types.ModuleType:
 
 def _serialize_move_arm_feedback(value: _move_arm.FeedbackMessage) -> bytes:
     capnp_msg = _arm_control_move_arm_feedback_message_capnp().ArmControlMoveArmFeedbackMessage.new_message()
+    if len(value.new_position) != 3:
+        raise ValueError("invalid fixed list length for field 'new_position': expected 3, got " + str(len(value.new_position)))
     capnp_msg.newPosition = value.new_position
     return capnp_msg.to_bytes()
 
@@ -3193,6 +3231,8 @@ class JointStatesMessage:
 def _deserialize_joint_states_message(payload: bytes) -> JointStatesMessage:
     with _peer_controller_joint_states_message_capnp().PeerControllerJointStatesMessage.from_bytes(payload) as capnp_msg:
         positions_0 = list(capnp_msg.positions)
+        if len(positions_0) != 3:
+            raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions_0)))
         timestamp_1 = capnp_msg.timestamp
         timestamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
         return JointStatesMessage(positions=positions_0, timestamp=timestamp_2)
@@ -3287,6 +3327,8 @@ def _peer_sensor_bus_joint_states_message_capnp() -> types.ModuleType:
 
 def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
     capnp_msg = _peer_sensor_bus_joint_states_message_capnp().PeerSensorBusJointStatesMessage.new_message()
+    if len(value.positions) != 3:
+        raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(value.positions)))
     capnp_msg.positions = value.positions
     timestamp_0 = peppylib.encoding.convert_time(value.timestamp)
     builder_1 = capnp_msg.init("timestamp")
@@ -3389,6 +3431,8 @@ class JointStatesMessage:
 def _deserialize_joint_states_message(payload: bytes) -> JointStatesMessage:
     with _peer_spare_controller_joint_states_message_capnp().PeerSpareControllerJointStatesMessage.from_bytes(payload) as capnp_msg:
         positions_0 = list(capnp_msg.positions)
+        if len(positions_0) != 3:
+            raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(positions_0)))
         timestamp_1 = capnp_msg.timestamp
         timestamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
         return JointStatesMessage(positions=positions_0, timestamp=timestamp_2)
@@ -3487,6 +3531,8 @@ def _peer_watchers_joint_states_message_capnp() -> types.ModuleType:
 
 def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
     capnp_msg = _peer_watchers_joint_states_message_capnp().PeerWatchersJointStatesMessage.new_message()
+    if len(value.positions) != 3:
+        raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(value.positions)))
     capnp_msg.positions = value.positions
     timestamp_0 = peppylib.encoding.convert_time(value.timestamp)
     builder_1 = capnp_msg.init("timestamp")
@@ -3587,6 +3633,8 @@ def _peer_spare_watcher_joint_states_message_capnp() -> types.ModuleType:
 
 def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
     capnp_msg = _peer_spare_watcher_joint_states_message_capnp().PeerSpareWatcherJointStatesMessage.new_message()
+    if len(value.positions) != 3:
+        raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(value.positions)))
     capnp_msg.positions = value.positions
     timestamp_0 = peppylib.encoding.convert_time(value.timestamp)
     builder_1 = capnp_msg.init("timestamp")
@@ -3687,6 +3735,8 @@ def _peer_watcher_bank_joint_states_message_capnp() -> types.ModuleType:
 
 def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
     capnp_msg = _peer_watcher_bank_joint_states_message_capnp().PeerWatcherBankJointStatesMessage.new_message()
+    if len(value.positions) != 3:
+        raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(value.positions)))
     capnp_msg.positions = value.positions
     timestamp_0 = peppylib.encoding.convert_time(value.timestamp)
     builder_1 = capnp_msg.init("timestamp")
@@ -3787,6 +3837,8 @@ def _peer_watcher_pool_joint_states_message_capnp() -> types.ModuleType:
 
 def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
     capnp_msg = _peer_watcher_pool_joint_states_message_capnp().PeerWatcherPoolJointStatesMessage.new_message()
+    if len(value.positions) != 3:
+        raise ValueError("invalid fixed list length for field 'positions': expected 3, got " + str(len(value.positions)))
     capnp_msg.positions = value.positions
     timestamp_0 = peppylib.encoding.convert_time(value.timestamp)
     builder_1 = capnp_msg.init("timestamp")
@@ -4355,6 +4407,8 @@ def _move_arm_goal_request_message_capnp() -> types.ModuleType:
 def _serialize_goal_request(value: _production.GoalRequestData) -> bytes:
     capnp_msg = _move_arm_goal_request_message_capnp().MoveArmGoalRequestMessage.new_message()
     capnp_msg.armId = value.arm_id
+    if len(value.desired_position) != 3:
+        raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(value.desired_position)))
     capnp_msg.desiredPosition = value.desired_position
     return capnp_msg.to_bytes()
 
@@ -4426,6 +4480,8 @@ class Feedback:
 def _deserialize_feedback(payload: bytes) -> Feedback:
     with _move_arm_feedback_message_capnp().MoveArmFeedbackMessage.from_bytes(payload) as capnp_msg:
         new_position_0 = list(capnp_msg.newPosition)
+        if len(new_position_0) != 3:
+            raise ValueError("invalid fixed list length for field 'new_position': expected 3, got " + str(len(new_position_0)))
         return Feedback(new_position=new_position_0)
 
 class GoalHandle:
@@ -4859,6 +4915,8 @@ def _camera_feed_v1_move_arm_goal_request_message_capnp() -> types.ModuleType:
 def _serialize_goal_request(value: _production.GoalRequestData) -> bytes:
     capnp_msg = _camera_feed_v1_move_arm_goal_request_message_capnp().CameraFeedV1MoveArmGoalRequestMessage.new_message()
     capnp_msg.armId = value.arm_id
+    if len(value.desired_position) != 3:
+        raise ValueError("invalid fixed list length for field 'desired_position': expected 3, got " + str(len(value.desired_position)))
     capnp_msg.desiredPosition = value.desired_position
     return capnp_msg.to_bytes()
 
@@ -4930,6 +4988,8 @@ class Feedback:
 def _deserialize_feedback(payload: bytes) -> Feedback:
     with _camera_feed_v1_move_arm_feedback_message_capnp().CameraFeedV1MoveArmFeedbackMessage.from_bytes(payload) as capnp_msg:
         new_position_0 = list(capnp_msg.newPosition)
+        if len(new_position_0) != 3:
+            raise ValueError("invalid fixed list length for field 'new_position': expected 3, got " + str(len(new_position_0)))
         return Feedback(new_position=new_position_0)
 
 class GoalHandle:

@@ -270,7 +270,9 @@ fn exposed_action() {
 
     // handle_goal_next_request returns a per-goal GoalContext. Rejected goals
     // send their declared response and are skipped; None means the stream
-    // closed.
+    // closed. A request that does not decode into the declared shape is
+    // rejected with the decode error before the decider runs, and the loop
+    // keeps polling.
     assert_contains_all(
         &rendered,
         &[
@@ -278,6 +280,10 @@ fn exposed_action() {
             "F: Fn(&GoalRequest) -> crate::Result<GoalDecision>",
             "crate::Result<Option<GoalContext>>",
             "recv_next_goal",
+            "match deserialize_goal_request(pending.request_bytes())",
+            "goal request does not decode: {error}",
+            "pending.reject(Some(&reason), peppylib::Payload::new()).await?;",
+            "continue;",
             "GoalDecision::Accept(response)",
             "pending.accept(response_payload).await?",
             "GoalDecision::Reject { reason, response }",

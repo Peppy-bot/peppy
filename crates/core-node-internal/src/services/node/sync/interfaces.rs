@@ -3,8 +3,8 @@ use super::deps::{
     build_dependency_offerings,
 };
 use crate::services::repo::cache as repo_cache;
-use config::ContractCoverageMismatch;
-use config::node::InterfaceKind;
+use config::node::{InterfaceKind, LinkedMember, RefinementProblem, refined_ref};
+use config::{ContractCoverageMismatch, RefinementMismatch};
 use daemon_config::consts::PeppyDirs;
 use generator::{ConsumedActionMessage, ContractOrigin, DeploymentInterface};
 use node_stack::NodeStack;
@@ -160,12 +160,15 @@ pub fn collect_consumed_interfaces(
                 // means the name is absent from the document and nothing
                 // else.
                 |parsed, name| {
-                    parsed
+                    let emitted = parsed
                         .interfaces
                         .topics
                         .iter()
-                        .find(|t| t.name.trim() == name)
-                        .map(|emitted| emitted.message_format.clone().unwrap_or_default())
+                        .find(|t| t.name.trim() == name)?;
+                    Some(
+                        refined_ref(consumed_topic.refine.as_deref(), emitted)
+                            .map(|emitted| emitted.message_format.clone().unwrap_or_default()),
+                    )
                 },
             )?
             else {
@@ -195,11 +198,16 @@ pub fn collect_consumed_interfaces(
                             .services
                             .iter()
                             .find(|s| s.name.trim() == name)?;
-                        let request_format =
-                            exposed.request_message_format.clone().unwrap_or_default();
-                        let response_format =
-                            exposed.response_message_format.clone().unwrap_or_default();
-                        Some((request_format, response_format))
+                        Some(
+                            refined_ref(consumed_service.refine.as_deref(), exposed).map(
+                                |exposed| {
+                                    (
+                                        exposed.request_message_format.clone().unwrap_or_default(),
+                                        exposed.response_message_format.clone().unwrap_or_default(),
+                                    )
+                                },
+                            ),
+                        )
                     },
                 )?
             else {
@@ -224,12 +232,15 @@ pub fn collect_consumed_interfaces(
                 consumed_action.name.trim(),
                 |offerings, name| offerings.actions.get(name).cloned(),
                 |parsed, name| {
-                    parsed
+                    let exposed = parsed
                         .interfaces
                         .actions
                         .iter()
-                        .find(|a| a.name.trim() == name)
-                        .map(action_message_from_exposed)
+                        .find(|a| a.name.trim() == name)?;
+                    Some(
+                        refined_ref(consumed_action.refine.as_deref(), exposed)
+                            .map(|exposed| action_message_from_exposed(&exposed)),
+                    )
                 },
             )?
             else {
@@ -262,14 +273,19 @@ impl ResolvedDependencies {
     /// A name absent from a *contract* document has no upstream reporter at
     /// all: `validate_dependency_specs` stops at the declaration check for
     /// `depends_on.contracts` link_ids, and no layer below this one can open a
-    /// contract document. So it errors here, or nowhere.
+    /// contract document. So it errors here, or nowhere. The same goes for a
+    /// `refine` block the member does not admit, which `extract_from_contract`
+    /// reports as its `Err`.
     fn resolve_consumed_offering<T>(
         &self,
         section: &str,
         link_id: &str,
         lookup_name: &str,
         extract_from_node: impl FnOnce(&DependencyOfferings, &str) -> Option<T>,
-        extract_from_contract: impl FnOnce(&daemon_config::contract::PeppyContract, &str) -> Option<T>,
+        extract_from_contract: impl FnOnce(
+            &daemon_config::contract::PeppyContract,
+            &str,
+        ) -> Option<Result<T, Vec<RefinementProblem>>>,
     ) -> std::result::Result<Option<(T, generator::DependencyContext)>, String> {
         let Some(entry) = self.lookup.get(link_id) else {
             return Ok(None);
@@ -303,13 +319,23 @@ impl ResolvedDependencies {
                         entry.name, entry.tag
                     )
                 })?;
-                let extracted = extract_from_contract(parsed, lookup_name).ok_or_else(|| {
-                    format!(
-                        "`{section}` entry `{lookup_name}` (link_id `{link_id}`) names no member \
-                         of contract `{}:{}`",
-                        entry.name, entry.tag
-                    )
-                })?;
+                let extracted = extract_from_contract(parsed, lookup_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "`{section}` entry `{lookup_name}` (link_id `{link_id}`) names no \
+                             member of contract `{}:{}`",
+                            entry.name, entry.tag
+                        )
+                    })?
+                    .map_err(|problems| {
+                        RefinementMismatch::for_contract(
+                            (&entry.name, &entry.tag),
+                            link_id,
+                            lookup_name,
+                            problems,
+                        )
+                        .to_string()
+                    })?;
                 Ok(Some((
                     extracted,
                     generator::DependencyContext::contract(
@@ -414,28 +440,25 @@ pub(crate) fn resolve_contract_doc(
 }
 
 /// Error from [`resolve_implements`]. Tier B coverage failures keep their
-/// per-slot [`ContractCoverageMismatch`] payloads so callers can render or
-/// match each slot's diff individually; every other failure is a plain
-/// message, matching the sync module's string error contract.
+/// per-slot [`ContractCoverageMismatch`] payloads and refinement failures
+/// their per-entry [`RefinementMismatch`] payloads, so callers can render or
+/// match each diff individually; every other failure is a plain message,
+/// matching the sync module's string error contract.
 #[derive(Debug)]
 pub enum ImplementsError {
     /// One aggregated set-diff per broken slot.
     Coverage(Vec<ContractCoverageMismatch>),
+    /// One aggregated problem list per entry whose `refine` block the
+    /// contract does not admit. Reported only once coverage is clean.
+    Refinement(Vec<RefinementMismatch>),
     Other(String),
 }
 
 impl std::fmt::Display for ImplementsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Coverage(mismatches) => {
-                for (idx, mismatch) in mismatches.iter().enumerate() {
-                    if idx > 0 {
-                        f.write_str("; ")?;
-                    }
-                    write!(f, "{mismatch}")?;
-                }
-                Ok(())
-            }
+            Self::Coverage(mismatches) => config::write_joined(f, mismatches, "; "),
+            Self::Refinement(mismatches) => config::write_joined(f, mismatches, "; "),
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -464,15 +487,18 @@ struct SlotCoverage {
 /// `topics.emits` / `services.exposes` / `actions.exposes`:
 ///
 /// entry -> implements slot -> contract document -> member (by name and
-/// kind) -> shape/qos, stamped with a [`ContractOrigin`] so the generator
-/// nests the artifact under `{link_id}/{leaf}` and embeds the matching wire
-/// segments.
+/// kind) -> shape/qos with the entry's `refine` block applied, stamped with
+/// a [`ContractOrigin`] so the generator nests the artifact under
+/// `{link_id}/{leaf}` and embeds the matching wire segments.
 ///
 /// After resolution, the Tier B coverage check runs per (slot x kind): the
 /// contract-backed entries referencing a slot must cover every member of
 /// its contract exactly once, with no extras. Any discrepancy is reported
 /// as one aggregated set-diff per broken slot
-/// ([`ContractCoverageMismatch`]).
+/// ([`ContractCoverageMismatch`]). An entry whose `refine` block the member
+/// does not admit still counts toward coverage (the member exists); once
+/// coverage is clean, those entries are reported together, one
+/// [`RefinementMismatch`] each listing every inadmissible pin.
 ///
 /// Contract documents resolve through the local cache with sha256 pinning
 /// and on-disk drift detection (see [`resolve_contract_doc`]); a cache miss
@@ -512,24 +538,26 @@ pub fn resolve_implements(
 
     let mut out: Vec<DeploymentInterface> = Vec::new();
     let mut coverage: HashMap<&str, SlotCoverage> = HashMap::new();
+    let mut inadmissible: Vec<RefinementMismatch> = Vec::new();
     let pairing_slots = pairing_slot_link_ids(manifest);
 
-    for (kind, entry) in interfaces_cfg.linked_entries() {
+    for member in interfaces_cfg.linked_entries() {
         // A pairing-backed emit is resolved against the pairing document by
         // `collect_pairing_interfaces`. It must not count toward any
         // implements slot's coverage, nor trip the unknown-link_id arm below.
-        if pairing_slots.contains(entry.link_id.as_str()) {
+        if pairing_slots.contains(member.link_id()) {
             continue;
         }
-        let name = entry.name.as_str();
-        let Some((slot, doc)) = docs.get(entry.link_id.as_str()) else {
+        let kind = member.kind();
+        let name = member.name();
+        let Some((slot, doc)) = docs.get(member.link_id()) else {
             // Parse-time validation guarantees every produced entry's
             // link_id names an implements slot; reaching this means the
             // config bypassed the parser.
             return Err(ImplementsError::Other(format!(
                 "produced entry `{name}` references link_id `{}`, which matches no \
                  `manifest.implements` slot",
-                entry.link_id
+                member.link_id()
             )));
         };
         let origin = ContractOrigin {
@@ -539,36 +567,57 @@ pub fn resolve_implements(
         };
         let slot_coverage = coverage.entry(slot.link_id.as_str()).or_default();
 
-        let resolved = match kind {
-            InterfaceKind::Topic => doc
-                .interfaces
-                .topics
-                .iter()
-                .find(|t| t.name == name)
-                .map(|topic| DeploymentInterface::emitted_topic(topic.clone(), Some(origin))),
-            InterfaceKind::Service => doc
-                .interfaces
-                .services
-                .iter()
-                .find(|s| s.name == name)
-                .map(|service| DeploymentInterface::exposed_service(service.clone(), Some(origin))),
-            InterfaceKind::Action => doc
-                .interfaces
-                .actions
-                .iter()
-                .find(|a| a.name == name)
-                .map(|action| DeploymentInterface::exposed_action(action.clone(), Some(origin))),
+        // `None`: no member of this kind by this name. `Some(Err)`: the
+        // member exists but does not admit the entry's `refine` block.
+        // Each arm is the same three steps — select the member by name,
+        // apply the entry's refinement, hand the result to the generator —
+        // over a different section, refinement type, and payload.
+        macro_rules! resolve {
+            ($members:expr, $entry:expr, $build:path) => {
+                $members
+                    .iter()
+                    .find(|member| member.name == name)
+                    .map(|member| {
+                        refined_ref($entry.refine.as_deref(), member)
+                            .map(|member| $build(member.into_owned(), Some(origin)))
+                    })
+            };
+        }
+        let resolved = match member {
+            LinkedMember::Topic(entry) => resolve!(
+                doc.interfaces.topics,
+                entry,
+                DeploymentInterface::emitted_topic
+            ),
+            LinkedMember::Service(entry) => resolve!(
+                doc.interfaces.services,
+                entry,
+                DeploymentInterface::exposed_service
+            ),
+            LinkedMember::Action(entry) => resolve!(
+                doc.interfaces.actions,
+                entry,
+                DeploymentInterface::exposed_action
+            ),
         };
 
         match resolved {
-            Some(interface) => {
-                out.push(interface);
+            Some(refined) => {
                 *slot_coverage
                     .visited
                     .entry(kind)
                     .or_default()
                     .entry(name.to_string())
                     .or_insert(0) += 1;
+                match refined {
+                    Ok(interface) => out.push(interface),
+                    Err(problems) => inadmissible.push(RefinementMismatch::for_contract(
+                        (slot.name.as_str(), &slot.tag),
+                        &slot.link_id,
+                        name,
+                        problems,
+                    )),
+                }
             }
             None => {
                 // The entry's name was not found under `kind`, so any kind
@@ -643,6 +692,9 @@ pub fn resolve_implements(
     }
     if !broken.is_empty() {
         return Err(ImplementsError::Coverage(broken));
+    }
+    if !inadmissible.is_empty() {
+        return Err(ImplementsError::Refinement(inadmissible));
     }
 
     Ok(out)
@@ -1009,6 +1061,243 @@ mod implements_tests {
         }
         assert!(saw_service, "service should be resolved with origin");
         assert!(saw_action, "action should be resolved with origin");
+    }
+
+    /// A contract keeping its joint vectors generic, with one array it pins
+    /// itself (`position`), so tests can tell a pin that lands from one the
+    /// document refuses.
+    const LIMB_MOTION_V1_BODY: &str = r#"{
+        peppy_schema: "contract/v1",
+        manifest: { name: "limb_motion", tag: "v1" },
+        interfaces: {
+            topics: [
+                {
+                    name: "joint_states",
+                    message_format: { positions: { $type: "array", $items: "f64" } }
+                }
+            ],
+            actions: [
+                {
+                    name: "move_arm_joints",
+                    goal_service: {
+                        request_message_format: {
+                            arm_id: "u8",
+                            joint_positions: { $type: "array", $items: "f64" },
+                        }
+                    },
+                    result_service: {
+                        response_message_format: {
+                            final_joint_positions: { $type: "array", $items: "f64" },
+                            position: { $type: "array", $items: "f64", $length: 3 },
+                        }
+                    }
+                }
+            ]
+        }
+    }"#;
+
+    fn array_length(format: Option<&config::node::MessageFormat>, field: &str) -> Option<usize> {
+        let format = format.expect("the format is declared");
+        let config::node::SchemaType::Array(array) = &format.0[field] else {
+            panic!("`{field}` should be an array");
+        };
+        array.length
+    }
+
+    fn refinement_mismatches(err: ImplementsError) -> Vec<RefinementMismatch> {
+        match err {
+            ImplementsError::Refinement(mismatches) => mismatches,
+            other => panic!("expected refinement mismatches, got: {other}"),
+        }
+    }
+
+    /// The entry's `refine` block lands on the resolved member: the pinned
+    /// arrays gain their length, every other field stays as the contract
+    /// declares it, and the origin is stamped as for an unrefined entry.
+    #[test]
+    fn refine_pins_generic_arrays_of_the_resolved_member() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest =
+            manifest_with_implements(r#"{ name: "limb_motion", tag: "v1", link_id: "moves" }"#);
+        let interfaces = interfaces_from(
+            r#"{
+                topics: { emits: [
+                    { link_id: "moves", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } },
+                ] },
+                actions: { exposes: [
+                    {
+                        link_id: "moves",
+                        name: "move_arm_joints",
+                        refine: {
+                            goal_service: { request_message_format: { joint_positions: { $length: 7 } } },
+                            result_service: { response_message_format: { final_joint_positions: { $length: 7 } } },
+                        },
+                    },
+                ] },
+            }"#,
+        );
+
+        let out = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
+            .expect("admissible refinements resolve");
+        assert_eq!(out.len(), 2);
+        for resolved in &out {
+            match resolved.interface() {
+                InterfaceVariant::EmittedTopic {
+                    topic,
+                    origin: Some(origin),
+                } => {
+                    assert_eq!(
+                        array_length(topic.message_format.as_ref(), "positions"),
+                        Some(7)
+                    );
+                    assert_eq!(origin.link_id, "moves");
+                }
+                InterfaceVariant::ExposedAction {
+                    action,
+                    origin: Some(origin),
+                } => {
+                    let goal = action.goal_service.as_ref().unwrap();
+                    let request = goal.request_message_format.as_ref();
+                    assert_eq!(array_length(request, "joint_positions"), Some(7));
+                    assert!(
+                        matches!(
+                            request.unwrap().0["arm_id"],
+                            config::node::SchemaType::Type(config::node::TypeToken::U8)
+                        ),
+                        "unpinned fields stay as the contract declares them"
+                    );
+                    let response = action
+                        .result_service
+                        .as_ref()
+                        .unwrap()
+                        .response_message_format
+                        .as_ref();
+                    assert_eq!(array_length(response, "final_joint_positions"), Some(7));
+                    assert_eq!(array_length(response, "position"), Some(3));
+                    assert_eq!(origin.contract_name, "limb_motion");
+                }
+                other => panic!("unexpected resolved variant: {other:?}"),
+            }
+        }
+    }
+
+    /// Every pin the member refuses is reported for the entry at once, with
+    /// the path inside the member, and the report names the contract and
+    /// slot the entry resolved through.
+    #[test]
+    fn inadmissible_refine_is_reported_per_entry_with_every_problem() {
+        use config::node::RefinementProblemKind;
+
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest =
+            manifest_with_implements(r#"{ name: "limb_motion", tag: "v1", link_id: "moves" }"#);
+        let interfaces = interfaces_from(
+            r#"{
+                topics: { emits: [{ link_id: "moves", name: "joint_states" }] },
+                actions: { exposes: [
+                    {
+                        link_id: "moves",
+                        name: "move_arm_joints",
+                        refine: {
+                            goal_service: { request_message_format: {
+                                arm_id: { $length: 1 },
+                                joint_positions: { $length: 7 },
+                                missing: { $length: 2 },
+                            } },
+                            result_service: { response_message_format: { position: { $length: 3 } } },
+                        },
+                    },
+                ] },
+            }"#,
+        );
+
+        let mismatches = refinement_mismatches(
+            resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
+                .expect_err("inadmissible pins must be rejected"),
+        );
+        assert_eq!(mismatches.len(), 1);
+        let mismatch = &mismatches[0];
+        assert_eq!(mismatch.name, "move_arm_joints");
+        assert_eq!(mismatch.link_id, "moves");
+        assert_eq!(mismatch.document, "contract `limb_motion:v1`");
+        let reported: Vec<(&str, &RefinementProblemKind)> = mismatch
+            .problems
+            .iter()
+            .map(|problem| (problem.path.as_str(), &problem.kind))
+            .collect();
+        assert_eq!(
+            reported,
+            vec![
+                (
+                    "goal_service.request_message_format.arm_id",
+                    &RefinementProblemKind::NotAnArray {
+                        declared: "a `u8`".to_string()
+                    }
+                ),
+                (
+                    "goal_service.request_message_format.missing",
+                    &RefinementProblemKind::UnknownField
+                ),
+                (
+                    "result_service.response_message_format.position",
+                    &RefinementProblemKind::AlreadyFixed { length: 3 }
+                ),
+            ]
+        );
+        let rendered = mismatch.to_string();
+        for needle in [
+            "entry `move_arm_joints` (link_id `moves`) refines contract `limb_motion:v1`",
+            "`goal_service.request_message_format.arm_id`: `$length` and `$items` apply to arrays, but the document declares a `u8`",
+            "`result_service.response_message_format.position`: the document already fixes the length at 3",
+        ] {
+            assert!(
+                rendered.contains(needle),
+                "expected `{needle}` in: {rendered}"
+            );
+        }
+    }
+
+    /// A refined entry still counts toward coverage, and a coverage failure
+    /// is what gets reported while one exists: the refinement report waits
+    /// until the slot lists the right members.
+    #[test]
+    fn coverage_is_reported_before_refinement_problems() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+
+        let manifest =
+            manifest_with_implements(r#"{ name: "limb_motion", tag: "v1", link_id: "moves" }"#);
+        // `joint_states` is missing, and the one entry present pins a field
+        // the contract does not declare.
+        let interfaces = interfaces_from(
+            r#"{ actions: { exposes: [
+                {
+                    link_id: "moves",
+                    name: "move_arm_joints",
+                    refine: { goal_service: { request_message_format: { missing: { $length: 2 } } } },
+                },
+            ] } }"#,
+        );
+
+        let err = resolve_implements(&manifest, &interfaces, &dirs, None, &|_| {})
+            .expect_err("the slot is not fully implemented");
+        let ImplementsError::Coverage(mismatches) = err else {
+            panic!("coverage must be reported first, got: {err}");
+        };
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].missing, vec!["joint_states (topic)"]);
+        assert!(
+            mismatches[0].duplicated.is_empty() && mismatches[0].unknown.is_empty(),
+            "the refined entry counts as visiting its member: {:?}",
+            mismatches[0]
+        );
     }
 
     #[test]
@@ -1525,6 +1814,103 @@ mod implements_tests {
                 assert_eq!(origin.contract_tag, "v1");
             }
             other => panic!("expected ConsumedAction variant, got {other:?}"),
+        }
+    }
+
+    fn limb_motion_consumer_manifest() -> Manifest {
+        serde_json5::from_str(
+            r#"{
+                name: "arm_consumer", tag: "v1",
+                depends_on: {
+                    contracts: [{ name: "limb_motion", tag: "v1", link_id: "arm" }]
+                }
+            }"#,
+        )
+        .expect("manifest parses")
+    }
+
+    /// A consumer that knows the arm it is bound to pins the contract's
+    /// generic arrays the same way an implementer does, on each consumed
+    /// kind.
+    #[test]
+    fn consumed_contract_entries_apply_their_refine_blocks() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let cfg = interfaces_from(
+            r#"{
+                topics: { consumes: [
+                    { link_id: "arm", name: "joint_states", refine: { message_format: { positions: { $length: 7 } } } },
+                ] },
+                actions: { consumes: [
+                    {
+                        link_id: "arm",
+                        name: "move_arm_joints",
+                        refine: { goal_service: { request_message_format: { joint_positions: { $length: 7 } } } },
+                    },
+                ] },
+            }"#,
+        );
+
+        let out = collect_consumed_interfaces(
+            &limb_motion_consumer_manifest(),
+            &cfg,
+            |_, _| None,
+            &dirs,
+            None,
+            &|_| {},
+        )
+        .expect("admissible refinements resolve");
+        assert_eq!(out.len(), 2, "{out:?}");
+        for resolved in &out {
+            match resolved.interface() {
+                InterfaceVariant::ConsumedTopic { message_format, .. } => {
+                    assert_eq!(array_length(Some(message_format), "positions"), Some(7));
+                }
+                InterfaceVariant::ConsumedAction { messages, .. } => {
+                    assert_eq!(
+                        array_length(messages.goal_request.as_ref(), "joint_positions"),
+                        Some(7)
+                    );
+                    assert_eq!(
+                        array_length(messages.result_response.as_ref(), "final_joint_positions"),
+                        None,
+                        "an endpoint the block does not name stays generic"
+                    );
+                }
+                other => panic!("unexpected resolved variant: {other:?}"),
+            }
+        }
+    }
+
+    /// Like a name absent from the contract, an inadmissible pin has no
+    /// reporter upstream of this collector, so it is reported here with the
+    /// entry, slot, contract, and every problem named.
+    #[test]
+    fn consumed_contract_entry_with_inadmissible_refine_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let entry = seed_contract(tmp.path(), "limb_motion", "v1", LIMB_MOTION_V1_BODY);
+        let (_tmp_dirs, dirs) = make_peppy_dirs_with_cache(&[entry]);
+        let cfg = interfaces_from(
+            r#"{ topics: { consumes: [
+                { link_id: "arm", name: "joint_states", refine: { message_format: { positions: { $length: 7 }, nope: { $length: 1 } } } },
+            ] } }"#,
+        );
+
+        let err = collect_consumed_interfaces(
+            &limb_motion_consumer_manifest(),
+            &cfg,
+            |_, _| None,
+            &dirs,
+            None,
+            &|_| {},
+        )
+        .expect_err("an inadmissible pin must not be dropped silently");
+        for needle in [
+            "entry `joint_states` (link_id `arm`) refines contract `limb_motion:v1`",
+            "`message_format.nope`: the document declares no such field",
+        ] {
+            assert!(err.contains(needle), "expected `{needle}` in: {err}");
         }
     }
 

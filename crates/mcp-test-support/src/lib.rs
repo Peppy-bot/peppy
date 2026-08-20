@@ -223,6 +223,7 @@ pub fn consumed_interfaces(
             ConsumedTopic {
                 link_id: resource.target.clone(),
                 name: topic.name.clone(),
+                refine: None,
             },
             topic
                 .message_format
@@ -243,6 +244,7 @@ pub fn consumed_interfaces(
             ConsumedService {
                 link_id: tool.target.clone(),
                 name: service.name.clone(),
+                refine: None,
             },
             service.request_message_format.clone().unwrap_or_default(),
             service.response_message_format.clone().unwrap_or_default(),
@@ -261,6 +263,7 @@ pub fn consumed_interfaces(
             ConsumedAction {
                 link_id: task.target.clone(),
                 name: action.name.clone(),
+                refine: None,
             },
             ConsumedActionMessage::from(action),
             dependency,

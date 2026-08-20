@@ -264,11 +264,17 @@ fn exposed_action() {
     );
 
     // handle_goal_next_request: recv → decode → accept/reject → GoalContext.
+    // A request that does not decode into the declared shape is rejected with
+    // the decode error before the handler runs, and the loop keeps polling.
     assert_contains_all(
         &rendered,
         &[
             "async def handle_goal_next_request(self, handler: Callable[[GoalRequest], GoalDecision]) -> \"GoalContext | None\":",
             "pending = await self._inner.recv_next_goal()",
+            "    request_data = _deserialize_goal_request(pending.request_bytes)",
+            "except (ValueError, capnp.KjException) as error:",
+            "await pending.reject(f\"goal request does not decode: {error}\", b\"\")",
+            "continue",
             "request = GoalRequest(instance_id=pending.instance_id, core_node=pending.core_node, data=request_data)",
             "response = decision.response",
             "if response is not None:",

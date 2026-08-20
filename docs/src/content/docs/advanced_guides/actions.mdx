@@ -276,6 +276,8 @@ fn main() -> Result<()> {
 - `GoalDecision::reject(reason)` (`GoalDecision.reject(reason)` in Python) declines it: the client sees `accepted == false` and the reason on its handle, no context is created, and the accept loop transparently moves on to the next goal. This is where you enforce per-resource concurrency limits.
 - A reject can also carry the declared response payload: construct `GoalDecision::Reject { reason, response }` directly in Rust, or pass both arguments in Python with `GoalDecision.reject(reason, response)`. The client's `data` is absent when a rejection carried no payload.
 
+A goal whose request bytes do not decode into the declared `request_message_format` (a field missing, a fixed-length array of the wrong length) never reaches your decider: the generated server rejects it with the decode error as the reason and keeps serving the next goal. The client sent something this server's shape does not admit, which is the client's problem to learn about, not a reason to stop serving.
+
 The `GoalRequest` passed to the decider contains:
 - `instance_id`: the client instance that sent the goal. The producer is binding-agnostic; it doesn't know which slot on the client this goal is heading to.
 - `core_node`: the core node of the caller.
