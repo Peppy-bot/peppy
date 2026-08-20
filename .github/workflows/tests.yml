@@ -150,16 +150,21 @@ jobs:
             cargo test --locked --no-run
 
       # The suite run under a kill-syscall tracer: the run dies with the whole
-      # ci session being SIGKILLed during the teardown force-kill tests, and
-      # the tracer's on-disk output survives the very kill that ends the step,
+      # ci session SIGKILLed during the teardown force-kill tests, and the
+      # tracer's on-disk output survives the very kill that ends the step,
       # naming the process that issued it. Tracing only the signal syscalls
-      # keeps the overhead near zero.
+      # keeps the overhead near zero. Under the tracer the setuid uid/gid map
+      # helpers lose their setuid bit, so the three container-build tests fail
+      # with EPERM from newgidmap; those failures are the tracer's artifact,
+      # and --no-fail-fast keeps the suite running past them to the teardown
+      # binary where the kill actually happens.
       - name: Run tests under a kill tracer
         run: |
           "$RUNNER_TEMP/as-ci" setsid --wait env \
             PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
             strace -ff -q -e trace=kill,tgkill,tkill,pidfd_send_signal \
-              -o "$PEPPY_RUN_HOME/kills.trace" -- cargo test --locked
+              -o "$PEPPY_RUN_HOME/kills.trace" -- \
+              cargo test --locked --no-fail-fast
 
       # `-ff` writes one file per traced pid and puts that pid in the file
       # name, not in the lines, so the issuing process is only identifiable
