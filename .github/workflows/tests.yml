@@ -19,23 +19,10 @@ env:
   # fresh artifacts are reused); it only pays the cross-build cost when the cache
   # is cold. Cross-arch apptainer is separate, gated by PEPPY_CROSS_ARCH.
   PEPPY_CROSS_BUILD: "1"
-  # Bounds every cargo invocation in the job, including the inner peppylib
-  # build that generator-internal's build script runs through pixi and
-  # maturin: build scripts inherit this environment, so the two overlapping
-  # builds cannot each spawn a rustc per vCPU. Three per build fits the
-  # 16 GB GitHub-hosted runner's memory.
-  CARGO_BUILD_JOBS: "3"
 
 jobs:
   test:
-    # A GitHub-hosted runner while the agent loss below is being pinned down.
-    # The loss is not a property of the runner provider: it reproduces here
-    # exactly as it does on both Blacksmith tiers, a few minutes into test
-    # execution and always taking the step's logs, so the only reason this job
-    # is not on Blacksmith with the rest of the workflows is that the two
-    # runners are being compared against each other. The ci-user split below
-    # is what addresses the loss itself.
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     permissions:
       contents: read
       pull-requests: read
@@ -48,10 +35,10 @@ jobs:
           # credential sitting in .git/config for every later step to inherit.
           persist-credentials: false
 
-      # Give this run its own peppy data root so the reused self-hosted runner
-      # does not accumulate or collide on /tmp/.peppy across runs. Only the Rust
-      # cargo steps below opt in via env; the release-scripts step is left alone
-      # so scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
+      # Give this run its own peppy data root so the runner does not accumulate
+      # or collide on /tmp/.peppy across runs. Only the Rust cargo steps below
+      # opt in via env; the release-scripts step is left alone so
+      # scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
       - name: Set up isolated peppy data root
         run: |
           PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
@@ -62,187 +49,25 @@ jobs:
       # compiles apptainer against. Must precede every cargo step.
       - uses: ./.github/actions/rust-build-env
 
-      # Every cargo step runs as a second user (`ci`) rather than the
-      # runner's own. The container tests build and run rootless containers,
-      # whose fake-root processes still carry the invoking user's kernel uid:
-      # anything they signal can reach every process of that uid, and on a
-      # hosted runner the Actions agent IS such a process. Seven runs across
-      # both Blacksmith tiers and GitHub's own runners lost the agent a few
-      # minutes into test execution, exactly when the container tests first
-      # exercise user namespaces, and each loss took the step's logs; the
-      # reused self-hosted box ran its agent under a different user, which is
-      # why the same suite passed there for months. Under `ci` the agent is
-      # outside the blast radius, mirroring the self-hosted arrangement. The
-      # subuid/subgid ranges are what apptainer's fakeroot builds map the
-      # container root to.
-      - name: Set up the ci user for the cargo steps
+      - name: Run tests
         run: |
-          # In `docker` because the multi-daemon e2e step, like every other
-          # cargo step, runs as `ci` and talks to the daemon socket.
-          sudo useradd -m -s /bin/bash -G docker ci
-          # The toolchains and temp dirs live under the runner user's home;
-          # the cargo steps execute them as `ci`, so every level down to them
-          # needs to be world-traversable.
-          sudo chmod a+X /home/runner /home/runner/work
-          sudo chmod -R a+rX /home/runner/.cargo /home/runner/.rustup \
-            /home/runner/.pixi /home/runner/.local
-          # Everything the cargo steps write is owned by `ci`: the checkout,
-          # because cargo materializes `target/` inside it and creates that
-          # directory through a sibling temp directory in the workspace root,
-          # and the run's peppy data root, which the step above created as the
-          # runner user before `ci` existed.
-          sudo chown -R ci:ci "$GITHUB_WORKSPACE" "$PEPPY_RUN_HOME"
-          # git rejects a repository whose owner is not the calling user, and
-          # the checkout is now read by both: `ci` for the lockfile check, the
-          # runner user for the checkout action's own post step.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          sudo --set-home --user ci \
-            git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cat > "$RUNNER_TEMP/as-ci" <<'EOF'
-          #!/bin/bash
-          exec sudo --set-home --user ci \
-            env HOME=/home/ci RUSTUP_HOME=/home/runner/.rustup \
-              PATH="/home/runner/.cargo/bin:/home/runner/.pixi/bin:/home/runner/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-              "$@"
-          EOF
-          chmod +x "$RUNNER_TEMP/as-ci"
-
-      # Two of the runner's own supervisors kill by cgroup, not by process, so
-      # either one takes cargo and every test binary at once and leaves the
-      # step with a bare SIGKILL and no output, which is exactly the shape of
-      # the loss this job keeps hitting:
-      #
-      #   - logind tears down a user's slice once that user's last session
-      #     closes, and every cargo step below is its own `sudo` session, so
-      #     the gap between two steps is enough. Lingering holds the slice open
-      #     for the whole job.
-      #   - systemd-oomd kills a whole cgroup on memory *pressure*, well before
-      #     the kernel is out of memory, and reports nothing to the job. The
-      #     kernel OOM killer is left in place, so a genuine runaway still
-      #     fails the job.
-      - name: Keep the runner's supervisors from killing the cargo steps
-        run: |
-          sudo loginctl enable-linger ci
-          if systemctl is-active --quiet systemd-oomd; then
-            sudo systemctl stop systemd-oomd
-          fi
-
-      # The traced run showed the mass SIGKILL arriving from outside the traced
-      # tree: no process under cargo issued it, yet every ci process died at
-      # once. Only two things can do that: the kernel or a ci process that had
-      # already escaped the traced tree by daemonizing. strace cannot see
-      # either; the audit subsystem records every kill syscall on the system
-      # with the issuing uid, pid and command, daemonized or not, so arm a
-      # SIGKILL-only rule ahead of the suite.
-      - name: Arm system-wide SIGKILL auditing
-        run: |
-          sudo auditctl -a always,exit -F arch=b64 -S kill -S tkill -S tgkill \
-            -F a1=9 -k peppy-killtrace \
-            && echo "SIGKILL auditing armed" \
-            || echo "::warning::auditctl unavailable; no system-wide kill audit"
-
-      # A runner-owned bystander: if a test's kill sweep still reaches the
-      # runner user despite the `ci` split, this process is what dies first
-      # and the check below reports it without costing the agent.
-      - name: Start a canary owned by the runner user
-        run: |
-          nohup sleep 5400 >/dev/null 2>&1 &
-          echo "CANARY_PID=$!" >> "$GITHUB_ENV"
-
-      # Split from the test execution so the whole doubled build (this step
-      # compiles the workspace and, via generator-internal's build script,
-      # the inner peppylib build) lives in a step of its own: a completed
-      # step uploads its logs even when a later step loses the runner, and
-      # the second step's cargo reuses this step's target directory.
-      # `setsid` keeps any group-scoped signal inside each cargo run's own
-      # session; `--wait` propagates the exit status so a failing suite
-      # still fails the step.
-      - name: Build the test binaries
-        run: |
-          "$RUNNER_TEMP/as-ci" setsid --wait env \
-            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
-            cargo test --locked --no-run
-
-      # The suite run under a kill-syscall tracer: the run dies with the whole
-      # ci session SIGKILLed during the teardown force-kill tests, and the
-      # tracer's on-disk output survives the very kill that ends the step,
-      # naming the process that issued it. Tracing only the signal syscalls
-      # keeps the overhead near zero. Under the tracer the setuid uid/gid map
-      # helpers lose their setuid bit, so the three container-build tests fail
-      # with EPERM from newgidmap; those failures are the tracer's artifact,
-      # and --no-fail-fast keeps the suite running past them to the teardown
-      # binary where the kill actually happens.
-      - name: Run tests under a kill tracer
-        run: |
-          "$RUNNER_TEMP/as-ci" setsid --wait env \
-            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
-            strace -ff -q -e trace=kill,tgkill,tkill,pidfd_send_signal \
-              -o "$PEPPY_RUN_HOME/kills.trace" -- \
-              cargo test --locked --no-fail-fast
-
-      # `-ff` writes one file per traced pid and puts that pid in the file
-      # name, not in the lines, so the issuing process is only identifiable
-      # with the name attached. `find -exec` rather than a glob: the suite
-      # forks far more processes than one command line can hold.
-      - name: Report the kill trace
-        if: always()
-        run: |
-          sudo find "$PEPPY_RUN_HOME" -name 'kills.trace.*' \
-            -exec grep -HE 'SIGKILL|SIGTERM' {} + | tail -200 || true
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test --locked
 
       - name: Run container e2e tests
         run: |
-          "$RUNNER_TEMP/as-ci" setsid --wait env \
-            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
-            cargo test --locked -p core-node --features container_e2e --test container_e2e
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test --locked -p core-node --features container_e2e --test container_e2e
 
       - name: Run multi-daemon Docker e2e test
         run: |
-          "$RUNNER_TEMP/as-ci" setsid --wait env \
-            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
-            cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
       - name: Run documentation integration tests
         run: |
-          "$RUNNER_TEMP/as-ci" setsid --wait env \
-            PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir" \
-            cargo test --locked -p docs-integration-tests
-
-      # A cargo step that dies without output was killed by something outside
-      # it, and every candidate names itself in exactly one of these places:
-      # the audit log (the exact issuing process of every SIGKILL, including
-      # ones that daemonized out of the strace tree), the kernel log (OOM
-      # killer), the oomd journal (a pressure kill), the logind journal (a
-      # slice teardown). The windows are short because the boot's audit and
-      # kernel noise drowns the relevant minutes otherwise. What survives
-      # under `ci` separates a whole-cgroup kill from one that took only the
-      # session leader.
-      - name: Report what killed the cargo step
-        if: failure()
-        run: |
-          free -m
-          cat /proc/pressure/memory
-          echo "--- ci processes still alive ---"
-          pgrep -u ci -a || echo "none"
-          echo "--- audit: every SIGKILL issued on the system ---"
-          sudo ausearch -k peppy-killtrace -i --format text | tail -150 || true
-          echo "--- journal: every unit since fifteen minutes ago ---"
-          sudo journalctl --since "-15 min" --no-pager | grep -viE 'audit|apparmor' | tail -120
-          echo "--- kernel log ---"
-          sudo journalctl -k --since "-15 min" --no-pager | tail -60
-          echo "--- systemd-oomd ---"
-          sudo journalctl -u systemd-oomd --since "-15 min" --no-pager | tail -40
-          echo "--- systemd-logind ---"
-          sudo journalctl -u systemd-logind --since "-15 min" --no-pager | tail -40
-
-      - name: Check the canary survived the test suite
-        if: always()
-        run: |
-          if kill -0 "$CANARY_PID" 2>/dev/null; then
-            echo "canary $CANARY_PID alive: no kill reached the runner user"
-          else
-            echo "::warning::canary $CANARY_PID was killed by the test suite"
-          fi
+          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
+          cargo test --locked -p docs-integration-tests
 
       - name: Detect scripts/ changes
         id: scripts_changed
@@ -256,20 +81,17 @@ jobs:
         if: |
           (github.event_name == 'pull_request' && github.base_ref == 'main')
           || steps.scripts_changed.outputs.scripts == 'true'
-        run: |
-          "$RUNNER_TEMP/as-ci" setsid --wait ./scripts/run_tests.sh --all
+        run: ./scripts/run_tests.sh --all
 
       # Proves the build consumed the committed lockfile rather than re-resolving
       # it, so the tested dependency graph is the shipped one. Must stay after the
       # cargo steps: placed before them it proves nothing.
       - name: Prove CI did not rewrite the shipping lockfile
-        run: |
-          "$RUNNER_TEMP/as-ci" git -C "$GITHUB_WORKSPACE" diff --exit-code -- Cargo.lock
+        run: git diff --exit-code -- Cargo.lock
 
       # Reclaim the per-run data root so disk does not grow on every run. Runs
       # even when a test step failed. The persistent build-tool cache at
       # $HOME/.peppy/tmp is intentionally left in place (see build_helpers::cache_dir).
-      # Owned by `ci` since the setup step, hence the sudo.
       - name: Clean up isolated peppy data root
         if: always()
-        run: sudo rm -rf "$RUNNER_TEMP/peppy-home"
+        run: rm -rf "$RUNNER_TEMP/peppy-home"

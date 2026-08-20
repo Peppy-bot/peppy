@@ -49,7 +49,7 @@ runs:
         sudo apt-get install -y -qq \
           make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates \
           libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
-          liblzma-dev libzstd-dev fuse2fs strace
+          liblzma-dev libzstd-dev fuse2fs
 
     # Apptainer is built without setuid and creates its user namespaces
     # unprivileged, through fakeroot. Ubuntu 24.04 images ship
