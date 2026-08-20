@@ -33,7 +33,7 @@ from functions.docs import (
     UpdateResult,
 )
 from functions.github import RepoSlug
-from functions.release_summary import ReleaseContent
+from functions.release_summary import ReleaseChanges, ReleaseContent
 
 DEV_COMMIT = "1111111111111111111111111111111111111111"
 MAIN_COMMIT = "2222222222222222222222222222222222222222"
@@ -1458,11 +1458,11 @@ def test_confirm_release_content_edits_then_accepts() -> None:
 
 @patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
 @patch("functions.build_release.generate_release_content")
-@patch("functions.build_release.get_commit_subjects")
+@patch("functions.build_release.collect_release_changes")
 @patch("functions.build_release.get_latest_release")
 def test_prepare_release_content_uses_previous_release_tag(
     mock_latest: MagicMock,
-    mock_commits: MagicMock,
+    mock_collect: MagicMock,
     mock_generate: MagicMock,
     mock_confirm: MagicMock,
     tmp_path: Path,
@@ -1470,39 +1470,44 @@ def test_prepare_release_content_uses_previous_release_tag(
     from functions.github import RepoSlug
 
     mock_latest.return_value = {"tag_name": "v0.11.1"}
-    subjects = ["fix(x): do thing", "feat(y): add y"]
-    mock_commits.return_value = subjects
+    changes = ReleaseChanges(commit_subjects=("fix(x): do thing",), diffs=None)
+    mock_collect.return_value = changes
     content = ReleaseContent("T", "D", "N")
     mock_generate.return_value = content
     client = MagicMock()
     slug = RepoSlug(owner="o", repo="r")
 
-    result = _prepare_release_content(client, slug, "v0.12.0", tmp_path)
+    result = _prepare_release_content(
+        client, slug, "v0.12.0", DEV_COMMIT, tmp_path
+    )
 
     assert result == content
-    # Commits are listed from the previous release tag, not via the GitHub API.
-    mock_commits.assert_called_once_with("v0.11.1")
-    mock_generate.assert_called_once_with(subjects, "v0.12.0", tmp_path)
+    # Changes are gathered from the previous release tag up to the exact commit
+    # being released, not via the GitHub API.
+    mock_collect.assert_called_once_with("v0.11.1", DEV_COMMIT, tmp_path)
+    mock_generate.assert_called_once_with(changes, "v0.12.0", tmp_path)
     mock_confirm.assert_called_once_with(content)
 
 
 @patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
 @patch("functions.build_release.generate_release_content")
-@patch("functions.build_release.get_commit_subjects")
+@patch("functions.build_release.collect_release_changes")
 @patch("functions.build_release.get_latest_release", return_value=None)
 def test_prepare_release_content_handles_no_previous_release(
     mock_latest: MagicMock,
-    mock_commits: MagicMock,
+    mock_collect: MagicMock,
     mock_generate: MagicMock,
     mock_confirm: MagicMock,
     tmp_path: Path,
 ) -> None:
     from functions.github import RepoSlug
 
-    mock_commits.return_value = ["initial commit"]
+    mock_collect.return_value = ReleaseChanges(("initial commit",), diffs=None)
     mock_generate.return_value = ReleaseContent("T", "D", "N")
 
-    _prepare_release_content(MagicMock(), RepoSlug("o", "r"), "v0.1.0", tmp_path)
+    _prepare_release_content(
+        MagicMock(), RepoSlug("o", "r"), "v0.1.0", DEV_COMMIT, tmp_path
+    )
 
-    # With no prior release, the commit range falls back to the full history.
-    mock_commits.assert_called_once_with(None)
+    # With no prior release, the change collection falls back to the full history.
+    mock_collect.assert_called_once_with(None, DEV_COMMIT, tmp_path)

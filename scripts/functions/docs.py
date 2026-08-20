@@ -13,6 +13,10 @@ nice-to-haves are reported as *minor* and never fail the check or feed the
 updater: tooling must not generate wording churn, and a release must not
 hinge on how the model would phrase a sentence today.
 
+The diff helpers (``get_code_diff``, ``get_docs_diff``, ``truncate_diff``)
+are shared with the release-notes generator (``release_summary.py``), so the
+notes are drafted from the same changes the docs check judged.
+
 Both require ``claude`` and ``git`` on PATH. No special auth handling —
 the invoking environment must already have claude authenticated.
 """
@@ -22,6 +26,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +45,17 @@ _EXCLUDE_PREFIXES: tuple[str, ...] = (
     "scripts/functions/docs.py",
     "scripts/tests/test_docs.py",
 )
+
+# Files excluded from the code diff outright. The lock file only records
+# dependency versions, which neither the docs nor the release notes report, and
+# it sorts first in `git diff` output, so a large bump would spend the diff
+# budget before any code is reached.
+_EXCLUDE_PATHS: tuple[str, ...] = ("Cargo.lock",)
+
+# The user documentation: the pages the docs site renders, including the
+# snippets they embed. Release notes under `docs/src/content/releases/` and the
+# site's own configuration are not part of it.
+USER_DOCS_PREFIX = "docs/src/content/docs/"
 
 _MAX_DIFF_BYTES = 400_000
 
@@ -160,27 +176,49 @@ def _run_git(args: list[str], cwd: Path) -> str:
 
 
 def _is_code_path(path: str) -> bool:
+    if path in _EXCLUDE_PATHS:
+        return False
     return not any(path.startswith(p) for p in _EXCLUDE_PREFIXES)
 
 
-def get_code_diff(base: str, head: str, repo_root: Path) -> tuple[str, list[str]]:
-    """Return (diff_text, changed_paths) for code-only changes between refs."""
+def _is_user_docs_path(path: str) -> bool:
+    return path.startswith(USER_DOCS_PREFIX)
+
+
+def _diff_matching(
+    base: str, head: str, repo_root: Path, keep: Callable[[str], bool]
+) -> tuple[str, list[str]]:
+    """Return (diff_text, changed_paths) between refs for the paths *keep* accepts.
+
+    The changed paths are listed first so the diff itself is only read for the
+    paths that matter; when none match, git is not asked for a diff at all.
+    """
     names_raw = _run_git(
         ["diff", "--name-only", f"{base}..{head}"],
         cwd=repo_root,
     )
     changed = [line for line in names_raw.splitlines() if line.strip()]
-    code_paths = [p for p in changed if _is_code_path(p)]
-    if not code_paths:
+    kept = [p for p in changed if keep(p)]
+    if not kept:
         return "", []
     diff = _run_git(
-        ["diff", f"{base}..{head}", "--", *code_paths],
+        ["diff", f"{base}..{head}", "--", *kept],
         cwd=repo_root,
     )
-    return diff, code_paths
+    return diff, kept
 
 
-def _truncate_diff(diff: str) -> str:
+def get_code_diff(base: str, head: str, repo_root: Path) -> tuple[str, list[str]]:
+    """Return (diff_text, changed_paths) for code-only changes between refs."""
+    return _diff_matching(base, head, repo_root, _is_code_path)
+
+
+def get_docs_diff(base: str, head: str, repo_root: Path) -> tuple[str, list[str]]:
+    """Return (diff_text, changed_paths) for user documentation changes between refs."""
+    return _diff_matching(base, head, repo_root, _is_user_docs_path)
+
+
+def truncate_diff(diff: str) -> str:
     if len(diff) <= _MAX_DIFF_BYTES:
         return diff
     return (
@@ -326,7 +364,7 @@ def check_docs(base: str, head: str) -> CheckResult:
         return CheckResult(changes=())
     prompt = _CHECK_PROMPT.format(
         paths="\n".join(paths),
-        diff=_truncate_diff(diff),
+        diff=truncate_diff(diff),
     )
     # tools (not just allowed_tools) is restricted: under bypassPermissions
     # the allowlist approves rather than limits, and the check must stay
@@ -358,7 +396,7 @@ def update_docs(
     prompt = _UPDATE_PROMPT.format(
         changes="\n".join(f"- `{c.file}`: {c.change}" for c in changes),
         paths="\n".join(paths),
-        diff=_truncate_diff(diff),
+        diff=truncate_diff(diff),
     )
     payload = run_claude(
         prompt,

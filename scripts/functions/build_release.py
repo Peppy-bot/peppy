@@ -72,13 +72,16 @@ from .release_notes import (
     fetch_release_body_html,
     generate_release_notes_file,
 )
-from .release_summary import ReleaseContent, generate_release_content
+from .release_summary import (
+    ReleaseContent,
+    collect_release_changes,
+    generate_release_content,
+)
 from .docker import main as build_base_images_main
 from .repo import (
     commit_paths,
     fetch_remote_branches,
     get_commit,
-    get_commit_subjects,
     get_current_branch,
     get_repo_root,
     has_changes_in_paths,
@@ -281,14 +284,16 @@ def _prepare_release_content(
     client: httpx.Client,
     slug: RepoSlug,
     tag: str,
+    release_commit: str,
     repo_root: Path,
 ) -> ReleaseContent:
     """Derive the release content from the changes since the last release.
 
-    Collects the commit subjects since the previous published release, asks
-    Claude to draft the title/description/notes as a self-contained list of
-    changes (no external links), then lets the user review, edit, or abort
-    before anything is built or published.
+    Collects everything merged between the previous published release and the
+    release commit (the commit subjects, the code diff, and the user
+    documentation diff), asks Claude to draft the title/description/notes as a
+    self-contained list of user-facing changes (no external links), then lets
+    the user review, edit, or abort before anything is built or published.
     """
     latest = get_latest_release(client, slug)
     previous_tag = latest.get("tag_name") if latest else None
@@ -300,9 +305,9 @@ def _prepare_release_content(
             "listing the full history.[/yellow]"
         )
 
-    commits = get_commit_subjects(previous_tag)
+    changes = collect_release_changes(previous_tag, release_commit, repo_root)
     console.print("Asking Claude to write the release notes...")
-    content = generate_release_content(commits, tag, repo_root)
+    content = generate_release_content(changes, tag, repo_root)
     return _confirm_release_content(content)
 
 
@@ -854,7 +859,9 @@ def _run_full(
     if not tag:
         raise ReleaseError("release tag cannot be empty")
 
-    content = _prepare_release_content(client, slug, tag, repo_root)
+    content = _prepare_release_content(
+        client, slug, tag, release_commit, repo_root
+    )
 
     # Build and package all targets
     targets = get_targets_for_platform()
