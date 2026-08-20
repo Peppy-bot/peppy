@@ -21,7 +21,7 @@ env:
 jobs:
   latency:
     if: github.head_ref == 'dev'
-    runs-on: self-hosted
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: read
       pull-requests: read
@@ -49,6 +49,10 @@ jobs:
           mkdir -p "$PEPPY_RUN_HOME/tmpdir"
           echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
 
+      # Rust toolchain plus the system libraries the container build script
+      # compiles apptainer against. Must precede the cargo step below.
+      - uses: ./.github/actions/rust-build-env
+
       # The guard asserts the MEDIAN against generous ceilings, so it does not
       # flake on ordinary jitter. The *absolute* numbers, however, swing with CPU
       # turbo frequency and shared-host load — both environmental, not code. To
@@ -63,7 +67,9 @@ jobs:
       - name: Roundtrip latency threshold tests (real nodes)
         run: |
           export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test -p core-node --test latency -- --ignored --test-threads 1 --nocapture
+          # Own session, as in tests.yml: this suite spawns and tears down real
+          # nodes, so a process-group signal must not reach the runner agent.
+          setsid --wait cargo test -p core-node --test latency -- --ignored --test-threads 1 --nocapture
 
       # Reclaim the per-run data root so disk does not grow on every run. Runs
       # even when the test step failed.

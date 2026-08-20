@@ -1,0 +1,105 @@
+name: Rust build environment
+description: >-
+  Installs the Rust toolchain, the system packages every cargo step in this
+  repository builds against, and the pixi and uv tools the build scripts and
+  Python test scenarios execute, then clears the kernel restriction that would
+  stop apptainer from creating unprivileged user namespaces.
+
+runs:
+  using: composite
+  steps:
+    # The runner image's default toolchain trails the workspace's dependency
+    # graph (sysinfo already requires a newer rustc than the image ships), so
+    # the job pins itself to current stable instead of inheriting the image
+    # default. Must stay ahead of every cargo step.
+    - name: Install Rust toolchain
+      shell: bash
+      run: |
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+        rustc --version
+
+    # containers-internal's build script compiles apptainer and its bundled
+    # squashfuse from source, and refuses to start unless every package in
+    # APPTAINER_BUILD_DEPS (crates/containers-internal/build.rs) is present: a
+    # header it cannot find is silently dropped from the build rather than
+    # reported. The list below mirrors that constant and must be kept in step
+    # with it. fuse2fs is separate: apptainer needs it at run time to mount EXT3
+    # images, so the container tests need it even though its absence is only a
+    # warning at build time. Go is absent because the build script downloads its
+    # own pinned toolchain.
+    #
+    # The install pulls newer libc, libcurl and ca-certificates into the runner
+    # image, and needrestart's automatic mode then restarts every service linked
+    # against them, systemd-journald, systemd-networkd, systemd-resolved and
+    # systemd-udevd among them, underneath the running job. Restarting the
+    # logging, networking and device stack out from under the Actions runner is
+    # one of the causes GitHub names for "the runner lost communication with the
+    # server", so the drop-in holds needrestart to listing what it would restart
+    # and the runner keeps the services it booted with.
+    - name: Install apptainer build and runtime dependencies
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo mkdir -p /etc/needrestart/conf.d
+        printf '$nrconf{restart} = "l";\n' \
+          | sudo tee /etc/needrestart/conf.d/90-no-service-restarts.conf > /dev/null
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates \
+          libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
+          liblzma-dev libzstd-dev fuse2fs
+
+    # Apptainer is built without setuid and creates its user namespaces
+    # unprivileged, through fakeroot. Ubuntu 24.04 images ship
+    # kernel.apparmor_restrict_unprivileged_userns=1, which denies that to any
+    # binary without a matching AppArmor profile, so every test that builds or
+    # runs a container fails with "Apptainer's user namespace prerequisites are
+    # not met" and a fix script naming the starter binary. Clearing the knob is
+    # what peppy itself does inside the Lima guest it provisions (see
+    # apptainer/lima.rs), and on a runner discarded at the end of the job it
+    # costs nothing, whereas installing the per-installation AppArmor profile
+    # would have to be redone for every apptainer version the build cache
+    # holds. Images predating the restriction (Ubuntu 22.04) never expose the
+    # knob, hence the existence check.
+    - name: Allow unprivileged user namespaces
+      shell: bash
+      run: |
+        knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        if [ ! -e "$knob" ]; then
+          echo "kernel does not restrict unprivileged user namespaces"
+          exit 0
+        fi
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+    # Apptainer mounts every SIF image through a /dev/loopN node, and the
+    # runner image materializes only loop0 through loop7. The container tests
+    # and the multi-daemon e2e run several containers at once, and the ninth
+    # concurrent mount dies with "could not open /dev/loop8: no such file or
+    # directory". Create the remaining nodes up front; the loop major is 7 and
+    # the kernel accepts device nodes whether or not udev would have made
+    # them.
+    - name: Create loop devices for parallel container mounts
+      shell: bash
+      run: |
+        for i in $(seq 8 63); do
+          [ -e "/dev/loop$i" ] || sudo mknod -m 660 "/dev/loop$i" b 7 "$i"
+        done
+
+    # The runner image ships neither pixi nor uv. generator-internal's build
+    # script builds the embedded peppylib .so through a bare `pixi run` and,
+    # when pixi is absent, refuses to serve a stale .so instead, which is
+    # fatal on an ephemeral runner whose ~/.peppy cache starts empty. The
+    # Python generator tests and latency scenarios likewise exec bare `uv` on
+    # the host. Both are installed exactly as scripts/setup_machine.sh
+    # installs them, pixi pinned to the version peppylib-py's `requires-pixi`
+    # demands; $GITHUB_PATH exports them to every later step of the calling
+    # job (the installers' own profile edits are never sourced there).
+    - name: Install pixi and uv
+      shell: bash
+      run: |
+        curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.72.0 sh
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"

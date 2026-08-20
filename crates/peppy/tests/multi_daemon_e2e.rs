@@ -232,19 +232,114 @@ async fn e2e_image() -> (String, String) {
             }
 
             let release = host_ubuntu_release();
-            // The build tags the image `E2E_IMAGE_NAME:release` in the local
-            // daemon, which is the part every container needs; the returned
-            // handle is just another way to name what is now on disk, and
+            // The build leaves the image tagged `E2E_IMAGE_NAME:release` in
+            // the local daemon, which is the part every container needs;
             // `start_daemon` builds its own request per container anyway.
-            let _tagged = GenericBuildableImage::new(E2E_IMAGE_NAME, &release)
-                .with_dockerfile_string(e2e_dockerfile(&release))
-                .build_image()
-                .await
-                .expect("building the e2e daemon image must succeed");
+            build_e2e_daemon_image(&release).await;
             (String::from(E2E_IMAGE_NAME), release)
         })
         .await
         .clone()
+}
+
+/// Builds the daemon image into the local Docker daemon.
+///
+/// Prefers the buildx client: `docker buildx build` resolves the configured
+/// default builder, and the CI runners run one whose layer cache persists
+/// between runs (Blacksmith hydrates a dedicated builder from a sticky disk
+/// for jobs that set up `useblacksmith/setup-docker-builder`), so the apt and
+/// uv-python layers of [`e2e_dockerfile`] are built once and reused across
+/// runs. The daemon's own embedded builder, which the testcontainers build
+/// below drives, keeps its cache only inside the ephemeral runner and
+/// rebuilds the image from scratch every run. Where no buildx client is
+/// installed the testcontainers build remains, building the identical
+/// image body either way.
+///
+/// `--load` exports the built image into the local daemon, which is where
+/// the containers below expect to find it. The Dockerfile arrives on stdin
+/// (`--file -`) and the build context is an empty directory, so the image
+/// body stays defined in exactly one place, [`e2e_dockerfile`].
+async fn build_e2e_daemon_image(release: &str) {
+    if buildx_available().await {
+        let tag = format!("{E2E_IMAGE_NAME}:{release}");
+        let dockerfile = e2e_dockerfile(release);
+        let built_at = Instant::now();
+        let tag_for_build = tag.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            let context = std::env::temp_dir().join("peppy-multi-daemon-e2e-context");
+            std::fs::create_dir_all(&context)
+                .expect("create the e2e image build context directory");
+            let mut child = std::process::Command::new("docker")
+                .args([
+                    "buildx",
+                    "build",
+                    "--load",
+                    "--progress=plain",
+                    "--tag",
+                    &tag_for_build,
+                    "--file",
+                    "-",
+                ])
+                .arg(&context)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn docker buildx build");
+            let mut stdin = child.stdin.take().expect("piped stdin for buildx");
+            let write = stdin.write_all(dockerfile.as_bytes());
+            drop(stdin);
+            write.expect("write the e2e Dockerfile to buildx stdin");
+            child.wait_with_output().expect("run docker buildx build")
+        })
+        .await
+        .expect("join the blocking e2e image build");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "docker buildx build of the e2e daemon image failed:\n{stderr}",
+        );
+        // Plain progress names every step BuildKit served from the layer
+        // cache, so the count is the run-to-run reuse made visible.
+        let cached_steps = stderr.lines().filter(|l| l.contains(" CACHED ")).count();
+        let elapsed = built_at.elapsed().as_secs_f32();
+        println!("built {tag} through the default buildx builder in {elapsed:.1}s ({cached_steps} cached steps)");
+        // The test harness captures stdout, so surface the same numbers in the
+        // GitHub step summary, where a passing run still shows them.
+        if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&summary) {
+                let _ = writeln!(
+                    file,
+                    "e2e daemon image: built in {elapsed:.1}s via buildx, {cached_steps} cached steps"
+                );
+            }
+        }
+        return;
+    }
+
+    let _tagged = GenericBuildableImage::new(E2E_IMAGE_NAME, release)
+        .with_dockerfile_string(e2e_dockerfile(release))
+        .build_image()
+        .await
+        .expect("building the e2e daemon image must succeed");
+}
+
+/// Whether a `docker buildx` client answers, ahead of choosing the build
+/// path in [`build_e2e_daemon_image`].
+async fn buildx_available() -> bool {
+    tokio::task::spawn_blocking(|| {
+        std::process::Command::new("docker")
+            .args(["buildx", "version"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// `GenericImage` wants the name and tag separately and joins them back with a
