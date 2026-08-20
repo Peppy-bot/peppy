@@ -405,6 +405,7 @@ export PATH="{GUEST_GO_DIR}/bin:{GUEST_CARGO_HOME}/bin:$PATH"
 export GOTOOLCHAIN=local
 export PEPPY_GIT_TAG={tag}
 export PEPPY_CROSS_ARCH=1
+export PEPPY_HOST_HOME={Path.home()}
 export RUSTC_WRAPPER=""
 export PEPPYLIB_PREBUILT_SO_DIR={so_dir}
 export CARGO_TARGET_DIR={guest_target_dir}
