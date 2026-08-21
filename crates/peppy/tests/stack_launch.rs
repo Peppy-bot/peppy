@@ -4631,9 +4631,12 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
     )
     .expect("launcher");
 
-    let (document, report) =
-        peppy::commands::stack::resolve_rendered(launcher, &["recorder=on".to_owned()])
-            .expect("resolves");
+    let (document, report) = peppy::commands::stack::resolve_rendered(
+        &empty_peppy_dirs(),
+        launcher,
+        &["recorder=on".to_owned()],
+    )
+    .expect("resolves");
 
     assert!(
         document.contains("recorder_inst") && document.contains("panel_inst"),
@@ -4700,6 +4703,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
     .expect("launcher");
 
     let err = peppy::commands::stack::resolve_rendered(
+        &empty_peppy_dirs(),
         launcher.clone(),
         &["mujoco".to_owned(), "cameras".to_owned()],
     )
@@ -4712,9 +4716,12 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         "the refusal names the guard, the requirement, and the reason: {msg}"
     );
 
-    let (document, _report) =
-        peppy::commands::stack::resolve_rendered(launcher, &["cameras".to_owned()])
-            .expect("the legal sibling resolves");
+    let (document, _report) = peppy::commands::stack::resolve_rendered(
+        &empty_peppy_dirs(),
+        launcher,
+        &["cameras".to_owned()],
+    )
+    .expect("the legal sibling resolves");
     assert!(
         document.contains("cam_inst") && document.contains("arm_inst"),
         "the flat document carries the selected options: {document}"
@@ -4722,5 +4729,192 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
     assert!(
         !document.contains("constraints"),
         "the flat document is an ordinary launcher with no composition keys: {document}"
+    );
+}
+
+/// A peppy root whose nodes cache holds nothing, for resolve tests that are
+/// about composition rather than the link rules: the check reports itself
+/// skipped instead of reading whatever this machine's real caches hold.
+fn empty_peppy_dirs() -> daemon_config::consts::PeppyDirs {
+    static EMPTY_ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let dir = EMPTY_ROOT.get_or_init(|| tempfile::tempdir().expect("temp peppy root"));
+    daemon_config::consts::PeppyDirs::new(dir.path())
+}
+
+/// A peppy root, a node manifest declaring one optional pairing slot, and a
+/// nodes cache pointing at it, so `stack resolve` can hold a launcher to the
+/// pairing rules without a daemon. Returns the dirs and the launcher dir;
+/// the caller writes the launcher it wants judged.
+fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile::TempDir) {
+    let root = tempfile::tempdir().expect("temp peppy root");
+    let node_dir = root.path().join("nodes/viewer");
+    fs::create_dir_all(&node_dir).expect("node dir");
+    fs::write(
+        node_dir.join("peppy.json5"),
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: {
+                name: "viewer",
+                tag: "v1",
+                depends_on: {
+                    pairings: [
+                        { name: "camera_link", tag: "v1", role: "viewer",
+                          link_id: "camera", optional: true },
+                    ],
+                },
+            },
+            execution: { language: "rust", run_cmd: ["./bin/viewer"] },
+        }"#,
+    )
+    .expect("node manifest");
+    let cache_dir = root.path().join("cache");
+    fs::create_dir_all(&cache_dir).expect("cache dir");
+    fs::write(
+        cache_dir.join("nodes.json5"),
+        format!(
+            r#"[{{ node_name: "viewer", node_tag: "v1",
+                  sha256: "{}",
+                  origin: {{ source_type: "fs", path: "{}" }} }}]"#,
+            "0".repeat(64),
+            node_dir.join("peppy.json5").display(),
+        ),
+    )
+    .expect("nodes cache");
+    let dirs = daemon_config::consts::PeppyDirs::new(root.path());
+    (dirs, root)
+}
+
+/// The gap this check exists to close: a launcher that leaves an optional
+/// pairing slot neither paired nor vacant used to pass `stack resolve` and
+/// fail minutes later at launch. Resolve now refuses it with the launch's
+/// own error.
+#[test]
+fn stack_resolve_fails_an_optional_pairing_slot_left_uncovered() {
+    let (dirs, root) = peppy_root_with_pairing_node();
+    let launcher = root.path().join("solo.json5");
+    fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                { source: { name: "viewer", tag: "v1" },
+                  instances: [{ instance_id: "viewer_inst" }] },
+            ],
+        }"#,
+    )
+    .expect("launcher");
+
+    let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
+        .expect_err("an uncovered optional pairing slot must not resolve");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("optional pairing slot `camera`") && msg.contains("with no pair"),
+        "the refusal names the slot and the rule: {msg}"
+    );
+    assert!(
+        msg.contains("vacant"),
+        "the refusal offers the vacancy escape hatch: {msg}"
+    );
+}
+
+/// The same launcher with the slot declared vacant resolves, and the report
+/// says the link rules were actually checked rather than skipped.
+#[test]
+fn stack_resolve_accepts_a_vacant_pairing_slot_and_says_it_checked() {
+    let (dirs, root) = peppy_root_with_pairing_node();
+    let launcher = root.path().join("solo.json5");
+    fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                { source: { name: "viewer", tag: "v1" },
+                  instances: [{ instance_id: "viewer_inst",
+                                links: { camera: { vacant: "no camera in this test" } } }] },
+            ],
+        }"#,
+    )
+    .expect("launcher");
+
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
+        .expect("a vacant slot is covered");
+    let report_text = report.join(
+        "
+",
+    );
+    assert!(
+        report_text.contains("link rules hold"),
+        "the report confirms the rules ran: {report_text}"
+    );
+}
+
+/// A deployment whose manifest is not in the nodes cache turns the check
+/// into a named skip, never a silent pass and never a false error: the
+/// pairing rules judge links by both endpoints' declarations, so a partial
+/// item list must not be validated.
+#[test]
+fn stack_resolve_reports_the_check_skipped_when_a_manifest_is_missing() {
+    let (dirs, root) = peppy_root_with_pairing_node();
+    let launcher = root.path().join("solo.json5");
+    fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                { source: { name: "viewer", tag: "v1" },
+                  instances: [{ instance_id: "viewer_inst" }] },
+                { source: { name: "stranger", tag: "v1" },
+                  instances: [{ instance_id: "stranger_inst" }] },
+            ],
+        }"#,
+    )
+    .expect("launcher");
+
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
+        .expect("a cache miss skips the check rather than failing the resolve");
+    let report_text = report.join(
+        "
+",
+    );
+    assert!(
+        report_text.contains("link rules not checked")
+            && report_text.contains("stranger:v1")
+            && report_text.contains("not in the nodes cache"),
+        "the skip names the missing manifest: {report_text}"
+    );
+    assert!(
+        !report_text.contains("link rules hold"),
+        "a skipped check must not also claim to have run: {report_text}"
+    );
+}
+
+/// An empty nodes cache (a machine that never ran `peppy repo refresh`)
+/// keeps resolve usable and says the check was skipped.
+#[test]
+fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let launcher = dir.path().join("solo.json5");
+    fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                { source: { name: "viewer", tag: "v1" },
+                  instances: [{ instance_id: "viewer_inst" }] },
+            ],
+        }"#,
+    )
+    .expect("launcher");
+
+    let (_document, report) =
+        peppy::commands::stack::resolve_rendered(&empty_peppy_dirs(), launcher, &[])
+            .expect("an empty cache skips the check rather than failing the resolve");
+    let report_text = report.join(
+        "
+",
+    );
+    assert!(
+        report_text.contains("link rules not checked") && report_text.contains("repo refresh"),
+        "the skip tells the user how to enable the check: {report_text}"
     );
 }
