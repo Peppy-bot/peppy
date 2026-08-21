@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use core_node_api::encoding::InfoRequest;
+use daemon_config::consts::PEPPY_VERSION;
 
 use super::{CALLER_INSTANCE_ID, Command};
 use crate::context::AppContext;
@@ -42,11 +43,9 @@ impl Command for InfoCommand {
 }
 
 async fn info_async(ctx: &Arc<AppContext>) -> Result<()> {
-    let client_version = option_env!("PEPPY_GIT_TAG").unwrap_or("unknown");
-
     println!("Peppy client info");
     println!("----------");
-    println!("Version: {}", client_version);
+    println!("Version: {PEPPY_VERSION}");
 
     // Local container setup check (works without the daemon running)
     print_container_setup_status();

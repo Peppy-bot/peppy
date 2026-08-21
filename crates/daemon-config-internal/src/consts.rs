@@ -13,6 +13,18 @@ pub const REPOSITORY_INDEX_FILE: &str = "peppy_repository.json5";
 
 pub const PEPPY_MESSAGING_PORT_VAR_NAME: &str = "PEPPY_MESSAGING_PORT";
 
+/// Release tag the binary was built from, read at compile time from the
+/// `PEPPY_GIT_TAG` environment variable the release build sets. A plain
+/// `cargo build` has none.
+pub const PEPPY_GIT_TAG: Option<&str> = option_env!("PEPPY_GIT_TAG");
+
+/// Version the CLI and the daemon report for themselves: the release tag, or
+/// `unknown` for a build without one.
+pub const PEPPY_VERSION: &str = match PEPPY_GIT_TAG {
+    Some(tag) => tag,
+    None => "unknown",
+};
+
 /// Default base container image for Rust nodes (Ubuntu 24.04 + Rust via rustup, build-essential).
 pub const DEFAULT_RUST_BASE_IMAGE: &str = "peppybot/rust-cargo-base:latest";
 

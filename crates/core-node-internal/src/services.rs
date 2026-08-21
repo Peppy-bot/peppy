@@ -24,7 +24,7 @@ use config::{
     schema::PeppySchema,
 };
 use core_node_api::{ActionId, ServiceId, TopicId};
-use daemon_config::consts::PeppyDirs;
+use daemon_config::consts::{PEPPY_GIT_TAG, PeppyDirs};
 use futures::future::{BoxFuture, FutureExt, select_all, try_join_all};
 use names_generator2::get_random;
 use node_stack::NodeStack;
@@ -44,7 +44,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-const CORE_NODE_TAG: &str = match option_env!("PEPPY_GIT_TAG") {
+const CORE_NODE_TAG: &str = match PEPPY_GIT_TAG {
     Some(tag) => tag,
     None => "dev",
 };
