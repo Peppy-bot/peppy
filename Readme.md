@@ -60,6 +60,7 @@ Non-goals:
 | `peppy platform` | Log in, log out, and show the current platform identity |
 | `peppy service` | Install, serve, stop, uninstall, and reset the background service |
 | `peppy info` | Print the CLI version, container setup, and daemon info |
+| `peppy --version` | Print the CLI version alone, without contacting the daemon |
 
 ## 📚 Documentation
 

@@ -27,3 +27,4 @@ mod service_serve;
 mod stack_launch;
 mod stack_list;
 mod stack_reset;
+mod version;

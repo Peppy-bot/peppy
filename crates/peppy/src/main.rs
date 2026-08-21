@@ -5,7 +5,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use tracing::error;
 
-use daemon_config::consts::AppEnv;
+use daemon_config::consts::{AppEnv, PEPPY_VERSION};
 use peppy::{
     commands::{Command, container, info, node, platform, repo, service, stack},
     context::AppContext,
@@ -18,6 +18,7 @@ use logging::{LogStyle, init_tracing};
 #[derive(Parser)]
 #[command(name = "peppy")]
 #[command(about = "The Peppy cli tool")]
+#[command(version = PEPPY_VERSION)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -158,6 +159,20 @@ mod tests {
     fn core_node_flag_defaults_to_none() {
         let cli = Cli::try_parse_from(["peppy", "stack", "list"]).expect("plain parse");
         assert_eq!(cli.core_node, None, "absent flag targets the local daemon");
+    }
+
+    /// `--version` is answered by the parser itself, before the app context
+    /// or the daemon come into play, so a freshly extracted binary on a
+    /// machine with no peppy state still states which release it is.
+    #[test]
+    fn version_flag_prints_the_release_tag() {
+        for flag in ["--version", "-V"] {
+            let err = Cli::try_parse_from(["peppy", flag])
+                .err()
+                .expect("--version ends parsing with a DisplayVersion error");
+            assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+            assert_eq!(err.to_string().trim_end(), format!("peppy {PEPPY_VERSION}"));
+        }
     }
 
     /// A malformed `--core-node` must be rejected at parse time — the same

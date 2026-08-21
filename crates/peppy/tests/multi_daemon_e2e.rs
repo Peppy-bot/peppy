@@ -304,7 +304,9 @@ async fn build_e2e_daemon_image(release: &str) {
         // cache, so the count is the run-to-run reuse made visible.
         let cached_steps = stderr.lines().filter(|l| l.contains(" CACHED ")).count();
         let elapsed = built_at.elapsed().as_secs_f32();
-        println!("built {tag} through the default buildx builder in {elapsed:.1}s ({cached_steps} cached steps)");
+        println!(
+            "built {tag} through the default buildx builder in {elapsed:.1}s ({cached_steps} cached steps)"
+        );
         // The test harness captures stdout, so surface the same numbers in the
         // GitHub step summary, where a passing run still shows them.
         if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {

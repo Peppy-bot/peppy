@@ -6,8 +6,8 @@ use core_node_api::{ServiceId, TopicId};
 // The clock-source abstraction and the NTP-style request handler live in
 // `peppylib::clock`, shared with the test harness's clock stand-in
 // (`peppylib::testing::MockClock`) so both serve identical semantics.
-pub use peppylib::clock::{ClockSource, SimClockSource, WallClockSource};
 use peppylib::clock::handle_clock_request;
+pub use peppylib::clock::{ClockSource, SimClockSource, WallClockSource};
 use peppylib::messaging::{SenderTarget, Subscription, TopicPublisher};
 use peppylib::{MessengerHandle, ServiceMessenger, TopicMessenger};
 use std::sync::Arc;
@@ -313,5 +313,4 @@ mod tests {
             .expect("heartbeat task should not panic");
         outcome.expect("heartbeat should exit Ok after a clean cancel");
     }
-
 }
