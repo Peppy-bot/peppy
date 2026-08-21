@@ -126,8 +126,8 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
         let manifest_path = match &entry.origin {
             EntryOrigin::Fs { path } => path.clone(),
             EntryOrigin::Git { .. } => {
-                // A git-backed manifest may need a fetch to read, which this
-                // command must not do; the launch that follows will.
+                // A git-backed manifest may need a fetch to read, and this
+                // command never fetches.
                 unavailable.push(format!(
                     "{id} (a git entry's manifest needs materializing to read)"
                 ));

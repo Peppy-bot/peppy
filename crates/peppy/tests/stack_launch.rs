@@ -4784,10 +4784,9 @@ fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile
     (dirs, root)
 }
 
-/// The gap this check exists to close: a launcher that leaves an optional
-/// pairing slot neither paired nor vacant used to pass `stack resolve` and
-/// fail minutes later at launch. Resolve now refuses it with the launch's
-/// own error.
+/// A launcher that leaves an optional pairing slot neither paired nor
+/// vacant fails `stack resolve` with the launch's own error, before any
+/// image is built.
 #[test]
 fn stack_resolve_fails_an_optional_pairing_slot_left_uncovered() {
     let (dirs, root) = peppy_root_with_pairing_node();
