@@ -4887,6 +4887,54 @@ fn stack_resolve_reports_the_check_skipped_when_a_manifest_is_missing() {
     );
 }
 
+/// A cache entry whose path now holds a different node's manifest turns the
+/// check into a named skip: the plan must never be judged against slot
+/// declarations the deployed identity does not own.
+#[test]
+fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
+    let (dirs, root) = peppy_root_with_pairing_node();
+    // The cached path stays the same; the file at it now declares another
+    // node, as a stale cache after a rename does.
+    let manifest = root.path().join("nodes/viewer/peppy.json5");
+    fs::write(
+        &manifest,
+        r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "renamed_viewer", tag: "v1" },
+            execution: { language: "rust", run_cmd: ["./bin/renamed_viewer"] },
+        }"#,
+    )
+    .expect("replacement manifest");
+    let launcher = root.path().join("solo.json5");
+    fs::write(
+        &launcher,
+        r#"{
+            peppy_schema: "launcher/v1",
+            deployments: [
+                { source: { name: "viewer", tag: "v1" },
+                  instances: [{ instance_id: "viewer_inst" }] },
+            ],
+        }"#,
+    )
+    .expect("launcher");
+
+    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
+        .expect("a mislabeled manifest skips the check rather than judging the plan with it");
+    let report_text = report.join(
+        "
+",
+    );
+    assert!(
+        report_text.contains("link rules not checked")
+            && report_text.contains("declares `renamed_viewer:v1`"),
+        "the skip names the identity the file actually declares: {report_text}"
+    );
+    assert!(
+        !report_text.contains("link rules hold"),
+        "a skipped check must not also claim to have run: {report_text}"
+    );
+}
+
 /// An empty nodes cache (a machine that never ran `peppy repo refresh`)
 /// keeps resolve usable and says the check was skipped.
 #[test]

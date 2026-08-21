@@ -135,7 +135,21 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
             }
         };
         match NodeConfigParser::from_path(&manifest_path) {
-            Ok(config) => manifests.push((name.to_string(), tag.to_string(), index, config)),
+            // The cache's label and the file's own declaration must agree:
+            // a stale entry whose path now holds another node's manifest
+            // would otherwise have the plan judged against that node's slot
+            // declarations under this one's name.
+            Ok(config) if config.manifest.name.as_str() == name && config.manifest.tag == tag => {
+                manifests.push((name.to_string(), tag.to_string(), index, config));
+            }
+            Ok(config) => {
+                unavailable.push(format!(
+                    "{id} (the manifest at {} declares `{}:{}`)",
+                    manifest_path.display(),
+                    config.manifest.name.as_str(),
+                    config.manifest.tag,
+                ));
+            }
             Err(e) => {
                 unavailable.push(format!("{id} ({e})"));
             }
