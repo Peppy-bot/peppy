@@ -228,6 +228,7 @@ async def setup(parameters, node_runner) -> list[asyncio.Task]:
                     640,
                     480,
                     bytes([1, 2, 3]),
+                    ["left", "right"],
                 )
             )
             if frame_id == 0:

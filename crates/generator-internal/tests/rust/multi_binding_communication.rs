@@ -168,6 +168,7 @@ fn main() -> Result<()> {
                 break;
             };
             assert_eq!(frame.width, 640, "frame payload must decode per producer");
+            assert_eq!(frame.tags, ["left", "right"], "string list must decode");
             seen.insert(producer.instance_id.clone());
         }
         let mut seen: Vec<String> = seen.into_iter().collect();
@@ -290,6 +291,7 @@ fn main() -> Result<()> {
                     640,
                     480,
                     vec![1, 2, 3],
+                    vec!["left".to_owned(), "right".to_owned()],
                 )
                 .expect("build video_stream message");
                 publisher

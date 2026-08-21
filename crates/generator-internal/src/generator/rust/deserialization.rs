@@ -454,6 +454,32 @@ fn generate_primitive_array_reader(
             })?;
     }];
 
+    // A text list's iterator yields `Result<text::Reader, capnp::Error>` per
+    // element (each string can fail to decode on its own), unlike a numeric
+    // list's plain values, so string elements convert through the same
+    // fallible path the scalar string reader uses.
+    let collect_strings = |vec_ident: &Ident| {
+        quote! {
+            let #vec_ident = #reader_ident
+                .iter()
+                .map(|element| {
+                    element
+                        .map_err(|source| source.to_string())
+                        .and_then(|text| {
+                            text.to_str().map(str::to_owned).map_err(|source| source.to_string())
+                        })
+                        .map_err(|source| {
+                            #[allow(clippy::all)]
+                            let context = #context_expr;
+                            crate::Error::Deserialization(
+                                format!("field '{}' in {}: {}", #field_literal, context, source)
+                            )
+                        })
+                })
+                .collect::<::std::result::Result<Vec<String>, crate::Error>>()?;
+        }
+    };
+
     if let Some(len) = length {
         let len_lit = Literal::usize_unsuffixed(len);
         statements.push(quote! {
@@ -464,12 +490,30 @@ fn generate_primitive_array_reader(
                 ));
             }
         });
-        statements.push(quote! {
-            let mut #value_ident: [#element_ty; #len_lit] = [#element_ty::default(); #len_lit];
-            for (idx, element) in #reader_ident.iter().enumerate() {
-                #value_ident[idx] = element;
-            }
-        });
+        if matches!(token, TypeToken::String) {
+            let vec_ident = names.next("strings");
+            statements.push(collect_strings(&vec_ident));
+            statements.push(quote! {
+                let #value_ident: [String; #len_lit] = match #vec_ident.try_into() {
+                    Ok(array) => array,
+                    // Unreachable: the length was checked above.
+                    Err(elements) => {
+                        return Err(crate::Error::Deserialization(
+                            format!("invalid fixed list length for field '{}': expected {}, got {}", #field_literal, #len_lit, elements.len())
+                        ));
+                    }
+                };
+            });
+        } else {
+            statements.push(quote! {
+                let mut #value_ident: [#element_ty; #len_lit] = [#element_ty::default(); #len_lit];
+                for (idx, element) in #reader_ident.iter().enumerate() {
+                    #value_ident[idx] = element;
+                }
+            });
+        }
+    } else if matches!(token, TypeToken::String) {
+        statements.push(collect_strings(&value_ident));
     } else {
         statements.push(quote! {
             let #value_ident = #reader_ident.iter().collect::<Vec<#element_ty>>();
