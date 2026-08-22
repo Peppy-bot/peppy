@@ -105,6 +105,7 @@ fn main() -> Result<()> {
     NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
         let mut subscription = subscribe(&node_runner).await?;
         if let Some((producer, frame)) = subscription.next().await? {
+            assert_eq!(frame.tags, ["left", "right"], "string list must decode");
             println!(
                 "got {}x{} frame encoded as {} from {}/{}",
                 frame.width, frame.height, frame.encoding, producer.core_node, producer.instance_id
@@ -194,6 +195,7 @@ fn main() -> Result<()> {
                     640,
                     480,
                     vec![1, 2, 3],
+                    vec!["left".to_owned(), "right".to_owned()],
                 )
                 .expect("build video_stream message");
                 publisher

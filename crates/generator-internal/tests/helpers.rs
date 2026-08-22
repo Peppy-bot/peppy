@@ -1460,6 +1460,10 @@ pub const EMITTED_TOPIC_EXAMPLE: &str = r#"
     frame: {
       $type: "array",
       $items: "u8"
+    },
+    tags: {
+      $type: "array",
+      $items: "string"
     }
   }
 }
@@ -1478,6 +1482,10 @@ pub const SUBSCRIBED_TOPIC_FORMAT_EXAMPLE: &str = r#"
   frame: {
     $type: "array",
     $items: "u8"
+  },
+  tags: {
+    $type: "array",
+    $items: "string"
   }
 }
 "#;
