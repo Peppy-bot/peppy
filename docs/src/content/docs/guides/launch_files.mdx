@@ -446,7 +446,7 @@ Composition changes instances from a distance, so it ships with an audit command
 peppy stack resolve openarm_v2 --with=xr_commander,lerobot_recorder
 ```
 
-`stack resolve` needs no running stack and touches nothing. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr:
+`stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr:
 
 ```
 components: robot=real (default)  commander=xr_commander  recorder=lerobot_recorder
@@ -457,6 +457,10 @@ adjustments applied:
 
 adjustments skipped:
   sim_inst.arguments.hardware_version        sim_inst is not in this selection  openarm_v2.json5 (base)
+
+link rules hold: slot keys, vacancies and pairing coverage checked over 6 node manifest(s)
 ```
 
 Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file.
+
+The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say an optional pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh` when the cache is empty or unreadable.
