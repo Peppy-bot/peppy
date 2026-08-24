@@ -5,6 +5,8 @@ mod helpers;
 mod actions_communication;
 #[path = "rust/actions_implements.rs"]
 mod actions_implements;
+#[path = "rust/codec_wire.rs"]
+mod codec_wire;
 #[path = "rust/consumed_services_dedup.rs"]
 mod consumed_services_dedup;
 #[path = "rust/consumed_topics_dedup.rs"]

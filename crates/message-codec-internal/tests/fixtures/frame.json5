@@ -1,0 +1,8 @@
+// A camera frame: the shape image-representation topics carry.
+{
+  frame: { $type: "array", $items: "u8" },
+  encoding: "string",
+  width: "u16",
+  height: "u16",
+  stamp: "time",
+}

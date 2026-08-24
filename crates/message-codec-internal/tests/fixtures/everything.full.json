@@ -1,0 +1,49 @@
+{
+  "flag": true,
+  "label": "camera",
+  "blob": "AAH+/w==",
+  "stamp": "2023-11-14T22:13:20.123456789Z",
+  "tiny": 255,
+  "small": 65535,
+  "medium": 4294967295,
+  "big": "18446744073709551615",
+  "tiny_signed": -128,
+  "small_signed": -32768,
+  "medium_signed": -2147483648,
+  "big_signed": "-9223372036854775808",
+  "ratio": 1.5,
+  "precise": -2.25,
+  "note": "optional note",
+  "attachment": "/w==",
+  "seen_at": "1970-01-01T00:00:00.000000000Z",
+  "checksum": "AQIDBA==",
+  "pixels": "AAECAwQFBgcICQ==",
+  "gains": [0.5, 1.0, 1.5],
+  "offsets": [-1, 1],
+  "flags": [true, false, true, true, false, false, false, true, true],
+  "counters": ["0", "18446744073709551615"],
+  "deltas": ["-1", "9223372036854775807"],
+  "weights": [0.25, -0.5],
+  "tags": ["a", "", "ccc"],
+  "chunks": ["AQ==", ""],
+  "pose": { "x_m": 1.25, "y_m": -3.5, "frame": "base_link" },
+  "profile": { "gamma": 2.2, "white_balance": { "red": 0.75, "blue": 1.25 } },
+  "samples": [
+    {
+      "offset": -1,
+      "value": 0.125,
+      "label": "first",
+      "taken_at": "2020-02-29T00:00:00.000000000Z",
+      "history": [1, 2, 3]
+    },
+    {
+      "offset": 32767,
+      "value": 0.0,
+      "label": "",
+      "taken_at": "2023-11-14T22:13:20.000000001Z",
+      "history": []
+    }
+  ],
+  "maybe_pose": { "x_m": 0.0 },
+  "maybe_tags": ["x"]
+}

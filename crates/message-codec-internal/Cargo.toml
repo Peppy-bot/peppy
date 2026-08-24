@@ -1,0 +1,38 @@
+# The schema-driven message codec and the type-erased consumer path behind
+# `peppy mcp serve`: canonical exposure JSON in, Peppy wire bytes out, and
+# back, for any contract member, with no generated code.
+[package]
+name = "message-codec"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+config = { workspace = true }
+encoding = { workspace = true }
+# The messaging session, the raw topic/service/action clients and the
+# `time` conversions generated nodes share.
+peppylib = { workspace = true }
+# `bridge` holds the canonical JSON value rules (RFC 3339 times, base64
+# bytes, decimal-string 64-bit integers) generated bridges use; this crate
+# applies the same rules so both agree byte for byte.
+peppy-mcp-runtime = { workspace = true }
+capnp = "0.27"
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2.0"
+
+[build-dependencies]
+# Compiles the fixture schemas under `tests/fixtures` into typed accessors
+# for the typed round-trip test, with the capnp binary peppy bundles.
+build-helpers = { workspace = true }
+capnpc = "0.27"
+
+[dev-dependencies]
+serde_json5 = "0.2"
+# The JPEG encoder the frame benchmark measures the codec against: the
+# same crate and feature set the MCP runtime transcodes snapshots with.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[[bench]]
+name = "frames"
+harness = false

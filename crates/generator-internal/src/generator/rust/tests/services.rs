@@ -698,3 +698,56 @@ fn clippy_consumed_service_empty_response_format() {
 
     run_clippy(&output_dir);
 }
+
+const EXPOSED_SERVICE_WITH_NESTED_REQUEST: &str = r#"
+{
+  name: "calibrate",
+  request_message_format: {
+    profile: {
+      $type: "object",
+      gamma: "f64",
+      white_balance: { $type: "object", red: "f32", blue: "f32" }
+    },
+    chunks: { $type: "array", $items: "bytes" },
+    samples: {
+      $type: "array",
+      $items: { $type: "object", offset: "i16" }
+    }
+  },
+  response_message_format: {
+    applied: "bool"
+  }
+}
+"#;
+
+/// The request deserializer constructs the nested structs the module
+/// declares (prefixed by the service's type name), and reads a list of
+/// `bytes` through the fallible data-list iterator.
+#[test]
+fn exposed_service_request_deserializer_builds_declared_nested_structs_and_bytes_lists() {
+    let service: NativeExposedService =
+        serde_json5::from_str(EXPOSED_SERVICE_WITH_NESTED_REQUEST).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_service(&service, None).unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct CalibrateProfile",
+            "pub struct CalibrateProfileWhiteBalance",
+            "pub struct CalibrateSamplesItem",
+            "= CalibrateProfileWhiteBalance {",
+            "= CalibrateProfile {",
+            ".push(CalibrateSamplesItem {",
+            "element.map(|data| data.to_vec())",
+            "Result<Vec<Vec<u8>>, crate::Error>",
+        ],
+    );
+    assert!(
+        !rendered.contains("calibrateProfile") && !rendered.contains("calibrateSamplesItem"),
+        "the deserializer names nested structs by their declared prefix:\n{rendered}"
+    );
+}

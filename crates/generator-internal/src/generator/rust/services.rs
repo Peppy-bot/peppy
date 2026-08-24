@@ -30,7 +30,11 @@ pub struct ExposedServiceMethodSpec<'a> {
     pub instance_id_param: Option<&'a FunctionParam>,
     pub encoding: Option<&'a MessageEncodingSpec>,
     pub request_format: Option<&'a MessageFormat>,
+    /// Names the deserializer's error context.
     pub label: &'a str,
+    /// The prefix the request's nested message structs are defined with, so
+    /// the deserializer constructs the types the module declares.
+    pub struct_prefix: &'a str,
     pub service_name_literal: &'a Literal,
     pub request_struct: Option<&'a Ident>,
     pub request_data_struct: Option<&'a Ident>,
@@ -56,6 +60,7 @@ pub fn build_exposed_service_method(
         encoding,
         request_format,
         label,
+        struct_prefix,
         service_name_literal,
         request_struct,
         request_data_struct,
@@ -233,6 +238,7 @@ pub fn build_exposed_service_method(
             wire_params,
             handler_params,
             label,
+            struct_prefix,
             request_struct: deserializer_struct,
             instance_id_param: instance_id_for_deserializer,
             use_service_name_const,
@@ -495,6 +501,7 @@ pub struct RequestDeserializerSpec<'a> {
     pub wire_params: &'a [FunctionParam],
     pub handler_params: &'a [FunctionParam],
     pub label: &'a str,
+    pub struct_prefix: &'a str,
     pub request_struct: Option<&'a Ident>,
     pub instance_id_param: Option<&'a FunctionParam>,
     pub use_service_name_const: bool,
@@ -508,6 +515,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
         wire_params,
         handler_params,
         label,
+        struct_prefix,
         request_struct,
         instance_id_param,
         use_service_name_const,
@@ -542,7 +550,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
                 &quote!(root),
                 original_name.as_str(),
                 schema,
-                label,
+                struct_prefix,
                 &field_context_expr,
                 &mut names,
             )?;
@@ -590,7 +598,7 @@ pub fn build_request_deserializer(spec: &RequestDeserializerSpec) -> Result<Toke
         let (field_statements, value_idents) = deserialize_fields_from_format(
             request_format,
             wire_params,
-            label,
+            struct_prefix,
             &field_context_expr,
         )?;
         let request_expr =
@@ -670,7 +678,7 @@ pub fn build_return_type_from_params(
 pub fn deserialize_fields_from_format(
     request_format: &MessageFormat,
     params: &[FunctionParam],
-    label: &str,
+    struct_prefix: &str,
     context_expr: &TokenStream,
 ) -> Result<(Vec<TokenStream>, Vec<Ident>)> {
     let schema_lookup = SchemaFieldLookup::new(request_format)?;
@@ -686,7 +694,7 @@ pub fn deserialize_fields_from_format(
             &quote!(root),
             original_name.as_str(),
             schema,
-            label,
+            struct_prefix,
             context_expr,
             &mut names,
         )?;

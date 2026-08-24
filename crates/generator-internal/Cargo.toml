@@ -70,6 +70,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # offline `cargo build` of the generated node resolves from.
 peppy-mcp-runtime = { workspace = true }
 mcp-test-support = { workspace = true }
+# The codec wire e2e holds the runtime codec against a generated provider
+# node through a real router.
+message-codec = { workspace = true }
 rmcp = { workspace = true, features = [
     "client",
     "transport-streamable-http-client-reqwest",

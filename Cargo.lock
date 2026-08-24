@@ -1747,6 +1747,7 @@ dependencies = [
  "json5-pretty",
  "jsonschema",
  "mcp-test-support",
+ "message-codec",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "peppy-mcp-runtime",
@@ -2947,6 +2948,23 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "message-codec"
+version = "0.0.1"
+dependencies = [
+ "build-helpers",
+ "capnp",
+ "capnpc",
+ "encoding",
+ "image",
+ "peppy-config-model",
+ "peppy-mcp-runtime",
+ "peppylib-rs",
+ "serde_json",
+ "serde_json5",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "micromap"

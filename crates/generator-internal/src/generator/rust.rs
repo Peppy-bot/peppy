@@ -907,6 +907,7 @@ impl LanguageGenerator for RustGenerator {
                 encoding: encoding.as_ref(),
                 request_format,
                 label: &fn_name_str,
+                struct_prefix: &struct_prefix,
                 service_name_literal: &service_name_literal,
                 request_struct: request_struct_ident.as_ref(),
                 request_data_struct: request_data_struct_ident.as_ref(),
@@ -986,11 +987,13 @@ impl LanguageGenerator for RustGenerator {
             )?;
 
             // Generates `GoalResponse` (+ `new`) when there is a response, and
-            // returns the request params used to build `GoalRequestData`.
+            // returns the request params used to build `GoalRequestData`. The
+            // request's nested message structs are defined under this prefix.
+            let goal_struct_prefix = "Goal";
             let goal_data_params = collect_function_params(
                 request_artifacts.as_ref(),
                 response_artifacts.as_ref(),
-                "Goal",
+                goal_struct_prefix,
                 &mut context,
                 None,
             )?;
@@ -1029,7 +1032,7 @@ impl LanguageGenerator for RustGenerator {
                         .map(|a| a.message_format())
                         .unwrap_or(&MessageFormat(IndexMap::new())),
                     &goal_data_params,
-                    &label,
+                    goal_struct_prefix,
                     goal_request_data_struct.as_ref(),
                 )?;
                 helper_tokens.push(deserializer_fn);

@@ -340,12 +340,15 @@ pub fn build_goal_context_complete(
 }
 
 /// Deserializer for the goal request payload into `GoalRequestData`.
+/// `struct_prefix` is the prefix the request's nested message structs are
+/// defined with, so the deserializer constructs the types the module
+/// declares.
 pub fn build_action_request_deserializer(
     deserializer_fn_name: &Ident,
     request_spec: &MessageEncodingSpec,
     request_format: &MessageFormat,
     params: &[FunctionParam],
-    label: &str,
+    struct_prefix: &str,
     request_struct: Option<&Ident>,
 ) -> Result<TokenStream> {
     let reader_type = &request_spec.reader_type;
@@ -357,7 +360,7 @@ pub fn build_action_request_deserializer(
     ));
 
     let (field_statements, value_idents) =
-        deserialize_fields_from_format(request_format, params, label, &context_expr)?;
+        deserialize_fields_from_format(request_format, params, struct_prefix, &context_expr)?;
 
     let request_expr = build_result_expr_from_values(params, &value_idents, request_struct);
 

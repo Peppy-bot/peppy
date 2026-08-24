@@ -59,6 +59,7 @@ daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
 generator = { path = "crates/generator-internal" }
 mcp-test-support = { path = "crates/mcp-test-support" }
+message-codec = { path = "crates/message-codec-internal" }
 latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
