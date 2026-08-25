@@ -255,7 +255,7 @@ fn repo_index_rejects_a_path_that_is_not_a_directory() {
     assert!(err.to_string().contains("not a directory"), "{err}");
 }
 
-// --- Exposure validation through `--check --include-repositories`: the
+// --- Exposure validation through `--check --validate-mcp-exposures`: the
 // repository suite of the built-in MCP server plan. The hubs below are
 // temporary; the contract caches are seeded directly, the way a
 // `peppy repo refresh` of a registered contract repository would fill them.
@@ -530,7 +530,7 @@ mod exposures {
         // well-formed and listed.
         check_index(&repo, CheckScope::Index, &dirs).expect("the index matches the tree");
 
-        let report = check_index(&repo, CheckScope::IndexAndRepositories, &dirs)
+        let report = check_index(&repo, CheckScope::IndexAndMcpExposures, &dirs)
             .expect_err("the invalid exposures fail the check")
             .to_string();
         assert!(!report.contains("`good:v1`"), "{report}");
@@ -578,7 +578,7 @@ mod exposures {
         repo_index(Some(repo.clone()), None).expect("the hub indexes");
         let dirs = PeppyDirs::new(tmp.path().join("home"));
 
-        let report = check_index(&repo, CheckScope::IndexAndRepositories, &dirs)
+        let report = check_index(&repo, CheckScope::IndexAndMcpExposures, &dirs)
             .expect_err("nothing is cached")
             .to_string();
         assert!(report.contains("`good:v1`"), "{report}");
@@ -586,7 +586,7 @@ mod exposures {
         assert!(report.contains("peppy repo refresh"), "{report}");
 
         seed_contract_cache(&dirs, &[("rgb_camera", CAMERA_CONTRACT)]);
-        check_index(&repo, CheckScope::IndexAndRepositories, &dirs)
+        check_index(&repo, CheckScope::IndexAndMcpExposures, &dirs)
             .expect("the exposure validates once its contract is cached");
     }
 

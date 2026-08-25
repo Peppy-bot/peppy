@@ -183,17 +183,18 @@ mod tests {
         assert_eq!(exposure, "camera_and_recording:v1");
     }
 
-    /// The exposure check rides `--check`; asking for it on a write is a
-    /// parse error, so the flag cannot be read as "index the repositories".
+    /// The exposure check rides `--check`; there is nothing to validate on
+    /// a write, so asking for it there is a parse error rather than a
+    /// silently ignored flag.
     #[test]
-    fn repo_index_include_repositories_requires_check() {
+    fn repo_index_validate_mcp_exposures_requires_check() {
         let cli = Cli::try_parse_from([
             "peppy",
             "repo",
             "index",
             ".",
             "--check",
-            "--include-repositories",
+            "--validate-mcp-exposures",
         ])
         .expect("the flag pair parses");
         assert!(matches!(
@@ -201,14 +202,15 @@ mod tests {
             Commands::Repo {
                 command: repo::RepoCommands::Index {
                     check: true,
-                    include_repositories: true,
+                    validate_mcp_exposures: true,
                     ..
                 }
             }
         ));
         assert!(
-            Cli::try_parse_from(["peppy", "repo", "index", ".", "--include-repositories"]).is_err(),
-            "--include-repositories without --check is refused"
+            Cli::try_parse_from(["peppy", "repo", "index", ".", "--validate-mcp-exposures"])
+                .is_err(),
+            "--validate-mcp-exposures without --check is refused"
         );
     }
 

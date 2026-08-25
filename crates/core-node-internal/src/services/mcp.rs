@@ -2,7 +2,7 @@
 //! launcher lists through this machine's caches, registering the server in
 //! the node stack from pinned documents, deriving an exposure's catalog on
 //! demand, and validating a hub's exposures for `peppy repo index --check
-//! --include-repositories`.
+//! --validate-mcp-exposures`.
 //!
 //! What the server is made of (its identity, manifest and catalogs) is
 //! derived by `daemon_config::mcp_deployment`; this module is the

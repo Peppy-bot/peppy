@@ -1,4 +1,4 @@
-//! Exposure validation for `peppy repo index --check --include-repositories`.
+//! Exposure validation for `peppy repo index --check --validate-mcp-exposures`.
 
 use super::resolve::resolve_cached_document;
 use crate::services::repo::cache::{self as repo_cache, ContractCacheEntry};

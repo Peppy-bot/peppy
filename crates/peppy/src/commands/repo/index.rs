@@ -1,5 +1,5 @@
 //! `peppy repo index`: write a repository's index, or verify it and, on
-//! request, the exposures it publishes.
+//! request, the MCP exposures it publishes.
 
 use std::path::{Path, PathBuf};
 
@@ -14,9 +14,9 @@ use crate::error::{Error, Result};
 pub enum CheckScope {
     /// The index against the tree: structural, no caches.
     Index,
-    /// The index, then every exposure against the contracts it references,
-    /// resolved through the machine's repository caches.
-    IndexAndRepositories,
+    /// The index, then every MCP exposure against the contracts it
+    /// references, resolved through the machine's repository caches.
+    IndexAndMcpExposures,
 }
 
 pub fn repo_index(path: Option<PathBuf>, check: Option<CheckScope>) -> Result<()> {
@@ -46,13 +46,13 @@ fn write_index(root: &Path) -> Result<()> {
 }
 
 /// The check, against the caches under `peppy_dirs` when the scope asks
-/// for repositories. Every drift and every exposure problem is reported at
+/// for exposures. Every drift and every exposure problem is reported at
 /// once; the command fails when there is any.
 pub fn check_index(root: &Path, scope: CheckScope, peppy_dirs: &PeppyDirs) -> Result<()> {
     let drifts = check_repository_index(root).map_err(index_failure)?;
     let findings = match scope {
         CheckScope::Index => Vec::new(),
-        CheckScope::IndexAndRepositories => {
+        CheckScope::IndexAndMcpExposures => {
             check_repository_exposures(root, peppy_dirs, &|message: &str| info!("{message}"))
                 .map_err(index_failure)?
         }
@@ -63,7 +63,7 @@ pub fn check_index(root: &Path, scope: CheckScope, peppy_dirs: &PeppyDirs) -> Re
             root.join(REPOSITORY_INDEX_FILE).display(),
             match scope {
                 CheckScope::Index => "",
-                CheckScope::IndexAndRepositories =>
+                CheckScope::IndexAndMcpExposures =>
                     " and every exposure validates against its contracts",
             }
         );

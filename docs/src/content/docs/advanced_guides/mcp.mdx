@@ -203,11 +203,11 @@ Public property names use the DSL's `snake_case` spelling. The internal wire enc
 An exposure is checked where it is published, by the repository check, and again by every launch that serves it. Both read the contracts through the local repository caches, so run [`peppy repo refresh`](/advanced_guides/repositories/#refresh-the-index) on the machine first. Neither check needs a running daemon.
 
 ```sh
-peppy repo index . --check --include-repositories   # the index, then every exposure against its contracts
-peppy mcp catalog camera_and_recording:v1           # the catalog an endpoint for the exposure advertises
+peppy repo index . --check --validate-mcp-exposures   # the index, then every exposure against its contracts
+peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint for the exposure advertises
 ```
 
-`peppy repo index --check --include-repositories` validates every exposure the repository's index lists against the contracts it references and reports **every** violation of **every** exposure at once, so you fix a document in one pass. A contract the caches cannot resolve is an error naming that contract, never a pass. A file that declares the exposure schema but does not parse as one (a document claiming a public name twice, say) is listed by no index, so the check reports it by path rather than letting it pass unseen. Run the check in the repository's CI, as [mcp-hub](https://github.com/Peppy-bot/mcp-hub) does: a hub cannot then merge an exposure that a launch would refuse.
+`peppy repo index --check --validate-mcp-exposures` validates every exposure the repository's index lists against the contracts it references and reports **every** violation of **every** exposure at once, so you fix a document in one pass. A contract the caches cannot resolve is an error naming that contract, never a pass. A file that declares the exposure schema but does not parse as one (a document claiming a public name twice, say) is listed by no index, so the check reports it by path rather than letting it pass unseen. Run the check in the repository's CI, as [mcp-hub](https://github.com/Peppy-bot/mcp-hub) does: a hub cannot then merge an exposure that a launch would refuse.
 
 ```text
 2 exposures do not validate:

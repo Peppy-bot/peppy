@@ -43,7 +43,7 @@ pub enum RepoCommands {
     /// under. Run it in CI so a repository cannot merge an index that has
     /// drifted from its contents. Needs no daemon.
     ///
-    /// With `--check --include-repositories`, also validates every
+    /// With `--check --validate-mcp-exposures`, also validates every
     /// `mcp_exposure/v1` document the index lists against the contracts it
     /// references, resolved through this machine's repository caches, and
     /// reports every violation of every exposure at once. A contract the
@@ -56,10 +56,11 @@ pub enum RepoCommands {
         /// Verify the committed index instead of writing it.
         #[arg(long)]
         check: bool,
-        /// With `--check`: validate the listed exposures against the
-        /// contracts they reference, through the repository caches.
+        /// With `--check`: validate the listed `mcp_exposure/v1` documents
+        /// against the contracts they reference, through the repository
+        /// caches.
         #[arg(long, requires = "check")]
-        include_repositories: bool,
+        validate_mcp_exposures: bool,
     },
     /// List configured repositories
     List,
@@ -115,13 +116,13 @@ impl Command for RepoCommand {
             RepoCommands::Index {
                 path,
                 check,
-                include_repositories,
+                validate_mcp_exposures,
             } => index::repo_index(
                 path,
-                match (check, include_repositories) {
+                match (check, validate_mcp_exposures) {
                     (false, _) => None,
                     (true, false) => Some(CheckScope::Index),
-                    (true, true) => Some(CheckScope::IndexAndRepositories),
+                    (true, true) => Some(CheckScope::IndexAndMcpExposures),
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),

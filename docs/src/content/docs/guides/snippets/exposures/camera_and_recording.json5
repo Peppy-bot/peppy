@@ -4,9 +4,9 @@
 //
 // This document is the whole artifact. A launcher lists it under
 // `source: { exposures: [...] }` and the daemon serves it from the server
-// built into peppy; `peppy repo index --check --include-repositories` checks
-// it against the contracts it references, and `peppy mcp catalog` prints
-// what an endpoint for it advertises.
+// built into peppy; `peppy repo index --check --validate-mcp-exposures`
+// checks it against the contracts it references, and `peppy mcp catalog`
+// prints what an endpoint for it advertises.
 {
   peppy_schema: "mcp_exposure/v1",
   manifest: { name: "camera_and_recording", tag: "v1" },
