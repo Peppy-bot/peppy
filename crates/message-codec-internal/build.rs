@@ -12,11 +12,22 @@ const FIXTURES: &[&str] = &["everything", "frame"];
 fn main() {
     println!("cargo:rerun-if-changed={FIXTURES_DIR}");
 
-    let target = build_helpers::build_target_triple();
-    let platform = build_helpers::CapnpPlatform::try_from(target.as_str())
-        .unwrap_or_else(|error| panic!("{error}"));
-    let capnp = build_helpers::bundled_capnp_path(platform)
-        .unwrap_or_else(|| panic!("no bundled capnp binary for target {target}"));
+    // The schema compiler executes on the build host and its generated Rust
+    // source is target independent, so the binary is picked by host platform.
+    let platform = build_helpers::CapnpPlatform::current_host().unwrap_or_else(|| {
+        panic!(
+            "no bundled capnp binary for build host {}/{}",
+            env::consts::OS,
+            env::consts::ARCH
+        )
+    });
+    let capnp = build_helpers::bundled_capnp_path(platform).unwrap_or_else(|| {
+        panic!(
+            "no bundled capnp binary for build host {}/{}",
+            env::consts::OS,
+            env::consts::ARCH
+        )
+    });
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
 
     let mut command = capnpc::CompilerCommand::new();
