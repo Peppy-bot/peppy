@@ -301,7 +301,7 @@ fn the_catalog_of_a_cached_exposure_derives_from_the_same_plan() {
     assert_eq!(bundle.exposure.endpoint_path(), "/cam/v1/mcp");
     assert_eq!(bundle.tools[0].name, "front_camera.video_stream_info");
     assert_eq!(
-        bundle.node.contracts[0].sha256,
+        bundle.contracts[0].sha256,
         ManifestFingerprint::of_bytes(CAMERA_CONTRACT.as_bytes()).as_str()
     );
 }

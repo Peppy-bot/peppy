@@ -228,14 +228,10 @@ peppy mcp catalog camera_and_recording:v1           # the catalog an endpoint fo
     "title": "OpenArm camera and recording",
     "instructions": "Observe the front camera and record teleoperation episodes."
   },
-  "node": {
-    "name": "camera_and_recording_mcp",
-    "tag": "v1",
-    "contracts": [
-      { "name": "rgb_camera", "tag": "v1", "sha256": "44527ab0…fb736ab", "link_id": "front_camera" },
-      { "name": "episode_recording", "tag": "v1", "sha256": "a4cfd6ec…f177c0d2", "link_id": "recorder" }
-    ]
-  },
+  "contracts": [
+    { "name": "rgb_camera", "tag": "v1", "sha256": "44527ab0…fb736ab", "link_id": "front_camera" },
+    { "name": "episode_recording", "tag": "v1", "sha256": "a4cfd6ec…f177c0d2", "link_id": "recorder" }
+  ],
   "resources": [ { "name": "front_camera.latest_frame", "uri": "peppy://resource/front_camera.latest_frame", "…": "…" } ],
   "tools": [ { "name": "front_camera.info", "…": "…" }, { "name": "front_camera.set_brightness", "…": "…" } ],
   "tasks": [ { "name": "recorder.record_episode", "…": "…" } ]
@@ -318,7 +314,7 @@ An exposure deployment is placed like any other: `core_node` on the instance nam
 
 ## What a client sees
 
-**Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity (`<exposure name>_mcp` at the exposure's tag), and `2026-07-28` as the only supported revision. Discovery, `resources/list`, and `tools/list` include private caching hints with a one-hour TTL. The catalog does not change while the server is running. To change it, change the exposure document, refresh the repositories, and launch again.
+**Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity (the exposure's name at its tag), and `2026-07-28` as the only supported revision. Discovery, `resources/list`, and `tools/list` include private caching hints with a one-hour TTL. The catalog does not change while the server is running. To change it, change the exposure document, refresh the repositories, and launch again.
 
 **Resources.** A read returns the latest snapshot that passed the policies. Its `ttlMs` value says how long the snapshot remains fresh. The resource is unavailable until the first published value arrives. After the stored value is older than `freshness.max_age_ms`, reads report it as stale instead of returning old data as current. If the size policy rejects a new snapshot, the server keeps the previous one until it becomes stale. Each accepted value notifies subscribers.
 

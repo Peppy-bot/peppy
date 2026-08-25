@@ -604,7 +604,7 @@ mod exposures {
         assert_eq!(catalog["exposure"]["name"], "good");
         assert_eq!(catalog["tools"][0]["name"], "front_camera.set_brightness");
         assert_eq!(
-            catalog["node"]["contracts"][0]["sha256"],
+            catalog["contracts"][0]["sha256"],
             config::fingerprint::fingerprint_for_bytes(CAMERA_CONTRACT.as_bytes())
         );
 
