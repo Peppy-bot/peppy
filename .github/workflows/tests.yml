@@ -154,7 +154,14 @@ jobs:
           rustup target add aarch64-unknown-linux-gnu
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu
 
+      # The linker matters even though `cargo check` itself never links:
+      # pmi's build script cargo-installs zenohd for the target, a real
+      # release build that links. Without the cross gcc as the target's
+      # linker driver, the host cc runs the linker in x86_64 mode, which
+      # rejects the aarch64-only flags rustc passes (the release script
+      # sets the equivalent variable for its cross direction).
       - name: Cross-check the release dependency tree
         env:
           PEPPY_SKIP_APPTAINER_PROVISION: "1"
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo check --locked --target aarch64-unknown-linux-gnu -p peppy
