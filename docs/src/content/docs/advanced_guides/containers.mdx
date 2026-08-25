@@ -295,7 +295,7 @@ Each entry follows the format `host_path:container_path[:options]`:
 | `host_path:container_path` | `"/data/models:/opt/models"` | Mounted at a different path inside the container |
 | `host_path:container_path:options` | `"/data/models:/opt/models:ro"` | Mounted with explicit options (`ro` for read-only, `rw` for read-write) |
 
-`host_path` may start with `~`, which expands to the home directory of the user running the daemon **on the machine where the instance runs** — in a federated launch, each machine expands `~` against its own home, so a single manifest works across machines with different usernames (`"~/.cache/my_node:/cache:rw"`). The `~user` form is not supported and is rejected while the launch is being validated, before any stack is replaced. Only the host side is expanded: a `~` in `container_path` is passed to the container verbatim.
+`host_path` may start with `~`, which expands to the home directory of the user running the daemon **on the machine where the instance runs**. In a federated launch, each machine expands `~` against its own home, so a single manifest works across machines with different usernames (`"~/.cache/my_node:/cache:rw"`). The `~user` form is not supported and is rejected while the launch is being validated, before any stack is replaced. Only the host side is expanded: a `~` in `container_path` is passed to the container verbatim.
 
 A source under `/dev` with no remap (no destination, or a destination equal to the source) is passed through rather than bound: host devices reach the container through Apptainer's device mount, and only a remapped device bind emits an explicit `--bind`.
 
