@@ -129,8 +129,8 @@ pub mod mcp_exposure {
 pub mod mcp_deployment {
     pub use crate::internal::mcp_deployment::{
         BUILT_IN_TAG, DEFAULT_PORT, ExposureViolations, McpDeploymentError, McpDeploymentPlan,
-        McpServeSpec, PORT_PARAMETER, PinnedContract, PinnedDocument, PinnedExposure, RUN_COMMAND,
-        SPEC_ENV_VAR, SlotConflict, built_in_identity, endpoint_urls, plan_deployment,
+        McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedDocument, PinnedExposure,
+        RUN_COMMAND, SPEC_ENV_VAR, SlotConflict, built_in_identity, plan_deployment,
     };
 }
 

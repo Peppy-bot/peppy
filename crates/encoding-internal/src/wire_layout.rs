@@ -26,22 +26,10 @@ pub struct StructShape {
     pub pointer_count: u16,
 }
 
-/// Where a field lives inside its struct.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldSlot {
-    /// A one-bit field at this bit offset into the data section.
-    Bit(u32),
-    /// A fixed-width scalar at this offset into the data section, counted in
-    /// units of the scalar's own width.
-    Data(u32),
-    /// A pointer at this index into the pointer section.
-    Pointer(u16),
-}
-
-/// A fixed-width value stored in a struct's data section.
+/// A fixed-width value stored in a struct's data section. A `bool` is not
+/// one: it is a bit, placed by [`FieldKind::Bit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scalar {
-    Bool,
     U8,
     U16,
     U32,
@@ -55,11 +43,10 @@ pub enum Scalar {
 }
 
 impl Scalar {
-    /// The scalar a token encodes as, or `None` for the pointer-backed tokens
-    /// (`string`, `bytes`, `time`).
+    /// The scalar a token encodes as in a data slot, or `None` for `bool` (a
+    /// bit) and the pointer-backed tokens (`string`, `bytes`, `time`).
     pub fn from_token(token: &TypeToken) -> Option<Self> {
         match token {
-            TypeToken::Bool => Some(Self::Bool),
             TypeToken::U8 => Some(Self::U8),
             TypeToken::U16 => Some(Self::U16),
             TypeToken::U32 => Some(Self::U32),
@@ -70,7 +57,7 @@ impl Scalar {
             TypeToken::I64 => Some(Self::I64),
             TypeToken::F32 => Some(Self::F32),
             TypeToken::F64 => Some(Self::F64),
-            TypeToken::String | TypeToken::Bytes | TypeToken::Time => None,
+            TypeToken::Bool | TypeToken::String | TypeToken::Bytes | TypeToken::Time => None,
         }
     }
 }
@@ -87,16 +74,30 @@ pub struct TimestampLayout {
 /// What the elements of a list are.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ListItems {
+    Bool,
     Scalar(Scalar),
     Text,
     Bytes,
     Struct(StructLayout),
 }
 
-/// What a field holds.
+/// Where a field lives inside its struct and what it holds there. The
+/// compiler places a field by its type, so the two are one fact: a `bool`
+/// is a bit, another scalar a data slot, everything else a pointer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldKind {
-    Scalar(Scalar),
+    /// A `bool`, at this bit offset into the data section.
+    Bit(u32),
+    /// A fixed-width scalar at this offset into the data section, counted
+    /// in units of the scalar's own width.
+    Data { offset: u32, scalar: Scalar },
+    /// A pointer at this index into the pointer section, to `target`.
+    Pointer { index: u16, target: PointerTarget },
+}
+
+/// What a pointer field points to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PointerTarget {
     Text,
     /// `bytes`, or an array of `u8`: both are one `Data` blob. A fixed array
     /// pins the byte count.
@@ -114,12 +115,11 @@ pub enum FieldKind {
 }
 
 /// One field of a struct: its message-format name, whether the format marks
-/// it `$optional`, where it lives and what it holds.
+/// it `$optional`, and where it lives with what it holds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldLayout {
     pub name: String,
     pub optional: bool,
-    pub slot: FieldSlot,
     pub kind: FieldKind,
 }
 
@@ -244,7 +244,7 @@ fn layout_struct(
                 )));
             }
         };
-        let (slot, kind) = layout_field(
+        let kind = layout_field(
             nodes,
             &field_path,
             schema,
@@ -254,7 +254,6 @@ fn layout_struct(
         laid_out.push(FieldLayout {
             name: name.clone(),
             optional: schema.is_optional(),
-            slot,
             kind,
         });
     }
@@ -271,7 +270,7 @@ fn layout_field(
     schema: &SchemaType,
     offset: u32,
     compiled: type_::Reader<'_>,
-) -> Result<(FieldSlot, FieldKind)> {
+) -> Result<FieldKind> {
     match schema {
         SchemaType::Type(token) => layout_token(nodes, path, token, offset, compiled),
         SchemaType::Primitive(primitive) => {
@@ -281,7 +280,7 @@ fn layout_field(
         SchemaType::Object(object) => {
             let nested = expect_struct(nodes, path, "a nested object", compiled)?;
             let layout = layout_struct(nodes, nested, &object.fields, path)?;
-            Ok((pointer_slot(path, offset)?, FieldKind::Struct(layout)))
+            pointer_field(path, offset, PointerTarget::Struct(layout))
         }
     }
 }
@@ -292,24 +291,21 @@ fn layout_token(
     token: &TypeToken,
     offset: u32,
     compiled: type_::Reader<'_>,
-) -> Result<(FieldSlot, FieldKind)> {
+) -> Result<FieldKind> {
     if *token == TypeToken::Time {
         let timestamp = layout_timestamp(nodes, path, compiled)?;
-        return Ok((pointer_slot(path, offset)?, FieldKind::Time(timestamp)));
+        return pointer_field(path, offset, PointerTarget::Time(timestamp));
     }
     expect_type(path, capnp_type_name(token), compiled)?;
     match token {
-        TypeToken::Bool => Ok((FieldSlot::Bit(offset), FieldKind::Scalar(Scalar::Bool))),
-        TypeToken::String => Ok((pointer_slot(path, offset)?, FieldKind::Text)),
-        TypeToken::Bytes => Ok((
-            pointer_slot(path, offset)?,
-            FieldKind::Bytes { length: None },
-        )),
+        TypeToken::Bool => Ok(FieldKind::Bit(offset)),
+        TypeToken::String => pointer_field(path, offset, PointerTarget::Text),
+        TypeToken::Bytes => pointer_field(path, offset, PointerTarget::Bytes { length: None }),
         scalar => {
             let scalar = Scalar::from_token(scalar).ok_or_else(|| {
                 Error::Encoding(format!("field `{path}` is not a fixed-width scalar"))
             })?;
-            Ok((FieldSlot::Data(offset), FieldKind::Scalar(scalar)))
+            Ok(FieldKind::Data { offset, scalar })
         }
     }
 }
@@ -320,16 +316,16 @@ fn layout_array(
     array: &ArraySchema,
     offset: u32,
     compiled: type_::Reader<'_>,
-) -> Result<(FieldSlot, FieldKind)> {
-    let slot = pointer_slot(path, offset)?;
+) -> Result<FieldKind> {
     if matches!(array.items.as_ref().as_type_token(), Some(TypeToken::U8)) {
         expect_type(path, "Data", compiled)?;
-        return Ok((
-            slot,
-            FieldKind::Bytes {
+        return pointer_field(
+            path,
+            offset,
+            PointerTarget::Bytes {
                 length: array.length,
             },
-        ));
+        );
     }
 
     let element = match compiled.which().map_err(not_in_schema)? {
@@ -358,6 +354,7 @@ fn layout_array(
                 .expect("a non-array, non-object schema carries a type token");
             expect_type(&item_path, capnp_type_name(token), element)?;
             match token {
+                TypeToken::Bool => ListItems::Bool,
                 TypeToken::String => ListItems::Text,
                 TypeToken::Bytes => ListItems::Bytes,
                 TypeToken::Time => {
@@ -365,20 +362,20 @@ fn layout_array(
                         "time arrays are not supported for field `{path}`"
                     )));
                 }
-                scalar => ListItems::Scalar(
-                    Scalar::from_token(scalar)
-                        .expect("every token other than string, bytes and time is a scalar"),
-                ),
+                scalar => ListItems::Scalar(Scalar::from_token(scalar).expect(
+                    "every token other than bool, string, bytes and time is a data scalar",
+                )),
             }
         }
     };
-    Ok((
-        slot,
-        FieldKind::List {
+    pointer_field(
+        path,
+        offset,
+        PointerTarget::List {
             items,
             length: array.length,
         },
-    ))
+    )
 }
 
 fn layout_timestamp(
@@ -453,10 +450,12 @@ fn expect_type(path: &str, expected: &str, compiled: type_::Reader<'_>) -> Resul
     )))
 }
 
-fn pointer_slot(path: &str, offset: u32) -> Result<FieldSlot> {
-    u16::try_from(offset)
-        .map(FieldSlot::Pointer)
-        .map_err(|_| Error::Encoding(format!("pointer index {offset} of `{path}` exceeds u16")))
+/// A pointer field at the compiled `offset`, which for a pointer is its
+/// index into the pointer section.
+fn pointer_field(path: &str, offset: u32, target: PointerTarget) -> Result<FieldKind> {
+    let index = u16::try_from(offset)
+        .map_err(|_| Error::Encoding(format!("pointer index {offset} of `{path}` exceeds u16")))?;
+    Ok(FieldKind::Pointer { index, target })
 }
 
 /// The schema spelling of a compiled type, matching [`capnp_type_name`] for
@@ -511,6 +510,14 @@ mod tests {
         MessageFormatMapper::new("layout_test", format)
             .wire_layout()
             .expect("the compiler lays the format out")
+    }
+
+    fn data(offset: u32, scalar: Scalar) -> FieldKind {
+        FieldKind::Data { offset, scalar }
+    }
+
+    fn pointer(index: u16, target: PointerTarget) -> FieldKind {
+        FieldKind::Pointer { index, target }
     }
 
     fn field<'a>(layout: &'a StructLayout, name: &str) -> &'a FieldLayout {
@@ -571,55 +578,61 @@ mod tests {
 
         // The compiler packs scalars by width: the u8 takes byte 0, the f32
         // the second 32-bit slot of word 0, the u64 word 1, the bool bit 8.
-        assert_eq!(field(&layout, "battery").slot, FieldSlot::Data(0));
-        assert_eq!(field(&layout, "temperature_c").slot, FieldSlot::Data(1));
-        assert_eq!(field(&layout, "frames_captured").slot, FieldSlot::Data(1));
-        assert_eq!(field(&layout, "recording").slot, FieldSlot::Bit(8));
-        assert_eq!(
-            field(&layout, "frames_captured").kind,
-            FieldKind::Scalar(Scalar::U64)
-        );
+        assert_eq!(field(&layout, "battery").kind, data(0, Scalar::U8));
+        assert_eq!(field(&layout, "temperature_c").kind, data(1, Scalar::F32));
+        assert_eq!(field(&layout, "frames_captured").kind, data(1, Scalar::U64));
+        assert_eq!(field(&layout, "recording").kind, FieldKind::Bit(8));
 
         let note = field(&layout, "note");
         assert!(note.optional);
-        assert_eq!(note.slot, FieldSlot::Pointer(0));
-        assert_eq!(note.kind, FieldKind::Text);
+        assert_eq!(note.kind, pointer(0, PointerTarget::Text));
 
-        let calibrated_at = field(&layout, "calibrated_at");
-        assert_eq!(calibrated_at.slot, FieldSlot::Pointer(1));
         assert_eq!(
-            calibrated_at.kind,
-            FieldKind::Time(TimestampLayout {
-                shape: StructShape {
-                    data_words: 2,
-                    pointer_count: 0
-                },
-                sec: 0,
-                nsec: 2,
-            })
+            field(&layout, "calibrated_at").kind,
+            pointer(
+                1,
+                PointerTarget::Time(TimestampLayout {
+                    shape: StructShape {
+                        data_words: 2,
+                        pointer_count: 0
+                    },
+                    sec: 0,
+                    nsec: 2,
+                })
+            )
         );
 
         assert_eq!(
             field(&layout, "checksum").kind,
-            FieldKind::Bytes { length: Some(4) }
+            pointer(2, PointerTarget::Bytes { length: Some(4) })
         );
         assert_eq!(
             field(&layout, "gains").kind,
-            FieldKind::List {
-                items: ListItems::Scalar(Scalar::F32),
-                length: Some(3)
-            }
+            pointer(
+                3,
+                PointerTarget::List {
+                    items: ListItems::Scalar(Scalar::F32),
+                    length: Some(3)
+                }
+            )
         );
         assert_eq!(
             field(&layout, "tags").kind,
-            FieldKind::List {
-                items: ListItems::Text,
-                length: None
-            }
+            pointer(
+                4,
+                PointerTarget::List {
+                    items: ListItems::Text,
+                    length: None
+                }
+            )
         );
 
-        let FieldKind::Struct(pose) = &field(&layout, "pose").kind else {
-            panic!("pose is a nested struct");
+        let FieldKind::Pointer {
+            index: 5,
+            target: PointerTarget::Struct(pose),
+        } = &field(&layout, "pose").kind
+        else {
+            panic!("pose is a nested struct behind pointer 5");
         };
         assert_eq!(
             pose.shape,
@@ -628,15 +641,19 @@ mod tests {
                 pointer_count: 0
             }
         );
-        assert_eq!(pose.fields[0].slot, FieldSlot::Data(0));
-        assert_eq!(pose.fields[1].slot, FieldSlot::Data(1));
+        assert_eq!(pose.fields[0].kind, data(0, Scalar::F64));
+        assert_eq!(pose.fields[1].kind, data(1, Scalar::F64));
 
-        let FieldKind::List {
-            items: ListItems::Struct(sample),
-            length: None,
+        let FieldKind::Pointer {
+            index: 6,
+            target:
+                PointerTarget::List {
+                    items: ListItems::Struct(sample),
+                    length: None,
+                },
         } = &field(&layout, "samples").kind
         else {
-            panic!("samples is a list of structs");
+            panic!("samples is a list of structs behind pointer 6");
         };
         assert_eq!(
             sample.shape,
@@ -645,10 +662,8 @@ mod tests {
                 pointer_count: 0
             }
         );
-        assert_eq!(sample.fields[0].kind, FieldKind::Scalar(Scalar::I16));
-        assert_eq!(sample.fields[0].slot, FieldSlot::Data(0));
-        assert_eq!(sample.fields[1].kind, FieldKind::Scalar(Scalar::F64));
-        assert_eq!(sample.fields[1].slot, FieldSlot::Data(1));
+        assert_eq!(sample.fields[0].kind, data(0, Scalar::I16));
+        assert_eq!(sample.fields[1].kind, data(1, Scalar::F64));
     }
 
     #[test]
@@ -658,15 +673,15 @@ mod tests {
         );
         assert_eq!(
             field(&layout, "blob").kind,
-            FieldKind::Bytes { length: None }
+            pointer(0, PointerTarget::Bytes { length: None })
         );
         assert_eq!(
             field(&layout, "frame").kind,
-            FieldKind::Bytes { length: None }
+            pointer(1, PointerTarget::Bytes { length: None })
         );
         assert_eq!(
             field(&layout, "pixels").kind,
-            FieldKind::Bytes { length: Some(3) }
+            pointer(2, PointerTarget::Bytes { length: Some(3) })
         );
         assert_eq!(
             layout.shape,
@@ -682,15 +697,23 @@ mod tests {
         let layout = layout_of(
             r#"{ profile: { $type: "object", gamma: "f64", white_balance: { $type: "object", red: "f32", blue: "f32" } } }"#,
         );
-        let FieldKind::Struct(profile) = &field(&layout, "profile").kind else {
+        let FieldKind::Pointer {
+            target: PointerTarget::Struct(profile),
+            ..
+        } = &field(&layout, "profile").kind
+        else {
             panic!("profile is a struct");
         };
-        let FieldKind::Struct(white_balance) = &field(profile, "white_balance").kind else {
+        let FieldKind::Pointer {
+            target: PointerTarget::Struct(white_balance),
+            ..
+        } = &field(profile, "white_balance").kind
+        else {
             panic!("white_balance is a struct");
         };
         assert_eq!(white_balance.fields[0].name, "red");
-        assert_eq!(white_balance.fields[0].slot, FieldSlot::Data(0));
-        assert_eq!(white_balance.fields[1].slot, FieldSlot::Data(1));
+        assert_eq!(white_balance.fields[0].kind, data(0, Scalar::F32));
+        assert_eq!(white_balance.fields[1].kind, data(1, Scalar::F32));
         assert_eq!(
             white_balance.shape,
             StructShape {

@@ -265,14 +265,11 @@ fn pinned_source(
         daemon_config::repository::DeploymentRoot::Node(pin) => serde_json5::to_string(pin)
             .map(|pin_json5| NodeSource::Pinned { pin_json5 })
             .map_err(|e| format!("deployment {}: could not encode its pin: {e}", key.label())),
-        daemon_config::repository::DeploymentRoot::Exposures(pins) => serde_json5::to_string(pins)
-            .map(|pins_json5| NodeSource::Exposures { pins_json5 })
-            .map_err(|e| {
-                format!(
-                    "deployment {}: could not encode its exposure pins: {e}",
-                    key.label()
-                )
-            }),
+        daemon_config::repository::DeploymentRoot::Exposures(pins) => {
+            crate::services::node::pins::encode_pins(pins)
+                .map(|pins_json5| NodeSource::Exposures { pins_json5 })
+                .map_err(|e| format!("deployment {}: {e}", key.label()))
+        }
     }
 }
 

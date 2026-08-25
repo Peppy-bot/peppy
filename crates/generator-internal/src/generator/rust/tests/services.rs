@@ -178,7 +178,7 @@ fn expose_service_without_request_body() {
         "expected no request deserializer when there is no request body"
     );
     assert_rendered!(
-        !rendered.contains("capnp::serialize::read_message"),
+        !rendered.contains("capnp::serialize::read_message_from_flat_slice"),
         &rendered,
         "expected no Cap'n Proto parsing when there is no request body"
     );

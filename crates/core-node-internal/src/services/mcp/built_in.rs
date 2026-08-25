@@ -13,7 +13,7 @@ use crate::services::node::{FeedbackLine, FeedbackStream, NodeAddActionContext, 
 use core_node_api::encoding::{NodeAddGoal, NodeAddResult, NodeSource};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_deployment::{RUN_COMMAND, SPEC_ENV_VAR};
-use daemon_config::repository::{DeploymentPins, DeploymentRoot, PinKind, PinnedItem};
+use daemon_config::repository::{DeploymentPins, DeploymentRoot, PinKind};
 use node_stack::BuiltInLaunch;
 use parking_lot::Mutex as StdMutex;
 use std::fs::File;
@@ -93,9 +93,9 @@ pub(crate) async fn run_built_in_add(
     let NodeSource::Exposures { pins_json5 } = &goal.source else {
         return fail("internal error: run_built_in_add called with another source".to_owned());
     };
-    let exposure_pins: Vec<PinnedItem> = match serde_json5::from_str(pins_json5) {
+    let exposure_pins = match pins::decode_pins(pins_json5) {
         Ok(pins) => pins,
-        Err(e) => return fail(format!("the goal's exposure pins are not decodable: {e}")),
+        Err(e) => return fail(format!("the goal's exposure pins: {e}")),
     };
     let closure = match pins::decode_pins(&goal.pins_json5) {
         Ok(closure) => closure,
@@ -110,9 +110,6 @@ pub(crate) async fn run_built_in_add(
     let pins = match DeploymentPins::new(DeploymentRoot::Exposures(exposure_pins), closure) {
         Ok(pins) => pins,
         Err(e) => return fail(e),
-    };
-    let DeploymentRoot::Exposures(exposure_pins) = &pins.root else {
-        unreachable!("built above as an exposures root")
     };
 
     let _ = feedback_tx.send(FeedbackLine {
@@ -129,12 +126,8 @@ pub(crate) async fn run_built_in_add(
     );
     let resolved = {
         let dirs = peppy_dirs.clone();
-        let exposure_pins = exposure_pins.clone();
-        let contract_pins = pins.closure.clone();
         match tokio::task::spawn_blocking(move || {
-            materialize_exposure_deployment(&dirs, &exposure_pins, &contract_pins, &|line| {
-                on_feedback(line)
-            })
+            materialize_exposure_deployment(&dirs, &pins, &|line| on_feedback(line))
         })
         .await
         {
@@ -170,9 +163,9 @@ pub(crate) async fn run_built_in_add(
     }
 
     let http_paths: Vec<String> = plan
-        .bundles
+        .exposures
         .iter()
-        .map(|bundle| bundle.exposure.endpoint_path())
+        .map(|exposure| exposure.bundle.exposure.endpoint_path())
         .collect();
     let launch = built_in_launch(executable, &peppy_dirs, &spec_path, http_paths.clone());
     let name = plan.name.as_str().to_owned();

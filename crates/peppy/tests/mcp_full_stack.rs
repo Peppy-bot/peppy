@@ -28,18 +28,15 @@ use daemon_config::mcp_deployment::SPEC_ENV_VAR;
 use daemon_config::repository::ManifestFingerprint;
 use generator::{ContractOrigin, LanguageGenerator};
 use mcp_test_support::{
-    compile_node, confirmation_accept, connect_with_tasks, ephemeral_port, poll_task_until,
-    protocol_error, register_contract_members,
+    compile_node, confirmation_accept, connect, connect_with_tasks, ephemeral_port,
+    poll_task_until, protocol_error, register_contract_members,
 };
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientInfo, ErrorCode,
+    CacheScope, CallToolRequestParams, CallToolResponse, CancelTaskParams, ErrorCode,
     GetTaskParams, ProtocolVersion, ReadResourceRequestParams, RequestMetaObject,
     ServerNotification, SubscriptionFilter, TaskStatus, object,
 };
 use rmcp::service::Subscription;
-use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{ClientLifecycleMode, ClientServiceExt};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -691,11 +688,12 @@ impl Stack {
         let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
         // The daemon runs the built-in server from the installed `peppy`;
-        // in this emulation that is the binary under test, placed where the
-        // installer places it.
+        // in this emulation that is the binary under test, linked where the
+        // installer places it (a debug binary is large, and every test
+        // boots its own home).
         let bin_dir = peppy_dirs.bin_dir();
         fs::create_dir_all(&bin_dir).expect("create bin dir");
-        fs::copy(env!("CARGO_BIN_EXE_peppy"), bin_dir.join("peppy"))
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_peppy"), bin_dir.join("peppy"))
             .expect("install the peppy binary under test");
 
         let hub_dir = tempfile::tempdir().expect("temp hub dir");
@@ -899,22 +897,6 @@ async fn wait_for_port(port: u16, logs: impl Fn() -> String) {
     })
     .await
     .unwrap_or_else(|_| panic!("port {port} never accepted connections\n{}", logs()));
-}
-
-/// A client without the tasks capability.
-async fn connect(url: &str) -> rmcp::service::RunningService<rmcp::RoleClient, ClientInfo> {
-    let transport = StreamableHttpClientTransport::from_config(
-        StreamableHttpClientTransportConfig::with_uri(url.to_owned()),
-    );
-    ClientInfo::default()
-        .serve_with_lifecycle(
-            transport,
-            ClientLifecycleMode::Discover {
-                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-            },
-        )
-        .await
-        .expect("the MCP client negotiates 2026-07-28")
 }
 
 /// The status line of a raw HTTP request, for the paths no MCP client

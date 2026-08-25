@@ -801,23 +801,19 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
         // The identity is derived from the pinned exposures; as with a pin,
         // decoding them here only to label a log file must not fail the
         // goal, so a generic label stands in when they do not decode.
-        NodeSource::Exposures { pins_json5 } => {
-            serde_json5::from_str::<Vec<daemon_config::repository::PinnedItem>>(pins_json5)
-                .ok()
-                .filter(|pins| !pins.is_empty())
-                .map(|pins| {
-                    let references: Vec<daemon_config::source::ExposureRef> = pins
-                        .iter()
-                        .map(|pin| daemon_config::source::ExposureRef {
-                            name: pin.name.as_str().to_owned(),
-                            tag: pin.tag.as_str().to_owned(),
-                        })
-                        .collect();
-                    let (name, tag) = daemon_config::mcp_deployment::built_in_identity(&references);
-                    format!("{}_{tag}", name.as_str())
-                })
-                .unwrap_or_else(generate_random_id)
-        }
+        NodeSource::Exposures { pins_json5 } => super::pins::decode_pins(pins_json5)
+            .ok()
+            .filter(|pins| !pins.is_empty())
+            .map(|pins| {
+                let references: Vec<daemon_config::source::ExposureRef> =
+                    pins.iter().map(Into::into).collect();
+                format!(
+                    "{}_{}",
+                    daemon_config::mcp_deployment::built_in_identity(&references).as_str(),
+                    daemon_config::mcp_deployment::BUILT_IN_TAG
+                )
+            })
+            .unwrap_or_else(generate_random_id),
     }
 }
 

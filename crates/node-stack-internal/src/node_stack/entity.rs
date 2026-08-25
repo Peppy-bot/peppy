@@ -63,12 +63,22 @@ fn built_in_endpoints(
     let runtime_config: config::runtime::RuntimeConfig =
         serde_json5::from_str(runtime_config_json5)
             .map_err(|error| format!("the runtime config does not parse: {error}"))?;
-    let port = match runtime_config.node_instance.arguments.get("port").cloned() {
+    let port = match runtime_config
+        .node_instance
+        .arguments
+        .get(daemon_config::mcp_deployment::PORT_PARAMETER)
+        .cloned()
+    {
         Some(config::AnyType::Int(port)) => u16::try_from(port).ok(),
         Some(config::AnyType::UInt(port)) => u16::try_from(port).ok(),
         _ => None,
     }
-    .ok_or_else(|| "a built-in node's runtime config carries no `port` argument".to_owned())?;
+    .ok_or_else(|| {
+        format!(
+            "a built-in node's runtime config carries no `{}` argument",
+            daemon_config::mcp_deployment::PORT_PARAMETER
+        )
+    })?;
     Ok(launch.endpoint_urls(port))
 }
 
@@ -76,9 +86,9 @@ fn built_in_endpoints(
 /// subcommand, plus the environment that hands the process what it serves.
 ///
 /// A built-in node is registered ready to start from documents the daemon
-/// derived itself; nothing is fetched, generated or built for it. Its
-/// `Ready` artifact is the executable, and this recipe is what the spawn
-/// runs instead of the manifest's `run_cmd`.
+/// derived itself; nothing is fetched, generated or built for it. The
+/// recipe is the [`Artifact::BuiltIn`] of its `Ready` stage, and what the
+/// spawn runs instead of the manifest's `run_cmd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltInLaunch {
     /// The executable to run; the entity's artifact path.
@@ -102,6 +112,36 @@ impl BuiltInLaunch {
     }
 }
 
+/// What a `Ready` entity spawns from.
+#[derive(Debug, Clone)]
+pub enum Artifact {
+    /// A built `.sif` or archive in `~/.peppy/built_nodes`, run through the
+    /// manifest's `run_cmd`, in a container when the manifest declares one.
+    Built(PathBuf),
+    /// The daemon's own executable with the recipe that runs it; nothing
+    /// was fetched, generated or built for the node.
+    BuiltIn(BuiltInLaunch),
+}
+
+impl Artifact {
+    /// The file on disk the entity runs from: the archive or SIF of a
+    /// sourced node, the executable of a built-in one.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Built(path) => path,
+            Self::BuiltIn(launch) => &launch.executable,
+        }
+    }
+
+    /// The recipe of a built-in node, `None` for a built artifact.
+    pub fn built_in(&self) -> Option<&BuiltInLaunch> {
+        match self {
+            Self::Built(_) => None,
+            Self::BuiltIn(launch) => Some(launch),
+        }
+    }
+}
+
 /// Lifecycle stage of a `NodeEntity`. Describes *artifact readiness only*.
 /// Per-instance state (Starting, Running, or a terminal Finished/Failed) lives
 /// on each [`TrackedNodeInstance`] inside `Ready.instances`.
@@ -110,11 +150,13 @@ impl BuiltInLaunch {
 /// - `Building`: `build()` is running its I/O. Acts as the concurrency
 ///   barrier: a second concurrent `build()` on the same entity sees this
 ///   stage and is rejected immediately with no queueing.
-/// - `Ready`: artifact is on disk. The instances list may be empty (no
-///   instances spawned yet, equivalent to the old `Built` stage) or hold any
-///   mix of `Starting` (in-flight `prepare_and_spawn`), `Running`, and terminal
-///   `Finished`/`Failed` instances. A self-exited instance stays listed as
-///   `Finished` or `Failed` until the stack is cleared or it is stopped.
+/// - `Ready`: the [`Artifact`] is on disk, built from sources or the
+///   daemon's own executable for a built-in node. The instances list may be
+///   empty (no instances spawned yet, equivalent to the old `Built` stage)
+///   or hold any mix of `Starting` (in-flight `prepare_and_spawn`),
+///   `Running`, and terminal `Finished`/`Failed` instances. A self-exited
+///   instance stays listed as `Finished` or `Failed` until the stack is
+///   cleared or it is stopped.
 /// - `Root`: the synthetic daemon entity. Has no buildable artifact and
 ///   exactly one `Running` instance (the daemon process itself). The
 ///   lifecycle methods (`build`, `prepare_and_spawn`, `commit_started`,
@@ -131,7 +173,7 @@ pub enum NodeStage {
     },
     Ready {
         config_path: PathBuf,
-        artifact_path: PathBuf,
+        artifact: Artifact,
         instances: Vec<TrackedNodeInstance>,
     },
     // Special kind
@@ -347,9 +389,6 @@ pub struct NodeEntity {
     /// transitions and are not signalled. A wholesale entity replacement
     /// (`push_config`) drops this sender, closing existing receivers.
     stage_tx: watch::Sender<SerializedNodeStage>,
-    /// The spawn recipe of a built-in node; `None` for a node the daemon
-    /// added and built from sources, which spawns its manifest's `run_cmd`.
-    built_in: Option<BuiltInLaunch>,
 }
 
 impl NodeEntity {
@@ -366,34 +405,34 @@ impl NodeEntity {
             generation: next_entity_generation(),
             pending_working_dir: None,
             stage_tx,
-            built_in: None,
         }
     }
 
-    /// Creates a built-in node, ready to start: its artifact is the
-    /// executable of `launch`, and spawning runs `launch` rather than the
-    /// manifest's `run_cmd`. `config_path` points at the manifest the daemon
-    /// derived and wrote for it.
+    /// Creates a built-in node, ready to start: its artifact is `launch`,
+    /// whose executable the spawn runs rather than the manifest's `run_cmd`.
+    /// `config_path` points at the manifest the daemon derived and wrote for
+    /// it.
     pub fn built_in<P: Into<PathBuf>>(
         config: NodeConfig,
         config_path: P,
         launch: BuiltInLaunch,
     ) -> Self {
-        let mut entity = Self::with_stage(
+        Self::with_stage(
             config,
             NodeStage::Ready {
                 config_path: config_path.into(),
-                artifact_path: launch.executable.clone(),
+                artifact: Artifact::BuiltIn(launch),
                 instances: Vec::new(),
             },
-        );
-        entity.built_in = Some(launch);
-        entity
+        )
     }
 
     /// The spawn recipe of a built-in node, `None` for a sourced node.
     pub fn built_in_launch(&self) -> Option<&BuiltInLaunch> {
-        self.built_in.as_ref()
+        match &self.stage {
+            NodeStage::Ready { artifact, .. } => artifact.built_in(),
+            _ => None,
+        }
     }
 
     /// Publishes the current stage label to [`subscribe_stage`] receivers.
@@ -515,12 +554,13 @@ impl NodeEntity {
     }
 
     /// Returns the path to the built `.sif`/archive in
-    /// `~/.peppy/built_nodes`. `None` until the entity has reached `Ready`,
-    /// and `None` for the synthetic root entity (which has no artifact).
+    /// `~/.peppy/built_nodes`, or a built-in node's executable. `None` until
+    /// the entity has reached `Ready`, and `None` for the synthetic root
+    /// entity (which has no artifact).
     pub fn artifact_path(&self) -> Option<&Path> {
         match &self.stage {
             NodeStage::Added { .. } | NodeStage::Building { .. } | NodeStage::Root { .. } => None,
-            NodeStage::Ready { artifact_path, .. } => Some(artifact_path),
+            NodeStage::Ready { artifact, .. } => Some(artifact.path()),
         }
     }
 
@@ -723,7 +763,7 @@ impl NodeEntity {
 
                 guard.stage = NodeStage::Ready {
                     config_path,
-                    artifact_path: artifact_path.clone(),
+                    artifact: Artifact::Built(artifact_path.clone()),
                     instances: Vec::new(),
                 };
                 guard.broadcast_stage();
@@ -828,7 +868,7 @@ impl NodeEntity {
         };
 
         // ---- Phase 1: register the Starting instance under a brief write lock ----
-        let (node_name, node_tag, node_config, artifact_path, start_generation, built_in) = {
+        let (node_name, node_tag, node_config, artifact, start_generation) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_spawnable() {
                 return Err(Error::InvalidStageTransition {
@@ -840,7 +880,7 @@ impl NodeEntity {
             }
             let entity_generation = guard.generation;
             let NodeStage::Ready {
-                artifact_path,
+                artifact,
                 instances,
                 ..
             } = &mut guard.stage
@@ -861,7 +901,7 @@ impl NodeEntity {
                 });
             }
 
-            let snapshot_artifact = artifact_path.clone();
+            let snapshot_artifact = artifact.clone();
             let mut instance = TrackedNodeInstance::new(
                 ctx.instance_id.clone(),
                 None,
@@ -879,7 +919,6 @@ impl NodeEntity {
                 guard.config.clone(),
                 snapshot_artifact,
                 entity_generation,
-                guard.built_in.clone(),
             )
         };
 
@@ -888,12 +927,15 @@ impl NodeEntity {
         let is_container = node_config.execution.container.is_some();
 
         // ---- Phase 2: prepare instance dir ----
-        // A built-in node has no archive to extract: its working directory
-        // starts empty, like a container's.
-        let instance_dir = if is_container || built_in.is_some() {
-            create_instance_dir(instance_id_str, ctx.peppy_dirs)
-        } else {
-            extract_node_archive(&artifact_path, instance_id_str, ctx.peppy_dirs)
+        // A container's working directory starts empty, and so does a
+        // built-in node's: it has no archive to extract.
+        let instance_dir = match &artifact {
+            Artifact::Built(archive) if !is_container => {
+                extract_node_archive(archive, instance_id_str, ctx.peppy_dirs)
+            }
+            Artifact::Built(_) | Artifact::BuiltIn(_) => {
+                create_instance_dir(instance_id_str, ctx.peppy_dirs)
+            }
         }
         .map_err(|reason| {
             Self::remove_starting_instance(handle, ctx.instance_id);
@@ -912,8 +954,8 @@ impl NodeEntity {
             mut command,
             runtime_config_path,
             description: spawn_description,
-        } = if let Some(launch) = built_in.as_ref() {
-            build_built_in_command(
+        } = match (&artifact, node_config.execution.container.as_ref()) {
+            (Artifact::BuiltIn(launch), _) => build_built_in_command(
                 launch,
                 &node_config,
                 &instance_dir,
@@ -921,39 +963,39 @@ impl NodeEntity {
                 ctx.env_vars,
                 &ctx.output_sinks.log_file,
                 ctx.peppy_dirs,
-            )
-        } else if let Some(container) = node_config.execution.container.as_ref() {
-            let apptainer_run_extra_args = container
-                .apptainer_run_extra_args
-                .as_deref()
-                .unwrap_or_default();
-            let lima_shell_extra_args = container
-                .lima_shell_extra_args
-                .as_deref()
-                .unwrap_or_default();
-            build_container_command(SpawnContainerInputs {
-                sif_path: &artifact_path,
-                working_dir: &instance_dir,
-                instance_id: instance_id_str,
-                runtime_config_json5: ctx.runtime_config_json5,
-                env_vars: ctx.env_vars,
-                mount_paths: ctx.mount_paths_resolved,
-                apptainer_run_extra_args,
-                lima_shell_extra_args,
-                log_file: &ctx.output_sinks.log_file,
-                feedback_tx: &ctx.output_sinks.feedback_tx,
-                peppy_dirs: ctx.peppy_dirs,
-            })
-            .await
-        } else {
-            build_process_command(
+            ),
+            (Artifact::Built(sif_path), Some(container)) => {
+                let apptainer_run_extra_args = container
+                    .apptainer_run_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+                let lima_shell_extra_args = container
+                    .lima_shell_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+                build_container_command(SpawnContainerInputs {
+                    sif_path,
+                    working_dir: &instance_dir,
+                    instance_id: instance_id_str,
+                    runtime_config_json5: ctx.runtime_config_json5,
+                    env_vars: ctx.env_vars,
+                    mount_paths: ctx.mount_paths_resolved,
+                    apptainer_run_extra_args,
+                    lima_shell_extra_args,
+                    log_file: &ctx.output_sinks.log_file,
+                    feedback_tx: &ctx.output_sinks.feedback_tx,
+                    peppy_dirs: ctx.peppy_dirs,
+                })
+                .await
+            }
+            (Artifact::Built(_), None) => build_process_command(
                 &node_config,
                 &instance_dir,
                 ctx.runtime_config_json5,
                 ctx.env_vars,
                 &ctx.output_sinks.log_file,
                 ctx.peppy_dirs,
-            )
+            ),
         }
         .map_err(|e| {
             // Best-effort cleanup of the instance dir we just materialized.
@@ -1267,7 +1309,7 @@ impl NodeEntity {
             ),
             (Some(artifact_path), _) => NodeStage::Ready {
                 config_path,
-                artifact_path,
+                artifact: Artifact::Built(artifact_path),
                 instances,
             },
         };
@@ -1563,6 +1605,16 @@ mod tests {
             built_in_launch(),
         );
         assert_eq!(entity.stage().to_serialized(), SerializedNodeStage::Ready);
+        assert!(
+            matches!(
+                entity.stage(),
+                NodeStage::Ready {
+                    artifact: Artifact::BuiltIn(_),
+                    ..
+                }
+            ),
+            "the recipe is the entity's artifact"
+        );
         assert_eq!(
             entity.artifact_path(),
             Some(Path::new("/opt/peppy/bin/peppy"))

@@ -14,7 +14,7 @@ use crate::internal::repository::{ManifestFingerprint, PinKind, PinnedItem};
 use crate::internal::source::ExposureRef;
 use config::node::{NodeConfig, NodeConfigParser};
 use config::runtime::Name;
-use peppy_mcp_catalog::{ExposureBundle, McpExposure, ResolvedContract, build_exposure_bundle};
+use peppy_mcp_catalog::{McpExposure, ResolvedContract, ValidatedExposure, build_exposure_bundle};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -38,11 +38,11 @@ pub const RUN_COMMAND: [&str; 3] = ["peppy", "mcp", "serve"];
 /// serve` the path of its [`McpServeSpec`].
 pub const SPEC_ENV_VAR: &str = "PEPPY_MCP_SERVE_SPEC";
 
-/// The node identity of the server that serves `exposures`, derived from
-/// the sorted list so a relaunch, a peer and a reader of `peppy stack list`
-/// all name the same deployment: `mcp` followed by `_<name>_<tag>` per
-/// exposure in name-then-tag order, at [`BUILT_IN_TAG`].
-pub fn built_in_identity(exposures: &[ExposureRef]) -> (Name, String) {
+/// The node name of the server that serves `exposures`, derived from the
+/// sorted list so a relaunch, a peer and a reader of `peppy stack list` all
+/// name the same deployment: `mcp` followed by `_<name>_<tag>` per exposure
+/// in name-then-tag order. Every built-in node is tagged [`BUILT_IN_TAG`].
+pub fn built_in_identity(exposures: &[ExposureRef]) -> Name {
     let mut sorted: Vec<&ExposureRef> = exposures.iter().collect();
     sorted.sort();
     sorted.dedup();
@@ -53,33 +53,41 @@ pub fn built_in_identity(exposures: &[ExposureRef]) -> (Name, String) {
         name.push('_');
         name.push_str(&reference.tag);
     }
-    (
-        Name::new(name).expect("exposure names and tags are made of name characters"),
-        BUILT_IN_TAG.to_owned(),
-    )
+    Name::new(name).expect("exposure names and tags are made of name characters")
+}
+
+/// A parsed document with the pin that names its bytes.
+#[derive(Debug, Clone)]
+pub struct Pinned<T> {
+    pub pin: PinnedItem,
+    pub document: T,
 }
 
 /// An exposure document with the pin that names its bytes.
-#[derive(Debug, Clone)]
-pub struct PinnedExposure {
-    pub pin: PinnedItem,
-    pub document: McpExposure,
-}
+pub type PinnedExposure = Pinned<McpExposure>;
+
+/// A contract document with the pin that names its bytes.
+pub type PinnedContract = Pinned<PeppyContract>;
 
 impl PinnedExposure {
     pub fn reference(&self) -> ExposureRef {
-        ExposureRef {
-            name: self.pin.name.as_str().to_owned(),
-            tag: self.pin.tag.as_str().to_owned(),
-        }
+        ExposureRef::from(&self.pin)
     }
 }
 
-/// A contract document with the pin that names its bytes.
-#[derive(Debug, Clone)]
-pub struct PinnedContract {
-    pub pin: PinnedItem,
-    pub document: PeppyContract,
+impl PinnedContract {
+    /// The contract as the catalog validates an exposure against it: its
+    /// pinned identity and fingerprint beside its members.
+    pub fn resolved(&self) -> ResolvedContract<'_> {
+        ResolvedContract {
+            name: self.pin.name.as_str(),
+            tag: self.pin.tag.as_str(),
+            sha256: &self.pin.sha256,
+            topics: &self.document.interfaces.topics,
+            services: &self.document.interfaces.services,
+            actions: &self.document.interfaces.actions,
+        }
+    }
 }
 
 /// Two exposures binding one target name to different contracts.
@@ -146,20 +154,20 @@ fn format_violations(reports: &[ExposureViolations]) -> String {
 }
 
 /// The planned deployment: its identity, the manifest the planner binds
-/// and pins, and the catalog of every exposure, in identity order.
+/// and pins, and every exposure validated against the pinned contracts, in
+/// identity order: the catalog each advertises, and behind each entry the
+/// contract member the server's bridges bind to.
 #[derive(Debug, Clone)]
 pub struct McpDeploymentPlan {
     pub name: Name,
     pub tag: String,
     pub config: NodeConfig,
-    pub bundles: Vec<ExposureBundle>,
+    pub exposures: Vec<ValidatedExposure>,
 }
 
 /// One contract slot of the synthesized manifest and who filled it.
-struct Slot {
-    contract_name: String,
-    contract_tag: String,
-    sha256: ManifestFingerprint,
+struct Slot<'a> {
+    contract: &'a PinnedItem,
     exposure: String,
 }
 
@@ -192,13 +200,14 @@ pub fn plan_deployment(
         }
     }
     let references: Vec<ExposureRef> = ordered.iter().map(|e| e.reference()).collect();
-    let (name, tag) = built_in_identity(&references);
+    let name = built_in_identity(&references);
+    let tag = BUILT_IN_TAG.to_owned();
 
     let mut slots: BTreeMap<String, Slot> = BTreeMap::new();
     let mut topics: BTreeSet<(String, String)> = BTreeSet::new();
     let mut services: BTreeSet<(String, String)> = BTreeSet::new();
     let mut actions: BTreeSet<(String, String)> = BTreeSet::new();
-    let mut bundles = Vec::with_capacity(ordered.len());
+    let mut validated = Vec::with_capacity(ordered.len());
     let mut invalid: Vec<ExposureViolations> = Vec::new();
 
     for exposure in &ordered {
@@ -229,13 +238,13 @@ pub fn plan_deployment(
             }
             match slots.get(target) {
                 Some(slot)
-                    if slot.contract_name != reference.name.as_str()
-                        || slot.contract_tag != reference.tag =>
+                    if slot.contract.name != reference.name.as_str()
+                        || slot.contract.tag != reference.tag.as_str() =>
                 {
                     return Err(McpDeploymentError::SlotConflict(SlotConflict {
                         target: target.clone(),
                         first_exposure: slot.exposure.clone(),
-                        first_contract: format!("{}:{}", slot.contract_name, slot.contract_tag),
+                        first_contract: format!("{}:{}", slot.contract.name, slot.contract.tag),
                         second_exposure: label.clone(),
                         second_contract: contract_label.clone(),
                     }));
@@ -245,9 +254,7 @@ pub fn plan_deployment(
                     slots.insert(
                         target.clone(),
                         Slot {
-                            contract_name: reference.name.as_str().to_owned(),
-                            contract_tag: reference.tag.clone(),
-                            sha256: pinned.pin.sha256.clone(),
+                            contract: &pinned.pin,
                             exposure: label.clone(),
                         },
                     );
@@ -256,28 +263,21 @@ pub fn plan_deployment(
             if !resolved.iter().any(|contract| {
                 contract.name == reference.name.as_str() && contract.tag == reference.tag
             }) {
-                resolved.push(ResolvedContract {
-                    name: pinned.pin.name.as_str(),
-                    tag: pinned.pin.tag.as_str(),
-                    sha256: &pinned.pin.sha256,
-                    topics: &pinned.document.interfaces.topics,
-                    services: &pinned.document.interfaces.services,
-                    actions: &pinned.document.interfaces.actions,
-                });
+                resolved.push(pinned.resolved());
             }
         }
         match build_exposure_bundle(&exposure.document, &resolved) {
-            Ok(bundle) => {
-                for resource in &bundle.resources {
+            Ok(checked) => {
+                for resource in &checked.bundle.resources {
                     topics.insert((resource.target.clone(), resource.member.clone()));
                 }
-                for tool in &bundle.tools {
+                for tool in &checked.bundle.tools {
                     services.insert((tool.target.clone(), tool.member.clone()));
                 }
-                for task in &bundle.tasks {
+                for task in &checked.bundle.tasks {
                     actions.insert((task.target.clone(), task.member.clone()));
                 }
-                bundles.push(bundle);
+                validated.push(checked);
             }
             Err(error) => invalid.push(ExposureViolations {
                 exposure: label,
@@ -318,10 +318,10 @@ pub fn plan_deployment(
         .iter()
         .map(|(target, slot)| {
             serde_json::json!({
-                "name": slot.contract_name,
-                "tag": slot.contract_tag,
+                "name": slot.contract.name.as_str(),
+                "tag": slot.contract.tag.as_str(),
                 "link_id": target,
-                "sha256": slot.sha256.as_str(),
+                "sha256": slot.contract.sha256.as_str(),
             })
         })
         .collect();
@@ -356,16 +356,8 @@ pub fn plan_deployment(
         name,
         tag,
         config,
-        bundles,
+        exposures: validated,
     })
-}
-
-/// The URL of every endpoint the plan serves on `port`, in bundle order.
-pub fn endpoint_urls(port: u16, plan: &McpDeploymentPlan) -> Vec<String> {
-    plan.bundles
-        .iter()
-        .map(|bundle| format!("http://127.0.0.1:{port}{}", bundle.exposure.endpoint_path()))
-        .collect()
 }
 
 /// A document the daemon materialized from a pin, carried by its bytes so
@@ -409,9 +401,8 @@ pub struct McpServeSpec {
 
 impl McpServeSpec {
     pub fn from_path(path: &Path) -> Result<Self, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        serde_json5::from_str(&content)
+        crate::parsing::read_non_empty_file(path)
+            .and_then(|content| crate::error::deserialize_json5_with_path(&content))
             .map_err(|error| format!("{} is not a serve spec: {error}", path.display()))
     }
 
@@ -426,33 +417,44 @@ impl McpServeSpec {
 
     /// Verifies every document against its pin and parses it.
     pub fn resolve(&self) -> Result<(Vec<PinnedExposure>, Vec<PinnedContract>), String> {
-        let mut exposures = Vec::with_capacity(self.exposures.len());
-        for document in &self.exposures {
-            if document.pin.kind != PinKind::McpExposure {
-                return Err(format!("{} is not an exposure", document.pin.label()));
-            }
-            let parsed: McpExposure =
-                crate::error::deserialize_json5_with_path(document.verified_content()?)
-                    .map_err(|error| format!("{} does not parse: {error}", document.pin.label()))?;
-            exposures.push(PinnedExposure {
-                pin: document.pin.clone(),
-                document: parsed,
-            });
-        }
-        let mut contracts = Vec::with_capacity(self.contracts.len());
-        for document in &self.contracts {
-            if document.pin.kind != PinKind::Contract {
-                return Err(format!("{} is not a contract", document.pin.label()));
-            }
-            let parsed = PeppyContractParser::from_content(document.verified_content()?)
-                .map_err(|error| format!("{} does not parse: {error}", document.pin.label()))?;
-            contracts.push(PinnedContract {
-                pin: document.pin.clone(),
-                document: parsed,
-            });
-        }
+        let exposures = parse_all(
+            &self.exposures,
+            PinKind::McpExposure,
+            "an exposure",
+            |content| crate::error::deserialize_json5_with_path(content).map_err(|e| e.to_string()),
+        )?;
+        let contracts = parse_all(
+            &self.contracts,
+            PinKind::Contract,
+            "a contract",
+            |content| PeppyContractParser::from_content(content).map_err(|e| e.to_string()),
+        )?;
         Ok((exposures, contracts))
     }
+}
+
+/// Parses every document of one kind: the pin must be of that kind and the
+/// bytes must fingerprint to it before `parse` sees them.
+fn parse_all<T>(
+    documents: &[PinnedDocument],
+    kind: PinKind,
+    what: &str,
+    parse: impl Fn(&str) -> Result<T, String>,
+) -> Result<Vec<Pinned<T>>, String> {
+    documents
+        .iter()
+        .map(|document| {
+            if document.pin.kind != kind {
+                return Err(format!("{} is not {what}", document.pin.label()));
+            }
+            let parsed = parse(document.verified_content()?)
+                .map_err(|error| format!("{} does not parse: {error}", document.pin.label()))?;
+            Ok(Pinned {
+                pin: document.pin.clone(),
+                document: parsed,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -583,7 +585,7 @@ mod tests {
 
     #[test]
     fn the_identity_sorts_the_exposures_and_ignores_listing_order() {
-        let (name, tag) = built_in_identity(&[
+        let name = built_in_identity(&[
             reference("camera_and_recording", "v2"),
             reference("arm_control", "v1"),
             reference("camera_and_recording", "v1"),
@@ -592,8 +594,7 @@ mod tests {
             name.as_str(),
             "mcp_arm_control_v1_camera_and_recording_v1_camera_and_recording_v2"
         );
-        assert_eq!(tag, BUILT_IN_TAG);
-        let (reordered, _) = built_in_identity(&[
+        let reordered = built_in_identity(&[
             reference("camera_and_recording", "v1"),
             reference("camera_and_recording", "v2"),
             reference("arm_control", "v1"),
@@ -711,21 +712,14 @@ mod tests {
             serde_json::json!(["peppy", "mcp", "serve"])
         );
         let served: Vec<String> = plan
-            .bundles
+            .exposures
             .iter()
-            .map(|bundle| bundle.exposure.endpoint_path())
+            .map(|exposure| exposure.bundle.exposure.endpoint_path())
             .collect();
         assert_eq!(
             served,
             ["/camera_and_recording/v1/mcp", "/camera_only/v1/mcp"],
             "bundles follow the identity order"
-        );
-        assert_eq!(
-            endpoint_urls(9000, &plan),
-            [
-                "http://127.0.0.1:9000/camera_and_recording/v1/mcp",
-                "http://127.0.0.1:9000/camera_only/v1/mcp"
-            ]
         );
     }
 

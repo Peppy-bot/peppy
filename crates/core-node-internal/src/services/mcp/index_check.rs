@@ -1,14 +1,17 @@
 //! Exposure validation for `peppy repo index --check --include-repositories`.
 
+use super::resolve::resolve_cached_document;
 use crate::services::repo::cache::{self as repo_cache, ContractCacheEntry};
 use crate::services::repo::index::{
     IndexError, read_repository_index, resolve_declared_item, walk_directory,
 };
 use daemon_config::consts::PeppyDirs;
 use daemon_config::contract::PeppyContractParser;
-use daemon_config::mcp_exposure::PeppyMcpExposureParser;
+use daemon_config::mcp_deployment::PinnedContract;
+use daemon_config::mcp_exposure::{McpExposure, PeppyMcpExposureParser, PinnedContractRef};
 use daemon_config::repository::{ManifestFingerprint, RepoItemKind};
-use peppy_mcp_catalog::{ResolvedContract, build_exposure_bundle};
+use peppy_mcp_catalog::build_exposure_bundle;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Everything wrong with one exposure a repository publishes.
@@ -56,6 +59,12 @@ pub fn check_repository_exposures(
     let committed = read_repository_index(&root)?;
     let contract_entries = repo_cache::load_repo_cache::<ContractCacheEntry>(peppy_dirs)
         .map_err(|e| IndexError::Unreadable(format!("failed to load the contract cache: {e}")))?;
+    let mut contracts = Contracts {
+        peppy_dirs,
+        entries: &contract_entries,
+        on_feedback,
+        resolved: BTreeMap::new(),
+    };
 
     let mut findings: Vec<ExposureFinding> = walk_directory(&root, &[])
         .malformed
@@ -85,9 +94,7 @@ pub fn check_repository_exposures(
                 Err(e) => vec![format!("{path} is not UTF-8: {e}")],
                 Ok(content) => match PeppyMcpExposureParser::from_content(content) {
                     Err(e) => vec![format!("{path} does not parse: {e}")],
-                    Ok(exposure) => {
-                        exposure_problems(&exposure, peppy_dirs, &contract_entries, on_feedback)
-                    }
+                    Ok(exposure) => exposure_problems(&exposure, &mut contracts),
                 },
             },
         };
@@ -99,57 +106,78 @@ pub fn check_repository_exposures(
     Ok(findings)
 }
 
+/// The identity a reference resolves through the cache, with the author's
+/// pin: two references at different pins may resolve to different bytes.
+type ContractKey = (String, String, Option<String>);
+
+/// The contracts the exposures of one check reference, each resolved
+/// through the caches once, however many exposures name it.
+struct Contracts<'a> {
+    peppy_dirs: &'a PeppyDirs,
+    entries: &'a [ContractCacheEntry],
+    on_feedback: &'a dyn Fn(&str),
+    resolved: BTreeMap<ContractKey, Result<PinnedContract, String>>,
+}
+
+impl Contracts<'_> {
+    fn key(reference: &PinnedContractRef) -> ContractKey {
+        (
+            reference.name.as_str().to_owned(),
+            reference.tag.clone(),
+            reference.sha256.as_ref().map(ToString::to_string),
+        )
+    }
+
+    /// The contract a reference names, resolved on first use.
+    fn get(&mut self, reference: &PinnedContractRef) -> &Result<PinnedContract, String> {
+        let key = Self::key(reference);
+        if !self.resolved.contains_key(&key) {
+            let resolved = self.resolve(reference);
+            self.resolved.insert(key.clone(), resolved);
+        }
+        &self.resolved[&key]
+    }
+
+    fn resolve(&self, reference: &PinnedContractRef) -> Result<PinnedContract, String> {
+        let name = reference.name.as_str();
+        let tag = reference.tag.as_str();
+        let document = resolve_cached_document(
+            self.peppy_dirs,
+            self.entries,
+            name,
+            tag,
+            reference.sha256.as_ref().map(ManifestFingerprint::as_str),
+            self.on_feedback,
+        )?;
+        let parsed = PeppyContractParser::from_content(&document.content)
+            .map_err(|e| format!("contract `{name}:{tag}` does not parse: {e}"))?;
+        Ok(PinnedContract {
+            pin: document.pin,
+            document: parsed,
+        })
+    }
+}
+
 /// One exposure's problems: every contract it references that the caches
 /// cannot resolve, then every validation violation against the ones they
 /// can.
-fn exposure_problems(
-    exposure: &daemon_config::mcp_exposure::McpExposure,
-    peppy_dirs: &PeppyDirs,
-    contract_entries: &[ContractCacheEntry],
-    on_feedback: &dyn Fn(&str),
-) -> Vec<String> {
+fn exposure_problems(exposure: &McpExposure, contracts: &mut Contracts<'_>) -> Vec<String> {
     let mut problems = Vec::new();
-    // Identity -> (fingerprint, parsed document); resolved once per identity.
-    let mut resolved: Vec<(
-        String,
-        String,
-        ManifestFingerprint,
-        daemon_config::contract::PeppyContract,
-    )> = Vec::new();
+    let mut resolved: Vec<&PinnedContract> = Vec::new();
+    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    // Resolve first, then borrow: every reference goes through the memo
+    // before any resolved contract is held by reference.
+    for target in exposure.targets.values() {
+        contracts.get(&target.contract);
+    }
     for target in exposure.targets.values() {
         let reference = &target.contract;
-        let name = reference.name.as_str();
-        if resolved
-            .iter()
-            .any(|(n, t, _, _)| n == name && t == &reference.tag)
-        {
+        if !seen.insert((reference.name.as_str().to_owned(), reference.tag.clone())) {
             continue;
         }
-        match repo_cache::resolve_cached_doc_entry(
-            peppy_dirs,
-            contract_entries,
-            name,
-            &reference.tag,
-            reference.sha256.as_ref().map(ManifestFingerprint::as_str),
-            on_feedback,
-        ) {
-            Err(detail) => problems.push(detail),
-            Ok((entry, bytes)) => match std::str::from_utf8(&bytes)
-                .map_err(|e| e.to_string())
-                .and_then(|content| {
-                    PeppyContractParser::from_content(content).map_err(|e| e.to_string())
-                }) {
-                Err(detail) => problems.push(format!(
-                    "contract `{name}:{}` does not parse: {detail}",
-                    reference.tag
-                )),
-                Ok(document) => resolved.push((
-                    name.to_owned(),
-                    reference.tag.clone(),
-                    entry.sha256.clone(),
-                    document,
-                )),
-            },
+        match &contracts.resolved[&Contracts::key(reference)] {
+            Err(detail) => problems.push(detail.clone()),
+            Ok(contract) => resolved.push(contract),
         }
     }
     if !problems.is_empty() {
@@ -158,16 +186,9 @@ fn exposure_problems(
         // problem above as many.
         return problems;
     }
-    let contracts: Vec<ResolvedContract<'_>> = resolved
+    let contracts: Vec<_> = resolved
         .iter()
-        .map(|(name, tag, sha256, document)| ResolvedContract {
-            name,
-            tag,
-            sha256,
-            topics: &document.interfaces.topics,
-            services: &document.interfaces.services,
-            actions: &document.interfaces.actions,
-        })
+        .map(|contract| contract.resolved())
         .collect();
     if let Err(error) = build_exposure_bundle(exposure, &contracts) {
         problems.extend(error.violations);

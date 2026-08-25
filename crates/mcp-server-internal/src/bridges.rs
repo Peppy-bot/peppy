@@ -1,21 +1,22 @@
 //! The bridges between each catalog entry and the contract member behind
-//! it: a codec per message side laid out when the process starts, and the
-//! type-erased clients driven at request time against the producers the
-//! launcher bound to the entry's target.
+//! it, the one validation bound the entry to: a codec per message side
+//! laid out when the process starts, and the type-erased clients driven at
+//! request time against the producers the launcher bound to the entry's
+//! target.
 
 use crate::serve::ServeError;
 use config::node::{MessageFormat, NativeExposedAction};
-use daemon_config::mcp_deployment::{McpDeploymentPlan, PinnedContract};
 use message_codec::MessageCodec;
 use message_codec::consumer::{
     ActionClient, ConsumerIdentity, GoalOutcome, MemberBinding, ServiceClient, TopicConsumer,
 };
-use peppy_mcp_catalog::ExposureBundle;
+use peppy_mcp_catalog::{BundleContractPin, ExposureBundle, ValidatedExposure};
 use peppy_mcp_runtime::{ActionContext, ActionExit, ResourceIngest, ToolCallError};
 use peppylib::config::QoSProfile;
 use peppylib::messaging::SenderTarget;
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -80,98 +81,110 @@ pub(crate) struct PreparedTask {
     pub deadline: Duration,
 }
 
-/// Lays out the codec of one message side; an absent or empty format is
-/// no payload at all.
-fn codec(label: &str, format: Option<&MessageFormat>) -> Result<Option<MessageCodec>, ServeError> {
-    let Some(format) = format.filter(|format| !format.0.is_empty()) else {
-        return Ok(None);
-    };
-    MessageCodec::new(label, format.clone())
-        .map(Some)
-        .map_err(|source| ServeError::Codec {
-            member: label.to_owned(),
-            source,
+impl Binding {
+    /// The binding of `member` through `slot`, the contract slot the
+    /// launcher's `links` fill.
+    fn new(slot: &BundleContractPin, member: &str) -> Result<Self, ServeError> {
+        let contract =
+            SenderTarget::contract(&slot.name, &slot.tag).map_err(peppylib::PeppyError::from)?;
+        Ok(Self {
+            target: slot.link_id.clone(),
+            contract,
+            member: member.to_owned(),
         })
+    }
 }
 
-/// Prepares every exposure of `plan`: for each catalog entry, the codecs of
-/// the member behind it, from the pinned contract its target draws from.
-pub(crate) fn prepare(
-    plan: &McpDeploymentPlan,
-    contracts: &[PinnedContract],
-) -> Result<Vec<PreparedExposure>, ServeError> {
-    let mut prepared = Vec::with_capacity(plan.bundles.len());
-    for bundle in &plan.bundles {
-        let contract_of = |target: &str| -> (&PinnedContract, SenderTarget) {
-            let pin = bundle
-                .node
-                .contracts
-                .iter()
-                .find(|pin| pin.link_id == target)
-                .expect("a bundle target is one of its node's contract slots");
-            let contract = contracts
-                .iter()
-                .find(|contract| {
-                    contract.pin.name == pin.name.as_str() && contract.pin.tag == pin.tag.as_str()
-                })
-                .expect("the plan was built from these contracts");
-            let sender = SenderTarget::contract(&pin.name, &pin.tag)
-                .expect("a pinned contract identity is a valid target");
-            (contract, sender)
-        };
+/// The codecs of one deployment, laid out once per member side: the same
+/// member of the same pinned contract has one wire format however many
+/// exposures reach it, and each layout is a run of the schema compiler.
+#[derive(Default)]
+struct Codecs {
+    laid_out: HashMap<String, MessageCodec>,
+}
 
-        let mut resources = Vec::with_capacity(bundle.resources.len());
-        for entry in &bundle.resources {
-            let (contract, sender) = contract_of(&entry.target);
-            let topic = contract
-                .document
-                .interfaces
-                .topics
-                .iter()
-                .find(|topic| topic.name == entry.member)
-                .expect("the bundle only carries members the contract declares");
-            let label = format!("{}_{}_topic", entry.target, entry.member);
-            let format = topic.message_format.clone().unwrap_or_default();
-            let codec = MessageCodec::new(&label, format).map_err(|source| ServeError::Codec {
-                member: label.clone(),
+impl Codecs {
+    /// The codec of the side `key` names, laid out on first use.
+    fn lay_out(
+        &mut self,
+        key: String,
+        label: &str,
+        format: &MessageFormat,
+    ) -> Result<MessageCodec, ServeError> {
+        if let Some(codec) = self.laid_out.get(&key) {
+            return Ok(codec.clone());
+        }
+        let codec =
+            MessageCodec::new(label, format.clone()).map_err(|source| ServeError::Codec {
+                member: label.to_owned(),
                 source,
             })?;
+        self.laid_out.insert(key, codec.clone());
+        Ok(codec)
+    }
+
+    /// The codec of an optional side; an absent or empty format is no
+    /// payload at all.
+    fn optional(
+        &mut self,
+        key: String,
+        label: &str,
+        format: Option<&MessageFormat>,
+    ) -> Result<Option<MessageCodec>, ServeError> {
+        match format.filter(|format| !format.0.is_empty()) {
+            Some(format) => self.lay_out(key, label, format).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+/// The memo key of one message side of a member: the contract's pinned
+/// identity, the member, the side.
+fn side_key(slot: &BundleContractPin, member: &str, side: &str) -> String {
+    format!("{}:{}/{member}/{side}", slot.name, slot.tag)
+}
+
+/// Prepares every exposure: for each catalog entry, the codecs of the
+/// contract member validation bound it to.
+pub(crate) fn prepare(
+    exposures: Vec<ValidatedExposure>,
+) -> Result<Vec<PreparedExposure>, ServeError> {
+    let mut codecs = Codecs::default();
+    let mut prepared = Vec::with_capacity(exposures.len());
+    for exposure in exposures {
+        let mut resources = Vec::with_capacity(exposure.bundle.resources.len());
+        for (entry, bound) in exposure.resources() {
+            let topic = &bound.member;
+            let label = format!("{}_{}_topic", entry.target, entry.member);
+            let format = topic.message_format.clone().unwrap_or_default();
+            let codec = codecs.lay_out(
+                side_key(&bound.slot, &entry.member, "topic"),
+                &label,
+                &format,
+            )?;
             resources.push(PreparedResource {
                 name: entry.name.clone(),
-                binding: Binding {
-                    target: entry.target.clone(),
-                    contract: sender,
-                    member: entry.member.clone(),
-                },
+                binding: Binding::new(&bound.slot, &entry.member)?,
                 qos: topic.qos_profile.clone(),
                 codec,
             });
         }
 
-        let mut tools = Vec::with_capacity(bundle.tools.len());
-        for entry in &bundle.tools {
-            let (contract, sender) = contract_of(&entry.target);
-            let service = contract
-                .document
-                .interfaces
-                .services
-                .iter()
-                .find(|service| service.name == entry.member)
-                .expect("the bundle only carries members the contract declares");
+        let mut tools = Vec::with_capacity(exposure.bundle.tools.len());
+        for (entry, bound) in exposure.tools() {
+            let service = &bound.member;
             let label = format!("{}_{}", entry.target, entry.member);
             tools.push(PreparedTool {
                 name: entry.name.clone(),
-                binding: Binding {
-                    target: entry.target.clone(),
-                    contract: sender,
-                    member: entry.member.clone(),
-                },
+                binding: Binding::new(&bound.slot, &entry.member)?,
                 client: ServiceClient::new(
-                    codec(
+                    codecs.optional(
+                        side_key(&bound.slot, &entry.member, "request"),
                         &format!("{label}_request"),
                         service.request_message_format.as_ref(),
                     )?,
-                    codec(
+                    codecs.optional(
+                        side_key(&bound.slot, &entry.member, "response"),
                         &format!("{label}_response"),
                         service.response_message_format.as_ref(),
                     )?,
@@ -180,32 +193,25 @@ pub(crate) fn prepare(
             });
         }
 
-        let mut tasks = Vec::with_capacity(bundle.tasks.len());
-        for entry in &bundle.tasks {
-            let (contract, sender) = contract_of(&entry.target);
-            let action = contract
-                .document
-                .interfaces
-                .actions
-                .iter()
-                .find(|action| action.name == entry.member)
-                .expect("the bundle only carries members the contract declares");
+        let mut tasks = Vec::with_capacity(exposure.bundle.tasks.len());
+        for (entry, bound) in exposure.tasks() {
+            let action = &bound.member;
             let label = format!("{}_{}", entry.target, entry.member);
-            let feedback_format = action
-                .feedback_topic
-                .as_ref()
-                .map(|feedback| &feedback.message_format);
-            let feedback = codec(&format!("{label}_feedback"), feedback_format)?;
+            let feedback = codecs.optional(
+                side_key(&bound.slot, &entry.member, "feedback"),
+                &format!("{label}_feedback"),
+                action
+                    .feedback_topic
+                    .as_ref()
+                    .map(|feedback| &feedback.message_format),
+            )?;
             tasks.push(PreparedTask {
                 name: entry.name.clone(),
-                binding: Binding {
-                    target: entry.target.clone(),
-                    contract: sender,
-                    member: entry.member.clone(),
-                },
+                binding: Binding::new(&bound.slot, &entry.member)?,
                 reports_feedback: feedback.is_some(),
                 client: ActionClient::new(
-                    codec(
+                    codecs.optional(
+                        side_key(&bound.slot, &entry.member, "goal"),
                         &format!("{label}_goal"),
                         action
                             .goal_service
@@ -213,7 +219,8 @@ pub(crate) fn prepare(
                             .and_then(|goal| goal.request_message_format.as_ref()),
                     )?,
                     feedback,
-                    codec(
+                    codecs.optional(
+                        side_key(&bound.slot, &entry.member, "result"),
                         &format!("{label}_result"),
                         action
                             .result_service
@@ -227,7 +234,7 @@ pub(crate) fn prepare(
         }
 
         prepared.push(PreparedExposure {
-            bundle: bundle.clone(),
+            bundle: exposure.bundle,
             resources,
             tools,
             tasks,

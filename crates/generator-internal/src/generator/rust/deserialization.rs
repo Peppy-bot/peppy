@@ -61,9 +61,9 @@ pub fn build_deserialize_fn(
         fn #fn_name(payload: &[u8]) -> crate::Result<#return_type> {
             #[allow(clippy::all)]
             let context = #context_expr;
-            let mut cursor = std::io::Cursor::new(payload);
-            let message_reader = capnp::serialize::read_message(
-                    &mut cursor,
+            let mut payload = payload;
+            let message_reader = capnp::serialize::read_message_from_flat_slice(
+                    &mut payload,
                     capnp::message::ReaderOptions::new(),
                 )
                 .map_err(|source| crate::Error::Deserialization(

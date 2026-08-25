@@ -74,10 +74,7 @@ pub fn check_index(root: &Path, scope: CheckScope, peppy_dirs: &PeppyDirs) -> Re
         report.push_str(&format!(
             "{} does not match the repository:{}\n\nRun `peppy repo index {}` and commit the result.",
             root.join(REPOSITORY_INDEX_FILE).display(),
-            drifts
-                .iter()
-                .map(|drift| format!("\n  - {drift}"))
-                .collect::<String>(),
+            daemon_config::format_bulleted(&drifts),
             root.display()
         ));
     }
@@ -90,10 +87,7 @@ pub fn check_index(root: &Path, scope: CheckScope, peppy_dirs: &PeppyDirs) -> Re
             findings.len(),
             if findings.len() == 1 { "" } else { "s" },
             if findings.len() == 1 { "es" } else { "" },
-            findings
-                .iter()
-                .map(|finding| format!("\n  - {finding}"))
-                .collect::<String>()
+            daemon_config::format_bulleted(&findings)
         ));
     }
     Err(Error::ExecutionFailed(report))

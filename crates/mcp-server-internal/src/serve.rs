@@ -61,9 +61,12 @@ pub fn serve() -> Result<(), ServeError> {
     let spec_path = std::env::var_os(SPEC_ENV_VAR).ok_or(ServeError::NoSpec)?;
     let spec = McpServeSpec::from_path(Path::new(&spec_path)).map_err(ServeError::Spec)?;
     let (exposures, contracts) = spec.resolve().map_err(ServeError::Spec)?;
-    let plan: McpDeploymentPlan = plan_deployment(&exposures, &contracts)?;
-    let prepared = bridges::prepare(&plan, &contracts)?;
-    let manifest = plan.config;
+    let McpDeploymentPlan {
+        config: manifest,
+        exposures: validated,
+        ..
+    } = plan_deployment(&exposures, &contracts)?;
+    let prepared = bridges::prepare(validated)?;
     NodeBuilder::<ServeArguments>::new()
         .with_manifest(manifest)
         .run(move |arguments, node_runner| async move {

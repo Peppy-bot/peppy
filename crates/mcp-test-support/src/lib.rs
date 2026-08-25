@@ -98,14 +98,28 @@ pub fn ephemeral_port() -> u16 {
         .port()
 }
 
+/// Connects a client with the default capabilities (no tasks extension) to
+/// one exposure's Streamable HTTP endpoint, negotiating MCP `2026-07-28`.
+pub async fn connect(endpoint_url: &str) -> Client {
+    connect_as(endpoint_url, ClientCapabilities::default()).await
+}
+
 /// Connects a client that declares the SEP-2663 tasks extension capability
 /// to one exposure's Streamable HTTP endpoint, negotiating MCP `2026-07-28`.
 pub async fn connect_with_tasks(endpoint_url: &str) -> Client {
+    connect_as(
+        endpoint_url,
+        ClientCapabilities::builder().enable_tasks().build(),
+    )
+    .await
+}
+
+async fn connect_as(endpoint_url: &str, capabilities: ClientCapabilities) -> Client {
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(endpoint_url.to_owned()),
     );
     let mut info = ClientInfo::default();
-    info.capabilities = ClientCapabilities::builder().enable_tasks().build();
+    info.capabilities = capabilities;
     info.serve_with_lifecycle(
         transport,
         ClientLifecycleMode::Discover {
@@ -113,7 +127,7 @@ pub async fn connect_with_tasks(endpoint_url: &str) -> Client {
         },
     )
     .await
-    .expect("the tasks-capable MCP client negotiates 2026-07-28")
+    .expect("the MCP client negotiates 2026-07-28")
 }
 
 /// Unwraps the protocol-level error data of a failed client call.

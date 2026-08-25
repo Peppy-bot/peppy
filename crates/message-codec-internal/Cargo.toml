@@ -17,7 +17,9 @@ peppylib = { workspace = true }
 # bytes, decimal-string 64-bit integers) generated bridges use; this crate
 # applies the same rules so both agree byte for byte.
 peppy-mcp-runtime = { workspace = true }
-capnp = "0.27"
+# `unaligned`: messages are decoded in place from the transport's buffer,
+# which carries no alignment guarantee.
+capnp = { version = "0.27", features = ["unaligned"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2.0"
 

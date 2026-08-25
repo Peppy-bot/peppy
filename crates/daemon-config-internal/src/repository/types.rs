@@ -12,19 +12,21 @@ use std::{
 };
 use thiserror::Error;
 
-/// A repository-relative path to the file that declares one item.
-///
-/// Every path peppy resolved from used to be produced by its own directory
-/// walk. An index path arrives instead from a file somebody merged, so it is
-/// untrusted input and the rules below are enforced at parse time: a value of
-/// this type is already known to stay inside the repository.
-///
-/// Parsing is canonical, which is what lets `peppy repo index --check`
-/// compare a committed path against a freshly generated one with `==`
-/// instead of reporting `./a.json5` as a move of `a.json5`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(transparent)]
-pub struct RepoRelativePath(String);
+config::validated_identity!(
+    /// A repository-relative path to the file that declares one item.
+    ///
+    /// Every path peppy resolved from used to be produced by its own directory
+    /// walk. An index path arrives instead from a file somebody merged, so it is
+    /// untrusted input and the rules below are enforced at parse time: a value of
+    /// this type is already known to stay inside the repository.
+    ///
+    /// Parsing is canonical, which is what lets `peppy repo index --check`
+    /// compare a committed path against a freshly generated one with `==`
+    /// instead of reporting `./a.json5` as a move of `a.json5`.
+    RepoRelativePath,
+    RepoPathError,
+    validate_repo_relative_path
+);
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RepoPathError {
@@ -43,65 +45,45 @@ pub enum RepoPathError {
     NotAFile(String),
 }
 
+/// The one statement of the path rules. Both the generator and
+/// `Deserialize` go through it, so a generated index can never hold a
+/// path that reading an index would refuse.
+fn validate_repo_relative_path(raw: &str) -> Result<String, RepoPathError> {
+    let path = raw.trim();
+    if path.is_empty() {
+        return Err(RepoPathError::Empty);
+    }
+    if path.contains('\\') {
+        return Err(RepoPathError::Backslash(path.to_owned()));
+    }
+    if path.starts_with('/') {
+        return Err(RepoPathError::NotInside(path.to_owned()));
+    }
+    if path.ends_with('/') {
+        return Err(RepoPathError::NotAFile(path.to_owned()));
+    }
+    for segment in path.split('/') {
+        match segment {
+            ".." => return Err(RepoPathError::NotInside(path.to_owned())),
+            "" | "." => return Err(RepoPathError::NotNormalized(path.to_owned())),
+            _ => {}
+        }
+    }
+    // Backstop for platforms where a root or a drive prefix is not
+    // spelled with a leading `/`. The textual checks above cover the
+    // hosts peppy runs on; this covers the type's promise everywhere.
+    if Path::new(path)
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(RepoPathError::NotInside(path.to_owned()));
+    }
+    Ok(path.to_owned())
+}
+
 impl RepoRelativePath {
-    /// The one statement of the path rules. Both the generator and
-    /// `Deserialize` go through it, so a generated index can never hold a
-    /// path that reading an index would refuse.
-    pub fn parse(raw: &str) -> Result<Self, RepoPathError> {
-        let path = raw.trim();
-        if path.is_empty() {
-            return Err(RepoPathError::Empty);
-        }
-        if path.contains('\\') {
-            return Err(RepoPathError::Backslash(path.to_owned()));
-        }
-        if path.starts_with('/') {
-            return Err(RepoPathError::NotInside(path.to_owned()));
-        }
-        if path.ends_with('/') {
-            return Err(RepoPathError::NotAFile(path.to_owned()));
-        }
-        for segment in path.split('/') {
-            match segment {
-                ".." => return Err(RepoPathError::NotInside(path.to_owned())),
-                "" | "." => return Err(RepoPathError::NotNormalized(path.to_owned())),
-                _ => {}
-            }
-        }
-        // Backstop for platforms where a root or a drive prefix is not
-        // spelled with a leading `/`. The textual checks above cover the
-        // hosts peppy runs on; this covers the type's promise everywhere.
-        if Path::new(path)
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(RepoPathError::NotInside(path.to_owned()));
-        }
-        Ok(Self(path.to_owned()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
     pub fn as_path(&self) -> &Path {
         Path::new(&self.0)
-    }
-}
-
-impl fmt::Display for RepoRelativePath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for RepoRelativePath {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse(&raw).map_err(de::Error::custom)
     }
 }
 
@@ -127,65 +109,25 @@ config::hex_identity!(
     40
 );
 
-/// Declares a validated string newtype whose `Deserialize` runs `$validate`,
-/// so an index cannot state an identity the repository caches could never
-/// key on. The two identity halves differ only in which shared validator
-/// they call, so the surrounding boilerplate is written once.
-macro_rules! validated_identity {
-    ($(#[$meta:meta])* $name:ident, $validate:path, $label:literal) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-        #[serde(transparent)]
-        pub struct $name(String);
+// The two identity halves differ only in which shared validator they run,
+// so an index cannot state an identity the repository caches could never
+// key on.
 
-        impl $name {
-            pub fn parse(raw: &str) -> Result<Self, String> {
-                $validate(raw, $label)?;
-                Ok(Self(raw.to_owned()))
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: de::Deserializer<'de>,
-            {
-                let raw = String::deserialize(deserializer)?;
-                Self::parse(&raw).map_err(de::Error::custom)
-            }
-        }
-    };
-}
-
-validated_identity!(
+config::validated_identity!(
     /// The name half of an item's identity, held to the same charset the
     /// rest of peppy resolves `name:tag` with.
     ItemName,
-    config::repo_node_id::validate_repo_node_name,
-    "name"
+    String,
+    |raw: &str| config::repo_node_id::validate_repo_node_name(raw, "name").map(|()| raw.to_owned())
 );
 
-validated_identity!(
+config::validated_identity!(
     /// The tag half of an item's identity. Launchers carry no tag and are
     /// indexed one level deep instead of borrowing an empty one.
     ItemTag,
-    config::repo_node_id::validate_repo_node_tag,
-    "tag"
+    String,
+    |raw: &str| config::repo_node_id::validate_repo_node_tag(raw, "tag").map(|()| raw.to_owned())
 );
-
-config::compares_to_str!(RepoRelativePath);
-config::compares_to_str!(ItemName);
-config::compares_to_str!(ItemTag);
 
 /// Where one published identity is declared.
 ///

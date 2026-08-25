@@ -478,51 +478,39 @@ mod exposures {
         repo
     }
 
-    /// Seeds the contract cache of `dirs` from the given documents, the way
-    /// a refresh of a registered contract repository would.
+    /// Seeds the contract cache of `dirs` from the given documents, written
+    /// under the home, the way a refresh of a registered contract
+    /// repository would.
     fn seed_contract_cache(dirs: &PeppyDirs, contracts: &[(&str, &str)]) {
         let docs = dirs.root().join("contracts");
         std::fs::create_dir_all(dirs.cache_dir()).unwrap();
         std::fs::create_dir_all(&docs).unwrap();
-        let entries: Vec<serde_json::Value> = contracts
+        let paths: Vec<(&str, PathBuf)> = contracts
             .iter()
             .map(|(name, content)| {
                 let path = docs.join(format!("{name}.json5"));
                 std::fs::write(&path, content).unwrap();
-                serde_json::json!({
-                    "contract_name": name,
-                    "tag": "v1",
-                    "sha256": config::fingerprint::fingerprint_for_bytes(content.as_bytes()),
-                    "origin": daemon_config::repository::EntryOrigin::Fs { path },
-                })
+                (*name, path)
             })
             .collect();
-        std::fs::write(
-            core_node::contracts_repo_cache_path(dirs),
-            serde_json::to_string_pretty(&entries).unwrap(),
-        )
-        .unwrap();
+        let documents: Vec<_> = paths
+            .iter()
+            .map(|(name, path)| (*name, "v1", path.as_path()))
+            .collect();
+        core_node::test_support::seed_contract_cache(dirs, &documents);
     }
 
+    /// Seeds the exposure cache of `dirs` with the named exposures of `repo`.
     fn seed_exposure_cache(dirs: &PeppyDirs, repo: &Path, names: &[&str]) {
-        let entries: Vec<serde_json::Value> = names
+        let paths: Vec<(&str, PathBuf)> = names
             .iter()
-            .map(|name| {
-                let path = repo.join("exposures").join(format!("{name}.json5"));
-                let bytes = std::fs::read(&path).unwrap();
-                serde_json::json!({
-                    "exposure_name": name,
-                    "tag": "v1",
-                    "sha256": config::fingerprint::fingerprint_for_bytes(&bytes),
-                    "origin": daemon_config::repository::EntryOrigin::Fs { path },
-                })
-            })
+            .map(|name| (*name, repo.join("exposures").join(format!("{name}.json5"))))
             .collect();
-        std::fs::write(
-            core_node::mcp_exposures_repo_cache_path(dirs),
-            serde_json::to_string_pretty(&entries).unwrap(),
-        )
-        .unwrap();
+        let documents: Vec<_> = paths
+            .iter()
+            .map(|(name, path)| (*name, "v1", path.as_path()))
+            .collect();
+        core_node::test_support::seed_exposure_cache(dirs, &documents);
     }
 
     #[test]

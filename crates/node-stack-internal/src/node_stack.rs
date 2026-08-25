@@ -7,7 +7,7 @@ mod run_steps;
 
 use entity::serialize_node_entity;
 pub use entity::{
-    BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, StartContext,
+    Artifact, BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, StartContext,
     StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
 use pairing::PairingRegistry;

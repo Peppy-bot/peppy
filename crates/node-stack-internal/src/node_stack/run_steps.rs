@@ -183,47 +183,35 @@ pub(super) fn build_process_command(
         working_dir
     );
 
-    crate::build_io::log_cmd_header(log_file, "run_cmd", &run_cmd.join(" "), working_dir, &[]);
-
-    let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
-
-    let mut command = Command::new(program);
-    command.current_dir(working_dir);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // Process-group leader so the daemon's shutdown can kill the node and any
-    // descendants it spawns (a Python child, a shell wrapper) in one signal.
-    spawn_as_process_group_leader(&mut command);
-    for (key, value) in env_vars {
-        command.env(key, value);
-    }
-    // Set PWD to match the actual working directory so tools that read this
-    // variable (e.g. capnproto's KJ) see a consistent value. The caller's
-    // PWD is stripped by caller_env_overrides() since it refers to the
-    // caller's directory, not the node's instance dir.
-    command.env("PWD", working_dir);
-    command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
-
     // Force unbuffered stdout/stderr for Python nodes. Without this, Python
     // defaults to full buffering when stdout is a pipe, delaying log capture.
-    if config.execution.language == PeppygenLanguage::Python {
-        command.env("PYTHONUNBUFFERED", "1");
-    }
+    let extra_env: Vec<(String, String)> = if config.execution.language == PeppygenLanguage::Python
+    {
+        vec![("PYTHONUNBUFFERED".to_owned(), "1".to_owned())]
+    } else {
+        Vec::new()
+    };
 
-    Ok(SpawnCommand {
-        command,
-        runtime_config_path,
-        description: run_cmd.join(" "),
-    })
+    assemble_command(
+        ProcessSpec {
+            program: program.as_ref(),
+            args,
+            log_tag: "run_cmd",
+            extra_env: &extra_env,
+            description: run_cmd.join(" "),
+        },
+        working_dir,
+        runtime_config_json5,
+        env_vars,
+        log_file,
+        peppy_dirs,
+    )
 }
 
 /// Builds the spawn command of a built-in node: `launch`'s executable and
-/// arguments in `working_dir`, with the instance's environment, the
-/// recipe's own entries, and the runtime config path the way
-/// [`build_process_command`] passes it.
+/// arguments in `working_dir`, with the instance's environment and the
+/// recipe's own entries, assembled the way [`build_process_command`]
+/// assembles a `run_cmd`.
 pub(super) fn build_built_in_command(
     launch: &super::entity::BuiltInLaunch,
     config: &NodeConfig,
@@ -244,31 +232,76 @@ pub(super) fn build_built_in_command(
         manifest.tag,
         working_dir
     );
-    crate::build_io::log_cmd_header(log_file, "built_in", &description, working_dir, &[]);
+
+    assemble_command(
+        ProcessSpec {
+            program: launch.executable.as_os_str(),
+            args: &launch.args,
+            log_tag: "built_in",
+            extra_env: &launch.env,
+            description,
+        },
+        working_dir,
+        runtime_config_json5,
+        env_vars,
+        log_file,
+        peppy_dirs,
+    )
+}
+
+/// What a process node runs, wherever it came from: the manifest's
+/// `run_cmd` for a sourced node, the recipe for a built-in one.
+struct ProcessSpec<'a> {
+    program: &'a std::ffi::OsStr,
+    args: &'a [String],
+    /// The label of the command line's header in the node's log file.
+    log_tag: &'a str,
+    /// Environment entries beyond the instance's own, applied after them.
+    extra_env: &'a [(String, String)],
+    /// The command line as the spawn-failure error names it.
+    description: String,
+}
+
+/// The daemon's spawn contract for a process node, written once for every
+/// kind of process: the log header, the runtime config temp file, piped
+/// stdio, process-group leadership, the instance's environment plus the
+/// spec's, and `PWD` and `PEPPY_RUNTIME_CONFIG` set last.
+fn assemble_command(
+    spec: ProcessSpec<'_>,
+    working_dir: &Path,
+    runtime_config_json5: &str,
+    env_vars: &[(String, String)],
+    log_file: &Arc<StdMutex<File>>,
+    peppy_dirs: &PeppyDirs,
+) -> std::io::Result<SpawnCommand> {
+    crate::build_io::log_cmd_header(log_file, spec.log_tag, &spec.description, working_dir, &[]);
 
     let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
 
-    let mut command = Command::new(&launch.executable);
+    let mut command = Command::new(spec.program);
     command.current_dir(working_dir);
     command
-        .args(&launch.args)
+        .args(spec.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Process-group leader so the daemon's shutdown can kill the node and any
+    // descendants it spawns (a Python child, a shell wrapper) in one signal.
     spawn_as_process_group_leader(&mut command);
-    for (key, value) in env_vars {
+    for (key, value) in env_vars.iter().chain(spec.extra_env) {
         command.env(key, value);
     }
-    for (key, value) in &launch.env {
-        command.env(key, value);
-    }
+    // Set PWD to match the actual working directory so tools that read this
+    // variable (e.g. capnproto's KJ) see a consistent value. The caller's
+    // PWD is stripped by caller_env_overrides() since it refers to the
+    // caller's directory, not the node's instance dir.
     command.env("PWD", working_dir);
     command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
 
     Ok(SpawnCommand {
         command,
         runtime_config_path,
-        description,
+        description: spec.description,
     })
 }
 

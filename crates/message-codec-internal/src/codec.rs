@@ -5,8 +5,9 @@
 //! its field, into a default heap allocator, then frames the message with
 //! [`capnp::serialize::write_message`]. That is the sequence generated
 //! nodes follow, so the two produce the same bytes for the same values.
-//! Decoding reads each field back through the same accessors and renders
-//! it with the canonical value rules.
+//! Decoding reads each field back through the same accessors, in place in
+//! the framed bytes as the transport handed them over (no alignment is
+//! assumed of them), and renders it with the canonical value rules.
 //!
 //! An optional field is present exactly when its pointer is non-null; it is
 //! omitted from the JSON object when absent and never written as `null`.
@@ -21,7 +22,7 @@ use capnp::{data_list, primitive_list, serialize, text, text_list};
 use config::node::MessageFormat;
 use encoding::MessageFormatMapper;
 use encoding::wire_layout::{
-    FieldKind, FieldLayout, FieldSlot, ListItems, Scalar, StructLayout, TimestampLayout,
+    FieldKind, FieldLayout, ListItems, PointerTarget, Scalar, StructLayout, TimestampLayout,
 };
 use peppy_mcp_runtime::bridge;
 use peppylib::encoding::{CapnpTimestamp, convert_time, convert_time_from_capnp};
@@ -99,21 +100,22 @@ impl MessageCodec {
                 .init_struct(struct_size(self.layout.shape));
             encode_struct(root, &self.layout, value)?;
         }
-        frame(&message)
+        Ok(frame(&message))
     }
 
-    /// Decodes a framed message into a JSON object.
-    pub fn decode(&self, bytes: &[u8]) -> Result<Value, ConversionError> {
-        let message = serialize::read_message(bytes, ReaderOptions::new())?;
+    /// Decodes a framed message into a JSON object, reading it in place:
+    /// nothing is copied out of `bytes` before its values are converted.
+    pub fn decode(&self, mut bytes: &[u8]) -> Result<Value, ConversionError> {
+        let message = serialize::read_message_from_flat_slice(&mut bytes, ReaderOptions::new())?;
         let root = message.get_root::<RootReader<'_>>()?.0.get_struct(None)?;
         decode_struct(root, &self.layout)
     }
 }
 
-fn frame(message: &Builder<HeapAllocator>) -> Result<Vec<u8>, ConversionError> {
-    let mut buffer = Vec::new();
-    serialize::write_message(&mut buffer, message)?;
-    Ok(buffer)
+/// Frames the message into one buffer sized from the message up front, so
+/// a large frame is written once rather than grown into.
+fn frame(message: &Builder<HeapAllocator>) -> Vec<u8> {
+    serialize::write_message_to_words(message)
 }
 
 fn encode_struct(
@@ -141,64 +143,43 @@ fn encode_field(
     value: &Value,
 ) -> Result<(), ConversionError> {
     let name = field.name.as_str();
-    match (&field.kind, field.slot) {
-        (FieldKind::Scalar(scalar), slot) => encode_scalar(&builder, slot, *scalar, name, value),
-        (kind, FieldSlot::Pointer(index)) => {
-            let pointer = builder.get_pointer_field(index as usize);
-            encode_pointer(pointer, kind, name, value)
+    match &field.kind {
+        FieldKind::Bit(bit) => {
+            builder.set_bool_field(*bit as usize, bridge::value_bool(value, name)?);
+            Ok(())
         }
-        (kind, slot) => Err(ConversionError(format!(
-            "`{name}` is laid out as {slot:?} but holds {kind:?}"
-        ))),
+        FieldKind::Data { offset, scalar } => {
+            encode_scalar(&builder, *offset as usize, *scalar, name, value)
+        }
+        FieldKind::Pointer { index, target } => {
+            let pointer = builder.get_pointer_field(*index as usize);
+            encode_pointer(pointer, target, name, value)
+        }
     }
 }
 
 fn encode_scalar(
     builder: &StructBuilder<'_>,
-    slot: FieldSlot,
+    offset: usize,
     scalar: Scalar,
     name: &str,
     value: &Value,
 ) -> Result<(), ConversionError> {
-    match (scalar, slot) {
-        (Scalar::Bool, FieldSlot::Bit(bit)) => {
-            builder.set_bool_field(bit as usize, bridge::value_bool(value, name)?);
+    match scalar {
+        Scalar::U8 => builder.set_data_field::<u8>(offset, bridge::value_u8(value, name)?),
+        Scalar::U16 => builder.set_data_field::<u16>(offset, bridge::value_u16(value, name)?),
+        Scalar::U32 => builder.set_data_field::<u32>(offset, bridge::value_u32(value, name)?),
+        Scalar::U64 => {
+            builder.set_data_field::<u64>(offset, bridge::value_u64_decimal(value, name)?)
         }
-        (Scalar::U8, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<u8>(offset as usize, bridge::value_u8(value, name)?);
+        Scalar::I8 => builder.set_data_field::<i8>(offset, bridge::value_i8(value, name)?),
+        Scalar::I16 => builder.set_data_field::<i16>(offset, bridge::value_i16(value, name)?),
+        Scalar::I32 => builder.set_data_field::<i32>(offset, bridge::value_i32(value, name)?),
+        Scalar::I64 => {
+            builder.set_data_field::<i64>(offset, bridge::value_i64_decimal(value, name)?)
         }
-        (Scalar::U16, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<u16>(offset as usize, bridge::value_u16(value, name)?);
-        }
-        (Scalar::U32, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<u32>(offset as usize, bridge::value_u32(value, name)?);
-        }
-        (Scalar::U64, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<u64>(offset as usize, bridge::value_u64_decimal(value, name)?);
-        }
-        (Scalar::I8, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<i8>(offset as usize, bridge::value_i8(value, name)?);
-        }
-        (Scalar::I16, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<i16>(offset as usize, bridge::value_i16(value, name)?);
-        }
-        (Scalar::I32, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<i32>(offset as usize, bridge::value_i32(value, name)?);
-        }
-        (Scalar::I64, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<i64>(offset as usize, bridge::value_i64_decimal(value, name)?);
-        }
-        (Scalar::F32, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<f32>(offset as usize, value_f32(value, name)?);
-        }
-        (Scalar::F64, FieldSlot::Data(offset)) => {
-            builder.set_data_field::<f64>(offset as usize, bridge::value_f64(value, name)?);
-        }
-        (scalar, slot) => {
-            return Err(ConversionError(format!(
-                "`{name}` is laid out as {slot:?} but holds a {scalar:?}"
-            )));
-        }
+        Scalar::F32 => builder.set_data_field::<f32>(offset, value_f32(value, name)?),
+        Scalar::F64 => builder.set_data_field::<f64>(offset, bridge::value_f64(value, name)?),
     }
     Ok(())
 }
@@ -219,16 +200,15 @@ fn value_f32(value: &Value, name: &str) -> Result<f32, ConversionError> {
 
 fn encode_pointer(
     mut pointer: PointerBuilder<'_>,
-    kind: &FieldKind,
+    target: &PointerTarget,
     name: &str,
     value: &Value,
 ) -> Result<(), ConversionError> {
-    match kind {
-        FieldKind::Text => {
-            let text = bridge::value_string(value, name)?;
-            pointer.set_text(text::Reader::from(text.as_str()));
+    match target {
+        PointerTarget::Text => {
+            pointer.set_text(text::Reader::from(bridge::value_str(value, name)?));
         }
-        FieldKind::Bytes { length } => {
+        PointerTarget::Bytes { length } => {
             let bytes = bridge::value_bytes(value, name)?;
             if let Some(length) = length
                 && bytes.len() != *length
@@ -239,17 +219,17 @@ fn encode_pointer(
             }
             pointer.set_data(&bytes);
         }
-        FieldKind::Time(timestamp) => {
+        PointerTarget::Time(timestamp) => {
             let time = convert_time(bridge::value_time(value, name)?);
             let builder = pointer.init_struct(struct_size(timestamp.shape));
             builder.set_data_field::<i64>(timestamp.sec as usize, time.sec);
             builder.set_data_field::<u32>(timestamp.nsec as usize, time.nsec);
         }
-        FieldKind::Struct(layout) => {
+        PointerTarget::Struct(layout) => {
             let builder = pointer.init_struct(struct_size(layout.shape));
             encode_struct(builder, layout, value)?;
         }
-        FieldKind::List { items, length } => {
+        PointerTarget::List { items, length } => {
             let elements = bridge::value_array(value, name)?;
             if let Some(length) = length
                 && elements.len() != *length
@@ -263,11 +243,6 @@ fn encode_pointer(
             })?;
             encode_list(pointer, items, name, elements, count)?;
         }
-        FieldKind::Scalar(scalar) => {
-            return Err(ConversionError(format!(
-                "`{name}` is laid out behind a pointer but holds a {scalar:?}"
-            )));
-        }
     }
     Ok(())
 }
@@ -280,7 +255,7 @@ fn encode_list(
     count: u32,
 ) -> Result<(), ConversionError> {
     match items {
-        ListItems::Scalar(Scalar::Bool) => encode_scalar_list(pointer, count, elements, |item| {
+        ListItems::Bool => encode_scalar_list(pointer, count, elements, |item| {
             bridge::value_bool(item, name)
         }),
         ListItems::Scalar(Scalar::U8) => encode_scalar_list(pointer, count, elements, |item| {
@@ -316,7 +291,7 @@ fn encode_list(
         ListItems::Text => {
             let mut list = text_list::Builder::init_pointer(pointer, count);
             for (index, item) in elements.iter().enumerate() {
-                list.set(index as u32, bridge::value_string(item, name)?.as_str());
+                list.set(index as u32, bridge::value_str(item, name)?);
             }
             Ok(())
         }
@@ -361,7 +336,7 @@ fn decode_struct(
 ) -> Result<Value, ConversionError> {
     let mut object = Map::new();
     for field in &layout.fields {
-        if field.optional && is_absent(&reader, field.slot) {
+        if field.optional && is_absent(&reader, &field.kind) {
             continue;
         }
         object.insert(field.name.clone(), decode_field(&reader, field)?);
@@ -370,82 +345,51 @@ fn decode_struct(
 }
 
 /// An optional field is absent when its pointer is null. Only pointer-backed
-/// fields can be optional, so any other slot reads as present.
-fn is_absent(reader: &StructReader<'_>, slot: FieldSlot) -> bool {
-    match slot {
-        FieldSlot::Pointer(index) => reader.is_pointer_field_null(index as usize),
-        FieldSlot::Bit(_) | FieldSlot::Data(_) => false,
-    }
+/// fields can be optional, so any other kind reads as present.
+fn is_absent(reader: &StructReader<'_>, kind: &FieldKind) -> bool {
+    matches!(kind, FieldKind::Pointer { index, .. } if reader.is_pointer_field_null(*index as usize))
 }
 
 fn decode_field(reader: &StructReader<'_>, field: &FieldLayout) -> Result<Value, ConversionError> {
-    let name = field.name.as_str();
-    match (&field.kind, field.slot) {
-        (FieldKind::Scalar(scalar), slot) => decode_scalar(reader, slot, *scalar, name),
-        (kind, FieldSlot::Pointer(index)) => {
-            decode_pointer(reader.get_pointer_field(index as usize), kind, name)
-        }
-        (kind, slot) => Err(ConversionError(format!(
-            "`{name}` is laid out as {slot:?} but holds {kind:?}"
-        ))),
+    match &field.kind {
+        FieldKind::Bit(bit) => Ok(Value::from(reader.get_bool_field(*bit as usize))),
+        FieldKind::Data { offset, scalar } => decode_scalar(reader, *offset as usize, *scalar),
+        FieldKind::Pointer { index, target } => decode_pointer(
+            reader.get_pointer_field(*index as usize),
+            target,
+            &field.name,
+        ),
     }
 }
 
 fn decode_scalar(
     reader: &StructReader<'_>,
-    slot: FieldSlot,
+    offset: usize,
     scalar: Scalar,
-    name: &str,
 ) -> Result<Value, ConversionError> {
-    let value = match (scalar, slot) {
-        (Scalar::Bool, FieldSlot::Bit(bit)) => Value::from(reader.get_bool_field(bit as usize)),
-        (Scalar::U8, FieldSlot::Data(offset)) => {
-            Value::from(reader.get_data_field::<u8>(offset as usize))
-        }
-        (Scalar::U16, FieldSlot::Data(offset)) => {
-            Value::from(reader.get_data_field::<u16>(offset as usize))
-        }
-        (Scalar::U32, FieldSlot::Data(offset)) => {
-            Value::from(reader.get_data_field::<u32>(offset as usize))
-        }
-        (Scalar::U64, FieldSlot::Data(offset)) => {
-            Value::String(reader.get_data_field::<u64>(offset as usize).to_string())
-        }
-        (Scalar::I8, FieldSlot::Data(offset)) => {
-            Value::from(reader.get_data_field::<i8>(offset as usize))
-        }
-        (Scalar::I16, FieldSlot::Data(offset)) => {
-            Value::from(reader.get_data_field::<i16>(offset as usize))
-        }
-        (Scalar::I32, FieldSlot::Data(offset)) => {
-            Value::from(reader.get_data_field::<i32>(offset as usize))
-        }
-        (Scalar::I64, FieldSlot::Data(offset)) => {
-            Value::String(reader.get_data_field::<i64>(offset as usize).to_string())
-        }
-        (Scalar::F32, FieldSlot::Data(offset)) => {
-            bridge::float_to_json(f64::from(reader.get_data_field::<f32>(offset as usize)))?
-        }
-        (Scalar::F64, FieldSlot::Data(offset)) => {
-            bridge::float_to_json(reader.get_data_field::<f64>(offset as usize))?
-        }
-        (scalar, slot) => {
-            return Err(ConversionError(format!(
-                "`{name}` is laid out as {slot:?} but holds a {scalar:?}"
-            )));
-        }
+    let value = match scalar {
+        Scalar::U8 => Value::from(reader.get_data_field::<u8>(offset)),
+        Scalar::U16 => Value::from(reader.get_data_field::<u16>(offset)),
+        Scalar::U32 => Value::from(reader.get_data_field::<u32>(offset)),
+        Scalar::U64 => Value::String(reader.get_data_field::<u64>(offset).to_string()),
+        Scalar::I8 => Value::from(reader.get_data_field::<i8>(offset)),
+        Scalar::I16 => Value::from(reader.get_data_field::<i16>(offset)),
+        Scalar::I32 => Value::from(reader.get_data_field::<i32>(offset)),
+        Scalar::I64 => Value::String(reader.get_data_field::<i64>(offset).to_string()),
+        Scalar::F32 => bridge::float_to_json(f64::from(reader.get_data_field::<f32>(offset)))?,
+        Scalar::F64 => bridge::float_to_json(reader.get_data_field::<f64>(offset))?,
     };
     Ok(value)
 }
 
 fn decode_pointer(
     pointer: PointerReader<'_>,
-    kind: &FieldKind,
+    target: &PointerTarget,
     name: &str,
 ) -> Result<Value, ConversionError> {
-    match kind {
-        FieldKind::Text => Ok(Value::String(decode_text(pointer.get_text(None)?, name)?)),
-        FieldKind::Bytes { length } => {
+    match target {
+        PointerTarget::Text => Ok(Value::String(decode_text(pointer.get_text(None)?, name)?)),
+        PointerTarget::Bytes { length } => {
             let bytes = pointer.get_data(None)?;
             if let Some(length) = length
                 && bytes.len() != *length
@@ -457,12 +401,12 @@ fn decode_pointer(
             }
             Ok(Value::String(bridge::bytes_to_base64(bytes)))
         }
-        FieldKind::Time(timestamp) => {
+        PointerTarget::Time(timestamp) => {
             let time = decode_time(pointer, timestamp)?;
             Ok(Value::String(bridge::time_to_rfc3339(time)))
         }
-        FieldKind::Struct(layout) => decode_struct(pointer.get_struct(None)?, layout),
-        FieldKind::List { items, length } => {
+        PointerTarget::Struct(layout) => decode_struct(pointer.get_struct(None)?, layout),
+        PointerTarget::List { items, length } => {
             let elements = decode_list(pointer, items, name)?;
             if let Some(length) = length
                 && elements.len() != *length
@@ -474,9 +418,6 @@ fn decode_pointer(
             }
             Ok(Value::Array(elements))
         }
-        FieldKind::Scalar(scalar) => Err(ConversionError(format!(
-            "`{name}` is laid out behind a pointer but holds a {scalar:?}"
-        ))),
     }
 }
 
@@ -502,7 +443,7 @@ fn decode_list(
     name: &str,
 ) -> Result<Vec<Value>, ConversionError> {
     match items {
-        ListItems::Scalar(Scalar::Bool) => decode_scalar_list::<bool>(pointer, Value::from),
+        ListItems::Bool => decode_scalar_list::<bool>(pointer, Value::from),
         ListItems::Scalar(Scalar::U8) => decode_scalar_list::<u8>(pointer, Value::from),
         ListItems::Scalar(Scalar::U16) => decode_scalar_list::<u16>(pointer, Value::from),
         ListItems::Scalar(Scalar::U32) => decode_scalar_list::<u32>(pointer, Value::from),

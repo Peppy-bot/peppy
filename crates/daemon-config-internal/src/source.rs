@@ -1,3 +1,4 @@
+use crate::internal::repository::PinnedItem;
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer},
@@ -72,6 +73,17 @@ impl ExposureRef {
 impl fmt::Display for ExposureRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.name, self.tag)
+    }
+}
+
+/// The identity a pin names, as a launcher would list it. A pin's name and
+/// tag already passed the identity rules, so no re-validation is needed.
+impl From<&PinnedItem> for ExposureRef {
+    fn from(pin: &PinnedItem) -> Self {
+        Self {
+            name: pin.name.as_str().to_owned(),
+            tag: pin.tag.as_str().to_owned(),
+        }
     }
 }
 

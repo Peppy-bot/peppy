@@ -3,10 +3,10 @@
 //! the pins it receives, and what the hub check reports.
 
 use super::*;
-use crate::services::repo::cache::{self as repo_cache, ContractCacheEntry, McpExposureCacheEntry};
 use crate::services::repo::index::publish_repository_index;
+use crate::test_support::{SeededDocument, seed_contract_cache, seed_exposure_cache};
 use daemon_config::consts::PeppyDirs;
-use daemon_config::repository::{EntryOrigin, ItemName, ItemTag, ManifestFingerprint, PinKind};
+use daemon_config::repository::{DeploymentPins, DeploymentRoot, ManifestFingerprint, PinKind};
 use daemon_config::source::ExposureRef;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -103,7 +103,7 @@ impl SeededHome {
         let dirs = PeppyDirs::new(guard.path());
         let docs = guard.path().join("docs");
         std::fs::create_dir_all(&docs).expect("docs dir");
-        let contract_entries: Vec<ContractCacheEntry> = contracts
+        let contract_files: Vec<(String, String, PathBuf)> = contracts
             .iter()
             .enumerate()
             .map(|(index, content)| {
@@ -111,37 +111,36 @@ impl SeededHome {
                     .expect("contract parses");
                 let path = docs.join(format!("contract_{index}.json5"));
                 std::fs::write(&path, content).expect("write contract");
-                ContractCacheEntry {
-                    contract_name: ItemName::parse(document.manifest.name.as_str()).unwrap(),
-                    tag: ItemTag::parse(&document.manifest.tag).unwrap(),
-                    sha256: ManifestFingerprint::of_bytes(content.as_bytes()),
-                    origin: EntryOrigin::Fs { path },
-                    repo_id: 0,
-                }
+                (
+                    document.manifest.name.as_str().to_owned(),
+                    document.manifest.tag.clone(),
+                    path,
+                )
             })
             .collect();
-        repo_cache::write_repo_cache(&dirs, &contract_entries).expect("write contract cache");
-        let exposure_entries: Vec<McpExposureCacheEntry> = exposures
+        seed_contract_cache(&dirs, &borrow_documents(&contract_files));
+        let exposure_files: Vec<(String, String, PathBuf)> = exposures
             .iter()
             .map(|(name, content)| {
                 let path = docs.join(format!("{name}.json5"));
                 std::fs::write(&path, content).expect("write exposure");
-                McpExposureCacheEntry {
-                    exposure_name: ItemName::parse(name).unwrap(),
-                    tag: ItemTag::parse("v1").unwrap(),
-                    sha256: ManifestFingerprint::of_bytes(content.as_bytes()),
-                    origin: EntryOrigin::Fs { path },
-                    repo_id: 0,
-                }
+                ((*name).to_owned(), "v1".to_owned(), path)
             })
             .collect();
-        repo_cache::write_repo_cache(&dirs, &exposure_entries).expect("write exposure cache");
+        seed_exposure_cache(&dirs, &borrow_documents(&exposure_files));
         Self {
             _guard: guard,
             dirs,
             docs,
         }
     }
+}
+
+fn borrow_documents(files: &[(String, String, PathBuf)]) -> Vec<SeededDocument<'_>> {
+    files
+        .iter()
+        .map(|(name, tag, path)| (name.as_str(), tag.as_str(), path.as_path()))
+        .collect()
 }
 
 fn references(names: &[&str]) -> Vec<ExposureRef> {
@@ -233,13 +232,13 @@ fn a_launch_resolves_exposures_and_their_contracts_through_the_caches() {
     assert_eq!(slots, ["front_camera", "recorder"]);
 
     // A peer materializing the same pins plans the same deployment.
-    let materialized = materialize_exposure_deployment(
-        &home.dirs,
-        &resolved.exposure_pins(),
-        &resolved.contract_pins(),
-        &quiet,
+    let pins = DeploymentPins::new(
+        DeploymentRoot::Exposures(resolved.exposure_pins()),
+        resolved.contract_pins(),
     )
-    .expect("materializes");
+    .expect("the resolved pins form a deployment");
+    let materialized =
+        materialize_exposure_deployment(&home.dirs, &pins, &quiet).expect("materializes");
     assert_eq!(materialized.spec, resolved.spec);
     assert_eq!(
         serde_json::to_value(&materialized.plan.config).unwrap(),

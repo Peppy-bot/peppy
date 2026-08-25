@@ -23,8 +23,9 @@ pub fn derive_exposure_catalog(
         resolve_exposure_deployment(peppy_dirs, std::slice::from_ref(&reference), on_feedback)?;
     resolved
         .plan
-        .bundles
+        .exposures
         .into_iter()
         .next()
+        .map(|exposure| exposure.bundle)
         .ok_or_else(|| format!("exposure `{reference}` produced no catalog"))
 }

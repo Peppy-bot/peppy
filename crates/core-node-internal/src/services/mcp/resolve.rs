@@ -1,14 +1,15 @@
 //! From exposure references or pins to a planned built-in deployment.
 
-use crate::services::repo::cache::{self as repo_cache, ContractCacheEntry, McpExposureCacheEntry};
+use crate::services::repo::cache::{
+    self as repo_cache, ContractCacheEntry, McpExposureCacheEntry, PinnableCacheEntry,
+    RepoCacheEntry,
+};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::mcp_deployment::{
     McpDeploymentPlan, McpServeSpec, PinnedDocument, plan_deployment,
 };
 use daemon_config::mcp_exposure::PeppyMcpExposureParser;
-use daemon_config::repository::{
-    EntryOrigin, ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem,
-};
+use daemon_config::repository::{DeploymentPins, DeploymentRoot, ManifestFingerprint, PinnedItem};
 use daemon_config::source::ExposureRef;
 use std::collections::BTreeMap;
 
@@ -36,24 +37,29 @@ impl ResolvedMcpDeployment {
     }
 }
 
-fn pinned(
-    kind: PinKind,
-    name: &ItemName,
-    tag: &ItemTag,
-    sha256: &ManifestFingerprint,
-    origin: &EntryOrigin,
-) -> PinnedItem {
-    PinnedItem {
-        kind,
-        name: name.clone(),
-        tag: tag.clone(),
-        sha256: sha256.clone(),
-        origin: origin.clone(),
-    }
-}
-
-fn utf8(label: &str, bytes: Vec<u8>) -> Result<String, String> {
-    String::from_utf8(bytes).map_err(|e| format!("{label} is not UTF-8: {e}"))
+/// Resolves one `name:tag[@sha256]` reference through this machine's cache
+/// rules into the document's bytes beside the pin its winning entry mints:
+/// what a coordinator ships, where [`repo_cache::resolve_cached_doc`] would
+/// hand back a parsed value.
+pub(super) fn resolve_cached_document<E: PinnableCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    entries: &[E],
+    name: &str,
+    tag: &str,
+    sha256_pin: Option<&str>,
+    on_feedback: &dyn Fn(&str),
+) -> Result<PinnedDocument, String> {
+    let (entry, bytes) = repo_cache::resolve_cached_doc_entry(
+        peppy_dirs,
+        entries,
+        name,
+        tag,
+        sha256_pin,
+        on_feedback,
+    )?;
+    let content = String::from_utf8(bytes)
+        .map_err(|e| format!("cached {} `{name}:{tag}` is not UTF-8: {e}", E::KIND))?;
+    Ok(PinnedDocument::new(entry.pin(), content))
 }
 
 /// Resolves the exposures a launcher lists through this machine's own cache
@@ -78,7 +84,7 @@ pub(crate) fn resolve_exposure_deployment(
     let mut wanted: BTreeMap<(String, String), (Option<ManifestFingerprint>, String)> =
         BTreeMap::new();
     for reference in references {
-        let (entry, bytes) = repo_cache::resolve_cached_doc_entry(
+        let exposure = resolve_cached_document(
             peppy_dirs,
             &exposure_entries,
             &reference.name,
@@ -86,8 +92,7 @@ pub(crate) fn resolve_exposure_deployment(
             None,
             on_feedback,
         )?;
-        let content = utf8(&format!("exposure `{reference}`"), bytes)?;
-        let document = PeppyMcpExposureParser::from_content(&content)
+        let document = PeppyMcpExposureParser::from_content(&exposure.content)
             .map_err(|e| format!("exposure `{reference}` does not parse: {e}"))?;
         for target in document.targets.values() {
             let key = (
@@ -115,38 +120,19 @@ pub(crate) fn resolve_exposure_deployment(
                 },
             }
         }
-        exposures.push(PinnedDocument::new(
-            pinned(
-                PinKind::McpExposure,
-                &entry.exposure_name,
-                &entry.tag,
-                &entry.sha256,
-                &entry.origin,
-            ),
-            content,
-        ));
+        exposures.push(exposure);
     }
 
     let mut contracts = Vec::with_capacity(wanted.len());
     for ((name, tag), (author, _)) in &wanted {
-        let (entry, bytes) = repo_cache::resolve_cached_doc_entry(
+        contracts.push(resolve_cached_document(
             peppy_dirs,
             &contract_entries,
             name,
             tag,
             author.as_ref().map(ManifestFingerprint::as_str),
             on_feedback,
-        )?;
-        contracts.push(PinnedDocument::new(
-            pinned(
-                PinKind::Contract,
-                &entry.contract_name,
-                &entry.tag,
-                &entry.sha256,
-                &entry.origin,
-            ),
-            utf8(&format!("contract `{name}:{tag}`"), bytes)?,
-        ));
+        )?);
     }
 
     ResolvedMcpDeployment::from_spec(McpServeSpec {
@@ -169,28 +155,43 @@ pub fn resolve_exposure_plan(
 /// origin otherwise, then plans the deployment. Nothing is resolved by name.
 pub(crate) fn materialize_exposure_deployment(
     peppy_dirs: &PeppyDirs,
-    exposure_pins: &[PinnedItem],
-    contract_pins: &[PinnedItem],
+    pins: &DeploymentPins,
     on_feedback: &dyn Fn(&str),
 ) -> Result<ResolvedMcpDeployment, String> {
+    let DeploymentRoot::Exposures(exposure_pins) = &pins.root else {
+        return Err(format!(
+            "{} is a node deployment, not a built-in MCP one",
+            pins.root.label()
+        ));
+    };
     let exposure_entries = repo_cache::load_repo_cache::<McpExposureCacheEntry>(peppy_dirs)
         .map_err(|e| format!("failed to load the exposure cache: {e}"))?;
     let contract_entries = repo_cache::load_repo_cache::<ContractCacheEntry>(peppy_dirs)
         .map_err(|e| format!("failed to load the contract cache: {e}"))?;
-    let mut exposures = Vec::with_capacity(exposure_pins.len());
-    for pin in exposure_pins {
-        let (_, bytes) =
-            repo_cache::resolve_pin_to_bytes(peppy_dirs, &exposure_entries, pin, on_feedback)?;
-        exposures.push(PinnedDocument::new(pin.clone(), utf8(&pin.label(), bytes)?));
-    }
-    let mut contracts = Vec::with_capacity(contract_pins.len());
-    for pin in contract_pins {
-        let (_, bytes) =
-            repo_cache::resolve_pin_to_bytes(peppy_dirs, &contract_entries, pin, on_feedback)?;
-        contracts.push(PinnedDocument::new(pin.clone(), utf8(&pin.label(), bytes)?));
-    }
     ResolvedMcpDeployment::from_spec(McpServeSpec {
-        exposures,
-        contracts,
+        exposures: materialize_pinned(peppy_dirs, &exposure_entries, exposure_pins, on_feedback)?,
+        contracts: materialize_pinned(peppy_dirs, &contract_entries, &pins.closure, on_feedback)?,
     })
+}
+
+/// Every pin's bytes, through the same content-first rule a pinned node's
+/// documents are materialized by.
+fn materialize_pinned<E: RepoCacheEntry>(
+    peppy_dirs: &PeppyDirs,
+    entries: &[E],
+    pins: &[PinnedItem],
+    on_feedback: &dyn Fn(&str),
+) -> Result<Vec<PinnedDocument>, String> {
+    pins.iter()
+        .map(|pin| {
+            let content = repo_cache::resolve_pinned_doc(
+                peppy_dirs,
+                entries,
+                pin,
+                |content| Ok(content.to_owned()),
+                on_feedback,
+            )?;
+            Ok(PinnedDocument::new(pin.clone(), content))
+        })
+        .collect()
 }
