@@ -327,6 +327,19 @@ fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], coloriz
         render_bindings_table(&mut out, &binding_nodes, colorize);
     }
 
+    // Per-instance endpoints. Only rendered when some tracked instance serves
+    // one: the built-in MCP server's instances, one URL per exposure, so an
+    // operator finds them here rather than in the launcher.
+    let endpoint_nodes: Vec<&SerializedNode> = nodes
+        .iter()
+        .filter(|n| n.instances.iter().any(|i| !i.endpoints.is_empty()))
+        .collect();
+    if !endpoint_nodes.is_empty() {
+        let _ = writeln!(out, "Instance endpoints");
+        let _ = writeln!(out);
+        render_endpoints_table(&mut out, &endpoint_nodes, colorize);
+    }
+
     // Per-instance pairing slots. Only rendered when some tracked instance
     // declares `depends_on.pairings`; the `⇌` arrow marks the relationship as
     // bidirectional, unlike the one-way binding `→` above.
@@ -443,6 +456,39 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
         .collect();
 
     render_table(out, &BINDING_HEADERS, &blocks);
+}
+
+/// Headers for the per-instance endpoints table; grouped like the bindings
+/// table (node label on the first row of its group, instance id on the first
+/// of its endpoint rows).
+const ENDPOINT_HEADERS: [&str; 3] = ["NODE", "INSTANCE", "ENDPOINT"];
+
+/// Renders the per-instance endpoints table. `nodes` must already be
+/// filtered to entries with at least one instance serving an endpoint.
+fn render_endpoints_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
+    let blocks: Vec<Vec<Vec<String>>> = nodes
+        .iter()
+        .map(|node| {
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut node_cell = paint(colorize, NODE_COLOR, &node.label());
+            for instance in &node.instances {
+                if instance.endpoints.is_empty() {
+                    continue;
+                }
+                let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
+                for endpoint in &instance.endpoints {
+                    rows.push(vec![
+                        std::mem::take(&mut node_cell),
+                        std::mem::take(&mut instance_cell),
+                        endpoint.clone(),
+                    ]);
+                }
+            }
+            rows
+        })
+        .collect();
+
+    render_table(out, &ENDPOINT_HEADERS, &blocks);
 }
 
 /// Headers for the per-instance pairings table; grouped like the bindings
@@ -699,9 +745,58 @@ mod tests {
                     healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
+                    endpoints: Vec::new(),
                 })
                 .collect(),
         }
+    }
+
+    /// The endpoints table appears only when an instance serves one, with
+    /// one row per endpoint URL under the instance that serves it.
+    #[test]
+    fn endpoints_are_listed_per_instance_and_only_when_served() {
+        let mut server = node(
+            "mcp_camera_and_recording_v1",
+            "builtin",
+            NodeStage::Ready,
+            vec![("mcp", InstanceState::Running)],
+        );
+        server.instances[0].endpoints = vec![
+            "http://127.0.0.1:8900/camera_and_recording/v1/mcp".to_string(),
+            "http://127.0.0.1:8900/camera_only/v1/mcp".to_string(),
+        ];
+        let camera = node(
+            "uvc_camera",
+            "v1",
+            NodeStage::Ready,
+            vec![("the_camera", InstanceState::Running)],
+        );
+        let out = format_stack_body(&[camera.clone(), server], &[], false);
+        assert!(out.contains("Instance endpoints"), "{out}");
+        assert!(out.contains("ENDPOINT"), "{out}");
+        assert!(
+            out.contains("http://127.0.0.1:8900/camera_and_recording/v1/mcp"),
+            "{out}"
+        );
+        assert!(
+            out.contains("http://127.0.0.1:8900/camera_only/v1/mcp"),
+            "{out}"
+        );
+        let endpoints_section = out
+            .split("Instance endpoints")
+            .nth(1)
+            .expect("the section exists");
+        assert!(
+            !endpoints_section
+                .split("Dependencies")
+                .next()
+                .unwrap()
+                .contains("uvc_camera"),
+            "a node serving no endpoint has no row: {out}"
+        );
+
+        let without = format_stack_body(&[camera], &[], false);
+        assert!(!without.contains("Instance endpoints"), "{without}");
     }
 
     /// `(instance_id, state, [(slot, producers)])` rows fed to
@@ -735,6 +830,7 @@ mod tests {
                         })
                         .collect(),
                     pairing_slots: std::collections::BTreeMap::new(),
+                    endpoints: Vec::new(),
                 })
                 .collect(),
         }
@@ -1207,6 +1303,7 @@ mod tests {
                     healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
+                    endpoints: Vec::new(),
                 },
                 SerializedInstance {
                     instance_id: "down-1".to_string(),
@@ -1214,6 +1311,7 @@ mod tests {
                     healthy: false,
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
+                    endpoints: Vec::new(),
                 },
             ],
         }];

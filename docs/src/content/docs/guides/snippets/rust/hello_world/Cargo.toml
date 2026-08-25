@@ -10,3 +10,6 @@ tokio = { version = "1", features = ["macros", "rt", "time"] }
 tracing = "0.1"
 
 [workspace]
+
+[dev-dependencies]
+peppygen = { path = ".peppy/libs/peppygen", features = ["testing"] }

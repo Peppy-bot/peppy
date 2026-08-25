@@ -15,6 +15,10 @@ generator = { workspace = true }
 latency-report = { workspace = true }
 containers = { workspace = true }
 json5-pretty = { workspace = true }
+# The catalog derivation the built-in MCP server serves from and the hub
+# check validates with; the daemon derives it when it registers the server
+# and when `peppy mcp catalog` asks.
+peppy-mcp-catalog = { workspace = true }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"

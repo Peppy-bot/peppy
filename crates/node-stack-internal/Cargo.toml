@@ -28,6 +28,9 @@ chrono = "0.4"
 tracing = "0.1"
 parking_lot = { workspace = true }
 tempfile = "3.10"
+# A built-in instance's endpoints are read off the runtime config it boots
+# with, which travels as JSON5.
+serde_json5 = "0.2"
 process-wrap = { version = "9.1.0", features = ["tokio1", "process-group"] }
 
 

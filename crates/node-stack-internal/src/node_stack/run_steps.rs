@@ -220,6 +220,58 @@ pub(super) fn build_process_command(
     })
 }
 
+/// Builds the spawn command of a built-in node: `launch`'s executable and
+/// arguments in `working_dir`, with the instance's environment, the
+/// recipe's own entries, and the runtime config path the way
+/// [`build_process_command`] passes it.
+pub(super) fn build_built_in_command(
+    launch: &super::entity::BuiltInLaunch,
+    config: &NodeConfig,
+    working_dir: &Path,
+    runtime_config_json5: &str,
+    env_vars: &[(String, String)],
+    log_file: &Arc<StdMutex<File>>,
+    peppy_dirs: &PeppyDirs,
+) -> std::io::Result<SpawnCommand> {
+    let manifest = &config.manifest;
+    let description = std::iter::once(launch.executable.display().to_string())
+        .chain(launch.args.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    debug!(
+        "Running built-in node '{}:{}' with command: {description} in dir {:?}",
+        manifest.name.as_str(),
+        manifest.tag,
+        working_dir
+    );
+    crate::build_io::log_cmd_header(log_file, "built_in", &description, working_dir, &[]);
+
+    let runtime_config_path = write_runtime_config_temp(peppy_dirs, runtime_config_json5)?;
+
+    let mut command = Command::new(&launch.executable);
+    command.current_dir(working_dir);
+    command
+        .args(&launch.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    spawn_as_process_group_leader(&mut command);
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
+    for (key, value) in &launch.env {
+        command.env(key, value);
+    }
+    command.env("PWD", working_dir);
+    command.env(RUNTIME_CONFIG_VAR_NAME, &runtime_config_path);
+
+    Ok(SpawnCommand {
+        command,
+        runtime_config_path,
+        description,
+    })
+}
+
 /// Describes a bind mount for a container node.
 pub(super) struct ContainerBind {
     pub(super) src: String,

@@ -1,14 +1,12 @@
 mod add;
 mod exclude;
-mod exposure;
 mod index;
 mod init;
 mod list;
 mod refresh;
 mod remove;
 
-pub use exposure::repo_exposure;
-pub use index::repo_index;
+pub use index::{CheckScope, check_index, repo_index};
 pub use init::repo_init_with_dirs;
 
 use std::sync::Arc;
@@ -44,32 +42,24 @@ pub enum RepoCommands {
     /// a file inside the repository declaring exactly what it is filed
     /// under. Run it in CI so a repository cannot merge an index that has
     /// drifted from its contents. Needs no daemon.
+    ///
+    /// With `--check --include-repositories`, also validates every
+    /// `mcp_exposure/v1` document the index lists against the contracts it
+    /// references, resolved through this machine's repository caches, and
+    /// reports every violation of every exposure at once. A contract the
+    /// caches cannot resolve is an error naming it, never a pass: register
+    /// and refresh the contract repository first (`peppy repo add`,
+    /// `peppy repo refresh`), as a hub's CI does.
     Index {
         /// Repository root to index (defaults to the current directory).
         path: Option<PathBuf>,
         /// Verify the committed index instead of writing it.
         #[arg(long)]
         check: bool,
-    },
-    /// Publish an MCP exposure document's artifacts, or verify them.
-    ///
-    /// Validates the `mcp_exposure/v1` document against the contract
-    /// documents its sha256 pins name, resolved through the local
-    /// repository caches (run `peppy repo refresh` first), writes the
-    /// derived bundle (public catalog plus generated-node identity) to
-    /// `<stem>.bundle.json` next to the document, and generates the MCP
-    /// server node into a sibling directory named after it.
-    ///
-    /// With `--check`, regenerates everything and verifies the committed
-    /// files match byte for byte. Run it in CI so a hub cannot merge
-    /// artifacts that have drifted from their exposure document. Needs no
-    /// daemon.
-    Exposure {
-        /// Path to the exposure `.json5` document.
-        path: PathBuf,
-        /// Verify the committed artifacts instead of writing them.
-        #[arg(long)]
-        check: bool,
+        /// With `--check`: validate the listed exposures against the
+        /// contracts they reference, through the repository caches.
+        #[arg(long, requires = "check")]
+        include_repositories: bool,
     },
     /// List configured repositories
     List,
@@ -122,8 +112,18 @@ impl Command for RepoCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<()> {
         match self.command {
             RepoCommands::Init => init::repo_init(ctx),
-            RepoCommands::Index { path, check } => index::repo_index(path, check),
-            RepoCommands::Exposure { path, check } => exposure::repo_exposure(path, check),
+            RepoCommands::Index {
+                path,
+                check,
+                include_repositories,
+            } => index::repo_index(
+                path,
+                match (check, include_repositories) {
+                    (false, _) => None,
+                    (true, false) => Some(CheckScope::Index),
+                    (true, true) => Some(CheckScope::IndexAndRepositories),
+                },
+            ),
             RepoCommands::List => list::list_repos(ctx),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {

@@ -1,5 +1,4 @@
 pub mod common;
-pub mod exposure;
 pub(crate) mod naming;
 pub(crate) mod scaffold_tree;
 #[cfg(test)]

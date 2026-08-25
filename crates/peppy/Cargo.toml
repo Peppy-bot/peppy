@@ -16,6 +16,8 @@ core-node = { workspace = true }
 core-node-api = { workspace = true }
 node-stack = { workspace = true }
 latency-report = { workspace = true }
+# `peppy mcp serve`, the built-in MCP server.
+mcp-server = { workspace = true }
 json5-pretty = { workspace = true }
 bytes = "1"
 # 0.4.31 for `DateTime::from_timestamp`, used to render repo read times.

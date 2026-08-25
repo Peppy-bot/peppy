@@ -1,20 +1,16 @@
-//! Shared harness for the MCP endpoint e2e suites.
+//! Shared harness for the MCP end-to-end suites.
 //!
-//! Two test binaries drive a generated MCP server node end to end:
-//! generator-internal's endpoint test (one node against a stub provider)
-//! and peppy's full-stack test (a launcher-deployed stack). Both need the
-//! same moves — compile the generated node offline in the shared test
-//! target dir, connect the real MCP client over Streamable HTTP, poll a
-//! task to a state, derive the consumed interfaces the daemon would
-//! resolve — so those moves live here.
+//! Two test binaries drive the built-in MCP server end to end: the codec
+//! wire test in generator-internal (the runtime codec against a generated
+//! provider) and peppy's full-stack suite (a launcher-deployed stack). Both
+//! need the same moves: compile a generated provider node offline in the
+//! shared test target dir, connect the real MCP client over Streamable HTTP,
+//! poll a task to a state, register a fixture contract's members on a
+//! provider generator. Those moves live here.
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::node::{Cardinality, ConsumedAction, ConsumedService, ConsumedTopic};
 use daemon_config::contract::PeppyContract;
-use generator::{
-    ConsumedActionMessage, ContractOrigin, DependencyContext, DeploymentInterface, ExposureBundle,
-    LanguageGenerator,
-};
+use generator::{ContractOrigin, LanguageGenerator};
 use rmcp::model::{
     ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProtocolVersion, UpdateTaskParams,
 };
@@ -103,10 +99,10 @@ pub fn ephemeral_port() -> u16 {
 }
 
 /// Connects a client that declares the SEP-2663 tasks extension capability
-/// to the node's Streamable HTTP endpoint, negotiating MCP `2026-07-28`.
-pub async fn connect_with_tasks(http_port: u16) -> Client {
+/// to one exposure's Streamable HTTP endpoint, negotiating MCP `2026-07-28`.
+pub async fn connect_with_tasks(endpoint_url: &str) -> Client {
     let transport = StreamableHttpClientTransport::from_config(
-        StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{http_port}/mcp")),
+        StreamableHttpClientTransportConfig::with_uri(endpoint_url.to_owned()),
     );
     let mut info = ClientInfo::default();
     info.capabilities = ClientCapabilities::builder().enable_tasks().build();
@@ -185,89 +181,4 @@ pub fn register_contract_members(
             .add_exposed_action(action, Some(origin))
             .expect("register exposed action");
     }
-}
-
-/// The consumed interfaces the daemon resolves for a generated exposure
-/// node: exactly the members the bundle selects, in catalog order, resolved
-/// against the fixture contract filling each `link_id` slot. This is what
-/// the generated manifest consumes, so it is what the node's peppygen must
-/// be built from.
-pub fn consumed_interfaces(
-    bundle: &ExposureBundle,
-    slots: &[(&PeppyContract, &str)],
-) -> Vec<DeploymentInterface> {
-    let slot = |target: &str| -> (&PeppyContract, DependencyContext) {
-        let (contract, link_id) = slots
-            .iter()
-            .find(|(_, link_id)| *link_id == target)
-            .unwrap_or_else(|| panic!("no fixture contract fills slot `{target}`"));
-        let dependency = DependencyContext::contract(
-            contract.manifest.name.as_str(),
-            contract.manifest.tag.as_str(),
-            *link_id,
-            Cardinality::One,
-        );
-        (contract, dependency)
-    };
-
-    let mut interfaces = Vec::new();
-    for resource in &bundle.resources {
-        let (contract, dependency) = slot(&resource.target);
-        let topic = contract
-            .interfaces
-            .topics
-            .iter()
-            .find(|topic| topic.name == resource.member)
-            .unwrap_or_else(|| panic!("the contract declares topic `{}`", resource.member));
-        interfaces.push(DeploymentInterface::consumed_topic(
-            ConsumedTopic {
-                link_id: resource.target.clone(),
-                name: topic.name.clone(),
-                refine: None,
-            },
-            topic
-                .message_format
-                .clone()
-                .expect("fixture topics carry formats"),
-            dependency,
-        ));
-    }
-    for tool in &bundle.tools {
-        let (contract, dependency) = slot(&tool.target);
-        let service = contract
-            .interfaces
-            .services
-            .iter()
-            .find(|service| service.name == tool.member)
-            .unwrap_or_else(|| panic!("the contract declares service `{}`", tool.member));
-        interfaces.push(DeploymentInterface::consumed_service(
-            ConsumedService {
-                link_id: tool.target.clone(),
-                name: service.name.clone(),
-                refine: None,
-            },
-            service.request_message_format.clone().unwrap_or_default(),
-            service.response_message_format.clone().unwrap_or_default(),
-            dependency,
-        ));
-    }
-    for task in &bundle.tasks {
-        let (contract, dependency) = slot(&task.target);
-        let action = contract
-            .interfaces
-            .actions
-            .iter()
-            .find(|action| action.name == task.member)
-            .unwrap_or_else(|| panic!("the contract declares action `{}`", task.member));
-        interfaces.push(DeploymentInterface::consumed_action(
-            ConsumedAction {
-                link_id: task.target.clone(),
-                name: action.name.clone(),
-                refine: None,
-            },
-            ConsumedActionMessage::from(action),
-            dependency,
-        ));
-    }
-    interfaces
 }

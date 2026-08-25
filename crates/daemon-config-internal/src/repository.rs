@@ -18,7 +18,7 @@ pub use parse::PeppyRepositoryIndexParser;
 // The pin model a launch coordinator ships to every daemon in a launch: the
 // fingerprint of the bytes to run plus the origin any machine can read them
 // from. Decoding a pin is the receiving side's structural validation.
-pub use pins::{DeploymentPins, PinKind, PinnedItem};
+pub use pins::{DeploymentPins, DeploymentRoot, PinKind, PinnedItem};
 pub use types::{
     DeclaredItem, DeclaredPaths, GitCommit, GitCommitError, IndexedItem, ItemName, ItemTag,
     ManifestFingerprint, ManifestFingerprintError, RepoPathError, RepoRelativePath,

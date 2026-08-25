@@ -2,10 +2,9 @@ use crate::error::{Error, Result};
 use crate::generator::common::CrateDeployMode;
 use crate::generator::naming::{array_item_type_name, to_camel_case};
 use config::node::{
-    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, NativeEmittedTopic,
-    NativeExposedAction, NativeExposedService, SchemaType,
+    Cardinality, ConsumedAction, ConsumedService, ConsumedTopic, FormatRuleViolation,
+    MessageFormat, NativeEmittedTopic, NativeExposedAction, NativeExposedService, SchemaType,
 };
-use config::type_token_name;
 use daemon_config::consts::PeppyDirs;
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -818,96 +817,44 @@ pub fn non_empty_message_format(format: Option<&MessageFormat>) -> Option<&Messa
     format.filter(|format| !format.0.is_empty())
 }
 
-const RESERVED_MESSAGE_FIELD_NAMES: &[&str] = &["instance_id"];
-
-fn validate_fixed_array_schema(schema: &SchemaType, path: &str) -> Result<()> {
-    match schema {
-        SchemaType::Array(array) => {
-            if array.length.is_some() {
-                if matches!(array.items.as_ref(), SchemaType::Object(_)) {
-                    return Err(Error::UnsupportedFixedArrayItemType {
-                        field: path.to_string(),
-                        item: "object",
-                    });
-                }
-                let token = array.items.as_ref().as_type_token().ok_or_else(|| {
-                    Error::UnsupportedArrayItemSchema {
-                        field: path.to_string(),
-                    }
-                })?;
-                if !token.is_scalar() {
-                    return Err(Error::UnsupportedFixedArrayItemType {
-                        field: path.to_string(),
-                        item: type_token_name(token),
-                    });
-                }
-            }
-
-            validate_fixed_array_schema(array.items.as_ref(), path)
-        }
-        SchemaType::Object(object) => {
-            for (field_name, nested) in &object.fields {
-                let nested_path = format!("{path}.{field_name}");
-                validate_fixed_array_schema(nested, &nested_path)?;
-            }
-            Ok(())
-        }
-        SchemaType::Type(_) | SchemaType::Primitive(_) => Ok(()),
-    }
-}
-
+/// Refuses a fixed-length array whose items are not scalars, the rule the
+/// generators and the MCP catalog share through `config`; the violation is
+/// mapped onto this crate's error vocabulary.
 pub fn validate_fixed_length_array_items(format: &MessageFormat) -> Result<()> {
-    for (field_name, schema) in &format.0 {
-        validate_fixed_array_schema(schema, field_name)?;
-    }
-    Ok(())
-}
-
-fn validate_schema_field_names(schema: &SchemaType, path: &str, context: &str) -> Result<()> {
-    match schema {
-        SchemaType::Object(object) => validate_field_map(object.fields.iter(), path, context),
-        SchemaType::Array(array) => {
-            validate_schema_field_names(array.items.as_ref(), path, context)
-        }
-        SchemaType::Type(_) | SchemaType::Primitive(_) => Ok(()),
-    }
-}
-
-fn validate_field_map<'a, I>(fields: I, parent_path: &str, context: &str) -> Result<()>
-where
-    I: IntoIterator<Item = (&'a String, &'a SchemaType)>,
-{
-    for (field_name, schema) in fields {
-        let path = if parent_path.is_empty() {
-            field_name.clone()
-        } else {
-            format!("{parent_path}.{field_name}")
-        };
-
-        if RESERVED_MESSAGE_FIELD_NAMES.contains(&field_name.as_str()) {
-            return Err(Error::UnauthorizedMessageFieldName {
-                field: field_name.clone(),
-                path,
-                context: context.to_string(),
-            });
-        }
-
-        validate_schema_field_names(schema, &path, context)?;
-    }
-
-    Ok(())
+    format
+        .check_fixed_length_array_items()
+        .map_err(|violation| format_rule_error(violation, ""))
 }
 
 /// Validates payload field names used inside a message format.
 ///
-/// Some names are reserved by transport metadata and cannot be used in payload schemas.
+/// Some names are reserved by transport metadata and cannot be used in
+/// payload schemas; the rule itself lives in `config` beside the format
+/// model, shared with the MCP catalog.
 pub fn validate_message_format_field_names(format: &MessageFormat, context: &str) -> Result<()> {
     let normalized_context = if context.trim().is_empty() {
         "message_format"
     } else {
         context
     };
-    validate_field_map(format.0.iter(), "", normalized_context)
+    format
+        .check_reserved_field_names()
+        .map_err(|violation| format_rule_error(violation, normalized_context))
+}
+
+fn format_rule_error(violation: FormatRuleViolation, context: &str) -> Error {
+    match violation {
+        FormatRuleViolation::ReservedFieldName { field, path } => {
+            Error::UnauthorizedMessageFieldName {
+                field,
+                path,
+                context: context.to_owned(),
+            }
+        }
+        FormatRuleViolation::UnsupportedFixedArrayItemType { field, item } => {
+            Error::UnsupportedFixedArrayItemType { field, item }
+        }
+    }
 }
 
 /// Validates that generated type names for nested objects and array-of-object items

@@ -1,7 +1,6 @@
-# Shared harness for the MCP endpoint e2e suites (generator-internal's
-# endpoint test and peppy's full-stack test), so the compile-the-node dance,
-# the real MCP client plumbing, and the daemon-shaped interface derivation
-# are written once.
+# Shared harness for the MCP end-to-end suites (generator-internal's codec
+# wire test and peppy's full-stack test), so the compile-the-provider dance
+# and the real MCP client plumbing are written once.
 [package]
 name = "mcp-test-support"
 version.workspace = true

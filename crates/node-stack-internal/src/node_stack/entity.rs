@@ -24,8 +24,8 @@ use super::build_steps::{
     run_build_cmd,
 };
 use super::run_steps::{
-    SpawnCommand, SpawnContainerInputs, build_container_command, build_process_command,
-    create_instance_dir, extract_node_archive, kill_and_collect_error,
+    SpawnCommand, SpawnContainerInputs, build_built_in_command, build_container_command,
+    build_process_command, create_instance_dir, extract_node_archive, kill_and_collect_error,
 };
 
 pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> SerializedNode {
@@ -48,8 +48,57 @@ pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> Ser
                 // `NodeStackInner::to_serialized_graph` (manifest + pairing
                 // registry); the entity alone cannot know pair state.
                 pairing_slots: std::collections::BTreeMap::new(),
+                endpoints: i.endpoints().to_vec(),
             })
             .collect(),
+    }
+}
+
+/// The endpoint URLs a built-in instance serves, from the recipe's paths and
+/// the `port` argument of the runtime config the instance boots with.
+fn built_in_endpoints(
+    launch: &BuiltInLaunch,
+    runtime_config_json5: &str,
+) -> std::result::Result<Vec<String>, String> {
+    let runtime_config: config::runtime::RuntimeConfig =
+        serde_json5::from_str(runtime_config_json5)
+            .map_err(|error| format!("the runtime config does not parse: {error}"))?;
+    let port = match runtime_config.node_instance.arguments.get("port").cloned() {
+        Some(config::AnyType::Int(port)) => u16::try_from(port).ok(),
+        Some(config::AnyType::UInt(port)) => u16::try_from(port).ok(),
+        _ => None,
+    }
+    .ok_or_else(|| "a built-in node's runtime config carries no `port` argument".to_owned())?;
+    Ok(launch.endpoint_urls(port))
+}
+
+/// How a built-in node starts: the daemon's own executable with a
+/// subcommand, plus the environment that hands the process what it serves.
+///
+/// A built-in node is registered ready to start from documents the daemon
+/// derived itself; nothing is fetched, generated or built for it. Its
+/// `Ready` artifact is the executable, and this recipe is what the spawn
+/// runs instead of the manifest's `run_cmd`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltInLaunch {
+    /// The executable to run; the entity's artifact path.
+    pub executable: PathBuf,
+    /// The arguments after the executable.
+    pub args: Vec<String>,
+    /// Environment entries the process needs beyond the instance's own.
+    pub env: Vec<(String, String)>,
+    /// The HTTP paths the process serves on its `port` argument, used to
+    /// report each instance's endpoint URLs.
+    pub http_paths: Vec<String>,
+}
+
+impl BuiltInLaunch {
+    /// The URLs an instance bound to `port` serves.
+    pub fn endpoint_urls(&self, port: u16) -> Vec<String> {
+        self.http_paths
+            .iter()
+            .map(|path| format!("http://127.0.0.1:{port}{path}"))
+            .collect()
     }
 }
 
@@ -298,13 +347,17 @@ pub struct NodeEntity {
     /// transitions and are not signalled. A wholesale entity replacement
     /// (`push_config`) drops this sender, closing existing receivers.
     stage_tx: watch::Sender<SerializedNodeStage>,
+    /// The spawn recipe of a built-in node; `None` for a node the daemon
+    /// added and built from sources, which spawns its manifest's `run_cmd`.
+    built_in: Option<BuiltInLaunch>,
 }
 
 impl NodeEntity {
     /// Shared constructor: assigns a fresh generation token and opens the
-    /// stage-broadcast channel seeded with `stage`'s label. All three public
-    /// constructors (`new`, `root`, `from_snapshot`) route through here so the
-    /// generation bump and the watch initialization cannot drift apart.
+    /// stage-broadcast channel seeded with `stage`'s label. Every public
+    /// constructor (`new`, `built_in`, `root`, `from_snapshot`) routes
+    /// through here so the generation bump and the watch initialization
+    /// cannot drift apart.
     fn with_stage(config: NodeConfig, stage: NodeStage) -> Self {
         let (stage_tx, _) = watch::channel(stage.to_serialized());
         Self {
@@ -313,7 +366,34 @@ impl NodeEntity {
             generation: next_entity_generation(),
             pending_working_dir: None,
             stage_tx,
+            built_in: None,
         }
+    }
+
+    /// Creates a built-in node, ready to start: its artifact is the
+    /// executable of `launch`, and spawning runs `launch` rather than the
+    /// manifest's `run_cmd`. `config_path` points at the manifest the daemon
+    /// derived and wrote for it.
+    pub fn built_in<P: Into<PathBuf>>(
+        config: NodeConfig,
+        config_path: P,
+        launch: BuiltInLaunch,
+    ) -> Self {
+        let mut entity = Self::with_stage(
+            config,
+            NodeStage::Ready {
+                config_path: config_path.into(),
+                artifact_path: launch.executable.clone(),
+                instances: Vec::new(),
+            },
+        );
+        entity.built_in = Some(launch);
+        entity
+    }
+
+    /// The spawn recipe of a built-in node, `None` for a sourced node.
+    pub fn built_in_launch(&self) -> Option<&BuiltInLaunch> {
+        self.built_in.as_ref()
     }
 
     /// Publishes the current stage label to [`subscribe_stage`] receivers.
@@ -728,8 +808,27 @@ impl NodeEntity {
         handle: &Arc<RwLock<NodeEntity>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
+        // A built-in instance's endpoints follow from the recipe and the
+        // port the runtime config carries; derived before the lock so a
+        // malformed config is refused without touching the entity.
+        let built_in_endpoints = {
+            let guard = handle.read();
+            match guard.built_in_launch() {
+                Some(launch) => Some(
+                    built_in_endpoints(launch, ctx.runtime_config_json5).map_err(|reason| {
+                        Error::StartFailed {
+                            node_name: guard.config.manifest.name.as_str().to_owned(),
+                            node_tag: guard.config.manifest.tag.clone(),
+                            reason,
+                        }
+                    })?,
+                ),
+                None => None,
+            }
+        };
+
         // ---- Phase 1: register the Starting instance under a brief write lock ----
-        let (node_name, node_tag, node_config, artifact_path, start_generation) = {
+        let (node_name, node_tag, node_config, artifact_path, start_generation, built_in) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_spawnable() {
                 return Err(Error::InvalidStageTransition {
@@ -763,12 +862,16 @@ impl NodeEntity {
             }
 
             let snapshot_artifact = artifact_path.clone();
-            instances.push(TrackedNodeInstance::new(
+            let mut instance = TrackedNodeInstance::new(
                 ctx.instance_id.clone(),
                 None,
                 InstanceState::Starting,
                 ctx.slot_bindings.clone(),
-            ));
+            );
+            if let Some(endpoints) = built_in_endpoints {
+                instance = instance.with_endpoints(endpoints);
+            }
+            instances.push(instance);
 
             (
                 guard.config.manifest.name.as_str().to_owned(),
@@ -776,6 +879,7 @@ impl NodeEntity {
                 guard.config.clone(),
                 snapshot_artifact,
                 entity_generation,
+                guard.built_in.clone(),
             )
         };
 
@@ -784,7 +888,9 @@ impl NodeEntity {
         let is_container = node_config.execution.container.is_some();
 
         // ---- Phase 2: prepare instance dir ----
-        let instance_dir = if is_container {
+        // A built-in node has no archive to extract: its working directory
+        // starts empty, like a container's.
+        let instance_dir = if is_container || built_in.is_some() {
             create_instance_dir(instance_id_str, ctx.peppy_dirs)
         } else {
             extract_node_archive(&artifact_path, instance_id_str, ctx.peppy_dirs)
@@ -806,7 +912,17 @@ impl NodeEntity {
             mut command,
             runtime_config_path,
             description: spawn_description,
-        } = if let Some(container) = node_config.execution.container.as_ref() {
+        } = if let Some(launch) = built_in.as_ref() {
+            build_built_in_command(
+                launch,
+                &node_config,
+                &instance_dir,
+                ctx.runtime_config_json5,
+                ctx.env_vars,
+                &ctx.output_sinks.log_file,
+                ctx.peppy_dirs,
+            )
+        } else if let Some(container) = node_config.execution.container.as_ref() {
             let apptainer_run_extra_args = container
                 .apptainer_run_extra_args
                 .as_deref()
@@ -1264,6 +1380,9 @@ pub struct TrackedNodeInstance {
     /// `Arc<AtomicBool>` for the same reason as `healthy`: it is flipped through
     /// the clone the stop path resolves, without an entity write lock.
     stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The endpoint URLs the instance serves; empty for every node that is
+    /// not a built-in server.
+    endpoints: Vec<String>,
 }
 
 impl TrackedNodeInstance {
@@ -1290,6 +1409,7 @@ impl TrackedNodeInstance {
             slot_bindings,
             healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            endpoints: Vec::new(),
         }
     }
 
@@ -1299,6 +1419,18 @@ impl TrackedNodeInstance {
     /// instances built with an empty bindings map.
     pub fn slot_bindings(&self) -> &config::runtime::SlotBindings {
         &self.slot_bindings
+    }
+
+    /// The endpoint URLs the instance serves, for `stack list`; empty for
+    /// every node that is not a built-in server.
+    pub fn endpoints(&self) -> &[String] {
+        &self.endpoints
+    }
+
+    /// Records the endpoint URLs a built-in instance serves.
+    pub fn with_endpoints(mut self, endpoints: Vec<String>) -> Self {
+        self.endpoints = endpoints;
+        self
     }
 
     pub fn instance_id(&self) -> &Name {
@@ -1406,6 +1538,118 @@ mod tests {
             }"#,
         )
         .expect("valid sensor config")
+    }
+
+    fn built_in_launch() -> BuiltInLaunch {
+        BuiltInLaunch {
+            executable: PathBuf::from("/opt/peppy/bin/peppy"),
+            args: vec!["mcp".to_owned(), "serve".to_owned()],
+            env: vec![(
+                "PEPPY_MCP_SERVE_SPEC".to_owned(),
+                "/tmp/spec.json5".to_owned(),
+            )],
+            http_paths: vec![
+                "/camera_and_recording/v1/mcp".to_owned(),
+                "/arm_control/v1/mcp".to_owned(),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_built_in_entity_is_ready_with_the_executable_as_its_artifact() {
+        let entity = NodeEntity::built_in(
+            sensor_config(),
+            PathBuf::from("/tmp/built_in/sensor/peppy.json5"),
+            built_in_launch(),
+        );
+        assert_eq!(entity.stage().to_serialized(), SerializedNodeStage::Ready);
+        assert_eq!(
+            entity.artifact_path(),
+            Some(Path::new("/opt/peppy/bin/peppy"))
+        );
+        assert_eq!(
+            entity.config_path(),
+            Path::new("/tmp/built_in/sensor/peppy.json5")
+        );
+        assert_eq!(entity.built_in_launch(), Some(&built_in_launch()));
+        assert!(entity.instances().is_empty());
+        assert!(
+            entity.stage().ensure_spawnable().is_ok(),
+            "a built-in node spawns without a build"
+        );
+        assert!(
+            NodeEntity::new(sensor_config(), "/tmp/sensor/peppy.json5")
+                .built_in_launch()
+                .is_none(),
+            "a sourced node carries no recipe"
+        );
+    }
+
+    #[test]
+    fn a_built_in_instance_reports_the_endpoints_of_its_port() {
+        let launch = built_in_launch();
+        assert_eq!(
+            launch.endpoint_urls(9000),
+            [
+                "http://127.0.0.1:9000/camera_and_recording/v1/mcp",
+                "http://127.0.0.1:9000/arm_control/v1/mcp"
+            ]
+        );
+        let runtime_config = config::runtime::RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig {
+                arguments: BTreeMap::from([("port".to_string(), config::AnyType::Int(9001))]),
+                ..config::runtime::NodeInstanceConfig::new(Name::new("mcp").unwrap())
+            },
+            "sensor",
+            "v1",
+            "core_a",
+        )
+        .expect("runtime config builds");
+        let json5 = serde_json5::to_string(&runtime_config).expect("serializes");
+        assert_eq!(
+            built_in_endpoints(&launch, &json5).expect("the port is read"),
+            [
+                "http://127.0.0.1:9001/camera_and_recording/v1/mcp",
+                "http://127.0.0.1:9001/arm_control/v1/mcp"
+            ]
+        );
+
+        let portless = config::runtime::RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig::new(Name::new("mcp").unwrap()),
+            "sensor",
+            "v1",
+            "core_a",
+        )
+        .expect("runtime config builds");
+        let error = built_in_endpoints(&launch, &serde_json5::to_string(&portless).unwrap())
+            .expect_err("no port argument");
+        assert!(error.contains("`port`"), "{error}");
+    }
+
+    #[test]
+    fn serialized_instances_carry_their_endpoints() {
+        let served = TrackedNodeInstance::new(
+            Name::new("mcp").unwrap(),
+            Some(7),
+            InstanceState::Running,
+            BTreeMap::new(),
+        )
+        .with_endpoints(vec!["http://127.0.0.1:8900/camera/v1/mcp".to_owned()]);
+        let entity = NodeEntity::from_snapshot(
+            sensor_config(),
+            PathBuf::from("/tmp/sensor/peppy.json5"),
+            Some(PathBuf::from("/opt/peppy/bin/peppy")),
+            vec![served],
+        );
+        let serialized = serialize_node_entity(&entity, "core_a");
+        assert_eq!(
+            serialized.instances[0].endpoints,
+            ["http://127.0.0.1:8900/camera/v1/mcp"]
+        );
     }
 
     /// Guards the one line that places resolved bindings onto the `graph_json`

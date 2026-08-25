@@ -7,8 +7,8 @@ mod run_steps;
 
 use entity::serialize_node_entity;
 pub use entity::{
-    BuildContext, NodeEntity, NodeStage, OutputSinks, StartContext, StartedInstanceCtx,
-    TrackedNodeInstance, WorkingDirGuard,
+    BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, StartContext,
+    StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard,
 };
 use pairing::PairingRegistry;
 pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
@@ -435,8 +435,17 @@ impl NodeStackInner {
         allow_missing_dependencies: bool,
         config_path: P,
     ) -> Result<()> {
+        self.push_entity(
+            NodeEntity::new(config, config_path),
+            allow_missing_dependencies,
+        )
+    }
+
+    /// Inserts `entity`, or replaces the entity of the same identity in
+    /// place under its write lock when it has no instances.
+    fn push_entity(&mut self, entity: NodeEntity, allow_missing_dependencies: bool) -> Result<()> {
+        let config = entity.config().clone();
         let key = NodeKey::new(config.manifest.name.as_str(), &config.manifest.tag);
-        let config_path = config_path.into();
 
         // The root node cannot be modified
         if self.is_root(&key) {
@@ -495,22 +504,22 @@ impl NodeStackInner {
                 }
 
                 if interfaces_changed || dependencies_changed {
-                    let candidate = NodeEntity::new(config.clone(), config_path.clone());
+                    let candidate = &entity;
                     if allow_missing_dependencies {
                         // A permissive (missing-dependency) re-add skips the full
                         // dependency check, but must still not close a
                         // service/action cycle; run the cycle check on the
                         // candidate's incoming config regardless.
-                        self.validate_no_service_action_cycle(&candidate)?;
+                        self.validate_no_service_action_cycle(candidate)?;
                     } else {
-                        self.validate_dependencies(&candidate)?;
+                        self.validate_dependencies(candidate)?;
                     }
                 }
 
                 // Replace the entity in-place under the still-held write
                 // lock. The same `Arc` handle is preserved so any external
                 // readers see the new state.
-                *guard = NodeEntity::new(config, config_path);
+                *guard = entity;
 
                 (interfaces_changed, dependencies_changed)
             };
@@ -521,8 +530,6 @@ impl NodeStackInner {
 
             Ok(())
         } else {
-            // Entity doesn't exist, create new one in the Added stage.
-            let entity = NodeEntity::new(config, config_path);
             if allow_missing_dependencies {
                 // `insert_entity` skips dependency validation (and with it the
                 // cycle check) on a permissive add, so run the cycle check
@@ -1135,6 +1142,22 @@ impl NodeStack {
         guard.push_config_impl(config, allow_missing_dependencies, config_path)
     }
 
+    /// Registers a built-in node, ready to start.
+    ///
+    /// The same slot rules as [`Self::push_config`]: a node already in the
+    /// stack is replaced only while it has no instances, and its dependents
+    /// are rewired when its interfaces or dependencies changed. There is no
+    /// `Added` stage to pass through, since nothing is built for it.
+    pub fn push_built_in<P: Into<PathBuf>>(
+        &self,
+        config: NodeConfig,
+        config_path: P,
+        launch: BuiltInLaunch,
+    ) -> Result<()> {
+        let mut guard = self.shared.write();
+        guard.push_entity(NodeEntity::built_in(config, config_path, launch), false)
+    }
+
     pub fn snapshot(&self) -> Vec<EntityHandle> {
         let guard = self.shared.read();
         guard.entities_snapshot()
@@ -1609,5 +1632,65 @@ mod live_container_instances_tests {
         let process = config_of(r#"{ language: "rust", run_cmd: ["recon"] }"#);
         let instances = [instance("running_inst", InstanceState::Running)];
         assert!(live_container_instances_of(&process, &instances).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod built_in_tests {
+    use super::*;
+    use config::node::NodeConfigParser;
+
+    fn manifest(name: &str) -> NodeConfig {
+        NodeConfigParser::from_content(&format!(
+            r#"{{
+                peppy_schema: "node/v1",
+                manifest: {{ name: "{name}", tag: "builtin" }},
+                execution: {{ language: "rust", run_cmd: ["peppy", "mcp", "serve"] }},
+            }}"#
+        ))
+        .expect("valid manifest")
+    }
+
+    #[test]
+    fn a_built_in_node_registers_ready_and_is_replaced_only_while_idle() {
+        let stack = NodeStack::new(manifest("root"), None, PathBuf::from("/tmp/root"));
+        let launch = BuiltInLaunch {
+            executable: PathBuf::from("/opt/peppy/bin/peppy"),
+            args: vec!["mcp".to_owned(), "serve".to_owned()],
+            env: Vec::new(),
+            http_paths: vec!["/camera/v1/mcp".to_owned()],
+        };
+        stack
+            .push_built_in(
+                manifest("mcp_camera_v1"),
+                "/tmp/built_in/mcp_camera_v1/peppy.json5",
+                launch.clone(),
+            )
+            .expect("registers");
+        let entity = stack
+            .find("mcp_camera_v1", "builtin")
+            .expect("in the stack");
+        assert_eq!(
+            entity.read().stage().to_serialized(),
+            core_node_api::NodeStage::Ready
+        );
+        assert_eq!(entity.read().built_in_launch(), Some(&launch));
+
+        // Re-registering while idle replaces the recipe in place.
+        let relaunch = BuiltInLaunch {
+            http_paths: vec!["/camera/v2/mcp".to_owned()],
+            ..launch
+        };
+        stack
+            .push_built_in(
+                manifest("mcp_camera_v1"),
+                "/tmp/built_in/mcp_camera_v1/peppy.json5",
+                relaunch.clone(),
+            )
+            .expect("replaces an idle entity");
+        let entity = stack
+            .find("mcp_camera_v1", "builtin")
+            .expect("still in the stack");
+        assert_eq!(entity.read().built_in_launch(), Some(&relaunch));
     }
 }

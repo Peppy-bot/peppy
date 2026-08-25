@@ -4,6 +4,7 @@ mod datastore;
 pub(crate) mod federation;
 mod health;
 mod info;
+pub(crate) mod mcp;
 mod node;
 mod presence;
 pub(crate) mod repo;

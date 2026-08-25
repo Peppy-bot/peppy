@@ -48,7 +48,7 @@ use core_node_api::encoding::{
 };
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, Placements};
-use daemon_config::repository::{DeploymentPins, PinnedItem};
+use daemon_config::repository::{DeploymentPins, DeploymentRoot, PinnedItem};
 use futures::future::join_all;
 use peppylib::core_node::transport::poll;
 use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
@@ -79,12 +79,12 @@ struct ParticipantSlice {
 /// every one of them must be reserved. The coordinator itself never
 /// appears: it holds no reservation on itself.
 fn partition_reservations<'a>(
-    items: impl Iterator<Item = (&'a Deployment, &'a PinnedItem, &'a [PinnedItem])>,
+    items: impl Iterator<Item = (&'a Deployment, &'a DeploymentRoot, &'a [PinnedItem])>,
     placements: &Placements,
 ) -> std::result::Result<BTreeMap<String, Vec<String>>, String> {
     let coordinator = placements.coordinator();
     let mut by_core_node: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (deployment, root_pin, closure_pins) in items {
+    for (deployment, root, closure_pins) in items {
         let hosts: BTreeSet<&str> = deployment
             .instances
             .iter()
@@ -97,7 +97,7 @@ fn partition_reservations<'a>(
         // Built and serialized ONCE per deployment, not once per host: every
         // host of a deployment receives the same closure, and a closure holds
         // every dependency node plus every contract and pairing document.
-        let pins = DeploymentPins::new(root_pin.clone(), closure_pins.to_vec())?;
+        let pins = DeploymentPins::new(root.clone(), closure_pins.to_vec())?;
         let encoded = serde_json5::to_string(&pins)
             .map_err(|e| format!("could not encode a deployment's pins: {e}"))?;
         for host in hosts {
@@ -325,13 +325,9 @@ pub(super) async fn preflight(
     }
 
     let peers = partition_reservations(
-        planned.iter().map(|item| {
-            (
-                &item.deployment,
-                &item.root_pin,
-                item.closure_pins.as_slice(),
-            )
-        }),
+        planned
+            .iter()
+            .map(|item| (&item.deployment, &item.root, item.closure_pins.as_slice())),
         placements,
     )?;
 
@@ -428,10 +424,15 @@ mod tests {
         items: &[(Deployment, PinnedItem, Vec<PinnedItem>)],
         placements: &Placements,
     ) -> BTreeMap<String, Vec<String>> {
+        let roots: Vec<DeploymentRoot> = items
+            .iter()
+            .map(|(_, root, _)| DeploymentRoot::Node(root.clone()))
+            .collect();
         partition_reservations(
             items
                 .iter()
-                .map(|(deployment, root, closure)| (deployment, root, closure.as_slice())),
+                .zip(&roots)
+                .map(|((deployment, _, closure), root)| (deployment, root, closure.as_slice())),
             placements,
         )
         .expect("partitions")
@@ -479,7 +480,7 @@ mod tests {
         assert!(!sent.contains("uvc_camera"), "got: {sent}");
         // What crosses the wire decodes as the same pins that were sent.
         let decoded: DeploymentPins = serde_json5::from_str(sent).expect("round trips");
-        assert_eq!(decoded.root.name, "planner");
+        assert_eq!(decoded.root.label(), "node `planner:v1`");
         assert_eq!(decoded.closure.len(), 1);
     }
 

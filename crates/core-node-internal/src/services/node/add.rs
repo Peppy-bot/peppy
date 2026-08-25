@@ -798,6 +798,26 @@ pub(crate) fn log_label_from_source(source: &NodeSource) -> String {
                 .unwrap_or_else(|_| generate_random_id())
         }
         NodeSource::ResolveRef { name, tag } => format!("{name}_{tag}"),
+        // The identity is derived from the pinned exposures; as with a pin,
+        // decoding them here only to label a log file must not fail the
+        // goal, so a generic label stands in when they do not decode.
+        NodeSource::Exposures { pins_json5 } => {
+            serde_json5::from_str::<Vec<daemon_config::repository::PinnedItem>>(pins_json5)
+                .ok()
+                .filter(|pins| !pins.is_empty())
+                .map(|pins| {
+                    let references: Vec<daemon_config::source::ExposureRef> = pins
+                        .iter()
+                        .map(|pin| daemon_config::source::ExposureRef {
+                            name: pin.name.as_str().to_owned(),
+                            tag: pin.tag.as_str().to_owned(),
+                        })
+                        .collect();
+                    let (name, tag) = daemon_config::mcp_deployment::built_in_identity(&references);
+                    format!("{}_{tag}", name.as_str())
+                })
+                .unwrap_or_else(generate_random_id)
+        }
     }
 }
 
@@ -869,10 +889,12 @@ async fn resolve_node_add_source(
             )
             .await
         }
-        NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. } => {
-            // Pinned and resolve-ref goals are routed to
-            // `add_batch::run_pinned_add` by [`dispatch_node_add`] and never
-            // reach `run_node_add`, so this arm should be unreachable by
+        NodeSource::Pinned { .. }
+        | NodeSource::ResolveRef { .. }
+        | NodeSource::Exposures { .. } => {
+            // Pinned, resolve-ref and exposures goals are routed by
+            // [`dispatch_node_add`] to their own pipelines and never reach
+            // `run_node_add`, so this arm should be unreachable by
             // construction.
             Err("internal error: a pinned source reached the single-source add path".to_owned())
         }
@@ -887,10 +909,11 @@ fn encode_rejected_goal(reason: impl Into<String>) -> PeppyResult<Payload> {
     )
 }
 
-/// The one place a node-add goal picks its pipeline: a pinned source (or a
-/// `name:tag` reference this daemon resolves into one) is a closure of
-/// nodes and takes the batch path, every other source names one thing to
-/// add and takes the single-source path.
+/// The one place a node-add goal picks its pipeline: an exposures source
+/// registers the built-in MCP server, a pinned source (or a `name:tag`
+/// reference this daemon resolves into one) is a closure of nodes and takes
+/// the batch path, every other source names one thing to add and takes the
+/// single-source path.
 ///
 /// Both the action-server path ([`handle_goal_request`]) and the direct
 /// call from `stack_launch` go through here, so no caller can send a
@@ -903,7 +926,16 @@ pub(crate) async fn dispatch_node_add(
     log_path: PathBuf,
     timestamp: String,
 ) -> NodeAddResult {
-    if matches!(
+    if matches!(goal.source, NodeSource::Exposures { .. }) {
+        crate::services::mcp::built_in::run_built_in_add(
+            goal,
+            action_context,
+            feedback_tx,
+            log_file,
+            log_path,
+        )
+        .await
+    } else if matches!(
         goal.source,
         NodeSource::Pinned { .. } | NodeSource::ResolveRef { .. }
     ) {
@@ -1173,6 +1205,9 @@ async fn handle_goal_request(
         NodeSource::Pinned { .. } => debug!(
             "Received `node_add` goal from {sender_instance_id}, source=pinned ({} closure pin(s))",
             goal.pins_json5.len()
+        ),
+        NodeSource::Exposures { .. } => debug!(
+            "Received `node_add` goal from {sender_instance_id}, source=exposures (built-in MCP server)"
         ),
         NodeSource::ResolveRef { name, tag } => debug!(
             "Received `node_add` goal from {sender_instance_id}, source=resolve:{}:{}",

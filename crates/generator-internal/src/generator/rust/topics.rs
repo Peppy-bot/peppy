@@ -833,9 +833,8 @@ fn build_topic_deserialize_helper(
 }
 
 /// The `QoSProfile` variant an emitted reference spells, for renderers that
-/// reach the type through a different module path (generated peppygen code
-/// says `peppylib::config::QoSProfile`, the exposure node's bridges say
-/// `peppygen::QoSProfile`).
+/// reach the type through their own module path (generated peppygen code
+/// says `peppylib::config::QoSProfile`).
 pub fn qos_profile_variant(profile: &QoSProfile) -> Ident {
     let variant = match profile {
         QoSProfile::Standard => "Standard",

@@ -1,0 +1,30 @@
+# The built-in MCP server behind `peppy mcp serve`: one process serving every
+# exposure of a launcher deployment, each on its own endpoint, converting
+# between public JSON and Peppy's wire format at run time with no generated
+# code.
+[package]
+name = "mcp-server"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+config = { workspace = true }
+daemon-config = { workspace = true }
+# The type-erased topic, service and action clients, and the codec they
+# convert with.
+message-codec = { workspace = true }
+# The catalog model the server serves from.
+peppy-mcp-catalog = { workspace = true }
+# The endpoint: policies, tasks, sessions, one listener for the set.
+peppy-mcp-runtime = { workspace = true }
+# The node lifecycle: the daemon-managed session, health and shutdown
+# services, the sim-time-aware clock.
+peppylib = { workspace = true }
+schemars = "1.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2.0"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"

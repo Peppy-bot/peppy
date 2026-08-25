@@ -5,8 +5,9 @@ use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::LauncherOrigin;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, BindingValidationItem, ExternallyCoveredSlots, PairingValidationItem,
-    PeppyLauncher, PeppyLauncherParser, compose, validate_link_slots, validate_pairings,
+    AlreadyPairedSlots, BindingValidationItem, DeploymentSource, ExternallyCoveredSlots,
+    PairingValidationItem, PeppyLauncher, PeppyLauncherParser, compose, validate_link_slots,
+    validate_pairings,
 };
 use daemon_config::repository::EntryOrigin;
 use tracing::info;
@@ -109,8 +110,28 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
     let mut unavailable: Vec<String> = Vec::new();
     let mut manifests: Vec<(String, String, usize, NodeConfig)> = Vec::new();
     for (index, deployment) in flat.deployments.iter().enumerate() {
-        let name = deployment.source.name.as_str();
-        let tag = deployment.source.tag.as_str();
+        let (name, tag) = match &deployment.source {
+            DeploymentSource::Node { name, tag } => (name.as_str(), tag.as_str()),
+            DeploymentSource::Exposures { exposures } => {
+                // The built-in server's manifest is derived from the
+                // exposures and their contracts, through the same caches
+                // and the same derivation a launch uses.
+                match core_node::resolve_exposure_plan(dirs, exposures, &|message: &str| {
+                    info!("{message}")
+                }) {
+                    Ok(plan) => {
+                        manifests.push((
+                            plan.name.as_str().to_owned(),
+                            plan.tag.clone(),
+                            index,
+                            plan.config,
+                        ));
+                    }
+                    Err(e) => unavailable.push(format!("{} ({e})", deployment.source.label())),
+                }
+                continue;
+            }
+        };
         let id = format!("{name}:{tag}");
         let entry = match core_node::lookup(&entries, name, tag) {
             Ok(Some(entry)) => entry,

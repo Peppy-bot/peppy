@@ -501,8 +501,8 @@ mod tests {
 
     fn pins_json5(origin: &str) -> String {
         format!(
-            r#"{{ root: {{ kind: "node", name: "camera", tag: "v1", sha256: "{}",
-                      origin: {origin} }} }}"#,
+            r#"{{ root: {{ node: {{ kind: "node", name: "camera", tag: "v1", sha256: "{}",
+                      origin: {origin} }} }} }}"#,
             "c".repeat(64)
         )
     }
@@ -528,6 +528,23 @@ mod tests {
         let err = validate_deployment_pins(&[raw]).expect_err("an fs pin cannot cross machines");
         assert!(err.contains("coordinator's filesystem"), "{err}");
         assert!(err.contains("git repository"), "{err}");
+    }
+
+    /// The built-in MCP server's pins cross the wire under the same rules:
+    /// an exposures root with git-pinned documents validates.
+    #[test]
+    fn an_exposures_root_validates_like_a_node_root() {
+        let commit = "d".repeat(40);
+        let sha = "c".repeat(64);
+        let raw = format!(
+            r#"{{ root: {{ exposures: [{{ kind: "mcp_exposure", name: "camera_and_recording", tag: "v1",
+                      sha256: "{sha}", origin: {{ source_type: "git", repo_url: "https://example.com/hub",
+                      commit: "{commit}", path: "exposures/camera_and_recording.json5" }} }}] }},
+                closure: [{{ kind: "contract", name: "rgb_camera", tag: "v1", sha256: "{sha}",
+                      origin: {{ source_type: "git", repo_url: "https://example.com/hub",
+                      commit: "{commit}", path: "contracts/rgb_camera.json5" }} }}] }}"#
+        );
+        assert!(validate_deployment_pins(&[raw]).is_ok());
     }
 
     /// The structural rules fire at decode: a traversal path is refused
