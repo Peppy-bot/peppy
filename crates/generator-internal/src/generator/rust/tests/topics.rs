@@ -615,7 +615,10 @@ fn consumed_topic() {
     // Deserialization
     assert_contains_all(
         &rendered,
-        &["fn deseralize_payload(", "capnp::serialize::read_message"],
+        &[
+            "fn deseralize_payload(",
+            "capnp::serialize::read_message_from_flat_slice",
+        ],
     );
 
     // Topic metadata: the subscribe call covers the slot's complete bound

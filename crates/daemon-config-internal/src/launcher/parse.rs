@@ -77,14 +77,18 @@ mod tests {
         assert_eq!(deployments.len(), 3);
 
         // Check first deployment (long form)
-        let DeploymentSource { name, tag } = &deployments[0].source;
+        let DeploymentSource::Node { name, tag } = &deployments[0].source else {
+            panic!("a node deployment");
+        };
         assert_eq!(name, "fake_robot_brain");
         assert_eq!(tag, "v1");
         assert_eq!(deployments[0].instances[0].instance_id, "the_brain");
         assert!(deployments[0].instances[0].arguments.is_empty());
 
         // Check second deployment (combined `name:tag` shorthand)
-        let DeploymentSource { name, tag } = &deployments[1].source;
+        let DeploymentSource::Node { name, tag } = &deployments[1].source else {
+            panic!("a node deployment");
+        };
         assert_eq!(name, "fake_openarm01_controller");
         assert_eq!(tag, "v1");
         assert_eq!(
@@ -94,7 +98,10 @@ mod tests {
         assert!(deployments[1].instances[0].arguments.is_empty());
 
         // Check third deployment
-        assert_eq!(deployments[2].source.name, "esp32_board");
+        let DeploymentSource::Node { name, .. } = &deployments[2].source else {
+            panic!("a node deployment");
+        };
+        assert_eq!(name, "esp32_board");
         assert_eq!(deployments[2].instances.len(), 1);
         assert_eq!(deployments[2].instances[0].instance_id, "esp32_1");
         assert!(deployments[2].instances[0].arguments.is_empty());

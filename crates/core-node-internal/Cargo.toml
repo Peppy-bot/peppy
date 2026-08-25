@@ -15,6 +15,10 @@ generator = { workspace = true }
 latency-report = { workspace = true }
 containers = { workspace = true }
 json5-pretty = { workspace = true }
+# The catalog derivation the built-in MCP server serves from and the hub
+# check validates with; the daemon derives it when it registers the server
+# and when `peppy mcp catalog` asks.
+peppy-mcp-catalog = { workspace = true }
 bytes = "1.10"
 chrono = "0.4"
 hostname = "0.4"
@@ -39,7 +43,7 @@ tokio-util = "0.7"
 tracing = "0.1"
 askama = "0.16"
 rust-embed = { version = "8", features = ["include-exclude"] }
-gix-url = "0.37"
+gix-url = "0.38"
 git2 = { version = "0.21", features = ["https", "vendored-openssl"] }
 url = "2"
 ureq = "3.1"
@@ -53,9 +57,6 @@ ignore = "0.4"
 # Only for the `test-support` log-capture helpers; the daemon's own tracing
 # setup lives in the binary crate.
 tracing-subscriber = { version = "0.3", optional = true }
-# Safe wrapper for the process-group SIGKILL in node teardown (replaces a raw
-# `libc::kill` FFI call), letting the crate adopt `#![forbid(unsafe_code)]`.
-nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [build-dependencies]
 build-helpers = { workspace = true }

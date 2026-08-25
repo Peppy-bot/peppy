@@ -2,6 +2,7 @@ mod action_poll;
 mod confirm;
 pub mod container;
 pub mod info;
+pub mod mcp;
 pub mod node;
 pub mod platform;
 pub mod repo;

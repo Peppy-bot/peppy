@@ -36,6 +36,11 @@ evolves.
 An author pin is a statement about authorship: it travels with the manifest,
 so every machine that ever adds the node enforces it.
 
+The contract references of an [MCP exposure](/advanced_guides/mcp/#contracts-are-referenced-by-identity-and-optionally-by-content)
+take the same optional `sha256` with the same meaning: a launch serving the
+exposure resolves the contract through the pin, and refuses naming both
+fingerprints when the caches hold other bytes.
+
 ## Launch pins: what a launch decides
 
 A launch pins everything, whether the manifests do or not. The machine the

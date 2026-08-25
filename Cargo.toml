@@ -21,7 +21,7 @@ parking_lot = "0.12"
 # Parameterized tests: messaging e2e suites run each body under both peer and
 # router mode via `#[case]` (see crates/*/tests). Test-only.
 rstest = "0.26"
-# The MCP client the endpoint e2e suites drive a generated server node with.
+# The MCP client the endpoint e2e suites drive the built-in server with.
 # Centralized because three crates depend on it and the version must match
 # the one `peppy-mcp-runtime` builds its server side against; each use site
 # adds its own features (the `server` feature only where the client
@@ -59,6 +59,8 @@ daemon-config = { path = "crates/daemon-config-internal" }
 encoding = { path = "crates/encoding-internal" }
 generator = { path = "crates/generator-internal" }
 mcp-test-support = { path = "crates/mcp-test-support" }
+message-codec = { path = "crates/message-codec-internal" }
+mcp-server = { path = "crates/mcp-server-internal" }
 latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }

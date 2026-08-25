@@ -126,6 +126,14 @@ impl PeppyDirs {
         self.root.join("runtime")
     }
 
+    /// Directory holding the manifests and serve specs of built-in nodes,
+    /// one subdirectory per node identity. A built-in node is registered in
+    /// the stack from documents the daemon derives at add time rather than
+    /// from a built artifact, and this is where those documents live.
+    pub fn built_in_nodes_dir(&self) -> PathBuf {
+        self.root.join("built_in")
+    }
+
     /// Temporary download directory for HTTP-sourced node archives.
     pub fn http_downloads_dir(&self) -> PathBuf {
         self.root.join("http_downloads")

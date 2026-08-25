@@ -7,7 +7,9 @@ edition = "2024"
 tokio = { version = "1", features = ["full"] }
 # This should be the only peppy dependency peppygen depends on
 peppylib = { path = "{{ peppylib_path }}", version = "{{ peppylib_version }}" }
-capnp = "0.27"
+# `unaligned`: the generated deserializers read messages in place from the
+# transport's buffer, which carries no alignment guarantee.
+capnp = { version = "0.27", features = ["unaligned"] }
 bytes = "1"
 thiserror = "2.0"
 serde = "1.0"

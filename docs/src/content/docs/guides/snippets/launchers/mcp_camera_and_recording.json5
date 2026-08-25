@@ -1,0 +1,42 @@
+// Deploying an MCP exposure: the providers by instance, and the server built
+// into peppy serving the exposure, its logical targets filled through
+// `links`.
+//
+//   peppy stack launch mcp_camera_and_recording
+{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      source: { name: "uvc_camera:v1" },
+      instances: [{ instance_id: "front_cam_inst" }],
+    },
+    {
+      source: { name: "episode_recorder:v1" },
+      instances: [{ instance_id: "recorder_inst" }],
+    },
+    {
+      // The exposures to serve, each as `<name>:<tag>`. The daemon derives
+      // the server from these documents and the contracts they reference,
+      // and runs one `peppy mcp serve` process for the list: nothing is
+      // generated or built. Its node is named after the set, here
+      // `mcp_camera_and_recording_v1:builtin`.
+      source: { exposures: ["camera_and_recording:v1"] },
+      instances: [
+        {
+          instance_id: "mcp_server",
+          // The only argument the server takes. It binds `127.0.0.1:<port>`
+          // and serves each exposure at `/<name>/<tag>/mcp`, so this one is
+          // reached at http://127.0.0.1:8900/camera_and_recording/v1/mcp.
+          arguments: { port: 8900 },
+          // One entry per target in the exposure document: the launcher
+          // binds each logical target to a concrete running instance. This is
+          // where "the front camera" stops being a role and becomes a robot.
+          links: {
+            front_camera: "front_cam_inst",
+            recorder: "recorder_inst",
+          },
+        },
+      ],
+    },
+  ],
+}

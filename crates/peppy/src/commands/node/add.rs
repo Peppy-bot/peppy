@@ -147,9 +147,9 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
     //
     // `Git`/`Http` root sources still skip the preflight since we'd need to
     // fetch them to read the manifest; the daemon's add action stops
-    // existing instances transparently in that path. `Pinned` skips it for a
-    // different reason: `parse_node_source` never produces one, so the arm
-    // exists only for exhaustiveness.
+    // existing instances transparently in that path. `Pinned` and
+    // `Exposures` skip it for a different reason: `parse_node_source` never
+    // produces them, so the arms exist only for exhaustiveness.
     if !force {
         let active_instances = match &node_source {
             NodeSource::Fs(path) => {
@@ -169,7 +169,10 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
                 )
                 .await?
             }
-            NodeSource::Git { .. } | NodeSource::Http { .. } | NodeSource::Pinned { .. } => None,
+            NodeSource::Git { .. }
+            | NodeSource::Http { .. }
+            | NodeSource::Pinned { .. }
+            | NodeSource::Exposures { .. } => None,
         };
 
         if let Some((node_name, node_tag, instance_ids)) = active_instances {

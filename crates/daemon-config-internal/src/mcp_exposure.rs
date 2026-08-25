@@ -1,16 +1,14 @@
 mod parse;
-mod types;
 
-// Defines the parsing of MCP exposure documents
-// (`peppy_schema: "mcp_exposure/v1"`). An exposure selects members of pinned
-// Peppy contracts and gives them stable public names, MCP-facing prose, and
-// operational policies; the request and response shapes stay derived from
-// the contracts. Filenames are not fixed; any `.json5` whose body carries
-// the `mcp_exposure/v1` schema tag is an exposure.
+// The `mcp_exposure/v1` document model lives in the shared `peppy-mcp-catalog`
+// crate beside the validation that derives a catalog from it, so the daemon,
+// the built-in server and the hub check all read one definition. Re-exported
+// here with the daemon's own parser, which maps a file to the daemon's
+// error vocabulary the way the contract and pairing parsers do.
 pub use parse::PeppyMcpExposureParser;
-pub use types::{
-    ActionExposure, ActionOperation, ExposureTarget, FreshnessPolicy, ImageCodec, ImageFieldMap,
-    ImageRepresentation, JpegQuality, MaxHz, McpExposure, OversizePolicy, PinnedContractRef,
-    PublicName, RestrictBounds, ServerIdentity, ServiceExposure, ServiceOperation, TopicExposure,
-    UpdatePolicy,
+pub use peppy_mcp_catalog::{
+    ActionExposure, ActionOperation, ExposureManifest, ExposureTarget, FreshnessPolicy, ImageCodec,
+    ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure, OversizePolicy,
+    PinnedContractRef, PublicName, RestrictBounds, ServerIdentity, ServiceExposure,
+    ServiceOperation, TopicExposure, UpdatePolicy,
 };

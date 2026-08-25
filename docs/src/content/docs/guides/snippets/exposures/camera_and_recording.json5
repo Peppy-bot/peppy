@@ -2,11 +2,11 @@
 // episode recorder to drive. Everything an MCP client can ever see is named
 // in this file; anything the running stack also carries stays private.
 //
-// Publish it with `peppy repo exposure exposures/camera_and_recording.json5`,
-// which validates every selection against the pinned contract bytes and
-// writes two artifacts beside this document: the bundle
-// (`camera_and_recording.bundle.json`) and the generated MCP server node
-// (`camera_and_recording_mcp/`).
+// This document is the whole artifact. A launcher lists it under
+// `source: { exposures: [...] }` and the daemon serves it from the server
+// built into peppy; `peppy repo index --check --validate-mcp-exposures`
+// checks it against the contracts it references, and `peppy mcp catalog`
+// prints what an endpoint for it advertises.
 {
   peppy_schema: "mcp_exposure/v1",
   manifest: { name: "camera_and_recording", tag: "v1" },
@@ -20,17 +20,17 @@
 
   targets: {
     // A LOGICAL target, not an instance. `front_camera` becomes the `link_id`
-    // of a `depends_on.contracts` slot on the generated node, so the launcher
+    // of a `depends_on.contracts` slot of the server's node, so the launcher
     // decides which running instance fills it. The same exposure serves a
     // simulated camera and a real one.
     front_camera: {
       contract: {
         name: "rgb_camera",
         tag: "v1",
-        // The sha256 of the exact contract document this file was written
-        // against (`sha256sum contracts/rgb_camera.json5`). Mandatory: the
-        // published schemas are derived from these bytes, so `name:tag`
-        // alone would not fix what gets published.
+        // An optional author pin: the sha256 of the exact contract document
+        // this file was written against (`sha256sum contracts/rgb_camera.json5`).
+        // With it, a launch that resolves other bytes for `rgb_camera:v1`
+        // refuses instead of publishing schemas this file never saw.
         sha256: "44527ab0542ac56389806315f21c6977c535a1874527926fcc480dd57fb736ab",
       },
 
@@ -92,11 +92,9 @@
     },
 
     recorder: {
-      contract: {
-        name: "episode_recording",
-        tag: "v1",
-        sha256: "a4cfd6ec023d2359c3b9911bf829a565b6e6a6b3b83d57df146c4a87f177c0d2",
-      },
+      // No pin: the exposure follows `episode_recording:v1` as its repository
+      // evolves, and each launch validates it against the bytes it resolves.
+      contract: { name: "episode_recording", tag: "v1" },
 
       // An action becomes a tool backed by an MCP task: the call returns a
       // task handle, feedback drives the status message, and `tasks/cancel`

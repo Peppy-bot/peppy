@@ -72,6 +72,19 @@ pub(crate) struct WalkResult {
     /// Non-empty means the repository has no defensible answer for those
     /// identities, so the caller refuses it rather than picking one.
     pub conflicts: Vec<RepoConflict>,
+    /// Files declaring a kind's schema tag that do not parse as that kind.
+    /// They declare no item and never enter an index; a check that must
+    /// not let a broken document pass unnoticed reads them from here.
+    pub malformed: Vec<MalformedDocument>,
+}
+
+/// A `.json5` file whose schema tag names a kind it fails to parse as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MalformedDocument {
+    pub kind: RepoItemKind,
+    /// Repository-relative path.
+    pub path: String,
+    pub reason: String,
 }
 
 /// An identity claimed by several manifests inside one repository. There
@@ -782,6 +795,7 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
     let mut pairings_seen = ClaimMap::new();
     let mut mcp_exposures_seen = ClaimMap::new();
     let mut items: Vec<WalkedItem> = Vec::new();
+    let mut malformed: Vec<MalformedDocument> = Vec::new();
 
     for entry in walker.flatten() {
         let config_path = entry.path();
@@ -809,29 +823,40 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
             continue;
         };
         match schema {
-            PeppySchema::NodeV1 => {
-                collect_item(&ctx, RepoItemKind::Node, &mut nodes_seen, &mut items)
-            }
+            PeppySchema::NodeV1 => collect_item(
+                &ctx,
+                RepoItemKind::Node,
+                &mut nodes_seen,
+                &mut items,
+                &mut malformed,
+            ),
             PeppySchema::LauncherV1 => collect_item(
                 &ctx,
                 RepoItemKind::Launcher,
                 &mut launchers_seen,
                 &mut items,
+                &mut malformed,
             ),
             PeppySchema::ContractV1 => collect_item(
                 &ctx,
                 RepoItemKind::Contract,
                 &mut contracts_seen,
                 &mut items,
+                &mut malformed,
             ),
-            PeppySchema::PairingV1 => {
-                collect_item(&ctx, RepoItemKind::Pairing, &mut pairings_seen, &mut items)
-            }
+            PeppySchema::PairingV1 => collect_item(
+                &ctx,
+                RepoItemKind::Pairing,
+                &mut pairings_seen,
+                &mut items,
+                &mut malformed,
+            ),
             PeppySchema::McpExposureV1 => collect_item(
                 &ctx,
                 RepoItemKind::McpExposure,
                 &mut mcp_exposures_seen,
                 &mut items,
+                &mut malformed,
             ),
             // The repository's own index declares no item. It is the
             // output of this walk, not an input to it.
@@ -860,7 +885,11 @@ pub(crate) fn walk_directory(root: &Path, excluded_paths: &[PathBuf]) -> WalkRes
         mcp_exposures_seen,
     ));
 
-    WalkResult { items, conflicts }
+    WalkResult {
+        items,
+        conflicts,
+        malformed,
+    }
 }
 
 fn has_json5_extension(path: &Path) -> bool {
@@ -909,37 +938,41 @@ fn collect_item(
     kind: RepoItemKind,
     claims: &mut ClaimMap,
     out: &mut Vec<WalkedItem>,
+    malformed: &mut Vec<MalformedDocument>,
 ) {
+    let relative_path = ctx
+        .config_path
+        .strip_prefix(ctx.root)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut skip = |reason: String| {
+        debug!(
+            "Skipping {} .json5 at {}: {}",
+            kind,
+            ctx.config_path.display(),
+            reason
+        );
+        malformed.push(MalformedDocument {
+            kind,
+            path: relative_path.clone(),
+            reason,
+        });
+    };
     let content = match std::str::from_utf8(ctx.bytes) {
         Ok(s) => s,
         Err(e) => {
-            debug!(
-                "Skipping non-utf8 {} .json5 at {}: {}",
-                kind,
-                ctx.config_path.display(),
-                e
-            );
+            skip(format!("is not UTF-8: {e}"));
             return;
         }
     };
     let (name, tag) = match identity_of(kind, content, ctx.config_path) {
         Ok(identity) => identity,
         Err(e) => {
-            debug!(
-                "Skipping {} .json5 at {}: {}",
-                kind,
-                ctx.config_path.display(),
-                e
-            );
+            skip(e);
             return;
         }
     };
 
-    let relative_path = ctx
-        .config_path
-        .strip_prefix(ctx.root)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let claimants = claims.entry((name.clone(), tag.clone())).or_default();
     claimants.push(relative_path.clone());
     if claimants.len() > 1 {

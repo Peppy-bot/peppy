@@ -5,14 +5,14 @@ mod helpers;
 mod actions_communication;
 #[path = "rust/actions_implements.rs"]
 mod actions_implements;
+#[path = "rust/codec_wire.rs"]
+mod codec_wire;
 #[path = "rust/consumed_services_dedup.rs"]
 mod consumed_services_dedup;
 #[path = "rust/consumed_topics_dedup.rs"]
 mod consumed_topics_dedup;
 #[path = "rust/generate_lib.rs"]
 mod generate_lib;
-#[path = "rust/mcp_endpoint.rs"]
-mod mcp_endpoint;
 #[path = "rust/multi_binding_communication.rs"]
 mod multi_binding_communication;
 #[path = "rust/pairing_lib.rs"]

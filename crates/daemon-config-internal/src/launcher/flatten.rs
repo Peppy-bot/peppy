@@ -1482,6 +1482,17 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    /// The node name a deployment names; every launcher these tests
+    /// compose deploys nodes, so an exposure deployment here is a mistake.
+    fn node_name(deployment: &Deployment) -> &str {
+        match &deployment.source {
+            crate::launcher::DeploymentSource::Node { name, .. } => name,
+            crate::launcher::DeploymentSource::Exposures { .. } => {
+                panic!("expected a node deployment")
+            }
+        }
+    }
+
     use super::super::composition::FragmentSpec;
     use super::*;
     use crate::launcher::{ComponentAxis, PeppyLauncherParser};
@@ -1602,11 +1613,7 @@ mod tests {
         assert!(flat.components.is_empty());
         assert!(flat.adjustments.is_empty());
         // Base deployments first, then the real option's deployment.
-        let sources: Vec<String> = flat
-            .deployments
-            .iter()
-            .map(|d| format!("{}:{}", d.source.name, d.source.tag))
-            .collect();
+        let sources: Vec<String> = flat.deployments.iter().map(|d| d.source.label()).collect();
         assert_eq!(sources, ["backbone:v1", "commander:v1", "can_arm:v1"]);
         assert_eq!(
             report.selection.echo(),
@@ -1628,11 +1635,7 @@ mod tests {
         let (flat, report) = compose(&launcher, &file, &words(&["mujoco"])).expect("composes");
 
         // Base deployments first, then sim_relays, then the engine.
-        let sources: Vec<String> = flat
-            .deployments
-            .iter()
-            .map(|d| format!("{}:{}", d.source.name, d.source.tag))
-            .collect();
+        let sources: Vec<String> = flat.deployments.iter().map(|d| d.source.label()).collect();
         assert_eq!(
             sources,
             ["backbone:v1", "commander:v1", "arm_sim:v1", "sim_mujoco:v1"]
@@ -1641,7 +1644,7 @@ mod tests {
         let sim = flat
             .deployments
             .iter()
-            .find(|d| d.source.name == "sim_mujoco")
+            .find(|d| node_name(d) == "sim_mujoco")
             .unwrap();
         assert_eq!(
             sim.instances[0].arguments.get("hardware_version"),
@@ -1651,7 +1654,7 @@ mod tests {
         let backbone = flat
             .deployments
             .iter()
-            .find(|d| d.source.name == "backbone")
+            .find(|d| node_name(d) == "backbone")
             .unwrap();
         assert_eq!(
             backbone.instances[0].arguments.get("max_ee_velocity_m_s"),
@@ -1691,7 +1694,7 @@ mod tests {
         let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
         let (flat, _) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
         assert_eq!(flat.deployments.len(), 1);
-        assert_eq!(flat.deployments[0].source.name, "camera");
+        assert_eq!(node_name(&flat.deployments[0]), "camera");
         let ids: Vec<&str> = flat.deployments[0]
             .instances
             .iter()
@@ -2097,7 +2100,7 @@ mod tests {
         let backbone = flat
             .deployments
             .iter()
-            .find(|d| d.source.name == "backbone")
+            .find(|d| node_name(d) == "backbone")
             .unwrap();
         assert!(
             !backbone.instances[0]
@@ -2118,7 +2121,7 @@ mod tests {
         let backbone = flat
             .deployments
             .iter()
-            .find(|d| d.source.name == "backbone")
+            .find(|d| node_name(d) == "backbone")
             .unwrap();
         assert_eq!(
             backbone.instances[0].arguments.get("record_backbone"),
@@ -2260,7 +2263,7 @@ mod tests {
         )
         .expect("an inline-only composition reads no files");
         assert_eq!(flat.deployments.len(), 1);
-        assert_eq!(flat.deployments[0].source.name, "can_arm");
+        assert_eq!(node_name(&flat.deployments[0]), "can_arm");
     }
 
     #[test]

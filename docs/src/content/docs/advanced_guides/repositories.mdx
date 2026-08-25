@@ -11,14 +11,15 @@ Repositories tell Peppy where to look for nodes, launchers, contracts, pairings,
 - **Launchers**, identified by content: every `.json5` file whose body declares `peppy_schema: "launcher/v1"` is treated as a launcher, regardless of its filename. The launcher is keyed by the file stem (e.g. `openarm01_sim_teleop.json5` becomes the launcher named `openarm01_sim_teleop`).
 - **Contracts**, identified by content: every `.json5` file whose body declares `peppy_schema: "contract/v1"` is treated as a contract, regardless of its filename. A contract is a reusable declaration of topics, services, and actions, keyed by the `name:tag` declared in its manifest; nodes claim contracts by `name:tag` in `manifest.implements`.
 - **Pairings**, identified by content: every `.json5` file whose body declares `peppy_schema: "pairing/v1"` is treated as a pairing, regardless of its filename. A pairing is a two-role, topics-only contract that two node instances pair 1:1 over, keyed by the `name:tag` declared in its manifest; see [Pairing](/advanced_guides/pairing/).
-- **MCP exposures**, identified by content: every `.json5` file whose body declares `peppy_schema: "mcp_exposure/v1"` is treated as an MCP exposure, regardless of its filename, keyed by the `name:tag` declared in its manifest. An exposure selects members of sha256-pinned contracts and gives them stable public names, MCP-facing prose, and operational policies; [`peppy repo exposure`](#publish-an-exposures-bundle-and-mcp-server-node) validates it and publishes its bundle. See [MCP exposure](/advanced_guides/mcp/).
+- **MCP exposures**, identified by content: every `.json5` file whose body declares `peppy_schema: "mcp_exposure/v1"` is treated as an MCP exposure, regardless of its filename, keyed by the `name:tag` declared in its manifest. An exposure selects members of contracts and gives them stable public names, MCP-facing prose, and operational policies; a launcher lists exposures by `name:tag` and the server built into `peppy` serves them, and [`peppy repo index --check --validate-mcp-exposures`](#check-the-exposures-a-repository-publishes) validates each one against the contracts it references. See [MCP exposure](/advanced_guides/mcp/).
 
-Out of the box, four repositories are configured:
+Out of the box, five repositories are configured:
 
 - **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, tracked on `main`, id `1000`): a curated collection of ready-to-use nodes.
 - **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, tracked on `main`, id `1001`): community launch files that compose nodes from the hubs.
 - **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`, id `1002`): nodes specific to the OpenArm01 robot.
 - **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`, id `1003`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
+- **`mcp-hub`** (`https://github.com/Peppy-bot/mcp-hub.git`, tracked on `main`, id `1004`): [MCP exposure](/advanced_guides/mcp/) documents that a launcher lists by `name:tag` and the server built into `peppy` serves.
 
 The `id` is the priority key when several repositories provide the same `name:tag`, so the defaults resolve in this order.
 
@@ -252,11 +253,12 @@ the branch that introduced it rather than at the first launch that picks it.
 ### Index a repository
 
 ```sh
-peppy repo index [PATH]           # write PATH/peppy_repository.json5 (PATH defaults to .)
-peppy repo index [PATH] --check   # verify the committed index instead of writing it
+peppy repo index [PATH]                                     # write PATH/peppy_repository.json5 (PATH defaults to .)
+peppy repo index [PATH] --check                             # verify the committed index instead of writing it
+peppy repo index [PATH] --check --validate-mcp-exposures    # also validate every listed exposure against its contracts
 ```
 
-Neither form needs a running daemon, so both work in CI and on a branch before anything is merged.
+No form needs a running daemon, so all of them work in CI and on a branch before anything is merged.
 
 Writing walks the repository and records what it finds. If one identity is claimed twice, generation
 refuses and names both files:
@@ -280,39 +282,31 @@ fleet reporting it the next morning, none of which can fix it.
 
 The remedy for any failure is the same: re-run `peppy repo index` and commit the result.
 
-### Publish an exposure's bundle and MCP server node
+### Check the exposures a repository publishes
 
 ```sh
-peppy repo exposure PATH           # validate PATH, write its <stem>.bundle.json sibling, and generate its node
-peppy repo exposure PATH --check   # verify the committed artifacts instead of writing them
+peppy repo index [PATH] --check --validate-mcp-exposures
 ```
 
-An MCP exposure document (`peppy_schema: "mcp_exposure/v1"`) selects members of sha256-pinned
-contracts and assigns them stable public names, MCP-facing descriptions, and operational policies;
-[MCP exposure](/advanced_guides/mcp/) is the guide to writing one and deploying its server node.
-`peppy repo exposure` resolves each pinned contract through the local repository caches (run
-`peppy repo refresh` first), validates the exposure against exactly those bytes, and publishes two
-artifacts next to the document: the derived bundle (the public catalog of resources, tools, and
-tasks with their JSON Schemas, plus the identity and contract slots of the generated MCP server
-node), and the generated node itself in a sibling directory named after it. The node is a complete
-Rust crate with no hand-written code: its `peppy.json5` declares one `depends_on.contracts` slot
-per logical target, its `main` composes the shared `peppy-mcp-runtime` crate from
-`public-peppy-libs`, its bridges translate between the canonical public JSON and the peppygen
-typed clients (topics become resources, services become tools, and actions become tools backed by
-MCP tasks), and it embeds the exact published bundle bytes as its served catalog.
+The structural check above reads nothing outside the repository. An MCP exposure document
+(`peppy_schema: "mcp_exposure/v1"`) also has to agree with contracts that live elsewhere: every
+member it selects must exist in its contract with the expected kind, every policy must fit the
+member's message format, and an author `sha256` must match the contract's bytes. Passing
+`--validate-mcp-exposures` adds that check. After the structural check, every exposure the index
+lists is validated against the contracts it references, resolved through this machine's
+repository caches, and every violation of every exposure is reported at once. The report names
+each exposure by identity and path, so one run tells an author everything to fix.
 
-Validation refuses, naming every violation at once, when a selected member does not exist in its
-contract with the expected kind, a public name is claimed twice, a message definition does not
-translate under the canonical schema mapping, a representation policy names a missing or wrongly
-typed member, a `restrict` bound does not fit its member, a size limit is smaller than a payload's
-finite maximum, or a pin does not match the resolved document's bytes.
+The check is only as good as the caches, so a contract the caches cannot resolve is a problem
+naming that contract, never a pass: register and refresh the contract repository first
+(`peppy repo add`, then `peppy repo refresh`). A hub's CI does exactly that, starting a
+throwaway daemon for the refresh, then running the check without one. A file that declares the
+exposure schema but does not parse as an exposure declares no item and is listed by no index, so
+the check reports it by path rather than letting it pass unseen.
 
-`--check` regenerates everything and refuses committed files that do not match byte for byte,
-listing every drifted file. Run it in CI alongside `peppy repo index --check` so a hub cannot
-merge artifacts that have drifted from their exposure document. Only generated files are compared;
-files a hub commits alongside them (such as a `Cargo.lock`) are not judged. Neither form needs a
-running daemon. The remedy for a drift is the same as for the index: re-run
-`peppy repo exposure PATH` and commit the result.
+[MCP exposure](/advanced_guides/mcp/) is the guide to writing an exposure and deploying it, and
+`peppy mcp catalog <name:tag>` prints the catalog an endpoint for an exposure advertises, from
+the same caches.
 
 ## Using a repository-indexed node
 

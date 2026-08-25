@@ -4,7 +4,9 @@ use config::runtime::Name;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{NodeStopRequest, NodeStopResponse};
 use core_node_api::names;
-use node_stack::{EntityHandle, NodeStack, TrackedNodeInstance};
+use node_stack::{
+    EntityHandle, NodeStack, TrackedNodeInstance, kill_process_group, terminate_process_group,
+};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
     SHUTDOWN_SERVICE, ServiceMessenger, ServiceRequestContext, ServiceTarget,
@@ -635,17 +637,40 @@ pub(super) async fn stop_instances(
     // force_stop_instances warns (daemon-side) when it has to force-kill, which
     // is the right surface for this overwrite path (the user sees node_add's
     // feedback stream; node_stop additionally relays force-kill to the CLI).
+    force_stop_and_forget(
+        messenger,
+        core_node_node,
+        core_instance_id,
+        node_stack,
+        &doomed,
+    )
+    .await;
+}
+
+/// Cooperative-then-force stop of `doomed` (see [`force_stop_instances`]),
+/// then removal of each from the stack. Once a process is gone the stack must
+/// not keep tracking its pid: the stack's drop signals every pid it still
+/// holds, and a pid whose process exited could be reused.
+async fn force_stop_and_forget(
+    messenger: &MessengerHandle,
+    core_node_node: &str,
+    core_instance_id: &str,
+    node_stack: &Arc<NodeStack>,
+    doomed: &[DoomedInstance],
+) {
     force_stop_instances(
         messenger,
         core_node_node,
         core_instance_id,
-        &doomed,
+        doomed,
+        // Configurable cooperative-shutdown grace (peppy_config.lifecycle
+        // .shutdown_grace_secs), pinned on the stack at daemon startup.
         node_stack.shutdown_grace(),
     )
     .await;
 
-    for instance_id in instance_ids {
-        remove_instance_from_registry(node_stack, node_name, node_tag, instance_id);
+    for d in doomed {
+        remove_instance_from_registry(node_stack, &d.node_name, &d.node_tag, &d.instance_id);
     }
 }
 
@@ -700,13 +725,14 @@ struct DoomedInstance {
 /// Graceful-then-force: first asks each node to shut down cooperatively (the
 /// same `SHUTDOWN_SERVICE` path as `peppy node stop`, so robot nodes can stop
 /// actuators cleanly), gives them a short shared budget to exit, then SIGKILLs
-/// the process group of anything still alive. The root (core) node is skipped;
-/// its pid is the daemon itself. This does NOT wait the uncatchable-death grace
+/// the process group of anything still alive. The root (core) node is skipped:
+/// it is the daemon itself. This does NOT wait the uncatchable-death grace
 /// period; that timer only governs a daemon that died without running cleanup.
 ///
-/// Delegates to [`force_stop_instances`]: the same phases as `peppy node
-/// stop`, batched: one grace budget shared across all instances and every
-/// cooperative shutdown sent concurrently.
+/// Delegates to [`force_stop_and_forget`]: the same phases as `peppy node
+/// stop`, batched (one grace budget shared across all instances and every
+/// cooperative shutdown sent concurrently), then each instance is dropped
+/// from the stack, which keeps no pid whose process is gone.
 pub async fn teardown_all_instances(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -721,14 +747,12 @@ pub async fn teardown_all_instances(
         "Tearing down {} node instance(s) on daemon shutdown",
         doomed.len()
     );
-    force_stop_instances(
+    force_stop_and_forget(
         messenger,
         core_node_name,
         core_instance_id,
+        node_stack,
         &doomed,
-        // Configurable cooperative-shutdown grace (peppy_config.lifecycle
-        // .shutdown_grace_secs), pinned on the stack at daemon startup.
-        node_stack.shutdown_grace(),
     )
     .await;
 }
@@ -800,47 +824,6 @@ fn doomed_pids(doomed: &[DoomedInstance]) -> Vec<sysinfo::Pid> {
         .filter_map(|d| d.pid)
         .map(sysinfo::Pid::from_u32)
         .collect()
-}
-
-/// SIGKILLs the entire process group led by `pid`. Nodes are spawned as group
-/// leaders (PGID == PID; see `node_stack::run_steps::spawn_process_node`), so a
-/// negative-pid signal reaches the node and every descendant in its group.
-/// `setpgid`/`killpg` semantics are identical on Linux and macOS.
-#[cfg(unix)]
-fn kill_process_group(pid: u32) {
-    signal_process_group(pid, nix::sys::signal::Signal::SIGKILL, "SIGKILL");
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
-
-/// SIGTERMs the entire process group led by `pid`. Used only as a cooperative
-/// fallback for native container runtimes when the Peppy shutdown RPC could not
-/// be delivered; the force phase still SIGKILLs any process group that remains.
-#[cfg(unix)]
-fn terminate_process_group(pid: u32) {
-    signal_process_group(pid, nix::sys::signal::Signal::SIGTERM, "SIGTERM");
-}
-
-#[cfg(not(unix))]
-fn terminate_process_group(_pid: u32) {}
-
-#[cfg(unix)]
-fn signal_process_group(pid: u32, signal: nix::sys::signal::Signal, signal_name: &str) {
-    // `killpg(pgrp, sig)` is POSIX-equivalent to `kill(-pgrp, sig)`: it targets
-    // the process group whose PGID == `pid`. Using nix's safe wrapper keeps the
-    // crate free of `unsafe`.
-    match nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), signal) {
-        // An already-dead group yields ESRCH; the group is already gone, which
-        // is exactly the state we wanted, so treat it as success.
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        // Any other errno (e.g. EPERM) means the signal did not land and the
-        // node's process group may still be alive, so surface it.
-        Err(err) => warn!(
-            "Failed to {} node process group (pid {}): {}",
-            signal_name, pid, err
-        ),
-    }
 }
 
 /// Refreshes only `pids` in `system` (existence + status), reading just those

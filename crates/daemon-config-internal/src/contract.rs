@@ -7,5 +7,5 @@ mod types;
 // Filenames are not fixed; any `.json5` whose body carries the
 // `contract/v1` schema tag is a contract.
 pub use parse::PeppyContractParser;
+pub(crate) use types::validate_named_items;
 pub use types::{Interfaces, Manifest, PeppyContract};
-pub(crate) use types::{deserialize_tag, validate_named_items};

@@ -94,8 +94,8 @@ pub(crate) fn prefixed_name(prefix: &str, candidate: Option<&str>, fallback: &st
 }
 
 /// The camel-case struct prefix of a consumed service's generated
-/// request/response types. The exposure generator emits references to these
-/// types, so both must derive them from this one rule.
+/// request/response types. Every renderer that names these types derives
+/// them from this one rule.
 pub(crate) fn consumed_service_struct_prefix(service_name: &str) -> String {
     to_camel_case(&prefixed_name("", non_empty_str(service_name), "service"))
 }
@@ -138,10 +138,10 @@ mod tests {
         assert_eq!(sanitize_rust_identifier("video-stream"), "video_stream");
     }
 
-    /// The three names below are the contract between the Rust backend and
-    /// the exposure generator: both derive the types they emit and the
-    /// types they reference from these functions, so the exact strings are
-    /// pinned here, empty components included.
+    /// The three names below are the contract between the Rust backend's
+    /// renderers: they derive the types they emit and the types they
+    /// reference from these functions, so the exact strings are pinned
+    /// here, empty components included.
     #[test]
     fn the_consumed_action_type_prefix_joins_producer_and_action() {
         assert_eq!(

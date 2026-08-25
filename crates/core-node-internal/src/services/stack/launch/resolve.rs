@@ -8,15 +8,15 @@ use core_node_api::encoding::{
 };
 use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::format_quoted_list;
-use daemon_config::launcher::{Deployment, PeppyLauncherParser, Placements};
-use daemon_config::repository::PinnedItem;
+use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
+use daemon_config::repository::{DeploymentRoot, PinnedItem};
 use parking_lot::Mutex as StdMutex;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 fn deployment_label(deployment: &Deployment) -> String {
-    format!("{}:{}", deployment.source.name, deployment.source.tag)
+    deployment.source.label()
 }
 
 /// Step 1: Parse launcher configuration from file path, resolving the
@@ -364,7 +364,7 @@ pub(super) async fn resolve_deployments(
         let _ = forwarder.await;
         let ResolvedDeployment {
             config,
-            root_pin,
+            root,
             closure_pins,
             pin_manifests,
         } = match resolved {
@@ -390,7 +390,20 @@ pub(super) async fn resolve_deployments(
         // declaring anything else, so there is one identity to name here.
         let key = NodeKey::new(&node_name, &node_tag);
         if !planned_keys.insert(key.clone()) {
-            planning_errors.push(format!("duplicate deployment for node {}", key.label()));
+            planning_errors.push(match &deployment.source {
+                DeploymentSource::Node { .. } => {
+                    format!("duplicate deployment for node {}", key.label())
+                }
+                // An identical exposure set synthesizes the same identity,
+                // so the second listing collides here; naming the set is
+                // what points the author at the launcher line to merge.
+                DeploymentSource::Exposures { .. } => format!(
+                    "duplicate deployment: {} are already deployed as {}; to serve one set on \
+                     several hosts, declare one deployment with one instance per host",
+                    deployment_label(&deployment),
+                    key.label()
+                ),
+            });
             continue;
         }
 
@@ -407,7 +420,7 @@ pub(super) async fn resolve_deployments(
             node_tag,
             config,
             config_sha256,
-            root_pin,
+            root,
             closure_pins,
             pin_manifests,
         });
@@ -428,12 +441,15 @@ pub(super) async fn resolve_deployments(
 /// with another would otherwise do so silently.
 struct ResolvedDeployment {
     config: config::node::NodeConfig,
-    /// The root pin of the resolved closure.
-    root_pin: PinnedItem,
-    /// The dependency-node pins of its closure.
+    /// The root pin of a node's resolved closure, or the pinned exposures
+    /// of the built-in MCP server.
+    root: DeploymentRoot,
+    /// For a node, the dependency-node pins of its closure; for the built-in
+    /// server, the contract pins its exposures reference.
     closure_pins: Vec<PinnedItem>,
-    /// Every manifest in that closure, from which the doc pins are minted
-    /// after the graph is validated.
+    /// Every manifest in a node's closure, from which the doc pins are
+    /// minted after the graph is validated. Empty for the built-in server,
+    /// whose contracts are pinned with it.
     pin_manifests: Vec<config::node::Manifest>,
 }
 
@@ -468,25 +484,57 @@ async fn resolve_one(
     feedback_tx: &tokio::sync::mpsc::UnboundedSender<FeedbackLine>,
 ) -> std::result::Result<ResolvedDeployment, String> {
     let label = deployment_label(deployment);
+    let remote = has_remote_instances(deployment, placements);
+    let feedback: crate::services::node::cache::MaterializeFeedback =
+        Arc::new(stdout_line_sender(feedback_tx.clone()));
+
+    let (name, tag) = match &deployment.source {
+        DeploymentSource::Node { name, tag } => (name, tag),
+        DeploymentSource::Exposures { exposures } => {
+            publish_stdout(
+                ctx,
+                format!("Resolving {label}"),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+            // Cache reads and possibly a checkout: off the async runtime,
+            // like every other materialization.
+            let dirs = ctx.peppy_dirs.clone();
+            let references = exposures.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                crate::services::mcp::resolve_exposure_deployment(&dirs, &references, &|line| {
+                    feedback(line)
+                })
+            })
+            .await
+            .map_err(|e| format!("deployment {label}: resolution task failed: {e}"))?
+            .map_err(|e| format!("deployment {label}: {e}"))?;
+            let root = DeploymentRoot::Exposures(resolved.exposure_pins());
+            let closure_pins = resolved.contract_pins();
+            if remote {
+                refuse_unportable_pins(&label, root.items().chain(closure_pins.iter()))?;
+            }
+            // The contracts are pinned here, from the exposures; the
+            // synthesized manifest names them again with the same pins, so
+            // it is not walked by the doc-pin minting.
+            return Ok(ResolvedDeployment {
+                config: resolved.plan.config,
+                root,
+                closure_pins,
+                pin_manifests: Vec::new(),
+            });
+        }
+    };
+
     publish_stdout(
         ctx,
         format!("Retrieving node config for {label}"),
         LaunchFeedbackStep::LauncherStep,
     )
     .await;
-    let remote = has_remote_instances(deployment, placements);
-    let feedback: crate::services::node::cache::MaterializeFeedback =
-        Arc::new(stdout_line_sender(feedback_tx.clone()));
-
-    let closure = pins::resolve_pinned_closure(
-        &ctx.peppy_dirs,
-        node_entries,
-        &deployment.source.name,
-        &deployment.source.tag,
-        feedback,
-    )
-    .await
-    .map_err(|e| format!("deployment {label}: {e}"))?;
+    let closure = pins::resolve_pinned_closure(&ctx.peppy_dirs, node_entries, name, tag, feedback)
+        .await
+        .map_err(|e| format!("deployment {label}: {e}"))?;
     if remote {
         refuse_unportable_pins(&label, closure.nodes.iter().map(|node| &node.pin))?;
     }
@@ -498,7 +546,7 @@ async fn resolve_one(
     let root = nodes.remove(0);
     Ok(ResolvedDeployment {
         config: root.config,
-        root_pin: root.pin,
+        root: DeploymentRoot::Node(root.pin),
         closure_pins: dep_pins,
         pin_manifests: manifests,
     })

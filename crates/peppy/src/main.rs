@@ -7,7 +7,7 @@ use tracing::error;
 
 use daemon_config::consts::{AppEnv, PEPPY_VERSION};
 use peppy::{
-    commands::{Command, container, info, node, platform, repo, service, stack},
+    commands::{Command, container, info, mcp, node, platform, repo, service, stack},
     context::AppContext,
 };
 
@@ -75,6 +75,11 @@ enum Commands {
         #[command(subcommand)]
         command: platform::PlatformCommands,
     },
+    /// The built-in MCP server: serve a deployment's exposures, print an exposure's catalog
+    Mcp {
+        #[command(subcommand)]
+        command: mcp::McpCommands,
+    },
     /// Display peppy version information
     Info {},
 }
@@ -94,6 +99,8 @@ fn main() {
             &cli.command,
             Commands::Service {
                 command: service::ServiceCommands::Serve { .. }
+            } | Commands::Mcp {
+                command: mcp::McpCommands::Serve
             }
         ) {
         LogStyle::Verbose
@@ -119,6 +126,7 @@ fn main() {
         }
         Commands::Repo { command } => repo::RepoCommand { command }.execute(&app_ctx),
         Commands::Platform { command } => platform::PlatformCommand { command }.execute(&app_ctx),
+        Commands::Mcp { command } => mcp::McpCommand { command }.execute(&app_ctx),
         Commands::Info {} => info::InfoCommand.execute(&app_ctx),
     };
 
@@ -153,6 +161,68 @@ mod tests {
             .expect("--core-node should parse at the root position too");
         assert_eq!(cli.core_node.as_deref(), Some("robot-7"));
         assert!(matches!(cli.command, Commands::Info {}));
+    }
+
+    #[test]
+    fn mcp_subcommands_parse() {
+        let cli = Cli::try_parse_from(["peppy", "mcp", "serve"]).expect("mcp serve parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Mcp {
+                command: mcp::McpCommands::Serve
+            }
+        ));
+        let cli = Cli::try_parse_from(["peppy", "mcp", "catalog", "camera_and_recording:v1"])
+            .expect("mcp catalog parses");
+        let Commands::Mcp {
+            command: mcp::McpCommands::Catalog { exposure },
+        } = cli.command
+        else {
+            panic!("expected mcp catalog");
+        };
+        assert_eq!(exposure, "camera_and_recording:v1");
+    }
+
+    /// The exposure check rides `--check`; there is nothing to validate on
+    /// a write, so asking for it there is a parse error rather than a
+    /// silently ignored flag.
+    #[test]
+    fn repo_index_validate_mcp_exposures_requires_check() {
+        let cli = Cli::try_parse_from([
+            "peppy",
+            "repo",
+            "index",
+            ".",
+            "--check",
+            "--validate-mcp-exposures",
+        ])
+        .expect("the flag pair parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Repo {
+                command: repo::RepoCommands::Index {
+                    check: true,
+                    validate_mcp_exposures: true,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["peppy", "repo", "index", ".", "--validate-mcp-exposures"])
+                .is_err(),
+            "--validate-mcp-exposures without --check is refused"
+        );
+    }
+
+    /// Exposures are published by writing the document and listing it in a
+    /// launcher; there is no publication command, and the parser knows no
+    /// such word.
+    #[test]
+    fn repo_exposure_is_not_a_command() {
+        let err = Cli::try_parse_from(["peppy", "repo", "exposure", "camera.json5"])
+            .err()
+            .expect("an unknown subcommand is a parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
     #[test]

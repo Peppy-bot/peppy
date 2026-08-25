@@ -1,0 +1,53 @@
+// Every shape a message format can take, as one message: all fourteen
+// primitive tokens, the optional pointer-backed kinds, fixed and variable
+// arrays of every element kind, nested objects two levels deep, an array of
+// objects whose items nest a time and an array, and an optional object and
+// array.
+{
+  flag: "bool",
+  label: "string",
+  blob: "bytes",
+  stamp: "time",
+  tiny: "u8",
+  small: "u16",
+  medium: "u32",
+  big: "u64",
+  tiny_signed: "i8",
+  small_signed: "i16",
+  medium_signed: "i32",
+  big_signed: "i64",
+  ratio: "f32",
+  precise: "f64",
+  note: { $type: "string", $optional: true },
+  attachment: { $type: "bytes", $optional: true },
+  seen_at: { $type: "time", $optional: true },
+  checksum: { $type: "array", $items: "u8", $length: 4 },
+  pixels: { $type: "array", $items: "u8" },
+  gains: { $type: "array", $items: "f32", $length: 3 },
+  offsets: { $type: "array", $items: "i16", $length: 2 },
+  flags: { $type: "array", $items: "bool" },
+  counters: { $type: "array", $items: "u64" },
+  deltas: { $type: "array", $items: "i64" },
+  weights: { $type: "array", $items: "f64" },
+  tags: { $type: "array", $items: "string" },
+  chunks: { $type: "array", $items: "bytes" },
+  pose: { $type: "object", x_m: "f64", y_m: "f64", frame: "string" },
+  profile: {
+    $type: "object",
+    gamma: "f64",
+    white_balance: { $type: "object", red: "f32", blue: "f32" },
+  },
+  samples: {
+    $type: "array",
+    $items: {
+      $type: "object",
+      offset: "i16",
+      value: "f64",
+      label: "string",
+      taken_at: "time",
+      history: { $type: "array", $items: "u32" },
+    },
+  },
+  maybe_pose: { $type: "object", $optional: true, x_m: "f64" },
+  maybe_tags: { $type: "array", $optional: true, $items: "string" },
+}

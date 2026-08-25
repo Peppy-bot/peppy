@@ -2,8 +2,14 @@
 //! downstream crates' tests (via the `test-support` feature).
 
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::services::repo::cache::{
+    self as repo_cache, ContractCacheEntry, EntryOrigin, McpExposureCacheEntry,
+};
+use daemon_config::consts::PeppyDirs;
+use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint};
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Cloneable in-memory sink for `tracing_subscriber`: pass a clone to
@@ -61,4 +67,51 @@ pub fn quiet_subscriber_guard() -> tracing::subscriber::DefaultGuard {
         .with_writer(std::io::sink)
         .finish();
     tracing::subscriber::set_default(subscriber)
+}
+
+/// One document to seed a cache with: its identity and the file that
+/// declares it, whose bytes are fingerprinted the way a refresh records
+/// them.
+pub type SeededDocument<'a> = (&'a str, &'a str, &'a Path);
+
+/// Writes the contract cache of `dirs` as a refresh of one fs repository
+/// publishing `documents` would leave it.
+pub fn seed_contract_cache(dirs: &PeppyDirs, documents: &[SeededDocument<'_>]) {
+    let entries: Vec<ContractCacheEntry> = documents
+        .iter()
+        .map(|(name, tag, path)| ContractCacheEntry {
+            contract_name: ItemName::parse(name).expect("a valid contract name"),
+            tag: ItemTag::parse(tag).expect("a valid contract tag"),
+            sha256: fingerprint_of(path),
+            origin: EntryOrigin::Fs {
+                path: path.to_path_buf(),
+            },
+            repo_id: 0,
+        })
+        .collect();
+    repo_cache::write_repo_cache(dirs, &entries).expect("the contract cache is written");
+}
+
+/// Writes the exposure cache of `dirs` as a refresh of one fs repository
+/// publishing `documents` would leave it.
+pub fn seed_exposure_cache(dirs: &PeppyDirs, documents: &[SeededDocument<'_>]) {
+    let entries: Vec<McpExposureCacheEntry> = documents
+        .iter()
+        .map(|(name, tag, path)| McpExposureCacheEntry {
+            exposure_name: ItemName::parse(name).expect("a valid exposure name"),
+            tag: ItemTag::parse(tag).expect("a valid exposure tag"),
+            sha256: fingerprint_of(path),
+            origin: EntryOrigin::Fs {
+                path: path.to_path_buf(),
+            },
+            repo_id: 0,
+        })
+        .collect();
+    repo_cache::write_repo_cache(dirs, &entries).expect("the exposure cache is written");
+}
+
+fn fingerprint_of(path: &Path) -> ManifestFingerprint {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    ManifestFingerprint::of_bytes(&bytes)
 }

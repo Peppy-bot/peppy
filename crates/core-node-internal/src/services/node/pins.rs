@@ -18,7 +18,7 @@
 use super::cache as node_cache;
 use crate::services::repo::cache::{
     self as repo_cache, ContractCacheEntry, EntryOrigin, NodeCacheEntry, PairingCacheEntry,
-    RepoCacheEntry,
+    PinnableCacheEntry, RepoCacheEntry,
 };
 use config::node::{Manifest, NodeConfig, NodeConfigParser};
 use daemon_config::consts::PeppyDirs;
@@ -74,18 +74,6 @@ impl PinnedClosure {
             .iter()
             .map(|node| node.config.manifest.clone())
             .collect()
-    }
-}
-
-/// The pin a nodes-cache entry mints: the entry already records the content
-/// fingerprint and the origin, so pinning is a restatement, not a decision.
-pub(crate) fn pin_for_node_entry(entry: &NodeCacheEntry) -> PinnedItem {
-    PinnedItem {
-        kind: PinKind::Node,
-        name: entry.node_name.clone(),
-        tag: entry.node_tag.clone(),
-        sha256: entry.sha256.clone(),
-        origin: entry.origin.clone(),
     }
 }
 
@@ -270,7 +258,7 @@ pub(crate) async fn resolve_pinned_closure(
                 missing.push(key);
                 continue;
             };
-            let pin = pin_for_node_entry(entry);
+            let pin = entry.pin();
             in_flight.push(spawn_materialize(
                 &semaphore,
                 peppy_dirs,

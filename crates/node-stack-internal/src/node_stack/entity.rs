@@ -24,8 +24,8 @@ use super::build_steps::{
     run_build_cmd,
 };
 use super::run_steps::{
-    SpawnCommand, SpawnContainerInputs, build_container_command, build_process_command,
-    create_instance_dir, extract_node_archive, kill_and_collect_error,
+    SpawnCommand, SpawnContainerInputs, build_built_in_command, build_container_command,
+    build_process_command, create_instance_dir, extract_node_archive, kill_and_collect_error,
 };
 
 pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> SerializedNode {
@@ -48,8 +48,97 @@ pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> Ser
                 // `NodeStackInner::to_serialized_graph` (manifest + pairing
                 // registry); the entity alone cannot know pair state.
                 pairing_slots: std::collections::BTreeMap::new(),
+                endpoints: i.endpoints().to_vec(),
             })
             .collect(),
+    }
+}
+
+/// The endpoint URLs a built-in instance serves, from the recipe's paths and
+/// the `port` argument of the runtime config the instance boots with.
+fn built_in_endpoints(
+    launch: &BuiltInLaunch,
+    runtime_config_json5: &str,
+) -> std::result::Result<Vec<String>, String> {
+    let runtime_config: config::runtime::RuntimeConfig =
+        serde_json5::from_str(runtime_config_json5)
+            .map_err(|error| format!("the runtime config does not parse: {error}"))?;
+    let port = match runtime_config
+        .node_instance
+        .arguments
+        .get(daemon_config::mcp_deployment::PORT_PARAMETER)
+        .cloned()
+    {
+        Some(config::AnyType::Int(port)) => u16::try_from(port).ok(),
+        Some(config::AnyType::UInt(port)) => u16::try_from(port).ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        format!(
+            "a built-in node's runtime config carries no `{}` argument",
+            daemon_config::mcp_deployment::PORT_PARAMETER
+        )
+    })?;
+    Ok(launch.endpoint_urls(port))
+}
+
+/// How a built-in node starts: the daemon's own executable with a
+/// subcommand, plus the environment that hands the process what it serves.
+///
+/// A built-in node is registered ready to start from documents the daemon
+/// derived itself; nothing is fetched, generated or built for it. The
+/// recipe is the [`Artifact::BuiltIn`] of its `Ready` stage, and what the
+/// spawn runs instead of the manifest's `run_cmd`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltInLaunch {
+    /// The executable to run; the entity's artifact path.
+    pub executable: PathBuf,
+    /// The arguments after the executable.
+    pub args: Vec<String>,
+    /// Environment entries the process needs beyond the instance's own.
+    pub env: Vec<(String, String)>,
+    /// The HTTP paths the process serves on its `port` argument, used to
+    /// report each instance's endpoint URLs.
+    pub http_paths: Vec<String>,
+}
+
+impl BuiltInLaunch {
+    /// The URLs an instance bound to `port` serves.
+    pub fn endpoint_urls(&self, port: u16) -> Vec<String> {
+        self.http_paths
+            .iter()
+            .map(|path| format!("http://127.0.0.1:{port}{path}"))
+            .collect()
+    }
+}
+
+/// What a `Ready` entity spawns from.
+#[derive(Debug, Clone)]
+pub enum Artifact {
+    /// A built `.sif` or archive in `~/.peppy/built_nodes`, run through the
+    /// manifest's `run_cmd`, in a container when the manifest declares one.
+    Built(PathBuf),
+    /// The daemon's own executable with the recipe that runs it; nothing
+    /// was fetched, generated or built for the node.
+    BuiltIn(BuiltInLaunch),
+}
+
+impl Artifact {
+    /// The file on disk the entity runs from: the archive or SIF of a
+    /// sourced node, the executable of a built-in one.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Built(path) => path,
+            Self::BuiltIn(launch) => &launch.executable,
+        }
+    }
+
+    /// The recipe of a built-in node, `None` for a built artifact.
+    pub fn built_in(&self) -> Option<&BuiltInLaunch> {
+        match self {
+            Self::Built(_) => None,
+            Self::BuiltIn(launch) => Some(launch),
+        }
     }
 }
 
@@ -61,11 +150,13 @@ pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> Ser
 /// - `Building`: `build()` is running its I/O. Acts as the concurrency
 ///   barrier: a second concurrent `build()` on the same entity sees this
 ///   stage and is rejected immediately with no queueing.
-/// - `Ready`: artifact is on disk. The instances list may be empty (no
-///   instances spawned yet, equivalent to the old `Built` stage) or hold any
-///   mix of `Starting` (in-flight `prepare_and_spawn`), `Running`, and terminal
-///   `Finished`/`Failed` instances. A self-exited instance stays listed as
-///   `Finished` or `Failed` until the stack is cleared or it is stopped.
+/// - `Ready`: the [`Artifact`] is on disk, built from sources or the
+///   daemon's own executable for a built-in node. The instances list may be
+///   empty (no instances spawned yet, equivalent to the old `Built` stage)
+///   or hold any mix of `Starting` (in-flight `prepare_and_spawn`),
+///   `Running`, and terminal `Finished`/`Failed` instances. A self-exited
+///   instance stays listed as `Finished` or `Failed` until the stack is
+///   cleared or it is stopped.
 /// - `Root`: the synthetic daemon entity. Has no buildable artifact and
 ///   exactly one `Running` instance (the daemon process itself). The
 ///   lifecycle methods (`build`, `prepare_and_spawn`, `commit_started`,
@@ -82,7 +173,7 @@ pub enum NodeStage {
     },
     Ready {
         config_path: PathBuf,
-        artifact_path: PathBuf,
+        artifact: Artifact,
         instances: Vec<TrackedNodeInstance>,
     },
     // Special kind
@@ -302,9 +393,10 @@ pub struct NodeEntity {
 
 impl NodeEntity {
     /// Shared constructor: assigns a fresh generation token and opens the
-    /// stage-broadcast channel seeded with `stage`'s label. All three public
-    /// constructors (`new`, `root`, `from_snapshot`) route through here so the
-    /// generation bump and the watch initialization cannot drift apart.
+    /// stage-broadcast channel seeded with `stage`'s label. Every public
+    /// constructor (`new`, `built_in`, `root`, `from_snapshot`) routes
+    /// through here so the generation bump and the watch initialization
+    /// cannot drift apart.
     fn with_stage(config: NodeConfig, stage: NodeStage) -> Self {
         let (stage_tx, _) = watch::channel(stage.to_serialized());
         Self {
@@ -313,6 +405,33 @@ impl NodeEntity {
             generation: next_entity_generation(),
             pending_working_dir: None,
             stage_tx,
+        }
+    }
+
+    /// Creates a built-in node, ready to start: its artifact is `launch`,
+    /// whose executable the spawn runs rather than the manifest's `run_cmd`.
+    /// `config_path` points at the manifest the daemon derived and wrote for
+    /// it.
+    pub fn built_in<P: Into<PathBuf>>(
+        config: NodeConfig,
+        config_path: P,
+        launch: BuiltInLaunch,
+    ) -> Self {
+        Self::with_stage(
+            config,
+            NodeStage::Ready {
+                config_path: config_path.into(),
+                artifact: Artifact::BuiltIn(launch),
+                instances: Vec::new(),
+            },
+        )
+    }
+
+    /// The spawn recipe of a built-in node, `None` for a sourced node.
+    pub fn built_in_launch(&self) -> Option<&BuiltInLaunch> {
+        match &self.stage {
+            NodeStage::Ready { artifact, .. } => artifact.built_in(),
+            _ => None,
         }
     }
 
@@ -435,12 +554,13 @@ impl NodeEntity {
     }
 
     /// Returns the path to the built `.sif`/archive in
-    /// `~/.peppy/built_nodes`. `None` until the entity has reached `Ready`,
-    /// and `None` for the synthetic root entity (which has no artifact).
+    /// `~/.peppy/built_nodes`, or a built-in node's executable. `None` until
+    /// the entity has reached `Ready`, and `None` for the synthetic root
+    /// entity (which has no artifact).
     pub fn artifact_path(&self) -> Option<&Path> {
         match &self.stage {
             NodeStage::Added { .. } | NodeStage::Building { .. } | NodeStage::Root { .. } => None,
-            NodeStage::Ready { artifact_path, .. } => Some(artifact_path),
+            NodeStage::Ready { artifact, .. } => Some(artifact.path()),
         }
     }
 
@@ -643,7 +763,7 @@ impl NodeEntity {
 
                 guard.stage = NodeStage::Ready {
                     config_path,
-                    artifact_path: artifact_path.clone(),
+                    artifact: Artifact::Built(artifact_path.clone()),
                     instances: Vec::new(),
                 };
                 guard.broadcast_stage();
@@ -728,8 +848,27 @@ impl NodeEntity {
         handle: &Arc<RwLock<NodeEntity>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
+        // A built-in instance's endpoints follow from the recipe and the
+        // port the runtime config carries; derived before the lock so a
+        // malformed config is refused without touching the entity.
+        let built_in_endpoints = {
+            let guard = handle.read();
+            match guard.built_in_launch() {
+                Some(launch) => Some(
+                    built_in_endpoints(launch, ctx.runtime_config_json5).map_err(|reason| {
+                        Error::StartFailed {
+                            node_name: guard.config.manifest.name.as_str().to_owned(),
+                            node_tag: guard.config.manifest.tag.clone(),
+                            reason,
+                        }
+                    })?,
+                ),
+                None => None,
+            }
+        };
+
         // ---- Phase 1: register the Starting instance under a brief write lock ----
-        let (node_name, node_tag, node_config, artifact_path, start_generation) = {
+        let (node_name, node_tag, node_config, artifact, start_generation) = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_spawnable() {
                 return Err(Error::InvalidStageTransition {
@@ -741,7 +880,7 @@ impl NodeEntity {
             }
             let entity_generation = guard.generation;
             let NodeStage::Ready {
-                artifact_path,
+                artifact,
                 instances,
                 ..
             } = &mut guard.stage
@@ -762,13 +901,16 @@ impl NodeEntity {
                 });
             }
 
-            let snapshot_artifact = artifact_path.clone();
-            instances.push(TrackedNodeInstance::new(
+            let snapshot_artifact = artifact.clone();
+            let mut instance = TrackedNodeInstance::new(
                 ctx.instance_id.clone(),
-                None,
                 InstanceState::Starting,
                 ctx.slot_bindings.clone(),
-            ));
+            );
+            if let Some(endpoints) = built_in_endpoints {
+                instance = instance.with_endpoints(endpoints);
+            }
+            instances.push(instance);
 
             (
                 guard.config.manifest.name.as_str().to_owned(),
@@ -784,10 +926,15 @@ impl NodeEntity {
         let is_container = node_config.execution.container.is_some();
 
         // ---- Phase 2: prepare instance dir ----
-        let instance_dir = if is_container {
-            create_instance_dir(instance_id_str, ctx.peppy_dirs)
-        } else {
-            extract_node_archive(&artifact_path, instance_id_str, ctx.peppy_dirs)
+        // A container's working directory starts empty, and so does a
+        // built-in node's: it has no archive to extract.
+        let instance_dir = match &artifact {
+            Artifact::Built(archive) if !is_container => {
+                extract_node_archive(archive, instance_id_str, ctx.peppy_dirs)
+            }
+            Artifact::Built(_) | Artifact::BuiltIn(_) => {
+                create_instance_dir(instance_id_str, ctx.peppy_dirs)
+            }
         }
         .map_err(|reason| {
             Self::remove_starting_instance(handle, ctx.instance_id);
@@ -806,38 +953,48 @@ impl NodeEntity {
             mut command,
             runtime_config_path,
             description: spawn_description,
-        } = if let Some(container) = node_config.execution.container.as_ref() {
-            let apptainer_run_extra_args = container
-                .apptainer_run_extra_args
-                .as_deref()
-                .unwrap_or_default();
-            let lima_shell_extra_args = container
-                .lima_shell_extra_args
-                .as_deref()
-                .unwrap_or_default();
-            build_container_command(SpawnContainerInputs {
-                sif_path: &artifact_path,
-                working_dir: &instance_dir,
-                instance_id: instance_id_str,
-                runtime_config_json5: ctx.runtime_config_json5,
-                env_vars: ctx.env_vars,
-                mount_paths: ctx.mount_paths_resolved,
-                apptainer_run_extra_args,
-                lima_shell_extra_args,
-                log_file: &ctx.output_sinks.log_file,
-                feedback_tx: &ctx.output_sinks.feedback_tx,
-                peppy_dirs: ctx.peppy_dirs,
-            })
-            .await
-        } else {
-            build_process_command(
+        } = match (&artifact, node_config.execution.container.as_ref()) {
+            (Artifact::BuiltIn(launch), _) => build_built_in_command(
+                launch,
                 &node_config,
                 &instance_dir,
                 ctx.runtime_config_json5,
                 ctx.env_vars,
                 &ctx.output_sinks.log_file,
                 ctx.peppy_dirs,
-            )
+            ),
+            (Artifact::Built(sif_path), Some(container)) => {
+                let apptainer_run_extra_args = container
+                    .apptainer_run_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+                let lima_shell_extra_args = container
+                    .lima_shell_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+                build_container_command(SpawnContainerInputs {
+                    sif_path,
+                    working_dir: &instance_dir,
+                    instance_id: instance_id_str,
+                    runtime_config_json5: ctx.runtime_config_json5,
+                    env_vars: ctx.env_vars,
+                    mount_paths: ctx.mount_paths_resolved,
+                    apptainer_run_extra_args,
+                    lima_shell_extra_args,
+                    log_file: &ctx.output_sinks.log_file,
+                    feedback_tx: &ctx.output_sinks.feedback_tx,
+                    peppy_dirs: ctx.peppy_dirs,
+                })
+                .await
+            }
+            (Artifact::Built(_), None) => build_process_command(
+                &node_config,
+                &instance_dir,
+                ctx.runtime_config_json5,
+                ctx.env_vars,
+                &ctx.output_sinks.log_file,
+                ctx.peppy_dirs,
+            ),
         }
         .map_err(|e| {
             // Best-effort cleanup of the instance dir we just materialized.
@@ -942,15 +1099,14 @@ impl NodeEntity {
     /// orphan process is left behind. On the success path the `Child` is handed
     /// back (not killed, no `kill_on_drop`), so the OS process keeps running; the
     /// caller owns it from here, holding it in the exit watcher and reaping it on
-    /// exit, while `stop_instance` still drives termination by pid.
+    /// exit, while the stop paths and the stack's drop still drive termination
+    /// by the pid `prepare_and_spawn` recorded at the fork.
     pub async fn commit_started(
         handle: &Arc<RwLock<NodeEntity>>,
         mut child: Child,
         started_ctx: StartedInstanceCtx,
         instance_id: Name,
     ) -> Result<Child> {
-        let pid = child.id().unwrap_or(0);
-
         // Helper: on every error path we must kill the still-running child
         // before returning, otherwise we leak an untracked OS process. tokio
         // `Child` does NOT have kill_on_drop set in the spawn helpers.
@@ -1000,11 +1156,7 @@ impl NodeEntity {
                                     to: "Running",
                                 })
                             } else {
-                                inst.set_running(
-                                    Some(pid),
-                                    instance_dir.clone(),
-                                    runtime_config_path.clone(),
-                                );
+                                inst.set_running(instance_dir.clone(), runtime_config_path.clone());
                                 Ok(())
                             }
                         } else {
@@ -1151,7 +1303,7 @@ impl NodeEntity {
             ),
             (Some(artifact_path), _) => NodeStage::Ready {
                 config_path,
-                artifact_path,
+                artifact: Artifact::Built(artifact_path),
                 instances,
             },
         };
@@ -1228,8 +1380,13 @@ impl NodeEntity {
 #[derive(Debug, Clone)]
 pub struct TrackedNodeInstance {
     instance_id: Name,
-    /// Process ID of the running instance. This is `None` for instances running on remote
-    /// locations (e.g., embedded systems) where a local PID is not available.
+    /// Process id of the child the spawn path recorded for this instance, the
+    /// leader of its process group, so the stop paths and the stack's own drop
+    /// can signal it. Only `prepare_and_spawn` records one, under the entity
+    /// lock, so every pid here names a child of this daemon. `None` for the
+    /// root instance (the daemon's own process), for instances running on
+    /// remote locations (e.g., embedded systems) where a local pid is not
+    /// available, and once the process has exited on its own.
     pid: Option<u32>,
     state: InstanceState,
     /// On-disk instance directory created during start (extracted archive
@@ -1264,6 +1421,9 @@ pub struct TrackedNodeInstance {
     /// `Arc<AtomicBool>` for the same reason as `healthy`: it is flipped through
     /// the clone the stop path resolves, without an entity write lock.
     stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The endpoint URLs the instance serves; empty for every node that is
+    /// not a built-in server.
+    endpoints: Vec<String>,
 }
 
 impl TrackedNodeInstance {
@@ -1274,22 +1434,24 @@ impl TrackedNodeInstance {
     /// fixture pass `InstanceState::Running`. `slot_bindings` carries the
     /// validator-resolved per-slot bindings for this instance; pass an
     /// empty map when reconstructing test fixtures or instances whose
-    /// manifest has no `depends_on` slots.
+    /// manifest has no `depends_on` slots. A new instance carries no pid:
+    /// the spawn path records the child's pid once it has forked it, so a
+    /// pid can never be made up for an instance and signaled later.
     pub fn new(
         instance_id: Name,
-        pid: Option<u32>,
         state: InstanceState,
         slot_bindings: config::runtime::SlotBindings,
     ) -> Self {
         Self {
             instance_id,
-            pid,
+            pid: None,
             state,
             instance_dir: None,
             runtime_config_path: None,
             slot_bindings,
             healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            endpoints: Vec::new(),
         }
     }
 
@@ -1299,6 +1461,18 @@ impl TrackedNodeInstance {
     /// instances built with an empty bindings map.
     pub fn slot_bindings(&self) -> &config::runtime::SlotBindings {
         &self.slot_bindings
+    }
+
+    /// The endpoint URLs the instance serves, for `stack list`; empty for
+    /// every node that is not a built-in server.
+    pub fn endpoints(&self) -> &[String] {
+        &self.endpoints
+    }
+
+    /// Records the endpoint URLs a built-in instance serves.
+    pub fn with_endpoints(mut self, endpoints: Vec<String>) -> Self {
+        self.endpoints = endpoints;
+        self
     }
 
     pub fn instance_id(&self) -> &Name {
@@ -1354,16 +1528,11 @@ impl TrackedNodeInstance {
     }
 
     /// Same-module mutator used by `NodeEntity::commit_started` to flip a
-    /// `Starting` instance to `Running` and record its pid plus the on-disk
-    /// paths produced by `prepare_and_spawn`. Not exported.
-    fn set_running(
-        &mut self,
-        pid: Option<u32>,
-        instance_dir: PathBuf,
-        runtime_config_path: PathBuf,
-    ) {
+    /// `Starting` instance to `Running` and record the on-disk paths produced
+    /// by `prepare_and_spawn`. The pid stays as recorded at spawn. Not
+    /// exported.
+    fn set_running(&mut self, instance_dir: PathBuf, runtime_config_path: PathBuf) {
         self.state = InstanceState::Running;
-        self.pid = pid;
         self.instance_dir = Some(instance_dir);
         self.runtime_config_path = Some(runtime_config_path);
     }
@@ -1408,6 +1577,127 @@ mod tests {
         .expect("valid sensor config")
     }
 
+    fn built_in_launch() -> BuiltInLaunch {
+        BuiltInLaunch {
+            executable: PathBuf::from("/opt/peppy/bin/peppy"),
+            args: vec!["mcp".to_owned(), "serve".to_owned()],
+            env: vec![(
+                "PEPPY_MCP_SERVE_SPEC".to_owned(),
+                "/tmp/spec.json5".to_owned(),
+            )],
+            http_paths: vec![
+                "/camera_and_recording/v1/mcp".to_owned(),
+                "/arm_control/v1/mcp".to_owned(),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_built_in_entity_is_ready_with_the_executable_as_its_artifact() {
+        let entity = NodeEntity::built_in(
+            sensor_config(),
+            PathBuf::from("/tmp/built_in/sensor/peppy.json5"),
+            built_in_launch(),
+        );
+        assert_eq!(entity.stage().to_serialized(), SerializedNodeStage::Ready);
+        assert!(
+            matches!(
+                entity.stage(),
+                NodeStage::Ready {
+                    artifact: Artifact::BuiltIn(_),
+                    ..
+                }
+            ),
+            "the recipe is the entity's artifact"
+        );
+        assert_eq!(
+            entity.artifact_path(),
+            Some(Path::new("/opt/peppy/bin/peppy"))
+        );
+        assert_eq!(
+            entity.config_path(),
+            Path::new("/tmp/built_in/sensor/peppy.json5")
+        );
+        assert_eq!(entity.built_in_launch(), Some(&built_in_launch()));
+        assert!(entity.instances().is_empty());
+        assert!(
+            entity.stage().ensure_spawnable().is_ok(),
+            "a built-in node spawns without a build"
+        );
+        assert!(
+            NodeEntity::new(sensor_config(), "/tmp/sensor/peppy.json5")
+                .built_in_launch()
+                .is_none(),
+            "a sourced node carries no recipe"
+        );
+    }
+
+    #[test]
+    fn a_built_in_instance_reports_the_endpoints_of_its_port() {
+        let launch = built_in_launch();
+        assert_eq!(
+            launch.endpoint_urls(9000),
+            [
+                "http://127.0.0.1:9000/camera_and_recording/v1/mcp",
+                "http://127.0.0.1:9000/arm_control/v1/mcp"
+            ]
+        );
+        let runtime_config = config::runtime::RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig {
+                arguments: BTreeMap::from([("port".to_string(), config::AnyType::Int(9001))]),
+                ..config::runtime::NodeInstanceConfig::new(Name::new("mcp").unwrap())
+            },
+            "sensor",
+            "v1",
+            "core_a",
+        )
+        .expect("runtime config builds");
+        let json5 = serde_json5::to_string(&runtime_config).expect("serializes");
+        assert_eq!(
+            built_in_endpoints(&launch, &json5).expect("the port is read"),
+            [
+                "http://127.0.0.1:9001/camera_and_recording/v1/mcp",
+                "http://127.0.0.1:9001/arm_control/v1/mcp"
+            ]
+        );
+
+        let portless = config::runtime::RuntimeConfig::new(
+            "127.0.0.1",
+            7448,
+            config::runtime::NodeInstanceConfig::new(Name::new("mcp").unwrap()),
+            "sensor",
+            "v1",
+            "core_a",
+        )
+        .expect("runtime config builds");
+        let error = built_in_endpoints(&launch, &serde_json5::to_string(&portless).unwrap())
+            .expect_err("no port argument");
+        assert!(error.contains("`port`"), "{error}");
+    }
+
+    #[test]
+    fn serialized_instances_carry_their_endpoints() {
+        let served = TrackedNodeInstance::new(
+            Name::new("mcp").unwrap(),
+            InstanceState::Running,
+            BTreeMap::new(),
+        )
+        .with_endpoints(vec!["http://127.0.0.1:8900/camera/v1/mcp".to_owned()]);
+        let entity = NodeEntity::from_snapshot(
+            sensor_config(),
+            PathBuf::from("/tmp/sensor/peppy.json5"),
+            Some(PathBuf::from("/opt/peppy/bin/peppy")),
+            vec![served],
+        );
+        let serialized = serialize_node_entity(&entity, "core_a");
+        assert_eq!(
+            serialized.instances[0].endpoints,
+            ["http://127.0.0.1:8900/camera/v1/mcp"]
+        );
+    }
+
     /// Guards the one line that places resolved bindings onto the `graph_json`
     /// wire: `From<&NodeEntity>` must copy each instance's `slot_bindings`
     /// through to its `SerializedInstance`. Reverting that line to an empty map
@@ -1432,14 +1722,12 @@ mod tests {
         );
         let bound = TrackedNodeInstance::new(
             Name::new("sensor-1").unwrap(),
-            Some(42),
             InstanceState::Running,
             bindings.clone(),
         );
         // A second, bindless instance must round-trip as an empty map.
         let unbound = TrackedNodeInstance::new(
             Name::new("sensor-2").unwrap(),
-            Some(43),
             InstanceState::Running,
             BTreeMap::new(),
         );
@@ -1468,7 +1756,6 @@ mod tests {
     fn serialized_node_carries_per_instance_health() {
         let healthy = TrackedNodeInstance::new(
             Name::new("sensor-1").unwrap(),
-            Some(42),
             InstanceState::Running,
             BTreeMap::new(),
         );
@@ -1478,7 +1765,6 @@ mod tests {
         );
         let unhealthy = TrackedNodeInstance::new(
             Name::new("sensor-2").unwrap(),
-            Some(43),
             InstanceState::Running,
             BTreeMap::new(),
         );
@@ -1522,12 +1808,10 @@ mod tests {
     #[test]
     fn mark_instance_exited_moves_running_to_finished_on_clean_exit() {
         let id = Name::new("one-shot-1").unwrap();
-        let handle = ready_entity_with(TrackedNodeInstance::new(
-            id.clone(),
-            Some(7),
-            InstanceState::Running,
-            BTreeMap::new(),
-        ));
+        let mut instance =
+            TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
+        instance.set_starting_pid(7);
+        let handle = ready_entity_with(instance);
 
         let new_state = NodeEntity::mark_instance_exited(&handle, &id, true);
         assert_eq!(new_state, Some(InstanceState::Finished));
@@ -1551,7 +1835,6 @@ mod tests {
         let id = Name::new("crash-1").unwrap();
         let handle = ready_entity_with(TrackedNodeInstance::new(
             id.clone(),
-            Some(9),
             InstanceState::Running,
             BTreeMap::new(),
         ));
@@ -1566,12 +1849,8 @@ mod tests {
     #[test]
     fn mark_instance_exited_is_noop_for_an_instance_being_stopped() {
         let id = Name::new("stopping-1").unwrap();
-        let instance = TrackedNodeInstance::new(
-            id.clone(),
-            Some(11),
-            InstanceState::Running,
-            BTreeMap::new(),
-        );
+        let instance =
+            TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
         // A stop path has claimed this instance; the watcher must not relabel
         // the intentional exit as a self-exit.
         instance.mark_stopping();
@@ -1596,7 +1875,6 @@ mod tests {
             Some(PathBuf::from("/tmp/sensor.sif")),
             vec![TrackedNodeInstance::new(
                 id.clone(),
-                None,
                 InstanceState::Finished,
                 BTreeMap::new(),
             )],

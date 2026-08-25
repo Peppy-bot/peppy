@@ -26,7 +26,7 @@ use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
 use core_node_api::encoding::RepoItemKind;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint, PinnedItem};
+use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -95,7 +95,7 @@ pub struct PairingCacheEntry {
 
 /// One entry as it appears in `mcp_exposures.json5`. MCP exposures are
 /// stand-alone JSON5 documents (`peppy_schema: "mcp_exposure/v1"`)
-/// selecting the contract members a generated MCP server makes public.
+/// selecting the contract members the built-in MCP server makes public.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpExposureCacheEntry {
     pub exposure_name: ItemName,
@@ -226,6 +226,48 @@ repo_cache_entry!(
     exposure_name,
     tag
 );
+
+/// The kinds a coordinator can pin: every cache kind but launchers, which
+/// carry no tag and are never deployed by pin.
+pub(crate) trait PinnableCacheEntry: RepoCacheEntry {
+    const PIN_KIND: PinKind;
+
+    fn item_name(&self) -> &ItemName;
+    fn item_tag(&self) -> &ItemTag;
+
+    /// The pin this entry mints: the entry already records the identity,
+    /// the content fingerprint and the origin, so pinning is a restatement,
+    /// not a decision.
+    fn pin(&self) -> PinnedItem {
+        PinnedItem {
+            kind: Self::PIN_KIND,
+            name: self.item_name().clone(),
+            tag: self.item_tag().clone(),
+            sha256: self.sha256().clone(),
+            origin: self.origin().clone(),
+        }
+    }
+}
+
+macro_rules! pinnable_cache_entry {
+    ($ty:ident, $pin_kind:ident, $name_field:ident, $tag_field:ident) => {
+        impl PinnableCacheEntry for $ty {
+            const PIN_KIND: PinKind = PinKind::$pin_kind;
+
+            fn item_name(&self) -> &ItemName {
+                &self.$name_field
+            }
+            fn item_tag(&self) -> &ItemTag {
+                &self.$tag_field
+            }
+        }
+    };
+}
+
+pinnable_cache_entry!(NodeCacheEntry, Node, node_name, node_tag);
+pinnable_cache_entry!(ContractCacheEntry, Contract, contract_name, tag);
+pinnable_cache_entry!(PairingCacheEntry, Pairing, pairing_name, tag);
+pinnable_cache_entry!(McpExposureCacheEntry, McpExposure, exposure_name, tag);
 
 /// Path of `E`'s cache file under the peppy cache dir.
 pub(crate) fn repo_cache_path<E: RepoCacheEntry>(peppy_dirs: &PeppyDirs) -> PathBuf {

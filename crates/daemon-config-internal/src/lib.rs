@@ -33,6 +33,7 @@ mod internal {
     pub mod core_node_name;
     pub mod env;
     pub mod launcher;
+    pub mod mcp_deployment;
     pub mod mcp_exposure;
     pub mod pairing;
     pub mod peppy_config;
@@ -113,10 +114,23 @@ pub mod contract {
 // -- mcp_exposure --
 pub mod mcp_exposure {
     pub use crate::internal::mcp_exposure::{
-        ActionExposure, ActionOperation, ExposureTarget, FreshnessPolicy, ImageCodec,
-        ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure, OversizePolicy,
-        PeppyMcpExposureParser, PinnedContractRef, PublicName, RestrictBounds, ServerIdentity,
-        ServiceExposure, ServiceOperation, TopicExposure, UpdatePolicy,
+        ActionExposure, ActionOperation, ExposureManifest, ExposureTarget, FreshnessPolicy,
+        ImageCodec, ImageFieldMap, ImageRepresentation, JpegQuality, MaxHz, McpExposure,
+        OversizePolicy, PeppyMcpExposureParser, PinnedContractRef, PublicName, RestrictBounds,
+        ServerIdentity, ServiceExposure, ServiceOperation, TopicExposure, UpdatePolicy,
+    };
+}
+
+// -- mcp_deployment --
+//
+// The built-in MCP server as a deployment: the identity and manifest the
+// daemon synthesizes from a set of exposures, the slot-merging rules, and
+// the spec file the daemon hands `peppy mcp serve`.
+pub mod mcp_deployment {
+    pub use crate::internal::mcp_deployment::{
+        BUILT_IN_TAG, DEFAULT_PORT, ExposureViolations, McpDeploymentError, McpDeploymentPlan,
+        McpServeSpec, PORT_PARAMETER, Pinned, PinnedContract, PinnedDocument, PinnedExposure,
+        RUN_COMMAND, SPEC_ENV_VAR, SlotConflict, built_in_identity, plan_deployment,
     };
 }
 
@@ -128,14 +142,14 @@ pub mod pairing {
 // -- repository --
 pub mod repository {
     pub use crate::internal::repository::{
-        DeclaredItem, DeclaredPaths, DeploymentPins, EntryOrigin, GitCommit, GitCommitError,
-        IndexedItem, ItemName, ItemTag, ManifestFingerprint, ManifestFingerprintError,
-        PeppyRepositoryIndexParser, PinKind, PinnedItem, RepoItemKind, RepoPathError,
-        RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
+        DeclaredItem, DeclaredPaths, DeploymentPins, DeploymentRoot, EntryOrigin, GitCommit,
+        GitCommitError, IndexedItem, ItemName, ItemTag, ManifestFingerprint,
+        ManifestFingerprintError, PeppyRepositoryIndexParser, PinKind, PinnedItem, RepoItemKind,
+        RepoPathError, RepoRelativePath, RepositoryIndex, TaggedSection, UniqueMap,
     };
 }
 
 // -- source --
 pub mod source {
-    pub use crate::internal::source::DeploymentSource;
+    pub use crate::internal::source::{DeploymentSource, ExposureRef};
 }

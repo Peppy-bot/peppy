@@ -757,6 +757,7 @@ mod tests {
             healthy: true,
             slot_bindings: BTreeMap::new(),
             pairing_slots: BTreeMap::new(),
+            endpoints: Vec::new(),
         }];
         let graph = graph_of(vec![node_with_stage("core", NodeStage::Root), recorder]);
         assert!(stack_has_user_nodes(&graph));

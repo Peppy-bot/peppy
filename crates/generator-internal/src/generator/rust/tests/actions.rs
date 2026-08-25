@@ -1305,3 +1305,34 @@ fn clippy_consumed_action_empty_goal_request() {
 
     run_clippy(&output_dir);
 }
+
+const EXPOSED_ACTION_WITH_NESTED_GOAL: &str = r#"
+{
+  name: "record",
+  goal_service: {
+    request_message_format: {
+      steps: "u32",
+      options: { $type: "object", uppercase: "bool" }
+    }
+  }
+}
+"#;
+
+/// The goal request deserializer constructs the nested structs declared
+/// under the `Goal` prefix.
+#[test]
+fn exposed_action_goal_deserializer_builds_declared_nested_structs() {
+    let action: NativeExposedAction =
+        serde_json5::from_str(EXPOSED_ACTION_WITH_NESTED_GOAL).unwrap();
+
+    let mut generator = RustGenerator::new();
+    generator.add_exposed_action(&action, None).unwrap();
+    let artifacts = render_artifacts(generator.into_artifacts());
+    let rendered = artifacts.into_iter().next().expect("artifact is present");
+
+    assert_contains_all(&rendered, &["pub struct GoalOptions", "= GoalOptions {"]);
+    assert!(
+        !rendered.contains("goalOptions"),
+        "the deserializer names nested structs by their declared prefix:\n{rendered}"
+    );
+}

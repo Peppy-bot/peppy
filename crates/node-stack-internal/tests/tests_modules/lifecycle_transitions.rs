@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use config::runtime::Name;
 use node_stack::{
-    BuildContext, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage, WorkingDirGuard,
+    Artifact, BuildContext, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
+    WorkingDirGuard,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -79,11 +80,11 @@ async fn ready_with_running_instance_round_trip() {
     match guard.stage() {
         NodeStage::Ready {
             config_path: cp,
-            artifact_path: sp,
+            artifact: sp,
             instances,
         } => {
             assert_eq!(cp, &config_path);
-            assert!(sp.is_file(), "archive should exist on disk");
+            assert!(sp.path().is_file(), "archive should exist on disk");
             assert_eq!(instances.len(), 1);
             assert_eq!(instances[0].instance_id().as_str(), "inst-1");
             assert!(instances[0].pid().is_some());
@@ -113,11 +114,11 @@ async fn stop_instance_removes_last_instance_keeps_ready() {
     match guard.stage() {
         NodeStage::Ready {
             config_path: cp,
-            artifact_path: sp,
+            artifact: sp,
             instances,
         } => {
             assert_eq!(cp, &config_path);
-            assert!(sp.is_file(), "archive should exist on disk");
+            assert!(sp.path().is_file(), "archive should exist on disk");
             assert!(
                 instances.is_empty(),
                 "instances list should be empty after removing the only instance"
@@ -1029,7 +1030,7 @@ mod backwards_transitions_are_rejected {
     fn ready_empty() -> NodeStage {
         NodeStage::Ready {
             config_path: PathBuf::from("/tmp/sensor"),
-            artifact_path: PathBuf::from("/tmp/sensor.sif"),
+            artifact: Artifact::Built(PathBuf::from("/tmp/sensor.sif")),
             instances: vec![],
         }
     }
@@ -1037,10 +1038,9 @@ mod backwards_transitions_are_rejected {
     fn ready_with_running_instance() -> NodeStage {
         NodeStage::Ready {
             config_path: PathBuf::from("/tmp/sensor"),
-            artifact_path: PathBuf::from("/tmp/sensor.sif"),
+            artifact: Artifact::Built(PathBuf::from("/tmp/sensor.sif")),
             instances: vec![TrackedNodeInstance::new(
                 Name::new("inst").unwrap(),
-                Some(1),
                 InstanceState::Running,
                 std::collections::BTreeMap::new(),
             )],

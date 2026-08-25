@@ -7,6 +7,7 @@
 
 pub mod facade;
 pub mod types;
+pub mod wire_layout;
 
 pub use types::FunctionParam;
 
@@ -16,8 +17,8 @@ pub(crate) use config::ConfigError as Error;
 pub type Result<T> = std::result::Result<T, config::ConfigError>;
 
 use capnp::message::ReaderOptions;
-use capnp::schema_capnp::{field, node, type_};
-use capnp::serialize;
+use capnp::schema_capnp::{code_generator_request, field, node, type_};
+use capnp::serialize::{self, OwnedSegments};
 use capnpc::codegen::GeneratorContext;
 use capnpc::codegen_types::{Leaf, RustTypeInfo};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -31,6 +32,7 @@ use tempfile::tempdir;
 use config::node::{ArraySchema, MessageFormat, SchemaType, TypeToken};
 use facade::CapnpFacade;
 use indexmap::IndexMap;
+use wire_layout::{SchemaNodes, StructLayout};
 
 /// The output_dir should point to the `src` of a Rust crate. A new `capnp` module will be
 /// created at the root of this directory with all the `capnp` files.
@@ -72,6 +74,26 @@ impl MessageFormatMapper {
     /// optional `PEPPY_BIN_DIR`. peppy never falls back to a system capnp on
     /// `PATH`.
     pub fn map_message_format_to_capnpn(&self) -> Result<CapnpSchemaArtifacts> {
+        let schema = self.render_schema()?;
+        let type_mapping = self.compute_rust_type_mapping(&schema)?;
+        Ok(CapnpSchemaArtifacts::new(
+            self.message_format.clone(),
+            schema,
+            type_mapping,
+        ))
+    }
+
+    /// Lays out the message format on the wire: the schema is rendered and
+    /// compiled exactly as for code generation, and the compiler's field
+    /// placement is read back. Runs the same subprocess as
+    /// [`map_message_format_to_capnpn`](Self::map_message_format_to_capnpn).
+    pub fn wire_layout(&self) -> Result<StructLayout> {
+        let schema = self.render_schema()?;
+        let compiled = CompiledSchema::compile(&schema)?;
+        wire_layout::extract(compiled.request()?, &self.message_format.0)
+    }
+
+    fn render_schema(&self) -> Result<String> {
         let mut generator = CapnpSchemaGenerator::default();
         let mut schema = String::new();
         let mut schema_id =
@@ -90,36 +112,14 @@ impl MessageFormatMapper {
             schema.push('\n');
             schema.push_str("struct Timestamp {\n  sec @0 :Int64;\n  nsec @1 :UInt32;\n}\n");
         }
-
-        let type_mapping = self.compute_rust_type_mapping(&schema)?;
-        Ok(CapnpSchemaArtifacts::new(
-            self.message_format.clone(),
-            schema,
-            type_mapping,
-        ))
+        Ok(schema)
     }
 
     fn compute_rust_type_mapping(&self, schema: &str) -> Result<HashMap<String, String>> {
-        let temp_dir = tempdir()?;
-        let schema_path = temp_dir.path().join("message.capnp");
-        std::fs::write(&schema_path, schema)?;
-        let request_path = temp_dir.path().join("code_generator_request.bin");
+        let compiled = CompiledSchema::compile(schema)?;
+        let ctx = GeneratorContext::new(&compiled.message)?;
 
-        let capnp = CapnpFacade::new()?;
-        let mut command = capnpc::CompilerCommand::new();
-        command
-            .capnp_executable(capnp.binary_path())
-            .file(&schema_path)
-            .output_path(temp_dir.path())
-            .raw_code_generator_request_path(&request_path);
-
-        command.run()?;
-
-        let mut request_file = std::fs::File::open(&request_path)?;
-        let message = serialize::read_message(&mut request_file, ReaderOptions::new())?;
-        let ctx = GeneratorContext::new(&message)?;
-
-        let root_struct_id = find_root_struct_id(&ctx)?;
+        let root_struct_id = SchemaNodes::from_request(ctx.request)?.root_message_id()?;
         let mut mapping = HashMap::new();
         let mut visited = HashSet::new();
         collect_struct_fields(&ctx, root_struct_id, "", &mut mapping, &mut visited)?;
@@ -293,6 +293,43 @@ impl CapnpSchemaArtifacts {
     }
 }
 
+/// The compiler's view of one rendered schema: the code generator request
+/// the `capnp` binary emits for it, read fully into memory.
+struct CompiledSchema {
+    message: capnp::message::Reader<OwnedSegments>,
+}
+
+impl CompiledSchema {
+    /// Writes the schema to a temporary directory, runs the bundled `capnp`
+    /// compiler on it and reads back the raw code generator request.
+    fn compile(schema: &str) -> Result<Self> {
+        let temp_dir = tempdir()?;
+        let schema_path = temp_dir.path().join("message.capnp");
+        std::fs::write(&schema_path, schema)?;
+        let request_path = temp_dir.path().join("code_generator_request.bin");
+
+        let capnp = CapnpFacade::new()?;
+        let mut command = capnpc::CompilerCommand::new();
+        command
+            .capnp_executable(capnp.binary_path())
+            .file(&schema_path)
+            .output_path(temp_dir.path())
+            .raw_code_generator_request_path(&request_path);
+
+        command.run()?;
+
+        let mut request_file = std::fs::File::open(&request_path)?;
+        let message = serialize::read_message(&mut request_file, ReaderOptions::new())?;
+        Ok(Self { message })
+    }
+
+    fn request(&self) -> Result<code_generator_request::Reader<'_>> {
+        Ok(self
+            .message
+            .get_root::<code_generator_request::Reader<'_>>()?)
+    }
+}
+
 #[derive(Default)]
 struct CapnpSchemaGenerator {
     timestamp_struct_needed: bool,
@@ -398,25 +435,31 @@ impl CapnpSchemaGenerator {
     }
 
     fn capnp_type_for_token(&mut self, token: &TypeToken) -> &'static str {
-        match token {
-            TypeToken::Bool => "Bool",
-            TypeToken::String => "Text",
-            TypeToken::Bytes => "Data",
-            TypeToken::Time => {
-                self.timestamp_struct_needed = true;
-                "Timestamp"
-            }
-            TypeToken::U8 => "UInt8",
-            TypeToken::U16 => "UInt16",
-            TypeToken::U32 => "UInt32",
-            TypeToken::U64 => "UInt64",
-            TypeToken::I8 => "Int8",
-            TypeToken::I16 => "Int16",
-            TypeToken::I32 => "Int32",
-            TypeToken::I64 => "Int64",
-            TypeToken::F32 => "Float32",
-            TypeToken::F64 => "Float64",
+        if *token == TypeToken::Time {
+            self.timestamp_struct_needed = true;
         }
+        capnp_type_name(token)
+    }
+}
+
+/// The Cap'n Proto type a token is rendered as. `time` names the file-level
+/// `Timestamp` struct the renderer appends when any field uses it.
+pub(crate) fn capnp_type_name(token: &TypeToken) -> &'static str {
+    match token {
+        TypeToken::Bool => "Bool",
+        TypeToken::String => "Text",
+        TypeToken::Bytes => "Data",
+        TypeToken::Time => "Timestamp",
+        TypeToken::U8 => "UInt8",
+        TypeToken::U16 => "UInt16",
+        TypeToken::U32 => "UInt32",
+        TypeToken::U64 => "UInt64",
+        TypeToken::I8 => "Int8",
+        TypeToken::I16 => "Int16",
+        TypeToken::I32 => "Int32",
+        TypeToken::I64 => "Int64",
+        TypeToken::F32 => "Float32",
+        TypeToken::F64 => "Float64",
     }
 }
 
@@ -425,7 +468,7 @@ struct TypeResolution {
     nested: Vec<String>,
 }
 
-fn sanitize_field_name(input: &str) -> String {
+pub(crate) fn sanitize_field_name(input: &str) -> String {
     let mut output = to_pascal_case(input);
     if output.is_empty() {
         output.push_str("Field");
@@ -488,41 +531,6 @@ fn type_token_strings(token: &TypeToken) -> (&'static str, &'static str) {
         TypeToken::F32 => ("f32", "f32"),
         TypeToken::F64 => ("f64", "f64"),
     }
-}
-
-fn find_root_struct_id(ctx: &GeneratorContext<'_>) -> Result<u64> {
-    let requested_files = ctx.request.get_requested_files()?;
-    if requested_files.is_empty() {
-        return Err(Error::Encoding(
-            "capnp request did not include any files".to_string(),
-        ));
-    }
-
-    let file_id = requested_files.get(0).get_id();
-
-    for (id, node_reader) in &ctx.node_map {
-        if node_reader.get_scope_id() != file_id {
-            continue;
-        }
-
-        if let Ok(node::Struct(_)) = node_reader.which() {
-            let display_name = node_reader
-                .get_display_name()?
-                .to_str()
-                .map_err(|err| Error::Encoding(err.to_string()))?;
-            let simple_name = display_name
-                .rsplit(|ch| [':', '.'].contains(&ch))
-                .next()
-                .unwrap_or(display_name);
-            if simple_name == "Message" {
-                return Ok(*id);
-            }
-        }
-    }
-
-    Err(Error::Encoding(
-        "capnp request missing root Message struct".to_string(),
-    ))
 }
 
 fn collect_struct_fields(

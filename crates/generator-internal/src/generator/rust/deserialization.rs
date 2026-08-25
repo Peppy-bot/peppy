@@ -61,9 +61,9 @@ pub fn build_deserialize_fn(
         fn #fn_name(payload: &[u8]) -> crate::Result<#return_type> {
             #[allow(clippy::all)]
             let context = #context_expr;
-            let mut cursor = std::io::Cursor::new(payload);
-            let message_reader = capnp::serialize::read_message(
-                    &mut cursor,
+            let mut payload = payload;
+            let message_reader = capnp::serialize::read_message_from_flat_slice(
+                    &mut payload,
                     capnp::message::ReaderOptions::new(),
                 )
                 .map_err(|source| crate::Error::Deserialization(
@@ -454,29 +454,37 @@ fn generate_primitive_array_reader(
             })?;
     }];
 
-    // A text list's iterator yields `Result<text::Reader, capnp::Error>` per
-    // element (each string can fail to decode on its own), unlike a numeric
-    // list's plain values, so string elements convert through the same
-    // fallible path the scalar string reader uses.
-    let collect_strings = |vec_ident: &Ident| {
+    // A text or data list's iterator yields `Result<_, capnp::Error>` per
+    // element (each pointer can fail to resolve on its own), unlike a
+    // numeric list's plain values, so those elements convert through the
+    // same fallible path the scalar string and bytes readers use.
+    let pointer_element_expr = match token {
+        TypeToken::String => Some(quote! {
+            element
+                .map_err(|source| source.to_string())
+                .and_then(|text| {
+                    text.to_str().map(str::to_owned).map_err(|source| source.to_string())
+                })
+        }),
+        TypeToken::Bytes => Some(quote! {
+            element.map(|data| data.to_vec()).map_err(|source| source.to_string())
+        }),
+        _ => None,
+    };
+    let collect_pointer_elements = |vec_ident: &Ident, element_expr: &TokenStream| {
         quote! {
             let #vec_ident = #reader_ident
                 .iter()
                 .map(|element| {
-                    element
-                        .map_err(|source| source.to_string())
-                        .and_then(|text| {
-                            text.to_str().map(str::to_owned).map_err(|source| source.to_string())
-                        })
-                        .map_err(|source| {
-                            #[allow(clippy::all)]
-                            let context = #context_expr;
-                            crate::Error::Deserialization(
-                                format!("field '{}' in {}: {}", #field_literal, context, source)
-                            )
-                        })
+                    (#element_expr).map_err(|source| {
+                        #[allow(clippy::all)]
+                        let context = #context_expr;
+                        crate::Error::Deserialization(
+                            format!("field '{}' in {}: {}", #field_literal, context, source)
+                        )
+                    })
                 })
-                .collect::<::std::result::Result<Vec<String>, crate::Error>>()?;
+                .collect::<::std::result::Result<Vec<#element_ty>, crate::Error>>()?;
         }
     };
 
@@ -490,11 +498,11 @@ fn generate_primitive_array_reader(
                 ));
             }
         });
-        if matches!(token, TypeToken::String) {
-            let vec_ident = names.next("strings");
-            statements.push(collect_strings(&vec_ident));
+        if let Some(element_expr) = &pointer_element_expr {
+            let vec_ident = names.next("elements");
+            statements.push(collect_pointer_elements(&vec_ident, element_expr));
             statements.push(quote! {
-                let #value_ident: [String; #len_lit] = match #vec_ident.try_into() {
+                let #value_ident: [#element_ty; #len_lit] = match #vec_ident.try_into() {
                     Ok(array) => array,
                     // Unreachable: the length was checked above.
                     Err(elements) => {
@@ -512,8 +520,8 @@ fn generate_primitive_array_reader(
                 }
             });
         }
-    } else if matches!(token, TypeToken::String) {
-        statements.push(collect_strings(&value_ident));
+    } else if let Some(element_expr) = &pointer_element_expr {
+        statements.push(collect_pointer_elements(&value_ident, element_expr));
     } else {
         statements.push(quote! {
             let #value_ident = #reader_ident.iter().collect::<Vec<#element_ty>>();

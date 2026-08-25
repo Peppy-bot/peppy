@@ -544,16 +544,14 @@ pub struct TestStartingInstance {
 
 impl Drop for TestStartingInstance {
     fn drop(&mut self) {
-        // The syscall, not a `kill -KILL -<pid>` subprocess: util-linux's
-        // `kill` reads a leading-dash pid as an option cluster and keeps only
-        // the first digit, so `-126750` becomes `kill(-1, SIGKILL)`, a
-        // broadcast to every process the user may signal. `killpg` names the
-        // group it means. Best-effort: by the time a test drops this, teardown
-        // has usually already reaped the group, hence the ignored ESRCH.
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(self.pid as i32),
-            nix::sys::signal::Signal::SIGKILL,
-        );
+        // The daemon's own group kill (the `killpg` syscall), not a
+        // `kill -KILL -<pid>` subprocess: util-linux's `kill` reads a
+        // leading-dash pid as an option cluster and keeps only the first
+        // digit, so `-126750` becomes `kill(-1, SIGKILL)`, a broadcast to
+        // every process the user may signal. Best-effort: by the time a test
+        // drops this, teardown has usually already reaped the group, and the
+        // helper ignores that ESRCH.
+        node_stack::kill_process_group(self.pid);
         self._feedback_drain.abort();
     }
 }

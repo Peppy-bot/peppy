@@ -74,30 +74,91 @@ impl PinnedItem {
     }
 }
 
-/// Everything one deployment runs: the root node the launcher names and the
+/// What a deployment runs: the node the launcher names, or the built-in
+/// MCP server over the exposures it lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentRoot {
+    /// Always [`PinKind::Node`], enforced by [`DeploymentPins::new`]: a
+    /// document whose root is a contract describes no deployment, and
+    /// refusing it at the boundary beats tripping over it mid-add.
+    Node(PinnedItem),
+    /// The `mcp_exposure` documents the built-in server serves, at least
+    /// one, each identity once. The daemon derives the server's manifest
+    /// from these bytes and the contract pins in the closure.
+    Exposures(Vec<PinnedItem>),
+}
+
+impl DeploymentRoot {
+    /// The pins the root is made of: one for a node, one per exposure.
+    pub fn items(&self) -> impl Iterator<Item = &PinnedItem> {
+        match self {
+            Self::Node(pin) => std::slice::from_ref(pin).iter(),
+            Self::Exposures(pins) => pins.iter(),
+        }
+    }
+
+    /// How refusals name the root: the node's label, or the exposure
+    /// labels joined.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Node(pin) => pin.label(),
+            Self::Exposures(pins) => pins
+                .iter()
+                .map(PinnedItem::label)
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        match self {
+            Self::Node(pin) if pin.kind != PinKind::Node => Err(format!(
+                "a deployment's root pin must be a node, got {}",
+                pin.label()
+            )),
+            Self::Node(_) => Ok(()),
+            Self::Exposures(pins) if pins.is_empty() => {
+                Err("a built-in MCP deployment pins no exposure".to_owned())
+            }
+            Self::Exposures(pins) => {
+                for (index, pin) in pins.iter().enumerate() {
+                    if pin.kind != PinKind::McpExposure {
+                        return Err(format!(
+                            "a built-in MCP deployment's root pins must be exposures, got {}",
+                            pin.label()
+                        ));
+                    }
+                    if pins[..index]
+                        .iter()
+                        .any(|other| other.name == pin.name && other.tag == pin.tag)
+                    {
+                        return Err(format!("{} is pinned twice in one deployment", pin.label()));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Everything one deployment runs: the root the launcher names and the
 /// closure the coordinator resolved underneath it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentPins {
-    /// The node the deployment names. Always [`PinKind::Node`], enforced at
-    /// decode: a document whose root is a contract describes no deployment,
-    /// and refusing it at the boundary beats tripping over it mid-add.
-    pub root: PinnedItem,
-    /// Every transitive node dependency of the root, and every contract and
-    /// pairing document any manifest in the deployment names. A daemon adds
-    /// from this list alone; an identity missing from it is a refusal, not a
-    /// lookup.
+    pub root: DeploymentRoot,
+    /// For a node root: every transitive node dependency of the root, and
+    /// every contract and pairing document any manifest in the deployment
+    /// names. For an exposures root: every contract the exposures reference.
+    /// A daemon adds from this list alone; an identity missing from it is a
+    /// refusal, not a lookup.
     pub closure: Vec<PinnedItem>,
 }
 
 impl DeploymentPins {
-    pub fn new(root: PinnedItem, closure: Vec<PinnedItem>) -> Result<Self, String> {
-        if root.kind != PinKind::Node {
-            return Err(format!(
-                "a deployment's root pin must be a node, got {}",
-                root.label()
-            ));
-        }
+    pub fn new(root: DeploymentRoot, closure: Vec<PinnedItem>) -> Result<Self, String> {
+        root.check()?;
         // One identity, one content. The minting side already refuses a
         // closure that needs `name:tag` at two different fingerprints; stating
         // it here too means a document that arrived over the wire cannot carry
@@ -119,9 +180,9 @@ impl DeploymentPins {
         Ok(Self { root, closure })
     }
 
-    /// The root and its closure, root first.
+    /// The root's pins and the closure, root first.
     pub fn items(&self) -> impl Iterator<Item = &PinnedItem> {
-        std::iter::once(&self.root).chain(self.closure.iter())
+        self.root.items().chain(self.closure.iter())
     }
 }
 
@@ -135,7 +196,7 @@ impl<'de> Deserialize<'de> for DeploymentPins {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Raw {
-            root: PinnedItem,
+            root: DeploymentRoot,
             #[serde(default)]
             closure: Vec<PinnedItem>,
         }
@@ -169,7 +230,7 @@ mod tests {
     #[test]
     fn deployment_pins_round_trip_through_json5() {
         let pins = DeploymentPins::new(
-            pin(PinKind::Node, "camera", "v1"),
+            DeploymentRoot::Node(pin(PinKind::Node, "camera", "v1")),
             vec![
                 pin(PinKind::Node, "driver", "v2"),
                 pin(PinKind::Contract, "frames", "v1"),
@@ -205,9 +266,9 @@ mod tests {
     /// rules, not the author's counting.
     fn raw_root(kind: &str, path: &str, commit: &str, sha: &str, url: &str) -> String {
         format!(
-            r#"{{ root: {{ kind: "{kind}", name: "camera", tag: "v1", sha256: "{sha}",
+            r#"{{ root: {{ node: {{ kind: "{kind}", name: "camera", tag: "v1", sha256: "{sha}",
                       origin: {{ source_type: "git", repo_url: "{url}", commit: "{commit}",
-                                 path: "{path}" }} }} }}"#
+                                 path: "{path}" }} }} }} }}"#
         )
     }
 
@@ -222,8 +283,11 @@ mod tests {
         );
         let decoded: DeploymentPins = serde_json5::from_str(&raw).expect("decodes");
         assert!(decoded.closure.is_empty());
+        let DeploymentRoot::Node(root) = &decoded.root else {
+            panic!("a node root decodes as one");
+        };
         assert!(matches!(
-            &decoded.root.origin,
+            &root.origin,
             EntryOrigin::Git { repo_ref: None, .. }
         ));
     }
@@ -312,22 +376,77 @@ mod tests {
     #[test]
     fn a_filesystem_origin_decodes() {
         let raw = format!(
-            r#"{{ root: {{ kind: "node", name: "camera", tag: "v1", sha256: "{}",
-                      origin: {{ source_type: "fs", path: "/nodes/camera/peppy.json5" }} }} }}"#,
+            r#"{{ root: {{ node: {{ kind: "node", name: "camera", tag: "v1", sha256: "{}",
+                      origin: {{ source_type: "fs", path: "/nodes/camera/peppy.json5" }} }} }} }}"#,
             "c".repeat(64)
         );
         let decoded: DeploymentPins = serde_json5::from_str(&raw).expect("decodes");
-        assert!(matches!(&decoded.root.origin, EntryOrigin::Fs { .. }));
+        let DeploymentRoot::Node(root) = &decoded.root else {
+            panic!("a node root decodes as one");
+        };
+        assert!(matches!(&root.origin, EntryOrigin::Fs { .. }));
     }
 
     #[test]
     fn items_yields_the_root_first() {
         let pins = DeploymentPins::new(
-            pin(PinKind::Node, "camera", "v1"),
+            DeploymentRoot::Node(pin(PinKind::Node, "camera", "v1")),
             vec![pin(PinKind::Contract, "frames", "v1")],
         )
         .expect("a node root");
         let labels: Vec<String> = pins.items().map(PinnedItem::label).collect();
         assert_eq!(labels, vec!["node `camera:v1`", "contract `frames:v1`"]);
+    }
+
+    #[test]
+    fn an_exposures_root_round_trips_and_yields_every_exposure_first() {
+        let pins = DeploymentPins::new(
+            DeploymentRoot::Exposures(vec![
+                pin(PinKind::McpExposure, "arm_control", "v1"),
+                pin(PinKind::McpExposure, "camera_and_recording", "v1"),
+            ]),
+            vec![pin(PinKind::Contract, "frames", "v1")],
+        )
+        .expect("an exposures root");
+        let encoded = serde_json5::to_string(&pins).expect("serialize");
+        let decoded: DeploymentPins = serde_json5::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, pins);
+        let labels: Vec<String> = pins.items().map(PinnedItem::label).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "mcp_exposure `arm_control:v1`",
+                "mcp_exposure `camera_and_recording:v1`",
+                "contract `frames:v1`"
+            ]
+        );
+        assert_eq!(
+            pins.root.label(),
+            "mcp_exposure `arm_control:v1`, mcp_exposure `camera_and_recording:v1`"
+        );
+    }
+
+    #[test]
+    fn an_exposures_root_refuses_the_shapes_no_deployment_has() {
+        let empty = DeploymentPins::new(DeploymentRoot::Exposures(Vec::new()), Vec::new())
+            .expect_err("no exposure");
+        assert!(empty.contains("pins no exposure"), "{empty}");
+
+        let wrong_kind = DeploymentPins::new(
+            DeploymentRoot::Exposures(vec![pin(PinKind::Contract, "frames", "v1")]),
+            Vec::new(),
+        )
+        .expect_err("a contract is not an exposure");
+        assert!(wrong_kind.contains("must be exposures"), "{wrong_kind}");
+
+        let twice = DeploymentPins::new(
+            DeploymentRoot::Exposures(vec![
+                pin(PinKind::McpExposure, "camera_and_recording", "v1"),
+                pin(PinKind::McpExposure, "camera_and_recording", "v1"),
+            ]),
+            Vec::new(),
+        )
+        .expect_err("one exposure twice");
+        assert!(twice.contains("pinned twice"), "{twice}");
     }
 }

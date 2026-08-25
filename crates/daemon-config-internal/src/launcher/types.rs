@@ -9,7 +9,7 @@ use serde::{
 };
 use std::collections::{BTreeMap, HashSet};
 
-pub use crate::source::DeploymentSource;
+pub use crate::internal::source::DeploymentSource;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PeppyLauncher {

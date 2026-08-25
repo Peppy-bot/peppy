@@ -241,27 +241,45 @@ struct PlannedDeployment {
     /// dispatch and start refuses rather than running a config the plan was
     /// never checked against.
     config_sha256: String,
-    /// The root pin of the deployment's resolved closure.
-    root_pin: daemon_config::repository::PinnedItem,
-    /// The rest of the closure: dependency-node pins plus, once
+    /// What the deployment runs: the root pin of a node's resolved closure,
+    /// or the pinned exposures of the built-in MCP server.
+    root: daemon_config::repository::DeploymentRoot,
+    /// The rest of the closure: for a node, dependency-node pins plus, once
     /// `mint_doc_pins` has run, the contract and pairing document pins every
-    /// add of this deployment carries.
+    /// add of this deployment carries; for the built-in server, the contract
+    /// pins its exposures reference.
     closure_pins: Vec<daemon_config::repository::PinnedItem>,
     /// Every manifest in the deployment's closure, root first. What the
     /// doc-pin minting walks after the graph validation has had first say.
     pin_manifests: Vec<config::node::Manifest>,
 }
 
-/// The add source a deployment dispatches with: its root pin, encoded at the
+/// The add source a deployment dispatches with: its root, encoded at the
 /// point of dispatch beside the closure pins, so the local arm and the goal a
-/// peer receives cannot disagree on how the pin travels.
+/// peer receives cannot disagree on how the pins travel.
 fn pinned_source(
     key: &NodeKey,
     item: &PlannedDeployment,
 ) -> std::result::Result<NodeSource, String> {
-    serde_json5::to_string(&item.root_pin)
-        .map(|pin_json5| NodeSource::Pinned { pin_json5 })
-        .map_err(|e| format!("deployment {}: could not encode its pin: {e}", key.label()))
+    match &item.root {
+        daemon_config::repository::DeploymentRoot::Node(pin) => serde_json5::to_string(pin)
+            .map(|pin_json5| NodeSource::Pinned { pin_json5 })
+            .map_err(|e| format!("deployment {}: could not encode its pin: {e}", key.label())),
+        daemon_config::repository::DeploymentRoot::Exposures(pins) => {
+            crate::services::node::pins::encode_pins(pins)
+                .map(|pins_json5| NodeSource::Exposures { pins_json5 })
+                .map_err(|e| format!("deployment {}: {e}", key.label()))
+        }
+    }
+}
+
+/// Whether a deployment is the built-in MCP server, which is registered by
+/// its add and has no build stage.
+fn is_built_in(item: &PlannedDeployment) -> bool {
+    matches!(
+        item.root,
+        daemon_config::repository::DeploymentRoot::Exposures(_)
+    )
 }
 
 /// Marker git_hash for an add whose bytes a pin already vouched for: the ones
@@ -443,6 +461,12 @@ async fn add_and_build_group(
             }
         };
 
+        // The built-in server is registered ready by its add: nothing to
+        // build.
+        if is_built_in(item) {
+            continue;
+        }
+
         let node_name = added.node_name.clone().unwrap_or_else(|| key.name.clone());
         let node_tag = added.node_tag.clone().unwrap_or_else(|| key.tag.clone());
 
@@ -523,6 +547,10 @@ async fn add_and_build_remotely(
             Err(reason) => Err(reason),
         }
         .map_err(|reason| format!("failed to add node {}: {reason}", item.node_name))?;
+
+    if is_built_in(item) {
+        return Ok(());
+    }
 
     let build_goal = NodeBuildGoal::new(
         added.node_name.unwrap_or_else(|| item.node_name.clone()),
@@ -1626,7 +1654,7 @@ mod tests {
 
         PlannedDeployment {
             deployment: Deployment {
-                source: daemon_config::launcher::DeploymentSource {
+                source: daemon_config::launcher::DeploymentSource::Node {
                     name: node_name.to_owned(),
                     tag: "v1".to_owned(),
                 },
@@ -1646,7 +1674,7 @@ mod tests {
             node_tag: "v1".to_owned(),
             config,
             config_sha256: String::new(),
-            root_pin: test_root_pin(node_name),
+            root: daemon_config::repository::DeploymentRoot::Node(test_root_pin(node_name)),
             closure_pins: Vec::new(),
             pin_manifests: Vec::new(),
         }

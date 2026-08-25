@@ -1,5 +1,6 @@
 mod common;
 mod container;
+mod daemon_drop_e2e;
 mod daemon_lifecycle_e2e;
 mod daemon_singleton;
 mod info;

@@ -1,5 +1,5 @@
-use super::types::McpExposure;
 use crate::{error::Result, parsing::read_non_empty_file};
+use peppy_mcp_catalog::McpExposure;
 use std::path::Path;
 
 /// Parser responsible for extracting MCP exposure documents.

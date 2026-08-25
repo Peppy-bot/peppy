@@ -1,8 +1,8 @@
 use super::identifiers::is_rust_keyword;
 use crate::generator::common::{
-    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi, EmbeddedMcpCatalog,
-    EmbeddedMcpRuntime, EmbeddedPeppyMessagingInterface, EmbeddedPeppylib,
-    WorkspacePackageMetadata, cache_sibling_path, copy_dir_recursive,
+    CrateDeployMode, EmbeddedBuildHelpers, EmbeddedConfig, EmbeddedCoreNodeApi,
+    EmbeddedPeppyMessagingInterface, EmbeddedPeppylib, WorkspacePackageMetadata,
+    cache_sibling_path, copy_dir_recursive,
 };
 use crate::{
     error::{Error, Result},
@@ -213,8 +213,6 @@ const VENDORED_SIBLING_CRATES: &[&str] = &[
     "peppy-config-model",
     "core-node-api",
     "build-helpers",
-    "peppy-mcp-catalog",
-    "peppy-mcp-runtime",
 ];
 
 /// Returns the flattened `../<crate>` path for `current` if its final component
@@ -344,16 +342,13 @@ fn vendored_crates_cache_key() -> String {
     hash_embedded_crate::<EmbeddedConfig>(&mut hasher, "peppy-config-model");
     hash_embedded_crate::<EmbeddedCoreNodeApi>(&mut hasher, "core-node-api");
     hash_embedded_crate::<EmbeddedBuildHelpers>(&mut hasher, "build-helpers");
-    hash_embedded_crate::<EmbeddedMcpCatalog>(&mut hasher, "peppy-mcp-catalog");
-    hash_embedded_crate::<EmbeddedMcpRuntime>(&mut hasher, "peppy-mcp-runtime");
     let hash = hasher.finalize();
     let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     format!("{}-{}", &hex[..16], env!("CARGO_PKG_VERSION"))
 }
 
 /// Deploys the vendored Rust crates (peppylib, peppy-messaging-interface, config, core-node-api,
-/// build-helpers, peppy-mcp-catalog, peppy-mcp-runtime) to a shared cache directory, then links or
-/// copies them into `node_libs_dir`.
+/// build-helpers) to a shared cache directory, then links or copies them into `node_libs_dir`.
 ///
 /// In `Symlink` mode (the default), creates symlinks from `node_libs_dir/{crate}`
 /// to the shared cache. This avoids duplicating source files across nodes.
@@ -402,8 +397,6 @@ fn deploy_rust_crates_to_shared_cache(
         copy_embedded_crate::<EmbeddedConfig>("peppy-config-model", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedCoreNodeApi>("core-node-api", &staging_dir, &metadata)?;
         copy_embedded_crate::<EmbeddedBuildHelpers>("build-helpers", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedMcpCatalog>("peppy-mcp-catalog", &staging_dir, &metadata)?;
-        copy_embedded_crate::<EmbeddedMcpRuntime>("peppy-mcp-runtime", &staging_dir, &metadata)?;
 
         if cache_dir.exists() {
             fs::remove_dir_all(&cache_dir)?;
@@ -414,7 +407,7 @@ fn deploy_rust_crates_to_shared_cache(
     drop(lock_file);
 
     // Link or copy all vendored crates (peppylib, peppy-messaging-interface, config,
-    // core-node-api, build-helpers, and the MCP catalog and runtime) into node_libs_dir.
+    // core-node-api, build-helpers) into node_libs_dir.
     // All are needed because the crates reference each other via relative sibling
     // paths (e.g., peppylib has `config = { package = "peppy-config-model", path = "../peppy-config-model" }` and
     // build-dependencies), and Cargo resolves these paths relative to the symlink
@@ -425,8 +418,6 @@ fn deploy_rust_crates_to_shared_cache(
         "peppy-config-model",
         "core-node-api",
         "build-helpers",
-        "peppy-mcp-catalog",
-        "peppy-mcp-runtime",
     ] {
         let dest = node_libs_dir.join(crate_name);
         let source = cache_dir.join(crate_name);
