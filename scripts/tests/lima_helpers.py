@@ -109,9 +109,29 @@ class VMConfig:
 # ---------------------------------------------------------------------------
 
 
-def diagnostic(result: subprocess.CompletedProcess[str]) -> str:
-    """Format stdout/stderr from a completed process for assertion messages."""
-    return f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+def _stream_text(stream: str | bytes | None) -> str:
+    """Render one captured stream.
+
+    Text mode hands back ``str``, but a run killed by its timeout raises with
+    the raw bytes that had arrived so far, and either stream can be ``None``.
+    """
+    if stream is None:
+        return ""
+    return stream.decode(errors="replace") if isinstance(stream, bytes) else stream
+
+
+def diagnostic(
+    result: subprocess.CompletedProcess[str] | subprocess.TimeoutExpired,
+) -> str:
+    """Format stdout/stderr from a finished or timed-out process.
+
+    TimeoutExpired carries the same two streams, and a command killed by its
+    timeout is exactly when their partial contents matter most.
+    """
+    return (
+        f"\n--- stdout ---\n{_stream_text(result.stdout)}"
+        f"\n--- stderr ---\n{_stream_text(result.stderr)}"
+    )
 
 
 def lima_env() -> dict[str, str]:
@@ -336,18 +356,40 @@ def setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
 # the user bus to come up so install.sh's checks see the baseline a configured
 # Ubuntu host would have. Fedora and Arch already ship a working user session
 # bus, so they need no provisioning.
+#
+# Nothing here may run before the guest has finished booting. `limactl start`
+# returns as soon as ssh answers, which is well before PID 1 has drained its
+# boot transaction, and logind serves enable-linger by asking PID 1 to start
+# user@<uid>.service and waiting for that job. Called into a still-settling
+# guest the reply outruns sd-bus's ~25s timeout and comes back as "Could not
+# enable linger: Connection timed out" -- the CI failure these waits exist to
+# prevent. Both waits are bounded and advisory: a guest that never reaches a
+# settled state still gets its linger attempts instead of hanging here.
 _UBUNTU_PROVISION_SCRIPT = """
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 
+if command -v cloud-init >/dev/null 2>&1; then
+    sudo timeout 120 cloud-init status --wait >/dev/null 2>&1 || true
+fi
+timeout 120 systemctl is-system-running --wait >/dev/null 2>&1 || true
+
 # Enable linger while logind is healthy, before the dbus install can restart
-# the system bus. Retry briefly in case logind is momentarily busy.
-for attempt in 1 2 3 4 5; do
-    if sudo loginctl enable-linger "$(id -un)"; then
+# the system bus. A busy logind answers by timing out, so each failed attempt
+# has already waited ~25s: the attempt count, not the sleep, is the budget.
+for attempt in 1 2 3 4 5 6 7 8; do
+    if sudo timeout 30 loginctl enable-linger "$(id -un)"; then
         break
     fi
-    if [ "$attempt" -eq 5 ]; then
-        echo "provision: could not enable linger after 5 attempts" >&2
+    if [ "$attempt" -eq 8 ]; then
+        echo "provision: could not enable linger after 8 attempts" >&2
+        # Whatever logind is stuck behind shows up in one of these two: a boot
+        # job that never completed, or logind's own log. Without them the next
+        # occurrence is as opaque as the one that prompted this.
+        echo "--- systemctl list-jobs ---" >&2
+        systemctl list-jobs >&2 || true
+        echo "--- journalctl -b -u systemd-logind ---" >&2
+        sudo journalctl -b -u systemd-logind --no-pager -n 50 >&2 || true
         exit 1
     fi
     sleep 2
@@ -367,6 +409,13 @@ done
 """
 
 
+# Worst case for the script above: both boot waits run out (120s each), every
+# linger attempt spends its full 30s, and apt still has to fetch a package.
+# The budget has to cover that, or a slow guest trades the script's own
+# diagnostics for a bare TimeoutExpired traceback.
+_PROVISION_TIMEOUT = 900
+
+
 def provision_guest(config: VMConfig, env: dict[str, str]) -> None:
     """Bring the guest to the baseline a properly-configured host would have.
 
@@ -378,26 +427,79 @@ def provision_guest(config: VMConfig, env: dict[str, str]) -> None:
     if config.distro != "ubuntu":
         return
 
-    result = subprocess.run(
-        [
-            "limactl",
-            "shell",
-            config.instance_name,
-            "--",
-            "bash",
-            "-c",
-            _UBUNTU_PROVISION_SCRIPT,
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    cmd = [
+        "limactl",
+        "shell",
+        config.instance_name,
+        "--",
+        "bash",
+        "-c",
+        _UBUNTU_PROVISION_SCRIPT,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_PROVISION_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as expired:
+        pytest.fail(
+            f"Ubuntu guest provisioning for {config.pytest_id()} did not finish "
+            f"within {_PROVISION_TIMEOUT}s{diagnostic(expired)}"
+        )
     if result.returncode != 0:
         pytest.fail(
             f"Ubuntu guest provisioning failed for {config.pytest_id()}"
             f"{diagnostic(result)}"
         )
+
+
+def _keep_failed_vm() -> bool:
+    """Whether a guest that failed setup is left running instead of deleted.
+
+    A wedged guest is the evidence for why it wedged, and deleting it throws
+    that away. CI wants the disk and the process gone; someone reproducing the
+    failure by hand wants to open a shell in it.
+    """
+    return os.environ.get("PEPPY_TEST_KEEP_VM", "") not in ("", "0")
+
+
+def _teardown_lima_vm(instance: str, env: dict[str, str]) -> None:
+    """Stop and delete a test VM, whatever state it is in.
+
+    A guest whose systemd/D-Bus is wedged can ignore the ACPI power button, so
+    `limactl stop` hangs. Escalate to a forced stop, then always force-delete.
+    Never raises: one bad VM must not error out the next module's setup.
+    """
+    try:
+        subprocess.run(
+            ["limactl", "stop", instance],
+            env=env,
+            capture_output=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        try:
+            subprocess.run(
+                ["limactl", "stop", "--force", instance],
+                env=env,
+                capture_output=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+
+    try:
+        subprocess.run(
+            ["limactl", "delete", "--force", instance],
+            env=env,
+            capture_output=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def lima_vm_lifecycle(request: pytest.FixtureRequest) -> Generator[VMConfig, None, None]:
@@ -459,12 +561,8 @@ def lima_vm_lifecycle(request: pytest.FixtureRequest) -> Generator[VMConfig, Non
                 cmd, env=env, capture_output=True, text=True, timeout=vm_start_timeout
             )
         except subprocess.TimeoutExpired:
-            subprocess.run(
-                ["limactl", "delete", "--force", instance],
-                env=env,
-                capture_output=True,
-                timeout=60,
-            )
+            # The half-started guest is the caller's to clean up: every path
+            # out of setup goes through the one teardown around the call site.
             pytest.fail(
                 f"Lima VM start for {vm_label} timed out after {vm_start_timeout}s "
                 f"(cloud image download may be slow)"
@@ -475,70 +573,50 @@ def lima_vm_lifecycle(request: pytest.FixtureRequest) -> Generator[VMConfig, Non
                 f"(exit {start_result.returncode}):\n{start_result.stderr}"
             )
 
-    if not status:
-        _start_lima_vm()
-    elif status == "Stopped":
-        try:
-            restart = subprocess.run(
-                ["limactl", "start", instance],
-                env=env,
-                capture_output=True,
-                timeout=vm_start_timeout,
-            )
-        except subprocess.TimeoutExpired:
-            subprocess.run(
-                ["limactl", "delete", "--force", instance],
-                env=env,
-                capture_output=True,
-                timeout=60,
-            )
-            pytest.fail(
-                f"Lima VM restart for {vm_label} timed out after {vm_start_timeout}s"
-            )
-        if restart.returncode != 0:
-            subprocess.run(
-                ["limactl", "delete", "--force", instance],
-                env=env,
-                capture_output=True,
-                timeout=60,
-            )
+    # Setup owns the guest until the yield hands it to the tests: a fixture
+    # that raises before yielding never reaches the code after it, so a failure
+    # here has to tear its own guest down. The run that prompted this left a
+    # booted VM and its qemu alive for the rest of the job, and only the CI
+    # runner's orphan-process sweep reaped them.
+    try:
+        if not status:
             _start_lima_vm()
+        elif status == "Stopped":
+            try:
+                restart = subprocess.run(
+                    ["limactl", "start", instance],
+                    env=env,
+                    capture_output=True,
+                    timeout=vm_start_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                pytest.fail(
+                    f"Lima VM restart for {vm_label} timed out after "
+                    f"{vm_start_timeout}s"
+                )
+            if restart.returncode != 0:
+                subprocess.run(
+                    ["limactl", "delete", "--force", instance],
+                    env=env,
+                    capture_output=True,
+                    timeout=60,
+                )
+                _start_lima_vm()
 
-    provision_guest(config, env)
+        provision_guest(config, env)
+    except BaseException:  # pytest.fail raises BaseException, not Exception
+        if _keep_failed_vm():
+            logger.warning(
+                "PEPPY_TEST_KEEP_VM set: leaving %s up after a failed setup",
+                instance,
+            )
+        else:
+            _teardown_lima_vm(instance, env)
+        raise
 
     yield config
 
-    # Teardown: a guest whose systemd/D-Bus is wedged can ignore the ACPI power
-    # button, so `limactl stop` hangs. Escalate to a forced stop, then always
-    # force-delete. Teardown must never raise: one bad VM must not error out the
-    # next module's setup.
-    try:
-        subprocess.run(
-            ["limactl", "stop", instance],
-            env=env,
-            capture_output=True,
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        try:
-            subprocess.run(
-                ["limactl", "stop", "--force", instance],
-                env=env,
-                capture_output=True,
-                timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            pass
-
-    try:
-        subprocess.run(
-            ["limactl", "delete", "--force", instance],
-            env=env,
-            capture_output=True,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        pass
+    _teardown_lima_vm(instance, env)
 
 
 # ---------------------------------------------------------------------------
