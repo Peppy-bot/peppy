@@ -95,7 +95,7 @@ pub struct PairingCacheEntry {
 
 /// One entry as it appears in `mcp_exposures.json5`. MCP exposures are
 /// stand-alone JSON5 documents (`peppy_schema: "mcp_exposure/v1"`)
-/// selecting the contract members a generated MCP server makes public.
+/// selecting the contract members the built-in MCP server makes public.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct McpExposureCacheEntry {
     pub exposure_name: ItemName,

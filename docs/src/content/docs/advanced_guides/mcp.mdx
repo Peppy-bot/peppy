@@ -1,19 +1,19 @@
 ---
 title: MCP exposure
-description: Publish selected parts of a Peppy stack to MCP clients as resources, tools, and tasks through a generated server node
+description: Publish selected parts of a Peppy stack to MCP clients as resources, tools, and tasks through the server built into peppy
 sidebar:
   order: 18
 ---
 
 import { Code } from '@astrojs/starlight/components';
 import cameraAndRecordingExposure from '../guides/snippets/exposures/camera_and_recording.json5?raw';
-import mcpLauncher from '../guides/snippets/launchers/camera_and_recording_mcp.json5?raw';
+import mcpLauncher from '../guides/snippets/launchers/mcp_camera_and_recording.json5?raw';
 
 An **MCP exposure** makes selected parts of a running Peppy stack available to [Model Context Protocol](https://modelcontextprotocol.io) clients. A client can read camera frames, call services, and run long-running actions through one HTTP endpoint. The client does not need a Peppy session, access to the messaging layer, or knowledge that the system uses Peppy.
 
-An exposure is an allowlist. In one document, you choose the contract members to publish and give each one a stable public name, a description, and operational policies. `peppy repo exposure` checks the document against the exact pinned contract bytes and generates a complete MCP server node. **Anything you do not name is not reachable through the endpoint.** This remains true even if a client guesses a name or knows the internal one. A client sees only the selected members, even when the underlying stack contains more.
+An exposure is an allowlist. In one document, you choose the contract members to publish and give each one a stable public name, a description, and operational policies. A launcher names the exposures to serve, and the daemon runs the MCP server that is built into the `peppy` binary for them: one process, one loopback port, one endpoint per exposure. Nothing is generated or built. **Anything you do not name is not reachable through the endpoint.** This remains true even if a client guesses a name or knows the internal one. A client sees only the selected members, even when the underlying stack contains more.
 
-You do not write the public request and response schemas by hand. Peppy derives them from the referenced contracts. If a contract changes, the exposure must be republished with the new schemas or validation fails.
+You do not write the public request and response schemas by hand. Peppy derives them from the referenced contracts, at check time and again when the server starts, so the published schemas cannot drift from the contracts behind them.
 
 ## What an exposure publishes
 
@@ -29,9 +29,9 @@ The server supports MCP revision `2026-07-28` over Streamable HTTP. It includes 
 
 ## The exposure document
 
-An exposure is a standalone JSON5 document with `peppy_schema: "mcp_exposure/v1"`. Its filename does not matter. The `name:tag` in its manifest identifies it, and [`peppy repo index`](/advanced_guides/repositories/#index-a-repository) discovers it by its content.
+An exposure is a standalone JSON5 document with `peppy_schema: "mcp_exposure/v1"`. Its filename does not matter. The `name:tag` in its manifest identifies it, [`peppy repo index`](/advanced_guides/repositories/#index-a-repository) discovers it by its content, and a launcher lists it by that `name:tag`. The manifest may also carry `labels`, a list of free-form strings for whoever browses the repository.
 
-Here is a complete example with two nodes. The camera provides an image resource and two tools. The recorder provides a `record_episode` tool that creates a task and requires confirmation.
+Here is a complete example with two targets. The camera provides an image resource and two tools. The recorder provides a `record_episode` tool that creates a task and requires confirmation.
 
 <Code code={cameraAndRecordingExposure} lang="json5" title="exposures/camera_and_recording.json5" />
 
@@ -100,26 +100,26 @@ It selects from these two contracts:
 
 ### Targets are logical, not instances
 
-Each key under `targets` names a **role**, not a running node. In the generated server node, `front_camera` becomes the `link_id` of a `depends_on.contracts` slot. The launcher connects that slot to a running instance at [deploy time](#deploy-it). The same exposure can therefore work with a simulated camera or a real one without being republished.
+Each key under `targets` names a **role**, not a running node. The server's manifest declares one `depends_on.contracts` slot per target, with the target name as its `link_id`, and the launcher connects that slot to a running instance at [deploy time](#deploy-it). The same exposure can therefore work with a simulated camera or a real one without being changed. A target name follows the rules of a node name, because it becomes a slot's `link_id`.
 
 A target must select at least one member, and an exposure must declare at least one target.
 
-### Contracts are pinned by content
+### Contracts are referenced by identity and, optionally, by content
 
-The `sha256` on a target's contract reference is **required**. This differs from the optional author pins described in [Content pins](/advanced_guides/lockfiles/). A `name:tag` can point to changed content, and Peppy derives the public JSON Schemas from that content. The hash makes sure the exposure always uses the exact contract it was written for.
+A target's `contract` names the contract by `name:tag`. Contract membership is frozen per tag, so that identity says which members the target can select. The `sha256` is optional. It is an [author pin](/advanced_guides/lockfiles/#author-pins-what-a-manifest-may-state) with the meaning pins have everywhere in Peppy:
 
-The required value is the SHA-256 hash of the contract document's exact bytes. Run `sha256sum contracts/rgb_camera.json5` to get it. If you do not know the hash, publish with any 64-character placeholder. The command will fail and show the hash of the resolved document.
+- **Present:** the contract resolved for the exposure must fingerprint to exactly that value. A launch or a repository check that resolves different bytes refuses, naming the pinned fingerprint and the resolved one.
+- **Absent:** the launch pins the contract bytes it resolves, and the exposure is validated against those. The exposure follows the contract as its repository evolves.
 
-```text
-target `front_camera` pins contract `rgb_camera:v1` at sha256 `0000…0000`,
-but the resolved document's bytes fingerprint to `44527ab0…fb736ab`
-```
+The value is the SHA-256 hash of the contract document's exact bytes: `sha256sum contracts/rgb_camera.json5`. Pin when the schemas you published to clients must not change under you without a deliberate republication of the exposure.
 
 ### Public names
 
 `resource` and `tool` set the names that clients see. You choose these names, and they do not need to match the internal member names. All public names share **one namespace across the whole exposure**. A resource and a tool cannot share a name, even across targets. Names must be 1 to 128 characters long and use only ASCII letters, digits, `_`, `-`, or `.`. A `.` cannot be the first or last character or appear next to another `.`.
 
 A resource's URI is derived from its name as `peppy://resource/<name>`.
+
+Each exposure is its own endpoint with its own catalog, so two exposures served by one process may reuse a public name without conflict.
 
 ## Policies
 
@@ -168,7 +168,7 @@ All four fields must refer to required, non-`$optional` top-level members of the
 
 `restrict` narrows a numeric range without changing the contract's type. Each key names a **top-level member of the request format**. Peppy adds the bounds to the published input schema as `minimum` and `maximum`, so clients can see the allowed range. The endpoint rejects values outside that range before sending anything to the Peppy graph.
 
-Each bound must fit the member's type. For example, publication rejects `min: -200` for an `i8`. You cannot restrict a `u64` or `i64` member because its public schema uses a decimal string instead of a JSON number. Use a narrower type in the contract if you need numeric bounds.
+Each bound must fit the member's type. For example, validation rejects `min: -200` for an `i8`. You cannot restrict a `u64` or `i64` member because its public schema uses a decimal string instead of a JSON number. Use a narrower type in the contract if you need numeric bounds.
 
 ### Action policies
 
@@ -181,7 +181,7 @@ Each bound must fit the member's type. For example, publication rejects `min: -2
 
 ## The published schemas
 
-You do not define request and response shapes in the exposure. Peppy derives them from the contract's [`message_format`](/reference/message_format/) declarations. The bundle records the version of the mapping used to create the schemas.
+You do not define request and response shapes in the exposure. Peppy derives them from the contract's [`message_format`](/reference/message_format/) declarations. The catalog records the version of the mapping used to create the schemas.
 
 Most types map directly to JSON. These are the important mapping rules, including the types that JSON cannot represent directly:
 
@@ -196,59 +196,129 @@ Most types map directly to JSON. These are the important mapping rules, includin
 | Nested objects | `object` with every property required | `$optional` is legal only at the top level |
 | `$optional` top-level field | Omitted from `required` | Direct |
 
-Public property names use the DSL's `snake_case` spelling. The internal wire encoding uses `lowerCamelCase` instead. Every generated object schema sets `additionalProperties: false`.
+Public property names use the DSL's `snake_case` spelling. The internal wire encoding uses `lowerCamelCase` instead. Every derived object schema sets `additionalProperties: false`.
 
-## Publish it
+## Check it
+
+An exposure is checked where it is published, by the repository check, and again by every launch that serves it. Both read the contracts through the local repository caches, so run [`peppy repo refresh`](/advanced_guides/repositories/#refresh-the-index) on the machine first. Neither check needs a running daemon.
 
 ```sh
-peppy repo exposure exposures/camera_and_recording.json5           # write the artifacts
-peppy repo exposure exposures/camera_and_recording.json5 --check   # verify the committed ones
+peppy repo index . --check --include-repositories   # the index, then every exposure against its contracts
+peppy mcp catalog camera_and_recording:v1           # the catalog an endpoint for the exposure advertises
 ```
 
-Peppy resolves the pinned contracts through the local repository caches. Run [`peppy repo refresh`](/advanced_guides/repositories/#refresh-the-index) on the machine first. Neither command needs a running daemon.
-
-Publication writes two artifacts next to the document:
+`peppy repo index --check --include-repositories` validates every exposure the repository's index lists against the contracts it references and reports **every** violation of **every** exposure at once, so you fix a document in one pass. A contract the caches cannot resolve is an error naming that contract, never a pass. A file that declares the exposure schema but does not parse as one (a document claiming a public name twice, say) is listed by no index, so the check reports it by path rather than letting it pass unseen. Run the check in the repository's CI, as [mcp-hub](https://github.com/Peppy-bot/mcp-hub) does: a hub cannot then merge an exposure that a launch would refuse.
 
 ```text
-exposures/
-├── camera_and_recording.json5            # the document you wrote
-├── camera_and_recording.bundle.json      # the derived public catalog
-└── camera_and_recording_mcp/             # the generated MCP server node
-    ├── peppy.json5
-    ├── Cargo.toml
-    ├── .gitignore
-    └── src/
-        ├── main.rs
-        ├── bridges.rs
-        └── bundle.json
+2 exposures do not validate:
+  - mcp_exposure `camera_and_recording:v1` (exposures/camera_and_recording.json5):
+    - target `front_camera` selects service member `set_brightnes`, but contract `rgb_camera:v1` declares no such service (declared services: `video_stream_info`, `set_brightness`)
+  - mcp_exposure `recording_only:v1` (exposures/recording_only.json5):
+    - contract `episode_recording:v1` not in contract cache; run `peppy repo refresh`
 ```
 
-The **bundle** is the public catalog. It contains every resource, tool, and task with its stable name, description, policies, and generated JSON Schemas. It also contains the server node's identity and contract slots.
+`peppy mcp catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, and task with its public name, description, policies, and derived JSON Schemas, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
 
-The **node** is a complete generated Rust crate:
-
-- `peppy.json5` declares one `depends_on.contracts` slot per logical target, consumes exactly the selected members, and takes a single `port` argument (default `8900`).
-- `bridges.rs` translates in both directions between the public JSON and typed peppygen clients.
-- `main.rs` uses the shared `peppy-mcp-runtime` crate, feeds exposed topics into their resources, and binds the endpoint.
-- `src/bundle.json` is an exact copy of the published bundle and is served as the catalog.
-
-Commit both artifacts to the hub alongside the exposure document. The `--check` option regenerates them and fails if the committed files do not match byte for byte. It lists every file that differs. Run it in CI next to `peppy repo index --check` to prevent the catalog from drifting away from its exposure document. The check compares only generated files and ignores a `Cargo.lock` committed beside them. To fix drift, rerun the command and commit the generated files.
+```json
+{
+  "bundle_format": 1,
+  "schema_mapping_version": 1,
+  "exposure": { "name": "camera_and_recording", "tag": "v1" },
+  "server": {
+    "title": "OpenArm camera and recording",
+    "instructions": "Observe the front camera and record teleoperation episodes."
+  },
+  "node": {
+    "name": "camera_and_recording_mcp",
+    "tag": "v1",
+    "contracts": [
+      { "name": "rgb_camera", "tag": "v1", "sha256": "44527ab0…fb736ab", "link_id": "front_camera" },
+      { "name": "episode_recording", "tag": "v1", "sha256": "a4cfd6ec…f177c0d2", "link_id": "recorder" }
+    ]
+  },
+  "resources": [ { "name": "front_camera.latest_frame", "uri": "peppy://resource/front_camera.latest_frame", "…": "…" } ],
+  "tools": [ { "name": "front_camera.info", "…": "…" }, { "name": "front_camera.set_brightness", "…": "…" } ],
+  "tasks": [ { "name": "recorder.record_episode", "…": "…" } ]
+}
+```
 
 ## Deploy it
 
-The generated server is an ordinary `node/v1`, so `peppy repo index` discovers it like any other node. Its name is `<exposure name>_mcp`, and it uses the exposure's tag. A launcher deploys it with one `links` entry per target. Each entry connects a logical role to a running instance.
+A launcher deploys exposures with `source: { exposures: [...] }`, listing each as `"<name>:<tag>"`. The deployment takes one argument, `port`, and one `links` entry per target of every exposure it lists. Each link connects a logical role to a running instance.
 
-<Code code={mcpLauncher} lang="json5" title="camera_and_recording_mcp.json5" />
+<Code code={mcpLauncher} lang="json5" title="launchers/mcp_camera_and_recording.json5" />
 
 ```sh
-peppy stack launch camera_and_recording_mcp
+peppy stack launch mcp_camera_and_recording
 ```
 
-The node binds to `127.0.0.1:<port>` and serves MCP under `/mcp`. Every other path returns 404. Point a client at `http://127.0.0.1:8900/mcp`.
+The daemon resolves each exposure through the machine's [repository caches](/advanced_guides/repositories/), then every contract the exposures reference, validates every exposure against those contracts, and derives the server's node from the result: its identity, its manifest (one contract slot per target, consuming exactly the selected members), and the catalog of each endpoint. Nothing is added or built. The node lands in the stack ready to run, with the installed `peppy` binary as its artifact, and its instance runs `peppy mcp serve`. You never run that command yourself: the daemon hands it the pinned documents through the environment, and run by hand it refuses, naming `PEPPY_MCP_SERVE_SPEC`. The derived manifest and the documents the server reads are written under `~/.peppy/built_in/<node name>/`.
+
+The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `mcp` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
+
+The instance binds `127.0.0.1:<port>` (default `8900`) and serves each exposure at its own path:
+
+```text
+http://127.0.0.1:8900/<exposure name>/<exposure tag>/mcp
+```
+
+Every other path returns 404, a bare `/mcp` included. Point a client at `http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
+
+### Several exposures on one endpoint
+
+One deployment can list several exposures, two tags of the same exposure included. They share one process and one port, and nothing else: each endpoint keeps its own catalog, snapshots, subscriptions, and task handles, so a public name, a subscription, or a task handle on one endpoint is unknown to the others.
+
+Targets with the same name across the listed exposures **share one slot** when they name the same contract, and the manifest consumes the union of the members they select. One `links` entry then fills the slot for every exposure using it. The same target name bound to different contracts is refused, naming both exposures and both contracts: two exposures sharing a target name must pin the same contract.
+
+```json5
+{
+  source: { exposures: ["camera_and_recording:v1", "camera_only:v2"] },
+  instances: [
+    {
+      instance_id: "mcp_server",
+      arguments: { port: 8900 },
+      // `front_camera` is a target of both exposures, bound to `rgb_camera:v1`
+      // in each, so one link fills it for both endpoints.
+      links: { front_camera: "front_cam_inst", recorder: "recorder_inst" },
+    },
+  ],
+}
+```
+
+The launch refuses, before anything starts, when:
+
+- an exposure or a contract it references is not in the caches, or an exposure does not parse;
+- an exposure does not validate against its contracts. The report lists every violation of every listed exposure at once;
+- an exposure's `sha256` disagrees with the contract bytes the launch resolved, or two listed exposures pin one contract at different bytes. One deployment carries one content per contract;
+- an exposure is listed twice in one deployment;
+- two deployments list the same set of exposures. They would derive the same node identity, so the error names the set and points at the remedy: to serve one set on several hosts, declare one deployment with one instance per host;
+- a `links` entry names no target of the listed exposures, or a target is left without a link, as for any node's slot.
+
+Two instances on one machine need distinct ports. A process whose port is taken exits before becoming healthy, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. Read the log with [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) on the node's identity.
+
+### Seeing what is served
+
+`peppy stack list` adds an **`Instance endpoints`** table when any instance serves an endpoint: one row per endpoint URL, under the node and instance serving it.
+
+```text
+Instance endpoints
+
+┌──────────────────────────────────────┬────────────┬───────────────────────────────────────────────────┐
+│ NODE                                 │ INSTANCE   │ ENDPOINT                                          │
+├──────────────────────────────────────┼────────────┼───────────────────────────────────────────────────┤
+│ mcp_camera_and_recording_v1:builtin  │ mcp_server │ http://127.0.0.1:8900/camera_and_recording/v1/mcp │
+└──────────────────────────────────────┴────────────┴───────────────────────────────────────────────────┘
+```
+
+`peppy stack resolve` derives the same node from the same caches and holds the deployment's `links` to its slots, so a launcher can be checked before it is launched. See [Auditing a composed launch](/guides/launch_files/#auditing-a-composed-launch).
+
+### Placement
+
+An exposure deployment is placed like any other: `core_node` on the instance names the machine it runs on, and the coordinator ships the pinned exposure documents and the contracts they reference, from which the other machine derives the same server. The [federation limits](/advanced_guides/federation/#limits) apply: an exposure or a contract resolved from a filesystem repository cannot back an instance placed on another machine. The server reads the messaging layer like any node, so a topic-heavy exposure belongs on the machine that produces the topic.
 
 ## What a client sees
 
-**Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity, and `2026-07-28` as the only supported revision. Discovery, `resources/list`, and `tools/list` include private caching hints with a one-hour TTL. The catalog does not change while the server is running. To change it, republish the exposure and redeploy the node.
+**Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity (`<exposure name>_mcp` at the exposure's tag), and `2026-07-28` as the only supported revision. Discovery, `resources/list`, and `tools/list` include private caching hints with a one-hour TTL. The catalog does not change while the server is running. To change it, change the exposure document, refresh the repositories, and launch again.
 
 **Resources.** A read returns the latest snapshot that passed the policies. Its `ttlMs` value says how long the snapshot remains fresh. The resource is unavailable until the first published value arrives. After the stored value is older than `freshness.max_age_ms`, reads report it as stale instead of returning old data as current. If the size policy rejects a new snapshot, the server keeps the previous one until it becomes stale. Each accepted value notifies subscribers.
 
@@ -261,33 +331,35 @@ The node binds to `127.0.0.1:<port>` and serves MCP under `/mcp`. Every other pa
 3. `tasks/cancel` forwards a request to the action's cooperative cancellation path. The task ends as `cancelled`.
 4. On success, the task completes with the structured result. A goal that is rejected, abandoned, or expired ends as `failed` with a message saying which event occurred.
 
-Task handles outlive connections. A client that reconnects can continue and observe the same task.
+Task handles outlive connections. A client that reconnects can continue and observe the same task. They do not outlive the process: stopping the stack ends every task the endpoint was running.
 
 ## What validation refuses
 
-Publication reports **every** violation at once, so you can fix the document in one pass. It rejects an exposure when:
+Validation reports **every** violation at once, so you can fix the document in one pass. It rejects an exposure when:
 
 - A selected member does not exist in its contract or exists as a different kind. The error lists the contract's members and points to the correct section when the name exists elsewhere.
-- A public name is claimed twice anywhere in the document.
 - A message definition cannot be converted to a public schema.
 - A representation role names a missing, `$optional`, or wrongly typed member.
 - A `restrict` bound does not fit its member's type, names a non-numeric member, or targets a `u64`/`i64`.
 - A `max_result_bytes` is smaller than a payload's static maximum, or a topic with an unbounded payload omits the size policy.
-- A contract hash does not match the resolved document's bytes.
+- A contract `sha256` does not match the resolved document's bytes.
 
-Parsing catches basic document errors before these publication checks. Examples include:
+Parsing catches document-level errors before these checks. Examples include:
 
 - An exposure with no targets or a target that selects no members.
-- A duplicated member, or a blank `title`, `instructions`, or `description` value.
+- A public name claimed twice anywhere in the document, or a member selected twice by one target.
+- A blank `title`, `instructions`, or `description` value.
 - A zero deadline or a `max_hz` value that is not positive and finite.
 - A `quality` value on a `raw` representation.
 - `on_oversize` without `max_result_bytes`.
 - `downscale` without a `jpeg` representation.
+- A `restrict` entry with neither bound, or with `min` above `max`.
 
 ## What stays private
 
 An exposure keeps everything else private:
 
 - The MCP endpoint is **not** a bridge to the messaging layer. It cannot pass through arbitrary messages or access an internal member that the exposure did not select. For example, the running stack includes `finish_session`, but the exposure does not publish it.
-- The catalog contains exactly the selected members. `tools/list` and `resources/list` return only what is in the bundle. The endpoint rejects unknown names.
+- The catalog contains exactly the selected members. `tools/list` and `resources/list` return only what is in the catalog. The endpoint rejects unknown names.
+- Endpoints served by one process are isolated from each other. A name, a subscription, or a task handle belongs to the endpoint it was created on.
 - The endpoint binds to `127.0.0.1`. It is available from another machine only if you deliberately configure network access.

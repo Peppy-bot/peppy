@@ -285,7 +285,10 @@ that does not fetches the pinned commit. No machine but the coordinator
 resolves a name, so a peer's cache freshness, repository priorities, and
 exclusions never decide what a launch runs. Here `cn-atlas-h100` runs the
 planner the robot's caches describe, even if its own were refreshed a week
-apart.
+apart. An [`exposures` deployment](/advanced_guides/mcp/#placement) crosses the
+same way: the pinned exposure documents and the contracts they reference, from
+which the machine hosting the instance derives the same MCP server the
+coordinator planned.
 
 **Container bind sources.** A [container node](/advanced_guides/containers/)
 declares the host paths it mounts, and a mount path may name an instance
@@ -397,7 +400,9 @@ the whole launch.
   resolved it, and a filesystem repository entry (a directory registered with
   `peppy repo add <path>`) is a path only the coordinator can read. Two things
   still work: keep that deployment's instances on one core node, or serve the
-  node from a git repository, which every machine can fetch.
+  node from a git repository, which every machine can fetch. The same holds
+  for an `exposures` deployment, whose exposure documents and contracts are
+  what gets pinned.
 - **The unit of byte coherence is one launch.** Two launches submitted while a
   repository moves between them may run different revisions of it; each launch
   is internally coherent, and nothing synchronizes one launch with the next.

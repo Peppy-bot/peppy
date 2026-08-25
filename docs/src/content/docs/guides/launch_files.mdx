@@ -41,9 +41,9 @@ In the `examples/` directory, you'll find a launcher file for each language. Ope
 
  1. The file is identified by `peppy_schema: "launcher/v1"` at the root: peppy uses this to distinguish launcher files from node `peppy.json5` files (which use `"node/v1"`)
  2. All deployments are defined in the `deployments` array
- 3. Each deployment requires a `source` (where the node comes from) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, and `links` are optional. See [Instance attributes](#instance-attributes) for what each one does
+ 3. Each deployment requires a `source` (the node to run, or the MCP exposures to serve) and an `instances` array (how many copies to start, and how each one is configured). Every entry needs an `instance_id`; `arguments`, `env_vars`, `framework`, `core_node`, and `links` are optional. See [Instance attributes](#instance-attributes) for what each one does
 
-The `source` attribute always references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`.
+The `source` attribute references a node from your configured repositories by `name` and `tag`. Specify them as separate fields, or use the combined `name: "<name>:<tag>"` shorthand. The node is resolved against your local nodes cache at `~/.peppy/cache/nodes.json5`. A source can instead list [MCP exposures](/advanced_guides/mcp/) to serve, as shown [below](#serving-mcp-exposures).
 
 If a node you want to deploy lives outside your configured repositories, add its location first: register a local directory with `peppy repo add /path/to/my/nodes`, or a git repository with `peppy repo add https://github.com/org/repo.git`. A repository states what it publishes through a committed `peppy_repository.json5`, so run `peppy repo index /path/to/my/nodes` to write it, and re-run it after adding, moving, or renaming a node, since the refresh reads the index rather than the filesystem. Then `peppy repo refresh` makes the nodes resolvable (see [Repositories](/advanced_guides/repositories/)).
 
@@ -74,6 +74,26 @@ If a node or tag is missing from the cache, the launch fails with a "not found" 
   },
   instances: [
     { instance_id: "the_nervous_system" }
+  ]
+}
+```
+
+#### Serving MCP exposures
+
+A deployment whose `source` lists `exposures` runs the MCP server built into `peppy` for them instead of a node. Each entry is an [MCP exposure](/advanced_guides/mcp/) as `"<name>:<tag>"`, resolved against `~/.peppy/cache/mcp_exposures.json5`, and the contracts the exposures reference resolve through the contracts cache. The daemon derives the server's node from those documents, so the deployment behaves like any other: its instances take `arguments` (the server's single `port`), `links` for the contract slots the exposures' targets become, and `core_node` for placement. The list must not be empty or repeat an exposure, and two deployments cannot list the same set.
+
+```json5
+// Exposure source: the built-in MCP server serving two exposures on one port
+{
+  source: {
+    exposures: ["camera_and_recording:v1", "arm_status:v1"],
+  },
+  instances: [
+    {
+      instance_id: "mcp_server",
+      arguments: { port: 8900 },
+      links: { front_camera: "front_cam_inst", recorder: "recorder_inst", arm: "arm_inst" },
+    }
   ]
 }
 ```
