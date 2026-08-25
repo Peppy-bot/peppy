@@ -1979,6 +1979,7 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rerun-if-env-changed=PEPPY_LIMA_DIR");
         println!("cargo:rerun-if-env-changed=PEPPY_CROSS_ARCH");
         println!("cargo:rerun-if-env-changed=PEPPY_NO_ROSETTA");
+        println!("cargo:rerun-if-env-changed=PEPPY_SKIP_APPTAINER_PROVISION");
     }
 
     fn emit_constant_env_vars() {
@@ -2289,6 +2290,33 @@ echo "=== Apptainer build complete ==="
         }
 
         let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "aarch64".to_string());
+
+        // PEPPY_SKIP_APPTAINER_PROVISION=1 skips every provisioning step and
+        // is meant for builds that only type-check, such as the CI cross-target
+        // check job: provisioning apptainer for a foreign architecture needs a
+        // Lima VM or a pre-seeded cache, neither of which a bare runner has,
+        // and a check build never runs containers. The compile-time env vars
+        // still point at the per-arch cache location so dependent crates
+        // compile; a binary produced under this knob cannot start containers
+        // until a provisioning build fills that cache.
+        if env::var("PEPPY_SKIP_APPTAINER_PROVISION").as_deref() == Ok("1") {
+            let cache_dir = apptainer_cache_dir(APPTAINER_VERSION, &arch);
+            let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
+            println!(
+                "cargo:warning=Skipping apptainer provisioning \
+                 (PEPPY_SKIP_APPTAINER_PROVISION=1); this build cannot run containers"
+            );
+            println!(
+                "cargo:rustc-env=APPTAINER_CACHE_SENTINEL={}",
+                cache_sentinel.display()
+            );
+            println!(
+                "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
+                cache_dir.display()
+            );
+            return;
+        }
+
         let out_dir = env::var("OUT_DIR").unwrap();
 
         // Step 1 (macOS only): Download and cache Lima, pre-build apptainer via VMs

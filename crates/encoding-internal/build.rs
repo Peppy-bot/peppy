@@ -12,14 +12,8 @@ mod capnp_build {
     /// present in the checkout: no superproject sibling and no cmake required.
     pub fn run() {
         let target = build_helpers::build_target_triple();
-        let platform = build_helpers::CapnpPlatform::try_from(target.as_str())
+        let binary_path = build_helpers::bundled_capnp_for_embedding(&target)
             .unwrap_or_else(|error| panic!("{error}"));
-        let binary_path = build_helpers::bundled_capnp_path(platform).unwrap_or_else(|| {
-            panic!(
-                "No bundled capnp binary for target {target}. Add a binary to public-peppy-libs \
-                 peppy-shared/peppy-config-model/tools/.",
-            )
-        });
         println!("cargo:rerun-if-changed={}", binary_path.display());
 
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
