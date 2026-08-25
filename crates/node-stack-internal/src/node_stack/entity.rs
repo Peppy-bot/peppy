@@ -904,7 +904,6 @@ impl NodeEntity {
             let snapshot_artifact = artifact.clone();
             let mut instance = TrackedNodeInstance::new(
                 ctx.instance_id.clone(),
-                None,
                 InstanceState::Starting,
                 ctx.slot_bindings.clone(),
             );
@@ -1100,15 +1099,14 @@ impl NodeEntity {
     /// orphan process is left behind. On the success path the `Child` is handed
     /// back (not killed, no `kill_on_drop`), so the OS process keeps running; the
     /// caller owns it from here, holding it in the exit watcher and reaping it on
-    /// exit, while `stop_instance` still drives termination by pid.
+    /// exit, while the stop paths and the stack's drop still drive termination
+    /// by the pid `prepare_and_spawn` recorded at the fork.
     pub async fn commit_started(
         handle: &Arc<RwLock<NodeEntity>>,
         mut child: Child,
         started_ctx: StartedInstanceCtx,
         instance_id: Name,
     ) -> Result<Child> {
-        let pid = child.id().unwrap_or(0);
-
         // Helper: on every error path we must kill the still-running child
         // before returning, otherwise we leak an untracked OS process. tokio
         // `Child` does NOT have kill_on_drop set in the spawn helpers.
@@ -1158,11 +1156,7 @@ impl NodeEntity {
                                     to: "Running",
                                 })
                             } else {
-                                inst.set_running(
-                                    Some(pid),
-                                    instance_dir.clone(),
-                                    runtime_config_path.clone(),
-                                );
+                                inst.set_running(instance_dir.clone(), runtime_config_path.clone());
                                 Ok(())
                             }
                         } else {
@@ -1386,8 +1380,13 @@ impl NodeEntity {
 #[derive(Debug, Clone)]
 pub struct TrackedNodeInstance {
     instance_id: Name,
-    /// Process ID of the running instance. This is `None` for instances running on remote
-    /// locations (e.g., embedded systems) where a local PID is not available.
+    /// Process id of the child the spawn path recorded for this instance, the
+    /// leader of its process group, so the stop paths and the stack's own drop
+    /// can signal it. Only `prepare_and_spawn` records one, under the entity
+    /// lock, so every pid here names a child of this daemon. `None` for the
+    /// root instance (the daemon's own process), for instances running on
+    /// remote locations (e.g., embedded systems) where a local pid is not
+    /// available, and once the process has exited on its own.
     pid: Option<u32>,
     state: InstanceState,
     /// On-disk instance directory created during start (extracted archive
@@ -1435,16 +1434,17 @@ impl TrackedNodeInstance {
     /// fixture pass `InstanceState::Running`. `slot_bindings` carries the
     /// validator-resolved per-slot bindings for this instance; pass an
     /// empty map when reconstructing test fixtures or instances whose
-    /// manifest has no `depends_on` slots.
+    /// manifest has no `depends_on` slots. A new instance carries no pid:
+    /// the spawn path records the child's pid once it has forked it, so a
+    /// pid can never be made up for an instance and signaled later.
     pub fn new(
         instance_id: Name,
-        pid: Option<u32>,
         state: InstanceState,
         slot_bindings: config::runtime::SlotBindings,
     ) -> Self {
         Self {
             instance_id,
-            pid,
+            pid: None,
             state,
             instance_dir: None,
             runtime_config_path: None,
@@ -1528,16 +1528,11 @@ impl TrackedNodeInstance {
     }
 
     /// Same-module mutator used by `NodeEntity::commit_started` to flip a
-    /// `Starting` instance to `Running` and record its pid plus the on-disk
-    /// paths produced by `prepare_and_spawn`. Not exported.
-    fn set_running(
-        &mut self,
-        pid: Option<u32>,
-        instance_dir: PathBuf,
-        runtime_config_path: PathBuf,
-    ) {
+    /// `Starting` instance to `Running` and record the on-disk paths produced
+    /// by `prepare_and_spawn`. The pid stays as recorded at spawn. Not
+    /// exported.
+    fn set_running(&mut self, instance_dir: PathBuf, runtime_config_path: PathBuf) {
         self.state = InstanceState::Running;
-        self.pid = pid;
         self.instance_dir = Some(instance_dir);
         self.runtime_config_path = Some(runtime_config_path);
     }
@@ -1686,7 +1681,6 @@ mod tests {
     fn serialized_instances_carry_their_endpoints() {
         let served = TrackedNodeInstance::new(
             Name::new("mcp").unwrap(),
-            Some(7),
             InstanceState::Running,
             BTreeMap::new(),
         )
@@ -1728,14 +1722,12 @@ mod tests {
         );
         let bound = TrackedNodeInstance::new(
             Name::new("sensor-1").unwrap(),
-            Some(42),
             InstanceState::Running,
             bindings.clone(),
         );
         // A second, bindless instance must round-trip as an empty map.
         let unbound = TrackedNodeInstance::new(
             Name::new("sensor-2").unwrap(),
-            Some(43),
             InstanceState::Running,
             BTreeMap::new(),
         );
@@ -1764,7 +1756,6 @@ mod tests {
     fn serialized_node_carries_per_instance_health() {
         let healthy = TrackedNodeInstance::new(
             Name::new("sensor-1").unwrap(),
-            Some(42),
             InstanceState::Running,
             BTreeMap::new(),
         );
@@ -1774,7 +1765,6 @@ mod tests {
         );
         let unhealthy = TrackedNodeInstance::new(
             Name::new("sensor-2").unwrap(),
-            Some(43),
             InstanceState::Running,
             BTreeMap::new(),
         );
@@ -1818,12 +1808,10 @@ mod tests {
     #[test]
     fn mark_instance_exited_moves_running_to_finished_on_clean_exit() {
         let id = Name::new("one-shot-1").unwrap();
-        let handle = ready_entity_with(TrackedNodeInstance::new(
-            id.clone(),
-            Some(7),
-            InstanceState::Running,
-            BTreeMap::new(),
-        ));
+        let mut instance =
+            TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
+        instance.set_starting_pid(7);
+        let handle = ready_entity_with(instance);
 
         let new_state = NodeEntity::mark_instance_exited(&handle, &id, true);
         assert_eq!(new_state, Some(InstanceState::Finished));
@@ -1847,7 +1835,6 @@ mod tests {
         let id = Name::new("crash-1").unwrap();
         let handle = ready_entity_with(TrackedNodeInstance::new(
             id.clone(),
-            Some(9),
             InstanceState::Running,
             BTreeMap::new(),
         ));
@@ -1862,12 +1849,8 @@ mod tests {
     #[test]
     fn mark_instance_exited_is_noop_for_an_instance_being_stopped() {
         let id = Name::new("stopping-1").unwrap();
-        let instance = TrackedNodeInstance::new(
-            id.clone(),
-            Some(11),
-            InstanceState::Running,
-            BTreeMap::new(),
-        );
+        let instance =
+            TrackedNodeInstance::new(id.clone(), InstanceState::Running, BTreeMap::new());
         // A stop path has claimed this instance; the watcher must not relabel
         // the intentional exit as a self-exit.
         instance.mark_stopping();
@@ -1892,7 +1875,6 @@ mod tests {
             Some(PathBuf::from("/tmp/sensor.sif")),
             vec![TrackedNodeInstance::new(
                 id.clone(),
-                None,
                 InstanceState::Finished,
                 BTreeMap::new(),
             )],

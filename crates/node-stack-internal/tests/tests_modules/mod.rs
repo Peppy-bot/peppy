@@ -5,4 +5,5 @@ mod pairing_registry;
 mod runtime_resolution;
 mod service_action_cycle_resolution;
 mod services_runtime_resolution;
+mod stack_drop;
 mod topics_runtime_resolution;

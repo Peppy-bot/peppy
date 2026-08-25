@@ -14,6 +14,7 @@ use pairing::PairingRegistry;
 pub use pairing::{PairEndpoint, Pairing, RemoteSlotMeta, SlotAddr};
 
 use crate::error::{Error, Result};
+use crate::process_group::kill_process_group;
 use crate::service_action_cycle::{CycleCheckNode, find_service_action_cycle};
 use config::node::{
     MissingDependencyPolicy, NodeConfig, PairingParticipantDependency,
@@ -98,6 +99,33 @@ struct NodeStackInner {
     /// mutations validate atomically against stack state. Pairings are
     /// DAG-invisible: nothing here contributes edges.
     pairing_registry: PairingRegistry,
+}
+
+/// Dropping the last handle to a stack SIGKILLs the process group of every
+/// child it still tracks.
+///
+/// The stack is the daemon's only record of the processes it spawned, so a
+/// daemon generation that ends without the cooperative teardown (a serve task
+/// aborted, a test runtime shutting down) cannot leave them behind as orphans.
+/// This is the backstop under the daemon's graceful stop paths, not a
+/// replacement for them: it sends no shutdown request and waits for nothing.
+/// Every pid an instance records names a child of this daemon (only the spawn
+/// path records one, and the root instance has none), and a pid is dropped
+/// with its instance or cleared once its process is known to have exited, so
+/// the signal never reaches a reused pid.
+impl Drop for NodeStackInner {
+    fn drop(&mut self) {
+        for handle in self.graph.node_weights() {
+            let entity = handle.read();
+            for pid in entity
+                .instances()
+                .iter()
+                .filter_map(TrackedNodeInstance::pid)
+            {
+                kill_process_group(pid);
+            }
+        }
+    }
 }
 
 impl NodeStackInner {
@@ -1001,7 +1029,8 @@ impl NodeStack {
     /// constructed directly in `Ready { instances: [Running] }` via
     /// [`NodeEntity::root`]. The root instance is in `Running` state because
     /// the daemon process is already alive; there's no spawn-then-commit to
-    /// model.
+    /// model. It records no pid: the daemon is its own process, and the only
+    /// pids a stack holds are those of the children it spawned.
     pub fn new<P: Into<PathBuf>>(
         root_config: NodeConfig,
         instance_id: Option<Name>,
@@ -1013,7 +1042,6 @@ impl NodeStack {
         });
         let instance = TrackedNodeInstance::new(
             instance_id,
-            Some(std::process::id()),
             InstanceState::Running,
             std::collections::BTreeMap::new(),
         );
@@ -1589,7 +1617,6 @@ mod live_container_instances_tests {
     fn instance(id: &str, state: InstanceState) -> TrackedNodeInstance {
         TrackedNodeInstance::new(
             Name::new(id).expect("valid instance id"),
-            None,
             state,
             std::collections::BTreeMap::new(),
         )

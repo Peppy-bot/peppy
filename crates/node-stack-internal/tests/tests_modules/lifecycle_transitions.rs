@@ -1041,7 +1041,6 @@ mod backwards_transitions_are_rejected {
             artifact: Artifact::Built(PathBuf::from("/tmp/sensor.sif")),
             instances: vec![TrackedNodeInstance::new(
                 Name::new("inst").unwrap(),
-                Some(1),
                 InstanceState::Running,
                 std::collections::BTreeMap::new(),
             )],

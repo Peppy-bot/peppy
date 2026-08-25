@@ -7,7 +7,10 @@
 //! instances of a node, the concrete add/build/run I/O steps that drive an
 //! entity `Added` to `Building` to `Ready` and spawn/stop its OS child
 //! process, `.tar.zst` archive extraction, child-process output streaming,
-//! and caller-driven service/action cycle detection.
+//! and caller-driven service/action cycle detection. The stack is the only
+//! record of the children the daemon spawned, so dropping its last handle
+//! SIGKILLs every process group it still tracks (see `NodeStackInner`'s
+//! `Drop`); the cooperative stop paths belong to the daemon.
 //!
 //! Consumers (the daemon in `core-node-internal`, the CLI in `peppy`) own:
 //! the `peppy.json5` config objects, every filesystem path (working dirs,
@@ -34,6 +37,7 @@ pub mod build_io;
 mod build_progress;
 mod error;
 mod node_stack;
+mod process_group;
 mod service_action_cycle;
 mod virtual_deptree;
 
@@ -48,4 +52,5 @@ pub use node_stack::{
     OutputSinks, PairEndpoint, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr,
     StartContext, StartedInstanceCtx, TrackedNodeInstance, WorkingDirGuard, pairing_slot_view,
 };
+pub use process_group::{kill_process_group, terminate_process_group};
 pub use virtual_deptree::{NodeKey, VirtualDeptree, VirtualNodeInfo};

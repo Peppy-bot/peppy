@@ -57,9 +57,6 @@ ignore = "0.4"
 # Only for the `test-support` log-capture helpers; the daemon's own tracing
 # setup lives in the binary crate.
 tracing-subscriber = { version = "0.3", optional = true }
-# Safe wrapper for the process-group SIGKILL in node teardown (replaces a raw
-# `libc::kill` FFI call), letting the crate adopt `#![forbid(unsafe_code)]`.
-nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [build-dependencies]
 build-helpers = { workspace = true }

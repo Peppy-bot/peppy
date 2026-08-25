@@ -32,6 +32,9 @@ tempfile = "3.10"
 # with, which travels as JSON5.
 serde_json5 = "0.2"
 process-wrap = { version = "9.1.0", features = ["tokio1", "process-group"] }
+# Safe wrapper for the process-group signals (`killpg`) the stack sends its
+# children, keeping the crate free of `unsafe`.
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 
 [dev-dependencies]
