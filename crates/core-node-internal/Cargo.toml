@@ -43,7 +43,7 @@ tokio-util = "0.7"
 tracing = "0.1"
 askama = "0.16"
 rust-embed = { version = "8", features = ["include-exclude"] }
-gix-url = "0.37"
+gix-url = "0.38"
 git2 = { version = "0.21", features = ["https", "vendored-openssl"] }
 url = "2"
 ureq = "3.1"
