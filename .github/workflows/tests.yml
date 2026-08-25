@@ -124,3 +124,37 @@ jobs:
       - name: Clean up isolated peppy data root
         if: always()
         run: rm -rf "$RUNNER_TEMP/peppy-home"
+
+  # Build scripts execute on the build host even when cargo compiles for
+  # another target, so a build script that runs a binary selected by the
+  # target triple only fails when host and target differ. The one cross build
+  # in the pipeline is the release script's x86_64-unknown-linux-gnu build
+  # inside an aarch64 Lima guest, which surfaces such a defect minutes into a
+  # release instead of on the pull request that introduced it. This job checks
+  # the release dependency tree under the mirrored mismatch (x86_64 host,
+  # aarch64 target): `cargo check` runs every build script for real, and one
+  # that executes a target-selected binary dies immediately with an exec
+  # format error. Apptainer provisioning is skipped because a foreign-arch
+  # apptainer needs a Lima VM or a pre-seeded cache and a check build never
+  # runs containers.
+  cross-check:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust-build-env
+
+      - name: Install the aarch64 cross toolchain
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+
+      - name: Cross-check the release dependency tree
+        env:
+          PEPPY_SKIP_APPTAINER_PROVISION: "1"
+        run: cargo check --locked --target aarch64-unknown-linux-gnu -p peppy
