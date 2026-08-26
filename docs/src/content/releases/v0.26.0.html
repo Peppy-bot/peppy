@@ -1,0 +1,47 @@
+<entry>
+  <title>v0.26.0</title>
+  <id>https://docs.peppy.bot/releases/v0-26-0/</id>
+  <updated>2026-08-26T00:00:00Z</updated>
+
+  <summary>Serve MCP exposures from the server built into peppy by listing them in a launcher, with no node to generate or build.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.26.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Serve MCP exposures from the server built into peppy by listing them in a launcher, with no node to generate or build.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on August 26, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy repo exposure&lt;/code&gt; is removed, and an exposure is no longer a committed bundle plus a generated MCP server node. Validate exposures with &lt;code&gt;peppy repo index --check --validate-mcp-exposures&lt;/code&gt; and delete the old generated artifacts.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Serve an exposure from a launcher's &lt;code&gt;source: { exposures: ["&amp;lt;name&amp;gt;:&amp;lt;tag&amp;gt;", ...] }&lt;/code&gt; instead of deploying its generated &lt;code&gt;&amp;lt;name&amp;gt;_mcp&lt;/code&gt; node; the server built into &lt;code&gt;peppy&lt;/code&gt; binds &lt;code&gt;127.0.0.1:&amp;lt;port&amp;gt;&lt;/code&gt;, one endpoint per exposure at &lt;code&gt;/&amp;lt;name&amp;gt;/&amp;lt;tag&amp;gt;/mcp&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy mcp catalog &amp;lt;name:tag&amp;gt;&lt;/code&gt; prints the catalog an endpoint advertises: every resource, tool, and task with its public name, policies, and derived JSON Schemas.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A target's contract &lt;code&gt;sha256&lt;/code&gt; is now optional; omit it and the exposure follows the contract as its repository evolves, with each launch pinning the bytes it resolves.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;One deployment can serve several exposures on a single port, sharing a contract slot when two exposures name the same target and the same contract.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;code&gt;peppy stack list&lt;/code&gt; adds an &lt;code&gt;Instance endpoints&lt;/code&gt; table listing each endpoint URL an instance serves.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Exposure deployments work in a federated launch: the exposure documents and the contracts they reference are pinned and shipped to the machine hosting the instance.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A new default &lt;code&gt;mcp-hub&lt;/code&gt; repository resolves the MCP exposure documents a launcher lists.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;An exposure manifest may carry a &lt;code&gt;labels&lt;/code&gt; list of free-form strings for whoever browses the repository.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
