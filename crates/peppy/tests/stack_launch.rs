@@ -3619,11 +3619,11 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         })
         .collect();
     staged.push((
-        "openarm_commander",
+        "openarm_web_commander",
         "v1",
         stage_hub_fixture_node(
             nodes_dir.path(),
-            "openarm_commander",
+            "openarm_web_commander",
             &git_hash,
             &commander_run_cmd,
         ),
@@ -3649,7 +3649,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         ("openarm_joint_follower", "follower_2"),
         ("openarm_gripper_leader", "grip_leader_1"),
         ("openarm_gripper_follower", "grip_follower_1"),
-        ("openarm_commander", "commander_inst"),
+        ("openarm_web_commander", "commander_inst"),
     ] {
         let ready = listen_for_node_ready(
             &node_messenger,
@@ -3720,7 +3720,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         &node_messenger,
         &core_node_name,
         "commander_inst",
-        test_node_target("openarm_commander"),
+        test_node_target("openarm_web_commander"),
         Arc::new(obs_senders),
     )
     .await
@@ -3765,7 +3765,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
                     instances: [{ instance_id: "grip_follower_1" }]
                 },
                 {
-                    source: { name: "openarm_commander:v1" },
+                    source: { name: "openarm_web_commander:v1" },
                     instances: [{
                         instance_id: "commander_inst",
                         links: {
