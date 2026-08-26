@@ -11,21 +11,14 @@
     url: "https://github.com/Peppy-bot/launchers-hub.git",
     ref: "main"
   },
-  // OpenArm01 specific nodes
   {
     id: 1002,
-    type: "git",
-    url: "https://github.com/Peppy-bot/openarm-nodes.git",
-    ref: "main"
-  },
-  {
-    id: 1003,
     type: "git",
     url: "https://github.com/Peppy-bot/contracts-hub.git",
     ref: "main"
   },
   {
-    id: 1004,
+    id: 1003,
     type: "git",
     url: "https://github.com/Peppy-bot/mcp-hub.git",
     ref: "main"

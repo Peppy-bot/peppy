@@ -1,7 +1,7 @@
 {
   peppy_schema: "node/v1",
   manifest: {
-    name: "openarm_commander",
+    name: "openarm_web_commander",
     tag: "v1",
     implements: [
       // Runtime on/off for the backbone's self-collision governor, driven by
@@ -33,7 +33,7 @@
   },
   execution: {
     language: "rust",
-    run_cmd: ["./bin/openarm_commander"]
+    run_cmd: ["./bin/openarm_web_commander"]
   },
   interfaces: {
     services: {
