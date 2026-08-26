@@ -13,13 +13,12 @@ Repositories tell Peppy where to look for nodes, launchers, contracts, pairings,
 - **Pairings**, identified by content: every `.json5` file whose body declares `peppy_schema: "pairing/v1"` is treated as a pairing, regardless of its filename. A pairing is a two-role, topics-only contract that two node instances pair 1:1 over, keyed by the `name:tag` declared in its manifest; see [Pairing](/advanced_guides/pairing/).
 - **MCP exposures**, identified by content: every `.json5` file whose body declares `peppy_schema: "mcp_exposure/v1"` is treated as an MCP exposure, regardless of its filename, keyed by the `name:tag` declared in its manifest. An exposure selects members of contracts and gives them stable public names, MCP-facing prose, and operational policies; a launcher lists exposures by `name:tag` and the server built into `peppy` serves them, and [`peppy repo index --check --validate-mcp-exposures`](#check-the-exposures-a-repository-publishes) validates each one against the contracts it references. See [MCP exposure](/advanced_guides/mcp/).
 
-Out of the box, five repositories are configured:
+Out of the box, four repositories are configured:
 
 - **`nodes-hub`** (`https://github.com/Peppy-bot/nodes-hub.git`, tracked on `main`, id `1000`): a curated collection of ready-to-use nodes.
 - **`launchers-hub`** (`https://github.com/Peppy-bot/launchers-hub.git`, tracked on `main`, id `1001`): community launch files that compose nodes from the hubs.
-- **`openarm-nodes`** (`https://github.com/Peppy-bot/openarm-nodes.git`, tracked on `main`, id `1002`): nodes specific to the OpenArm01 robot.
-- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`, id `1003`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
-- **`mcp-hub`** (`https://github.com/Peppy-bot/mcp-hub.git`, tracked on `main`, id `1004`): [MCP exposure](/advanced_guides/mcp/) documents that a launcher lists by `name:tag` and the server built into `peppy` serves.
+- **`contracts-hub`** (`https://github.com/Peppy-bot/contracts-hub.git`, tracked on `main`, id `1002`): shared contract definitions that nodes claim by `name:tag` in `manifest.implements`.
+- **`mcp-hub`** (`https://github.com/Peppy-bot/mcp-hub.git`, tracked on `main`, id `1003`): [MCP exposure](/advanced_guides/mcp/) documents that a launcher lists by `name:tag` and the server built into `peppy` serves.
 
 The `id` is the priority key when several repositories provide the same `name:tag`, so the defaults resolve in this order.
 
