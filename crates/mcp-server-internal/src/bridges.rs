@@ -8,17 +8,22 @@ use crate::serve::ServeError;
 use config::node::{MessageFormat, NativeExposedAction};
 use message_codec::MessageCodec;
 use message_codec::consumer::{
-    ActionClient, ConsumerIdentity, GoalOutcome, MemberBinding, ServiceClient, TopicConsumer,
+    ActionClient, ConsumerError, ConsumerIdentity, GoalHandle, GoalOutcome, MemberBinding,
+    ServiceClient, TopicConsumer,
 };
 use peppy_mcp_catalog::{BundleContractPin, ExposureBundle, ValidatedExposure};
 use peppy_mcp_runtime::{ActionContext, ActionExit, ResourceIngest, ToolCallError};
 use peppylib::config::QoSProfile;
-use peppylib::messaging::SenderTarget;
+use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget};
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[cfg(test)]
+mod tests;
 
 /// One exposure ready to serve: its catalog and the bridge behind every
 /// entry.
@@ -74,9 +79,10 @@ pub(crate) struct PreparedTask {
     pub binding: Binding,
     pub client: ActionClient,
     pub feedback_qos: QoSProfile,
-    /// Whether the action declares a feedback message; a feedback-less
-    /// action's stream carries only the terminal sentinel, which is not
-    /// reported as task progress.
+    /// Whether the action declares a feedback message. A goal on such an
+    /// action settles once the provider closes the stream at the terminal
+    /// result; a feedback-less action's stream carries nothing, not even
+    /// that close, so a goal on it settles on a parked result request.
     pub reports_feedback: bool,
     pub deadline: Duration,
 }
@@ -245,7 +251,7 @@ pub(crate) fn prepare(
 
 /// The feedback subscription follows the contract: the QoS profile the
 /// action's feedback topic declares picks the subscriber's buffering tier,
-/// and a feedback-less action's sentinel-only stream takes the default.
+/// and a feedback-less action's empty stream takes the default.
 fn feedback_qos(action: &NativeExposedAction) -> QoSProfile {
     action
         .feedback_topic
@@ -327,14 +333,29 @@ pub(crate) async fn call_tool(
         .map_err(|error| ToolCallError::Failed(error.to_string()))
 }
 
-/// Runs the action behind a task: fires the goal, pumps feedback into the
-/// task's status, forwards `tasks/cancel` cooperatively, and maps the Peppy
-/// terminal result onto the MCP terminal state.
-///
-/// The deadline is the whole-goal deadline, so every await after the goal
-/// is fired spends what is left of it rather than restarting it: a
-/// provider that keeps sending feedback, or a cancel that takes its own
-/// time, cannot push the bridge past the deadline the tool advertises.
+/// The runtime-side surface a goal drives while it runs: its feedback
+/// becomes the task's status message, and the client's `tasks/cancel`
+/// reaches the provider through it.
+pub(crate) trait TaskSurface: Sync {
+    fn report_feedback(&self, message: String);
+
+    /// Resolves once the client has requested cancellation (immediately, if
+    /// it already has).
+    fn cancel_requested(&self) -> impl Future<Output = ()> + Send;
+}
+
+impl TaskSurface for ActionContext {
+    fn report_feedback(&self, message: String) {
+        ActionContext::report_feedback(self, message);
+    }
+
+    fn cancel_requested(&self) -> impl Future<Output = ()> + Send {
+        ActionContext::cancel_requested(self)
+    }
+}
+
+/// Runs the action behind a task on the producer the launcher bound to its
+/// target.
 pub(crate) async fn run_task(
     task: &PreparedTask,
     node_runner: &NodeRunner,
@@ -342,12 +363,42 @@ pub(crate) async fn run_task(
     input: Value,
     context: ActionContext,
 ) -> Result<Value, ActionExit> {
-    let messenger = node_runner.messenger();
     let binding = task.binding.member_binding(node_runner);
     let producer = node_runner
         .processor()
         .sole_bound_producer(&task.binding.target)
         .clone();
+    drive_goal(
+        task,
+        node_runner.messenger(),
+        identity,
+        &binding,
+        &producer,
+        input,
+        &context,
+    )
+    .await
+}
+
+/// Drives the goal behind a task: fires it at `producer`, settles it on the
+/// provider's terminal result, and maps that result onto the MCP terminal
+/// state. Cancellation is cooperative on both sides: `tasks/cancel` is
+/// forwarded once to the Peppy cancel path, and the terminal result the
+/// provider settles on decides the task's terminal state.
+///
+/// The deadline is the whole-goal deadline, so every await after the goal
+/// is fired spends what is left of it rather than restarting it: a
+/// provider that keeps sending feedback, or a cancel that takes its own
+/// time, cannot push the bridge past the deadline the tool advertises.
+pub(crate) async fn drive_goal(
+    task: &PreparedTask,
+    messenger: &MessengerHandle,
+    identity: &ConsumerIdentity,
+    binding: &MemberBinding,
+    producer: &ProducerRef,
+    input: Value,
+    surface: &impl TaskSurface,
+) -> Result<Value, ActionExit> {
     let started = Instant::now();
     let deadline = task.deadline;
     let remaining = || deadline.saturating_sub(started.elapsed());
@@ -357,8 +408,8 @@ pub(crate) async fn run_task(
         .fire_goal(
             messenger,
             identity,
-            &binding,
-            &producer,
+            binding,
+            producer,
             &input,
             task.feedback_qos.clone(),
             deadline,
@@ -372,11 +423,33 @@ pub(crate) async fn run_task(
         }));
     }
 
-    // Cancellation is cooperative on both sides: `tasks/cancel` is
-    // forwarded once to the Peppy cancel path, and the terminal result the
-    // provider settles on decides the task's terminal state. The feedback
-    // stream ends at the terminal result (clean close) or when the producer
-    // disappears; either way the result reply below settles the outcome.
+    let outcome = if task.reports_feedback {
+        settle_after_feedback(&mut handle, messenger, surface, &remaining).await
+    } else {
+        settle_on_result(&handle, messenger, surface, &remaining).await
+    }
+    .map_err(|error| ActionExit::Failed(error.to_string()))?;
+    match outcome {
+        GoalOutcome::Completed(value) => Ok(value),
+        GoalOutcome::Cancelled => Err(ActionExit::Cancelled),
+        GoalOutcome::Abandoned => Err(ActionExit::Failed(
+            "the provider abandoned the goal".to_owned(),
+        )),
+        GoalOutcome::Expired => Err(ActionExit::Failed(
+            "the goal expired before reaching a terminal result".to_owned(),
+        )),
+    }
+}
+
+/// Settles a goal on an action with feedback: every message is reported as
+/// the task's status until the provider closes the stream at the terminal
+/// result (or disappears), then the result reply decides the outcome.
+async fn settle_after_feedback(
+    handle: &mut GoalHandle,
+    messenger: &MessengerHandle,
+    surface: &impl TaskSurface,
+    remaining: &impl Fn() -> Duration,
+) -> Result<GoalOutcome, ConsumerError> {
     let mut cancel_pending = false;
     let mut cancel_forwarded = false;
     // Armed once rather than per message: a feedback stream can be fast,
@@ -391,31 +464,39 @@ pub(crate) async fn run_task(
         }
         tokio::select! {
             _ = &mut expiry => break,
-            _ = context.cancel_requested(), if !cancel_forwarded => {
+            _ = surface.cancel_requested(), if !cancel_forwarded => {
                 cancel_pending = true;
             }
             message = handle.next_feedback() => match message {
-                Ok(Some(value)) => {
-                    if task.reports_feedback {
-                        context.report_feedback(value.to_string());
-                    }
-                }
+                Ok(Some(value)) => surface.report_feedback(value.to_string()),
                 Ok(None) | Err(_) => break,
             }
         }
     }
-    let outcome = handle
-        .result(messenger, remaining())
-        .await
-        .map_err(|error| ActionExit::Failed(error.to_string()))?;
-    match outcome {
-        GoalOutcome::Completed(value) => Ok(value),
-        GoalOutcome::Cancelled => Err(ActionExit::Cancelled),
-        GoalOutcome::Abandoned => Err(ActionExit::Failed(
-            "the provider abandoned the goal".to_owned(),
-        )),
-        GoalOutcome::Expired => Err(ActionExit::Failed(
-            "the goal expired before reaching a terminal result".to_owned(),
-        )),
+    handle.result(messenger, remaining()).await
+}
+
+/// Settles a goal on a feedback-less action: its stream carries nothing,
+/// not even a close at the terminal result, so the result request is parked
+/// on the provider from the start and its reply decides the outcome. The
+/// request stays parked while a cancel is forwarded; the provider settling
+/// the goal cancelled is what answers it.
+async fn settle_on_result(
+    handle: &GoalHandle,
+    messenger: &MessengerHandle,
+    surface: &impl TaskSurface,
+    remaining: &impl Fn() -> Duration,
+) -> Result<GoalOutcome, ConsumerError> {
+    let result = handle.result(messenger, remaining());
+    tokio::pin!(result);
+    let mut cancel_forwarded = false;
+    loop {
+        tokio::select! {
+            outcome = &mut result => return outcome,
+            _ = surface.cancel_requested(), if !cancel_forwarded => {
+                cancel_forwarded = true;
+                let _ = handle.cancel(messenger, remaining()).await;
+            }
+        }
     }
 }
