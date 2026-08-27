@@ -52,8 +52,10 @@ jobs:
       # Which of the later gated suites have had their inputs touched. The
       # per-suite source sets are derived from cargo metadata's resolve graph
       # at run time (see the action), so added or rewired crates are picked
-      # up with nothing to maintain here. Needs cargo on PATH, hence the
-      # placement after rust-build-env.
+      # up with nothing to maintain here. A suite whose inputs are untouched
+      # is skipped, and the action reports the reason in the job's
+      # annotations and summary. Needs cargo on PATH, hence the placement
+      # after rust-build-env.
       - name: Detect changed test inputs
         id: changes
         uses: ./.github/actions/changed-test-inputs
@@ -97,9 +99,7 @@ jobs:
           cargo test --locked -p docs-integration-tests
 
       - name: Run release scripts tests
-        if: |
-          (github.event_name == 'pull_request' && github.base_ref == 'main')
-          || steps.changes.outputs.scripts == 'true'
+        if: steps.changes.outputs.scripts == 'true'
         run: |
           # The install tests boot Lima VMs, whose QEMU the runner image
           # lacks (limactl itself comes from the pixi environment). The
