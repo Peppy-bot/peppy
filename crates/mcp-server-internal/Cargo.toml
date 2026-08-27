@@ -28,3 +28,9 @@ thiserror = "2.0"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 tokio-util = "0.7"
 tracing = "0.1"
+
+[dev-dependencies]
+# The provider double and the ephemeral router the bridge tests drive a
+# real goal through.
+peppylib = { workspace = true, features = ["testing"] }
+tokio = { version = "1", features = ["sync"] }
