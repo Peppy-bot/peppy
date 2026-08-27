@@ -24,6 +24,24 @@ class BuildArtifact:
     target_triple: str
 
 
+def _release_rustflags(repo_root: Path) -> str:
+    """RUSTFLAGS that keep build machine paths out of the compiled binary.
+
+    rustc records absolute source paths in panic locations and debug data: the
+    cargo registry under CARGO_HOME and the workspace checkout both name the
+    machine the release is built on. Remapping them to fixed prefixes removes
+    that identity from the shipped binary. Appended to any RUSTFLAGS the
+    environment already carries so local wrappers keep working.
+    """
+    cargo_home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))
+    parts = [
+        os.environ.get("RUSTFLAGS", ""),
+        f"--remap-path-prefix={cargo_home}=/cargo-home",
+        f"--remap-path-prefix={repo_root}=/peppy",
+    ]
+    return " ".join(part for part in parts if part)
+
+
 def cargo_build(
     tag: str,
     target_triple: str,
@@ -46,6 +64,7 @@ def cargo_build(
     """
     console.print(f"Building peppy for [bold]{target_triple}[/bold]...")
     env = {**os.environ, "PEPPY_GIT_TAG": tag, "PEPPY_CROSS_ARCH": "1"}
+    env["RUSTFLAGS"] = _release_rustflags(repo_root)
     if target_dir is not None:
         env["CARGO_TARGET_DIR"] = str(target_dir)
     try:
@@ -177,6 +196,18 @@ def find_build_dir(
     )
 
 
+def _sanitize_tar_member(member: tarfile.TarInfo) -> tarfile.TarInfo:
+    """Zero member ownership so the archive never carries the packer's uid,
+    gid, or user and group names. A root install restoring them would either
+    abort in a user namespace or hand the tree to the packing machine's (or a
+    same-named local) account."""
+    member.uid = 0
+    member.gid = 0
+    member.uname = ""
+    member.gname = ""
+    return member
+
+
 def package_release(
     target_triple: str,
     repo_root: Path,
@@ -218,7 +249,7 @@ def package_release(
 
         with tarfile.open(asset_path, "w:gz") as tar:
             for child in sorted(pkg_dir.iterdir()):
-                tar.add(child, arcname=f"./{child.name}")
+                tar.add(child, arcname=f"./{child.name}", filter=_sanitize_tar_member)
 
     console.print(f"Built artifact: [bold]{asset_path}[/bold]")
     return BuildArtifact(

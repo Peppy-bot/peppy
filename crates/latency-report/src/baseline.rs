@@ -54,19 +54,74 @@ pub fn baseline_path(subdir: &str) -> PathBuf {
     path_in(&target_dir(), subdir, &machine_id())
 }
 
-/// The machine-local `target/` directory baselines live under: `$CARGO_TARGET_DIR`
-/// when set, else the workspace `target/` resolved relative to this crate.
+/// The machine-local `target/` directory baselines live under: the invoking
+/// environment's `$CARGO_TARGET_DIR` when set, else the workspace `target/`
+/// found by walking up from the running executable, else the peppy cache root.
+/// Resolved at runtime so the binary carries no path from the machine that
+/// built it.
 fn target_dir() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // CARGO_MANIFEST_DIR is `<repo>/crates/latency-report`; the workspace
-            // `target/` is two levels up.
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("target")
-        })
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        return PathBuf::from(dir);
+    }
+    // Cargo lays built binaries out under the workspace `target/` as
+    // `target/[<triple>/]<profile>/[deps/]`, so walking a bounded number of
+    // parents up from the running executable finds it without compiling the
+    // building machine's checkout path into the binary.
+    if let Some(exe) = std::env::current_exe().ok()
+        && let Some(dir) = workspace_target_dir_of(&exe)
+    {
+        return dir;
+    }
+    // Installed binaries have no `target/` ancestor; keep baselines
+    // machine-local under the peppy cache root instead.
+    match std::env::var_os("HOME") {
+        Some(home) => Path::new(&home).join(".peppy/tmp/latency-report"),
+        None => std::env::temp_dir().join("peppy-latency-report"),
+    }
+}
+
+/// The first ancestor of `exe` named `target`, or `None` within five levels.
+fn workspace_target_dir_of(exe: &Path) -> Option<PathBuf> {
+    let mut dir = exe.parent()?;
+    for _ in 0..5 {
+        if dir.file_name() == Some(std::ffi::OsStr::new("target")) {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+    None
+}
+
+#[cfg(test)]
+mod target_dir_tests {
+    use super::workspace_target_dir_of;
+    use std::path::Path;
+
+    #[test]
+    fn finds_the_workspace_target_from_a_bench_binary_layout() {
+        let exe = Path::new("/ws/target/release/deps/bench-abc");
+        assert_eq!(
+            workspace_target_dir_of(exe),
+            Some(Path::new("/ws/target").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn finds_the_workspace_target_from_a_crosscompiled_layout() {
+        let exe = Path::new("/ws/target/aarch64-unknown-linux-gnu/release/peppy");
+        assert_eq!(
+            workspace_target_dir_of(exe),
+            Some(Path::new("/ws/target").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_an_installed_binary() {
+        assert_eq!(
+            workspace_target_dir_of(Path::new("/usr/local/bin/peppy")),
+            None
+        );
+    }
 }
 
 /// Pure path join, split out so the layout is testable without reading the

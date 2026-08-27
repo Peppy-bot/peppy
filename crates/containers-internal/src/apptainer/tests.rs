@@ -997,47 +997,99 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
 // Compile-time cache consistency test
 // ---------------------------------------------------------------------------
 
-/// Verifies that the compile-time `APPTAINER_INSTALL_DIR` injected by build.rs
-/// points to a valid cache directory with the expected sentinel and binary. The
-/// sentinel path comes from build.rs too, via `APPTAINER_CACHE_SENTINEL`: the
-/// name is keyed on every input that changes the produced tree (apptainer
-/// version, recipe revision, squashfuse version), so re-deriving it here would
-/// go stale the next time the cache key changes.
+/// Verifies that the apptainer cache provisioned for this binary's
+/// architecture exists with its completed-build sentinel and binary. The
+/// location is derived at runtime from the exported cache names, so the
+/// binary carries no path from the machine that built it.
 ///
 /// If this test fails after deleting `~/.peppy`, it means the build cache is
 /// stale and `cargo build` needs to re-run build.rs (which the
 /// `rerun-if-changed` directive on the sentinel file should ensure).
 #[cfg(target_os = "linux")]
 #[test]
-fn compile_time_apptainer_dir_exists_with_sentinel() {
-    let install_dir = env!(
-        "APPTAINER_INSTALL_DIR",
-        "APPTAINER_INSTALL_DIR should be set by build.rs at compile time"
-    );
+fn apptainer_cache_dir_exists_with_sentinel() {
+    let Some(install_dir) = linux_apptainer_cache_dir() else {
+        panic!("HOME is not set; cannot locate the apptainer build cache");
+    };
 
-    let path = Path::new(install_dir);
     assert!(
-        path.is_dir(),
-        "APPTAINER_INSTALL_DIR={} does not exist; was ~/.peppy deleted without rebuilding?",
+        install_dir.is_dir(),
+        "apptainer cache {:?} does not exist; was ~/.peppy deleted without rebuilding?",
         install_dir
     );
 
-    let sentinel = Path::new(env!(
-        "APPTAINER_CACHE_SENTINEL",
-        "APPTAINER_CACHE_SENTINEL should be set by build.rs at compile time"
-    ));
+    let sentinel = install_dir.join(crate::APPTAINER_CACHE_SENTINEL_NAME);
     assert!(
         sentinel.exists(),
         "Cache sentinel {:?} is missing; the apptainer cache may be corrupt",
         sentinel
     );
 
-    let apptainer_bin = path.join("bin/apptainer");
+    let apptainer_bin = install_dir.join("bin/apptainer");
     assert!(
         apptainer_bin.exists(),
-        "bin/apptainer not found in APPTAINER_INSTALL_DIR={}",
+        "bin/apptainer not found in the apptainer cache {:?}",
         install_dir
     );
+}
+
+/// The apptainer build cache for this binary's architecture, derived at
+/// runtime exactly as production code derives it.
+#[cfg(target_os = "linux")]
+fn linux_apptainer_cache_dir() -> Option<PathBuf> {
+    super::lima::peppy_home_dir(&format!("tmp/{}", crate::APPTAINER_CACHE_DIR_NAME))
+}
+
+/// The trees build.rs copies into OUT_DIR ship inside release archives: their
+/// `.copy-source` sentinels and the generated apptainer man pages must not
+/// carry the building machine's home directory.
+#[test]
+fn out_dir_trees_carry_no_build_machine_paths() {
+    let Some(home) = std::env::var_os("HOME") else {
+        panic!("HOME is not set; cannot check OUT_DIR trees for host paths");
+    };
+    let home = home.to_string_lossy();
+    let out_dir = Path::new(env!("OUT_DIR"));
+
+    for marker in [
+        "apptainer-install/.copy-source",
+        "lima-install/.copy-source",
+    ] {
+        let path = out_dir.join(marker);
+        if let Ok(contents) = fs::read_to_string(&path) {
+            assert!(
+                !contents.contains(home.as_ref()),
+                "{marker} embeds the building machine's home directory: {contents:?}"
+            );
+        }
+    }
+
+    let man_dir = out_dir.join("apptainer-install/share/man");
+    if !man_dir.is_dir() {
+        // A PEPPY_SKIP_APPTAINER_PROVISION build provisions nothing; there is
+        // no tree to check, same self-skip the integration tests apply.
+        eprintln!(
+            "SKIPPING: no apptainer tree in OUT_DIR at {:?}; build without \
+             PEPPY_SKIP_APPTAINER_PROVISION to check it",
+            man_dir
+        );
+        return;
+    }
+    let mut stack = vec![man_dir];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).expect("read man page directory") {
+            let entry = entry.expect("read man page entry");
+            if entry.path().is_dir() {
+                stack.push(entry.path());
+            } else if let Ok(contents) = fs::read_to_string(entry.path()) {
+                assert!(
+                    !contents.contains(home.as_ref()),
+                    "{} embeds the building machine's home directory",
+                    entry.path().display()
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,8 +1106,9 @@ fn compile_time_apptainer_dir_exists_with_sentinel() {
 #[cfg(target_os = "linux")]
 #[test]
 fn gocryptfs_bundled_in_apptainer_install_dir() {
-    let install_dir = env!("APPTAINER_INSTALL_DIR");
-    let path = Path::new(install_dir);
+    let install_dir =
+        linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
+    let path = install_dir;
 
     let gocryptfs_bin = path.join("libexec/apptainer/bin/gocryptfs");
     assert!(
@@ -1091,8 +1144,9 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
 #[cfg(target_os = "linux")]
 #[test]
 fn gocryptfs_bundled_binary_is_runnable() {
-    let install_dir = env!("APPTAINER_INSTALL_DIR");
-    let gocryptfs_bin = Path::new(install_dir).join("libexec/apptainer/bin/gocryptfs");
+    let install_dir =
+        linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
+    let gocryptfs_bin = install_dir.join("libexec/apptainer/bin/gocryptfs");
 
     let output = Command::new(&gocryptfs_bin)
         .arg("--version")
@@ -1187,8 +1241,9 @@ fn squashfuse_bundled_in_apptainer_install_dir() {
 #[cfg(target_os = "linux")]
 #[test]
 fn squashfuse_bundled_binary_is_runnable() {
-    let install_dir = env!("APPTAINER_INSTALL_DIR");
-    let squashfuse_bin = Path::new(install_dir).join("libexec/apptainer/bin/squashfuse_ll");
+    let install_dir =
+        linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
+    let squashfuse_bin = install_dir.join("libexec/apptainer/bin/squashfuse_ll");
 
     // Invoked with no arguments: `squashfuse_ll` has no `--version` flag, and
     // its usage banner carries the version. Apptainer scans the same output for

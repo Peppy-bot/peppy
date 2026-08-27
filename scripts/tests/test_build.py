@@ -11,6 +11,7 @@ import pytest
 
 from functions.build import (
     _get_target_dir,
+    _release_rustflags,
     build_and_package,
     find_build_dir,
     find_peppy_binary,
@@ -256,6 +257,71 @@ def test_package_release_respects_peppy_dist_dir(tmp_path: Path) -> None:
         )
 
     assert artifact.asset_path.parent == custom_dist
+
+
+def test_package_release_tarball_has_zeroed_ownership(tmp_path: Path) -> None:
+    """Every member must be owned by uid 0 with no user or group names.
+
+    GNU tar restores ownership on root installs: a foreign uid aborts the
+    install inside user namespaces, and a resolvable name hands the tree to
+    a same-named local account. The archive must not carry the packer's.
+    """
+    triple = "aarch64-apple-darwin"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    peppy_bin = tmp_path / "peppy"
+    peppy_bin.write_bytes(b"peppy binary")
+    zenohd_bin = tmp_path / "zenohd"
+    zenohd_bin.write_bytes(b"zenohd binary")
+
+    apptainer_dir = tmp_path / "apptainer-install"
+    apptainer_dir.mkdir()
+    (apptainer_dir / "bin").mkdir(parents=True)
+    (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
+
+    dist_dir = tmp_path / "dist"
+    with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
+        artifact = package_release(
+            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir
+        )
+
+    with tarfile.open(artifact.asset_path, "r:gz") as tar:
+        members = tar.getmembers()
+
+    assert members
+    for member in members:
+        assert member.uid == 0, member.name
+        assert member.gid == 0, member.name
+        assert member.uname == "", member.name
+        assert member.gname == "", member.name
+
+
+def test_release_rustflags_remap_build_machine_paths(tmp_path: Path) -> None:
+    """The release build remaps CARGO_HOME and the checkout to fixed prefixes
+
+    so panic locations and debug data in the shipped binary cannot name the
+    machine it was built on, while an inherited RUSTFLAGS keeps its flags.
+    """
+    env = {
+        "CARGO_HOME": str(tmp_path / "cargo-home"),
+        "RUSTFLAGS": "--cfg inherited",
+    }
+    repo_root = tmp_path / "repo"
+    with patch.dict(os.environ, env):
+        flags = _release_rustflags(repo_root)
+
+    assert f"--remap-path-prefix={tmp_path / 'cargo-home'}=/cargo-home" in flags
+    assert f"--remap-path-prefix={repo_root}=/peppy" in flags
+    assert flags.startswith("--cfg inherited")
+
+
+def test_release_rustflags_without_inherited_flags(tmp_path: Path) -> None:
+    with patch.dict(os.environ, {"RUSTFLAGS": ""}):
+        flags = _release_rustflags(tmp_path / "repo")
+
+    assert not flags.startswith(" ")
+    assert flags.count("--remap-path-prefix") == 2
 
 
 def test_build_and_package_rejects_unsupported_triple(tmp_path: Path) -> None:
