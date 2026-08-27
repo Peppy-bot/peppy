@@ -44,10 +44,11 @@ mod apptainer_build {
     /// afterwards) squashfuse is compiled for the target ISA, so it can only be
     /// produced inside the build environment that built apptainer itself.
     ///
-    /// r3 scrubs the building user's home directory out of the installed man
-    /// pages, which render flag defaults from `$HOME` at build time and ship
-    /// inside release archives otherwise.
-    const APPTAINER_RECIPE_REVISION: u32 = 3;
+    /// r3 and r4 scrub the building user's home directory out of the installed
+    /// man pages, which render flag defaults from `$HOME` at build time and
+    /// ship inside release archives otherwise. r4 extends the scrub to the
+    /// native Linux build path, which r3 covered only inside Lima guests.
+    const APPTAINER_RECIPE_REVISION: u32 = 4;
 
     /// Directory, relative to the apptainer install prefix, holding the shared
     /// libraries bundled with the binaries (see [`APPTAINER_CGO_LDFLAGS`]).
@@ -228,6 +229,13 @@ mod apptainer_build {
     /// Guest-side installation path for apptainer inside the Lima VM.
     /// Must match the `--prefix` used at build time.
     const GUEST_APPTAINER_DIR: &str = "/tmp/peppy/apptainer";
+
+    /// Replacement for the building user's home directory in generated man
+    /// pages: apptainer renders flag defaults in them from `$HOME` at build
+    /// time, and the pages ship inside release archives, so neither the guest
+    /// build script nor [`scrub_man_page_builder_home`] may leave the real one
+    /// in place.
+    const MAN_PAGE_HOME_PLACEHOLDER: &str = "/home/apptainer-builder";
 
     // -----------------------------------------------------------------------
     // Cache helpers
@@ -1623,6 +1631,10 @@ mod apptainer_build {
             return false;
         }
 
+        if !scrub_man_page_builder_home(install_dir) {
+            return false;
+        }
+
         // Clean up source directory
         std::fs::remove_dir_all(&source_dir).ok();
 
@@ -1643,6 +1655,55 @@ mod apptainer_build {
         // Refusing a mismatched result here turns a wrong-arch build into a
         // build failure instead of a cache entry every later release reuses.
         installed_arch_matches(install_dir, target_arch, "built natively")
+    }
+
+    /// Rewrite the building user's home directory out of the installed man
+    /// pages. The guest build script does the same with `sed` right after its
+    /// `make install`; this covers the native Linux source build, which
+    /// installs through `run_command` instead. Returns false on an I/O error,
+    /// failing the build rather than shipping an identifying tree.
+    fn scrub_man_page_builder_home(install_dir: &Path) -> bool {
+        let Some(home) = std::env::var_os("HOME") else {
+            // Without a home directory nothing was baked into the pages.
+            return true;
+        };
+        let home = home.to_string_lossy();
+        let man_dir = install_dir.join("share/man");
+        let mut stack = vec![man_dir];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    println!(
+                        "cargo:warning=Failed to read man page directory {:?}: {}",
+                        dir, e
+                    );
+                    return false;
+                }
+            };
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let Ok(contents) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                if contents.contains(home.as_ref()) {
+                    let scrubbed = contents.replace(home.as_ref(), MAN_PAGE_HOME_PLACEHOLDER);
+                    if let Err(e) = std::fs::write(&path, scrubbed) {
+                        println!("cargo:warning=Failed to scrub man page {:?}: {}", path, e);
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Build apptainer from source inside a Lima VM and copy the result back.
@@ -1805,7 +1866,7 @@ echo "=== Scrubbing the builder home from man pages ==="
 # Apptainer renders flag defaults in its man pages from the building user's
 # $HOME; a generic path keeps the build account out of release archives.
 if [ -d {install_dir}/share/man ]; then
-  find {install_dir}/share/man -type f -exec sed -i "s|$HOME|/home/apptainer-builder|g" {{}} +
+  find {install_dir}/share/man -type f -exec sed -i "s|$HOME|{man_page_home}|g" {{}} +
 fi
 echo "=== Bundling {libseccomp} ==="
 # The rpaths above point the binaries here, so the bundle — not the runtime
@@ -1848,8 +1909,9 @@ rm -rf /tmp/apptainer-{version} /tmp/apptainer-{version}.tar.gz"#,
             cgo_ldflags = APPTAINER_CGO_LDFLAGS,
             libseccomp = LIBSECCOMP_SONAME,
             lib_dir = APPTAINER_BUNDLED_LIB_DIR,
-            sq_version = SQUASHFUSE_VERSION,
+            man_page_home = MAN_PAGE_HOME_PLACEHOLDER,
             sq_sha = SQUASHFUSE_SHA256,
+            sq_version = SQUASHFUSE_VERSION,
             sq_url = squashfuse_source_url(SQUASHFUSE_VERSION),
         )
     }
