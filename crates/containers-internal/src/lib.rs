@@ -38,3 +38,13 @@ pub const GOCRYPTFS_VERSION: &str = env!("GOCRYPTFS_VERSION");
 /// which is both slow and fatal on hosts whose `/tmp` is a quota-limited
 /// tmpfs.
 pub const SQUASHFUSE_VERSION: &str = env!("SQUASHFUSE_VERSION");
+
+/// Name of the apptainer cache directory under `~/.peppy/tmp`, as provisioned
+/// by the build script for this binary's architecture. A name, not a path, so
+/// the binary carries no directory layout of the machine it was built on.
+pub const APPTAINER_CACHE_DIR_NAME: &str = env!("APPTAINER_CACHE_DIR_NAME");
+/// Name of the sentinel file marking that cache directory as complete.
+pub const APPTAINER_CACHE_SENTINEL_NAME: &str = env!("APPTAINER_CACHE_SENTINEL_NAME");
+/// Name of the Lima cache directory under `~/.peppy/tmp`, same rationale as
+/// [`APPTAINER_CACHE_DIR_NAME`].
+pub const LIMA_CACHE_DIR_NAME: &str = env!("LIMA_CACHE_DIR_NAME");

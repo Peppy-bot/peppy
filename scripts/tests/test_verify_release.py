@@ -35,14 +35,24 @@ def _create_archive(
     members: list[str],
     triple: str,
     content_overrides: dict[str, bytes] | None = None,
+    *,
+    uid: int = 0,
+    gid: int = 0,
+    uname: str = "",
+    gname: str = "",
 ) -> None:
-    """Create a .tgz archive whose members carry the triple's binary shape."""
+    """Create a .tgz archive whose members carry the triple's binary shape
+    and, by default, the zeroed ownership release packaging must produce."""
     overrides = content_overrides or {}
     with tarfile.open(path, "w:gz") as tar:
         for name in members:
             data = overrides.get(name, _binary_for(triple))
             info = tarfile.TarInfo(name=f"./{name}")
             info.size = len(data)
+            info.uid = uid
+            info.gid = gid
+            info.uname = uname
+            info.gname = gname
             tar.addfile(info, io.BytesIO(data))
 
 
@@ -188,3 +198,30 @@ def test_verify_archive_rejects_a_binary_that_is_not_elf(tmp_path: Path) -> None
 
     problems = verify_release_archive(archive, triple)
     assert any("bin/peppy" in p for p in problems), problems
+
+
+def test_verify_archive_rejects_build_host_ownership(tmp_path: Path) -> None:
+    """Members stamped with the packing machine's uid or account names fail.
+
+    GNU tar restores ownership on root installs: a foreign uid aborts the
+    install inside user namespaces, and a resolvable user or group name hands
+    the tree to a same-named local account.
+    """
+    triple = "aarch64-unknown-linux-gnu"
+    archive = tmp_path / f"peppy-{triple}.tgz"
+    _create_archive(
+        archive,
+        _all_required_members(triple),
+        triple,
+        uid=501,
+        gid=20,
+        uname="builder",
+        gname="staff",
+    )
+
+    problems = verify_release_archive(archive, triple)
+    expected = (
+        "bin/peppy carries build host ownership "
+        "(uid=501, gid=20, uname='builder', gname='staff')"
+    )
+    assert expected in problems

@@ -428,7 +428,7 @@ impl Apptainer {
     /// Resolution order:
     /// 1. `PEPPY_APPTAINER_DIR` environment variable
     /// 2. `apptainer/` relative to the current executable (installed layout)
-    /// 3. Compile-time `APPTAINER_INSTALL_DIR` set by build.rs
+    /// 3. The apptainer build cache under `~/.peppy/tmp` (development machines)
     ///
     /// # Blocking
     ///
@@ -1101,8 +1101,8 @@ impl Apptainer {
         lima::resolve_install_dir(
             "PEPPY_APPTAINER_DIR",
             "apptainer",
-            option_env!("APPTAINER_INSTALL_DIR"),
-            "APPTAINER_INSTALL_DIR",
+            lima::peppy_home_dir(&format!("tmp/{}", crate::APPTAINER_CACHE_DIR_NAME)),
+            "apptainer build cache",
             || {
                 Error::ApptainerNotFound(
                     "Apptainer installation not found. Install apptainer or set PEPPY_APPTAINER_DIR."

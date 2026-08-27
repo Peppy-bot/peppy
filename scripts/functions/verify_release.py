@@ -1,4 +1,4 @@
-"""Verify that release archives contain all required binaries."""
+"""Verify that release archives are sound and free of build machine identity."""
 
 from __future__ import annotations
 
@@ -39,12 +39,16 @@ def _elf_machine(header: bytes) -> int | None:
 
 
 def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
-    """Verify a single .tgz archive contains all required binaries, and that
-    each Linux binary is built for the triple's architecture.
+    """Verify a single .tgz archive contains all required binaries, that each
+    Linux binary is built for the triple's architecture, and that no member
+    carries ownership of the machine that packed it.
 
     Returns a list of problems (empty if the archive is sound). Presence alone
     is not enough: a binary for the wrong machine sits at the right path and
-    fails only at exec on the consumer's host.
+    fails only at exec on the consumer's host. Ownership is checked because
+    GNU tar restores it on root installs, where a foreign uid aborts the
+    install inside user namespaces and a resolvable user or group name hands
+    the tree to a same-named local account.
     """
     problems: list[str] = []
 
@@ -77,6 +81,14 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
                     f"{item} is built for ELF machine {machine}, "
                     f"the {triple} archive needs {expected_machine}"
                 )
+
+    for name, member in members.items():
+        if member.uid != 0 or member.gid != 0 or member.uname or member.gname:
+            problems.append(
+                f"{name} carries build host ownership "
+                f"(uid={member.uid}, gid={member.gid}, "
+                f"uname={member.uname!r}, gname={member.gname!r})"
+            )
 
     return problems
 

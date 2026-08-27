@@ -662,18 +662,31 @@ pub(crate) fn ensure_guest_apptainer(
     Ok(guest_bin)
 }
 
+/// A directory under the user's `~/.peppy` root, resolved at runtime.
+///
+/// Build scripts provision their caches under `~/.peppy/tmp` via
+/// `build_helpers::cache_dir`; deriving the same locations at runtime (rather
+/// than compiling in the paths build.rs used) keeps the building machine's
+/// home directory out of the shipped binary. `None` when no home directory is
+/// known.
+pub(crate) fn peppy_home_dir(rel: &str) -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| Path::new(&home).join(".peppy").join(rel))
+}
+
 /// Resolve an installation directory using a standard three-step fallback:
 ///
 /// 1. Runtime override via `env_var` environment variable.
 /// 2. `exe_subdir` relative to the current executable (installed layout).
-/// 3. Compile-time path from build.rs (passed as `compile_time_dir`).
+/// 3. `fallback_dir`, a machine-local location resolved at runtime (the
+///    build-tool caches under `~/.peppy/tmp`; no path from the build machine
+///    is compiled in).
 ///
 /// Returns the first directory that exists, or the error from `not_found_err`.
 pub(crate) fn resolve_install_dir(
     env_var: &str,
     exe_subdir: &str,
-    compile_time_dir: Option<&str>,
-    compile_time_label: &str,
+    fallback_dir: Option<PathBuf>,
+    fallback_label: &str,
     not_found_err: impl FnOnce() -> Error,
 ) -> Result<PathBuf> {
     // 1) Runtime override via environment variable
@@ -698,13 +711,15 @@ pub(crate) fn resolve_install_dir(
         }
     }
 
-    // 3) Compile-time path injected by build.rs
-    if let Some(dir) = compile_time_dir {
-        let path = PathBuf::from(dir);
-        if path.is_dir() {
-            return Ok(path);
+    // 3) Machine-local fallback (build-tool cache), resolved at runtime
+    if let Some(dir) = fallback_dir {
+        if dir.is_dir() {
+            return Ok(dir);
         }
-        tracing::debug!("Compile-time {compile_time_label} path {dir} does not exist at runtime");
+        tracing::debug!(
+            "{fallback_label} path {} does not exist at runtime",
+            dir.display()
+        );
     }
 
     Err(not_found_err())
@@ -715,13 +730,13 @@ pub(crate) fn resolve_install_dir(
 /// Resolution order:
 /// 1. `PEPPY_LIMA_DIR` environment variable
 /// 2. `lima/` relative to the current executable (installed layout)
-/// 3. Compile-time `LIMA_INSTALL_DIR` set by build.rs
+/// 3. The Lima build cache under `~/.peppy/tmp` (development machines)
 pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
     resolve_install_dir(
         "PEPPY_LIMA_DIR",
         "lima",
-        option_env!("LIMA_INSTALL_DIR"),
-        "LIMA_INSTALL_DIR",
+        peppy_home_dir(&format!("tmp/{}", crate::LIMA_CACHE_DIR_NAME)),
+        "Lima build cache",
         || Error::LimaRequired,
     )
 }
@@ -730,7 +745,7 @@ pub(crate) fn resolve_lima_dir() -> Result<PathBuf> {
 ///
 /// Resolution order:
 /// 1. `{exe_dir}/../lima-data/`: installed layout (`~/.peppy/lima-data/`).
-/// 2. Compile-time `LIMA_BUILD_HOME`: reuses the build-time VM during development.
+/// 2. `~/.peppy/lima-build/`: reuses the build-time VM during development.
 /// 3. `~/.peppy/lima-data/`: fallback for unusual layouts.
 pub(crate) fn resolve_lima_home() -> Result<PathBuf> {
     // 1) Relative to the current executable: {exe_dir}/../lima-data/
@@ -745,14 +760,14 @@ pub(crate) fn resolve_lima_home() -> Result<PathBuf> {
         }
     }
 
-    // 2) Compile-time build home: during `cargo test` / `cargo run` in the
-    //    source tree the exe-relative path won't exist, so fall back to the
-    //    LIMA_HOME used at build time (typically ~/.peppy/lima-build/).
-    if let Some(dir) = option_env!("LIMA_BUILD_HOME") {
-        let path = PathBuf::from(dir);
-        if path.is_dir() {
-            return Ok(path);
-        }
+    // 2) Build-time VM data (during `cargo test` / `cargo run` in the source
+    //    tree the exe-relative path won't exist, so reuse the build VM's
+    //    home). Always `~/.peppy/lima-build`, resolved at runtime so no
+    //    build-machine path is compiled into the binary.
+    if let Some(path) = peppy_home_dir("lima-build")
+        && path.is_dir()
+    {
+        return Ok(path);
     }
 
     // 3) Fallback: well-known location in the user's home

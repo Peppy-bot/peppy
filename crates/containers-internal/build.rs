@@ -43,7 +43,11 @@ mod apptainer_build {
     /// gocryptfs (a prebuilt download that can be dropped into any cache
     /// afterwards) squashfuse is compiled for the target ISA, so it can only be
     /// produced inside the build environment that built apptainer itself.
-    const APPTAINER_RECIPE_REVISION: u32 = 2;
+    ///
+    /// r3 scrubs the building user's home directory out of the installed man
+    /// pages, which render flag defaults from `$HOME` at build time and ship
+    /// inside release archives otherwise.
+    const APPTAINER_RECIPE_REVISION: u32 = 3;
 
     /// Directory, relative to the apptainer install prefix, holding the shared
     /// libraries bundled with the binaries (see [`APPTAINER_CGO_LDFLAGS`]).
@@ -238,11 +242,18 @@ mod apptainer_build {
     /// squashfuse is compiled into the tree with no version marker of its own —
     /// unlike gocryptfs, which carries a version-keyed sentinel of its own
     /// ([`gocryptfs_sentinel_path`]) and so re-installs itself on a bump.
-    fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
-        cache_dir.join(format!(
+    /// The bare file name, also exported to the crate (see
+    /// [`emit_constant_env_vars`]) so runtime code can locate the sentinel
+    /// without a compile-time path naming the build machine.
+    fn apptainer_cache_sentinel_name(version: &str) -> String {
+        format!(
             ".peppy-version-{}-r{}-sq{}",
             version, APPTAINER_RECIPE_REVISION, SQUASHFUSE_VERSION
-        ))
+        )
+    }
+
+    fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
+        cache_dir.join(apptainer_cache_sentinel_name(version))
     }
 
     fn write_cache_sentinel(cache_dir: &Path, version: &str) {
@@ -257,8 +268,38 @@ mod apptainer_build {
         .unwrap_or_else(|e| panic!("Failed to write cache sentinel {:?}: {}", sentinel, e));
     }
 
+    /// The bare directory name, also exported to the crate (see
+    /// [`emit_constant_env_vars`]) so runtime code can find the cache without
+    /// a compile-time path naming the build machine.
+    fn apptainer_cache_dir_name(version: &str, arch: &str) -> String {
+        format!("apptainer-{}-{}-nosuid", version, arch)
+    }
+
     fn apptainer_cache_dir(version: &str, arch: &str) -> PathBuf {
-        build_helpers::cache_dir(&format!("apptainer-{}-{}-nosuid", version, arch))
+        build_helpers::cache_dir(&apptainer_cache_dir_name(version, arch))
+    }
+
+    /// Name of the Lima cache directory under the shared build cache. Lima is
+    /// only ever bundled for the arm64 macOS host that builds it, so the name
+    /// carries no runtime-arch variable. Exported to the crate like the
+    /// apptainer names above.
+    fn lima_cache_dir_name() -> String {
+        format!("lima-{}-Darwin-arm64", LIMA_VERSION)
+    }
+
+    /// Stable digest of a cache path, for `.copy-source` sentinels. The
+    /// sentinel only decides whether the copy under OUT_DIR is current, so a
+    /// digest distinguishes source directories as well as the path did
+    /// without writing the building machine's home directory into trees that
+    /// ship inside release archives. The hash algorithm is not stable across
+    /// compiler versions; a change at worst triggers one redundant re-copy.
+    fn cache_path_digest(path: &Path) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        path.to_string_lossy().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
     }
 
     /// The ELF e_machine a binary for `arch` must carry.
@@ -1760,6 +1801,12 @@ echo "=== Compiling apptainer ==="
 make -C builddir -j"$(nproc)"
 echo "=== Installing apptainer ==="
 make -C builddir install
+echo "=== Scrubbing the builder home from man pages ==="
+# Apptainer renders flag defaults in its man pages from the building user's
+# $HOME; a generic path keeps the build account out of release archives.
+if [ -d {install_dir}/share/man ]; then
+  find {install_dir}/share/man -type f -exec sed -i "s|$HOME|/home/apptainer-builder|g" {{}} +
+fi
 echo "=== Bundling {libseccomp} ==="
 # The rpaths above point the binaries here, so the bundle — not the runtime
 # host's libseccomp — is what they load.
@@ -1983,6 +2030,12 @@ echo "=== Apptainer build complete ==="
     }
 
     fn emit_constant_env_vars() {
+        // Runtime code derives the machine-local cache locations from these
+        // names joined onto the user's home directory. Names, not absolute
+        // paths: a compiled-in path would ship the building machine's home
+        // directory inside the binary.
+        let target_arch =
+            env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "aarch64".to_string());
         println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
         println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
@@ -1992,6 +2045,18 @@ echo "=== Apptainer build complete ==="
         println!(
             "cargo:rustc-env=GUEST_APPTAINER_DIR={}",
             GUEST_APPTAINER_DIR
+        );
+        println!(
+            "cargo:rustc-env=APPTAINER_CACHE_DIR_NAME={}",
+            apptainer_cache_dir_name(APPTAINER_VERSION, &target_arch)
+        );
+        println!(
+            "cargo:rustc-env=APPTAINER_CACHE_SENTINEL_NAME={}",
+            apptainer_cache_sentinel_name(APPTAINER_VERSION)
+        );
+        println!(
+            "cargo:rustc-env=LIMA_CACHE_DIR_NAME={}",
+            lima_cache_dir_name()
         );
     }
 
@@ -2013,10 +2078,13 @@ echo "=== Apptainer build complete ==="
         };
 
         // Copy Lima installation to OUT_DIR for the crate to reference at compile time.
-        // Use a sentinel to skip the copy when the source hasn't changed.
+        // Use a sentinel to skip the copy when the source hasn't changed. The
+        // sentinel stores a digest of the cache path, not the path itself:
+        // `.copy-source` ships inside release archives and must not name the
+        // building machine.
         let out_lima_dir = PathBuf::from(out_dir).join("lima-install");
         let lima_sentinel_path = out_lima_dir.join(".copy-source");
-        let lima_sentinel_content = format!("{}", lima_cache_dir.display());
+        let lima_sentinel_content = cache_path_digest(&lima_cache_dir);
         let lima_needs_copy = !lima_sentinel_path.exists()
             || std::fs::read_to_string(&lima_sentinel_path)
                 .map_or(true, |s| s.trim() != lima_sentinel_content.trim());
@@ -2029,14 +2097,6 @@ echo "=== Apptainer build complete ==="
             }
             std::fs::write(&lima_sentinel_path, &lima_sentinel_content).ok();
         }
-        println!(
-            "cargo:rustc-env=LIMA_INSTALL_DIR={}",
-            out_lima_dir.display()
-        );
-        println!(
-            "cargo:rustc-env=LIMA_BUILD_HOME={}",
-            lima.lima_home.display()
-        );
 
         lima
     }
@@ -2295,24 +2355,14 @@ echo "=== Apptainer build complete ==="
         // is meant for builds that only type-check, such as the CI cross-target
         // check job: provisioning apptainer for a foreign architecture needs a
         // Lima VM or a pre-seeded cache, neither of which a bare runner has,
-        // and a check build never runs containers. The compile-time env vars
-        // still point at the per-arch cache location so dependent crates
-        // compile; a binary produced under this knob cannot start containers
-        // until a provisioning build fills that cache.
+        // and a check build never runs containers. The cache-name env vars are
+        // still emitted so dependent crates compile; a binary produced under
+        // this knob cannot start containers until a provisioning build fills
+        // that cache.
         if env::var("PEPPY_SKIP_APPTAINER_PROVISION").as_deref() == Ok("1") {
-            let cache_dir = apptainer_cache_dir(APPTAINER_VERSION, &arch);
-            let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
             println!(
                 "cargo:warning=Skipping apptainer provisioning \
                  (PEPPY_SKIP_APPTAINER_PROVISION=1); this build cannot run containers"
-            );
-            println!(
-                "cargo:rustc-env=APPTAINER_CACHE_SENTINEL={}",
-                cache_sentinel.display()
-            );
-            println!(
-                "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
-                cache_dir.display()
             );
             return;
         }
@@ -2332,22 +2382,16 @@ echo "=== Apptainer build complete ==="
         let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
         println!("cargo:rerun-if-changed={}", cache_sentinel.display());
 
-        // Export the sentinel path so the cache-consistency test asserts on the
-        // name this build actually wrote. Only `apptainer_cache_sentinel_path`
-        // knows the naming scheme, so changing it cannot desync the test.
-        println!(
-            "cargo:rustc-env=APPTAINER_CACHE_SENTINEL={}",
-            cache_sentinel.display()
-        );
-
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
         // Use a sentinel to skip the copy when the source hasn't changed,
-        // avoiding mtime bumps that trigger unnecessary recompilation.
+        // avoiding mtime bumps that trigger unnecessary recompilation. Like
+        // the Lima sentinel, it stores a digest of the source path so the
+        // building machine's directories never ship in release archives.
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
         let sentinel_path = out_install_dir.join(".copy-source");
         let sentinel_content = format!(
             "{}\ngocryptfs={}\nsquashfuse={}",
-            cache_dir.display(),
+            cache_path_digest(&cache_dir),
             GOCRYPTFS_VERSION,
             SQUASHFUSE_VERSION
         );
@@ -2363,11 +2407,6 @@ echo "=== Apptainer build complete ==="
             });
             std::fs::write(&sentinel_path, &sentinel_content).ok();
         }
-
-        println!(
-            "cargo:rustc-env=APPTAINER_INSTALL_DIR={}",
-            cache_dir.display()
-        );
     }
 }
 
