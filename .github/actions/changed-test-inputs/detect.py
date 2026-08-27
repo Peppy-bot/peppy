@@ -3,7 +3,8 @@
 
 Emits one boolean output per suite, true when the branch's diff against the
 base commit touched anything that suite compiles from this workspace or
-reads at run time.
+reads at run time. A suite gated off gets its skip reason reported to the
+job's annotations and step summary.
 
 The crate sets are not listed here: they are derived from cargo metadata's
 resolve graph (internal path dependencies, transitive, including dev and
@@ -40,6 +41,14 @@ SUITES = {
 TREE_SUITES = {
     # ./scripts/run_tests.sh --all
     "scripts": ["scripts/**"],
+}
+
+# The tests.yml step each gate guards, so a skip reason names what CI did
+# not run. Presentation only; an unknown suite falls back to its key.
+STEP_NAMES = {
+    "container_e2e": "Run container e2e tests",
+    "docs_integration": "Run documentation integration tests",
+    "scripts": "Run release scripts tests",
 }
 
 # Build and tooling inputs shared by every suite. These track CI and build
@@ -124,6 +133,35 @@ def touches(files, globs, dirs):
     return False
 
 
+def report_skips(gates, base):
+    """Say why each gated-off suite is skipped: a job annotation per suite
+    plus a step summary section, because the gray "skipped" mark a workflow
+    shows explains nothing."""
+    skipped = [
+        (suite, STEP_NAMES.get(suite, suite))
+        for suite, gate in sorted(gates.items())
+        if not gate
+    ]
+    if not skipped:
+        return
+    versus = base[:12] if base else "the base commit"
+    for _, step in skipped:
+        print(
+            '::notice::Skipped "%s": none of the files it builds from or '
+            "reads changed vs %s" % (step, versus)
+        )
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        with open(summary_file, "a") as handle:
+            handle.write("### Skipped test suites\n")
+            handle.write(
+                "No file these suites build from or read changed in the "
+                "diff vs `%s`, so the Tests workflow skips them:\n" % versus
+            )
+            for suite, step in skipped:
+                handle.write("- **%s** (gate `%s`)\n" % (step, suite))
+
+
 def main():
     base = os.environ.get("INPUT_BASE", "")
     try:
@@ -151,6 +189,7 @@ def main():
         with open(output_file, "a") as handle:
             for suite, gate in gates.items():
                 handle.write("%s=%s\n" % (suite, "true" if gate else "false"))
+    report_skips(gates, base)
 
 
 if __name__ == "__main__":

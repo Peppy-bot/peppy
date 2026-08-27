@@ -4,7 +4,9 @@ description: >-
   when the change set touches that suite's inputs. The per-suite crate sets
   are derived from cargo metadata's resolve graph at run time, so newly
   added or rewired workspace crates are picked up with nothing to maintain
-  here. Fails open: on any detection error every suite runs.
+  here. Gated-off suites get their skip reason reported to the job's
+  annotations and step summary. Fails open: on any detection error every
+  suite runs.
 inputs:
   base:
     description: Commit the branch's changes are diffed against (the PR
