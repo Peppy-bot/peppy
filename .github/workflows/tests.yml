@@ -20,47 +20,96 @@ env:
   # is cold. Cross-arch apptainer is separate, gated by PEPPY_CROSS_ARCH.
   PEPPY_CROSS_BUILD: "1"
 
+# Every suite runs in a job of its own, so the workflow finishes with its
+# slowest suite rather than the sum of them. Each cargo job builds from a cold
+# target directory; that build is a small fixed cost next to the suite it
+# unblocks. The gated suites wait only for the changes job, never for another
+# suite.
 jobs:
-  test:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+  # Which of the gated suites have had their inputs touched. The per-suite
+  # source sets are derived from cargo metadata's resolve graph at run time
+  # (see the action), so added or rewired crates are picked up with nothing
+  # to maintain here. A suite whose inputs are untouched has its job skipped,
+  # and the action reports the reason in this job's annotations and summary.
+  changes:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
-      pull-requests: read
+    outputs:
+      container_e2e: ${{ steps.changes.outputs.container_e2e }}
+      docs_integration: ${{ steps.changes.outputs.docs_integration }}
+      scripts: ${{ steps.changes.outputs.scripts }}
 
     steps:
       - uses: actions/checkout@v6
         with:
+          # The detection diffs the branch against its base, so both sides of
+          # the history must be present.
           fetch-depth: 0
-          # Nothing in this job pushes, so it has no use for a writable
+          # Nothing in this workflow pushes, so no job has a use for a writable
           # credential sitting in .git/config for every later step to inherit.
           persist-credentials: false
 
-      # Give this run its own peppy data root so the runner does not accumulate
-      # or collide on /tmp/.peppy across runs. Only the Rust cargo steps below
-      # opt in via env; the release-scripts step is left alone so
-      # scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
-      - name: Set up isolated peppy data root
-        run: |
-          PEPPY_RUN_HOME="$RUNNER_TEMP/peppy-home"
-          mkdir -p "$PEPPY_RUN_HOME/tmpdir"
-          echo "PEPPY_RUN_HOME=$PEPPY_RUN_HOME" >> "$GITHUB_ENV"
-
-      # Rust toolchain plus the system libraries the container build script
-      # compiles apptainer against. Must precede every cargo step.
+      # The detection queries cargo metadata, and the action is where the
+      # toolchain pin lives.
       - uses: ./.github/actions/rust-build-env
 
-      # Which of the later gated suites have had their inputs touched. The
-      # per-suite source sets are derived from cargo metadata's resolve graph
-      # at run time (see the action), so added or rewired crates are picked
-      # up with nothing to maintain here. A suite whose inputs are untouched
-      # is skipped, and the action reports the reason in the job's
-      # annotations and summary. Needs cargo on PATH, hence the placement
-      # after rust-build-env.
       - name: Detect changed test inputs
         id: changes
         uses: ./.github/actions/changed-test-inputs
         with:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+  workspace-tests:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Rust toolchain plus the system libraries the container build script
+      # compiles apptainer against. Must precede every cargo step.
+      - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-suite
+        with:
+          command: cargo test --locked
+
+  container-e2e:
+    needs: changes
+    if: needs.changes.outputs.container_e2e == 'true'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-suite
+        with:
+          command: cargo test --locked -p core-node --features container_e2e --test container_e2e
+
+  multi-daemon-e2e:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust-build-env
 
       # A persistent Docker builder: setup-docker-builder starts a buildkitd
       # whose layer cache lives on a sticky disk, hydrated from this job's
@@ -76,30 +125,57 @@ jobs:
         with:
           cache-key: peppy/multi-daemon-e2e-image
 
-      - name: Run tests
-        run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked
+      - uses: ./.github/actions/cargo-suite
+        with:
+          command: cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
 
-      - name: Run container e2e tests
-        if: steps.changes.outputs.container_e2e == 'true'
-        run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked -p core-node --features container_e2e --test container_e2e
+  docs-integration:
+    needs: changes
+    if: needs.changes.outputs.docs_integration == 'true'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    permissions:
+      contents: read
 
-      - name: Run multi-daemon Docker e2e test
-        run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Run documentation integration tests
-        if: steps.changes.outputs.docs_integration == 'true'
-        run: |
-          export PEPPY_HOME="$PEPPY_RUN_HOME" TMPDIR="$PEPPY_RUN_HOME/tmpdir"
-          cargo test --locked -p docs-integration-tests
+      - uses: ./.github/actions/rust-build-env
+
+      # The snippet node tests run cargo offline
+      # (snippet_runner::run_cargo_node_tests) and resolve against the registry
+      # cache. This suite's own build fetches only the crates it links, and a
+      # synced node's dev-dependencies reach further: peppygen's `testing`
+      # feature turns on peppylib's, whose crates (ctor among them) only a
+      # workspace member's test build pulls in. Fetching the whole lockfile
+      # puts every crate the workspace resolves into the cache, which is what
+      # a synced node can count on.
+      - name: Fetch every crate in the lockfile for the offline snippet builds
+        run: cargo fetch --locked
+
+      - uses: ./.github/actions/cargo-suite
+        with:
+          command: cargo test --locked -p docs-integration-tests
+
+  release-scripts:
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Provides the pixi the suite runs under.
+      - uses: ./.github/actions/rust-build-env
 
       - name: Run release scripts tests
-        if: steps.changes.outputs.scripts == 'true'
         run: |
           # The install tests boot Lima VMs, whose QEMU the runner image
           # lacks (limactl itself comes from the pixi environment). The
@@ -111,19 +187,6 @@ jobs:
             sudo chmod 666 /dev/kvm
           fi
           ./scripts/run_tests.sh --all
-
-      # Proves the build consumed the committed lockfile rather than re-resolving
-      # it, so the tested dependency graph is the shipped one. Must stay after the
-      # cargo steps: placed before them it proves nothing.
-      - name: Prove CI did not rewrite the shipping lockfile
-        run: git diff --exit-code -- Cargo.lock
-
-      # Reclaim the per-run data root so disk does not grow on every run. Runs
-      # even when a test step failed. The persistent build-tool cache at
-      # $HOME/.peppy/tmp is intentionally left in place (see build_helpers::cache_dir).
-      - name: Clean up isolated peppy data root
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/peppy-home"
 
   # Build scripts execute on the build host even when cargo compiles for
   # another target, so a build script that runs a binary selected by the
@@ -165,3 +228,31 @@ jobs:
           PEPPY_SKIP_APPTAINER_PROVISION: "1"
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo check --locked --target aarch64-unknown-linux-gnu -p peppy
+
+  # The one status check the branch rulesets on dev and main require. It is
+  # green only when every job above succeeded or was gated off, so a red
+  # suite blocks the merge whichever job it ran in.
+  test:
+    needs:
+      - changes
+      - workspace-tests
+      - container-e2e
+      - multi-daemon-e2e
+      - docs-integration
+      - release-scripts
+      - cross-check
+    # Runs whatever happened above: on the default condition a failed or
+    # cancelled suite would leave this check unreported instead of red.
+    if: always()
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions: {}
+
+    steps:
+      - name: Report every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: echo "$RESULTS"
+
+      - name: Fail when any job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

@@ -1,0 +1,40 @@
+name: Cargo test suite
+description: >-
+  Runs one cargo test command against a peppy data root private to the job,
+  then proves the build consumed the committed lockfile. Expects the
+  rust-build-env action to have run first.
+
+inputs:
+  command:
+    description: The cargo command that runs the suite.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The suite gets its own peppy data root so the runner does not accumulate
+    # or collide on /tmp/.peppy across runs. Only the cargo command opts in via
+    # env; the release scripts job never goes through this action, so
+    # scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
+    - name: Run the suite in an isolated peppy data root
+      shell: bash
+      run: |
+        peppy_home="$RUNNER_TEMP/peppy-home"
+        mkdir -p "$peppy_home/tmpdir"
+        export PEPPY_HOME="$peppy_home" TMPDIR="$peppy_home/tmpdir"
+        ${{ inputs.command }}
+
+    # Proves the build consumed the committed lockfile rather than re-resolving
+    # it, so the tested dependency graph is the shipped one. Must stay after the
+    # suite: placed before it, it proves nothing.
+    - name: Prove CI did not rewrite the shipping lockfile
+      shell: bash
+      run: git diff --exit-code -- Cargo.lock
+
+    # Reclaim the data root so disk does not grow on every run. Runs even when
+    # the suite failed. The persistent build-tool cache at $HOME/.peppy/tmp is
+    # intentionally left in place (see build_helpers::cache_dir).
+    - name: Clean up isolated peppy data root
+      if: always()
+      shell: bash
+      run: rm -rf "$RUNNER_TEMP/peppy-home"
