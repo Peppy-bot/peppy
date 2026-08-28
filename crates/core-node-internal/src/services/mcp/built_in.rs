@@ -26,21 +26,49 @@ const MANIFEST_FILE: &str = config::consts::NODE_CONFIG_FILE;
 /// The serve spec file of a built-in node.
 const SPEC_FILE: &str = "mcp_serve.json5";
 
+/// The `peppy` executable a built-in node's recipe runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeppyExecutable {
+    /// The path the recipe spawns.
+    pub path: PathBuf,
+    /// This daemon's own file when it was unlinked after the daemon started,
+    /// as a rebuild or an upgrade does: `path` then reaches the daemon's
+    /// still-running image instead.
+    pub replaced: Option<PathBuf>,
+}
+
+impl PeppyExecutable {
+    /// What the operator is told when the recipe runs the daemon's image
+    /// rather than the file on disk.
+    pub fn warning(&self) -> Option<String> {
+        self.replaced.as_ref().map(|file| {
+            format!(
+                "{} was replaced on disk after this daemon started; built-in MCP nodes run the \
+                 daemon's own image until it restarts",
+                file.display()
+            )
+        })
+    }
+}
+
 /// Where the `peppy` executable that serves built-in nodes is: this daemon's
 /// own executable when it is `peppy`, otherwise the installed one in the
 /// Peppy home's bin directory.
-pub fn resolve_peppy_executable(peppy_dirs: &PeppyDirs) -> Result<PathBuf, String> {
+pub fn resolve_peppy_executable(peppy_dirs: &PeppyDirs) -> Result<PeppyExecutable, String> {
     let expected = format!("peppy{}", std::env::consts::EXE_SUFFIX);
     let own = std::env::current_exe().ok();
-    if let Some(path) = own.as_ref().filter(|path| {
-        path.file_name()
-            .is_some_and(|name| name == expected.as_str())
-    }) {
-        return Ok(path.clone());
+    if let Some(executable) = own
+        .as_deref()
+        .and_then(|path| own_executable(path, &expected))
+    {
+        return Ok(executable);
     }
     let installed = peppy_dirs.bin_dir().join(&expected);
     if installed.is_file() {
-        return Ok(installed);
+        return Ok(PeppyExecutable {
+            path: installed,
+            replaced: None,
+        });
     }
     Err(format!(
         "cannot find the `peppy` executable that serves built-in MCP nodes: this daemon runs as {} \
@@ -49,6 +77,30 @@ pub fn resolve_peppy_executable(peppy_dirs: &PeppyDirs) -> Result<PathBuf, Strin
             .unwrap_or_else(|| "an unknown executable".to_owned()),
         installed.display()
     ))
+}
+
+/// This process's executable when `current_exe` names it `expected`.
+///
+/// On Linux the name carries a ` (deleted)` marker once the file was
+/// unlinked underneath the running process. The image itself lives on, and
+/// a child forked from this daemon still reaches it through
+/// `/proc/self/exe`, so that is what the recipe runs then.
+fn own_executable(current_exe: &Path, expected: &str) -> Option<PeppyExecutable> {
+    let name = current_exe.file_name()?.to_str()?;
+    if name == expected {
+        return Some(PeppyExecutable {
+            path: current_exe.to_path_buf(),
+            replaced: None,
+        });
+    }
+    #[cfg(target_os = "linux")]
+    if name.strip_suffix(" (deleted)") == Some(expected) {
+        return Some(PeppyExecutable {
+            path: PathBuf::from("/proc/self/exe"),
+            replaced: Some(current_exe.with_file_name(expected)),
+        });
+    }
+    None
 }
 
 /// The spawn recipe of a built-in node whose documents live in `dir`.
@@ -138,9 +190,17 @@ pub(crate) async fn run_built_in_add(
     };
 
     let executable = match resolve_peppy_executable(&peppy_dirs) {
-        Ok(path) => path,
+        Ok(executable) => executable,
         Err(e) => return fail(e),
     };
+    if let Some(warning) = executable.warning() {
+        tracing::warn!("{warning}");
+        node_stack::build_io::write_feedback_log_line(&log_file, FeedbackStream::Warning, &warning);
+        let _ = feedback_tx.send(FeedbackLine {
+            stream: FeedbackStream::Warning,
+            line: warning,
+        });
+    }
 
     let plan = resolved.plan;
     let dir = peppy_dirs.built_in_nodes_dir().join(plan.name.as_str());
@@ -167,7 +227,7 @@ pub(crate) async fn run_built_in_add(
         .iter()
         .map(|exposure| exposure.bundle.exposure.endpoint_path())
         .collect();
-    let launch = built_in_launch(executable, &peppy_dirs, &spec_path, http_paths.clone());
+    let launch = built_in_launch(executable.path, &peppy_dirs, &spec_path, http_paths.clone());
     let name = plan.name.as_str().to_owned();
     let tag = plan.tag.clone();
     if let Err(e) = action_context
@@ -203,7 +263,46 @@ mod tests {
             .bin_dir()
             .join(format!("peppy{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&installed, "").expect("write a stand-in");
-        assert_eq!(resolve_peppy_executable(&dirs).expect("found"), installed);
+        assert_eq!(
+            resolve_peppy_executable(&dirs).expect("found"),
+            PeppyExecutable {
+                path: installed,
+                replaced: None,
+            }
+        );
+    }
+
+    #[test]
+    fn this_daemon_is_the_executable_when_it_is_peppy() {
+        assert_eq!(
+            own_executable(Path::new("/home/robot/.peppy/bin/peppy"), "peppy"),
+            Some(PeppyExecutable {
+                path: PathBuf::from("/home/robot/.peppy/bin/peppy"),
+                replaced: None,
+            })
+        );
+        assert_eq!(
+            own_executable(Path::new("/home/robot/.peppy/bin/peppy-tests"), "peppy"),
+            None
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_daemon_runs_its_own_image_once_its_file_was_replaced() {
+        let executable =
+            own_executable(Path::new("/home/robot/.peppy/bin/peppy (deleted)"), "peppy")
+                .expect("still peppy");
+        assert_eq!(executable.path, Path::new("/proc/self/exe"));
+        assert_eq!(
+            executable.replaced.as_deref(),
+            Some(Path::new("/home/robot/.peppy/bin/peppy"))
+        );
+        assert_eq!(
+            executable.warning().expect("warns"),
+            "/home/robot/.peppy/bin/peppy was replaced on disk after this daemon started; \
+             built-in MCP nodes run the daemon's own image until it restarts"
+        );
     }
 
     #[test]
