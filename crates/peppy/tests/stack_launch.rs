@@ -4965,3 +4965,40 @@ fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
         "the skip tells the user how to enable the check: {report_text}"
     );
 }
+
+/// A bare name is a repository launcher whatever the current directory
+/// holds: `peppy stack resolve openarm_v2` run next to a valid
+/// `openarm_v2.json5` still goes to the repository cache, and is refused
+/// there because this root has none. Drives the binary because the current
+/// directory is per process.
+#[test]
+fn stack_resolve_never_reads_a_bare_name_from_the_current_directory() {
+    let cwd = tempfile::tempdir().expect("temp cwd");
+    fs::write(
+        cwd.path().join("openarm_v2.json5"),
+        r#"{ peppy_schema: "launcher/v1", deployments: [] }"#,
+    )
+    .expect("same-named launcher file");
+    let home = tempfile::tempdir().expect("temp home");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_peppy"))
+        .args(["stack", "resolve", "openarm_v2"])
+        .current_dir(cwd.path())
+        .env(config::consts::PEPPY_HOME_ENV, home.path())
+        .output()
+        .expect("failed to run peppy");
+
+    let printed = format!(
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        !output.status.success(),
+        "the same-named file was resolved instead of the repository:\n{printed}"
+    );
+    assert!(
+        printed.contains("launcher `openarm_v2` not found"),
+        "the refusal comes from the repository lookup:\n{printed}"
+    );
+}
