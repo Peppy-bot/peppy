@@ -43,12 +43,12 @@ TREE_SUITES = {
     "scripts": ["scripts/**"],
 }
 
-# The tests.yml step each gate guards, so a skip reason names what CI did
+# The tests.yml job each gate guards, so a skip reason names what CI did
 # not run. Presentation only; an unknown suite falls back to its key.
-STEP_NAMES = {
-    "container_e2e": "Run container e2e tests",
-    "docs_integration": "Run documentation integration tests",
-    "scripts": "Run release scripts tests",
+JOB_NAMES = {
+    "container_e2e": "container-e2e",
+    "docs_integration": "docs-integration",
+    "scripts": "release-scripts",
 }
 
 # Build and tooling inputs shared by every suite. These track CI and build
@@ -59,6 +59,7 @@ SHARED = [
     "Cargo.lock",
     ".cargo/config.toml",
     ".github/actions/rust-build-env/**",
+    ".github/actions/cargo-suite/**",
     ".github/actions/changed-test-inputs/**",
     ".github/workflows/tests.yml",
 ]
@@ -138,17 +139,17 @@ def report_skips(gates, base):
     plus a step summary section, because the gray "skipped" mark a workflow
     shows explains nothing."""
     skipped = [
-        (suite, STEP_NAMES.get(suite, suite))
+        (suite, JOB_NAMES.get(suite, suite))
         for suite, gate in sorted(gates.items())
         if not gate
     ]
     if not skipped:
         return
     versus = base[:12] if base else "the base commit"
-    for _, step in skipped:
+    for _, job in skipped:
         print(
             '::notice::Skipped "%s": none of the files it builds from or '
-            "reads changed vs %s" % (step, versus)
+            "reads changed vs %s" % (job, versus)
         )
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
@@ -158,8 +159,8 @@ def report_skips(gates, base):
                 "No file these suites build from or read changed in the "
                 "diff vs `%s`, so the Tests workflow skips them:\n" % versus
             )
-            for suite, step in skipped:
-                handle.write("- **%s** (gate `%s`)\n" % (step, suite))
+            for suite, job in skipped:
+                handle.write("- **%s** (gate `%s`)\n" % (job, suite))
 
 
 def main():
