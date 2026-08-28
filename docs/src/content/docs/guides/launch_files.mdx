@@ -126,7 +126,7 @@ Launchers discovered by `peppy repo refresh` (see [Repositories](/advanced_guide
 peppy stack launch openarm01_sim_teleop
 ```
 
-An argument that contains a path separator or ends in `.json5` is always resolved as a filesystem path. A bare name (no separator, no extension) is first tried on disk as `<name>.json5` next to your current directory, and only falls back to the repository cache at `~/.peppy/cache/launchers.json5` when no such file exists. Run `peppy repo refresh` first on the machine you submit the launch to; the launcher document, like every repository source, resolves on that machine alone.
+An argument that contains a path separator or ends in `.json5` is resolved as a filesystem path: `./my_launcher.json5`, `/abs/my_launcher.json5`, `my_launcher.json5`. A bare name (no separator, no extension) is a repository launcher and is never looked up on disk, whatever the current directory holds: `peppy stack launch my_launcher` resolves through the repository cache at `~/.peppy/cache/launchers.json5` even when a `my_launcher.json5` sits next to the caller. Run `peppy repo refresh` first on the machine you submit the launch to; the launcher document, like every repository source, resolves on that machine alone.
 
 If the name resolves neither to a file nor to a cached launcher, the launch fails with an explicit "not found" error. If one repository provides two launcher files with that name, the launch fails with a distinct ambiguity error naming both: launchers are keyed by filename, so two identically named `.json5` files anywhere in one repository contest the same name even in different directories.
 

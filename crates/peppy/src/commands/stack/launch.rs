@@ -9,7 +9,7 @@ use core_node_api::encoding::{
     LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
 };
 use daemon_config::core_node_name::CoreNodeName;
-use daemon_config::launcher::{PeppyLauncherParser, compose};
+use daemon_config::launcher::{PeppyLauncher, PeppyLauncherParser, compose};
 use peppylib::ActionMessenger;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
@@ -163,10 +163,9 @@ fn looks_like_fs_path(input: &Path) -> bool {
     input.extension().is_some_and(|ext| ext == "json5")
 }
 
-/// Resolves a user-supplied launcher path, treating a bare name as shorthand for the `.json5`
-/// file. If the path does not have a `.json5` extension and a sibling `<path>.json5` exists as
-/// a file, that is returned; otherwise the original path is returned unchanged so the caller's
-/// existing not-found error path fires.
+/// Resolves a user-supplied launcher path, treating a path without the `.json5` extension as
+/// shorthand for the sibling file that has it. When no such sibling exists the original path
+/// is returned unchanged so the caller's existing not-found error path fires.
 ///
 /// Lives in the CLI (the sole caller) rather than `core-node-api`: it touches the filesystem
 /// (`is_file`), which a pure wire-codec crate should not do.
@@ -180,33 +179,35 @@ fn resolve_launcher_path(path: PathBuf) -> PathBuf {
     if candidate.is_file() { candidate } else { path }
 }
 
+/// Parses a launcher file, naming the file in the error: the parse error alone locates the
+/// offending field within the document, not the document on disk.
+pub(super) fn parse_launcher_file(path: &Path) -> Result<PeppyLauncher> {
+    PeppyLauncherParser::from_path(path)
+        .map_err(|e| Error::ExecutionFailed(format!("launcher file {}: {e}", path.display())))
+}
+
 /// Decide whether the user wants a filesystem launcher or a repository launcher.
 ///
-/// `./demo.json5`, `/abs/path`, `foo.json5` → `Fs`, with the path canonicalized so the daemon
-/// finds it regardless of its working directory. A bare name like `openarm01_sim_teleop` first
-/// tries the filesystem (sibling `.json5` shorthand from `resolve_launcher_path`) and only
-/// falls back to `Repository` when no file exists at that name.
+/// `./demo.json5`, `/abs/path`, `dir/foo`, `foo.json5` → `Fs`, with the path canonicalized so
+/// the daemon finds it regardless of its working directory. A bare name like
+/// `openarm01_sim_teleop` (no separator, no `.json5` extension) → `Repository`, whatever the
+/// current directory holds: the decision is made on the argument alone, and a same-named file
+/// next to the caller is never read.
 pub(super) fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
-    if looks_like_fs_path(&input) {
-        let resolved = resolve_launcher_path(input);
-        let canonical = resolved.canonicalize().map_err(|e| {
-            Error::ExecutionFailed(format!(
-                "Failed to resolve launcher config path '{}': {}",
-                resolved.display(),
-                e
-            ))
-        })?;
-        return Ok(LauncherOrigin::Fs(canonical));
+    if !looks_like_fs_path(&input) {
+        return Ok(LauncherOrigin::Repository {
+            name: input.to_string_lossy().into_owned(),
+        });
     }
-
-    let resolved = resolve_launcher_path(input.clone());
-    if let Ok(canonical) = resolved.canonicalize() {
-        return Ok(LauncherOrigin::Fs(canonical));
-    }
-
-    Ok(LauncherOrigin::Repository {
-        name: input.to_string_lossy().into_owned(),
-    })
+    let resolved = resolve_launcher_path(input);
+    let canonical = resolved.canonicalize().map_err(|e| {
+        Error::ExecutionFailed(format!(
+            "Failed to resolve launcher config path '{}': {}",
+            resolved.display(),
+            e
+        ))
+    })?;
+    Ok(LauncherOrigin::Fs(canonical))
 }
 
 /// The `--place` / `--local` wiring as the user typed it.
@@ -313,7 +314,7 @@ async fn launch_async(
     // used: placement and the `--with` selection are resolved against the document the
     // COORDINATOR read, so that a repository launcher and a file one resolve identically.
     if let LauncherOrigin::Fs(path) = &launcher_origin {
-        let parsed = PeppyLauncherParser::from_path(path).map_err(Error::DaemonConfig)?;
+        let parsed = parse_launcher_file(path)?;
         compose(&parsed, path, &with).map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     }
 
@@ -675,17 +676,33 @@ mod tests {
         }
     }
 
+    /// The decision is made on the argument alone: a bare name is a
+    /// repository launcher without a look at the filesystem. The integration
+    /// suite runs the binary next to a same-named file to hold that.
     #[test]
-    fn infer_launcher_origin_falls_back_to_repository_for_bare_name() {
-        // Use a name that is unlikely to collide with any sibling .json5 in the test cwd.
-        let bare = PathBuf::from("definitely_not_a_real_launcher_xyz123");
-        let origin = infer_launcher_origin(bare.clone()).expect("bare name should not error");
+    fn infer_launcher_origin_resolves_a_bare_name_through_the_repository() {
+        let origin =
+            infer_launcher_origin(PathBuf::from("openarm_v2")).expect("bare name should not error");
         match origin {
-            LauncherOrigin::Repository { name } => {
-                assert_eq!(name, "definitely_not_a_real_launcher_xyz123");
-            }
+            LauncherOrigin::Repository { name } => assert_eq!(name, "openarm_v2"),
             other => panic!("expected Repository, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_launcher_file_names_the_file_in_its_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("openarm_v2.json5");
+        std::fs::write(&file, r#"{ peppy_schema: "mcp_exposure/v1" }"#).unwrap();
+
+        let err = parse_launcher_file(&file).expect_err("an exposure is not a launcher");
+
+        let message = err.to_string();
+        assert!(message.contains(&file.display().to_string()), "{message}");
+        assert!(
+            message.contains("expected peppy_schema 'launcher/v1', got 'mcp_exposure/v1'"),
+            "{message}"
+        );
     }
 
     fn places(pairs: &[(&str, &str)]) -> PlacementArgs {

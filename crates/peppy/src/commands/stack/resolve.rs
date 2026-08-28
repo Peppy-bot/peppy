@@ -6,13 +6,12 @@ use core_node_api::encoding::LauncherOrigin;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, DeploymentSource, ExternallyCoveredSlots,
-    PairingValidationItem, PeppyLauncher, PeppyLauncherParser, compose, validate_link_slots,
-    validate_pairings,
+    PairingValidationItem, PeppyLauncher, compose, validate_link_slots, validate_pairings,
 };
 use daemon_config::repository::EntryOrigin;
 use tracing::info;
 
-use super::launch::infer_launcher_origin;
+use super::launch::{infer_launcher_origin, parse_launcher_file};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 
@@ -64,7 +63,7 @@ pub fn resolve_rendered(
         }
     };
 
-    let parsed = PeppyLauncherParser::from_path(&path).map_err(Error::DaemonConfig)?;
+    let parsed = parse_launcher_file(&path)?;
     let (flat, report) =
         compose(&parsed, &path, with).map_err(|e| Error::ExecutionFailed(e.to_string()))?;
 
