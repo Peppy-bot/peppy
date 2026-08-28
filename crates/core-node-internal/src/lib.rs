@@ -8,8 +8,8 @@ pub mod test_support;
 
 pub use error::{Error, Result};
 pub use services::mcp::{
-    ExposureFinding, check_repository_exposures, derive_exposure_catalog, resolve_exposure_plan,
-    resolve_peppy_executable,
+    ExposureFinding, PeppyExecutable, check_repository_exposures, derive_exposure_catalog,
+    resolve_exposure_plan, resolve_peppy_executable,
 };
 pub use services::repo::cache::{
     EntryOrigin, NodeCacheEntry, contracts_repo_cache_path, launchers_repo_cache_path,
