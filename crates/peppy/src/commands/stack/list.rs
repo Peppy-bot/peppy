@@ -47,13 +47,17 @@ pub struct StackListReport {
     pub failed_names: Vec<String>,
 }
 
-pub fn list_nodes(ctx: &Arc<AppContext>) -> Result<()> {
-    let colorize = crate::terminal::colors_enabled();
-    let report = crate::commands::block_on(list_nodes_collecting(
-        ctx,
-        colorize,
-        crate::terminal::stdout_width(),
-    ))?;
+pub fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
+    let report = if json {
+        crate::commands::block_on(list_nodes_json_collecting(ctx))?
+    } else {
+        let colorize = crate::terminal::colors_enabled();
+        crate::commands::block_on(list_nodes_collecting(
+            ctx,
+            colorize,
+            crate::terminal::stdout_width(),
+        ))?
+    };
     print!("{}", report.output);
     if report.failed_names.is_empty() {
         Ok(())
@@ -77,6 +81,26 @@ pub async fn list_nodes_collecting(
     colorize: bool,
     max_width: Option<usize>,
 ) -> Result<StackListReport> {
+    let sections = collect_sections(ctx).await?;
+    Ok(StackListReport {
+        output: format_stack_list(&sections, colorize, max_width),
+        failed_names: failed_names(&sections),
+    })
+}
+
+/// Like [`list_nodes_collecting`] but renders the sections as one JSON
+/// document ([`render_stack_json`]); colour and width do not apply to it.
+pub async fn list_nodes_json_collecting(ctx: &Arc<AppContext>) -> Result<StackListReport> {
+    let sections = collect_sections(ctx).await?;
+    Ok(StackListReport {
+        output: render_stack_json(&sections),
+        failed_names: failed_names(&sections),
+    })
+}
+
+/// One queried [`StackSection`] per distinct live core-node name, the
+/// local daemon first, in the order every report prints them.
+async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
     let conn = ctx.connect_to_daemon().await?;
 
     let live = CoreNodePresenceMessenger::list_live(
@@ -146,16 +170,54 @@ pub async fn list_nodes_collecting(
     }))
     .await;
 
-    let failed_names = sections
+    Ok(sections)
+}
+
+/// The core nodes whose section failed, in section order: the names the
+/// CLI exits non-zero over, whichever rendering it printed.
+fn failed_names(sections: &[StackSection]) -> Vec<String> {
+    sections
         .iter()
         .filter(|section| section.outcome.is_err())
         .map(|section| section.core_node.clone())
-        .collect();
+        .collect()
+}
 
-    Ok(StackListReport {
-        output: format_stack_list(&sections, colorize, max_width),
-        failed_names,
-    })
+/// The report as one JSON document: one entry per core node carrying the
+/// section's identity facts, its `launch` and `reservation`, and either
+/// the `stack` graph (`nodes` and `edges`, exactly as the daemon
+/// serialized them) or the query `error`; exactly one of the two is null.
+pub fn render_stack_json(sections: &[StackSection]) -> String {
+    let launch_json = |identity: &Option<LaunchIdentity>| match identity {
+        Some(identity) => serde_json::json!({
+            "launch_id": identity.launch_id,
+            "coordinator_core_node": identity.coordinator_core_node,
+        }),
+        None => serde_json::Value::Null,
+    };
+    let core_nodes: Vec<serde_json::Value> = sections
+        .iter()
+        .map(|section| {
+            let (stack, error) = match &section.outcome {
+                Ok((nodes, edges)) => (
+                    serde_json::json!({ "nodes": nodes, "edges": edges }),
+                    serde_json::Value::Null,
+                ),
+                Err(error) => (serde_json::Value::Null, serde_json::json!(error)),
+            };
+            serde_json::json!({
+                "core_node": section.core_node,
+                "instance_id": section.instance_id,
+                "host_name": section.host_name,
+                "live_claimants": section.live_claimants,
+                "launch": launch_json(&section.launch),
+                "reservation": launch_json(&section.reservation),
+                "stack": stack,
+                "error": error,
+            })
+        })
+        .collect();
+    format!("{}\n", serde_json::json!({ "core_nodes": core_nodes }))
 }
 
 fn ordered_targets(
@@ -907,6 +969,63 @@ mod tests {
                 Vec::new(),
             )),
         }
+    }
+
+    /// The JSON report mirrors the sections: the identity facts, the
+    /// launch and reservation identities, and per section either the
+    /// daemon's serialized graph or the query error, exactly one of the
+    /// two null.
+    #[test]
+    fn json_report_carries_the_graph_or_the_error() {
+        let mut healthy = successful_section("core-a", "host-a");
+        healthy.launch = Some(LaunchIdentity::new("launch-1", "cn-coordinator"));
+        if let Ok((nodes, _)) = &mut healthy.outcome {
+            nodes.push(node(
+                "worker",
+                "v1",
+                NodeStage::Ready,
+                vec![("w-1", InstanceState::Running)],
+            ));
+        }
+        let failed = StackSection {
+            core_node: "core-b".to_string(),
+            instance_id: None,
+            host_name: "unknown".to_string(),
+            live_claimants: 2,
+            launch: None,
+            reservation: Some(LaunchIdentity::new("launch-2", "cn-coordinator")),
+            outcome: Err("query timed out".to_string()),
+        };
+
+        let text = render_stack_json(&[healthy, failed]);
+        let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        let first = &doc["core_nodes"][0];
+        assert_eq!(first["core_node"], "core-a");
+        assert_eq!(first["instance_id"], "gen-1");
+        assert_eq!(first["host_name"], "host-a");
+        assert_eq!(first["live_claimants"], 1);
+        assert_eq!(first["launch"]["launch_id"], "launch-1");
+        assert_eq!(first["launch"]["coordinator_core_node"], "cn-coordinator");
+        assert!(first["reservation"].is_null());
+        assert!(first["error"].is_null());
+        assert_eq!(first["stack"]["nodes"][0]["stage"], "Root");
+        assert_eq!(first["stack"]["nodes"][1]["name"], "worker");
+        assert_eq!(
+            first["stack"]["nodes"][1]["instances"][0]["state"],
+            "running"
+        );
+        assert_eq!(first["stack"]["nodes"][1]["instances"][0]["healthy"], true);
+        assert_eq!(first["stack"]["edges"], serde_json::json!([]));
+
+        let second = &doc["core_nodes"][1];
+        assert_eq!(second["core_node"], "core-b");
+        assert!(second["instance_id"].is_null());
+        assert_eq!(second["live_claimants"], 2);
+        assert!(second["launch"].is_null());
+        assert_eq!(second["reservation"]["launch_id"], "launch-2");
+        assert!(second["stack"].is_null());
+        assert_eq!(second["error"], "query timed out");
     }
 
     /// The slice line attributes a stack to the launch that produced it, and

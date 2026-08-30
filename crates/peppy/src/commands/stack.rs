@@ -4,7 +4,7 @@ mod list;
 mod reset;
 mod resolve;
 
-pub use list::{StackListReport, list_nodes_collecting};
+pub use list::{StackListReport, list_nodes_collecting, list_nodes_json_collecting};
 pub use resolve::resolve_rendered;
 
 use std::path::PathBuf;
@@ -56,7 +56,11 @@ pub enum StackCommands {
         max_timeout_secs: Option<u64>,
     },
     /// List the nodes in the current node stack
-    List,
+    List {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the flat launcher a composed launch would run, and the report
     /// of what the selection did.
     ///
@@ -159,7 +163,7 @@ pub struct StackCommand {
 impl Command for StackCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
-            StackCommands::List => list::list_nodes(ctx),
+            StackCommands::List { json } => list::list_nodes(ctx, json),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
             StackCommands::Resolve {
                 launcher_config_path,

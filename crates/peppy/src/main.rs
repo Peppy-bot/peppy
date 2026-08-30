@@ -150,7 +150,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Stack {
-                command: stack::StackCommands::List
+                command: stack::StackCommands::List { .. }
             }
         ));
     }
@@ -246,6 +246,25 @@ mod tests {
             .err()
             .expect("an unknown subcommand is a parse error");
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    /// `stack list --json` parses, and the flag is off by default.
+    #[test]
+    fn stack_list_json_flag_parses() {
+        let cli = Cli::try_parse_from(["peppy", "stack", "list", "--json"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Stack {
+                command: stack::StackCommands::List { json: true }
+            }
+        ));
+        let cli = Cli::try_parse_from(["peppy", "stack", "list"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Stack {
+                command: stack::StackCommands::List { json: false }
+            }
+        ));
     }
 
     #[test]

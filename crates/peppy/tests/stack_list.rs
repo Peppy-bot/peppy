@@ -332,6 +332,47 @@ async fn node_list_command_succeeds() {
         "output should contain the dependency edge consumer ➔ provider:\n{output}"
     );
 
+    // The JSON variant reports the same stack under this core node's entry:
+    // both nodes Ready with no instances, and the dependency edge.
+    let json_report = peppy::commands::stack::list_nodes_json_collecting(&node_ctx)
+        .await
+        .expect("stack list --json should succeed");
+    assert!(
+        json_report.failed_names.is_empty(),
+        "{:?}",
+        json_report.failed_names
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&json_report.output).expect("the output is one JSON document");
+    let entry = doc["core_nodes"]
+        .as_array()
+        .expect("core_nodes is a list")
+        .iter()
+        .find(|entry| entry["core_node"] == core_node_name.as_str())
+        .expect("this daemon's entry is present")
+        .clone();
+    assert!(entry["error"].is_null(), "{entry}");
+    let nodes = entry["stack"]["nodes"]
+        .as_array()
+        .expect("the stack carries its nodes");
+    let provider = nodes
+        .iter()
+        .find(|node| node["name"] == provider_name)
+        .unwrap_or_else(|| panic!("the provider is listed: {nodes:?}"));
+    assert_eq!(provider["stage"], "Ready", "{provider}");
+    assert_eq!(provider["instances"], serde_json::json!([]), "{provider}");
+    assert!(
+        entry["stack"]["edges"]
+            .as_array()
+            .expect("the stack carries its edges")
+            .iter()
+            .any(
+                |edge| edge["from"]["name"] == consumer_name && edge["to"]["name"] == provider_name
+            ),
+        "the dependency edge is reported: {}",
+        entry["stack"]["edges"]
+    );
+
     // Silence unused variable when LogCapture is only constructed for
     // log-side effects in sibling tests.
     let _ = log_capture;
