@@ -4,7 +4,7 @@ use core_node::{IndexedNode, PinStatus, PublishedDoc, SearchReport};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::source::ItemRef;
 
-use crate::commands::colors::{ORANGE, RED, paint};
+use crate::commands::colors::{BINDING_COLOR, COUNT_COLOR, NODE_COLOR, ORANGE, RED, paint};
 use crate::commands::table::render_table;
 use crate::error::{Error, Result};
 
@@ -51,14 +51,15 @@ pub fn search_rendered(
 /// The report as a person reads it: the published documents first, then
 /// one section per way of using the identity, each grouped by repository
 /// the way `repo list` groups nodes. A section with no hits is left out;
-/// a report with none says so.
+/// a report with none says so. Tinted with `stack list`'s palette: node
+/// identities cyan, link ids yellow, counts green.
 fn render_human(
     reference: &ItemRef,
     report: &SearchReport,
     colorize: bool,
     max_width: Option<usize>,
 ) -> String {
-    let mut out = format!("{reference}\n");
+    let mut out = format!("{}\n", paint(colorize, NODE_COLOR, &reference.to_string()));
     let published: Vec<String> = [("contract", &report.contract), ("pairing", &report.pairing)]
         .into_iter()
         .filter_map(|(kind, doc)| doc.as_ref().map(|doc| published_line(kind, doc)))
@@ -84,7 +85,7 @@ fn render_human(
         |hit| &hit.node,
         |hit| {
             vec![
-                slot_cell(&hit.link_id, None),
+                slot_cell(&hit.link_id, None, colorize),
                 pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
@@ -98,7 +99,7 @@ fn render_human(
         |hit| &hit.node,
         |hit| {
             vec![
-                slot_cell(&hit.link_id, Some(hit.cardinality.as_str())),
+                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
                 pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
@@ -113,7 +114,7 @@ fn render_human(
         |hit| {
             vec![
                 hit.role.clone(),
-                slot_cell(&hit.link_id, hit.optional.then_some("optional")),
+                slot_cell(&hit.link_id, hit.optional.then_some("optional"), colorize),
                 pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
@@ -128,7 +129,7 @@ fn render_human(
         |hit| {
             vec![
                 hit.role.clone(),
-                slot_cell(&hit.link_id, Some(hit.cardinality.as_str())),
+                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
                 pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
@@ -152,12 +153,13 @@ fn published_line(kind: &str, doc: &PublishedDoc) -> String {
     )
 }
 
-/// The SLOT column: the `link_id`, with the cardinality or `optional`
-/// qualifier the manifest declares on it.
-fn slot_cell(link_id: &str, qualifier: Option<&str>) -> String {
+/// The SLOT column: the `link_id`, tinted like every link id, with the
+/// cardinality or `optional` qualifier the manifest declares on it.
+fn slot_cell(link_id: &str, qualifier: Option<&str>, colorize: bool) -> String {
+    let link = paint(colorize, BINDING_COLOR, link_id);
     match qualifier {
-        Some(qualifier) => format!("{link_id} ({qualifier})"),
-        None => link_id.to_owned(),
+        Some(qualifier) => format!("{link} ({qualifier})"),
+        None => link,
     }
 }
 
@@ -208,7 +210,7 @@ fn section<T>(
         .collect();
     let mut out = format!(
         "\n{title} {} indexed node{}\n",
-        nodes.len(),
+        paint(colorize, COUNT_COLOR, &nodes.len().to_string()),
         if nodes.len() == 1 { "" } else { "s" }
     );
 
@@ -225,7 +227,10 @@ fn section<T>(
             .iter()
             .map(|hit| {
                 let node = node_of(hit);
-                let mut cells = vec![node.node_name.clone(), node.node_tag.clone()];
+                let mut cells = vec![
+                    paint(colorize, NODE_COLOR, &node.node_name),
+                    paint(colorize, NODE_COLOR, &node.node_tag),
+                ];
                 cells.extend(cells_of(hit));
                 cells.push(match &node.shadowed_by {
                     Some(by) => format!(
@@ -605,8 +610,42 @@ mod tests {
         assert!(text.contains("│ uvc_ │ v1  │ came │"), "{text}");
     }
 
-    /// The two pin states a sync refuses are red, and only those: the
-    /// column is padded on the plain text so colour never skews it.
+    /// The searched identity and each node's name and tag are cyan, link
+    /// ids yellow, and section counts green, exactly as `stack list` tints
+    /// them; padding is computed on the plain text so colour never skews
+    /// the outline.
+    #[test]
+    fn human_output_tints_with_the_stack_list_palette() {
+        use crate::commands::colors::RESET;
+
+        let coloured = render_human(&reference(), &full(), true, None);
+
+        assert!(
+            coloured.starts_with(&format!("{NODE_COLOR}rgb_camera:v1{RESET}\n")),
+            "{coloured}"
+        );
+        assert!(
+            coloured.contains(&format!("│ {NODE_COLOR}uvc_camera_linux{RESET} ")),
+            "{coloured}"
+        );
+        assert!(
+            coloured.contains(&format!("{NODE_COLOR}v1{RESET}")),
+            "{coloured}"
+        );
+        assert!(
+            coloured.contains(&format!("{BINDING_COLOR}camera{RESET}")),
+            "{coloured}"
+        );
+        assert!(
+            coloured.contains(&format!(
+                "Implemented by {COUNT_COLOR}2{RESET} indexed nodes"
+            )),
+            "{coloured}"
+        );
+    }
+
+    /// The two pin states a sync refuses are red: the column is padded on
+    /// the plain text so colour never skews it.
     #[test]
     fn human_output_paints_the_pins_a_sync_would_refuse() {
         let report = SearchReport {
@@ -654,7 +693,7 @@ mod tests {
         );
         assert!(
             !coloured.contains(&format!("{RED}stale")),
-            "only the pin column is painted: {coloured}"
+            "a healthy cell is never red: {coloured}"
         );
 
         let narrow = render_human(&reference(), &report, true, Some(60));

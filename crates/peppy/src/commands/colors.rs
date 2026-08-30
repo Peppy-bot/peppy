@@ -1,8 +1,9 @@
-//! Shared ANSI color palette for the `stack` subcommands, so `stack list` and
-//! `stack benchmark` tint the same things the same way (node labels cyan, link
-//! ids yellow, …). Applied only when `colorize` is set; the table width logic in
-//! each command strips these codes before measuring, so a colored cell occupies
-//! the same display columns as its plain text and stays aligned.
+//! Shared ANSI color palette for the CLI's boxed views, so `stack list`,
+//! `stack benchmark`, `repo list`, and `repo search` tint the same things the
+//! same way (node labels cyan, link ids yellow, …). Applied only when
+//! `colorize` is set; the table width logic strips these codes before
+//! measuring, so a colored cell occupies the same display columns as its
+//! plain text and stays aligned.
 
 pub(super) const NODE_COLOR: &str = "\x1b[36m"; // cyan: node labels
 pub(super) const COUNT_COLOR: &str = "\x1b[32m"; // green: per-node instance counts
