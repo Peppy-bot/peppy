@@ -150,7 +150,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Stack {
-                command: stack::StackCommands::List
+                command: stack::StackCommands::List { .. }
             }
         ));
     }
@@ -181,6 +181,29 @@ mod tests {
             panic!("expected mcp catalog");
         };
         assert_eq!(exposure, "camera_and_recording:v1");
+    }
+
+    #[test]
+    fn repo_search_parses() {
+        let cli = Cli::try_parse_from(["peppy", "repo", "search", "rgb_camera:v1", "--json"])
+            .expect("repo search parses");
+        let Commands::Repo {
+            command: repo::RepoCommands::Search { identity, json },
+        } = cli.command
+        else {
+            panic!("expected repo search");
+        };
+        assert_eq!(identity, "rgb_camera:v1");
+        assert!(json);
+
+        let cli = Cli::try_parse_from(["peppy", "repositories", "search", "rgb_camera:v1"])
+            .expect("the repositories alias parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Repo {
+                command: repo::RepoCommands::Search { json: false, .. }
+            }
+        ));
     }
 
     /// The exposure check rides `--check`; there is nothing to validate on
@@ -223,6 +246,25 @@ mod tests {
             .err()
             .expect("an unknown subcommand is a parse error");
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    /// `stack list --json` parses, and the flag is off by default.
+    #[test]
+    fn stack_list_json_flag_parses() {
+        let cli = Cli::try_parse_from(["peppy", "stack", "list", "--json"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Stack {
+                command: stack::StackCommands::List { json: true }
+            }
+        ));
+        let cli = Cli::try_parse_from(["peppy", "stack", "list"]).expect("parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Stack {
+                command: stack::StackCommands::List { json: false }
+            }
+        ));
     }
 
     #[test]

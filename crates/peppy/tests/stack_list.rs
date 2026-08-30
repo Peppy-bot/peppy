@@ -288,7 +288,7 @@ async fn node_list_command_succeeds() {
     // assert on the exact text the CLI would print without capturing stdout.
     // `false`: render without ANSI color so the assertions match plain table
     // text regardless of whether the test runs attached to a terminal.
-    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false)
+    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false, None)
         .await
         .expect("node list command should succeed")
         .output;
@@ -330,6 +330,47 @@ async fn node_list_command_succeeds() {
     assert!(
         output.contains(&format!("{consumer_label} ➔ {provider_label}")),
         "output should contain the dependency edge consumer ➔ provider:\n{output}"
+    );
+
+    // The JSON variant reports the same stack under this core node's entry:
+    // both nodes Ready with no instances, and the dependency edge.
+    let json_report = peppy::commands::stack::list_nodes_json_collecting(&node_ctx)
+        .await
+        .expect("stack list --json should succeed");
+    assert!(
+        json_report.failed_names.is_empty(),
+        "{:?}",
+        json_report.failed_names
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&json_report.output).expect("the output is one JSON document");
+    let entry = doc["core_nodes"]
+        .as_array()
+        .expect("core_nodes is a list")
+        .iter()
+        .find(|entry| entry["core_node"] == core_node_name.as_str())
+        .expect("this daemon's entry is present")
+        .clone();
+    assert!(entry["error"].is_null(), "{entry}");
+    let nodes = entry["stack"]["nodes"]
+        .as_array()
+        .expect("the stack carries its nodes");
+    let provider = nodes
+        .iter()
+        .find(|node| node["name"] == provider_name)
+        .unwrap_or_else(|| panic!("the provider is listed: {nodes:?}"));
+    assert_eq!(provider["stage"], "Ready", "{provider}");
+    assert_eq!(provider["instances"], serde_json::json!([]), "{provider}");
+    assert!(
+        entry["stack"]["edges"]
+            .as_array()
+            .expect("the stack carries its edges")
+            .iter()
+            .any(
+                |edge| edge["from"]["name"] == consumer_name && edge["to"]["name"] == provider_name
+            ),
+        "the dependency edge is reported: {}",
+        entry["stack"]["edges"]
     );
 
     // Silence unused variable when LogCapture is only constructed for
@@ -462,7 +503,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         AppContext::with_messenger(local.temp_dir(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(local.daemon_state_path()),
     );
-    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("multi-daemon stack list should succeed");
     assert!(
@@ -511,7 +552,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
             .with_daemon_state_file(local.daemon_state_path())
             .with_core_node_override(Some("a-remote".to_string())),
     );
-    let targeted_report = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
+    let targeted_report = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await
         .expect("explicit remote stack list should succeed");
     assert!(
@@ -543,7 +584,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
             .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
-    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("duplicate tokens should not duplicate or fail the section");
     assert!(
@@ -563,7 +604,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
             .with_daemon_state_file(daemon.daemon_state_path())
             .with_core_node_override(Some("claimed-core".to_string())),
     );
-    let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
+    let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await
         .expect("targeted duplicate-name query should succeed")
         .output;
@@ -592,7 +633,7 @@ async fn stack_list_keeps_healthy_sections_when_an_enumerated_daemon_cannot_answ
             .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
-    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("collection succeeds even when one section fails");
     assert!(report.output.contains("Core node: healthy-core (host:"));

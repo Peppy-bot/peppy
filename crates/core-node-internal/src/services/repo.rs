@@ -6,6 +6,7 @@ mod init;
 mod list;
 mod refresh;
 mod remove;
+mod search;
 pub(crate) mod status;
 
 pub use add::listen_for_repo_add;
@@ -14,12 +15,21 @@ pub use init::{InitOutcome, ensure_default_repos};
 pub use list::listen_for_repo_list;
 pub use refresh::listen_for_repo_refresh;
 pub use remove::listen_for_repo_remove;
+pub use search::{
+    Consumer, Implementer, IndexedNode, Observer, Participant, PinStatus, PublishedDoc,
+    SearchReport, search_identity,
+};
 
-use crate::services::repo::cache::EntryOrigin;
+use crate::services::repo::cache::{EntryOrigin, NodeCacheEntry, UNOWNED_REPO_ID};
+use crate::services::repo::exclude::ExclusionSet;
+use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos};
 use core_node_api::encoding::RepoSource;
+use daemon_config::consts::PeppyDirs;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use tracing::{debug, warn};
 
 /// Guards read-modify-write cycles on repositories.json5 and
 /// excluded_repositories.json5 to prevent concurrent corruption.
@@ -221,6 +231,108 @@ fn canonical_root(configured: &str) -> PathBuf {
     std::fs::canonicalize(configured).unwrap_or_else(|_| PathBuf::from(configured))
 }
 
+/// One configured repository as `repo list` and a search show it.
+pub(crate) struct ListedRepo {
+    pub id: u32,
+    /// [`RepoSource::display_label`]: the path of an fs repository, the url
+    /// and ref of a git one.
+    pub label: String,
+    pub source: RepoSource,
+}
+
+/// The configured repositories in id order, minus the excluded ones and
+/// any whose id no cache entry can be attributed to (above the wire's
+/// `u32`, or the id reserved for unowned entries). What `repo list` groups
+/// nodes under and what a search attributes hits to, so the two cannot
+/// disagree about which repositories exist.
+pub(crate) fn listed_repositories(peppy_dirs: &PeppyDirs) -> crate::Result<Vec<ListedRepo>> {
+    let repos = read_or_create_repos(peppy_dirs)?;
+    let exclusions = ExclusionSet::load(peppy_dirs);
+    let mut listed = Vec::new();
+    for entry in &repos {
+        let Some(source) = parse_repo_entry(entry) else {
+            warn!("Skipping unrecognized repository entry: {:?}", entry);
+            continue;
+        };
+
+        let identity = source_identity(&source);
+        if exclusions.is_excluded(&identity) {
+            debug!("Excluding repository from list: {}", identity);
+            continue;
+        }
+
+        let repo_id_u64 = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+        let id = match u32::try_from(repo_id_u64) {
+            Ok(id) if id != UNOWNED_REPO_ID => id,
+            _ => {
+                warn!(
+                    "Skipping repository entry with id {} (not a repository id cache entries \
+                     can be attributed to)",
+                    repo_id_u64
+                );
+                continue;
+            }
+        };
+
+        listed.push(ListedRepo {
+            id,
+            label: source.display_label(),
+            source,
+        });
+    }
+    Ok(listed)
+}
+
+/// A cached node under the repository that owns it.
+pub(crate) struct AttributedNode<'a> {
+    pub entry: &'a NodeCacheEntry,
+    /// The lower-id repository that already provides this `name:tag`, so a
+    /// plain lookup resolves there rather than here.
+    pub shadowed_by: Option<&'a ListedRepo>,
+}
+
+/// One listed repository with the cached nodes it owns.
+pub(crate) struct RepoNodes<'a> {
+    pub repo: &'a ListedRepo,
+    pub nodes: Vec<AttributedNode<'a>>,
+}
+
+/// Each listed repository with the cached nodes it owns, in the order
+/// `repos` lists them (id order), each node in cache order. `shadowed_by`
+/// names the earlier repository that already provides a node's `name:tag`.
+///
+/// The single definition of what `repo list` shows and what a search
+/// filters. Ownership is the `repo_id` the cache load stamped on each
+/// entry, so an entry no listed repository owns (its repository was removed
+/// or excluded since the cache was written) appears under none.
+pub(crate) fn nodes_by_repository<'a>(
+    repos: &'a [ListedRepo],
+    cached: &'a [NodeCacheEntry],
+) -> Vec<RepoNodes<'a>> {
+    let mut winners: HashMap<(&str, &str), &ListedRepo> = HashMap::new();
+    repos
+        .iter()
+        .map(|repo| {
+            let nodes = cached
+                .iter()
+                .filter(|node| node.repo_id == repo.id)
+                .map(|entry| {
+                    let key = (entry.node_name.as_str(), entry.node_tag.as_str());
+                    let shadowed_by = match winners.entry(key) {
+                        Entry::Occupied(winner) => Some(*winner.get()),
+                        Entry::Vacant(vacant) => {
+                            vacant.insert(repo);
+                            None
+                        }
+                    };
+                    AttributedNode { entry, shadowed_by }
+                })
+                .collect();
+            RepoNodes { repo, nodes }
+        })
+        .collect()
+}
+
 /// Normalize a list of repo JSON entries: auto-assign missing `id` fields,
 /// detect duplicate ids, sort by id, and write back if any ids were assigned.
 pub(crate) fn normalize_repo_entries(
@@ -287,10 +399,163 @@ mod tests {
     // Coverage for `source_identity` (relocated here from `core-node-api`
     // alongside the function, which moved out of the pure wire-codec crate
     // because its `Fs` arm canonicalizes against the real filesystem).
-    use super::{RepoOwners, source_identity};
-    use crate::services::repo::cache::EntryOrigin;
+    use super::{
+        ListedRepo, RepoOwners, listed_repositories, nodes_by_repository, source_identity,
+    };
+    use crate::services::repo::cache::test_support::{node_entry, owned_by};
+    use crate::services::repo::cache::{EntryOrigin, UNOWNED_REPO_ID, repositories_list_path};
     use core_node_api::encoding::RepoSource;
+    use daemon_config::consts::PeppyDirs;
     use serde_json::Value;
+    use std::path::PathBuf;
+
+    fn listed(id: u32, path: &str) -> ListedRepo {
+        let source = RepoSource::Fs(PathBuf::from(path));
+        ListedRepo {
+            id,
+            label: source.display_label(),
+            source,
+        }
+    }
+
+    /// The `(repo id, node name, shadowing repo id)` triples
+    /// `nodes_by_repository` yields, in order, which is the whole of what a
+    /// listing shows.
+    fn attribution(
+        repos: &[ListedRepo],
+        cached: &[crate::services::repo::cache::NodeCacheEntry],
+    ) -> Vec<(u32, String, Option<u32>)> {
+        nodes_by_repository(repos, cached)
+            .iter()
+            .flat_map(|group| {
+                group.nodes.iter().map(|node| {
+                    (
+                        group.repo.id,
+                        node.entry.node_name.to_string(),
+                        node.shadowed_by.map(|winner| winner.id),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// An identity two repositories provide is shadowed in the higher-id
+    /// one, whatever order the cache lists the entries in.
+    #[test]
+    fn a_higher_id_repository_is_shadowed_on_a_shared_identity() {
+        let repos = [listed(1, "/top"), listed(2, "/hub")];
+        let cached = [
+            owned_by(
+                node_entry(
+                    "cam",
+                    "v1",
+                    EntryOrigin::Fs {
+                        path: "/hub/cam/peppy.json5".into(),
+                    },
+                ),
+                2,
+            ),
+            owned_by(
+                node_entry(
+                    "cam",
+                    "v1",
+                    EntryOrigin::Fs {
+                        path: "/top/cam/peppy.json5".into(),
+                    },
+                ),
+                1,
+            ),
+            owned_by(
+                node_entry(
+                    "lidar",
+                    "v1",
+                    EntryOrigin::Fs {
+                        path: "/hub/lidar/peppy.json5".into(),
+                    },
+                ),
+                2,
+            ),
+        ];
+
+        assert_eq!(
+            attribution(&repos, &cached),
+            vec![
+                (1, "cam".to_owned(), None),
+                (2, "cam".to_owned(), Some(1)),
+                (2, "lidar".to_owned(), None),
+            ]
+        );
+    }
+
+    /// An entry no listed repository owns is shown under none: its
+    /// repository was removed or excluded after the cache was written.
+    #[test]
+    fn an_unowned_entry_appears_under_no_repository() {
+        let repos = [listed(1, "/hub")];
+        let cached = [owned_by(
+            node_entry(
+                "ghost",
+                "v1",
+                EntryOrigin::Fs {
+                    path: "/gone/ghost/peppy.json5".into(),
+                },
+            ),
+            UNOWNED_REPO_ID,
+        )];
+
+        assert!(attribution(&repos, &cached).is_empty());
+    }
+
+    /// A repository that owns nothing is still listed: an empty group is
+    /// the answer to "what does this repository provide".
+    #[test]
+    fn a_repository_with_no_nodes_is_still_listed() {
+        let repos = [listed(1, "/empty")];
+        let groups = nodes_by_repository(&repos, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].repo.id, 1);
+        assert!(groups[0].nodes.is_empty());
+    }
+
+    /// The configured repositories come back in id order, without the
+    /// excluded ones and without an id cache entries cannot carry.
+    #[test]
+    fn listed_repositories_drop_excluded_and_unattributable_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        let kept = tmp.path().join("kept");
+        let excluded = tmp.path().join("excluded");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::create_dir_all(&excluded).unwrap();
+        std::fs::create_dir_all(peppy_dirs.conf_dir()).unwrap();
+        std::fs::write(
+            repositories_list_path(&peppy_dirs),
+            serde_json::to_string(&serde_json::json!([
+                { "id": 7, "type": "fs", "path": kept.to_string_lossy() },
+                { "id": 3, "type": "fs", "path": excluded.to_string_lossy() },
+                { "id": u64::from(UNOWNED_REPO_ID), "type": "git", "url": "https://example.com/unowned.git" },
+                { "id": u64::from(u32::MAX) + 1, "type": "git", "url": "https://example.com/wide.git" },
+                { "id": 9, "type": "mystery" },
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            peppy_dirs.conf_dir().join("excluded_repositories.json5"),
+            serde_json::to_string(&serde_json::json!([
+                { "id": 1, "type": "fs", "path": excluded.to_string_lossy() },
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let listed = listed_repositories(&peppy_dirs).expect("the configuration is readable");
+
+        let ids: Vec<u32> = listed.iter().map(|repo| repo.id).collect();
+        assert_eq!(ids, vec![7]);
+        assert_eq!(listed[0].label, kept.to_string_lossy());
+        assert!(matches!(listed[0].source, RepoSource::Fs(_)));
+    }
 
     #[test]
     fn identity_git_distinguishes_refs() {

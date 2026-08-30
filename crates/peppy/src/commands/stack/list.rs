@@ -47,9 +47,17 @@ pub struct StackListReport {
     pub failed_names: Vec<String>,
 }
 
-pub fn list_nodes(ctx: &Arc<AppContext>) -> Result<()> {
-    let colorize = crate::terminal::colors_enabled();
-    let report = crate::commands::block_on(list_nodes_collecting(ctx, colorize))?;
+pub fn list_nodes(ctx: &Arc<AppContext>, json: bool) -> Result<()> {
+    let report = if json {
+        crate::commands::block_on(list_nodes_json_collecting(ctx))?
+    } else {
+        let colorize = crate::terminal::colors_enabled();
+        crate::commands::block_on(list_nodes_collecting(
+            ctx,
+            colorize,
+            crate::terminal::stdout_width(),
+        ))?
+    };
     print!("{}", report.output);
     if report.failed_names.is_empty() {
         Ok(())
@@ -65,11 +73,34 @@ pub fn list_nodes(ctx: &Arc<AppContext>) -> Result<()> {
 /// and deciding the exit status. `colorize` is passed in rather than read from
 /// the ambient terminal so the result is deterministic: the CLI passes
 /// [`crate::terminal::colors_enabled`], while integration tests pass `false`
-/// for stable, color-free assertions.
+/// for stable, color-free assertions. `max_width` caps the panels and their
+/// tables at that many columns (the CLI passes the terminal's width);
+/// `None` keeps every line unwrapped.
 pub async fn list_nodes_collecting(
     ctx: &Arc<AppContext>,
     colorize: bool,
+    max_width: Option<usize>,
 ) -> Result<StackListReport> {
+    let sections = collect_sections(ctx).await?;
+    Ok(StackListReport {
+        output: format_stack_list(&sections, colorize, max_width),
+        failed_names: failed_names(&sections),
+    })
+}
+
+/// Like [`list_nodes_collecting`] but renders the sections as one JSON
+/// document ([`render_stack_json`]); colour and width do not apply to it.
+pub async fn list_nodes_json_collecting(ctx: &Arc<AppContext>) -> Result<StackListReport> {
+    let sections = collect_sections(ctx).await?;
+    Ok(StackListReport {
+        output: render_stack_json(&sections),
+        failed_names: failed_names(&sections),
+    })
+}
+
+/// One queried [`StackSection`] per distinct live core-node name, the
+/// local daemon first, in the order every report prints them.
+async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
     let conn = ctx.connect_to_daemon().await?;
 
     let live = CoreNodePresenceMessenger::list_live(
@@ -139,16 +170,54 @@ pub async fn list_nodes_collecting(
     }))
     .await;
 
-    let failed_names = sections
+    Ok(sections)
+}
+
+/// The core nodes whose section failed, in section order: the names the
+/// CLI exits non-zero over, whichever rendering it printed.
+fn failed_names(sections: &[StackSection]) -> Vec<String> {
+    sections
         .iter()
         .filter(|section| section.outcome.is_err())
         .map(|section| section.core_node.clone())
-        .collect();
+        .collect()
+}
 
-    Ok(StackListReport {
-        output: format_stack_list(&sections, colorize),
-        failed_names,
-    })
+/// The report as one JSON document: one entry per core node carrying the
+/// section's identity facts, its `launch` and `reservation`, and either
+/// the `stack` graph (`nodes` and `edges`, exactly as the daemon
+/// serialized them) or the query `error`; exactly one of the two is null.
+pub fn render_stack_json(sections: &[StackSection]) -> String {
+    let launch_json = |identity: &Option<LaunchIdentity>| match identity {
+        Some(identity) => serde_json::json!({
+            "launch_id": identity.launch_id,
+            "coordinator_core_node": identity.coordinator_core_node,
+        }),
+        None => serde_json::Value::Null,
+    };
+    let core_nodes: Vec<serde_json::Value> = sections
+        .iter()
+        .map(|section| {
+            let (stack, error) = match &section.outcome {
+                Ok((nodes, edges)) => (
+                    serde_json::json!({ "nodes": nodes, "edges": edges }),
+                    serde_json::Value::Null,
+                ),
+                Err(error) => (serde_json::Value::Null, serde_json::json!(error)),
+            };
+            serde_json::json!({
+                "core_node": section.core_node,
+                "instance_id": section.instance_id,
+                "host_name": section.host_name,
+                "live_claimants": section.live_claimants,
+                "launch": launch_json(&section.launch),
+                "reservation": launch_json(&section.reservation),
+                "stack": stack,
+                "error": error,
+            })
+        })
+        .collect();
+    format!("{}\n", serde_json::json!({ "core_nodes": core_nodes }))
 }
 
 fn ordered_targets(
@@ -194,9 +263,16 @@ fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
 /// Pure multi-core-node formatter for `peppy stack list`. Each distinct name
 /// keeps its graph, host annotation, duplicate-name warning, or query error in
 /// a separate outer panel.
-pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
+pub fn format_stack_list(
+    sections: &[StackSection],
+    colorize: bool,
+    max_width: Option<usize>,
+) -> String {
     use std::fmt::Write as _;
 
+    // The panel wraps every body line in `│ … │`, so its interior, where
+    // the tables render, is four columns narrower than the whole line.
+    let inner_width = max_width.map(|w| w.saturating_sub(4));
     let mut out = String::new();
     for (index, section) in sections.iter().enumerate() {
         if index > 0 {
@@ -252,34 +328,53 @@ pub fn format_stack_list(sections: &[StackSection], colorize: bool) -> String {
 
         match &section.outcome {
             Ok((nodes, edges)) => {
-                body.push_str(&format_stack_body(nodes, edges, colorize));
+                body.push_str(&format_stack_body(nodes, edges, colorize, inner_width));
             }
             Err(error) => {
                 let _ = writeln!(body, "error: {error}");
             }
         }
 
-        render_section_panel(&mut out, &header, &body);
+        render_section_panel(&mut out, &header, &body, max_width);
     }
     out
 }
 
 /// Encloses one core node's complete report in a panel. Nested table borders
 /// remain intact, while the continuous outer edge makes ownership clear when
-/// several independently queried stacks are printed together.
-fn render_section_panel(out: &mut String, header: &str, body: &str) {
+/// several independently queried stacks are printed together. Under
+/// `max_width` every line wider than the panel's interior wraps with
+/// [`wrap`]; the nested tables were already fitted to that interior, so only
+/// prose lines (warnings, launch ownership, dependencies) ever need it.
+fn render_section_panel(out: &mut String, header: &str, body: &str, max_width: Option<usize>) {
     use std::fmt::Write as _;
 
-    let width = std::iter::once(header)
-        .chain(body.lines())
-        .map(col_width)
+    // `│ ` and ` │` around every line.
+    let budget = max_width.map(|w| w.saturating_sub(4));
+    let fit = |line: &str| -> Vec<String> {
+        match budget {
+            Some(budget) if col_width(line) > budget => {
+                wrap(line, budget).split('\n').map(str::to_owned).collect()
+            }
+            _ => vec![line.to_owned()],
+        }
+    };
+    let header_lines = fit(header);
+    let body_lines: Vec<String> = body.lines().flat_map(fit).collect();
+
+    let width = header_lines
+        .iter()
+        .chain(&body_lines)
+        .map(|line| col_width(line))
         .max()
         .unwrap_or(0);
 
     let _ = writeln!(out, "┌{}┐", "─".repeat(width + 2));
-    write_panel_line(out, header, width);
+    for line in &header_lines {
+        write_panel_line(out, line, width);
+    }
     let _ = writeln!(out, "├{}┤", "─".repeat(width + 2));
-    for line in body.lines() {
+    for line in &body_lines {
         write_panel_line(out, line, width);
     }
     let _ = writeln!(out, "└{}┘", "─".repeat(width + 2));
@@ -299,7 +394,12 @@ fn write_panel_line(out: &mut String, line: &str, width: usize) {
 /// Formats the existing tables inside one core-node section. `colorize` tints
 /// node labels, instances, and bindings; table width measurement strips those
 /// codes so colored and plain layouts remain identical.
-fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], colorize: bool) -> String {
+fn format_stack_body(
+    nodes: &[SerializedNode],
+    edges: &[SerializedEdge],
+    colorize: bool,
+    max_width: Option<usize>,
+) -> String {
     use std::fmt::Write as _;
 
     let mut out = String::new();
@@ -310,7 +410,7 @@ fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], coloriz
         let _ = writeln!(out, "  (empty)");
         let _ = writeln!(out);
     } else {
-        render_nodes_table(&mut out, nodes, colorize);
+        render_nodes_table(&mut out, nodes, colorize, max_width);
     }
 
     // Per-instance bindings. A distinct view from the node table above, but it
@@ -324,7 +424,7 @@ fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], coloriz
         let _ = writeln!(out, "  (none)");
         let _ = writeln!(out);
     } else {
-        render_bindings_table(&mut out, &binding_nodes, colorize);
+        render_bindings_table(&mut out, &binding_nodes, colorize, max_width);
     }
 
     // Per-instance endpoints. Only rendered when some tracked instance serves
@@ -337,7 +437,7 @@ fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], coloriz
     if !endpoint_nodes.is_empty() {
         let _ = writeln!(out, "Instance endpoints");
         let _ = writeln!(out);
-        render_endpoints_table(&mut out, &endpoint_nodes, colorize);
+        render_endpoints_table(&mut out, &endpoint_nodes, colorize, max_width);
     }
 
     // Per-instance pairing slots. Only rendered when some tracked instance
@@ -350,7 +450,7 @@ fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], coloriz
     if !pairing_nodes.is_empty() {
         let _ = writeln!(out, "Instance pairings");
         let _ = writeln!(out);
-        render_pairings_table(&mut out, &pairing_nodes, colorize);
+        render_pairings_table(&mut out, &pairing_nodes, colorize, max_width);
     }
 
     // Dependencies reuse node labels but a distinct `➔` arrow (bindings above
@@ -387,18 +487,23 @@ fn format_stack_body(nodes: &[SerializedNode], edges: &[SerializedEdge], coloriz
 // and `stack benchmark` color the same things the same way. `col_width` strips
 // these codes before measuring, so a colored cell occupies the same display
 // columns as its plain text and the box stays aligned.
-use super::colors::{
+use crate::commands::colors::{
     BINDING_COLOR, COUNT_COLOR, HEALTH_HEALTHY_COLOR, HEALTH_UNHEALTHY_COLOR, INSTANCE_COLOR,
     NODE_COLOR, STATUS_FAILED_COLOR, STATUS_FINISHED_COLOR, STATUS_RUNNING_COLOR,
     STATUS_STARTING_COLOR, paint,
 };
-use super::table::{col_width, render_table};
+use crate::commands::table::{col_width, render_table, wrap};
 
 /// Column headers kept in one place so widths stay consistent between the
 /// separator and data rows.
 const HEADERS: [&str; 4] = ["NODE", "STAGE", "INSTANCES", "PATH"];
 
-fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool) {
+fn render_nodes_table(
+    out: &mut String,
+    nodes: &[SerializedNode],
+    colorize: bool,
+    max_width: Option<usize>,
+) {
     let rows: Vec<Vec<String>> = nodes
         .iter()
         .map(|n| {
@@ -412,7 +517,7 @@ fn render_nodes_table(out: &mut String, nodes: &[SerializedNode], colorize: bool
         .collect();
 
     // A single block: the nodes table has no internal group rules.
-    render_table(out, &HEADERS, &[rows]);
+    render_table(out, &HEADERS, &[rows], max_width);
 }
 
 /// Headers for the per-instance bindings table. The node→instance→binding
@@ -425,7 +530,12 @@ const BINDING_HEADERS: [&str; 5] = ["NODE", "INSTANCE", "STATUS", "HEALTH", "BIN
 /// Renders the per-instance bindings table. `nodes` must already be filtered
 /// to entries with at least one instance; the caller prints `(none)` when
 /// none qualify, so this never emits an empty body.
-fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
+fn render_bindings_table(
+    out: &mut String,
+    nodes: &[&SerializedNode],
+    colorize: bool,
+    max_width: Option<usize>,
+) {
     // One block of rows per node, so `render_table` draws a rule between node
     // groups (keeping it unambiguous which instances belong to which node, even
     // when a node's last instance has a single binding). Within a block, the
@@ -455,7 +565,7 @@ fn render_bindings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
         })
         .collect();
 
-    render_table(out, &BINDING_HEADERS, &blocks);
+    render_table(out, &BINDING_HEADERS, &blocks, max_width);
 }
 
 /// Headers for the per-instance endpoints table; grouped like the bindings
@@ -465,7 +575,12 @@ const ENDPOINT_HEADERS: [&str; 3] = ["NODE", "INSTANCE", "ENDPOINT"];
 
 /// Renders the per-instance endpoints table. `nodes` must already be
 /// filtered to entries with at least one instance serving an endpoint.
-fn render_endpoints_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
+fn render_endpoints_table(
+    out: &mut String,
+    nodes: &[&SerializedNode],
+    colorize: bool,
+    max_width: Option<usize>,
+) {
     let blocks: Vec<Vec<Vec<String>>> = nodes
         .iter()
         .map(|node| {
@@ -488,7 +603,7 @@ fn render_endpoints_table(out: &mut String, nodes: &[&SerializedNode], colorize:
         })
         .collect();
 
-    render_table(out, &ENDPOINT_HEADERS, &blocks);
+    render_table(out, &ENDPOINT_HEADERS, &blocks, max_width);
 }
 
 /// Headers for the per-instance pairings table; grouped like the bindings
@@ -498,7 +613,12 @@ const PAIRING_HEADERS: [&str; 3] = ["NODE", "INSTANCE", "PAIRINGS"];
 
 /// Renders the per-instance pairing-slot table. `nodes` must already be
 /// filtered to entries with at least one instance carrying pairing slots.
-fn render_pairings_table(out: &mut String, nodes: &[&SerializedNode], colorize: bool) {
+fn render_pairings_table(
+    out: &mut String,
+    nodes: &[&SerializedNode],
+    colorize: bool,
+    max_width: Option<usize>,
+) {
     let blocks: Vec<Vec<Vec<String>>> = nodes
         .iter()
         .map(|node| {
@@ -521,7 +641,7 @@ fn render_pairings_table(out: &mut String, nodes: &[&SerializedNode], colorize: 
         })
         .collect();
 
-    render_table(out, &PAIRING_HEADERS, &blocks);
+    render_table(out, &PAIRING_HEADERS, &blocks, max_width);
 }
 
 /// One display string per pairing slot on the instance, ordered by link id:
@@ -718,8 +838,8 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::table::skip_csi;
     use super::*;
+    use crate::commands::table::skip_csi;
     use config::runtime::ProducerRef;
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
@@ -771,7 +891,7 @@ mod tests {
             NodeStage::Ready,
             vec![("the_camera", InstanceState::Running)],
         );
-        let out = format_stack_body(&[camera.clone(), server], &[], false);
+        let out = format_stack_body(&[camera.clone(), server], &[], false, None);
         assert!(out.contains("Instance endpoints"), "{out}");
         assert!(out.contains("ENDPOINT"), "{out}");
         assert!(
@@ -795,7 +915,7 @@ mod tests {
             "a node serving no endpoint has no row: {out}"
         );
 
-        let without = format_stack_body(&[camera], &[], false);
+        let without = format_stack_body(&[camera], &[], false, None);
         assert!(!without.contains("Instance endpoints"), "{without}");
     }
 
@@ -851,6 +971,63 @@ mod tests {
         }
     }
 
+    /// The JSON report mirrors the sections: the identity facts, the
+    /// launch and reservation identities, and per section either the
+    /// daemon's serialized graph or the query error, exactly one of the
+    /// two null.
+    #[test]
+    fn json_report_carries_the_graph_or_the_error() {
+        let mut healthy = successful_section("core-a", "host-a");
+        healthy.launch = Some(LaunchIdentity::new("launch-1", "cn-coordinator"));
+        if let Ok((nodes, _)) = &mut healthy.outcome {
+            nodes.push(node(
+                "worker",
+                "v1",
+                NodeStage::Ready,
+                vec![("w-1", InstanceState::Running)],
+            ));
+        }
+        let failed = StackSection {
+            core_node: "core-b".to_string(),
+            instance_id: None,
+            host_name: "unknown".to_string(),
+            live_claimants: 2,
+            launch: None,
+            reservation: Some(LaunchIdentity::new("launch-2", "cn-coordinator")),
+            outcome: Err("query timed out".to_string()),
+        };
+
+        let text = render_stack_json(&[healthy, failed]);
+        let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        let first = &doc["core_nodes"][0];
+        assert_eq!(first["core_node"], "core-a");
+        assert_eq!(first["instance_id"], "gen-1");
+        assert_eq!(first["host_name"], "host-a");
+        assert_eq!(first["live_claimants"], 1);
+        assert_eq!(first["launch"]["launch_id"], "launch-1");
+        assert_eq!(first["launch"]["coordinator_core_node"], "cn-coordinator");
+        assert!(first["reservation"].is_null());
+        assert!(first["error"].is_null());
+        assert_eq!(first["stack"]["nodes"][0]["stage"], "Root");
+        assert_eq!(first["stack"]["nodes"][1]["name"], "worker");
+        assert_eq!(
+            first["stack"]["nodes"][1]["instances"][0]["state"],
+            "running"
+        );
+        assert_eq!(first["stack"]["nodes"][1]["instances"][0]["healthy"], true);
+        assert_eq!(first["stack"]["edges"], serde_json::json!([]));
+
+        let second = &doc["core_nodes"][1];
+        assert_eq!(second["core_node"], "core-b");
+        assert!(second["instance_id"].is_null());
+        assert_eq!(second["live_claimants"], 2);
+        assert!(second["launch"].is_null());
+        assert_eq!(second["reservation"]["launch_id"], "launch-2");
+        assert!(second["stack"].is_null());
+        assert_eq!(second["error"], "query timed out");
+    }
+
     /// The slice line attributes a stack to the launch that produced it, and
     /// the reservation line shows a machine currently held: which launch,
     /// which coordinator, and the exact command that clears THIS machine.
@@ -863,7 +1040,7 @@ mod tests {
             reservation: Some(LaunchIdentity::new("launch-held", "cn-coordinator")),
             ..successful_section("cn-participant", "robo-a")
         }];
-        let out = format_stack_list(&sections, false);
+        let out = format_stack_list(&sections, false, None);
         assert!(
             out.contains("Slice of launch launch-old (coordinator: cn-coordinator)"),
             "the slice must name its launch:\n{out}"
@@ -880,9 +1057,40 @@ mod tests {
 
     #[test]
     fn a_standalone_stack_reports_no_launch_ownership() {
-        let out = format_stack_list(&[successful_section("cn-solo", "robo-a")], false);
+        let out = format_stack_list(&[successful_section("cn-solo", "robo-a")], false, None);
         assert!(!out.contains("Slice of launch"), "got:\n{out}");
         assert!(!out.contains("Reserved for launch"), "got:\n{out}");
+    }
+
+    /// A width limit caps the whole panel: the nested tables shrink and
+    /// wrap first, prose lines wrap inside the panel, and no line of the
+    /// output exceeds the limit.
+    #[test]
+    fn a_width_limit_caps_every_panel_and_table_line() {
+        let long = "a_node_with_a_very_long_name_that_overruns_any_narrow_terminal_width";
+        let sections = vec![StackSection {
+            outcome: Ok((
+                vec![node(
+                    long,
+                    "v1",
+                    NodeStage::Ready,
+                    vec![("inst-1", InstanceState::Running)],
+                )],
+                Vec::new(),
+            )),
+            ..successful_section("cn-solo", "robo-a")
+        }];
+
+        let wide = format_stack_list(&sections, false, None);
+        assert!(
+            wide.lines().any(|line| UnicodeWidthStr::width(line) > 60),
+            "the fixture must overrun 60 columns unfitted:\n{wide}"
+        );
+
+        let narrow = format_stack_list(&sections, false, Some(60));
+        for line in narrow.lines() {
+            assert!(UnicodeWidthStr::width(line) <= 60, "{line}\n{narrow}");
+        }
     }
 
     #[test]
@@ -891,7 +1099,7 @@ mod tests {
             successful_section("z-local", "robot-local"),
             successful_section("a-remote", "robot-remote"),
         ];
-        let out = format_stack_list(&sections, false);
+        let out = format_stack_list(&sections, false, None);
 
         let local = out
             .find("Core node: z-local (host: robot-local)")
@@ -969,7 +1177,7 @@ mod tests {
             reservation: None,
             outcome: Err("daemon disappeared".to_string()),
         }];
-        let out = format_stack_list(&sections, false);
+        let out = format_stack_list(&sections, false, None);
         assert!(out.contains("Core node: claimed (host: unknown)"));
         assert!(out.contains("warning: 3 live daemons currently claim this name"));
         assert!(out.contains("error: daemon disappeared"));
@@ -981,7 +1189,7 @@ mod tests {
             live_claimants: 2,
             ..successful_section("claimed", "robo-a")
         }];
-        let out = format_stack_list(&sections, false);
+        let out = format_stack_list(&sections, false, None);
         assert!(
             out.contains(
                 "warning: 2 live daemons currently claim this name; answered by instance gen-1"
@@ -1036,7 +1244,7 @@ mod tests {
                 vec![("i1", InstanceState::Running)],
             ),
         ];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
 
         for header in HEADERS {
             assert!(out.contains(header), "missing header {}:\n{}", header, out);
@@ -1067,7 +1275,7 @@ mod tests {
                 ("s1", InstanceState::Starting),
             ],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         assert!(
             out.contains("2 (1 running, 1 starting)"),
             "mixed breakdown missing:\n{}",
@@ -1085,7 +1293,7 @@ mod tests {
             NodeStage::Ready,
             vec![("rec-1", InstanceState::Finished)],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         assert!(
             out.contains("1 finished"),
             "finished instance missing from compact count:\n{out}"
@@ -1104,7 +1312,7 @@ mod tests {
                 ("x1", InstanceState::Failed),
             ],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         assert!(
             out.contains("3 (1 running, 1 finished, 1 failed)"),
             "mixed terminal breakdown missing:\n{out}"
@@ -1123,7 +1331,7 @@ mod tests {
                 ("rec-2", InstanceState::Failed, vec![]),
             ],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         let finished_line = section
@@ -1155,7 +1363,7 @@ mod tests {
 
     #[test]
     fn empty_stack_renders_empty_marker() {
-        let out = format_stack_body(&[], &[], false);
+        let out = format_stack_body(&[], &[], false, None);
         assert!(out.contains("(empty)"), "empty marker missing:\n{}", out);
         assert!(
             out.contains("Dependencies"),
@@ -1174,7 +1382,7 @@ mod tests {
             to: to.clone(),
             via_contract: None,
         }];
-        let out = format_stack_body(&[from, to], &edges, false);
+        let out = format_stack_body(&[from, to], &edges, false, None);
         assert!(
             out.contains("brain:v1 ➔ sensor:v1"),
             "edge line missing:\n{}",
@@ -1191,7 +1399,7 @@ mod tests {
             to: provider.clone(),
             via_contract: Some("uvc_camera:v1".to_string()),
         }];
-        let out = format_stack_body(&[consumer, provider], &edges, false);
+        let out = format_stack_body(&[consumer, provider], &edges, false, None);
         assert!(
             out.contains("brain:v1 ➔ camera_mock:v1 (via uvc_camera:v1 contract implementation)"),
             "contract-implementation edge annotation missing:\n{}",
@@ -1235,7 +1443,7 @@ mod tests {
                 vec![("arm", vec![ProducerRef::new("core_a", "arm-1")])],
             )],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         for header in BINDING_HEADERS {
@@ -1268,7 +1476,7 @@ mod tests {
                 )],
             ),
         ];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         assert!(section.contains("STATUS"), "STATUS header missing:\n{out}");
@@ -1315,7 +1523,7 @@ mod tests {
                 },
             ],
         }];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         assert!(section.contains("HEALTH"), "HEALTH header missing:\n{out}");
@@ -1355,7 +1563,7 @@ mod tests {
                 ],
             )],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         // Both slots render, sorted by link id (BTreeMap order) regardless of
@@ -1385,7 +1593,7 @@ mod tests {
             "camera",
             vec![("cam-1", InstanceState::Running, vec![])],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         assert!(section.contains("cam-1"), "instance id missing:\n{out}");
@@ -1408,7 +1616,7 @@ mod tests {
                 ],
             )],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         let sensors_at = section
@@ -1460,7 +1668,7 @@ mod tests {
             },
         );
 
-        let out = format_stack_body(&[arm, ctrl], &[], false);
+        let out = format_stack_body(&[arm, ctrl], &[], false, None);
         assert!(
             out.contains("Instance pairings"),
             "missing Instance pairings section:\n{out}"
@@ -1485,7 +1693,7 @@ mod tests {
             NodeStage::Ready,
             vec![("s-1", InstanceState::Running)],
         )];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         assert!(
             !out.contains("Instance pairings"),
             "Instance pairings section must be omitted for pairing-free stacks:\n{out}"
@@ -1495,7 +1703,7 @@ mod tests {
     #[test]
     fn bindings_section_renders_none_when_no_node_has_instances() {
         let nodes = vec![node("sensor", "v1", NodeStage::Added, vec![])];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
         assert!(
             section.contains("(none)"),
@@ -1528,7 +1736,7 @@ mod tests {
             node("ghost", "v1", NodeStage::Added, vec![]),
             binding_node("beta", vec![("beta-1", InstanceState::Running, vec![])]),
         ];
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
         let section = bindings_section(&out);
 
         // Instance-less node never appears in the bindings table.
@@ -1588,7 +1796,7 @@ mod tests {
                 },
             },
         );
-        let out = format_stack_body(&nodes, &[], false);
+        let out = format_stack_body(&nodes, &[], false, None);
 
         fn box_line_widths(block: &str) -> Vec<usize> {
             block
@@ -1667,8 +1875,8 @@ mod tests {
             via_contract: None,
         }];
 
-        let plain = format_stack_body(&nodes, &edges, false);
-        let colored = format_stack_body(&nodes, &edges, true);
+        let plain = format_stack_body(&nodes, &edges, false, None);
+        let colored = format_stack_body(&nodes, &edges, true, None);
 
         assert!(
             colored.contains('\x1b'),
@@ -1687,8 +1895,8 @@ mod tests {
         // The enclosing core-node panel performs its own width calculation,
         // including the colored node name in the header.
         let sections = [successful_section("core-a", "robot-a")];
-        let plain_panel = format_stack_list(&sections, false);
-        let colored_panel = format_stack_list(&sections, true);
+        let plain_panel = format_stack_list(&sections, false, None);
+        let colored_panel = format_stack_list(&sections, true, None);
         assert_eq!(
             strip_ansi(&colored_panel),
             plain_panel,

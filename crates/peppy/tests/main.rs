@@ -23,6 +23,7 @@ mod repo_init;
 mod repo_list;
 mod repo_refresh;
 mod repo_remove;
+mod repo_search;
 mod service_install;
 mod service_serve;
 mod stack_launch;

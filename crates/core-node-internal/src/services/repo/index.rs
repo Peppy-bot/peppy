@@ -16,8 +16,8 @@
 //! conflict, happens in `refresh.rs`.
 
 use crate::services::repo::cache::{
-    ContractCacheEntry, EntryOrigin, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
-    PairingCacheEntry, RepoItems,
+    ContractCacheEntry, DeclaredLinks, EntryOrigin, LauncherCacheEntry, McpExposureCacheEntry,
+    NodeCacheEntry, PairingCacheEntry, RepoItems,
 };
 use crate::services::repo::refresh::RepoFailureKind;
 use config::node::NodeConfigParser;
@@ -161,7 +161,8 @@ fn conflicts_from_claims(kind: RepoItemKind, claims: ClaimMap) -> Vec<RepoConfli
 
 /// One item a repository publishes, resolved against the tree it was read
 /// from: the identity the index states, the fingerprint of the bytes that
-/// declare it, and where those bytes live.
+/// declare it, where those bytes live, and (for a node) the links its
+/// manifest declares.
 #[derive(Debug)]
 pub(crate) struct PublishedItem {
     pub kind: RepoItemKind,
@@ -170,6 +171,8 @@ pub(crate) struct PublishedItem {
     pub tag: Option<ItemTag>,
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    /// Empty for every kind but nodes.
+    pub links: DeclaredLinks,
 }
 
 /// Where the tree being read came from, which is all that separates reading
@@ -284,12 +287,13 @@ pub(crate) fn read_published_items(
             continue;
         }
         match resolve_declared_item(&root, &item) {
-            Ok(bytes) => items.push(PublishedItem {
+            Ok(resolved) => items.push(PublishedItem {
                 kind: item.kind,
                 name: item.name.clone(),
                 tag: item.tag.cloned(),
-                sha256: ManifestFingerprint::of_bytes(&bytes),
+                sha256: ManifestFingerprint::of_bytes(&resolved.bytes),
                 origin,
+                links: resolved.links,
             }),
             Err(detail) => problems.push(format!("{item} points at {}, which {detail}", item.path)),
         }
@@ -326,6 +330,7 @@ pub(crate) fn build_cache_entries(
                 node_tag: tagged(&item)?,
                 sha256: item.sha256,
                 origin: item.origin,
+                links: item.links,
                 repo_id: 0,
             }),
             RepoItemKind::Launcher => built.launchers.push(LauncherCacheEntry {
@@ -518,8 +523,17 @@ pub fn read_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError>
     PeppyRepositoryIndexParser::from_path(&path).map_err(|e| IndexError::Unreadable(e.to_string()))
 }
 
+/// A declared item resolved against its tree: the bytes of the file that
+/// declares it, and what the parse of those bytes recorded beyond the
+/// identity.
+pub(crate) struct ResolvedItem {
+    pub bytes: Vec<u8>,
+    /// The links a node manifest declares; empty for every other kind.
+    pub links: DeclaredLinks,
+}
+
 /// Resolves one declared item against the tree at `root`, returning the
-/// bytes of the file that declares it.
+/// bytes of the file that declares it and the links it declares.
 ///
 /// `root` must already be canonical. The parse is not redundant with the
 /// index: the index states where an item is, the manifest states what it
@@ -528,7 +542,7 @@ pub fn read_repository_index(root: &Path) -> Result<RepositoryIndex, IndexError>
 pub(crate) fn resolve_declared_item(
     root: &Path,
     item: &DeclaredItem<'_>,
-) -> std::result::Result<Vec<u8>, String> {
+) -> std::result::Result<ResolvedItem, String> {
     let joined = root.join(item.path.as_path());
     // Canonicalizing is the only way to catch a target reached through a
     // symlink that leaves the tree: the walk never follows a symlinked
@@ -546,39 +560,58 @@ pub(crate) fn resolve_declared_item(
     let bytes = std::fs::read(&canonical).map_err(|e| format!("cannot be read: {e}"))?;
     let content = std::str::from_utf8(&bytes).map_err(|e| format!("is not valid UTF-8: {e}"))?;
 
-    let (name, tag) = identity_of(item.kind, content, item.path.as_path())
+    let declared = declaration_of(item.kind, content, item.path.as_path())
         .map_err(|detail| format!("is not a {}: {detail}", item.kind))?;
     let expected_tag = item.tag.map(ItemTag::as_str).unwrap_or_default();
-    if name != item.name.as_str() || tag != expected_tag {
-        let found = format_identity(&name, &tag);
+    if declared.name != item.name.as_str() || declared.tag != expected_tag {
+        let found = format_identity(&declared.name, &declared.tag);
         return Err(format!("declares `{found}`"));
     }
 
-    Ok(bytes)
+    Ok(ResolvedItem {
+        bytes,
+        links: declared.links,
+    })
 }
 
-/// The identity a document declares when read as `kind`: its `(name, tag)`,
-/// with an empty tag for a launcher.
+/// What a document declares when read as `kind`: its identity, and for a
+/// node the contract and pairing links its manifest states.
+struct Declaration {
+    name: String,
+    /// Empty for a launcher.
+    tag: String,
+    /// Empty for every kind but nodes.
+    links: DeclaredLinks,
+}
+
+/// The declaration a document makes when read as `kind`: its `(name, tag)`,
+/// with an empty tag for a launcher, plus a node's links.
 ///
-/// The single place that maps a kind to its parser and pulls the identity out.
-/// Both the walk (discovering items) and [`resolve_declared_item`] (verifying
-/// a listed path still declares what it was filed under) go through it, so the
-/// two ways of learning what a file declares cannot disagree. `Err` carries why
-/// the file is not a usable `kind`: it does not parse as one, carries a
-/// `peppy_schema` that is not this kind's, or (for a launcher) has no usable
-/// file stem to take a name from.
-fn identity_of(
+/// The single place that maps a kind to its parser and pulls the declaration
+/// out. Both the walk (discovering items) and [`resolve_declared_item`]
+/// (verifying a listed path still declares what it was filed under) go
+/// through it, so the two ways of learning what a file declares cannot
+/// disagree. `Err` carries why the file is not a usable `kind`: it does not
+/// parse as one, carries a `peppy_schema` that is not this kind's, or (for a
+/// launcher) has no usable file stem to take a name from.
+fn declaration_of(
     kind: RepoItemKind,
     content: &str,
     path: &Path,
-) -> std::result::Result<(String, String), String> {
+) -> std::result::Result<Declaration, String> {
+    let identity = |name: String, tag: String| Declaration {
+        name,
+        tag,
+        links: DeclaredLinks::default(),
+    };
     match kind {
         RepoItemKind::Node => {
             let parsed = NodeConfigParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok((
-                parsed.manifest.name.as_str().to_owned(),
-                parsed.manifest.tag.clone(),
-            ))
+            Ok(Declaration {
+                name: parsed.manifest.name.as_str().to_owned(),
+                tag: parsed.manifest.tag.clone(),
+                links: DeclaredLinks::from(&parsed.manifest),
+            })
         }
         RepoItemKind::Launcher => {
             let parsed = PeppyLauncherParser::from_content(content).map_err(|e| e.to_string())?;
@@ -594,18 +627,18 @@ fn identity_of(
                 .and_then(|s| s.to_str())
                 .filter(|stem| !stem.is_empty())
                 .ok_or_else(|| "has no usable file stem".to_owned())?;
-            Ok((stem.to_owned(), String::new()))
+            Ok(identity(stem.to_owned(), String::new()))
         }
         RepoItemKind::Contract => {
             let parsed = PeppyContractParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok((
+            Ok(identity(
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
             ))
         }
         RepoItemKind::Pairing => {
             let parsed = PeppyPairingParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok((
+            Ok(identity(
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
             ))
@@ -613,7 +646,7 @@ fn identity_of(
         RepoItemKind::McpExposure => {
             let parsed =
                 PeppyMcpExposureParser::from_content(content).map_err(|e| e.to_string())?;
-            Ok((
+            Ok(identity(
                 parsed.manifest.name.as_str().to_owned(),
                 parsed.manifest.tag.clone(),
             ))
@@ -930,7 +963,7 @@ struct EntryContext<'a> {
 ///
 /// A file that does not name a usable identity (non-UTF-8 bytes, a parse
 /// failure, a launcher with no usable stem) is skipped with a debug line
-/// rather than failing the walk: the strict parse in [`identity_of`] catches
+/// rather than failing the walk: the strict parse in [`declaration_of`] catches
 /// structural problems the cheap schema peek can't, and a repository is free
 /// to hold `.json5` files that declare nothing.
 fn collect_item(
@@ -965,8 +998,10 @@ fn collect_item(
             return;
         }
     };
-    let (name, tag) = match identity_of(kind, content, ctx.config_path) {
-        Ok(identity) => identity,
+    // The walk records where an identity is declared and nothing else, so
+    // a node's links are not carried into the index.
+    let Declaration { name, tag, .. } = match declaration_of(kind, content, ctx.config_path) {
+        Ok(declaration) => declaration,
         Err(e) => {
             skip(e);
             return;
@@ -1384,6 +1419,86 @@ mod tests {
         );
     }
 
+    /// Reading a repository records the contract and pairing links each
+    /// node manifest declares, exactly as the manifest spells them, so a
+    /// search over the cache answers without re-reading the manifest.
+    #[test]
+    fn read_published_items_records_the_links_each_node_declares() {
+        use crate::services::repo::cache::test_support::{
+            consumes, implements, observes, participates,
+        };
+        use config::node::Cardinality;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let pin = "c".repeat(64);
+        std::fs::create_dir_all(repo.join("nodes/linked")).unwrap();
+        std::fs::write(
+            repo.join("nodes/linked").join(NODE_CONFIG_FILE),
+            format!(
+                r#"{{
+  peppy_schema: "node/v1",
+  manifest: {{
+    name: "linked",
+    tag: "v1",
+    implements: [{{ name: "rgb_camera", tag: "v1", link_id: "camera", sha256: "{pin}" }}],
+    depends_on: {{
+      contracts: [{{ name: "depth", tag: "v2", link_id: "depth_in", cardinality: "zero_or_one" }}],
+      pairings: [{{ name: "arm_link", tag: "v1", role: "arm", link_id: "arm", optional: true }}],
+      pairing_observers: [{{ name: "arm_link", tag: "v1", role: "controller", link_id: "watch" }}],
+    }},
+  }},
+  interfaces: {{ topics: {{ consumes: [{{ link_id: "watch", name: "joint_commands" }}] }} }},
+  execution: {{ language: "rust", build_cmd: ["true"], run_cmd: ["true"] }},
+}}"#
+            ),
+        )
+        .unwrap();
+        write_node_json5(&repo.join("nodes/plain"), "plain", "v1");
+        let index = generate_repository_index(&repo).expect("index the repository");
+        write_repository_index(&repo, &index).expect("write the index");
+
+        let items = read_published_items(
+            &repo,
+            &ReadSource::Fs {
+                excluded: Vec::new(),
+            },
+        )
+        .expect("read the published items");
+        let entries = build_cache_entries(items).expect("build cache entries");
+        let node = |name: &str| {
+            entries
+                .nodes
+                .iter()
+                .find(|n| n.node_name.as_str() == name)
+                .unwrap_or_else(|| panic!("{name} is cached"))
+        };
+
+        assert_eq!(
+            node("linked").links,
+            DeclaredLinks {
+                implements: vec![implements("rgb_camera", "v1", "camera", Some(&pin))],
+                contracts: vec![consumes(
+                    "depth",
+                    "v2",
+                    "depth_in",
+                    Cardinality::ZeroOrOne,
+                    None
+                )],
+                pairings: vec![participates("arm_link", "v1", "arm", "arm", true, None)],
+                pairing_observers: vec![observes(
+                    "arm_link",
+                    "v1",
+                    "controller",
+                    "watch",
+                    Cardinality::One,
+                    None
+                )],
+            }
+        );
+        assert_eq!(node("plain").links, DeclaredLinks::default());
+    }
+
     /// A repository with no index publishes nothing, and the refusal names
     /// the file and how to produce it. There is no walk to fall back to:
     /// what a machine caches is what the repository stated, or nothing.
@@ -1589,12 +1704,12 @@ mod tests {
         let resolved: Vec<(&str, String, String, String)> = committed
             .declared_items()
             .map(|item| {
-                let bytes = resolve_declared_item(&root, &item).expect("resolves");
+                let resolved = resolve_declared_item(&root, &item).expect("resolves");
                 (
                     item.kind.as_str(),
                     identity_label(&item),
                     item.path.as_str().to_owned(),
-                    fingerprint_for_bytes(&bytes),
+                    fingerprint_for_bytes(&resolved.bytes),
                 )
             })
             .collect();

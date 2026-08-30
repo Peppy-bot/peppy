@@ -5,9 +5,11 @@ mod init;
 mod list;
 mod refresh;
 mod remove;
+mod search;
 
 pub use index::{CheckScope, check_index, repo_index};
 pub use init::repo_init_with_dirs;
+pub use search::search_rendered;
 
 use std::sync::Arc;
 
@@ -64,6 +66,20 @@ pub enum RepoCommands {
     },
     /// List configured repositories
     List,
+    /// Show who uses a contract or pairing: the nodes that implement,
+    /// consume, participate in, or observe it, and whether their pins match
+    /// what is published.
+    ///
+    /// Reads this machine's repository caches, so it reflects the last
+    /// `peppy repo refresh`; needs no daemon, and `--core-node` has no
+    /// effect on it.
+    Search {
+        /// The contract or pairing, as `<name>:<tag>`.
+        identity: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Update repository indexes
     #[clap(alias = "update")]
     Refresh,
@@ -126,6 +142,7 @@ impl Command for RepoCommand {
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),
+            RepoCommands::Search { identity, json } => search::repo_search(&identity, json),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {
                 source,

@@ -4769,12 +4769,16 @@ fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile
     .expect("node manifest");
     let cache_dir = root.path().join("cache");
     fs::create_dir_all(&cache_dir).expect("cache dir");
+    // The links are serialized from the type `repo refresh` writes, so a
+    // change to their shape reaches this fixture.
+    let links = serde_json::to_string(&core_node::DeclaredLinks::default()).expect("links");
     fs::write(
         cache_dir.join("nodes.json5"),
         format!(
             r#"[{{ node_name: "viewer", node_tag: "v1",
                   sha256: "{}",
-                  origin: {{ source_type: "fs", path: "{}" }} }}]"#,
+                  origin: {{ source_type: "fs", path: "{}" }},
+                  links: {links} }}]"#,
             "0".repeat(64),
             node_dir.join("peppy.json5").display(),
         ),

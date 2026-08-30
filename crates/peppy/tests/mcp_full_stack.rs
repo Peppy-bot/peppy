@@ -816,7 +816,7 @@ impl Stack {
     }
 
     async fn stack_list(&self) -> String {
-        list_nodes_collecting(&self.ctx, false)
+        list_nodes_collecting(&self.ctx, false, None)
             .await
             .expect("stack list answers")
             .output
