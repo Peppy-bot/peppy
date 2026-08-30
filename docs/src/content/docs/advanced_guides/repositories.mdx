@@ -100,14 +100,20 @@ rgb_camera:v1
 
 Implemented by 2 indexed nodes
   https://github.com/Peppy-bot/nodes-hub.git (ref: main):
-    NODE              TAG  SLOT    PIN                     PATH
-    uvc_camera_linux  v1   camera  pin a4e66999 (current)  uvc_camera/linux/peppy.json5
-    realsense_d4xx    v1   camera  unpinned                realsense_d4xx/peppy.json5
+    ┌──────────────────┬─────┬────────┬────────────────────────┬──────────────────────────────┐
+    │ NODE             │ TAG │ SLOT   │ PIN                    │ PATH                         │
+    ├──────────────────┼─────┼────────┼────────────────────────┼──────────────────────────────┤
+    │ uvc_camera_linux │ v1  │ camera │ pin a4e66999 (current) │ uvc_camera/linux/peppy.json5 │
+    │ realsense_d4xx   │ v1  │ camera │ unpinned               │ realsense_d4xx/peppy.json5   │
+    └──────────────────┴─────┴────────┴────────────────────────┴──────────────────────────────┘
 
 Consumed by 1 indexed node
   https://github.com/Peppy-bot/nodes-hub.git (ref: main):
-    NODE              TAG  SLOT                  PIN       PATH
-    episode_recorder  v1   camera (one_or_more)  unpinned  example_robot/episode_recorder/peppy.json5
+    ┌──────────────────┬─────┬──────────────────────┬──────────┬────────────────────────────────────────────┐
+    │ NODE             │ TAG │ SLOT                 │ PIN      │ PATH                                       │
+    ├──────────────────┼─────┼──────────────────────┼──────────┼────────────────────────────────────────────┤
+    │ episode_recorder │ v1  │ camera (one_or_more) │ unpinned │ example_robot/episode_recorder/peppy.json5 │
+    └──────────────────┴─────┴──────────────────────┴──────────┴────────────────────────────────────────────┘
 ```
 
 The `PIN` column says what a sync does with the claim's `sha256`:

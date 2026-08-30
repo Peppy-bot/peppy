@@ -231,9 +231,10 @@ fn section<T>(
     out
 }
 
-/// A header row, then the data rows, every column but the last padded to
-/// the group's widest value, headers included. Padding is measured on the
-/// plain text and applied before painting, so colour never skews a column.
+/// A bordered table: top rule, header row, rule, data rows, bottom rule,
+/// every cell padded to the column's widest value, headers included.
+/// Padding is measured on the plain text and applied before painting, so
+/// colour never skews a column; the rules and separators are never painted.
 fn table(headers: &[&str], rows: &[(Vec<Cell>, String)], colorize: bool) -> String {
     let widths: Vec<usize> = headers
         .iter()
@@ -247,31 +248,46 @@ fn table(headers: &[&str], rows: &[(Vec<Cell>, String)], colorize: bool) -> Stri
         })
         .collect();
     let header_cells: Vec<Cell> = headers.iter().copied().map(Cell::plain).collect();
-    let mut out = rendered_row(&header_cells, "", &widths, colorize);
+    let mut out = rule(&widths, '┌', '┬', '┐');
+    out.push_str(&rendered_row(&header_cells, "", &widths, colorize));
+    out.push_str(&rule(&widths, '├', '┼', '┤'));
     for (cells, suffix) in rows {
         out.push_str(&rendered_row(cells, suffix, &widths, colorize));
     }
+    out.push_str(&rule(&widths, '└', '┴', '┘'));
     out
 }
 
-/// One table line under the section's repository label.
+/// One horizontal rule of the table's outline, spanning every column plus
+/// its one-space cell padding on each side.
+fn rule(widths: &[usize], left: char, junction: char, right: char) -> String {
+    let mut out = String::from("    ");
+    out.push(left);
+    for (column, width) in widths.iter().enumerate() {
+        out.push_str(&"─".repeat(width + 2));
+        out.push(match column + 1 == widths.len() {
+            true => right,
+            false => junction,
+        });
+    }
+    out.push('\n');
+    out
+}
+
+/// One table line under the section's repository label; the shadowing note
+/// trails the row outside the outline.
 fn rendered_row(cells: &[Cell], suffix: &str, widths: &[usize], colorize: bool) -> String {
     let mut out = String::from("    ");
     for (column, cell) in cells.iter().enumerate() {
-        let last = column + 1 == cells.len();
-        let text = if last {
-            cell.text.clone()
-        } else {
-            format!("{:<width$}", cell.text, width = widths[column])
-        };
+        out.push_str("│ ");
+        let text = format!("{:<width$}", cell.text, width = widths[column]);
         out.push_str(&match cell.colour {
             Some(colour) => paint(&text, colour, colorize),
             None => text,
         });
-        if !last {
-            out.push_str("  ");
-        }
+        out.push(' ');
     }
+    out.push('│');
     out.push_str(suffix);
     out.push('\n');
     out
@@ -507,24 +523,36 @@ mod tests {
             "",
             "Implemented by 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    NODE              TAG  SLOT    PIN                     PATH",
-            "    uvc_camera_linux  v1   camera  pin aaaaaaaa (current)  uvc_camera/linux/peppy.json5",
-            "    realsense_d4xx    v1   camera  unpinned                realsense_d4xx/peppy.json5",
+            "    ┌──────────────────┬─────┬────────┬────────────────────────┬──────────────────────────────┐",
+            "    │ NODE             │ TAG │ SLOT   │ PIN                    │ PATH                         │",
+            "    ├──────────────────┼─────┼────────┼────────────────────────┼──────────────────────────────┤",
+            "    │ uvc_camera_linux │ v1  │ camera │ pin aaaaaaaa (current) │ uvc_camera/linux/peppy.json5 │",
+            "    │ realsense_d4xx   │ v1  │ camera │ unpinned               │ realsense_d4xx/peppy.json5   │",
+            "    └──────────────────┴─────┴────────┴────────────────────────┴──────────────────────────────┘",
             "",
             "Consumed by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    NODE              TAG  SLOT                  PIN       PATH",
-            "    episode_recorder  v1   camera (one_or_more)  unpinned  example_robot/episode_recorder/peppy.json5",
+            "    ┌──────────────────┬─────┬──────────────────────┬──────────┬────────────────────────────────────────────┐",
+            "    │ NODE             │ TAG │ SLOT                 │ PIN      │ PATH                                       │",
+            "    ├──────────────────┼─────┼──────────────────────┼──────────┼────────────────────────────────────────────┤",
+            "    │ episode_recorder │ v1  │ camera (one_or_more) │ unpinned │ example_robot/episode_recorder/peppy.json5 │",
+            "    └──────────────────┴─────┴──────────────────────┴──────────┴────────────────────────────────────────────┘",
             "",
             "Pairing roles played by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    NODE    TAG  ROLE    SLOT               PIN       PATH",
-            "    viewer  v1   viewer  camera (optional)  unpinned  viewer/peppy.json5",
+            "    ┌────────┬─────┬────────┬───────────────────┬──────────┬────────────────────┐",
+            "    │ NODE   │ TAG │ ROLE   │ SLOT              │ PIN      │ PATH               │",
+            "    ├────────┼─────┼────────┼───────────────────┼──────────┼────────────────────┤",
+            "    │ viewer │ v1  │ viewer │ camera (optional) │ unpinned │ viewer/peppy.json5 │",
+            "    └────────┴─────┴────────┴───────────────────┴──────────┴────────────────────┘",
             "",
             "Observed by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    NODE       TAG  ROLE    SLOT                 PIN                                              PATH",
-            "    dashboard  v1   camera  watch (zero_or_one)  pin cccccccc (cached copy in /home/user/mirror)  dashboard/peppy.json5  (shadowed by /home/user/workspace)",
+            "    ┌───────────┬─────┬────────┬─────────────────────┬─────────────────────────────────────────────────┬───────────────────────┐",
+            "    │ NODE      │ TAG │ ROLE   │ SLOT                │ PIN                                             │ PATH                  │",
+            "    ├───────────┼─────┼────────┼─────────────────────┼─────────────────────────────────────────────────┼───────────────────────┤",
+            "    │ dashboard │ v1  │ camera │ watch (zero_or_one) │ pin cccccccc (cached copy in /home/user/mirror) │ dashboard/peppy.json5 │  (shadowed by /home/user/workspace)",
+            "    └───────────┴─────┴────────┴─────────────────────┴─────────────────────────────────────────────────┴───────────────────────┘",
             "",
         ]
         .join("\n");
@@ -558,12 +586,12 @@ mod tests {
 
         let plain = render_human(&reference(), &report, false);
         assert!(
-            plain.contains("    stale  v1   camera  pin bbbbbbbb (not in cache)"),
+            plain.contains("    │ stale │ v1  │ camera │ pin bbbbbbbb (not in cache)"),
             "{plain}"
         );
         assert!(
             plain.contains(
-                "    typo   v1   camera  unusable pin (fingerprint is not 64 hexadecimal characters: abc)  typo/peppy.json5"
+                "    │ typo  │ v1  │ camera │ unusable pin (fingerprint is not 64 hexadecimal characters: abc) │ typo/peppy.json5"
             ),
             "{plain}"
         );

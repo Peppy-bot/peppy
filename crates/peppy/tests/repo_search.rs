@@ -118,9 +118,10 @@ fn repo_search_reports_a_contracts_implementers_and_consumers() {
         "{text}"
     );
     assert!(text.contains("\nImplemented by 1 indexed node\n"), "{text}");
+    assert!(text.contains(&format!("  {label}:\n    ┌─")), "{text}");
     assert!(
         text.contains(&format!(
-            "  {label}:\n    NODE        TAG  SLOT    PIN                     PATH\n    uvc_camera  v1   camera  pin {} (current)  {}\n",
+            "    │ uvc_camera │ v1  │ camera │ pin {} (current) │ {} │\n",
             &contract_sha[..8],
             repo_dir.join("uvc_camera").join(NODE_CONFIG_FILE).display()
         )),
@@ -129,7 +130,7 @@ fn repo_search_reports_a_contracts_implementers_and_consumers() {
     assert!(text.contains("\nConsumed by 1 indexed node\n"), "{text}");
     assert!(
         text.contains(&format!(
-            "    recorder  v1   frames (zero_or_one)  unpinned  {}\n",
+            "    │ recorder │ v1  │ frames (zero_or_one) │ unpinned │ {} │\n",
             repo_dir.join("recorder").join(NODE_CONFIG_FILE).display()
         )),
         "{text}"
@@ -166,12 +167,12 @@ fn repo_search_reports_a_pairings_participants_and_observers() {
         "{text}"
     );
     assert!(
-        text.contains("    follower_arm  v1   arm   link (optional)  unpinned  "),
+        text.contains("    │ follower_arm │ v1  │ arm  │ link (optional) │ unpinned │ "),
         "{text}"
     );
     assert!(text.contains("\nObserved by 1 indexed node\n"), "{text}");
     assert!(
-        text.contains("    arm_logger  v1   controller  watch (one)  unpinned  "),
+        text.contains("    │ arm_logger │ v1  │ controller │ watch (one) │ unpinned │ "),
         "{text}"
     );
     assert!(!text.contains("Implemented by"), "{text}");
