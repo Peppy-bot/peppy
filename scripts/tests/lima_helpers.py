@@ -359,12 +359,18 @@ def setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
 #
 # Nothing here may run before the guest has finished booting. `limactl start`
 # returns as soon as ssh answers, which is well before PID 1 has drained its
-# boot transaction, and logind serves enable-linger by asking PID 1 to start
-# user@<uid>.service and waiting for that job. Called into a still-settling
-# guest the reply outruns sd-bus's ~25s timeout and comes back as "Could not
-# enable linger: Connection timed out" -- the CI failure these waits exist to
-# prevent. Both waits are bounded and advisory: a guest that never reaches a
-# settled state still gets its linger attempts instead of hanging here.
+# boot transaction. Both waits are bounded and advisory.
+#
+# Linger is established through its on-disk form rather than by asking logind
+# for it. `loginctl enable-linger` is served by logind over the bus, and these
+# guests can boot into a logind that never answers it: eight 25s calls in a
+# row came back "Could not enable linger: Connection timed out" while
+# `systemctl list-jobs` sat empty, twice on the same commit, so neither
+# settling nor retrying reaches such an instance. Writing the flag file,
+# restarting logind so it enumerates the linger directory afresh, and starting
+# the user manager through PID 1 need nothing from the wedged instance; the
+# one `loginctl enable-linger` at the end verifies that the restarted logind
+# serves the API install.sh's checks rely on.
 _UBUNTU_PROVISION_SCRIPT = """
 set -eu
 export DEBIAN_FRONTEND=noninteractive
@@ -374,26 +380,37 @@ if command -v cloud-init >/dev/null 2>&1; then
 fi
 timeout 120 systemctl is-system-running --wait >/dev/null 2>&1 || true
 
-# Enable linger while logind is healthy, before the dbus install can restart
-# the system bus. A busy logind answers by timing out, so each failed attempt
-# has already waited ~25s: the attempt count, not the sleep, is the budget.
-for attempt in 1 2 3 4 5 6 7 8; do
-    if sudo timeout 30 loginctl enable-linger "$(id -un)"; then
-        break
-    fi
-    if [ "$attempt" -eq 8 ]; then
-        echo "provision: could not enable linger after 8 attempts" >&2
-        # Whatever logind is stuck behind shows up in one of these two: a boot
-        # job that never completed, or logind's own log. Without them the next
-        # occurrence is as opaque as the one that prompted this.
-        echo "--- systemctl list-jobs ---" >&2
-        systemctl list-jobs >&2 || true
-        echo "--- journalctl -b -u systemd-logind ---" >&2
-        sudo journalctl -b -u systemd-logind --no-pager -n 50 >&2 || true
-        exit 1
-    fi
-    sleep 2
-done
+# Whatever logind is stuck behind shows up in one of these: a boot job that
+# never completed, the unit's own state, or its log. Without them the next
+# occurrence is as opaque as the one that prompted this.
+diagnose() {
+    echo "provision: $1" >&2
+    echo "--- systemctl list-jobs ---" >&2
+    systemctl list-jobs >&2 || true
+    echo "--- systemctl status systemd-logind ---" >&2
+    sudo systemctl status systemd-logind --no-pager >&2 || true
+    echo "--- journalctl -b -u systemd-logind ---" >&2
+    sudo journalctl -b -u systemd-logind --no-pager -n 50 >&2 || true
+    exit 1
+}
+
+# Enable linger before the dbus install can restart the system bus. The flag
+# file goes in first so the restarted logind enumerates the user as lingering
+# the moment it comes up. The 120s timeouts leave systemd room to SIGKILL a
+# logind that ignores its stop signal (90s) before they fire.
+user="$(id -un)"
+sudo mkdir -p /var/lib/systemd/linger
+sudo touch "/var/lib/systemd/linger/${user}"
+sudo timeout 120 systemctl restart systemd-logind \\
+    || diagnose "could not restart systemd-logind"
+sudo timeout 120 systemctl start "user@$(id -u).service" \\
+    || diagnose "could not start the user manager"
+
+# install.sh's check_linger_enabled asks logind, not the linger directory, so
+# a logind that cannot answer has to fail provisioning here, with its state on
+# record, not twenty tests later.
+sudo timeout 30 loginctl enable-linger "${user}" \\
+    || diagnose "logind does not serve enable-linger after a restart"
 
 sudo apt-get update -qq
 sudo apt-get install -y -qq dbus-user-session
@@ -409,10 +426,11 @@ done
 """
 
 
-# Worst case for the script above: both boot waits run out (120s each), every
-# linger attempt spends its full 30s, and apt still has to fetch a package.
-# The budget has to cover that, or a slow guest trades the script's own
-# diagnostics for a bare TimeoutExpired traceback.
+# Worst case for the script above: both boot waits run out (120s each), the
+# logind restart and the user manager start each spend their full 120s, the
+# verification call its 30s, and apt still has to fetch a package. The budget
+# has to cover that, or a slow guest trades the script's own diagnostics for
+# a bare TimeoutExpired traceback.
 _PROVISION_TIMEOUT = 900
 
 

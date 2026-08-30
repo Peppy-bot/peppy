@@ -165,18 +165,25 @@ def test_non_ubuntu_guests_are_not_provisioned(tmp_path: Path) -> None:
     assert calls == []
 
 
-def test_provisioning_settles_the_guest_before_enabling_linger() -> None:
+def test_provisioning_orders_linger_around_the_logind_restart() -> None:
     """Order matters more than any single command in that script.
 
     `limactl start` returns once ssh answers, while PID 1 may still be working
-    through its boot transaction -- and logind serves enable-linger by waiting
-    on a PID 1 job. Asking for linger first is what produced "Could not enable
-    linger: Connection timed out" five times in a row in CI.
+    through its boot transaction, so the settle waits come first. The linger
+    flag file must exist before logind restarts (a fresh logind enumerates the
+    linger directory at startup), the restart must precede the enable-linger
+    verification (a wedged boot-time instance is the one that cannot answer
+    it), and the verification must precede the dbus install, which can restart
+    the system bus.
     """
     script = _UBUNTU_PROVISION_SCRIPT
 
-    assert script.index("cloud-init status --wait") < script.index("enable-linger")
-    assert script.index("is-system-running --wait") < script.index("enable-linger")
+    flag_file = script.index("/var/lib/systemd/linger")
+    restart = script.index("systemctl restart systemd-logind")
+    verify = script.index("loginctl enable-linger")
+    assert script.index("cloud-init status --wait") < flag_file
+    assert script.index("is-system-running --wait") < flag_file
+    assert flag_file < restart < verify < script.index("apt-get install")
 
 
 def test_provisioning_reports_captured_output_when_it_times_out(
