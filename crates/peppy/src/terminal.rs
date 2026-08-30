@@ -20,6 +20,17 @@ pub fn colors_enabled() -> bool {
     std::io::stdout().is_terminal() && !no_color_requested()
 }
 
+/// The stdout column budget for width-fitted output: the terminal's width
+/// when stdout is one, `None` when stdout is piped, so redirected output
+/// keeps every row on one line.
+pub(crate) fn stdout_width() -> Option<usize> {
+    std::io::stdout().is_terminal().then(|| {
+        crossterm::terminal::size()
+            .map(|(width, _)| width as usize)
+            .unwrap_or(80)
+    })
+}
+
 /// Whether the `NO_COLOR` convention asks for plain output: the variable set to
 /// a non-empty value. An empty `NO_COLOR` is treated as unset, per the
 /// convention at https://no-color.org.

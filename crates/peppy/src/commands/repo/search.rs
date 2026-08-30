@@ -11,21 +11,39 @@ use crate::error::{Error, Result};
 pub(super) fn repo_search(identity: &str, json: bool) -> Result<()> {
     print!(
         "{}",
-        search_rendered(&PeppyDirs::default(), identity, json)?
+        search_rendered(
+            &PeppyDirs::default(),
+            identity,
+            json,
+            crate::terminal::stdout_width()
+        )?
     );
     Ok(())
 }
 
 /// The search as the command prints it, against the Peppy home it names,
-/// so a test reads the text instead of capturing stdout.
-pub fn search_rendered(peppy_dirs: &PeppyDirs, identity: &str, json: bool) -> Result<String> {
+/// so a test reads the text instead of capturing stdout. `max_width` caps
+/// the human tables at that many columns (the command passes the
+/// terminal's width); `None` keeps every row on one line, which is what
+/// piped output gets.
+pub fn search_rendered(
+    peppy_dirs: &PeppyDirs,
+    identity: &str,
+    json: bool,
+    max_width: Option<usize>,
+) -> Result<String> {
     let reference = ItemRef::parse(identity, "search").map_err(Error::ExecutionFailed)?;
     let report = core_node::search_identity(peppy_dirs, &reference.name, &reference.tag)
         .map_err(Error::ExecutionFailed)?;
     Ok(if json {
         render_json(&reference, &report)
     } else {
-        render_human(&reference, &report, crate::terminal::colors_enabled())
+        render_human(
+            &reference,
+            &report,
+            crate::terminal::colors_enabled(),
+            max_width,
+        )
     })
 }
 
@@ -33,7 +51,12 @@ pub fn search_rendered(peppy_dirs: &PeppyDirs, identity: &str, json: bool) -> Re
 /// one section per way of using the identity, each grouped by repository
 /// the way `repo list` groups nodes. A section with no hits is left out;
 /// a report with none says so.
-fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> String {
+fn render_human(
+    reference: &ItemRef,
+    report: &SearchReport,
+    colorize: bool,
+    max_width: Option<usize>,
+) -> String {
     let mut out = format!("{reference}\n");
     let published: Vec<String> = [("contract", &report.contract), ("pairing", &report.pairing)]
         .into_iter()
@@ -65,6 +88,7 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
             ]
         },
         colorize,
+        max_width,
     ));
     sections.push_str(&section(
         "Consumed by",
@@ -78,6 +102,7 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
             ]
         },
         colorize,
+        max_width,
     ));
     sections.push_str(&section(
         "Pairing roles played by",
@@ -92,6 +117,7 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
             ]
         },
         colorize,
+        max_width,
     ));
     sections.push_str(&section(
         "Observed by",
@@ -106,6 +132,7 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
             ]
         },
         colorize,
+        max_width,
     ));
     if sections.is_empty() {
         out.push_str(&format!(
@@ -180,6 +207,7 @@ fn section<T>(
     node_of: impl Fn(&T) -> &IndexedNode,
     cells_of: impl Fn(&T) -> Vec<Cell>,
     colorize: bool,
+    max_width: Option<usize>,
 ) -> String {
     if hits.is_empty() {
         return String::new();
@@ -225,28 +253,53 @@ fn section<T>(
                 (cells, suffix)
             })
             .collect();
-        out.push_str(&table(headers, &rows, colorize));
+        out.push_str(&table(headers, &rows, colorize, max_width));
         start = end;
     }
     out
 }
 
 /// A bordered table: top rule, header row, rule, data rows, bottom rule,
-/// every cell padded to the column's widest value, headers included.
-/// Padding is measured on the plain text and applied before painting, so
-/// colour never skews a column; the rules and separators are never painted.
-fn table(headers: &[&str], rows: &[(Vec<Cell>, String)], colorize: bool) -> String {
-    let widths: Vec<usize> = headers
+/// every cell padded to its column's width. Columns take their widest
+/// value, headers included; under `max_width` (the whole line's budget,
+/// indent and outline included) the widest columns give way first, ties
+/// rightmost, never below their header's width, and a cell longer than
+/// its column wraps onto continuation lines inside the outline. Padding
+/// is measured on the plain text and applied before painting, so colour
+/// never skews a column; the rules and separators are never painted.
+fn table(
+    headers: &[&str],
+    rows: &[(Vec<Cell>, String)],
+    colorize: bool,
+    max_width: Option<usize>,
+) -> String {
+    let mut widths: Vec<usize> = headers
         .iter()
         .enumerate()
         .map(|(column, header)| {
             rows.iter()
-                .map(|(cells, _)| cells[column].text.len())
-                .chain([header.len()])
+                .map(|(cells, _)| cells[column].text.chars().count())
+                .chain([header.chars().count()])
                 .max()
                 .unwrap_or(0)
         })
         .collect();
+    if let Some(limit) = max_width {
+        // `│ cell │ cell │`: three outline characters per column plus the
+        // closing one, and the section indent.
+        let decorations = INDENT.len() + 3 * headers.len() + 1;
+        let budget = limit.saturating_sub(decorations);
+        let floors: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
+        while widths.iter().sum::<usize>() > budget {
+            let Some(column) = (0..widths.len())
+                .filter(|&column| widths[column] > floors[column])
+                .max_by_key(|&column| (widths[column], column))
+            else {
+                break;
+            };
+            widths[column] -= 1;
+        }
+    }
     let header_cells: Vec<Cell> = headers.iter().copied().map(Cell::plain).collect();
     let mut out = rule(&widths, '┌', '┬', '┐');
     out.push_str(&rendered_row(&header_cells, "", &widths, colorize));
@@ -258,10 +311,13 @@ fn table(headers: &[&str], rows: &[(Vec<Cell>, String)], colorize: bool) -> Stri
     out
 }
 
+/// The indent every table line carries under its repository label.
+const INDENT: &str = "    ";
+
 /// One horizontal rule of the table's outline, spanning every column plus
 /// its one-space cell padding on each side.
 fn rule(widths: &[usize], left: char, junction: char, right: char) -> String {
-    let mut out = String::from("    ");
+    let mut out = String::from(INDENT);
     out.push(left);
     for (column, width) in widths.iter().enumerate() {
         out.push_str(&"─".repeat(width + 2));
@@ -274,23 +330,52 @@ fn rule(widths: &[usize], left: char, junction: char, right: char) -> String {
     out
 }
 
-/// One table line under the section's repository label; the shadowing note
-/// trails the row outside the outline.
+/// One table row: a line per wrap level, cells wrapped to their column's
+/// width, a painted cell's every piece painted. The shadowing note trails
+/// the row's first line outside the outline.
 fn rendered_row(cells: &[Cell], suffix: &str, widths: &[usize], colorize: bool) -> String {
-    let mut out = String::from("    ");
-    for (column, cell) in cells.iter().enumerate() {
-        out.push_str("│ ");
-        let text = format!("{:<width$}", cell.text, width = widths[column]);
-        out.push_str(&match cell.colour {
-            Some(colour) => paint(&text, colour, colorize),
-            None => text,
-        });
-        out.push(' ');
+    let wrapped_cells: Vec<Vec<String>> = cells
+        .iter()
+        .zip(widths)
+        .map(|(cell, &width)| wrapped(&cell.text, width))
+        .collect();
+    let lines = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
+    let mut out = String::new();
+    for line in 0..lines {
+        out.push_str(INDENT);
+        for (column, cell) in cells.iter().enumerate() {
+            out.push_str("│ ");
+            let piece = wrapped_cells[column]
+                .get(line)
+                .map(String::as_str)
+                .unwrap_or("");
+            let text = format!("{piece:<width$}", width = widths[column]);
+            out.push_str(&match cell.colour {
+                Some(colour) if !piece.is_empty() => paint(&text, colour, colorize),
+                _ => text,
+            });
+            out.push(' ');
+        }
+        out.push('│');
+        if line == 0 {
+            out.push_str(suffix);
+        }
+        out.push('\n');
     }
-    out.push('│');
-    out.push_str(suffix);
-    out.push('\n');
     out
+}
+
+/// `text` in pieces of at most `width` characters, split at character
+/// boundaries; empty text is one empty piece so every cell renders.
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= width {
+        return vec![text.to_owned()];
+    }
+    chars
+        .chunks(width.max(1))
+        .map(|piece| piece.iter().collect())
+        .collect()
 }
 
 /// Machine-readable output: the query, the published documents (`null` when
@@ -515,7 +600,7 @@ mod tests {
     /// them, and the shadowing note where a lower-id repository wins.
     #[test]
     fn human_output_lists_every_section_with_aligned_columns() {
-        let text = render_human(&reference(), &full(), false);
+        let text = render_human(&reference(), &full(), false, None);
 
         let expected = [
             "rgb_camera:v1",
@@ -559,6 +644,82 @@ mod tests {
         assert_eq!(text, expected);
     }
 
+    /// Under a width limit the widest columns give way first, ties
+    /// rightmost, and over-long cells wrap onto continuation lines inside
+    /// the outline, so no outline line exceeds the limit.
+    #[test]
+    fn human_output_wraps_wide_tables_to_the_width_limit() {
+        let text = render_human(&reference(), &full(), false, Some(80));
+
+        for line in text.lines() {
+            if ['│', '┐', '┤', '┘'].iter().any(|c| line.ends_with(*c)) {
+                assert!(line.chars().count() <= 80, "{line}\n{text}");
+            }
+        }
+        let expected = [
+            "rgb_camera:v1",
+            "  contract published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            "",
+            "Implemented by 2 indexed nodes",
+            "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
+            "    ┌──────────────────┬─────┬────────┬────────────────────┬───────────────────┐",
+            "    │ NODE             │ TAG │ SLOT   │ PIN                │ PATH              │",
+            "    ├──────────────────┼─────┼────────┼────────────────────┼───────────────────┤",
+            "    │ uvc_camera_linux │ v1  │ camera │ pin aaaaaaaa (curr │ uvc_camera/linux/ │",
+            "    │                  │     │        │ ent)               │ peppy.json5       │",
+            "    │ realsense_d4xx   │ v1  │ camera │ unpinned           │ realsense_d4xx/pe │",
+            "    │                  │     │        │                    │ ppy.json5         │",
+            "    └──────────────────┴─────┴────────┴────────────────────┴───────────────────┘",
+            "",
+            "Consumed by 1 indexed node",
+            "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
+            "    ┌──────────────────┬─────┬───────────────────┬──────────┬──────────────────┐",
+            "    │ NODE             │ TAG │ SLOT              │ PIN      │ PATH             │",
+            "    ├──────────────────┼─────┼───────────────────┼──────────┼──────────────────┤",
+            "    │ episode_recorder │ v1  │ camera (one_or_mo │ unpinned │ example_robot/ep │",
+            "    │                  │     │ re)               │          │ isode_recorder/p │",
+            "    │                  │     │                   │          │ eppy.json5       │",
+            "    └──────────────────┴─────┴───────────────────┴──────────┴──────────────────┘",
+            "",
+            "Pairing roles played by 1 indexed node",
+            "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
+            "    ┌────────┬─────┬────────┬───────────────────┬──────────┬───────────────────┐",
+            "    │ NODE   │ TAG │ ROLE   │ SLOT              │ PIN      │ PATH              │",
+            "    ├────────┼─────┼────────┼───────────────────┼──────────┼───────────────────┤",
+            "    │ viewer │ v1  │ viewer │ camera (optional) │ unpinned │ viewer/peppy.json │",
+            "    │        │     │        │                   │          │ 5                 │",
+            "    └────────┴─────┴────────┴───────────────────┴──────────┴───────────────────┘",
+            "",
+            "Observed by 1 indexed node",
+            "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
+            "    ┌───────────┬─────┬────────┬───────────────┬───────────────┬───────────────┐",
+            "    │ NODE      │ TAG │ ROLE   │ SLOT          │ PIN           │ PATH          │",
+            "    ├───────────┼─────┼────────┼───────────────┼───────────────┼───────────────┤",
+            "    │ dashboard │ v1  │ camera │ watch (zero_o │ pin cccccccc  │ dashboard/pep │  (shadowed by /home/user/workspace)",
+            "    │           │     │        │ r_one)        │ (cached copy  │ py.json5      │",
+            "    │           │     │        │               │ in /home/user │               │",
+            "    │           │     │        │               │ /mirror)      │               │",
+            "    └───────────┴─────┴────────┴───────────────┴───────────────┴───────────────┘",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected, "\n{text}");
+    }
+
+    /// A limit narrower than the headers still yields a coherent table:
+    /// no column shrinks below its header, the outline holds at that
+    /// floor, and every over-long cell wraps.
+    #[test]
+    fn human_output_never_shrinks_a_column_below_its_header() {
+        let text = render_human(&reference(), &full(), false, Some(10));
+
+        assert!(
+            text.contains("│ NODE │ TAG │ SLOT │ PIN │ PATH │"),
+            "{text}"
+        );
+        assert!(text.contains("│ uvc_ │ v1  │ came │"), "{text}");
+    }
+
     /// The two pin states a sync refuses are red, and only those: the
     /// column is padded on the plain text so colour never skews it.
     #[test]
@@ -584,7 +745,7 @@ mod tests {
             ..empty()
         };
 
-        let plain = render_human(&reference(), &report, false);
+        let plain = render_human(&reference(), &report, false, None);
         assert!(
             plain.contains("    │ stale │ v1  │ camera │ pin bbbbbbbb (not in cache)"),
             "{plain}"
@@ -597,7 +758,7 @@ mod tests {
         );
         assert!(!plain.contains('\x1b'), "no colour without a terminal");
 
-        let coloured = render_human(&reference(), &report, true);
+        let coloured = render_human(&reference(), &report, true, None);
         assert!(
             coloured.contains(&format!("{RED}pin bbbbbbbb (not in cache)")),
             "{coloured}"
@@ -609,6 +770,12 @@ mod tests {
         assert!(
             !coloured.contains(&format!("{RED}stale")),
             "only the pin column is painted: {coloured}"
+        );
+
+        let narrow = render_human(&reference(), &report, true, Some(60));
+        assert!(
+            narrow.matches(RED).count() > coloured.matches(RED).count(),
+            "every piece of a wrapped red pin is painted: {narrow}"
         );
     }
 
@@ -622,7 +789,7 @@ mod tests {
             ..empty()
         };
 
-        let text = render_human(&reference(), &report, false);
+        let text = render_human(&reference(), &report, false, None);
 
         assert_eq!(
             text,
@@ -651,7 +818,7 @@ mod tests {
             ..empty()
         };
 
-        let text = render_human(&reference(), &report, false);
+        let text = render_human(&reference(), &report, false, None);
 
         assert!(
             text.contains("  contract published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaa"),

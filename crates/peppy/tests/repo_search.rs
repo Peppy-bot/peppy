@@ -107,7 +107,7 @@ fn repo_search_reports_a_contracts_implementers_and_consumers() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, contract_sha) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", false).expect("searches");
+    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", false, None).expect("searches");
 
     let label = repo_dir.to_string_lossy();
     assert!(
@@ -150,7 +150,7 @@ fn repo_search_reports_a_pairings_participants_and_observers() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "arm_link:v1", false).expect("searches");
+    let text = search_rendered(&peppy_dirs, "arm_link:v1", false, None).expect("searches");
 
     assert!(
         text.contains(&format!(
@@ -185,7 +185,7 @@ fn repo_search_json_carries_the_report() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, contract_sha) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", true).expect("searches");
+    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", true, None).expect("searches");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
 
     assert_eq!(doc["query"]["name"], "rgb_camera");
@@ -201,7 +201,7 @@ fn repo_search_json_carries_the_report() {
     assert_eq!(doc["participants"], serde_json::json!([]));
     assert_eq!(doc["observers"], serde_json::json!([]));
 
-    let text = search_rendered(&peppy_dirs, "arm_link:v1", true).expect("searches");
+    let text = search_rendered(&peppy_dirs, "arm_link:v1", true, None).expect("searches");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
     assert!(doc["contract"].is_null());
     assert_eq!(doc["pairing"]["repo_id"], 1);
@@ -217,7 +217,7 @@ fn repo_search_refuses_a_reference_without_a_tag() {
     let (_rt, serve, _ctx, _work_dir) = setup();
     let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
-    let err = search_rendered(&peppy_dirs, "rgb_camera", false)
+    let err = search_rendered(&peppy_dirs, "rgb_camera", false, None)
         .expect_err("a bare name is not a reference")
         .to_string();
 
@@ -233,7 +233,7 @@ fn repo_search_says_when_nobody_publishes_or_uses_an_identity() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "nobody:v1", false).expect("an empty answer");
+    let text = search_rendered(&peppy_dirs, "nobody:v1", false, None).expect("an empty answer");
 
     assert_eq!(
         text,
@@ -242,5 +242,32 @@ fn repo_search_says_when_nobody_publishes_or_uses_an_identity() {
          check the name, or register its repository (`peppy repo add`) and run `peppy repo refresh`\n\
          \n\
          No indexed node implements, consumes, participates in, or observes `nobody:v1`\n"
+    );
+}
+
+/// A narrow width limit caps every table at that many columns: the
+/// outline never exceeds it, and the over-long absolute manifest paths
+/// wrap onto continuation lines instead of breaking the box.
+#[test]
+fn repo_search_wraps_tables_to_a_narrow_width() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+    let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
+
+    let wide = search_rendered(&peppy_dirs, "rgb_camera:v1", false, None).expect("searches");
+    let narrow = search_rendered(&peppy_dirs, "rgb_camera:v1", false, Some(60)).expect("searches");
+
+    for line in narrow.lines() {
+        if ['│', '┐', '┤', '┘'].iter().any(|c| line.ends_with(*c)) {
+            assert!(line.chars().count() <= 60, "{line}\n{narrow}");
+        }
+    }
+    let table_lines = |text: &str| {
+        text.lines()
+            .filter(|line| line.starts_with("    │"))
+            .count()
+    };
+    assert!(
+        table_lines(&narrow) > table_lines(&wide),
+        "wrapping adds continuation lines:\n{narrow}"
     );
 }
