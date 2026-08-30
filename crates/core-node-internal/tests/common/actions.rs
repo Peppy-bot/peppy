@@ -13,9 +13,9 @@ use core_node_api::encoding::{
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use gix_url::Url as GitUrl;
-use peppylib::ActionMessenger;
 use peppylib::messaging::{ActionGoalHandle, MessengerHandle, ResultStatus};
 use peppylib::services::health::listen_for_node_health;
+use peppylib::{ActionMessenger, PeppyError};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
@@ -207,6 +207,29 @@ async fn fetch_node_run_result(
             other => Err(format!("action did not complete with a result: {other:?}")),
         },
         Err(err) => Err(format!("Failed to get result: {}", err)),
+    }
+}
+
+/// Waits for a live action to finish without ever fetching its result: reads
+/// its feedback stream, discarding every line, until the server closes it.
+/// The daemon frees the action's single-goal slot before it completes the
+/// goal, and completing is what closes the stream, so by the time this returns
+/// the next goal is admitted. It is the one completion signal a client can
+/// observe without a result fetch; the node stack is not one, because the
+/// entity's stage changes while the work task is still winding down, ahead of
+/// the slot release.
+pub async fn wait_until_action_completes(action_handle: &mut ActionGoalHandle, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, action_handle.on_next_feedback()).await {
+            Ok(Ok(_feedback)) => {}
+            Ok(Err(PeppyError::ActionFeedbackChannelClosed)) => return,
+            Ok(Err(err)) => {
+                panic!("the action's feedback stream failed before it completed: {err}")
+            }
+            Err(_) => panic!("the action did not complete within {timeout:?}"),
+        }
     }
 }
 

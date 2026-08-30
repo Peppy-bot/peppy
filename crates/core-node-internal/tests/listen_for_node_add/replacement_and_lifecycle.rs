@@ -512,7 +512,7 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
     );
     let first_goal_payload = first_goal.encode().expect("failed to encode goal");
 
-    let first_action_handle = ActionMessenger::send_goal(
+    let mut first_action_handle = ActionMessenger::send_goal(
         &started_core_node.caller_handle,
         &started_core_node.core_node_name,
         CALLER_INSTANCE_ID,
@@ -535,25 +535,10 @@ async fn listen_for_node_add_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to settle without polling its action
-    // result (the whole point of this test is that the result is never
-    // requested). With `node_add` and `node_build` now split into two
-    // separate actions, settling means the entity reached `Added` (the
-    // terminal stage of `node_add`); a follow-up `node_build` would be a
-    // separate goal.
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Some(handle) = node_stack.find(FIRST_NODE_NAME, FIRST_NODE_TAG) {
-                let guard = handle.read();
-                if matches!(guard.stage(), node_stack::NodeStage::Added { .. }) {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("first node never reached Added within 30s");
+    // Settle the first action without ever fetching its result, the whole
+    // point of this test: the daemon closes the feedback stream only after
+    // freeing the action slot, so the second goal cannot be refused.
+    wait_until_action_completes(&mut first_action_handle, RESULT_TIMEOUT).await;
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result

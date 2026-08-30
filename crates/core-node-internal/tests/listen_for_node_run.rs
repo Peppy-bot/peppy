@@ -5,7 +5,7 @@ use common::{
     instance_state_in_any_state, poll_until, send_node_add_then_build, send_node_run_and_wait,
     send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
-    start_core_node_with_real_messenger, write_peppy_json5,
+    start_core_node_with_real_messenger, wait_until_action_completes, write_peppy_json5,
 };
 use config::runtime::Name as NodeName;
 use core_node_api::encoding::NodeRunFeedback;
@@ -923,7 +923,7 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
     );
     let first_goal_payload = first_goal.encode().expect("failed to encode first goal");
 
-    let first_action_handle = ActionMessenger::send_goal(
+    let mut first_action_handle = ActionMessenger::send_goal(
         &started.caller_handle,
         &started.core_node_name,
         common::CALLER_INSTANCE_ID,
@@ -947,9 +947,10 @@ async fn listen_for_node_run_abandoned_action_does_not_block_next_goal() {
         "first goal should be accepted"
     );
 
-    // Wait for the first action to complete (but don't poll for result)
-    // The start operation should complete after ready + health checks pass
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Settle the first action without ever fetching its result, the whole
+    // point of this test: the daemon closes the feedback stream only after
+    // freeing the action slot, so the second goal cannot be refused.
+    wait_until_action_completes(&mut first_action_handle, Duration::from_secs(10)).await;
 
     // Now send second goal - this should succeed even though we never polled
     // for the first action's result
