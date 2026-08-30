@@ -192,7 +192,7 @@ fn match_table(
                 paint(colorize, NODE_COLOR, &display_id(item)),
                 item.published.repo_label.clone(),
                 item.published.path.clone(),
-                item.published.sha256.as_str().chars().take(8).collect(),
+                short_fingerprint(item.published.sha256.as_str()),
             ]
         })
         .collect();
@@ -249,9 +249,15 @@ fn slot_cell(link_id: &str, qualifier: Option<&str>, colorize: bool) -> String {
     }
 }
 
+/// The first eight characters of a fingerprint, as every human cell shows
+/// one; the JSON carries fingerprints whole.
+fn short_fingerprint(sha256: &str) -> String {
+    sha256.chars().take(8).collect()
+}
+
 /// What the claim's pin does at sync, in red when a sync would refuse it.
 fn pin_cell(sha256: Option<&str>, pin: &PinStatus, colorize: bool) -> String {
-    let short: String = sha256.unwrap_or_default().chars().take(8).collect();
+    let short = short_fingerprint(sha256.unwrap_or_default());
     match pin {
         PinStatus::Unpinned => "unpinned".to_owned(),
         PinStatus::Current => format!("pin {short} (current)"),
@@ -832,8 +838,6 @@ mod tests {
     /// the plain text so colour never skews it.
     #[test]
     fn human_output_paints_the_pins_a_sync_would_refuse() {
-        use crate::commands::colors::RESET;
-
         let report = SearchReport {
             implementers: vec![
                 Implementer {
@@ -889,7 +893,6 @@ mod tests {
             !coloured.contains(&format!("{RED}stale")),
             "a healthy cell is never red: {coloured}"
         );
-        let _ = RESET;
 
         let narrow = render_human(&query("rgb_camera:v1"), &outcome, true, Some(60));
         assert!(

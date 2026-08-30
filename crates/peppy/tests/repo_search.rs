@@ -435,7 +435,7 @@ fn repo_search_rejects_a_bad_digest() {
 
 /// A query nothing matches is an answer, not an error.
 #[test]
-fn repo_search_says_when_nobody_publishes_or_uses_an_identity() {
+fn repo_search_says_when_nothing_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
 

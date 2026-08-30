@@ -33,8 +33,8 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
     raw: String,
-    name: SearchPattern,
-    tag: Option<SearchPattern>,
+    name: regex::Regex,
+    tag: Option<regex::Regex>,
     digest: Option<ManifestFingerprint>,
 }
 
@@ -84,8 +84,8 @@ impl SearchQuery {
         }
         Ok(Self {
             raw: raw.to_owned(),
-            name: SearchPattern::compile(name)?,
-            tag: tag.map(SearchPattern::compile).transpose()?,
+            name: compile_pattern(name)?,
+            tag: tag.map(compile_pattern).transpose()?,
             digest,
         })
     }
@@ -97,12 +97,12 @@ impl SearchQuery {
 
     /// The name part as typed, for machine-readable output.
     pub fn name_pattern(&self) -> &str {
-        self.name.matcher.as_str()
+        self.name.as_str()
     }
 
     /// The tag part as typed, when the query has one.
     pub fn tag_pattern(&self) -> Option<&str> {
-        self.tag.as_ref().map(|pattern| pattern.matcher.as_str())
+        self.tag.as_ref().map(|pattern| pattern.as_str())
     }
 
     /// The digest, when the query pins one.
@@ -113,39 +113,28 @@ impl SearchQuery {
     /// Whether the patterns match `(name, tag)`. The digest is a filter on
     /// copies, not identities, so it plays no part here.
     fn matches(&self, name: &str, tag: &str) -> bool {
-        self.name.matcher.is_match(name)
+        self.name.is_match(name)
             && self
                 .tag
                 .as_ref()
-                .is_none_or(|pattern| pattern.matcher.is_match(tag))
+                .is_none_or(|pattern| pattern.is_match(tag))
     }
 
     /// Whether the name pattern matches the whole name: such a hit ranks
-    /// ahead of one the pattern merely brushes.
+    /// ahead of one the pattern merely brushes. The leftmost match must
+    /// cover the name from start to end, so the pattern itself needs no
+    /// second, anchored compilation.
     fn names_outright(&self, name: &str) -> bool {
-        self.name.whole.is_match(name)
+        self.name
+            .find(name)
+            .is_some_and(|hit| hit.start() == 0 && hit.end() == name.len())
     }
 }
 
-/// One query part: the unanchored matcher, plus the same pattern anchored
-/// to the whole string so ranking can tell a name the pattern spells out
-/// from one it matches somewhere inside.
-#[derive(Debug, Clone)]
-struct SearchPattern {
-    matcher: regex::Regex,
-    whole: regex::Regex,
-}
-
-impl SearchPattern {
-    fn compile(part: &str) -> Result<Self, String> {
-        let matcher = regex::Regex::new(part).map_err(|e| {
-            format!("search pattern `{part}` is not a valid regular expression: {e}")
-        })?;
-        // Wrapping a valid pattern in a non-capturing group keeps it valid.
-        let whole =
-            regex::Regex::new(&format!("^(?:{part})$")).expect("anchored form of a valid pattern");
-        Ok(Self { matcher, whole })
-    }
+/// Compiles one query part into its unanchored matcher.
+fn compile_pattern(part: &str) -> Result<regex::Regex, String> {
+    regex::Regex::new(part)
+        .map_err(|e| format!("search pattern `{part}` is not a valid regular expression: {e}"))
 }
 
 /// The node a hit belongs to, as `repo list` would show it.
@@ -284,9 +273,10 @@ pub struct SearchReport {
 /// `name:tag`, the outcome also reports who uses that identity, with each
 /// claim's pin checked against the cached documents.
 ///
-/// An unreadable cache is an error, as is a matched identity one
-/// repository publishes twice: neither has an answer a launch would
-/// accept.
+/// An unreadable cache is an error. An identity one repository publishes
+/// twice is an error only when the query settles on it, since it has no
+/// answer a launch would accept; a wider match list keeps its row so the
+/// other matches still answer.
 pub fn search_repo_items(
     peppy_dirs: &PeppyDirs,
     query: &SearchQuery,
@@ -300,11 +290,12 @@ pub fn search_repo_items(
         load_repo_cache(peppy_dirs).map_err(|e| e.to_string())?;
     let repos = listed_repositories(peppy_dirs).map_err(|e| e.to_string())?;
 
-    let mut matches = matched_identities(&nodes, &repos, query)?;
-    matches.extend(matched_identities(&launchers, &repos, query)?);
-    matches.extend(matched_identities(&contracts, &repos, query)?);
-    matches.extend(matched_identities(&pairings, &repos, query)?);
-    matches.extend(matched_identities(&exposures, &repos, query)?);
+    let mut contests = Vec::new();
+    let mut matches = matched_identities(&nodes, &repos, query, &mut contests);
+    matches.extend(matched_identities(&launchers, &repos, query, &mut contests));
+    matches.extend(matched_identities(&contracts, &repos, query, &mut contests));
+    matches.extend(matched_identities(&pairings, &repos, query, &mut contests));
+    matches.extend(matched_identities(&exposures, &repos, query, &mut contests));
     matches.sort_by(|a, b| match_order(a).cmp(&match_order(b)));
 
     let single_identity = matches
@@ -315,6 +306,13 @@ pub fn search_repo_items(
                 .all(|m| m.name == first.name && m.tag == first.tag)
         })
         .map(|first| (first.name.clone(), first.tag.clone()));
+    if let Some((name, tag)) = &single_identity
+        && let Some(contest) = contests
+            .iter()
+            .find(|contest| &contest.name == name && &contest.tag == tag)
+    {
+        return Err(contest.error.clone());
+    }
     let detail = match single_identity {
         Some((name, tag)) => Some(usage_report(
             &nodes, &contracts, &pairings, &repos, &name, &tag,
@@ -329,15 +327,27 @@ pub fn search_repo_items(
     })
 }
 
+/// An identity its winning repository publishes twice: the search refuses
+/// it only once the query settles on it alone.
+struct ContestedIdentity {
+    name: String,
+    tag: String,
+    error: String,
+}
+
 /// Every distinct identity in `entries` the query matches, each with the
 /// copy the answer points at: the one a plain reference resolves to, or,
 /// for a digest query, the highest-priority copy carrying that digest.
 /// An identity none of whose copies carries the digest is not a match.
+/// An identity its winning repository publishes twice is listed by that
+/// repository's first copy in path order and recorded in `contests`, so
+/// the caller decides whether the contest matters.
 fn matched_identities<E: RepoCacheEntry>(
     entries: &[E],
     repos: &[ListedRepo],
     query: &SearchQuery,
-) -> Result<Vec<MatchedItem>, String> {
+    contests: &mut Vec<ContestedIdentity>,
+) -> Vec<MatchedItem> {
     let identities: BTreeSet<(&str, &str)> = entries
         .iter()
         .filter(|e| query.matches(e.name(), e.tag()))
@@ -347,8 +357,27 @@ fn matched_identities<E: RepoCacheEntry>(
     let mut matches = Vec::new();
     for (name, tag) in identities {
         let published = match query.digest() {
-            None => published_doc(entries, repos, name, tag)?
-                .expect("the identity came from these entries"),
+            None => match published_doc(entries, repos, name, tag) {
+                Ok(doc) => doc.expect("the identity came from these entries"),
+                Err(error) => {
+                    contests.push(ContestedIdentity {
+                        name: name.to_owned(),
+                        tag: tag.to_owned(),
+                        error,
+                    });
+                    let copy = entries
+                        .iter()
+                        .filter(|e| e.name() == name && e.tag() == tag)
+                        .min_by_key(|e| (e.repo_id(), e.origin().path_str().to_owned()))
+                        .expect("the identity came from these entries");
+                    PublishedDoc {
+                        repo_id: copy.repo_id(),
+                        repo_label: label_of(repos, copy.repo_id()),
+                        path: copy.origin().path_str().to_owned(),
+                        sha256: copy.sha256().clone(),
+                    }
+                }
+            },
             Some(digest) => {
                 let carriers = entries
                     .iter()
@@ -372,7 +401,7 @@ fn matched_identities<E: RepoCacheEntry>(
             published,
         });
     }
-    Ok(matches)
+    matches
 }
 
 /// The order matches are listed in: a name the pattern spells out ranks
@@ -574,10 +603,7 @@ mod tests {
         consumes, contract_entry, fingerprint, implements, launcher_entry, mcp_exposure_entry,
         node_entry, observes, pairing_entry, participates, with_links,
     };
-    use crate::services::repo::cache::{
-        ContractCacheEntry, EntryOrigin, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
-        PairingCacheEntry, repositories_list_path, write_repo_cache,
-    };
+    use crate::services::repo::cache::{EntryOrigin, repositories_list_path, write_repo_cache};
     use std::path::{Path, PathBuf};
 
     /// A Peppy home whose root is canonical, so an entry under a
@@ -634,23 +660,8 @@ mod tests {
             .unwrap();
         }
 
-        fn nodes(&self, entries: &[NodeCacheEntry]) {
-            write_repo_cache(&self.dirs, entries).unwrap();
-        }
-
-        fn launchers(&self, entries: &[LauncherCacheEntry]) {
-            write_repo_cache(&self.dirs, entries).unwrap();
-        }
-
-        fn contracts(&self, entries: &[ContractCacheEntry]) {
-            write_repo_cache(&self.dirs, entries).unwrap();
-        }
-
-        fn pairings(&self, entries: &[PairingCacheEntry]) {
-            write_repo_cache(&self.dirs, entries).unwrap();
-        }
-
-        fn mcp_exposures(&self, entries: &[McpExposureCacheEntry]) {
+        /// Writes the cache of `E`'s kind; the entries name the kind.
+        fn cache<E: RepoCacheEntry>(&self, entries: &[E]) {
             write_repo_cache(&self.dirs, entries).unwrap();
         }
     }
@@ -748,6 +759,16 @@ mod tests {
         assert!(!anchored.matches("uvc_camera", "v1"));
     }
 
+    /// A verbose-mode pattern whose comment runs to the end of the query
+    /// is a valid query, and exactness still takes the whole name.
+    #[test]
+    fn a_verbose_pattern_with_a_trailing_comment_is_accepted() {
+        let query = SearchQuery::parse("(?x)cam # the short name").expect("parses");
+        assert!(query.matches("cam", "v1"));
+        assert!(query.names_outright("cam"));
+        assert!(!query.names_outright("uvc_camera"));
+    }
+
     /// One identity, every kind of link on it, published as both a
     /// contract and a pairing: both documents are matches, one identity
     /// means the usage report comes along, and each hit lands in its
@@ -759,11 +780,11 @@ mod tests {
         home.configure(&[(1, &hub)]);
         let contract = contract_entry("rgb_camera", "v1", fs(hub.join("contracts/rgb.json5")));
         let contract_sha = contract.sha256.as_str().to_owned();
-        home.contracts(&[contract]);
+        home.cache(&[contract]);
         let pairing = pairing_entry("rgb_camera", "v1", fs(hub.join("pairings/rgb.json5")));
         let pairing_sha = pairing.sha256.as_str().to_owned();
-        home.pairings(&[pairing]);
-        home.nodes(&[
+        home.cache(&[pairing]);
+        home.cache(&[
             only_implements(
                 node_entry("cam", "v1", fs(hub.join("cam/peppy.json5"))),
                 implements("rgb_camera", "v1", "camera", Some(&contract_sha)),
@@ -900,21 +921,21 @@ mod tests {
         let home = Home::new();
         let hub = home.repo("hub");
         home.configure(&[(1, &hub)]);
-        home.nodes(&[node_entry(
+        home.cache(&[node_entry(
             "uvc_camera",
             "v1",
             fs(hub.join("uvc_camera/peppy.json5")),
         )]);
-        home.launchers(&[launcher_entry(
+        home.cache(&[launcher_entry(
             "camera_boot",
             fs(hub.join("camera_boot.json5")),
         )]);
-        home.contracts(&[contract_entry(
+        home.cache(&[contract_entry(
             "rgb_camera",
             "v1",
             fs(hub.join("rgb.json5")),
         )]);
-        home.mcp_exposures(&[mcp_exposure_entry(
+        home.cache(&[mcp_exposure_entry(
             "camera_surface",
             "v1",
             fs(hub.join("camera_surface.json5")),
@@ -947,8 +968,8 @@ mod tests {
         let home = Home::new();
         let hub = home.repo("hub");
         home.configure(&[(1, &hub)]);
-        home.contracts(&[contract_entry("cam", "v1", fs(hub.join("cam.json5")))]);
-        home.nodes(&[node_entry(
+        home.cache(&[contract_entry("cam", "v1", fs(hub.join("cam.json5")))]);
+        home.cache(&[node_entry(
             "uvc_camera",
             "v1",
             fs(hub.join("uvc_camera/peppy.json5")),
@@ -973,7 +994,7 @@ mod tests {
         let home = Home::new();
         let hub = home.repo("hub");
         home.configure(&[(1, &hub)]);
-        home.launchers(&[launcher_entry(
+        home.cache(&[launcher_entry(
             "camera_boot",
             fs(hub.join("camera_boot.json5")),
         )]);
@@ -1003,7 +1024,7 @@ mod tests {
         let home = Home::new();
         let hub = home.repo("hub");
         home.configure(&[(1, &hub)]);
-        home.contracts(&[
+        home.cache(&[
             contract_entry("rgb_camera", "v1", fs(hub.join("rgb_v1.json5"))),
             contract_entry("rgb_camera", "v2", fs(hub.join("rgb_v2.json5"))),
         ]);
@@ -1027,7 +1048,7 @@ mod tests {
         let mut older = contract_entry("rgb_camera", "v1", fs(mirror.join("rgb.json5")));
         older.sha256 = fingerprint("older revision");
         let older_sha = older.sha256.as_str().to_owned();
-        home.contracts(&[current, older]);
+        home.cache(&[current, older]);
 
         let outcome = search(&home, &format!("rgb_camera:v1@{older_sha}")).expect("searches");
         assert_eq!(outcome.matches.len(), 1);
@@ -1057,12 +1078,12 @@ mod tests {
         let top = home.repo("top");
         let hub = home.repo("hub");
         home.configure(&[(5, &top), (1000, &hub)]);
-        home.contracts(&[contract_entry(
+        home.cache(&[contract_entry(
             "rgb_camera",
             "v1",
             fs(hub.join("contracts/rgb.json5")),
         )]);
-        home.nodes(&[
+        home.cache(&[
             only_implements(
                 node_entry("cam", "v1", fs(hub.join("cam/peppy.json5"))),
                 implements("rgb_camera", "v1", "camera", None),
@@ -1093,12 +1114,12 @@ mod tests {
         let extra = home.repo("extra");
         home.configure(&[(1, &hub), (2, &extra)]);
         home.exclude(&extra);
-        home.contracts(&[contract_entry(
+        home.cache(&[contract_entry(
             "rgb_camera",
             "v1",
             fs(hub.join("contracts/rgb.json5")),
         )]);
-        home.nodes(&[
+        home.cache(&[
             only_implements(
                 node_entry("cam", "v1", fs(hub.join("cam/peppy.json5"))),
                 implements("rgb_camera", "v1", "camera", None),
@@ -1147,12 +1168,12 @@ mod tests {
         let mut older = contract_entry("rgb_camera", "v1", fs(mirror.join("rgb.json5")));
         older.sha256 = fingerprint("older revision");
         let older_sha = older.sha256.as_str().to_owned();
-        home.contracts(&[current, older]);
+        home.cache(&[current, older]);
         let pairing = pairing_entry("rgb_camera", "v1", fs(hub.join("pairings/rgb.json5")));
         let pairing_sha = pairing.sha256.as_str().to_owned();
-        home.pairings(&[pairing]);
+        home.cache(&[pairing]);
         let absent = fingerprint("never published");
-        home.nodes(&[with_links(
+        home.cache(&[with_links(
             node_entry("cam", "v1", fs(hub.join("cam/peppy.json5"))),
             DeclaredLinks {
                 implements: vec![
@@ -1228,7 +1249,7 @@ mod tests {
         let home = Home::new();
         let hub = home.repo("hub");
         home.configure(&[(1, &hub)]);
-        home.nodes(&[only_implements(
+        home.cache(&[only_implements(
             node_entry("cam", "v1", fs(hub.join("cam/peppy.json5"))),
             implements("rgb_camera", "v1", "camera", None),
         )]);
@@ -1272,15 +1293,54 @@ mod tests {
         let home = Home::new();
         let hub = home.repo("hub");
         home.configure(&[(1, &hub)]);
-        home.contracts(&[
+        home.cache(&[
             contract_entry("rgb_camera", "v1", fs(hub.join("a/rgb.json5"))),
             contract_entry("rgb_camera", "v1", fs(hub.join("b/rgb.json5"))),
         ]);
-        home.nodes(&[]);
 
         let err = search(&home, "rgb_camera:v1").expect_err("refuses");
 
         assert!(err.contains("2 contract entries"), "got: {err}");
         assert!(err.contains("`rgb_camera:v1`"), "got: {err}");
+    }
+
+    /// A broad pattern that also matches a contested identity keeps the
+    /// other matches: the contested row points at the winning repository's
+    /// first copy in path order, and only a query settling on that
+    /// identity alone refuses.
+    #[test]
+    fn a_contested_identity_among_other_matches_is_still_listed() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.cache(&[
+            contract_entry("rgb_camera", "v1", fs(hub.join("a/rgb.json5"))),
+            contract_entry("rgb_camera", "v1", fs(hub.join("b/rgb.json5"))),
+        ]);
+        home.cache(&[node_entry(
+            "uvc_camera",
+            "v1",
+            fs(hub.join("uvc_camera/peppy.json5")),
+        )]);
+
+        let outcome = search(&home, ".*").expect("searches");
+
+        let identities: Vec<(RepoItemKind, &str)> = outcome
+            .matches
+            .iter()
+            .map(|m| (m.kind, m.name.as_str()))
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                (RepoItemKind::Contract, "rgb_camera"),
+                (RepoItemKind::Node, "uvc_camera"),
+            ]
+        );
+        assert_eq!(
+            outcome.matches[0].published.path,
+            label(&hub.join("a/rgb.json5"))
+        );
+        assert_eq!(outcome.detail, None);
     }
 }
