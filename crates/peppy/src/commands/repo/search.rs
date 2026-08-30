@@ -51,8 +51,11 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
     }
 
     let mut sections = String::new();
+    const CONTRACT_HEADERS: [&str; 5] = ["NODE", "TAG", "SLOT", "PIN", "PATH"];
+    const PAIRING_HEADERS: [&str; 6] = ["NODE", "TAG", "ROLE", "SLOT", "PIN", "PATH"];
     sections.push_str(&section(
         "Implemented by",
+        &CONTRACT_HEADERS,
         &report.implementers,
         |hit| &hit.node,
         |hit| {
@@ -65,6 +68,7 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
     ));
     sections.push_str(&section(
         "Consumed by",
+        &CONTRACT_HEADERS,
         &report.consumers,
         |hit| &hit.node,
         |hit| {
@@ -77,11 +81,12 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
     ));
     sections.push_str(&section(
         "Pairing roles played by",
+        &PAIRING_HEADERS,
         &report.participants,
         |hit| &hit.node,
         |hit| {
             vec![
-                role_cell(&hit.role),
+                Cell::plain(&hit.role),
                 slot_cell(&hit.link_id, hit.optional.then_some("optional")),
                 pin_cell(hit.sha256.as_deref(), &hit.pin),
             ]
@@ -90,11 +95,12 @@ fn render_human(reference: &ItemRef, report: &SearchReport, colorize: bool) -> S
     ));
     sections.push_str(&section(
         "Observed by",
+        &PAIRING_HEADERS,
         &report.observers,
         |hit| &hit.node,
         |hit| {
             vec![
-                role_cell(&hit.role),
+                Cell::plain(&hit.role),
                 slot_cell(&hit.link_id, Some(hit.cardinality.as_str())),
                 pin_cell(hit.sha256.as_deref(), &hit.pin),
             ]
@@ -133,15 +139,13 @@ impl Cell {
     }
 }
 
+/// The SLOT column: the `link_id`, with the cardinality or `optional`
+/// qualifier the manifest declares on it.
 fn slot_cell(link_id: &str, qualifier: Option<&str>) -> Cell {
     Cell::plain(match qualifier {
-        Some(qualifier) => format!("slot {link_id} ({qualifier})"),
-        None => format!("slot {link_id}"),
+        Some(qualifier) => format!("{link_id} ({qualifier})"),
+        None => link_id.to_owned(),
     })
-}
-
-fn role_cell(role: &str) -> Cell {
-    Cell::plain(format!("role {role}"))
 }
 
 /// What the claim's pin does at sync, in red when a sync would refuse it.
@@ -166,10 +170,12 @@ fn pin_cell(sha256: Option<&str>, pin: &PinStatus) -> Cell {
 
 /// One section: a title counting the distinct nodes, then the hits grouped
 /// by repository in the order the report lists them (repository priority),
-/// each row `name tag <cells> path`, with the shadowing note when a
+/// each group a table under `headers`, one row per hit
+/// (`name tag <cells> path`), with the shadowing note appended when a
 /// lower-id repository provides the same identity.
 fn section<T>(
     title: &str,
+    headers: &[&str],
     hits: &[T],
     node_of: impl Fn(&T) -> &IndexedNode,
     cells_of: impl Fn(&T) -> Vec<Cell>,
@@ -219,46 +225,55 @@ fn section<T>(
                 (cells, suffix)
             })
             .collect();
-        out.push_str(&aligned_rows(&rows, colorize));
+        out.push_str(&table(headers, &rows, colorize));
         start = end;
     }
     out
 }
 
-/// Rows with every column but the last padded to the group's widest value,
-/// so a group reads as a table. Padding is measured on the plain text and
-/// applied before painting, so colour never skews a column.
-fn aligned_rows(rows: &[(Vec<Cell>, String)], colorize: bool) -> String {
-    let columns = rows.first().map_or(0, |(cells, _)| cells.len());
-    let widths: Vec<usize> = (0..columns)
-        .map(|column| {
+/// A header row, then the data rows, every column but the last padded to
+/// the group's widest value, headers included. Padding is measured on the
+/// plain text and applied before painting, so colour never skews a column.
+fn table(headers: &[&str], rows: &[(Vec<Cell>, String)], colorize: bool) -> String {
+    let widths: Vec<usize> = headers
+        .iter()
+        .enumerate()
+        .map(|(column, header)| {
             rows.iter()
                 .map(|(cells, _)| cells[column].text.len())
+                .chain([header.len()])
                 .max()
                 .unwrap_or(0)
         })
         .collect();
-    let mut out = String::new();
+    let header_cells: Vec<Cell> = headers.iter().copied().map(Cell::plain).collect();
+    let mut out = rendered_row(&header_cells, "", &widths, colorize);
     for (cells, suffix) in rows {
-        out.push_str("    ");
-        for (column, cell) in cells.iter().enumerate() {
-            let last = column + 1 == cells.len();
-            let text = if last {
-                cell.text.clone()
-            } else {
-                format!("{:<width$}", cell.text, width = widths[column])
-            };
-            out.push_str(&match cell.colour {
-                Some(colour) => paint(&text, colour, colorize),
-                None => text,
-            });
-            if !last {
-                out.push_str("  ");
-            }
-        }
-        out.push_str(suffix);
-        out.push('\n');
+        out.push_str(&rendered_row(cells, suffix, &widths, colorize));
     }
+    out
+}
+
+/// One table line under the section's repository label.
+fn rendered_row(cells: &[Cell], suffix: &str, widths: &[usize], colorize: bool) -> String {
+    let mut out = String::from("    ");
+    for (column, cell) in cells.iter().enumerate() {
+        let last = column + 1 == cells.len();
+        let text = if last {
+            cell.text.clone()
+        } else {
+            format!("{:<width$}", cell.text, width = widths[column])
+        };
+        out.push_str(&match cell.colour {
+            Some(colour) => paint(&text, colour, colorize),
+            None => text,
+        });
+        if !last {
+            out.push_str("  ");
+        }
+    }
+    out.push_str(suffix);
+    out.push('\n');
     out
 }
 
@@ -492,20 +507,24 @@ mod tests {
             "",
             "Implemented by 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    uvc_camera_linux  v1  slot camera  pin aaaaaaaa (current)  uvc_camera/linux/peppy.json5",
-            "    realsense_d4xx    v1  slot camera  unpinned                realsense_d4xx/peppy.json5",
+            "    NODE              TAG  SLOT    PIN                     PATH",
+            "    uvc_camera_linux  v1   camera  pin aaaaaaaa (current)  uvc_camera/linux/peppy.json5",
+            "    realsense_d4xx    v1   camera  unpinned                realsense_d4xx/peppy.json5",
             "",
             "Consumed by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    episode_recorder  v1  slot camera (one_or_more)  unpinned  example_robot/episode_recorder/peppy.json5",
+            "    NODE              TAG  SLOT                  PIN       PATH",
+            "    episode_recorder  v1   camera (one_or_more)  unpinned  example_robot/episode_recorder/peppy.json5",
             "",
             "Pairing roles played by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    viewer  v1  role viewer  slot camera (optional)  unpinned  viewer/peppy.json5",
+            "    NODE    TAG  ROLE    SLOT               PIN       PATH",
+            "    viewer  v1   viewer  camera (optional)  unpinned  viewer/peppy.json5",
             "",
             "Observed by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    dashboard  v1  role camera  slot watch (zero_or_one)  pin cccccccc (cached copy in /home/user/mirror)  dashboard/peppy.json5  (shadowed by /home/user/workspace)",
+            "    NODE       TAG  ROLE    SLOT                 PIN                                              PATH",
+            "    dashboard  v1   camera  watch (zero_or_one)  pin cccccccc (cached copy in /home/user/mirror)  dashboard/peppy.json5  (shadowed by /home/user/workspace)",
             "",
         ]
         .join("\n");
@@ -539,12 +558,12 @@ mod tests {
 
         let plain = render_human(&reference(), &report, false);
         assert!(
-            plain.contains("    stale  v1  slot camera  pin bbbbbbbb (not in cache)"),
+            plain.contains("    stale  v1   camera  pin bbbbbbbb (not in cache)"),
             "{plain}"
         );
         assert!(
             plain.contains(
-                "    typo   v1  slot camera  unusable pin (fingerprint is not 64 hexadecimal characters: abc)  typo/peppy.json5"
+                "    typo   v1   camera  unusable pin (fingerprint is not 64 hexadecimal characters: abc)  typo/peppy.json5"
             ),
             "{plain}"
         );
