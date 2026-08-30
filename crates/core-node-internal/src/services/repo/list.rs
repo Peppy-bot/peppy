@@ -1,9 +1,7 @@
 use crate::Result;
 use crate::services::repo::cache::{NodeCacheEntry, load_repo_cache};
-use crate::services::repo::exclude::ExclusionSet;
-use crate::services::repo::refresh::{parse_repo_entry, read_or_create_repos};
 use crate::services::repo::status::{self, RepoStatus};
-use crate::services::repo::{RepoOwners, source_identity};
+use crate::services::repo::{ListedRepo, RepoNodes, listed_repositories, nodes_by_repository};
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
@@ -16,9 +14,8 @@ use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceRequestContext;
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyResult, ServiceMessenger};
-use std::collections::HashSet;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::warn;
 
 pub async fn listen_for_repo_list(
     messenger: &MessengerHandle,
@@ -71,7 +68,7 @@ fn handle_repo_list_request_inner(
     let payload = context.message().payload_bytes();
     let _request = RepoListRequest::decode(payload.as_ref())?;
 
-    let repos = match read_or_create_repos(peppy_dirs) {
+    let repos = match listed_repositories(peppy_dirs) {
         Ok(repos) => repos,
         Err(e) => {
             return RepoListResponse::failure(e.to_string())
@@ -80,67 +77,26 @@ fn handle_repo_list_request_inner(
         }
     };
 
-    let exclusions = ExclusionSet::load(peppy_dirs);
     let statuses = status::read(peppy_dirs);
     let cached: Vec<NodeCacheEntry> = load_repo_cache(peppy_dirs).unwrap_or_else(|e| {
         warn!("Failed to read the nodes cache: {e}");
         Vec::new()
     });
 
-    // Each cached node's owning repository, resolved once. The loop below
-    // considers every node for every repository, and resolving inside it
-    // re-scans the repository list on each of those visits.
-    let resolved = RepoOwners::new(&repos);
-    let owners: Vec<Option<u64>> = cached
-        .iter()
-        .map(|node| resolved.owner_of(&node.origin))
-        .collect();
-
-    let mut global_seen: HashSet<(&str, &str)> = HashSet::new();
     let mut all_entries: Vec<RepoListNodeEntry> = Vec::new();
     let mut all_repos: Vec<RepoListRepoEntry> = Vec::new();
-
-    for entry in &repos {
-        let Some(source) = parse_repo_entry(entry) else {
-            warn!("Skipping unrecognized repository entry: {:?}", entry);
-            continue;
-        };
-
-        let identity = source_identity(&source);
-        if exclusions.is_excluded(&identity) {
-            debug!("Excluding repository from list: {}", identity);
-            continue;
-        }
-
-        let repo_id_u64 = entry.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-        let Ok(repo_id) = u32::try_from(repo_id_u64) else {
-            warn!(
-                "Skipping repository entry with id {} (exceeds u32 wire-format limit)",
-                repo_id_u64
-            );
-            continue;
-        };
-
-        let repo_label = source.display_label();
-        let status = statuses.iter().find(|s| s.id == repo_id_u64);
-        all_repos.push(repo_entry(repo_id, &repo_label, &source, status));
-
-        for (node, owner) in cached.iter().zip(&owners) {
-            if *owner != Some(repo_id_u64) {
-                continue;
-            }
-            let key = (node.node_name.as_str(), node.node_tag.as_str());
-            let duplicate = !global_seen.insert(key);
-            all_entries.push(RepoListNodeEntry {
-                node_name: node.node_name.to_string(),
-                node_tag: node.node_tag.to_string(),
-                source_type: node.origin.kind(),
-                path: node.origin.path_str().to_owned(),
-                duplicate,
-                repo_id,
-                repo_label: repo_label.clone(),
-            });
-        }
+    for RepoNodes { repo, nodes } in nodes_by_repository(&repos, &cached) {
+        let status = statuses.iter().find(|s| s.id == u64::from(repo.id));
+        all_repos.push(repo_entry(repo, status));
+        all_entries.extend(nodes.iter().map(|node| RepoListNodeEntry {
+            node_name: node.entry.node_name.to_string(),
+            node_tag: node.entry.node_tag.to_string(),
+            source_type: node.entry.origin.kind(),
+            path: node.entry.origin.path_str().to_owned(),
+            duplicate: node.shadowed_by.is_some(),
+            repo_id: repo.id,
+            repo_label: repo.label.clone(),
+        }));
     }
 
     RepoListResponse::success(all_entries, all_repos)
@@ -151,16 +107,11 @@ fn handle_repo_list_request_inner(
 /// Projects one repository's recorded status onto the wire. A repository
 /// with no status line has never been through a refresh that recorded
 /// one, so it reads as never-read rather than as failed.
-fn repo_entry(
-    repo_id: u32,
-    label: &str,
-    source: &core_node_api::encoding::RepoSource,
-    status: Option<&RepoStatus>,
-) -> RepoListRepoEntry {
+fn repo_entry(repo: &ListedRepo, status: Option<&RepoStatus>) -> RepoListRepoEntry {
     RepoListRepoEntry {
-        id: repo_id,
-        label: label.to_owned(),
-        source_type: source.kind(),
+        id: repo.id,
+        label: repo.label.clone(),
+        source_type: repo.source.kind(),
         last_read_unix_secs: status.and_then(|s| s.last_read_unix_secs),
         retained: status.is_some_and(|s| s.is_retained()),
         failure: status

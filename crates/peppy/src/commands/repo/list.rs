@@ -4,19 +4,13 @@ use std::time::Duration;
 
 use core_node_api::encoding::{RepoListNodeEntry, RepoListRepoEntry, RepoListRequest};
 
+use super::{ORANGE, RED, paint};
 use crate::commands::CALLER_INSTANCE_ID;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Orange, for the two states that are not errors but are not the plain
-/// answer either: entries kept from an earlier read, and an identity a
-/// higher-priority repository already answers.
-const ORANGE: &str = "\x1b[38;5;208m";
-/// Red, for what does not resolve at all.
-const RED: &str = "\x1b[31m";
 
 pub(super) fn list_repos(ctx: &Arc<AppContext>) -> Result<()> {
     crate::commands::block_on(list_repos_async(ctx))
@@ -147,14 +141,6 @@ fn print_nodes(nodes: &[&RepoListNodeEntry], winner: &HashMap<(&str, &str), &str
     }
 }
 
-fn paint(text: &str, colour: &str, colorize: bool) -> String {
-    if colorize {
-        format!("{colour}{text}\x1b[0m")
-    } else {
-        text.to_owned()
-    }
-}
-
 /// Renders a unix timestamp in local time, to the minute. Out-of-range
 /// values render as the raw number rather than being dropped: a status
 /// file is a diagnostic, so showing something odd beats showing nothing.
@@ -189,14 +175,5 @@ mod tests {
     #[test]
     fn out_of_range_timestamp_degrades_to_the_raw_value() {
         assert_eq!(format_timestamp(u64::MAX), format!("unix {}", u64::MAX));
-    }
-
-    #[test]
-    fn paint_is_a_no_op_without_colour() {
-        assert_eq!(paint("  (conflict)", "\x1b[31m", false), "  (conflict)");
-        assert_eq!(
-            paint("  (conflict)", "\x1b[31m", true),
-            "\x1b[31m  (conflict)\x1b[0m"
-        );
     }
 }

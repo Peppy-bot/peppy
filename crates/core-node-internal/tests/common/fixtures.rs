@@ -110,6 +110,13 @@ fn fingerprint_or_seeded(path: &Path, seed: &str) -> String {
         .unwrap_or_else(|_| seeded_sha(seed))
 }
 
+/// The `links` object of a node cache entry that declares no contract or
+/// pairing link, serialized from the type `repo refresh` writes so a change
+/// to its shape reaches every hand-written fixture.
+pub fn empty_links() -> serde_json::Value {
+    serde_json::to_value(core_node::DeclaredLinks::default()).expect("serialize empty links")
+}
+
 /// The `origin` object of a cache entry for an item on this machine, in the
 /// shape `repo refresh` writes it. The one spelling of that shape for every
 /// test binary, so a change to it is a change here rather than in each
@@ -172,6 +179,7 @@ impl TestPackagesCache {
             "node_tag": tag,
             "sha256": sha256,
             "origin": fs_origin(&manifest_path),
+            "links": empty_links(),
         }));
         self
     }
@@ -207,6 +215,7 @@ impl TestPackagesCache {
                 &manifest_path.to_string_lossy(),
                 &format!("{name}:{tag}"),
             ),
+            "links": empty_links(),
         }));
         self
     }

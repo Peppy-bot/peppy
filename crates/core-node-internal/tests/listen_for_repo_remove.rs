@@ -133,6 +133,7 @@ async fn remove_git_repo_succeeds_and_triggers_refresh() {
                 "nodes/git_sensor/peppy.json5",
                 "git_sensor:v1",
             ),
+            "links": common::empty_links(),
         }]))
         .unwrap(),
     );

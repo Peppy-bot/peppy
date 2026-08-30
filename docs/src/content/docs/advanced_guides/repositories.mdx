@@ -32,7 +32,7 @@ Repository configuration lives in `~/.peppy/conf/`, and the indexes built by `pe
 |------|---------|
 | `conf/repositories.json5` | Repositories to scan |
 | `conf/excluded_repositories.json5` | Repositories (or subdirectories) to skip |
-| `cache/nodes.json5` | Index of nodes discovered across repositories |
+| `cache/nodes.json5` | Index of nodes discovered across repositories, with the contract and pairing links each node's manifest declares |
 | `cache/launchers.json5` | Index of launch files discovered across repositories |
 | `cache/contracts.json5` | Index of contract definitions discovered across repositories |
 | `cache/pairings.json5` | Index of pairing definitions discovered across repositories |
@@ -86,6 +86,42 @@ One situation is flagged: `(shadowed by <repository>)` means another repository 
 
 A repository whose last refresh failed is marked `[retained, last read <date>]`, with the reason on the following line. Its entries are the ones it last published successfully, so anything referencing them keeps working; the date tells you how old they are.
 
+### Search for a contract's or pairing's users
+
+```sh
+peppy repo search <name>:<tag>
+```
+
+Shows who uses a contract or pairing: the nodes that implement it (`manifest.implements`), consume it (`depends_on.contracts`), play a role in it (`depends_on.pairings`), or observe one of its roles (`depends_on.pairing_observers`). The first lines name the published document the identity resolves to, with its repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both. One section per way of using it follows, grouped by repository like `peppy repo list`, one row per slot: the node's name and tag, the role (for pairings), the slot's `link_id` with its cardinality or `optional`, the pin column, and the manifest path.
+
+```text
+rgb_camera:v1
+  contract published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 a4e66999c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8)
+
+Implemented by 2 indexed nodes
+  https://github.com/Peppy-bot/nodes-hub.git (ref: main):
+    uvc_camera_linux  v1  slot camera  pin a4e66999 (current)  uvc_camera/linux/peppy.json5
+    realsense_d4xx    v1  slot camera  unpinned                realsense_d4xx/peppy.json5
+
+Consumed by 1 indexed node
+  https://github.com/Peppy-bot/nodes-hub.git (ref: main):
+    episode_recorder  v1  slot camera (one_or_more)  unpinned  example_robot/episode_recorder/peppy.json5
+```
+
+The pin column says what a sync does with the claim's `sha256`:
+
+| Pin column | Meaning |
+|------|---------|
+| `unpinned` | No pin: the claim resolves to the published document. |
+| `pin <sha> (current)` | The pin equals the published document's fingerprint. |
+| `pin <sha> (cached copy in <repository>)` | Another repository's cached copy carries that fingerprint; a sync resolves through it. |
+| `pin <sha> (not in cache)` | No cached copy carries the pin; a sync fails. |
+| `unusable pin (<reason>)` | The pin is not a fingerprint; a sync refuses the manifest. |
+
+`(shadowed by <repository>)` means what it means in `peppy repo list`: a lower-`id` repository provides the same `name:tag`, so a launch resolves to that node, which may not make this claim at all.
+
+The search reads this machine's caches, so it reflects the last `peppy repo refresh` and needs no daemon (`--core-node` has no effect). An identity nobody uses is an answer, not an error: the command says that no indexed node uses it and, when repositories are excluded, that one of them may have provided a user. `--json` prints the same report as one JSON document with `query`, `contract`, `pairing`, `implementers`, `consumers`, `participants`, and `observers`.
+
 ### Refresh the index
 
 ```sh
@@ -97,7 +133,7 @@ Re-scans all configured repositories and rebuilds the node, launcher, contract, 
 - Reads `repositories.json5` (creates it with defaults on first run).
 - Skips any repository or path listed in `excluded_repositories.json5`.
 - Reads local directories in place and shallow-clones git repositories.
-- Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
+- Records what each repository's committed [`peppy_repository.json5`](#the-repository-index) publishes: nodes and their tags, together with the contract and pairing links each node's manifest declares, launchers (one per name, no tag), and contracts, pairings, and MCP exposures (keyed by their manifest `name:tag`). A repository without that file fails its read with instructions to run `peppy repo index`.
 - Reports each discovered node, launcher, contract, pairing, MCP exposure, and excluded repository in real time.
 - Caches results in `~/.peppy/cache/nodes.json5`, `~/.peppy/cache/launchers.json5`, `~/.peppy/cache/contracts.json5`, `~/.peppy/cache/pairings.json5`, and `~/.peppy/cache/mcp_exposures.json5`, and records per-repository read status in `~/.peppy/cache/repo_status.json5`.
 

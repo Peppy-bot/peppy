@@ -180,14 +180,19 @@ pub fn register_repo_caches(
         .iter()
         .map(|(name, tag, dir)| {
             let manifest_path = dir.join(config::consts::NODE_CONFIG_FILE);
-            let bytes = std::fs::read(&manifest_path).expect("node manifest should exist");
+            let content =
+                std::fs::read_to_string(&manifest_path).expect("node manifest should exist");
+            let parsed = config::node::NodeConfigParser::from_content(&content)
+                .expect("node manifest should parse");
             serde_json::json!({
                 "node_name": name,
                 "node_tag": tag,
-                "sha256": config::fingerprint::fingerprint_for_bytes(&bytes),
-                // The origin is serialized from the type `repo refresh`
-                // writes, so a change to its shape reaches this fixture.
+                "sha256": config::fingerprint::fingerprint_for_bytes(content.as_bytes()),
+                // The origin and the links are serialized from the types
+                // `repo refresh` writes, so a change to their shape reaches
+                // this fixture.
                 "origin": daemon_config::repository::EntryOrigin::Fs { path: manifest_path },
+                "links": core_node::DeclaredLinks::from(&parsed.manifest),
             })
         })
         .collect();

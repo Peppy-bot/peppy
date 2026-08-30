@@ -12,15 +12,19 @@ pub use services::mcp::{
     resolve_exposure_plan, resolve_peppy_executable,
 };
 pub use services::repo::cache::{
-    EntryOrigin, NodeCacheEntry, contracts_repo_cache_path, launchers_repo_cache_path,
-    load_node_cache, lookup, mcp_exposures_repo_cache_path, nodes_repo_cache_path,
-    pairings_repo_cache_path, repositories_list_path, resolve_repo_launcher_path,
+    ContractSlot, DeclaredLinks, EntryOrigin, ImplementsClaim, NodeCacheEntry, ObserverSlot,
+    PairingSlot, contracts_repo_cache_path, launchers_repo_cache_path, load_node_cache, lookup,
+    mcp_exposures_repo_cache_path, nodes_repo_cache_path, pairings_repo_cache_path,
+    repositories_list_path, resolve_repo_launcher_path,
 };
 pub use services::repo::index::{
     IndexDrift, IndexError, RepoConflict, check_repository_index, generate_repository_index,
     publish_repository_index, read_repository_index, write_repository_index,
 };
-pub use services::repo::{InitOutcome, ensure_default_repos};
+pub use services::repo::{
+    Consumer, Implementer, IndexedNode, InitOutcome, Observer, Participant, PinStatus,
+    PublishedDoc, SearchReport, ensure_default_repos, search_identity,
+};
 pub use services::{
     CoreNode, CoreNodeArguments, CoreNodeConfig, NAME_CLAIM_LINKED_SETTLE, TEARDOWN_REAP_BUDGET,
     check_runtime_prerequisites, force_kill_deadline, idle_timeout_flag, slow_connection_hint,

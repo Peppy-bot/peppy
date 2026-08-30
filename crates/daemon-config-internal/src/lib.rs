@@ -151,5 +151,5 @@ pub mod repository {
 
 // -- source --
 pub mod source {
-    pub use crate::internal::source::{DeploymentSource, ExposureRef};
+    pub use crate::internal::source::{DeploymentSource, ExposureRef, ItemRef};
 }

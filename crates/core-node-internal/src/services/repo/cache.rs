@@ -17,6 +17,11 @@
 //! repositories are kept side by side (the fingerprint tells them apart);
 //! lookup picks the entry from the lowest-id repository.
 //!
+//! A node entry also carries the contract and pairing links its manifest
+//! declares ([`DeclaredLinks`]), so "who implements, consumes, participates
+//! in, or observes `x:v1`" is answered from the cache without reading a
+//! manifest or materializing a checkout.
+//!
 //! Reads of the nodes cache are memoized by `(mtime-of-cache-file)` per
 //! path so that a daemon hit by many `node add` / launch goals in a row
 //! doesn't re-read and re-parse the cache file on every request.
@@ -24,6 +29,7 @@
 use crate::Result;
 use crate::services::repo::RepoOwners;
 use crate::services::repo::refresh::read_or_create_repos;
+use config::node::Cardinality;
 use core_node_api::encoding::RepoItemKind;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::{ItemName, ItemTag, ManifestFingerprint, PinKind, PinnedItem};
@@ -38,6 +44,138 @@ use std::time::SystemTime;
 // what a cache records and what a coordinator ships cannot drift.
 pub use daemon_config::repository::EntryOrigin;
 
+/// The contract and pairing links a node manifest declares, as the cache
+/// records them: every `manifest.implements` claim and every
+/// `depends_on.{contracts,pairings,pairing_observers}` slot, each with the
+/// identity, the slot and the pin exactly as the manifest spells them. The
+/// `link_id` is what a launcher author writes in `links:` to bind the slot,
+/// and the pin is what a sync checks against the published document, so
+/// both are kept. `depends_on.nodes` is node-to-node wiring and is not
+/// recorded.
+///
+/// Captured at refresh, which parses every manifest anyway, so a search
+/// over these is a cache read that needs no checkout. The values are copied
+/// from the parsed manifest without further validation: a claim the
+/// manifest states is a claim the cache reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeclaredLinks {
+    pub implements: Vec<ImplementsClaim>,
+    pub contracts: Vec<ContractSlot>,
+    pub pairings: Vec<PairingSlot>,
+    pub pairing_observers: Vec<ObserverSlot>,
+}
+
+/// One `manifest.implements` entry: the node provides the contract through
+/// the slot named `link_id`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ImplementsClaim {
+    pub name: config::runtime::Name,
+    pub tag: String,
+    pub link_id: String,
+    pub sha256: Option<String>,
+}
+
+/// One `depends_on.contracts` entry: the node consumes the contract through
+/// the slot named `link_id`, bound to `cardinality` producers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContractSlot {
+    pub name: config::runtime::Name,
+    pub tag: String,
+    pub link_id: String,
+    pub sha256: Option<String>,
+    pub cardinality: Cardinality,
+}
+
+/// One `depends_on.pairings` entry: the node plays `role` in the pairing
+/// through the slot named `link_id`; `optional` says the slot may run with
+/// no peer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PairingSlot {
+    pub name: config::runtime::Name,
+    pub tag: String,
+    pub role: String,
+    pub link_id: String,
+    pub sha256: Option<String>,
+    pub optional: bool,
+}
+
+/// One `depends_on.pairing_observers` entry: the node observes the topics
+/// the pairing's `role` emits through the slot named `link_id`, over
+/// `cardinality` pairings.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ObserverSlot {
+    pub name: config::runtime::Name,
+    pub tag: String,
+    pub role: String,
+    pub link_id: String,
+    pub sha256: Option<String>,
+    pub cardinality: Cardinality,
+}
+
+/// The one conversion from a parsed manifest to what the cache records,
+/// used by refresh and by every fixture that stands in for it.
+impl From<&config::node::Manifest> for DeclaredLinks {
+    fn from(manifest: &config::node::Manifest) -> Self {
+        let depends_on = manifest.depends_on.as_ref();
+        Self {
+            implements: manifest
+                .implements
+                .iter()
+                .map(|claim| ImplementsClaim {
+                    name: claim.name.clone(),
+                    tag: claim.tag.clone(),
+                    link_id: claim.link_id.clone(),
+                    sha256: claim.sha256.clone(),
+                })
+                .collect(),
+            contracts: depends_on
+                .map(|deps| {
+                    deps.contracts
+                        .iter()
+                        .map(|slot| ContractSlot {
+                            name: slot.name.clone(),
+                            tag: slot.tag.clone(),
+                            link_id: slot.link_id.clone(),
+                            sha256: slot.sha256.clone(),
+                            cardinality: slot.cardinality,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            pairings: depends_on
+                .map(|deps| {
+                    deps.pairings
+                        .iter()
+                        .map(|slot| PairingSlot {
+                            name: slot.name.clone(),
+                            tag: slot.tag.clone(),
+                            role: slot.role.clone(),
+                            link_id: slot.link_id.clone(),
+                            sha256: slot.sha256.clone(),
+                            optional: slot.optional,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            pairing_observers: depends_on
+                .map(|deps| {
+                    deps.pairing_observers
+                        .iter()
+                        .map(|slot| ObserverSlot {
+                            name: slot.name.clone(),
+                            tag: slot.tag.clone(),
+                            role: slot.role.clone(),
+                            link_id: slot.link_id.clone(),
+                            sha256: slot.sha256.clone(),
+                            cardinality: slot.cardinality,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+
 /// One entry as it appears in `nodes.json5`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeCacheEntry {
@@ -47,6 +185,8 @@ pub struct NodeCacheEntry {
     /// `(name, tag)` across repositories are told apart by this.
     pub sha256: ManifestFingerprint,
     pub origin: EntryOrigin,
+    /// The contract and pairing links the manifest declares.
+    pub links: DeclaredLinks,
     /// The id of the repository entry this node was discovered under (as
     /// read from `repositories.json5`). Derived at read time and never
     /// serialized back to disk.
@@ -952,7 +1092,89 @@ pub(crate) mod test_support {
             node_tag: ItemTag::parse(tag).expect("test node tag is valid"),
             sha256: fingerprint(&format!("{name}:{tag}")),
             origin,
+            links: DeclaredLinks::default(),
             repo_id: 0,
+        }
+    }
+
+    /// The same entry, declaring `links`.
+    pub(crate) fn with_links(mut entry: NodeCacheEntry, links: DeclaredLinks) -> NodeCacheEntry {
+        entry.links = links;
+        entry
+    }
+
+    fn link_name(name: &str) -> config::runtime::Name {
+        config::runtime::Name::new(name).expect("test link name is valid")
+    }
+
+    /// An `implements` claim on `name:tag` through `link_id`, pinned to
+    /// `sha256` when given.
+    pub(crate) fn implements(
+        name: &str,
+        tag: &str,
+        link_id: &str,
+        sha256: Option<&str>,
+    ) -> ImplementsClaim {
+        ImplementsClaim {
+            name: link_name(name),
+            tag: tag.to_owned(),
+            link_id: link_id.to_owned(),
+            sha256: sha256.map(ToOwned::to_owned),
+        }
+    }
+
+    /// A `depends_on.contracts` slot on `name:tag`.
+    pub(crate) fn consumes(
+        name: &str,
+        tag: &str,
+        link_id: &str,
+        cardinality: Cardinality,
+        sha256: Option<&str>,
+    ) -> ContractSlot {
+        ContractSlot {
+            name: link_name(name),
+            tag: tag.to_owned(),
+            link_id: link_id.to_owned(),
+            sha256: sha256.map(ToOwned::to_owned),
+            cardinality,
+        }
+    }
+
+    /// A `depends_on.pairings` slot playing `role` in `name:tag`.
+    pub(crate) fn participates(
+        name: &str,
+        tag: &str,
+        role: &str,
+        link_id: &str,
+        optional: bool,
+        sha256: Option<&str>,
+    ) -> PairingSlot {
+        PairingSlot {
+            name: link_name(name),
+            tag: tag.to_owned(),
+            role: role.to_owned(),
+            link_id: link_id.to_owned(),
+            sha256: sha256.map(ToOwned::to_owned),
+            optional,
+        }
+    }
+
+    /// A `depends_on.pairing_observers` slot observing `role` of `name:tag`.
+    pub(crate) fn observes(
+        name: &str,
+        tag: &str,
+        role: &str,
+        link_id: &str,
+        cardinality: Cardinality,
+        sha256: Option<&str>,
+    ) -> ObserverSlot {
+        ObserverSlot {
+            name: link_name(name),
+            tag: tag.to_owned(),
+            role: role.to_owned(),
+            link_id: link_id.to_owned(),
+            sha256: sha256.map(ToOwned::to_owned),
+            cardinality,
         }
     }
 
@@ -970,6 +1192,16 @@ pub(crate) mod test_support {
             contract_name: ItemName::parse(name).expect("test contract name is valid"),
             tag: ItemTag::parse(tag).expect("test contract tag is valid"),
             sha256: fingerprint(&format!("{name}:{tag}")),
+            origin,
+            repo_id: 0,
+        }
+    }
+
+    pub(crate) fn pairing_entry(name: &str, tag: &str, origin: EntryOrigin) -> PairingCacheEntry {
+        PairingCacheEntry {
+            pairing_name: ItemName::parse(name).expect("test pairing name is valid"),
+            tag: ItemTag::parse(tag).expect("test pairing tag is valid"),
+            sha256: fingerprint(&format!("pairing {name}:{tag}")),
             origin,
             repo_id: 0,
         }
@@ -1159,10 +1391,37 @@ mod tests {
                 ),
             ),
             node_entry("b", "v2", fs_origin("/tmp/b/peppy.json5")),
+            with_links(
+                node_entry("c", "v1", fs_origin("/tmp/c/peppy.json5")),
+                DeclaredLinks {
+                    implements: vec![implements(
+                        "rgb_camera",
+                        "v1",
+                        "camera",
+                        Some("a".repeat(64).as_str()),
+                    )],
+                    contracts: vec![consumes(
+                        "depth",
+                        "v2",
+                        "depth_in",
+                        Cardinality::ZeroOrMore,
+                        None,
+                    )],
+                    pairings: vec![participates("arm_link", "v1", "arm", "arm", true, None)],
+                    pairing_observers: vec![observes(
+                        "arm_link",
+                        "v1",
+                        "controller",
+                        "watch",
+                        Cardinality::OneOrMore,
+                        Some("b".repeat(64).as_str()),
+                    )],
+                },
+            ),
         ];
         write_repo_cache(&peppy_dirs, &input).unwrap();
         let loaded = load_node_cache(&peppy_dirs).unwrap();
-        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.len(), 3);
         // `repo_id` is re-derived from `repositories.json5` at load time
         // rather than stored, so it is the one field that does not survive
         // as written.
@@ -1176,8 +1435,36 @@ mod tests {
             .collect();
         assert_eq!(
             written, input,
-            "an entry survives the round trip whole, commit included"
+            "an entry survives the round trip whole, commit and links included"
         );
+    }
+
+    /// A nodes cache written before links were recorded is refused whole,
+    /// with the message that names the fix. Reading it with empty links
+    /// instead would answer "nobody uses it" for every identity until the
+    /// user happened to refresh.
+    #[test]
+    fn a_nodes_cache_without_links_is_refused_until_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let peppy_dirs = PeppyDirs::new(tmp.path());
+        std::fs::create_dir_all(peppy_dirs.cache_dir()).unwrap();
+        std::fs::write(
+            nodes_repo_cache_path(&peppy_dirs),
+            serde_json::to_string(&serde_json::json!([{
+                "node_name": "a",
+                "node_tag": "v1",
+                "sha256": fingerprint("a:v1").as_str(),
+                "origin": { "source_type": "fs", "path": "/tmp/a/peppy.json5" },
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = load_repo_cache::<NodeCacheEntry>(&peppy_dirs)
+            .expect_err("an entry without links is not this cache's shape")
+            .to_string();
+        assert!(err.contains("does not parse"), "got: {err}");
+        assert!(err.contains("peppy repo update"), "got: {err}");
     }
 
     /// An entry no configured repository claims must not outrank one that

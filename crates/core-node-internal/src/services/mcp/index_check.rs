@@ -90,7 +90,7 @@ pub fn check_repository_exposures(
         let path = item.path.as_str().to_owned();
         let problems = match resolve_declared_item(&root, &item) {
             Err(detail) => vec![format!("{path} {detail}")],
-            Ok(bytes) => match std::str::from_utf8(&bytes) {
+            Ok(resolved) => match std::str::from_utf8(&resolved.bytes) {
                 Err(e) => vec![format!("{path} is not UTF-8: {e}")],
                 Ok(content) => match PeppyMcpExposureParser::from_content(content) {
                     Err(e) => vec![format!("{path} does not parse: {e}")],

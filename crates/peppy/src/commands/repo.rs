@@ -5,9 +5,11 @@ mod init;
 mod list;
 mod refresh;
 mod remove;
+mod search;
 
 pub use index::{CheckScope, check_index, repo_index};
 pub use init::repo_init_with_dirs;
+pub use search::search_rendered;
 
 use std::sync::Arc;
 
@@ -18,9 +20,38 @@ use std::path::PathBuf;
 use super::Command;
 use crate::{context::AppContext, error::Result};
 
+#[cfg(test)]
+mod tests {
+    use super::paint;
+
+    #[test]
+    fn paint_is_a_no_op_without_colour() {
+        assert_eq!(paint("  (conflict)", "\x1b[31m", false), "  (conflict)");
+        assert_eq!(
+            paint("  (conflict)", "\x1b[31m", true),
+            "\x1b[31m  (conflict)\x1b[0m"
+        );
+    }
+}
+
 /// Human-readable label for a repository source (used in CLI output).
 pub(super) fn repo_source_label(source: &RepoSource) -> String {
     source.display_label()
+}
+
+/// Orange, for the states that are not errors but are not the plain answer
+/// either: entries kept from an earlier read, and an identity a
+/// higher-priority repository already answers.
+pub(super) const ORANGE: &str = "\x1b[38;5;208m";
+/// Red, for what does not resolve at all.
+pub(super) const RED: &str = "\x1b[31m";
+
+pub(super) fn paint(text: &str, colour: &str, colorize: bool) -> String {
+    if colorize {
+        format!("{colour}{text}\x1b[0m")
+    } else {
+        text.to_owned()
+    }
 }
 
 #[derive(Subcommand)]
@@ -64,6 +95,20 @@ pub enum RepoCommands {
     },
     /// List configured repositories
     List,
+    /// Show who uses a contract or pairing: the nodes that implement,
+    /// consume, participate in, or observe it, and whether their pins match
+    /// what is published.
+    ///
+    /// Reads this machine's repository caches, so it reflects the last
+    /// `peppy repo refresh`; needs no daemon, and `--core-node` has no
+    /// effect on it.
+    Search {
+        /// The contract or pairing, as `<name>:<tag>`.
+        identity: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Update repository indexes
     #[clap(alias = "update")]
     Refresh,
@@ -126,6 +171,7 @@ impl Command for RepoCommand {
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),
+            RepoCommands::Search { identity, json } => search::repo_search(&identity, json),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {
                 source,
