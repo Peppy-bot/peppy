@@ -16,8 +16,8 @@ pub use list::listen_for_repo_list;
 pub use refresh::listen_for_repo_refresh;
 pub use remove::listen_for_repo_remove;
 pub use search::{
-    Consumer, Implementer, IndexedNode, Observer, Participant, PinStatus, PublishedDoc,
-    SearchReport, search_identity,
+    Consumer, Implementer, IndexedNode, MatchedItem, Observer, Participant, PinStatus,
+    PublishedDoc, SearchOutcome, SearchQuery, SearchReport, search_repo_items,
 };
 
 use crate::services::repo::cache::{EntryOrigin, NodeCacheEntry, UNOWNED_REPO_ID};

@@ -86,17 +86,34 @@ One situation is flagged: `(shadowed by <repository>)` means another repository 
 
 A repository whose last refresh failed is marked `[retained, last read <date>]`, with the reason on the following line. Its entries are the ones it last published successfully, so anything referencing them keeps working; the date tells you how old they are.
 
-### Search for a contract's or pairing's users
+### Search the repositories
 
 ```sh
-peppy repo search <name>:<tag>
+peppy repo search <name-regex>[:<tag-regex>][@<sha256>]
 ```
 
-Shows who uses a contract or pairing: the nodes that implement it (`manifest.implements`), consume it (`depends_on.contracts`), play a role in it (`depends_on.pairings`), or observe one of its roles (`depends_on.pairing_observers`). The first lines name the published document the identity resolves to, with its repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both. One section per way of using it follows, grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality or `optional`), `PIN`, and `PATH` (the manifest path). A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
+Finds any indexed item: nodes, launchers, contracts, pairings, and MCP exposures. Each query part is an unanchored regular expression, matched the way `apt search` matches its patterns: `camera` finds `rgb_camera`, `^rgb_camera$` only the exact name, `cam(era)?:v[12]` any combination of the alternatives. Matching is case-sensitive; prepend `(?i)` to a part for case-insensitive matching. A missing tag part matches every tag. Launchers carry no tag, so a bare name finds them, while a tag pattern only matches them when it matches the empty string (`demo:.*` does, `demo:v1` does not). The `:` splits the query, so a POSIX class like `[[:digit:]]` cannot be written; use `[0-9]`. `@<sha256>` keeps only the copies carrying exactly those bytes, wherever they are published, so `.*@<sha256>` finds a document knowing only its fingerprint.
+
+Several matching identities are listed with where each is stored, names the pattern matches outright first, then by name:
+
+```text
+camera
+
+3 items match `camera`
+┌──────────────┬───────────────────┬────────────────────────────────────────────────────────────┬────────────────────────────┬──────────┐
+│ KIND         │ ITEM              │ REPOSITORY                                                 │ PATH                       │ SHA256   │
+├──────────────┼───────────────────┼────────────────────────────────────────────────────────────┼────────────────────────────┼──────────┤
+│ mcp exposure │ front_camera:v1   │ https://github.com/Peppy-bot/mcp-hub.git (ref: main)       │ cameras/front_camera.json5 │ 583f9ac9 │
+│ contract     │ rgb_camera:v1     │ https://github.com/Peppy-bot/contracts-hub.git (ref: main) │ cameras/rgb_camera.json5   │ 4594da02 │
+│ node         │ sim_rgb_camera:v1 │ https://github.com/Peppy-bot/nodes-hub.git (ref: main)     │ sim_rgb_camera/peppy.json5 │ 9f2c1a77 │
+└──────────────┴───────────────────┴────────────────────────────────────────────────────────────┴────────────────────────────┴──────────┘
+```
+
+One matching identity gets its full report. The first lines name each matching document with its kind, repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both, and one report covers them. For a contract or pairing, one section per way a node uses it follows: implementing it (`manifest.implements`), consuming it (`depends_on.contracts`), playing a role in it (`depends_on.pairings`), or observing one of its roles (`depends_on.pairing_observers`). Sections are grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality or `optional`), `PIN`, and `PATH` (the manifest path). A node, launcher, or MCP exposure has no usage sections; its published line is the whole answer. A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
 
 ```text
 rgb_camera:v1
-  contract published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 a4e66999c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8)
+  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 a4e66999c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8)
 
 Implemented by 2 indexed nodes
   https://github.com/Peppy-bot/nodes-hub.git (ref: main):
@@ -128,7 +145,7 @@ The `PIN` column says what a sync does with the claim's `sha256`:
 
 `(shadowed by <repository>)` means what it means in `peppy repo list`: a lower-`id` repository provides the same `name:tag`, so a launch resolves to that node, which may not make this claim at all.
 
-The search reads this machine's caches, so it reflects the last `peppy repo refresh` and needs no daemon (`--core-node` has no effect). An identity nobody uses is an answer, not an error: the command says that no indexed node uses it and, when repositories are excluded, that one of them may have provided a user. `--json` prints the same report as one JSON document with `query`, `contract`, `pairing`, `implementers`, `consumers`, `participants`, and `observers`.
+The search reads this machine's caches, so it reflects the last `peppy repo refresh` and needs no daemon (`--core-node` has no effect). A query nothing matches is an answer, not an error: the command says so and, when repositories are excluded, that one of them may have provided the item. `--json` prints the same answer as one JSON document with `query` (the parsed `raw`, `name`, `tag`, and `sha256` parts), `matches` (each with its `kind`, `name`, `tag`, `exact`, and `published` document), `detail` (the usage report with `implementers`, `consumers`, `participants`, and `observers`; `null` unless exactly one identity matches), and `excluded`.
 
 ### Refresh the index
 

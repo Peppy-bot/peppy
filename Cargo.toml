@@ -18,6 +18,8 @@ edition = "2024"
 # Uncomment and adapt as needed.
 [workspace.dependencies]
 parking_lot = "0.12"
+# The regex engine `repo search` compiles its query patterns with.
+regex = "1"
 # Parameterized tests: messaging e2e suites run each body under both peer and
 # router mode via `#[case]` (see crates/*/tests). Test-only.
 rstest = "0.26"

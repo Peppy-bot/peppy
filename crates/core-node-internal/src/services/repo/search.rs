@@ -1,26 +1,152 @@
-//! Who uses a contract or pairing, read from this machine's caches.
+//! What a search query names across this machine's caches: every indexed
+//! item whose identity matches, and who uses it once the query settles on
+//! one identity.
 //!
-//! Every hit comes from the links `repo refresh` recorded on each node entry
-//! ([`DeclaredLinks`]), so a search never reads a manifest or materializes a
-//! checkout: it answers for what the last refresh saw, which is also what a
-//! launch resolves. Nodes are attributed to repositories, and shadowed,
-//! exactly as `repo list` shows them, through [`nodes_by_repository`].
-//!
-//! A claim whose tag breaks the `ItemTag` rules is never found: the query is
-//! validated before the search, and such a claim is equally unresolvable
-//! through the caches at sync, so nothing a launch could use is hidden.
+//! Every answer comes from the caches `repo refresh` wrote, so a search
+//! never reads a manifest or materializes a checkout: it answers for what
+//! the last refresh saw, which is also what a launch resolves. Usage hits
+//! come from the links recorded on each node entry ([`DeclaredLinks`]);
+//! nodes are attributed to repositories, and shadowed, exactly as
+//! `repo list` shows them, through [`nodes_by_repository`].
 
 use crate::services::repo::cache::{
-    DeclaredLinks, NodeCacheEntry, RepoCacheEntry, excluded_repositories_hint, load_contract_cache,
-    load_node_cache, load_pairing_cache, lookup_repo_entry, lookup_repo_entry_by_sha256,
+    ContractCacheEntry, DeclaredLinks, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
+    PairingCacheEntry, RepoCacheEntry, excluded_repositories_hint, load_contract_cache,
+    load_node_cache, load_pairing_cache, load_repo_cache, lookup_repo_entry,
+    lookup_repo_entry_by_sha256,
 };
 use crate::services::repo::{
     AttributedNode, ListedRepo, RepoNodes, listed_repositories, nodes_by_repository,
 };
 use config::node::Cardinality;
-use core_node_api::encoding::RepoSourceKind;
+use core_node_api::encoding::{RepoItemKind, RepoSourceKind};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::repository::ManifestFingerprint;
+use std::collections::BTreeSet;
+
+/// A parsed `<name-regex>[:<tag-regex>][@<sha256>]` search query.
+///
+/// Each part is an unanchored [`regex::Regex`], so `camera` finds
+/// `rgb_camera` and `^camera$` finds only `camera`. A missing tag part
+/// matches every tag, the empty one of untagged kinds included; a digest
+/// keeps only the copies carrying exactly those bytes.
+#[derive(Debug, Clone)]
+pub struct SearchQuery {
+    raw: String,
+    name: SearchPattern,
+    tag: Option<SearchPattern>,
+    digest: Option<ManifestFingerprint>,
+}
+
+impl SearchQuery {
+    /// Parses `raw`: the digest is split off at the last `@` and must be a
+    /// sha256 fingerprint, the name and tag parts are split at the one
+    /// allowed `:`, and each part must be a non-empty, valid regular
+    /// expression. A query that does not fit the grammar is refused with
+    /// the rule it broke; an item name never contains `:` or `@`, so the
+    /// splits never take a matchable pattern apart.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err(
+                "the search query is empty; write `<name-regex>[:<tag-regex>][@<sha256>]`"
+                    .to_owned(),
+            );
+        }
+        let (patterns, digest) = match raw.rsplit_once('@') {
+            Some((patterns, suffix)) => {
+                let digest = ManifestFingerprint::parse(suffix)
+                    .map_err(|e| format!("search digest `{suffix}`: {e}"))?;
+                (patterns, Some(digest))
+            }
+            None => (raw, None),
+        };
+        let (name, tag) = match patterns.split_once(':') {
+            Some((name, tag)) => (name, Some(tag)),
+            None => (patterns, None),
+        };
+        if let Some(tag) = tag
+            && tag.contains(':')
+        {
+            return Err(format!("search query `{raw}` must contain at most one `:`"));
+        }
+        if name.is_empty() {
+            return Err(format!(
+                "search query `{raw}` has an empty name pattern; write `.*` to match every name"
+            ));
+        }
+        if let Some(tag) = tag
+            && tag.is_empty()
+        {
+            return Err(format!(
+                "search query `{raw}` has an empty tag pattern; drop the `:` to match every tag"
+            ));
+        }
+        Ok(Self {
+            raw: raw.to_owned(),
+            name: SearchPattern::compile(name)?,
+            tag: tag.map(SearchPattern::compile).transpose()?,
+            digest,
+        })
+    }
+
+    /// The query as typed (trimmed), for echoing back in output.
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// The name part as typed, for machine-readable output.
+    pub fn name_pattern(&self) -> &str {
+        self.name.matcher.as_str()
+    }
+
+    /// The tag part as typed, when the query has one.
+    pub fn tag_pattern(&self) -> Option<&str> {
+        self.tag.as_ref().map(|pattern| pattern.matcher.as_str())
+    }
+
+    /// The digest, when the query pins one.
+    pub fn digest(&self) -> Option<&ManifestFingerprint> {
+        self.digest.as_ref()
+    }
+
+    /// Whether the patterns match `(name, tag)`. The digest is a filter on
+    /// copies, not identities, so it plays no part here.
+    fn matches(&self, name: &str, tag: &str) -> bool {
+        self.name.matcher.is_match(name)
+            && self
+                .tag
+                .as_ref()
+                .is_none_or(|pattern| pattern.matcher.is_match(tag))
+    }
+
+    /// Whether the name pattern matches the whole name: such a hit ranks
+    /// ahead of one the pattern merely brushes.
+    fn names_outright(&self, name: &str) -> bool {
+        self.name.whole.is_match(name)
+    }
+}
+
+/// One query part: the unanchored matcher, plus the same pattern anchored
+/// to the whole string so ranking can tell a name the pattern spells out
+/// from one it matches somewhere inside.
+#[derive(Debug, Clone)]
+struct SearchPattern {
+    matcher: regex::Regex,
+    whole: regex::Regex,
+}
+
+impl SearchPattern {
+    fn compile(part: &str) -> Result<Self, String> {
+        let matcher = regex::Regex::new(part).map_err(|e| {
+            format!("search pattern `{part}` is not a valid regular expression: {e}")
+        })?;
+        // Wrapping a valid pattern in a non-capturing group keeps it valid.
+        let whole =
+            regex::Regex::new(&format!("^(?:{part})$")).expect("anchored form of a valid pattern");
+        Ok(Self { matcher, whole })
+    }
+}
 
 /// The node a hit belongs to, as `repo list` would show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,8 +227,8 @@ pub struct Observer {
     pub pin: PinStatus,
 }
 
-/// The document a plain `name:tag` reference resolves to: the lowest-id
-/// repository's copy.
+/// The document a reference resolves to: the lowest-id repository's copy,
+/// or, for a digest query, the copy carrying that digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedDoc {
     pub repo_id: u32,
@@ -113,47 +239,177 @@ pub struct PublishedDoc {
     pub sha256: ManifestFingerprint,
 }
 
-/// Everything a search says about one identity.
+/// One identity the query matches, with the copy the answer points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchReport {
-    /// The published contract of that name, from the contracts cache.
-    pub contract: Option<PublishedDoc>,
-    /// The published pairing of that name, from the pairings cache. The two
-    /// namespaces are separate, so both are reported.
-    pub pairing: Option<PublishedDoc>,
-    pub implementers: Vec<Implementer>,
-    pub consumers: Vec<Consumer>,
-    pub participants: Vec<Participant>,
-    pub observers: Vec<Observer>,
+pub struct MatchedItem {
+    pub kind: RepoItemKind,
+    pub name: String,
+    /// Empty for untagged kinds (launchers).
+    pub tag: String,
+    /// The name pattern matches the whole name, not just a part of it.
+    pub exact: bool,
+    pub published: PublishedDoc,
+}
+
+/// Everything a search says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchOutcome {
+    /// Every identity the query matches, ranked: names the pattern spells
+    /// out first, then by name, tag and kind.
+    pub matches: Vec<MatchedItem>,
+    /// Who uses the identity, once the matches settle on exactly one
+    /// `name:tag`. An identity published as both a contract and a pairing
+    /// has two entries in `matches` and one report covering both.
+    pub detail: Option<SearchReport>,
     /// [`excluded_repositories_hint`], so an empty result can say that an
-    /// excluded repository may have provided a user without the caller
+    /// excluded repository may have provided the item without the caller
     /// knowing the cache layout. Empty when nothing is excluded.
     pub excluded_hint: String,
 }
 
-/// Searches this machine's caches for the nodes that implement, consume,
-/// participate in, or observe `name:tag`, with each claim's pin checked
-/// against the cached documents. Each section is ordered by repository id,
-/// then node name, tag and slot.
+/// Who uses one identity: the nodes that implement, consume, participate
+/// in, or observe it, read from the links `repo refresh` recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchReport {
+    pub name: String,
+    pub tag: String,
+    pub implementers: Vec<Implementer>,
+    pub consumers: Vec<Consumer>,
+    pub participants: Vec<Participant>,
+    pub observers: Vec<Observer>,
+}
+
+/// Searches this machine's caches for every indexed item the query
+/// matches, across all five kinds. Once the matches settle on exactly one
+/// `name:tag`, the outcome also reports who uses that identity, with each
+/// claim's pin checked against the cached documents.
 ///
-/// An unreadable cache is an error, as is an identity one repository
-/// publishes twice: neither has an answer a launch would accept.
-pub fn search_identity(
+/// An unreadable cache is an error, as is a matched identity one
+/// repository publishes twice: neither has an answer a launch would
+/// accept.
+pub fn search_repo_items(
     peppy_dirs: &PeppyDirs,
+    query: &SearchQuery,
+) -> Result<SearchOutcome, String> {
+    let nodes = load_node_cache(peppy_dirs).map_err(|e| e.to_string())?;
+    let launchers: Vec<LauncherCacheEntry> =
+        load_repo_cache(peppy_dirs).map_err(|e| e.to_string())?;
+    let contracts = load_contract_cache(peppy_dirs).map_err(|e| e.to_string())?;
+    let pairings = load_pairing_cache(peppy_dirs).map_err(|e| e.to_string())?;
+    let exposures: Vec<McpExposureCacheEntry> =
+        load_repo_cache(peppy_dirs).map_err(|e| e.to_string())?;
+    let repos = listed_repositories(peppy_dirs).map_err(|e| e.to_string())?;
+
+    let mut matches = matched_identities(&nodes, &repos, query)?;
+    matches.extend(matched_identities(&launchers, &repos, query)?);
+    matches.extend(matched_identities(&contracts, &repos, query)?);
+    matches.extend(matched_identities(&pairings, &repos, query)?);
+    matches.extend(matched_identities(&exposures, &repos, query)?);
+    matches.sort_by(|a, b| match_order(a).cmp(&match_order(b)));
+
+    let single_identity = matches
+        .first()
+        .filter(|first| {
+            matches
+                .iter()
+                .all(|m| m.name == first.name && m.tag == first.tag)
+        })
+        .map(|first| (first.name.clone(), first.tag.clone()));
+    let detail = match single_identity {
+        Some((name, tag)) => Some(usage_report(
+            &nodes, &contracts, &pairings, &repos, &name, &tag,
+        )?),
+        None => None,
+    };
+
+    Ok(SearchOutcome {
+        matches,
+        detail,
+        excluded_hint: excluded_repositories_hint(peppy_dirs),
+    })
+}
+
+/// Every distinct identity in `entries` the query matches, each with the
+/// copy the answer points at: the one a plain reference resolves to, or,
+/// for a digest query, the highest-priority copy carrying that digest.
+/// An identity none of whose copies carries the digest is not a match.
+fn matched_identities<E: RepoCacheEntry>(
+    entries: &[E],
+    repos: &[ListedRepo],
+    query: &SearchQuery,
+) -> Result<Vec<MatchedItem>, String> {
+    let identities: BTreeSet<(&str, &str)> = entries
+        .iter()
+        .filter(|e| query.matches(e.name(), e.tag()))
+        .map(|e| (e.name(), e.tag()))
+        .collect();
+
+    let mut matches = Vec::new();
+    for (name, tag) in identities {
+        let published = match query.digest() {
+            None => published_doc(entries, repos, name, tag)?
+                .expect("the identity came from these entries"),
+            Some(digest) => {
+                let carriers = entries
+                    .iter()
+                    .filter(|e| e.name() == name && e.tag() == tag && e.sha256() == digest);
+                let Some(entry) = carriers.min_by_key(|e| e.repo_id()) else {
+                    continue;
+                };
+                PublishedDoc {
+                    repo_id: entry.repo_id(),
+                    repo_label: label_of(repos, entry.repo_id()),
+                    path: entry.origin().path_str().to_owned(),
+                    sha256: entry.sha256().clone(),
+                }
+            }
+        };
+        matches.push(MatchedItem {
+            kind: E::ITEM_KIND,
+            name: name.to_owned(),
+            tag: tag.to_owned(),
+            exact: query.names_outright(name),
+            published,
+        });
+    }
+    Ok(matches)
+}
+
+/// The order matches are listed in: a name the pattern spells out ranks
+/// first, then name, tag and kind.
+fn match_order(item: &MatchedItem) -> (bool, &str, &str, u8) {
+    (!item.exact, &item.name, &item.tag, kind_rank(item.kind))
+}
+
+/// Kinds in the order `repo refresh` discovers them.
+fn kind_rank(kind: RepoItemKind) -> u8 {
+    match kind {
+        RepoItemKind::Node => 0,
+        RepoItemKind::Launcher => 1,
+        RepoItemKind::Contract => 2,
+        RepoItemKind::Pairing => 3,
+        RepoItemKind::McpExposure => 4,
+    }
+}
+
+/// Who uses `name:tag`: the nodes whose cached links implement, consume,
+/// participate in, or observe it, with each claim's pin checked. Each
+/// section is ordered by repository id, then node name, tag and slot.
+fn usage_report(
+    nodes: &[NodeCacheEntry],
+    contracts: &[ContractCacheEntry],
+    pairings: &[PairingCacheEntry],
+    repos: &[ListedRepo],
     name: &str,
     tag: &str,
 ) -> Result<SearchReport, String> {
-    let cached = load_node_cache(peppy_dirs).map_err(|e| e.to_string())?;
-    let repos = listed_repositories(peppy_dirs).map_err(|e| e.to_string())?;
-    let contracts = load_contract_cache(peppy_dirs).map_err(|e| e.to_string())?;
-    let pairings = load_pairing_cache(peppy_dirs).map_err(|e| e.to_string())?;
-    let contract = published_doc(&contracts, &repos, name, tag)?;
-    let pairing = published_doc(&pairings, &repos, name, tag)?;
+    let contract = published_doc(contracts, repos, name, tag)?;
+    let pairing = published_doc(pairings, repos, name, tag)?;
 
     let contract_pin =
-        |sha256: Option<&str>| pin_status(&contracts, contract.as_ref(), &repos, name, tag, sha256);
+        |sha256: Option<&str>| pin_status(contracts, contract.as_ref(), repos, name, tag, sha256);
     let pairing_pin =
-        |sha256: Option<&str>| pin_status(&pairings, pairing.as_ref(), &repos, name, tag, sha256);
+        |sha256: Option<&str>| pin_status(pairings, pairing.as_ref(), repos, name, tag, sha256);
     let about = |claim_name: &config::runtime::Name, claim_tag: &str| {
         claim_name.as_str() == name && claim_tag == tag
     };
@@ -162,7 +418,7 @@ pub fn search_identity(
     let mut consumers = Vec::new();
     let mut participants = Vec::new();
     let mut observers = Vec::new();
-    for RepoNodes { repo, nodes } in nodes_by_repository(&repos, &cached) {
+    for RepoNodes { repo, nodes } in nodes_by_repository(repos, nodes) {
         for node in &nodes {
             let DeclaredLinks {
                 implements,
@@ -215,13 +471,12 @@ pub fn search_identity(
     observers.sort_by_key(|hit| hit_order(&hit.node, &hit.link_id));
 
     Ok(SearchReport {
-        contract,
-        pairing,
+        name: name.to_owned(),
+        tag: tag.to_owned(),
         implementers,
         consumers,
         participants,
         observers,
-        excluded_hint: excluded_repositories_hint(peppy_dirs),
     })
 }
 
@@ -316,12 +571,12 @@ fn pin_status<E: RepoCacheEntry>(
 mod tests {
     use super::*;
     use crate::services::repo::cache::test_support::{
-        consumes, contract_entry, fingerprint, implements, node_entry, observes, pairing_entry,
-        participates, with_links,
+        consumes, contract_entry, fingerprint, implements, launcher_entry, mcp_exposure_entry,
+        node_entry, observes, pairing_entry, participates, with_links,
     };
     use crate::services::repo::cache::{
-        ContractCacheEntry, EntryOrigin, NodeCacheEntry, PairingCacheEntry, repositories_list_path,
-        write_repo_cache,
+        ContractCacheEntry, EntryOrigin, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
+        PairingCacheEntry, repositories_list_path, write_repo_cache,
     };
     use std::path::{Path, PathBuf};
 
@@ -383,6 +638,10 @@ mod tests {
             write_repo_cache(&self.dirs, entries).unwrap();
         }
 
+        fn launchers(&self, entries: &[LauncherCacheEntry]) {
+            write_repo_cache(&self.dirs, entries).unwrap();
+        }
+
         fn contracts(&self, entries: &[ContractCacheEntry]) {
             write_repo_cache(&self.dirs, entries).unwrap();
         }
@@ -390,6 +649,14 @@ mod tests {
         fn pairings(&self, entries: &[PairingCacheEntry]) {
             write_repo_cache(&self.dirs, entries).unwrap();
         }
+
+        fn mcp_exposures(&self, entries: &[McpExposureCacheEntry]) {
+            write_repo_cache(&self.dirs, entries).unwrap();
+        }
+    }
+
+    fn search(home: &Home, raw: &str) -> Result<SearchOutcome, String> {
+        search_repo_items(&home.dirs, &SearchQuery::parse(raw).expect("a valid query"))
     }
 
     fn fs(path: PathBuf) -> EntryOrigin {
@@ -413,9 +680,78 @@ mod tests {
         )
     }
 
+    #[test]
+    fn parse_accepts_a_bare_name_pattern() {
+        let query = SearchQuery::parse(" openarm ").expect("parses");
+        assert_eq!(query.raw(), "openarm");
+        assert_eq!(query.name_pattern(), "openarm");
+        assert_eq!(query.tag_pattern(), None);
+        assert_eq!(query.digest(), None);
+    }
+
+    #[test]
+    fn parse_splits_name_tag_and_digest() {
+        let digest = "A".repeat(64);
+        let query = SearchQuery::parse(&format!("openarm_v2:v1@{digest}")).expect("parses");
+        assert_eq!(query.name_pattern(), "openarm_v2");
+        assert_eq!(query.tag_pattern(), Some("v1"));
+        assert_eq!(
+            query.digest().map(|d| d.as_str().to_owned()),
+            Some("a".repeat(64)),
+            "the digest is normalized to lowercase"
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_digest_that_is_not_a_fingerprint() {
+        let err = SearchQuery::parse("cam@abc").expect_err("refuses");
+        assert!(err.contains("search digest `abc`"), "got: {err}");
+        assert!(err.contains("64 hexadecimal"), "got: {err}");
+        let err = SearchQuery::parse("cam@").expect_err("refuses");
+        assert!(err.contains("empty"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_refuses_an_empty_part() {
+        let err = SearchQuery::parse("  ").expect_err("refuses");
+        assert!(err.contains("search query is empty"), "got: {err}");
+        let err = SearchQuery::parse("cam:").expect_err("refuses");
+        assert!(err.contains("empty tag pattern"), "got: {err}");
+        let err = SearchQuery::parse(":v1").expect_err("refuses");
+        assert!(err.contains("empty name pattern"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_refuses_a_second_colon() {
+        let err = SearchQuery::parse("a:b:c").expect_err("refuses");
+        assert!(err.contains("at most one `:`"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_refuses_an_invalid_regex() {
+        let err = SearchQuery::parse("cam[").expect_err("refuses");
+        assert!(err.contains("`cam[`"), "got: {err}");
+        assert!(err.contains("not a valid regular expression"), "got: {err}");
+    }
+
+    /// Matching is unanchored, as `apt search` matches; ranking a hit as
+    /// exact takes the whole name, and `^…$` makes exactness explicit.
+    #[test]
+    fn matching_is_unanchored_and_exactness_needs_the_whole_name() {
+        let query = SearchQuery::parse("cam").expect("parses");
+        assert!(query.matches("uvc_camera", "v1"));
+        assert!(!query.names_outright("uvc_camera"));
+        assert!(query.names_outright("cam"));
+
+        let anchored = SearchQuery::parse("^cam$").expect("parses");
+        assert!(anchored.matches("cam", "v1"));
+        assert!(!anchored.matches("uvc_camera", "v1"));
+    }
+
     /// One identity, every kind of link on it, published as both a
-    /// contract and a pairing: each hit lands in its section with the
-    /// slot facts the manifest declared, and both documents are reported.
+    /// contract and a pairing: both documents are matches, one identity
+    /// means the usage report comes along, and each hit lands in its
+    /// section with the slot facts the manifest declared.
     #[test]
     fn every_link_kind_on_one_identity_is_reported() {
         let home = Home::new();
@@ -469,8 +805,42 @@ mod tests {
             node_entry("plain", "v1", fs(hub.join("plain/peppy.json5"))),
         ]);
 
-        let report = search_identity(&home.dirs, "rgb_camera", "v1").expect("searches");
+        let outcome = search(&home, "rgb_camera:v1").expect("searches");
 
+        assert_eq!(
+            outcome.matches,
+            vec![
+                MatchedItem {
+                    kind: RepoItemKind::Contract,
+                    name: "rgb_camera".to_owned(),
+                    tag: "v1".to_owned(),
+                    exact: true,
+                    published: PublishedDoc {
+                        repo_id: 1,
+                        repo_label: label(&hub),
+                        path: label(&hub.join("contracts/rgb.json5")),
+                        sha256: ManifestFingerprint::parse(&contract_sha).unwrap(),
+                    },
+                },
+                MatchedItem {
+                    kind: RepoItemKind::Pairing,
+                    name: "rgb_camera".to_owned(),
+                    tag: "v1".to_owned(),
+                    exact: true,
+                    published: PublishedDoc {
+                        repo_id: 1,
+                        repo_label: label(&hub),
+                        path: label(&hub.join("pairings/rgb.json5")),
+                        sha256: ManifestFingerprint::parse(&pairing_sha).unwrap(),
+                    },
+                },
+            ]
+        );
+        assert_eq!(outcome.excluded_hint, "");
+
+        let report = outcome.detail.expect("one identity carries its report");
+        assert_eq!(report.name, "rgb_camera");
+        assert_eq!(report.tag, "v1");
         let node = |name: &str| IndexedNode {
             node_name: name.to_owned(),
             node_tag: "v1".to_owned(),
@@ -480,24 +850,6 @@ mod tests {
             path: label(&hub.join(format!("{name}/peppy.json5"))),
             shadowed_by: None,
         };
-        assert_eq!(
-            report.contract,
-            Some(PublishedDoc {
-                repo_id: 1,
-                repo_label: label(&hub),
-                path: label(&hub.join("contracts/rgb.json5")),
-                sha256: ManifestFingerprint::parse(&contract_sha).unwrap(),
-            })
-        );
-        assert_eq!(
-            report.pairing,
-            Some(PublishedDoc {
-                repo_id: 1,
-                repo_label: label(&hub),
-                path: label(&hub.join("pairings/rgb.json5")),
-                sha256: ManifestFingerprint::parse(&pairing_sha).unwrap(),
-            })
-        );
         assert_eq!(
             report.implementers,
             vec![Implementer {
@@ -539,7 +891,161 @@ mod tests {
                 pin: PinStatus::Unpinned,
             }]
         );
-        assert_eq!(report.excluded_hint, "");
+    }
+
+    /// A partial name lists every matching identity across the five kinds
+    /// with no usage report, ordered by name whatever the kind.
+    #[test]
+    fn a_partial_name_lists_every_matching_identity() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.nodes(&[node_entry(
+            "uvc_camera",
+            "v1",
+            fs(hub.join("uvc_camera/peppy.json5")),
+        )]);
+        home.launchers(&[launcher_entry(
+            "camera_boot",
+            fs(hub.join("camera_boot.json5")),
+        )]);
+        home.contracts(&[contract_entry(
+            "rgb_camera",
+            "v1",
+            fs(hub.join("rgb.json5")),
+        )]);
+        home.mcp_exposures(&[mcp_exposure_entry(
+            "camera_surface",
+            "v1",
+            fs(hub.join("camera_surface.json5")),
+        )]);
+
+        let outcome = search(&home, "camera").expect("searches");
+
+        let identities: Vec<(RepoItemKind, &str, &str)> = outcome
+            .matches
+            .iter()
+            .map(|m| (m.kind, m.name.as_str(), m.tag.as_str()))
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                (RepoItemKind::Launcher, "camera_boot", ""),
+                (RepoItemKind::McpExposure, "camera_surface", "v1"),
+                (RepoItemKind::Contract, "rgb_camera", "v1"),
+                (RepoItemKind::Node, "uvc_camera", "v1"),
+            ]
+        );
+        assert!(outcome.matches.iter().all(|m| !m.exact));
+        assert_eq!(outcome.detail, None);
+    }
+
+    /// A name the pattern spells out ranks ahead of one it merely brushes,
+    /// whatever the kinds involved.
+    #[test]
+    fn an_outright_name_match_ranks_before_partial_ones() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.contracts(&[contract_entry("cam", "v1", fs(hub.join("cam.json5")))]);
+        home.nodes(&[node_entry(
+            "uvc_camera",
+            "v1",
+            fs(hub.join("uvc_camera/peppy.json5")),
+        )]);
+
+        let outcome = search(&home, "cam").expect("searches");
+
+        let names: Vec<(&str, bool)> = outcome
+            .matches
+            .iter()
+            .map(|m| (m.name.as_str(), m.exact))
+            .collect();
+        assert_eq!(names, vec![("cam", true), ("uvc_camera", false)]);
+        assert_eq!(outcome.detail, None);
+    }
+
+    /// A query without a tag part matches an untagged launcher; a tag
+    /// pattern is matched against the launcher's empty tag, so `v1` never
+    /// finds it and `.*` does.
+    #[test]
+    fn a_missing_tag_part_matches_untagged_launchers() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.launchers(&[launcher_entry(
+            "camera_boot",
+            fs(hub.join("camera_boot.json5")),
+        )]);
+
+        let outcome = search(&home, "camera_boot").expect("searches");
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(outcome.matches[0].kind, RepoItemKind::Launcher);
+        assert_eq!(outcome.matches[0].tag, "");
+        let report = outcome.detail.expect("one identity carries its report");
+        assert_eq!(
+            (report.name.as_str(), report.tag.as_str()),
+            ("camera_boot", "")
+        );
+        assert_eq!(report.implementers, Vec::new());
+
+        let outcome = search(&home, "camera_boot:v1").expect("searches");
+        assert_eq!(outcome.matches, Vec::new());
+
+        let outcome = search(&home, "camera_boot:.*").expect("searches");
+        assert_eq!(outcome.matches.len(), 1);
+    }
+
+    /// A regex tag part spans every tag it matches; more than one identity
+    /// means no usage report.
+    #[test]
+    fn a_regex_tag_part_spans_every_matching_tag() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.contracts(&[
+            contract_entry("rgb_camera", "v1", fs(hub.join("rgb_v1.json5"))),
+            contract_entry("rgb_camera", "v2", fs(hub.join("rgb_v2.json5"))),
+        ]);
+
+        let outcome = search(&home, "rgb_camera:v[12]").expect("searches");
+
+        let tags: Vec<&str> = outcome.matches.iter().map(|m| m.tag.as_str()).collect();
+        assert_eq!(tags, vec!["v1", "v2"]);
+        assert_eq!(outcome.detail, None);
+    }
+
+    /// A digest query points at the copy carrying those bytes, wherever it
+    /// is published, and matches nothing when no copy carries them.
+    #[test]
+    fn a_digest_query_finds_the_copy_carrying_it() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        let mirror = home.repo("mirror");
+        home.configure(&[(1, &hub), (2, &mirror)]);
+        let current = contract_entry("rgb_camera", "v1", fs(hub.join("contracts/rgb.json5")));
+        let mut older = contract_entry("rgb_camera", "v1", fs(mirror.join("rgb.json5")));
+        older.sha256 = fingerprint("older revision");
+        let older_sha = older.sha256.as_str().to_owned();
+        home.contracts(&[current, older]);
+
+        let outcome = search(&home, &format!("rgb_camera:v1@{older_sha}")).expect("searches");
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(
+            outcome.matches[0].published,
+            PublishedDoc {
+                repo_id: 2,
+                repo_label: label(&mirror),
+                path: label(&mirror.join("rgb.json5")),
+                sha256: ManifestFingerprint::parse(&older_sha).unwrap(),
+            }
+        );
+        assert!(outcome.detail.is_some(), "one identity carries its report");
+
+        let absent = fingerprint("never published");
+        let outcome = search(&home, &format!("rgb_camera:v1@{absent}")).expect("searches");
+        assert_eq!(outcome.matches, Vec::new());
+        assert_eq!(outcome.detail, None);
     }
 
     /// An implementer whose `name:tag` a lower-id repository also provides
@@ -564,7 +1070,8 @@ mod tests {
             node_entry("cam", "v1", fs(top.join("cam/peppy.json5"))),
         ]);
 
-        let report = search_identity(&home.dirs, "rgb_camera", "v1").expect("searches");
+        let outcome = search(&home, "rgb_camera:v1").expect("searches");
+        let report = outcome.detail.expect("one identity carries its report");
 
         assert_eq!(report.implementers.len(), 1);
         let hit = &report.implementers[0].node;
@@ -602,24 +1109,25 @@ mod tests {
             ),
         ]);
 
-        let report = search_identity(&home.dirs, "rgb_camera", "v1").expect("searches");
+        let outcome = search(&home, "rgb_camera:v1").expect("searches");
 
+        assert!(
+            outcome.excluded_hint.contains("1 excluded repository"),
+            "got: {}",
+            outcome.excluded_hint
+        );
+        assert!(
+            outcome.excluded_hint.contains(&label(&extra)),
+            "got: {}",
+            outcome.excluded_hint
+        );
+        let report = outcome.detail.expect("one identity carries its report");
         let names: Vec<&str> = report
             .implementers
             .iter()
             .map(|hit| hit.node.node_name.as_str())
             .collect();
         assert_eq!(names, vec!["cam"]);
-        assert!(
-            report.excluded_hint.contains("1 excluded repository"),
-            "got: {}",
-            report.excluded_hint
-        );
-        assert!(
-            report.excluded_hint.contains(&label(&extra)),
-            "got: {}",
-            report.excluded_hint
-        );
     }
 
     /// Each pin state is decided the way a sync decides it: unpinned takes
@@ -680,7 +1188,8 @@ mod tests {
             },
         )]);
 
-        let report = search_identity(&home.dirs, "rgb_camera", "v1").expect("searches");
+        let outcome = search(&home, "rgb_camera:v1").expect("searches");
+        let report = outcome.detail.expect("one identity carries its report");
 
         let pins: Vec<(&str, &PinStatus)> = report
             .implementers
@@ -712,8 +1221,8 @@ mod tests {
         );
     }
 
-    /// An identity nobody publishes or uses is an empty report, not an
-    /// error: "nobody uses it" is an answer.
+    /// An identity nobody publishes or uses is an empty outcome, not an
+    /// error: "nothing matches" is an answer.
     #[test]
     fn an_unknown_identity_reports_nothing() {
         let home = Home::new();
@@ -724,17 +1233,13 @@ mod tests {
             implements("rgb_camera", "v1", "camera", None),
         )]);
 
-        let report = search_identity(&home.dirs, "nobody", "v1").expect("searches");
+        let outcome = search(&home, "nobody:v1").expect("searches");
 
         assert_eq!(
-            report,
-            SearchReport {
-                contract: None,
-                pairing: None,
-                implementers: Vec::new(),
-                consumers: Vec::new(),
-                participants: Vec::new(),
-                observers: Vec::new(),
+            outcome,
+            SearchOutcome {
+                matches: Vec::new(),
+                detail: None,
                 excluded_hint: String::new(),
             }
         );
@@ -754,7 +1259,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = search_identity(&home.dirs, "rgb_camera", "v1").expect_err("refuses");
+        let err = search(&home, "rgb_camera:v1").expect_err("refuses");
 
         assert!(err.contains("does not parse"), "got: {err}");
         assert!(err.contains("peppy repo update"), "got: {err}");
@@ -773,7 +1278,7 @@ mod tests {
         ]);
         home.nodes(&[]);
 
-        let err = search_identity(&home.dirs, "rgb_camera", "v1").expect_err("refuses");
+        let err = search(&home, "rgb_camera:v1").expect_err("refuses");
 
         assert!(err.contains("2 contract entries"), "got: {err}");
         assert!(err.contains("`rgb_camera:v1`"), "got: {err}");

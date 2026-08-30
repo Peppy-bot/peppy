@@ -66,16 +66,26 @@ pub enum RepoCommands {
     },
     /// List configured repositories
     List,
-    /// Show who uses a contract or pairing: the nodes that implement,
-    /// consume, participate in, or observe it, and whether their pins match
-    /// what is published.
+    /// Search the repositories for any indexed item (node, launcher,
+    /// contract, pairing, MCP exposure). One matching identity gets its
+    /// full report: where it is published and, for a contract or pairing,
+    /// the nodes that implement, consume, participate in, or observe it,
+    /// with each pin checked; several matches list where each is stored.
+    ///
+    /// Each query part is an unanchored regular expression, as `apt
+    /// search` reads its patterns: `camera` finds `rgb_camera`,
+    /// `^rgb_camera$` only the exact name, `cam(era)?:v[12]` any of four
+    /// identities. A missing tag part matches every tag (launchers carry
+    /// none), and `@<sha256>` keeps only the copies carrying exactly
+    /// those bytes.
     ///
     /// Reads this machine's repository caches, so it reflects the last
     /// `peppy repo refresh`; needs no daemon, and `--core-node` has no
     /// effect on it.
     Search {
-        /// The contract or pairing, as `<name>:<tag>`.
-        identity: String,
+        /// The query, as `<name-regex>[:<tag-regex>][@<sha256>]`.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -142,7 +152,7 @@ impl Command for RepoCommand {
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),
-            RepoCommands::Search { identity, json } => search::repo_search(&identity, json),
+            RepoCommands::Search { query, json } => search::repo_search(&query, json),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {
                 source,

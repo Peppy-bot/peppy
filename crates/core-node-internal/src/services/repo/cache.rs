@@ -1197,6 +1197,20 @@ pub(crate) mod test_support {
         }
     }
 
+    pub(crate) fn mcp_exposure_entry(
+        name: &str,
+        tag: &str,
+        origin: EntryOrigin,
+    ) -> McpExposureCacheEntry {
+        McpExposureCacheEntry {
+            exposure_name: ItemName::parse(name).expect("test exposure name is valid"),
+            tag: ItemTag::parse(tag).expect("test exposure tag is valid"),
+            sha256: fingerprint(&format!("mcp exposure {name}:{tag}")),
+            origin,
+            repo_id: 0,
+        }
+    }
+
     pub(crate) fn pairing_entry(name: &str, tag: &str, origin: EntryOrigin) -> PairingCacheEntry {
         PairingCacheEntry {
             pairing_name: ItemName::parse(name).expect("test pairing name is valid"),

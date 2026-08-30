@@ -188,12 +188,12 @@ mod tests {
         let cli = Cli::try_parse_from(["peppy", "repo", "search", "rgb_camera:v1", "--json"])
             .expect("repo search parses");
         let Commands::Repo {
-            command: repo::RepoCommands::Search { identity, json },
+            command: repo::RepoCommands::Search { query, json },
         } = cli.command
         else {
             panic!("expected repo search");
         };
-        assert_eq!(identity, "rgb_camera:v1");
+        assert_eq!(query, "rgb_camera:v1");
         assert!(json);
 
         let cli = Cli::try_parse_from(["peppy", "repositories", "search", "rgb_camera:v1"])
@@ -204,6 +204,16 @@ mod tests {
                 command: repo::RepoCommands::Search { json: false, .. }
             }
         ));
+
+        let cli = Cli::try_parse_from(["peppy", "repo", "search", "-bot[0-9]+"])
+            .expect("a pattern starting with `-` is a query, not a flag");
+        let Commands::Repo {
+            command: repo::RepoCommands::Search { query, .. },
+        } = cli.command
+        else {
+            panic!("expected repo search");
+        };
+        assert_eq!(query, "-bot[0-9]+");
     }
 
     /// The exposure check rides `--check`; there is nothing to validate on

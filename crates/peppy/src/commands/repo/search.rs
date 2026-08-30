@@ -1,20 +1,23 @@
 use std::collections::BTreeSet;
 
-use core_node::{IndexedNode, PinStatus, PublishedDoc, SearchReport};
+use core_node::{
+    IndexedNode, MatchedItem, PinStatus, PublishedDoc, SearchOutcome, SearchQuery, SearchReport,
+};
+use core_node_api::encoding::RepoItemKind;
 use daemon_config::consts::PeppyDirs;
-use daemon_config::source::ItemRef;
 
 use crate::commands::colors::{BINDING_COLOR, COUNT_COLOR, NODE_COLOR, ORANGE, RED, paint};
 use crate::commands::table::render_table;
 use crate::error::{Error, Result};
 
-/// `peppy repo search <name>:<tag>`: who uses a contract or pairing.
-pub(super) fn repo_search(identity: &str, json: bool) -> Result<()> {
+/// `peppy repo search <query>`: every indexed item the query matches, and
+/// who uses it once the query settles on one identity.
+pub(super) fn repo_search(query: &str, json: bool) -> Result<()> {
     print!(
         "{}",
         search_rendered(
             &PeppyDirs::default(),
-            identity,
+            query,
             json,
             crate::terminal::stdout_width()
         )?
@@ -29,50 +32,65 @@ pub(super) fn repo_search(identity: &str, json: bool) -> Result<()> {
 /// piped output gets.
 pub fn search_rendered(
     peppy_dirs: &PeppyDirs,
-    identity: &str,
+    query: &str,
     json: bool,
     max_width: Option<usize>,
 ) -> Result<String> {
-    let reference = ItemRef::parse(identity, "search").map_err(Error::ExecutionFailed)?;
-    let report = core_node::search_identity(peppy_dirs, &reference.name, &reference.tag)
-        .map_err(Error::ExecutionFailed)?;
+    let query = SearchQuery::parse(query).map_err(Error::ExecutionFailed)?;
+    let outcome =
+        core_node::search_repo_items(peppy_dirs, &query).map_err(Error::ExecutionFailed)?;
     Ok(if json {
-        render_json(&reference, &report)
+        render_json(&query, &outcome)
     } else {
         render_human(
-            &reference,
-            &report,
+            &query,
+            &outcome,
             crate::terminal::colors_enabled(),
             max_width,
         )
     })
 }
 
-/// The report as a person reads it: the published documents first, then
-/// one section per way of using the identity, each grouped by repository
-/// the way `repo list` groups nodes. A section with no hits is left out;
-/// a report with none says so. Tinted with `stack list`'s palette: node
-/// identities cyan, link ids yellow, counts green.
+/// The outcome as a person reads it: one matched identity gets its
+/// published documents and one section per way of using it, each grouped
+/// by repository the way `repo list` groups nodes; several matched
+/// identities are listed with where each is stored. Tinted with
+/// `stack list`'s palette: item identities cyan, link ids yellow, counts
+/// green.
 fn render_human(
-    reference: &ItemRef,
-    report: &SearchReport,
+    query: &SearchQuery,
+    outcome: &SearchOutcome,
     colorize: bool,
     max_width: Option<usize>,
 ) -> String {
-    let mut out = format!("{}\n", paint(colorize, NODE_COLOR, &reference.to_string()));
-    let published: Vec<String> = [("contract", &report.contract), ("pairing", &report.pairing)]
-        .into_iter()
-        .filter_map(|(kind, doc)| doc.as_ref().map(|doc| published_line(kind, doc)))
-        .collect();
-    if published.is_empty() {
-        out.push_str(&format!(
-            "  no configured repository publishes a contract or pairing named `{reference}`; \
-             check the name, or register its repository (`peppy repo add`) and run \
-             `peppy repo refresh`\n"
-        ));
+    let mut out = format!("{}\n", paint(colorize, NODE_COLOR, query.raw()));
+    match &outcome.detail {
+        Some(report) => out.push_str(&detail_lines(report, outcome, colorize, max_width)),
+        None if outcome.matches.is_empty() => out.push_str(&format!(
+            "  nothing in any configured repository's cache matches `{}`; check the \
+             pattern, or register its repository (`peppy repo add`) and run \
+             `peppy repo refresh`{}\n",
+            query.raw(),
+            outcome.excluded_hint
+        )),
+        None => out.push_str(&match_table(query, outcome, colorize, max_width)),
     }
-    for line in published {
-        out.push_str(&line);
+    out
+}
+
+/// The single-identity view: one published line per matching document,
+/// then the four usage sections. A contract or pairing nobody uses says
+/// so; the other kinds have no usage sections to be empty, so their
+/// published line is the whole answer.
+fn detail_lines(
+    report: &SearchReport,
+    outcome: &SearchOutcome,
+    colorize: bool,
+    max_width: Option<usize>,
+) -> String {
+    let mut out = String::new();
+    for item in &outcome.matches {
+        out.push_str(&published_line(item));
     }
 
     let mut sections = String::new();
@@ -136,21 +154,89 @@ fn render_human(
         colorize,
         max_width,
     ));
-    if sections.is_empty() {
+    let usable_by_nodes = outcome
+        .matches
+        .iter()
+        .any(|item| matches!(item.kind, RepoItemKind::Contract | RepoItemKind::Pairing));
+    if sections.is_empty() && usable_by_nodes {
         out.push_str(&format!(
-            "\nNo indexed node implements, consumes, participates in, or observes `{reference}`{}\n",
-            report.excluded_hint
+            "\nNo indexed node implements, consumes, participates in, or observes `{}:{}`{}\n",
+            report.name, report.tag, outcome.excluded_hint
         ));
     }
     out.push_str(&sections);
     out
 }
 
-fn published_line(kind: &str, doc: &PublishedDoc) -> String {
+/// The several-identities view, one row per match in the service's rank
+/// order: the kind, the identity, and where the document is stored, with
+/// the fingerprint shortened the way pin cells shorten it (the JSON
+/// carries it whole).
+fn match_table(
+    query: &SearchQuery,
+    outcome: &SearchOutcome,
+    colorize: bool,
+    max_width: Option<usize>,
+) -> String {
+    let mut out = format!(
+        "\n{} items match `{}`\n",
+        paint(colorize, COUNT_COLOR, &outcome.matches.len().to_string()),
+        query.raw()
+    );
+    let rows: Vec<Vec<String>> = outcome
+        .matches
+        .iter()
+        .map(|item| {
+            vec![
+                kind_label(item.kind).to_owned(),
+                paint(colorize, NODE_COLOR, &display_id(item)),
+                item.published.repo_label.clone(),
+                item.published.path.clone(),
+                item.published.sha256.as_str().chars().take(8).collect(),
+            ]
+        })
+        .collect();
+    let mut table = String::new();
+    render_table(
+        &mut table,
+        &["KIND", "ITEM", "REPOSITORY", "PATH", "SHA256"],
+        &[rows],
+        max_width,
+    );
+    out.push_str(table.trim_end_matches('\n'));
+    out.push('\n');
+    out
+}
+
+/// Where one matching document is stored: the copy a plain reference
+/// resolves to, or the one carrying the queried digest.
+fn published_line(item: &MatchedItem) -> String {
     format!(
-        "  {kind} published by {} at {} (sha256 {})\n",
-        doc.repo_label, doc.path, doc.sha256
+        "  {} {} published by {} at {} (sha256 {})\n",
+        kind_label(item.kind),
+        display_id(item),
+        item.published.repo_label,
+        item.published.path,
+        item.published.sha256
     )
+}
+
+/// `name:tag`, or the bare name for untagged kinds (launchers).
+fn display_id(item: &MatchedItem) -> String {
+    if item.tag.is_empty() {
+        item.name.clone()
+    } else {
+        format!("{}:{}", item.name, item.tag)
+    }
+}
+
+/// The kind as prose. The JSON output uses [`RepoItemKind::as_str`]
+/// instead, whose `mcp_exposure` stays a machine token.
+fn kind_label(kind: RepoItemKind) -> &'static str {
+    match kind {
+        RepoItemKind::McpExposure => "mcp exposure",
+        other => other.as_str(),
+    }
 }
 
 /// The SLOT column: the `link_id`, tinted like every link id, with the
@@ -266,10 +352,43 @@ fn indented(table: &str) -> String {
         .collect()
 }
 
-/// Machine-readable output: the query, the published documents (`null` when
-/// none), and every section with each hit's node, slot facts, raw pin and
-/// pin state, so a script can tell "unknown identity" from "unused".
-fn render_json(reference: &ItemRef, report: &SearchReport) -> String {
+/// Machine-readable output: the parsed query, every match with its full
+/// fingerprint, and the usage report (`null` unless exactly one identity
+/// matches), so a script can tell "unknown identity" from "unused".
+fn render_json(query: &SearchQuery, outcome: &SearchOutcome) -> String {
+    let matches: Vec<serde_json::Value> = outcome
+        .matches
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "kind": item.kind.as_str(),
+                "name": item.name,
+                "tag": match item.tag.is_empty() {
+                    true => serde_json::Value::Null,
+                    false => item.tag.clone().into(),
+                },
+                "exact": item.exact,
+                "published": published_json(&item.published),
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({
+        "query": {
+            "raw": query.raw(),
+            "name": query.name_pattern(),
+            "tag": query.tag_pattern(),
+            "sha256": query.digest().map(|digest| digest.as_str()),
+        },
+        "matches": matches,
+        "detail": outcome.detail.as_ref().map(detail_json),
+        "excluded": outcome.excluded_hint,
+    });
+    format!("{doc}\n")
+}
+
+/// The usage report: every section with each hit's node, slot facts, raw
+/// pin and pin state.
+fn detail_json(report: &SearchReport) -> serde_json::Value {
     let implementers: Vec<serde_json::Value> = report
         .implementers
         .iter()
@@ -323,16 +442,14 @@ fn render_json(reference: &ItemRef, report: &SearchReport) -> String {
             })
         })
         .collect();
-    let doc = serde_json::json!({
-        "query": { "name": reference.name, "tag": reference.tag },
-        "contract": report.contract.as_ref().map(published_json),
-        "pairing": report.pairing.as_ref().map(published_json),
+    serde_json::json!({
+        "name": report.name,
+        "tag": report.tag,
         "implementers": implementers,
         "consumers": consumers,
         "participants": participants,
         "observers": observers,
-    });
-    format!("{doc}\n")
+    })
 }
 
 fn published_json(doc: &PublishedDoc) -> serde_json::Value {
@@ -387,9 +504,10 @@ mod tests {
 
     const HUB: &str = "https://github.com/Peppy-bot/nodes-hub.git (ref: main)";
     const CONTRACTS: &str = "https://github.com/Peppy-bot/contracts-hub.git (ref: main)";
+    const LAUNCHERS: &str = "https://github.com/Peppy-bot/launchers-hub.git (ref: main)";
 
-    fn reference() -> ItemRef {
-        ItemRef::parse("rgb_camera:v1", "search").expect("a valid reference")
+    fn query(raw: &str) -> SearchQuery {
+        SearchQuery::parse(raw).expect("a valid query")
     }
 
     fn sha(fill: char) -> String {
@@ -417,21 +535,37 @@ mod tests {
         }
     }
 
-    fn empty() -> SearchReport {
+    fn matched(kind: RepoItemKind, name: &str, tag: &str, published: PublishedDoc) -> MatchedItem {
+        MatchedItem {
+            kind,
+            name: name.to_owned(),
+            tag: tag.to_owned(),
+            exact: true,
+            published,
+        }
+    }
+
+    fn empty_report() -> SearchReport {
         SearchReport {
-            contract: None,
-            pairing: None,
+            name: "rgb_camera".to_owned(),
+            tag: "v1".to_owned(),
             implementers: Vec::new(),
             consumers: Vec::new(),
             participants: Vec::new(),
             observers: Vec::new(),
+        }
+    }
+
+    fn detailed(report: SearchReport, matches: Vec<MatchedItem>) -> SearchOutcome {
+        SearchOutcome {
+            matches,
+            detail: Some(report),
             excluded_hint: String::new(),
         }
     }
 
-    fn full() -> SearchReport {
-        SearchReport {
-            contract: Some(contract()),
+    fn full() -> SearchOutcome {
+        let report = SearchReport {
             implementers: vec![
                 Implementer {
                     node: node("uvc_camera_linux", "uvc_camera/linux/peppy.json5"),
@@ -479,7 +613,57 @@ mod tests {
                     path: "/home/user/mirror/rgb.json5".to_owned(),
                 },
             }],
-            ..empty()
+            ..empty_report()
+        };
+        detailed(
+            report,
+            vec![matched(
+                RepoItemKind::Contract,
+                "rgb_camera",
+                "v1",
+                contract(),
+            )],
+        )
+    }
+
+    fn multi() -> SearchOutcome {
+        SearchOutcome {
+            matches: vec![
+                MatchedItem {
+                    exact: false,
+                    ..matched(
+                        RepoItemKind::Launcher,
+                        "camera_boot",
+                        "",
+                        PublishedDoc {
+                            repo_id: 1001,
+                            repo_label: LAUNCHERS.to_owned(),
+                            path: "camera_boot.json5".to_owned(),
+                            sha256: ManifestFingerprint::parse(&sha('e')).unwrap(),
+                        },
+                    )
+                },
+                MatchedItem {
+                    exact: false,
+                    ..matched(RepoItemKind::Contract, "rgb_camera", "v1", contract())
+                },
+                MatchedItem {
+                    exact: false,
+                    ..matched(
+                        RepoItemKind::Node,
+                        "uvc_camera",
+                        "v1",
+                        PublishedDoc {
+                            repo_id: 1000,
+                            repo_label: HUB.to_owned(),
+                            path: "uvc_camera/peppy.json5".to_owned(),
+                            sha256: ManifestFingerprint::parse(&sha('b')).unwrap(),
+                        },
+                    )
+                },
+            ],
+            detail: None,
+            excluded_hint: String::new(),
         }
     }
 
@@ -488,11 +672,11 @@ mod tests {
     /// them, and the shadowing note where a lower-id repository wins.
     #[test]
     fn human_output_lists_every_section_with_aligned_columns() {
-        let text = render_human(&reference(), &full(), false, None);
+        let text = render_human(&query("rgb_camera:v1"), &full(), false, None);
 
         let expected = [
             "rgb_camera:v1",
-            "  contract published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            "  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
             "",
             "Implemented by 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
@@ -538,7 +722,7 @@ mod tests {
     /// the outline, so no outline line exceeds the limit.
     #[test]
     fn human_output_wraps_wide_tables_to_the_width_limit() {
-        let text = render_human(&reference(), &full(), false, Some(80));
+        let text = render_human(&query("rgb_camera:v1"), &full(), false, Some(80));
 
         for line in text.lines() {
             if ['│', '┐', '┤', '┘'].iter().any(|c| line.ends_with(*c)) {
@@ -547,7 +731,7 @@ mod tests {
         }
         let expected = [
             "rgb_camera:v1",
-            "  contract published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+            "  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
             "",
             "Implemented by 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
@@ -601,7 +785,7 @@ mod tests {
     /// floor, and every over-long cell wraps.
     #[test]
     fn human_output_never_shrinks_a_column_below_its_header() {
-        let text = render_human(&reference(), &full(), false, Some(10));
+        let text = render_human(&query("rgb_camera:v1"), &full(), false, Some(10));
 
         assert!(
             text.contains("│ NODE │ TAG │ SLOT │ PIN │ PATH │"),
@@ -610,15 +794,15 @@ mod tests {
         assert!(text.contains("│ uvc_ │ v1  │ came │"), "{text}");
     }
 
-    /// The searched identity and each node's name and tag are cyan, link
-    /// ids yellow, and section counts green, exactly as `stack list` tints
-    /// them; padding is computed on the plain text so colour never skews
-    /// the outline.
+    /// The query and each node's name and tag are cyan, link ids yellow,
+    /// and section counts green, exactly as `stack list` tints them;
+    /// padding is computed on the plain text so colour never skews the
+    /// outline.
     #[test]
     fn human_output_tints_with_the_stack_list_palette() {
         use crate::commands::colors::RESET;
 
-        let coloured = render_human(&reference(), &full(), true, None);
+        let coloured = render_human(&query("rgb_camera:v1"), &full(), true, None);
 
         assert!(
             coloured.starts_with(&format!("{NODE_COLOR}rgb_camera:v1{RESET}\n")),
@@ -648,8 +832,9 @@ mod tests {
     /// the plain text so colour never skews it.
     #[test]
     fn human_output_paints_the_pins_a_sync_would_refuse() {
+        use crate::commands::colors::RESET;
+
         let report = SearchReport {
-            contract: Some(contract()),
             implementers: vec![
                 Implementer {
                     node: node("stale", "stale/peppy.json5"),
@@ -666,10 +851,19 @@ mod tests {
                     },
                 },
             ],
-            ..empty()
+            ..empty_report()
         };
+        let outcome = detailed(
+            report,
+            vec![matched(
+                RepoItemKind::Contract,
+                "rgb_camera",
+                "v1",
+                contract(),
+            )],
+        );
 
-        let plain = render_human(&reference(), &report, false, None);
+        let plain = render_human(&query("rgb_camera:v1"), &outcome, false, None);
         assert!(
             plain.contains("    │ stale │ v1  │ camera │ pin bbbbbbbb (not in cache)"),
             "{plain}"
@@ -682,7 +876,7 @@ mod tests {
         );
         assert!(!plain.contains('\x1b'), "no colour without a terminal");
 
-        let coloured = render_human(&reference(), &report, true, None);
+        let coloured = render_human(&query("rgb_camera:v1"), &outcome, true, None);
         assert!(
             coloured.contains(&format!("{RED}pin bbbbbbbb (not in cache)")),
             "{coloured}"
@@ -695,39 +889,38 @@ mod tests {
             !coloured.contains(&format!("{RED}stale")),
             "a healthy cell is never red: {coloured}"
         );
+        let _ = RESET;
 
-        let narrow = render_human(&reference(), &report, true, Some(60));
+        let narrow = render_human(&query("rgb_camera:v1"), &outcome, true, Some(60));
         assert!(
             narrow.matches(RED).count() > coloured.matches(RED).count(),
             "every piece of a wrapped red pin is painted: {narrow}"
         );
     }
 
-    /// An identity nobody publishes or uses: the header says nothing
-    /// publishes it, the body says nothing uses it, and the excluded
+    /// A query nothing matches: one line says so, and the excluded
     /// repositories are named as a possible reason.
     #[test]
-    fn human_output_says_when_nothing_is_published_or_used() {
-        let report = SearchReport {
+    fn human_output_says_when_nothing_matches() {
+        let outcome = SearchOutcome {
+            matches: Vec::new(),
+            detail: None,
             excluded_hint: ". 1 excluded repository (/tmp/private) is not indexed at all and may have provided it".to_owned(),
-            ..empty()
         };
 
-        let text = render_human(&reference(), &report, false, None);
+        let text = render_human(&query("rgb_camera:v1"), &outcome, false, None);
 
         assert_eq!(
             text,
             "rgb_camera:v1\n\
-             \x20 no configured repository publishes a contract or pairing named `rgb_camera:v1`; \
-             check the name, or register its repository (`peppy repo add`) and run `peppy repo refresh`\n\
-             \n\
-             No indexed node implements, consumes, participates in, or observes `rgb_camera:v1`. \
+             \x20 nothing in any configured repository's cache matches `rgb_camera:v1`; \
+             check the pattern, or register its repository (`peppy repo add`) and run `peppy repo refresh`. \
              1 excluded repository (/tmp/private) is not indexed at all and may have provided it\n"
         );
     }
 
     /// Both namespaces are reported when the identity is published as a
-    /// contract and as a pairing.
+    /// contract and as a pairing, and a pair nobody uses says so once.
     #[test]
     fn human_output_names_both_published_documents() {
         let pairing = PublishedDoc {
@@ -736,42 +929,147 @@ mod tests {
             path: "pairings/rgb_camera.json5".to_owned(),
             sha256: ManifestFingerprint::parse(&sha('d')).unwrap(),
         };
-        let report = SearchReport {
-            contract: Some(contract()),
-            pairing: Some(pairing),
-            ..empty()
-        };
+        let outcome = detailed(
+            empty_report(),
+            vec![
+                matched(RepoItemKind::Contract, "rgb_camera", "v1", contract()),
+                matched(RepoItemKind::Pairing, "rgb_camera", "v1", pairing),
+            ],
+        );
 
-        let text = render_human(&reference(), &report, false, None);
+        let text = render_human(&query("rgb_camera:v1"), &outcome, false, None);
 
         assert!(
-            text.contains("  contract published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaa"),
+            text.contains("  contract rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at cameras/rgb_camera.json5 (sha256 aaaa"),
             "{text}"
         );
         assert!(
-            text.contains("  pairing published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at pairings/rgb_camera.json5 (sha256 dddd"),
+            text.contains("  pairing rgb_camera:v1 published by https://github.com/Peppy-bot/contracts-hub.git (ref: main) at pairings/rgb_camera.json5 (sha256 dddd"),
             "{text}"
         );
-        assert!(!text.contains("no configured repository"), "{text}");
+        assert!(
+            text.contains(
+                "No indexed node implements, consumes, participates in, or observes `rgb_camera:v1`"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("nothing in any configured"), "{text}");
     }
 
-    /// The JSON carries every section with the node, the slot facts, the
-    /// raw pin and its state, and `null` for a document nobody publishes.
+    /// A launcher has no usage sections to be empty, so its published
+    /// line is the whole answer: no "No indexed node ..." line.
     #[test]
-    fn json_output_carries_every_section() {
-        let text = render_json(&reference(), &full());
+    fn human_output_details_a_single_launcher_match() {
+        let outcome = detailed(
+            SearchReport {
+                name: "openarm_boot".to_owned(),
+                tag: String::new(),
+                ..empty_report()
+            },
+            vec![matched(
+                RepoItemKind::Launcher,
+                "openarm_boot",
+                "",
+                PublishedDoc {
+                    repo_id: 1001,
+                    repo_label: LAUNCHERS.to_owned(),
+                    path: "openarm_boot.json5".to_owned(),
+                    sha256: ManifestFingerprint::parse(&sha('e')).unwrap(),
+                },
+            )],
+        );
+
+        let text = render_human(&query("openarm_boot"), &outcome, false, None);
+
+        assert_eq!(
+            text,
+            format!(
+                "openarm_boot\n\
+                 \x20 launcher openarm_boot published by {LAUNCHERS} at openarm_boot.json5 (sha256 {})\n",
+                sha('e')
+            )
+        );
+    }
+
+    /// Several matched identities are one flat table in the service's
+    /// rank order, with the fingerprints shortened.
+    #[test]
+    fn human_output_lists_multiple_matches_as_a_table() {
+        let text = render_human(&query("camera"), &multi(), false, None);
+
+        let expected = [
+            "camera",
+            "",
+            "3 items match `camera`",
+            "┌──────────┬───────────────┬────────────────────────────────────────────────────────────┬──────────────────────────┬──────────┐",
+            "│ KIND     │ ITEM          │ REPOSITORY                                                 │ PATH                     │ SHA256   │",
+            "├──────────┼───────────────┼────────────────────────────────────────────────────────────┼──────────────────────────┼──────────┤",
+            "│ launcher │ camera_boot   │ https://github.com/Peppy-bot/launchers-hub.git (ref: main) │ camera_boot.json5        │ eeeeeeee │",
+            "│ contract │ rgb_camera:v1 │ https://github.com/Peppy-bot/contracts-hub.git (ref: main) │ cameras/rgb_camera.json5 │ aaaaaaaa │",
+            "│ node     │ uvc_camera:v1 │ https://github.com/Peppy-bot/nodes-hub.git (ref: main)     │ uvc_camera/peppy.json5   │ bbbbbbbb │",
+            "└──────────┴───────────────┴────────────────────────────────────────────────────────────┴──────────────────────────┴──────────┘",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected, "\n{text}");
+    }
+
+    /// The match table tints identities cyan and the count green, and
+    /// respects the width limit like every other table.
+    #[test]
+    fn human_output_tints_and_wraps_the_match_table() {
+        use crate::commands::colors::RESET;
+
+        let coloured = render_human(&query("camera"), &multi(), true, None);
+        assert!(
+            coloured.contains(&format!("{COUNT_COLOR}3{RESET} items match `camera`")),
+            "{coloured}"
+        );
+        assert!(
+            coloured.contains(&format!("│ {NODE_COLOR}rgb_camera:v1{RESET} ")),
+            "{coloured}"
+        );
+
+        let narrow = render_human(&query("camera"), &multi(), false, Some(60));
+        for line in narrow.lines() {
+            if ['│', '┐', '┤', '┘'].iter().any(|c| line.ends_with(*c)) {
+                assert!(line.chars().count() <= 60, "{line}\n{narrow}");
+            }
+        }
+    }
+
+    /// The JSON carries the parsed query, every match with its full
+    /// fingerprint, and the report under `detail`, with `null` where a
+    /// value is absent.
+    #[test]
+    fn json_output_carries_matches_and_detail() {
+        let text = render_json(&query("rgb_camera:v1"), &full());
 
         assert!(text.ends_with('\n'));
         let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(
             doc["query"],
-            serde_json::json!({ "name": "rgb_camera", "tag": "v1" })
+            serde_json::json!({
+                "raw": "rgb_camera:v1",
+                "name": "rgb_camera",
+                "tag": "v1",
+                "sha256": serde_json::Value::Null,
+            })
         );
-        assert_eq!(doc["contract"]["repo_id"], 1002);
-        assert_eq!(doc["contract"]["sha256"], sha('a'));
-        assert!(doc["pairing"].is_null());
+        let matches = doc["matches"].as_array().expect("array");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["kind"], "contract");
+        assert_eq!(matches[0]["name"], "rgb_camera");
+        assert_eq!(matches[0]["tag"], "v1");
+        assert_eq!(matches[0]["exact"], true);
+        assert_eq!(matches[0]["published"]["repo_id"], 1002);
+        assert_eq!(matches[0]["published"]["sha256"], sha('a'));
+        assert_eq!(doc["excluded"], "");
 
-        let implementers = doc["implementers"].as_array().expect("array");
+        let detail = &doc["detail"];
+        assert_eq!(detail["name"], "rgb_camera");
+        assert_eq!(detail["tag"], "v1");
+        let implementers = detail["implementers"].as_array().expect("array");
         assert_eq!(implementers.len(), 2);
         assert_eq!(implementers[0]["node"]["node_name"], "uvc_camera_linux");
         assert_eq!(implementers[0]["node"]["source_type"], "git");
@@ -786,11 +1084,11 @@ mod tests {
         assert!(implementers[1]["sha256"].is_null());
         assert_eq!(implementers[1]["pin"]["status"], "unpinned");
 
-        assert_eq!(doc["consumers"][0]["cardinality"], "one_or_more");
-        assert_eq!(doc["participants"][0]["role"], "viewer");
-        assert_eq!(doc["participants"][0]["optional"], true);
+        assert_eq!(detail["consumers"][0]["cardinality"], "one_or_more");
+        assert_eq!(detail["participants"][0]["role"], "viewer");
+        assert_eq!(detail["participants"][0]["optional"], true);
 
-        let observer = &doc["observers"][0];
+        let observer = &detail["observers"][0];
         assert_eq!(observer["cardinality"], "zero_or_one");
         assert_eq!(observer["node"]["shadowed_by"], "/home/user/workspace");
         assert_eq!(
@@ -802,6 +1100,29 @@ mod tests {
                 "path": "/home/user/mirror/rgb.json5",
             })
         );
+
+        let digest = sha('a');
+        let text = render_json(&query(&format!("rgb_camera:v1@{digest}")), &full());
+        let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(doc["query"]["sha256"], digest);
+    }
+
+    /// Several matched identities carry no report, and an untagged
+    /// launcher's tag is `null`.
+    #[test]
+    fn json_output_for_several_matches_has_no_detail() {
+        let text = render_json(&query("camera"), &multi());
+
+        let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert!(doc["detail"].is_null());
+        let matches = doc["matches"].as_array().expect("array");
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches[0]["kind"], "launcher");
+        assert!(matches[0]["tag"].is_null());
+        assert_eq!(matches[0]["exact"], false);
+        assert_eq!(matches[1]["kind"], "contract");
+        assert_eq!(matches[2]["kind"], "node");
+        assert_eq!(matches[2]["published"]["repo_label"], HUB);
     }
 
     /// An unusable pin's JSON carries the reason a sync would print.
