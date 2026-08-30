@@ -1,10 +1,8 @@
 mod benchmark;
-mod colors;
 mod launch;
 mod list;
 mod reset;
 mod resolve;
-mod table;
 
 pub use list::{StackListReport, list_nodes_collecting};
 pub use resolve::resolve_rendered;

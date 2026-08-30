@@ -20,38 +20,9 @@ use std::path::PathBuf;
 use super::Command;
 use crate::{context::AppContext, error::Result};
 
-#[cfg(test)]
-mod tests {
-    use super::paint;
-
-    #[test]
-    fn paint_is_a_no_op_without_colour() {
-        assert_eq!(paint("  (conflict)", "\x1b[31m", false), "  (conflict)");
-        assert_eq!(
-            paint("  (conflict)", "\x1b[31m", true),
-            "\x1b[31m  (conflict)\x1b[0m"
-        );
-    }
-}
-
 /// Human-readable label for a repository source (used in CLI output).
 pub(super) fn repo_source_label(source: &RepoSource) -> String {
     source.display_label()
-}
-
-/// Orange, for the states that are not errors but are not the plain answer
-/// either: entries kept from an earlier read, and an identity a
-/// higher-priority repository already answers.
-pub(super) const ORANGE: &str = "\x1b[38;5;208m";
-/// Red, for what does not resolve at all.
-pub(super) const RED: &str = "\x1b[31m";
-
-pub(super) fn paint(text: &str, colour: &str, colorize: bool) -> String {
-    if colorize {
-        format!("{colour}{text}\x1b[0m")
-    } else {
-        text.to_owned()
-    }
 }
 
 #[derive(Subcommand)]

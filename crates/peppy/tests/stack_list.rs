@@ -288,7 +288,7 @@ async fn node_list_command_succeeds() {
     // assert on the exact text the CLI would print without capturing stdout.
     // `false`: render without ANSI color so the assertions match plain table
     // text regardless of whether the test runs attached to a terminal.
-    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false)
+    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false, None)
         .await
         .expect("node list command should succeed")
         .output;
@@ -462,7 +462,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         AppContext::with_messenger(local.temp_dir(), Arc::clone(&shared_messenger))
             .with_daemon_state_file(local.daemon_state_path()),
     );
-    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("multi-daemon stack list should succeed");
     assert!(
@@ -511,7 +511,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
             .with_daemon_state_file(local.daemon_state_path())
             .with_core_node_override(Some("a-remote".to_string())),
     );
-    let targeted_report = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
+    let targeted_report = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await
         .expect("explicit remote stack list should succeed");
     assert!(
@@ -543,7 +543,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
             .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
-    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("duplicate tokens should not duplicate or fail the section");
     assert!(
@@ -563,7 +563,7 @@ async fn stack_list_warns_when_multiple_live_tokens_claim_one_name() {
             .with_daemon_state_file(daemon.daemon_state_path())
             .with_core_node_override(Some("claimed-core".to_string())),
     );
-    let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false)
+    let targeted = peppy::commands::stack::list_nodes_collecting(&targeted_ctx, false, None)
         .await
         .expect("targeted duplicate-name query should succeed")
         .output;
@@ -592,7 +592,7 @@ async fn stack_list_keeps_healthy_sections_when_an_enumerated_daemon_cannot_answ
             .with_daemon_state_file(daemon.daemon_state_path()),
     );
 
-    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false)
+    let report = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
         .await
         .expect("collection succeeds even when one section fails");
     assert!(report.output.contains("Core node: healthy-core (host:"));

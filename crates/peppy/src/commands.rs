@@ -1,4 +1,5 @@
 mod action_poll;
+mod colors;
 mod confirm;
 pub mod container;
 pub mod info;
@@ -8,6 +9,7 @@ pub mod platform;
 pub mod repo;
 pub mod service;
 pub mod stack;
+mod table;
 
 use std::future::Future;
 use std::sync::Arc;

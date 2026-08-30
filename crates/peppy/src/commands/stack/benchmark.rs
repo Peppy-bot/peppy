@@ -31,11 +31,11 @@ use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
-use super::colors::{
+use crate::commands::colors::{
     BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
     MEASURE_SERVICE_COLOR, NODE_COLOR, paint,
 };
-use super::table::{render_table, wrap_ansi};
+use crate::commands::table::{render_table, wrap};
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -277,7 +277,12 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
         );
         let rows = display_rows(&synthetic, &previous, colorize, ReportTable::Synthetic);
         let mut table = String::new();
-        render_table(&mut table, &SYNTHETIC_HEADERS, &[rows]);
+        render_table(
+            &mut table,
+            &SYNTHETIC_HEADERS,
+            &[rows],
+            crate::terminal::stdout_width(),
+        );
         print!("{table}");
     }
 
@@ -288,7 +293,12 @@ fn render_report(result: &StackBenchmarkResult, samples: u32) {
         );
         let rows = display_rows(&real, &previous, colorize, ReportTable::Real);
         let mut table = String::new();
-        render_table(&mut table, &REAL_HEADERS, &[rows]);
+        render_table(
+            &mut table,
+            &REAL_HEADERS,
+            &[rows],
+            crate::terminal::stdout_width(),
+        );
         print!("{table}");
     }
 
@@ -432,7 +442,7 @@ fn display_rows(
                 dur(row.mean_ns),
                 row.count.to_string(),
                 delta,
-                wrap_ansi(&note, NOTE_WRAP_COLS),
+                wrap(&note, NOTE_WRAP_COLS),
             ]
         })
         .collect()
@@ -636,7 +646,7 @@ mod tests {
             .replace(MEASURE_ACTION_COLOR, "")
             .replace(MEASURE_NODE_COLOR, "")
             .replace(MEASURE_DELIVERY_COLOR, "")
-            .replace(super::super::colors::RESET, "");
+            .replace(crate::commands::colors::RESET, "");
         assert_eq!(stripped, plain, "color codes must be width-neutral");
         // The legend names all four measurement labels and the safety guarantee.
         for label in ["svc-probe", "act-probe", "node-probe", "delivery"] {
@@ -661,7 +671,7 @@ mod tests {
         ];
         for (rows, headers) in tables {
             let mut out = String::new();
-            render_table(&mut out, headers.as_slice(), &[rows]);
+            render_table(&mut out, headers.as_slice(), &[rows], None);
 
             // Box-drawing borders like `stack list`.
             assert!(out.contains('┌') && out.contains('│') && out.contains('└'));

@@ -4,7 +4,8 @@ use core_node::{IndexedNode, PinStatus, PublishedDoc, SearchReport};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::source::ItemRef;
 
-use super::{ORANGE, RED, paint};
+use crate::commands::colors::{ORANGE, RED, paint};
+use crate::commands::table::render_table;
 use crate::error::{Error, Result};
 
 /// `peppy repo search <name>:<tag>`: who uses a contract or pairing.
@@ -84,7 +85,7 @@ fn render_human(
         |hit| {
             vec![
                 slot_cell(&hit.link_id, None),
-                pin_cell(hit.sha256.as_deref(), &hit.pin),
+                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
         colorize,
@@ -98,7 +99,7 @@ fn render_human(
         |hit| {
             vec![
                 slot_cell(&hit.link_id, Some(hit.cardinality.as_str())),
-                pin_cell(hit.sha256.as_deref(), &hit.pin),
+                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
         colorize,
@@ -111,9 +112,9 @@ fn render_human(
         |hit| &hit.node,
         |hit| {
             vec![
-                Cell::plain(&hit.role),
+                hit.role.clone(),
                 slot_cell(&hit.link_id, hit.optional.then_some("optional")),
-                pin_cell(hit.sha256.as_deref(), &hit.pin),
+                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
         colorize,
@@ -126,9 +127,9 @@ fn render_human(
         |hit| &hit.node,
         |hit| {
             vec![
-                Cell::plain(&hit.role),
+                hit.role.clone(),
                 slot_cell(&hit.link_id, Some(hit.cardinality.as_str())),
-                pin_cell(hit.sha256.as_deref(), &hit.pin),
+                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
         colorize,
@@ -151,61 +152,43 @@ fn published_line(kind: &str, doc: &PublishedDoc) -> String {
     )
 }
 
-/// One column of a row, painted when it carries a state worth the colour.
-struct Cell {
-    text: String,
-    colour: Option<&'static str>,
-}
-
-impl Cell {
-    fn plain(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            colour: None,
-        }
-    }
-}
-
 /// The SLOT column: the `link_id`, with the cardinality or `optional`
 /// qualifier the manifest declares on it.
-fn slot_cell(link_id: &str, qualifier: Option<&str>) -> Cell {
-    Cell::plain(match qualifier {
+fn slot_cell(link_id: &str, qualifier: Option<&str>) -> String {
+    match qualifier {
         Some(qualifier) => format!("{link_id} ({qualifier})"),
         None => link_id.to_owned(),
-    })
+    }
 }
 
 /// What the claim's pin does at sync, in red when a sync would refuse it.
-fn pin_cell(sha256: Option<&str>, pin: &PinStatus) -> Cell {
+fn pin_cell(sha256: Option<&str>, pin: &PinStatus, colorize: bool) -> String {
     let short: String = sha256.unwrap_or_default().chars().take(8).collect();
     match pin {
-        PinStatus::Unpinned => Cell::plain("unpinned"),
-        PinStatus::Current => Cell::plain(format!("pin {short} (current)")),
+        PinStatus::Unpinned => "unpinned".to_owned(),
+        PinStatus::Current => format!("pin {short} (current)"),
         PinStatus::Resolvable { repo_label, .. } => {
-            Cell::plain(format!("pin {short} (cached copy in {repo_label})"))
+            format!("pin {short} (cached copy in {repo_label})")
         }
-        PinStatus::Unresolvable => Cell {
-            text: format!("pin {short} (not in cache)"),
-            colour: Some(RED),
-        },
-        PinStatus::Unusable { reason } => Cell {
-            text: format!("unusable pin ({reason})"),
-            colour: Some(RED),
-        },
+        PinStatus::Unresolvable => paint(colorize, RED, &format!("pin {short} (not in cache)")),
+        PinStatus::Unusable { reason } => paint(colorize, RED, &format!("unusable pin ({reason})")),
     }
 }
+
+/// The indent every table line carries under its repository label.
+const INDENT: &str = "    ";
 
 /// One section: a title counting the distinct nodes, then the hits grouped
 /// by repository in the order the report lists them (repository priority),
 /// each group a table under `headers`, one row per hit
-/// (`name tag <cells> path`), with the shadowing note appended when a
-/// lower-id repository provides the same identity.
+/// (`name tag <cells> path`). A shadowed node's note rides its PATH cell as
+/// an extra line, so it stays inside the outline and wraps with the table.
 fn section<T>(
     title: &str,
     headers: &[&str],
     hits: &[T],
     node_of: impl Fn(&T) -> &IndexedNode,
-    cells_of: impl Fn(&T) -> Vec<Cell>,
+    cells_of: impl Fn(&T) -> Vec<String>,
     colorize: bool,
     max_width: Option<usize>,
 ) -> String {
@@ -238,143 +221,43 @@ fn section<T>(
             .map_or(hits.len(), |offset| start + offset);
         let group = &hits[start..end];
         out.push_str(&format!("  {}:\n", node_of(&group[0]).repo_label));
-        let rows: Vec<(Vec<Cell>, String)> = group
+        let rows: Vec<Vec<String>> = group
             .iter()
             .map(|hit| {
                 let node = node_of(hit);
-                let mut cells = vec![Cell::plain(&node.node_name), Cell::plain(&node.node_tag)];
+                let mut cells = vec![node.node_name.clone(), node.node_tag.clone()];
                 cells.extend(cells_of(hit));
-                cells.push(Cell::plain(&node.path));
-                let suffix = node
-                    .shadowed_by
-                    .as_deref()
-                    .map(|by| paint(&format!("  (shadowed by {by})"), ORANGE, colorize))
-                    .unwrap_or_default();
-                (cells, suffix)
+                cells.push(match &node.shadowed_by {
+                    Some(by) => format!(
+                        "{}\n{}",
+                        node.path,
+                        paint(colorize, ORANGE, &format!("(shadowed by {by})"))
+                    ),
+                    None => node.path.clone(),
+                });
+                cells
             })
             .collect();
-        out.push_str(&table(headers, &rows, colorize, max_width));
+        let mut table = String::new();
+        render_table(
+            &mut table,
+            headers,
+            &[rows],
+            max_width.map(|width| width.saturating_sub(INDENT.len())),
+        );
+        out.push_str(&indented(&table));
         start = end;
     }
     out
 }
 
-/// A bordered table: top rule, header row, rule, data rows, bottom rule,
-/// every cell padded to its column's width. Columns take their widest
-/// value, headers included; under `max_width` (the whole line's budget,
-/// indent and outline included) the widest columns give way first, ties
-/// rightmost, never below their header's width, and a cell longer than
-/// its column wraps onto continuation lines inside the outline. Padding
-/// is measured on the plain text and applied before painting, so colour
-/// never skews a column; the rules and separators are never painted.
-fn table(
-    headers: &[&str],
-    rows: &[(Vec<Cell>, String)],
-    colorize: bool,
-    max_width: Option<usize>,
-) -> String {
-    let mut widths: Vec<usize> = headers
-        .iter()
-        .enumerate()
-        .map(|(column, header)| {
-            rows.iter()
-                .map(|(cells, _)| cells[column].text.chars().count())
-                .chain([header.chars().count()])
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    if let Some(limit) = max_width {
-        // `│ cell │ cell │`: three outline characters per column plus the
-        // closing one, and the section indent.
-        let decorations = INDENT.len() + 3 * headers.len() + 1;
-        let budget = limit.saturating_sub(decorations);
-        let floors: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
-        while widths.iter().sum::<usize>() > budget {
-            let Some(column) = (0..widths.len())
-                .filter(|&column| widths[column] > floors[column])
-                .max_by_key(|&column| (widths[column], column))
-            else {
-                break;
-            };
-            widths[column] -= 1;
-        }
-    }
-    let header_cells: Vec<Cell> = headers.iter().copied().map(Cell::plain).collect();
-    let mut out = rule(&widths, '┌', '┬', '┐');
-    out.push_str(&rendered_row(&header_cells, "", &widths, colorize));
-    out.push_str(&rule(&widths, '├', '┼', '┤'));
-    for (cells, suffix) in rows {
-        out.push_str(&rendered_row(cells, suffix, &widths, colorize));
-    }
-    out.push_str(&rule(&widths, '└', '┴', '┘'));
-    out
-}
-
-/// The indent every table line carries under its repository label.
-const INDENT: &str = "    ";
-
-/// One horizontal rule of the table's outline, spanning every column plus
-/// its one-space cell padding on each side.
-fn rule(widths: &[usize], left: char, junction: char, right: char) -> String {
-    let mut out = String::from(INDENT);
-    out.push(left);
-    for (column, width) in widths.iter().enumerate() {
-        out.push_str(&"─".repeat(width + 2));
-        out.push(match column + 1 == widths.len() {
-            true => right,
-            false => junction,
-        });
-    }
-    out.push('\n');
-    out
-}
-
-/// One table row: a line per wrap level, cells wrapped to their column's
-/// width, a painted cell's every piece painted. The shadowing note trails
-/// the row's first line outside the outline.
-fn rendered_row(cells: &[Cell], suffix: &str, widths: &[usize], colorize: bool) -> String {
-    let wrapped_cells: Vec<Vec<String>> = cells
-        .iter()
-        .zip(widths)
-        .map(|(cell, &width)| wrapped(&cell.text, width))
-        .collect();
-    let lines = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
-    let mut out = String::new();
-    for line in 0..lines {
-        out.push_str(INDENT);
-        for (column, cell) in cells.iter().enumerate() {
-            out.push_str("│ ");
-            let piece = wrapped_cells[column]
-                .get(line)
-                .map(String::as_str)
-                .unwrap_or("");
-            let text = format!("{piece:<width$}", width = widths[column]);
-            out.push_str(&match cell.colour {
-                Some(colour) if !piece.is_empty() => paint(&text, colour, colorize),
-                _ => text,
-            });
-            out.push(' ');
-        }
-        out.push('│');
-        if line == 0 {
-            out.push_str(suffix);
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// `text` in pieces of at most `width` characters, split at character
-/// boundaries; empty text is one empty piece so every cell renders.
-fn wrapped(text: &str, width: usize) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
-        return vec![text.to_owned()];
-    }
-    chars
-        .chunks(width.max(1))
-        .map(|piece| piece.iter().collect())
+/// The rendered table placed under its repository label: every line
+/// indented, the trailing blank line dropped (sections space themselves).
+fn indented(table: &str) -> String {
+    table
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| format!("{INDENT}{line}\n"))
         .collect()
 }
 
@@ -633,11 +516,12 @@ mod tests {
             "",
             "Observed by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    ┌───────────┬─────┬────────┬─────────────────────┬─────────────────────────────────────────────────┬───────────────────────┐",
-            "    │ NODE      │ TAG │ ROLE   │ SLOT                │ PIN                                             │ PATH                  │",
-            "    ├───────────┼─────┼────────┼─────────────────────┼─────────────────────────────────────────────────┼───────────────────────┤",
-            "    │ dashboard │ v1  │ camera │ watch (zero_or_one) │ pin cccccccc (cached copy in /home/user/mirror) │ dashboard/peppy.json5 │  (shadowed by /home/user/workspace)",
-            "    └───────────┴─────┴────────┴─────────────────────┴─────────────────────────────────────────────────┴───────────────────────┘",
+            "    ┌───────────┬─────┬────────┬─────────────────────┬─────────────────────────────────────────────────┬────────────────────────────────────┐",
+            "    │ NODE      │ TAG │ ROLE   │ SLOT                │ PIN                                             │ PATH                               │",
+            "    ├───────────┼─────┼────────┼─────────────────────┼─────────────────────────────────────────────────┼────────────────────────────────────┤",
+            "    │ dashboard │ v1  │ camera │ watch (zero_or_one) │ pin cccccccc (cached copy in /home/user/mirror) │ dashboard/peppy.json5              │",
+            "    │           │     │        │                     │                                                 │ (shadowed by /home/user/workspace) │",
+            "    └───────────┴─────┴────────┴─────────────────────┴─────────────────────────────────────────────────┴────────────────────────────────────┘",
             "",
         ]
         .join("\n");
@@ -665,8 +549,8 @@ mod tests {
             "    ┌──────────────────┬─────┬────────┬────────────────────┬───────────────────┐",
             "    │ NODE             │ TAG │ SLOT   │ PIN                │ PATH              │",
             "    ├──────────────────┼─────┼────────┼────────────────────┼───────────────────┤",
-            "    │ uvc_camera_linux │ v1  │ camera │ pin aaaaaaaa (curr │ uvc_camera/linux/ │",
-            "    │                  │     │        │ ent)               │ peppy.json5       │",
+            "    │ uvc_camera_linux │ v1  │ camera │ pin aaaaaaaa       │ uvc_camera/linux/ │",
+            "    │                  │     │        │ (current)          │ peppy.json5       │",
             "    │ realsense_d4xx   │ v1  │ camera │ unpinned           │ realsense_d4xx/pe │",
             "    │                  │     │        │                    │ ppy.json5         │",
             "    └──────────────────┴─────┴────────┴────────────────────┴───────────────────┘",
@@ -676,8 +560,8 @@ mod tests {
             "    ┌──────────────────┬─────┬───────────────────┬──────────┬──────────────────┐",
             "    │ NODE             │ TAG │ SLOT              │ PIN      │ PATH             │",
             "    ├──────────────────┼─────┼───────────────────┼──────────┼──────────────────┤",
-            "    │ episode_recorder │ v1  │ camera (one_or_mo │ unpinned │ example_robot/ep │",
-            "    │                  │     │ re)               │          │ isode_recorder/p │",
+            "    │ episode_recorder │ v1  │ camera            │ unpinned │ example_robot/ep │",
+            "    │                  │     │ (one_or_more)     │          │ isode_recorder/p │",
             "    │                  │     │                   │          │ eppy.json5       │",
             "    └──────────────────┴─────┴───────────────────┴──────────┴──────────────────┘",
             "",
@@ -695,10 +579,11 @@ mod tests {
             "    ┌───────────┬─────┬────────┬───────────────┬───────────────┬───────────────┐",
             "    │ NODE      │ TAG │ ROLE   │ SLOT          │ PIN           │ PATH          │",
             "    ├───────────┼─────┼────────┼───────────────┼───────────────┼───────────────┤",
-            "    │ dashboard │ v1  │ camera │ watch (zero_o │ pin cccccccc  │ dashboard/pep │  (shadowed by /home/user/workspace)",
-            "    │           │     │        │ r_one)        │ (cached copy  │ py.json5      │",
-            "    │           │     │        │               │ in /home/user │               │",
-            "    │           │     │        │               │ /mirror)      │               │",
+            "    │ dashboard │ v1  │ camera │ watch         │ pin cccccccc  │ dashboard/pep │",
+            "    │           │     │        │ (zero_or_one) │ (cached copy  │ py.json5      │",
+            "    │           │     │        │               │ in            │ (shadowed by  │",
+            "    │           │     │        │               │ /home/user/mi │ /home/user/wo │",
+            "    │           │     │        │               │ rror)         │ rkspace)      │",
             "    └───────────┴─────┴────────┴───────────────┴───────────────┴───────────────┘",
             "",
         ]

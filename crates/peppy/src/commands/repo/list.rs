@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use core_node_api::encoding::{RepoListNodeEntry, RepoListRepoEntry, RepoListRequest};
 
-use super::{ORANGE, RED, paint};
 use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::colors::{ORANGE, RED, paint};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::poll;
@@ -91,9 +91,9 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
             .map(format_timestamp)
             .unwrap_or_else(|| "never".to_owned());
         header.push_str(&paint(
-            &format!("  [retained, last read {when}]"),
-            ORANGE,
             colorize,
+            ORANGE,
+            &format!("  [retained, last read {when}]"),
         ));
     }
     println!("{header}");
@@ -102,12 +102,12 @@ fn print_repo_header(repo: &RepoListRepoEntry, node_count: usize, colorize: bool
         println!(
             "{}",
             paint(
+                colorize,
+                RED,
                 &format!(
                     "  last refresh failed ({}): {}",
                     failure.kind, failure.detail
                 ),
-                RED,
-                colorize,
             )
         );
     }
@@ -125,7 +125,7 @@ fn print_nodes(nodes: &[&RepoListNodeEntry], winner: &HashMap<(&str, &str), &str
                 .get(&(node.node_name.as_str(), node.node_tag.as_str()))
                 .copied()
                 .unwrap_or("a higher-priority repository");
-            paint(&format!("  (shadowed by {by})"), ORANGE, colorize)
+            paint(colorize, ORANGE, &format!("  (shadowed by {by})"))
         } else {
             String::new()
         };
