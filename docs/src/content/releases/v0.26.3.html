@@ -1,0 +1,34 @@
+<entry>
+  <title>v0.26.3</title>
+  <id>https://docs.peppy.bot/releases/v0-26-3/</id>
+  <updated>2026-08-31T00:00:00Z</updated>
+
+  <summary>Adds `peppy repo search` and `repo show` to find any indexed item by regex and report who implements, consumes, or observes it.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.26.3&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Adds `peppy repo search` and `repo show` to find any indexed item by regex and report who implements, consumes, or observes it.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on August 31, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A bare launcher name (no path separator, no &lt;code&gt;.json5&lt;/code&gt;) passed to &lt;code&gt;peppy stack launch&lt;/code&gt; or &lt;code&gt;stack resolve&lt;/code&gt; now resolves through the repository cache only, never a same-named file in the current directory; write &lt;code&gt;./name.json5&lt;/code&gt; to launch a local file.&lt;/li&gt;
+&lt;li&gt;Run &lt;code&gt;peppy repo refresh&lt;/code&gt; after upgrading: peppy refuses a nodes cache written by an earlier release, and the commands that read it fail until it is rebuilt.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Repository search and inspection&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy repo search &amp;lt;name-regex&amp;gt;[:&amp;lt;tag-regex&amp;gt;][@&amp;lt;sha256&amp;gt;]&lt;/code&gt; finds any indexed node, launcher, contract, pairing, or MCP exposure by unanchored regex, listing each match's kind, repository, path, and fingerprint.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy repo show &amp;lt;query&amp;gt;&lt;/code&gt; reports every matched identity: where each document is published and, for a contract or pairing, the nodes that implement, consume, participate in, or observe it, with each pin's status.&lt;/li&gt;
+&lt;li&gt;Both &lt;code&gt;repo search&lt;/code&gt; and &lt;code&gt;repo show&lt;/code&gt; accept &lt;code&gt;--json&lt;/code&gt; for machine-readable output and read the local caches, so they need no daemon.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Other improvements&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy stack list --json&lt;/code&gt; prints the discovered core nodes and their stacks as one JSON document.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;stack list&lt;/code&gt; panels and the &lt;code&gt;repo search&lt;/code&gt; / &lt;code&gt;repo show&lt;/code&gt; tables now fit the terminal, wrapping over-long cells inside the borders; piped output stays unwrapped.&lt;/li&gt;
+&lt;li&gt;On Linux, replacing the &lt;code&gt;peppy&lt;/code&gt; binary while the daemon runs no longer strands built-in MCP nodes: the daemon serves them from its running image, warns in the add log, and adopts the new binary on restart.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
