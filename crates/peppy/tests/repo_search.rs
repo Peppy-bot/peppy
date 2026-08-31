@@ -373,8 +373,9 @@ fn repo_search_json_carries_the_report() {
     assert_eq!(detail["observers"][0]["cardinality"], "one");
 }
 
-/// The JSON of several matches lists each kind with no report, and the
-/// launcher's missing tag is `null`.
+/// The JSON of several matches lists each kind, and the launcher's
+/// missing tag is `null`. The pattern spells out only `demo` in full, so
+/// the query settles on the launcher and its (empty) report rides along.
 #[test]
 fn repo_search_json_lists_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
@@ -383,7 +384,8 @@ fn repo_search_json_lists_matches() {
     let text = search_rendered(&peppy_dirs, "camera|demo", true, None).expect("searches");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
 
-    assert!(doc["detail"].is_null());
+    assert_eq!(doc["detail"]["name"], "demo");
+    assert_eq!(doc["detail"]["implementers"], serde_json::json!([]));
     let kinds: Vec<&str> = doc["matches"]
         .as_array()
         .expect("array")

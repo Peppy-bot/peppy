@@ -67,10 +67,12 @@ pub enum RepoCommands {
     /// List configured repositories
     List,
     /// Search the repositories for any indexed item (node, launcher,
-    /// contract, pairing, MCP exposure). One matching identity gets its
-    /// full report: where it is published and, for a contract or pairing,
-    /// the nodes that implement, consume, participate in, or observe it,
-    /// with each pin checked; several matches list where each is stored.
+    /// contract, pairing, MCP exposure). A query settling on one identity,
+    /// because only one matches or because the name pattern spells exactly
+    /// one of them out in full, gets its full report: where it is
+    /// published and, for a contract or pairing, the nodes that implement,
+    /// consume, participate in, or observe it, with each pin checked.
+    /// Every other match is listed with where it is stored.
     ///
     /// Each query part is an unanchored regular expression, as `apt
     /// search` reads its patterns: `camera` finds `rgb_camera`,

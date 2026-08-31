@@ -246,9 +246,11 @@ pub struct SearchOutcome {
     /// Every identity the query matches, ranked: names the pattern spells
     /// out first, then by name, tag and kind.
     pub matches: Vec<MatchedItem>,
-    /// Who uses the identity, once the matches settle on exactly one
-    /// `name:tag`. An identity published as both a contract and a pairing
-    /// has two entries in `matches` and one report covering both.
+    /// Who uses the identity the query settles on: the only matched
+    /// `name:tag`, or the only one the name pattern spells out in full
+    /// ([`settled_identity`]). An identity published as both a contract
+    /// and a pairing has two entries in `matches` and one report covering
+    /// both.
     pub detail: Option<SearchReport>,
     /// [`excluded_repositories_hint`], so an empty result can say that an
     /// excluded repository may have provided the item without the caller
@@ -269,9 +271,10 @@ pub struct SearchReport {
 }
 
 /// Searches this machine's caches for every indexed item the query
-/// matches, across all five kinds. Once the matches settle on exactly one
-/// `name:tag`, the outcome also reports who uses that identity, with each
-/// claim's pin checked against the cached documents.
+/// matches, across all five kinds. Once the query settles on one
+/// `name:tag` ([`settled_identity`]), the outcome also reports who uses
+/// that identity, with each claim's pin checked against the cached
+/// documents.
 ///
 /// An unreadable cache is an error. An identity one repository publishes
 /// twice is an error only when the query settles on it, since it has no
@@ -298,22 +301,15 @@ pub fn search_repo_items(
     matches.extend(matched_identities(&exposures, &repos, query, &mut contests));
     matches.sort_by(|a, b| match_order(a).cmp(&match_order(b)));
 
-    let single_identity = matches
-        .first()
-        .filter(|first| {
-            matches
-                .iter()
-                .all(|m| m.name == first.name && m.tag == first.tag)
-        })
-        .map(|first| (first.name.clone(), first.tag.clone()));
-    if let Some((name, tag)) = &single_identity
+    let settled = settled_identity(&matches);
+    if let Some((name, tag)) = &settled
         && let Some(contest) = contests
             .iter()
             .find(|contest| &contest.name == name && &contest.tag == tag)
     {
         return Err(contest.error.clone());
     }
-    let detail = match single_identity {
+    let detail = match settled {
         Some((name, tag)) => Some(usage_report(
             &nodes, &contracts, &pairings, &repos, &name, &tag,
         )?),
@@ -325,6 +321,25 @@ pub fn search_repo_items(
         detail,
         excluded_hint: excluded_repositories_hint(peppy_dirs),
     })
+}
+
+/// The identity the query settles on: the one every match shares, or,
+/// failing that, the one every outright name match shares. A pattern that
+/// spells a name out in full settles on that identity even while it also
+/// brushes longer names, so `rgb_camera:v1` keeps its report when
+/// `sim_rgb_camera:v1` matches too.
+fn settled_identity(matches: &[MatchedItem]) -> Option<(String, String)> {
+    single_identity(matches.iter()).or_else(|| single_identity(matches.iter().filter(|m| m.exact)))
+}
+
+/// The one `(name, tag)` every item shares, if they all do.
+fn single_identity<'a>(
+    mut items: impl Iterator<Item = &'a MatchedItem>,
+) -> Option<(String, String)> {
+    let first = items.next()?;
+    items
+        .all(|m| m.name == first.name && m.tag == first.tag)
+        .then(|| (first.name.clone(), first.tag.clone()))
 }
 
 /// An identity its winning repository publishes twice: the search refuses
@@ -983,7 +998,64 @@ mod tests {
             .map(|m| (m.name.as_str(), m.exact))
             .collect();
         assert_eq!(names, vec![("cam", true), ("uvc_camera", false)]);
-        assert_eq!(outcome.detail, None);
+        let report = outcome
+            .detail
+            .expect("the pattern spells `cam` out in full");
+        assert_eq!((report.name.as_str(), report.tag.as_str()), ("cam", "v1"));
+    }
+
+    /// A pattern that spells exactly one matched name out in full settles
+    /// on that identity: its usage report comes along even while the
+    /// pattern also brushes longer names, which stay listed.
+    #[test]
+    fn an_outright_name_settles_among_partial_matches() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.cache(&[contract_entry(
+            "rgb_camera",
+            "v1",
+            fs(hub.join("rgb.json5")),
+        )]);
+        home.cache(&[pairing_entry(
+            "sim_rgb_camera_link",
+            "v1",
+            fs(hub.join("sim_link.json5")),
+        )]);
+        home.cache(&[
+            node_entry("sim_rgb_camera", "v1", fs(hub.join("sim/peppy.json5"))),
+            with_links(
+                node_entry("cam", "v1", fs(hub.join("cam/peppy.json5"))),
+                DeclaredLinks {
+                    implements: vec![implements("rgb_camera", "v1", "camera", None)],
+                    ..DeclaredLinks::default()
+                },
+            ),
+        ]);
+
+        let outcome = search(&home, "rgb_camera:v1").expect("searches");
+
+        let identities: Vec<(&str, bool)> = outcome
+            .matches
+            .iter()
+            .map(|m| (m.name.as_str(), m.exact))
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                ("rgb_camera", true),
+                ("sim_rgb_camera", false),
+                ("sim_rgb_camera_link", false),
+            ]
+        );
+        let report = outcome
+            .detail
+            .expect("the query settles on `rgb_camera:v1`");
+        assert_eq!(
+            (report.name.as_str(), report.tag.as_str()),
+            ("rgb_camera", "v1")
+        );
+        assert_eq!(report.implementers.len(), 1);
     }
 
     /// A query without a tag part matches an untagged launcher; a tag
@@ -1342,5 +1414,28 @@ mod tests {
             label(&hub.join("a/rgb.json5"))
         );
         assert_eq!(outcome.detail, None);
+    }
+
+    /// A pattern that spells a contested identity's name out in full
+    /// settles on it, so the search refuses even while the pattern also
+    /// brushes other names.
+    #[test]
+    fn a_query_settling_on_a_contested_identity_refuses() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.cache(&[
+            contract_entry("rgb_camera", "v1", fs(hub.join("a/rgb.json5"))),
+            contract_entry("rgb_camera", "v1", fs(hub.join("b/rgb.json5"))),
+        ]);
+        home.cache(&[node_entry(
+            "sim_rgb_camera",
+            "v1",
+            fs(hub.join("sim/peppy.json5")),
+        )]);
+
+        let err = search(&home, "rgb_camera:v1").expect_err("refuses");
+
+        assert!(err.contains("2 contract entries"), "got: {err}");
     }
 }

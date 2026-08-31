@@ -65,7 +65,9 @@ fn render_human(
 ) -> String {
     let mut out = format!("{}\n", paint(colorize, NODE_COLOR, query.raw()));
     match &outcome.detail {
-        Some(report) => out.push_str(&detail_lines(report, outcome, colorize, max_width)),
+        Some(report) => {
+            out.push_str(&detail_lines(query, report, outcome, colorize, max_width));
+        }
         None if outcome.matches.is_empty() => out.push_str(&format!(
             "  nothing in any configured repository's cache matches `{}`; check the \
              pattern, or register its repository (`peppy repo add`) and run \
@@ -73,23 +75,33 @@ fn render_human(
             query.raw(),
             outcome.excluded_hint
         )),
-        None => out.push_str(&match_table(query, outcome, colorize, max_width)),
+        None => {
+            let all: Vec<&MatchedItem> = outcome.matches.iter().collect();
+            out.push_str(&match_table(query, &all, false, colorize, max_width));
+        }
     }
     out
 }
 
-/// The single-identity view: one published line per matching document,
-/// then the four usage sections. A contract or pairing nobody uses says
-/// so; the other kinds have no usage sections to be empty, so their
-/// published line is the whole answer.
+/// The settled-identity view: one published line per document of that
+/// identity, then the four usage sections. A contract or pairing nobody
+/// uses says so; the other kinds have no usage sections to be empty, so
+/// their published line is the whole answer. Matches the pattern only
+/// brushes are listed after the report, so a query that spells one name
+/// out in full still shows everything else it finds.
 fn detail_lines(
+    query: &SearchQuery,
     report: &SearchReport,
     outcome: &SearchOutcome,
     colorize: bool,
     max_width: Option<usize>,
 ) -> String {
+    let (settled, others): (Vec<&MatchedItem>, Vec<&MatchedItem>) = outcome
+        .matches
+        .iter()
+        .partition(|m| m.name == report.name && m.tag == report.tag);
     let mut out = String::new();
-    for item in &outcome.matches {
+    for item in &settled {
         out.push_str(&published_line(item));
     }
 
@@ -154,8 +166,7 @@ fn detail_lines(
         colorize,
         max_width,
     ));
-    let usable_by_nodes = outcome
-        .matches
+    let usable_by_nodes = settled
         .iter()
         .any(|item| matches!(item.kind, RepoItemKind::Contract | RepoItemKind::Pairing));
     if sections.is_empty() && usable_by_nodes {
@@ -165,26 +176,35 @@ fn detail_lines(
         ));
     }
     out.push_str(&sections);
+    if !others.is_empty() {
+        out.push_str(&match_table(query, &others, true, colorize, max_width));
+    }
     out
 }
 
-/// The several-identities view, one row per match in the service's rank
-/// order: the kind, the identity, and where the document is stored, with
-/// the fingerprint shortened the way pin cells shorten it (the JSON
-/// carries it whole).
+/// The listed view, one row per match in the service's rank order: the
+/// kind, the identity, and where the document is stored, with the
+/// fingerprint shortened the way pin cells shorten it (the JSON carries
+/// it whole). `more` phrases the count for the matches a settled
+/// identity's report leaves over.
 fn match_table(
     query: &SearchQuery,
-    outcome: &SearchOutcome,
+    matches: &[&MatchedItem],
+    more: bool,
     colorize: bool,
     max_width: Option<usize>,
 ) -> String {
+    let phrase = match (more, matches.len()) {
+        (false, _) => "items match",
+        (true, 1) => "more item matches",
+        (true, _) => "more items match",
+    };
     let mut out = format!(
-        "\n{} items match `{}`\n",
-        paint(colorize, COUNT_COLOR, &outcome.matches.len().to_string()),
+        "\n{} {phrase} `{}`\n",
+        paint(colorize, COUNT_COLOR, &matches.len().to_string()),
         query.raw()
     );
-    let rows: Vec<Vec<String>> = outcome
-        .matches
+    let rows: Vec<Vec<String>> = matches
         .iter()
         .map(|item| {
             vec![
@@ -359,8 +379,8 @@ fn indented(table: &str) -> String {
 }
 
 /// Machine-readable output: the parsed query, every match with its full
-/// fingerprint, and the usage report (`null` unless exactly one identity
-/// matches), so a script can tell "unknown identity" from "unused".
+/// fingerprint, and the usage report (`null` unless the query settles on
+/// one identity), so a script can tell "unknown identity" from "unused".
 fn render_json(query: &SearchQuery, outcome: &SearchOutcome) -> String {
     let matches: Vec<serde_json::Value> = outcome
         .matches
@@ -1039,6 +1059,54 @@ mod tests {
                 assert!(line.chars().count() <= 60, "{line}\n{narrow}");
             }
         }
+    }
+
+    /// A query settling on one identity while brushing others reports the
+    /// settled identity alone, then lists the leftover matches: their
+    /// documents never join the published lines.
+    #[test]
+    fn human_output_lists_brushed_matches_after_the_report() {
+        let mut brushed = matched(
+            RepoItemKind::Node,
+            "sim_rgb_camera",
+            "v1",
+            PublishedDoc {
+                repo_id: 1000,
+                repo_label: HUB.to_owned(),
+                path: "sim_rgb_camera/peppy.json5".to_owned(),
+                sha256: ManifestFingerprint::parse(&sha('b')).unwrap(),
+            },
+        );
+        brushed.exact = false;
+        let outcome = detailed(
+            empty_report(),
+            vec![
+                matched(RepoItemKind::Contract, "rgb_camera", "v1", contract()),
+                brushed,
+            ],
+        );
+
+        let text = render_human(&query("rgb_camera:v1"), &outcome, false, None);
+
+        assert!(
+            text.starts_with(&format!(
+                "rgb_camera:v1\n\
+                 \x20 contract rgb_camera:v1 published by {CONTRACTS} at \
+                 cameras/rgb_camera.json5 (sha256 {})\n\
+                 \nNo indexed node implements",
+                sha('a')
+            )),
+            "{text}"
+        );
+        assert!(
+            !text.contains("  node sim_rgb_camera:v1 published by"),
+            "a brushed match is not a published document of the identity: {text}"
+        );
+        assert!(
+            text.contains("\n1 more item matches `rgb_camera:v1`\n"),
+            "{text}"
+        );
+        assert!(text.contains("│ node │ sim_rgb_camera:v1 │"), "{text}");
     }
 
     /// The JSON carries the parsed query, every match with its full
