@@ -88,6 +88,10 @@ pub enum RepoCommands {
         /// The query, as `<name-regex>[:<tag-regex>][@<sha256>]`.
         #[arg(allow_hyphen_values = true)]
         query: String,
+        /// Print the full report for every matched identity instead of
+        /// the match table, as `apt search --full` prints every record.
+        #[arg(long)]
+        full: bool,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -154,7 +158,7 @@ impl Command for RepoCommand {
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),
-            RepoCommands::Search { query, json } => search::repo_search(&query, json),
+            RepoCommands::Search { query, full, json } => search::repo_search(&query, full, json),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {
                 source,

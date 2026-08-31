@@ -188,13 +188,23 @@ mod tests {
         let cli = Cli::try_parse_from(["peppy", "repo", "search", "rgb_camera:v1", "--json"])
             .expect("repo search parses");
         let Commands::Repo {
-            command: repo::RepoCommands::Search { query, json },
+            command: repo::RepoCommands::Search { query, full, json },
         } = cli.command
         else {
             panic!("expected repo search");
         };
         assert_eq!(query, "rgb_camera:v1");
         assert!(json);
+        assert!(!full);
+
+        let cli = Cli::try_parse_from(["peppy", "repo", "search", "camera", "--full"])
+            .expect("repo search --full parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Repo {
+                command: repo::RepoCommands::Search { full: true, .. }
+            }
+        ));
 
         let cli = Cli::try_parse_from(["peppy", "repositories", "search", "rgb_camera:v1"])
             .expect("the repositories alias parses");

@@ -149,7 +149,7 @@ fn repo_search_reports_a_contracts_implementers_and_consumers() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, contract_sha) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", false, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", false, false, None).expect("searches");
 
     let label = repo_dir.to_string_lossy();
     assert!(
@@ -192,7 +192,7 @@ fn repo_search_reports_a_pairings_participants_and_observers() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "arm_link:v1", false, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "arm_link:v1", false, false, None).expect("searches");
 
     assert!(
         text.contains(&format!(
@@ -228,7 +228,7 @@ fn repo_search_a_bare_name_matches_any_tag() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, contract_sha) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "rgb_camera", false, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "rgb_camera", false, false, None).expect("searches");
 
     assert!(
         text.starts_with(&format!(
@@ -248,7 +248,7 @@ fn repo_search_lists_partial_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, contract_sha) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "camera", false, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "camera", false, false, None).expect("searches");
 
     assert!(
         text.starts_with("camera\n\n3 items match `camera`\n"),
@@ -283,6 +283,33 @@ fn repo_search_lists_partial_matches() {
     );
 }
 
+/// `--full` prints a report block for every matched identity instead of
+/// the table, in match order.
+#[test]
+fn repo_search_full_reports_every_match() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+    let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
+
+    let text = search_rendered(&peppy_dirs, "camera", true, false, None).expect("searches");
+
+    assert!(!text.contains("items match"), "{text}");
+    let exposure = text
+        .find("  mcp exposure camera_surface:v1 published by")
+        .expect(&text);
+    let contract = text
+        .find("  contract rgb_camera:v1 published by")
+        .expect(&text);
+    let node = text.find("  node uvc_camera:v1 published by").expect(&text);
+    assert!(
+        exposure < contract && contract < node,
+        "blocks come in match order: {text}"
+    );
+    assert!(
+        text.contains("\nImplemented by 1 indexed node\n"),
+        "the contract's block carries its sections: {text}"
+    );
+}
+
 /// A launcher is found by its file stem, the one untagged kind: its
 /// published line is the whole answer.
 #[test]
@@ -290,7 +317,7 @@ fn repo_search_finds_a_launcher() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "demo", false, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "demo", false, false, None).expect("searches");
 
     assert_eq!(
         text,
@@ -312,7 +339,7 @@ fn repo_search_finds_a_pinned_digest() {
     let (peppy_dirs, repo_dir, contract_sha) = seeded(&serve, &ctx);
 
     let pinned = format!("rgb_camera:v1@{contract_sha}");
-    let text = search_rendered(&peppy_dirs, &pinned, false, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, &pinned, false, false, None).expect("searches");
     assert!(
         text.starts_with(&format!(
             "{pinned}\n  contract rgb_camera:v1 published by {} at {} (sha256 {contract_sha})\n",
@@ -324,8 +351,14 @@ fn repo_search_finds_a_pinned_digest() {
     assert!(text.contains("\nImplemented by 1 indexed node\n"), "{text}");
 
     let absent = "f".repeat(64);
-    let text = search_rendered(&peppy_dirs, &format!("rgb_camera:v1@{absent}"), false, None)
-        .expect("an empty answer");
+    let text = search_rendered(
+        &peppy_dirs,
+        &format!("rgb_camera:v1@{absent}"),
+        false,
+        false,
+        None,
+    )
+    .expect("an empty answer");
     assert!(
         text.contains("nothing in any configured repository's cache matches"),
         "{text}"
@@ -339,7 +372,7 @@ fn repo_search_json_carries_the_report() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, contract_sha) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", true, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "rgb_camera:v1", false, true, None).expect("searches");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
 
     assert_eq!(doc["query"]["raw"], "rgb_camera:v1");
@@ -363,7 +396,7 @@ fn repo_search_json_carries_the_report() {
     assert_eq!(detail["participants"], serde_json::json!([]));
     assert_eq!(detail["observers"], serde_json::json!([]));
 
-    let text = search_rendered(&peppy_dirs, "arm_link:v1", true, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "arm_link:v1", false, true, None).expect("searches");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
     assert_eq!(doc["matches"][0]["kind"], "pairing");
     let detail = &doc["detail"];
@@ -381,7 +414,7 @@ fn repo_search_json_lists_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "camera|demo", true, None).expect("searches");
+    let text = search_rendered(&peppy_dirs, "camera|demo", false, true, None).expect("searches");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
 
     assert_eq!(doc["detail"]["name"], "demo");
@@ -410,7 +443,7 @@ fn repo_search_rejects_an_invalid_regex() {
     let (_rt, serve, _ctx, _work_dir) = setup();
     let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
-    let err = search_rendered(&peppy_dirs, "rgb_camera[", false, None)
+    let err = search_rendered(&peppy_dirs, "rgb_camera[", false, false, None)
         .expect_err("an unclosed class is not a pattern")
         .to_string();
 
@@ -427,7 +460,7 @@ fn repo_search_rejects_a_bad_digest() {
     let (_rt, serve, _ctx, _work_dir) = setup();
     let peppy_dirs = PeppyDirs::new(serve.temp_dir());
 
-    let err = search_rendered(&peppy_dirs, "rgb_camera@xyz", false, None)
+    let err = search_rendered(&peppy_dirs, "rgb_camera@xyz", false, false, None)
         .expect_err("`xyz` is not a fingerprint")
         .to_string();
 
@@ -441,7 +474,8 @@ fn repo_search_says_when_nothing_matches() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
 
-    let text = search_rendered(&peppy_dirs, "nobody:v1", false, None).expect("an empty answer");
+    let text =
+        search_rendered(&peppy_dirs, "nobody:v1", false, false, None).expect("an empty answer");
 
     assert_eq!(
         text,
@@ -459,8 +493,9 @@ fn repo_search_wraps_tables_to_a_narrow_width() {
     let (_rt, serve, ctx, _work_dir) = setup();
     let (peppy_dirs, _repo_dir, _) = seeded(&serve, &ctx);
 
-    let wide = search_rendered(&peppy_dirs, "rgb_camera:v1", false, None).expect("searches");
-    let narrow = search_rendered(&peppy_dirs, "rgb_camera:v1", false, Some(60)).expect("searches");
+    let wide = search_rendered(&peppy_dirs, "rgb_camera:v1", false, false, None).expect("searches");
+    let narrow =
+        search_rendered(&peppy_dirs, "rgb_camera:v1", false, false, Some(60)).expect("searches");
 
     for line in narrow.lines() {
         if ['│', '┐', '┤', '┘'].iter().any(|c| line.ends_with(*c)) {

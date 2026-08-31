@@ -11,13 +11,15 @@ use crate::commands::table::render_table;
 use crate::error::{Error, Result};
 
 /// `peppy repo search <query>`: every indexed item the query matches, and
-/// who uses it once the query settles on one identity.
-pub(super) fn repo_search(query: &str, json: bool) -> Result<()> {
+/// who uses it once the query settles on one identity, or every matched
+/// identity's report under `--full`.
+pub(super) fn repo_search(query: &str, full: bool, json: bool) -> Result<()> {
     print!(
         "{}",
         search_rendered(
             &PeppyDirs::default(),
             query,
+            full,
             json,
             crate::terminal::stdout_width()
         )?
@@ -33,12 +35,13 @@ pub(super) fn repo_search(query: &str, json: bool) -> Result<()> {
 pub fn search_rendered(
     peppy_dirs: &PeppyDirs,
     query: &str,
+    full: bool,
     json: bool,
     max_width: Option<usize>,
 ) -> Result<String> {
     let query = SearchQuery::parse(query).map_err(Error::ExecutionFailed)?;
     let outcome =
-        core_node::search_repo_items(peppy_dirs, &query).map_err(Error::ExecutionFailed)?;
+        core_node::search_repo_items(peppy_dirs, &query, full).map_err(Error::ExecutionFailed)?;
     Ok(if json {
         render_json(&query, &outcome)
     } else {
@@ -51,10 +54,11 @@ pub fn search_rendered(
     })
 }
 
-/// The outcome as a person reads it: one matched identity gets its
-/// published documents and one section per way of using it, each grouped
-/// by repository the way `repo list` groups nodes; several matched
-/// identities are listed with where each is stored. Tinted with
+/// The outcome as a person reads it: a query that settles on one identity
+/// gets that identity's published documents and one section per way of
+/// using it, each grouped by repository the way `repo list` groups nodes;
+/// a full search prints such a report for every matched identity; other
+/// matched identities are listed with where each is stored. Tinted with
 /// `stack list`'s palette: item identities cyan, link ids yellow, counts
 /// green.
 fn render_human(
@@ -64,31 +68,44 @@ fn render_human(
     max_width: Option<usize>,
 ) -> String {
     let mut out = format!("{}\n", paint(colorize, NODE_COLOR, query.raw()));
-    match &outcome.detail {
-        Some(report) => {
-            out.push_str(&detail_lines(query, report, outcome, colorize, max_width));
+    if !outcome.details.is_empty() {
+        for (position, report) in outcome.details.iter().enumerate() {
+            let items: Vec<&MatchedItem> = outcome
+                .matches
+                .iter()
+                .filter(|m| m.name == report.name && m.tag == report.tag)
+                .collect();
+            if position > 0 {
+                out.push('\n');
+            }
+            out.push_str(&report_block(
+                report,
+                &items,
+                &outcome.excluded_hint,
+                colorize,
+                max_width,
+            ));
         }
-        None if outcome.matches.is_empty() => out.push_str(&format!(
+    } else if let Some(report) = &outcome.detail {
+        out.push_str(&detail_lines(query, report, outcome, colorize, max_width));
+    } else if outcome.matches.is_empty() {
+        out.push_str(&format!(
             "  nothing in any configured repository's cache matches `{}`; check the \
              pattern, or register its repository (`peppy repo add`) and run \
              `peppy repo refresh`{}\n",
             query.raw(),
             outcome.excluded_hint
-        )),
-        None => {
-            let all: Vec<&MatchedItem> = outcome.matches.iter().collect();
-            out.push_str(&match_table(query, &all, false, colorize, max_width));
-        }
+        ));
+    } else {
+        let all: Vec<&MatchedItem> = outcome.matches.iter().collect();
+        out.push_str(&match_table(query, &all, false, colorize, max_width));
     }
     out
 }
 
-/// The settled-identity view: one published line per document of that
-/// identity, then the four usage sections. A contract or pairing nobody
-/// uses says so; the other kinds have no usage sections to be empty, so
-/// their published line is the whole answer. Matches the pattern only
-/// brushes are listed after the report, so a query that spells one name
-/// out in full still shows everything else it finds.
+/// The settled-identity view: that identity's report, then the matches
+/// the pattern only brushes, so a query that spells one name out in full
+/// still shows everything else it finds.
 fn detail_lines(
     query: &SearchQuery,
     report: &SearchReport,
@@ -100,8 +117,32 @@ fn detail_lines(
         .matches
         .iter()
         .partition(|m| m.name == report.name && m.tag == report.tag);
+    let mut out = report_block(
+        report,
+        &settled,
+        &outcome.excluded_hint,
+        colorize,
+        max_width,
+    );
+    if !others.is_empty() {
+        out.push_str(&match_table(query, &others, true, colorize, max_width));
+    }
+    out
+}
+
+/// One identity's report: one published line per document of the
+/// identity, then the four usage sections. A contract or pairing nobody
+/// uses says so; the other kinds have no usage sections to be empty, so
+/// their published line is the whole answer.
+fn report_block(
+    report: &SearchReport,
+    items: &[&MatchedItem],
+    excluded_hint: &str,
+    colorize: bool,
+    max_width: Option<usize>,
+) -> String {
     let mut out = String::new();
-    for item in &settled {
+    for item in items {
         out.push_str(&published_line(item));
     }
 
@@ -166,19 +207,16 @@ fn detail_lines(
         colorize,
         max_width,
     ));
-    let usable_by_nodes = settled
+    let usable_by_nodes = items
         .iter()
         .any(|item| matches!(item.kind, RepoItemKind::Contract | RepoItemKind::Pairing));
     if sections.is_empty() && usable_by_nodes {
         out.push_str(&format!(
             "\nNo indexed node implements, consumes, participates in, or observes `{}:{}`{}\n",
-            report.name, report.tag, outcome.excluded_hint
+            report.name, report.tag, excluded_hint
         ));
     }
     out.push_str(&sections);
-    if !others.is_empty() {
-        out.push_str(&match_table(query, &others, true, colorize, max_width));
-    }
     out
 }
 
@@ -379,8 +417,9 @@ fn indented(table: &str) -> String {
 }
 
 /// Machine-readable output: the parsed query, every match with its full
-/// fingerprint, and the usage report (`null` unless the query settles on
-/// one identity), so a script can tell "unknown identity" from "unused".
+/// fingerprint, the usage report (`null` unless the query settles on one
+/// identity), and under `details` one report per matched identity for a
+/// full search, so a script can tell "unknown identity" from "unused".
 fn render_json(query: &SearchQuery, outcome: &SearchOutcome) -> String {
     let matches: Vec<serde_json::Value> = outcome
         .matches
@@ -407,6 +446,7 @@ fn render_json(query: &SearchQuery, outcome: &SearchOutcome) -> String {
         },
         "matches": matches,
         "detail": outcome.detail.as_ref().map(detail_json),
+        "details": outcome.details.iter().map(detail_json).collect::<Vec<_>>(),
         "excluded": outcome.excluded_hint,
     });
     format!("{doc}\n")
@@ -586,6 +626,7 @@ mod tests {
         SearchOutcome {
             matches,
             detail: Some(report),
+            details: Vec::new(),
             excluded_hint: String::new(),
         }
     }
@@ -689,6 +730,7 @@ mod tests {
                 },
             ],
             detail: None,
+            details: Vec::new(),
             excluded_hint: String::new(),
         }
     }
@@ -928,6 +970,7 @@ mod tests {
         let outcome = SearchOutcome {
             matches: Vec::new(),
             detail: None,
+            details: Vec::new(),
             excluded_hint: ". 1 excluded repository (/tmp/private) is not indexed at all and may have provided it".to_owned(),
         };
 
@@ -1109,6 +1152,56 @@ mod tests {
         assert!(text.contains("│ node │ sim_rgb_camera:v1 │"), "{text}");
     }
 
+    /// A full search prints one report block per matched identity in
+    /// match order, a blank line between blocks, and no match table.
+    #[test]
+    fn human_output_prints_a_block_per_identity_for_a_full_search() {
+        let mut second = empty_report();
+        second.name = "sim_rgb_camera_link".to_owned();
+        let mut brushed = matched(
+            RepoItemKind::Pairing,
+            "sim_rgb_camera_link",
+            "v1",
+            PublishedDoc {
+                repo_id: 1002,
+                repo_label: CONTRACTS.to_owned(),
+                path: "cameras/sim_rgb_camera_link.json5".to_owned(),
+                sha256: ManifestFingerprint::parse(&sha('d')).unwrap(),
+            },
+        );
+        brushed.exact = false;
+        let outcome = SearchOutcome {
+            matches: vec![
+                matched(RepoItemKind::Contract, "rgb_camera", "v1", contract()),
+                brushed,
+            ],
+            detail: None,
+            details: vec![empty_report(), second],
+            excluded_hint: String::new(),
+        };
+
+        let text = render_human(&query("rgb_camera"), &outcome, false, None);
+
+        assert_eq!(
+            text,
+            format!(
+                "rgb_camera\n\
+                 \x20 contract rgb_camera:v1 published by {CONTRACTS} at \
+                 cameras/rgb_camera.json5 (sha256 {a})\n\
+                 \nNo indexed node implements, consumes, participates in, or observes \
+                 `rgb_camera:v1`\n\
+                 \n\
+                 \x20 pairing sim_rgb_camera_link:v1 published by {CONTRACTS} at \
+                 cameras/sim_rgb_camera_link.json5 (sha256 {d})\n\
+                 \nNo indexed node implements, consumes, participates in, or observes \
+                 `sim_rgb_camera_link:v1`\n",
+                a = sha('a'),
+                d = sha('d'),
+            ),
+            "\n{text}"
+        );
+    }
+
     /// The JSON carries the parsed query, every match with its full
     /// fingerprint, and the report under `detail`, with `null` where a
     /// value is absent.
@@ -1136,6 +1229,11 @@ mod tests {
         assert_eq!(matches[0]["published"]["repo_id"], 1002);
         assert_eq!(matches[0]["published"]["sha256"], sha('a'));
         assert_eq!(doc["excluded"], "");
+        assert_eq!(
+            doc["details"],
+            serde_json::json!([]),
+            "a plain search carries no per-identity reports"
+        );
 
         let detail = &doc["detail"];
         assert_eq!(detail["name"], "rgb_camera");

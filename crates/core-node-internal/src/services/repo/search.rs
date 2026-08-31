@@ -252,6 +252,9 @@ pub struct SearchOutcome {
     /// and a pairing has two entries in `matches` and one report covering
     /// both.
     pub detail: Option<SearchReport>,
+    /// One report per matched identity in match order, filled only when
+    /// the search is asked for full reports (`--full`); empty otherwise.
+    pub details: Vec<SearchReport>,
     /// [`excluded_repositories_hint`], so an empty result can say that an
     /// excluded repository may have provided the item without the caller
     /// knowing the cache layout. Empty when nothing is excluded.
@@ -274,15 +277,17 @@ pub struct SearchReport {
 /// matches, across all five kinds. Once the query settles on one
 /// `name:tag` ([`settled_identity`]), the outcome also reports who uses
 /// that identity, with each claim's pin checked against the cached
-/// documents.
+/// documents. `full` asks for that report on every matched identity
+/// instead, the way `apt search --full` prints every record whole.
 ///
 /// An unreadable cache is an error. An identity one repository publishes
-/// twice is an error only when the query settles on it, since it has no
-/// answer a launch would accept; a wider match list keeps its row so the
-/// other matches still answer.
+/// twice is an error only when the query settles on it or a full search
+/// demands its report, since it has no answer a launch would accept; a
+/// plain match list keeps its row so the other matches still answer.
 pub fn search_repo_items(
     peppy_dirs: &PeppyDirs,
     query: &SearchQuery,
+    full: bool,
 ) -> Result<SearchOutcome, String> {
     let nodes = load_node_cache(peppy_dirs).map_err(|e| e.to_string())?;
     let launchers: Vec<LauncherCacheEntry> =
@@ -316,9 +321,29 @@ pub fn search_repo_items(
         None => None,
     };
 
+    let mut details = Vec::new();
+    if full {
+        let mut reported = BTreeSet::new();
+        for item in &matches {
+            if !reported.insert((item.name.clone(), item.tag.clone())) {
+                continue;
+            }
+            if let Some(contest) = contests
+                .iter()
+                .find(|contest| contest.name == item.name && contest.tag == item.tag)
+            {
+                return Err(contest.error.clone());
+            }
+            details.push(usage_report(
+                &nodes, &contracts, &pairings, &repos, &item.name, &item.tag,
+            )?);
+        }
+    }
+
     Ok(SearchOutcome {
         matches,
         detail,
+        details,
         excluded_hint: excluded_repositories_hint(peppy_dirs),
     })
 }
@@ -682,7 +707,19 @@ mod tests {
     }
 
     fn search(home: &Home, raw: &str) -> Result<SearchOutcome, String> {
-        search_repo_items(&home.dirs, &SearchQuery::parse(raw).expect("a valid query"))
+        search_repo_items(
+            &home.dirs,
+            &SearchQuery::parse(raw).expect("a valid query"),
+            false,
+        )
+    }
+
+    fn search_full(home: &Home, raw: &str) -> Result<SearchOutcome, String> {
+        search_repo_items(
+            &home.dirs,
+            &SearchQuery::parse(raw).expect("a valid query"),
+            true,
+        )
     }
 
     fn fs(path: PathBuf) -> EntryOrigin {
@@ -1333,6 +1370,7 @@ mod tests {
             SearchOutcome {
                 matches: Vec::new(),
                 detail: None,
+                details: Vec::new(),
                 excluded_hint: String::new(),
             }
         );
@@ -1436,6 +1474,65 @@ mod tests {
 
         let err = search(&home, "rgb_camera:v1").expect_err("refuses");
 
+        assert!(err.contains("2 contract entries"), "got: {err}");
+    }
+
+    /// A full search reports every matched identity in match order, the
+    /// way `apt search --full` prints every record whole; the settled
+    /// report is unaffected.
+    #[test]
+    fn a_full_search_reports_every_matched_identity() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.cache(&[
+            contract_entry("rgb_camera", "v1", fs(hub.join("rgb_v1.json5"))),
+            contract_entry("rgb_camera", "v2", fs(hub.join("rgb_v2.json5"))),
+        ]);
+        home.cache(&[only_implements(
+            node_entry("cam", "v1", fs(hub.join("cam/peppy.json5"))),
+            implements("rgb_camera", "v1", "camera", None),
+        )]);
+
+        let outcome = search_full(&home, "rgb_camera:v[12]").expect("searches");
+
+        let identities: Vec<(&str, &str)> = outcome
+            .details
+            .iter()
+            .map(|report| (report.name.as_str(), report.tag.as_str()))
+            .collect();
+        assert_eq!(identities, vec![("rgb_camera", "v1"), ("rgb_camera", "v2")]);
+        assert_eq!(outcome.details[0].implementers.len(), 1);
+        assert_eq!(outcome.details[1].implementers, Vec::new());
+        assert_eq!(outcome.detail, None, "two identities never settle");
+
+        let outcome = search(&home, "rgb_camera:v[12]").expect("searches");
+        assert_eq!(
+            outcome.details,
+            Vec::new(),
+            "a plain search computes no per-identity reports"
+        );
+    }
+
+    /// A full search demands a report for every matched identity, so a
+    /// contested one refuses even though a plain search would list it.
+    #[test]
+    fn a_full_search_refuses_a_contested_identity_among_matches() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.cache(&[
+            contract_entry("rgb_camera", "v1", fs(hub.join("a/rgb.json5"))),
+            contract_entry("rgb_camera", "v1", fs(hub.join("b/rgb.json5"))),
+        ]);
+        home.cache(&[node_entry(
+            "uvc_camera",
+            "v1",
+            fs(hub.join("uvc_camera/peppy.json5")),
+        )]);
+
+        assert!(search(&home, ".*").is_ok(), "a plain search lists it");
+        let err = search_full(&home, ".*").expect_err("refuses");
         assert!(err.contains("2 contract entries"), "got: {err}");
     }
 }
