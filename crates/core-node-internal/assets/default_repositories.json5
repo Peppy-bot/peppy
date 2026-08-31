@@ -23,4 +23,10 @@
     url: "https://github.com/Peppy-bot/mcp-hub.git",
     ref: "main"
   },
+  {
+    id: 1004,
+    type: "git",
+    url: "https://github.com/Peppy-bot/pairings-hub.git",
+    ref: "main"
+  },
 ]
