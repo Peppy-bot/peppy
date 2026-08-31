@@ -6,10 +6,12 @@ mod list;
 mod refresh;
 mod remove;
 mod search;
+mod show;
 
 pub use index::{CheckScope, check_index, repo_index};
 pub use init::repo_init_with_dirs;
 pub use search::search_rendered;
+pub use show::show_rendered;
 
 use std::sync::Arc;
 
@@ -67,12 +69,9 @@ pub enum RepoCommands {
     /// List configured repositories
     List,
     /// Search the repositories for any indexed item (node, launcher,
-    /// contract, pairing, MCP exposure). A query settling on one identity,
-    /// because only one matches or because the name pattern spells exactly
-    /// one of them out in full, gets its full report: where it is
-    /// published and, for a contract or pairing, the nodes that implement,
-    /// consume, participate in, or observe it, with each pin checked.
-    /// Every other match is listed with where it is stored.
+    /// contract, pairing, MCP exposure). Every match is listed with its
+    /// kind, repository, path, and fingerprint; `repo show` takes the
+    /// same query and prints each match's full report instead.
     ///
     /// Each query part is an unanchored regular expression, as `apt
     /// search` reads its patterns: `camera` finds `rgb_camera`,
@@ -88,10 +87,28 @@ pub enum RepoCommands {
         /// The query, as `<name-regex>[:<tag-regex>][@<sha256>]`.
         #[arg(allow_hyphen_values = true)]
         query: String,
-        /// Print the full report for every matched identity instead of
-        /// the match table, as `apt search --full` prints every record.
+        /// Emit machine-readable JSON.
         #[arg(long)]
-        full: bool,
+        json: bool,
+    },
+    /// Show the full report of every indexed item the query matches, as
+    /// `apt show` prints a package's record: where each document is
+    /// published and, for a contract or pairing, the nodes that
+    /// implement, consume, participate in, or observe it, with each pin
+    /// checked.
+    ///
+    /// Takes the same `<name-regex>[:<tag-regex>][@<sha256>]` query as
+    /// `repo search` and reports every identity it matches, in the
+    /// search's order. A query nothing matches is an error, and so is an
+    /// identity one repository publishes twice, since its report has no
+    /// answer a launch would accept.
+    ///
+    /// Reads the same caches as `repo search`; needs no daemon, and
+    /// `--core-node` has no effect on it.
+    Show {
+        /// The query, as `<name-regex>[:<tag-regex>][@<sha256>]`.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -158,7 +175,8 @@ impl Command for RepoCommand {
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),
-            RepoCommands::Search { query, full, json } => search::repo_search(&query, full, json),
+            RepoCommands::Search { query, json } => search::repo_search(&query, json),
+            RepoCommands::Show { query, json } => show::repo_show(&query, json),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {
                 source,

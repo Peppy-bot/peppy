@@ -188,23 +188,13 @@ mod tests {
         let cli = Cli::try_parse_from(["peppy", "repo", "search", "rgb_camera:v1", "--json"])
             .expect("repo search parses");
         let Commands::Repo {
-            command: repo::RepoCommands::Search { query, full, json },
+            command: repo::RepoCommands::Search { query, json },
         } = cli.command
         else {
             panic!("expected repo search");
         };
         assert_eq!(query, "rgb_camera:v1");
         assert!(json);
-        assert!(!full);
-
-        let cli = Cli::try_parse_from(["peppy", "repo", "search", "camera", "--full"])
-            .expect("repo search --full parses");
-        assert!(matches!(
-            cli.command,
-            Commands::Repo {
-                command: repo::RepoCommands::Search { full: true, .. }
-            }
-        ));
 
         let cli = Cli::try_parse_from(["peppy", "repositories", "search", "rgb_camera:v1"])
             .expect("the repositories alias parses");
@@ -224,6 +214,31 @@ mod tests {
             panic!("expected repo search");
         };
         assert_eq!(query, "-bot[0-9]+");
+    }
+
+    #[test]
+    fn repo_show_parses() {
+        let cli = Cli::try_parse_from(["peppy", "repo", "show", "rgb_camera:v1", "--json"])
+            .expect("repo show parses");
+        let Commands::Repo {
+            command: repo::RepoCommands::Show { query, json },
+        } = cli.command
+        else {
+            panic!("expected repo show");
+        };
+        assert_eq!(query, "rgb_camera:v1");
+        assert!(json);
+
+        let cli = Cli::try_parse_from(["peppy", "repo", "show", "-bot[0-9]+"])
+            .expect("a pattern starting with `-` is a query, not a flag");
+        let Commands::Repo {
+            command: repo::RepoCommands::Show { query, json },
+        } = cli.command
+        else {
+            panic!("expected repo show");
+        };
+        assert_eq!(query, "-bot[0-9]+");
+        assert!(!json);
     }
 
     /// The exposure check rides `--check`; there is nothing to validate on

@@ -94,7 +94,7 @@ peppy repo search <name-regex>[:<tag-regex>][@<sha256>]
 
 Finds any indexed item: nodes, launchers, contracts, pairings, and MCP exposures. Each query part is an unanchored regular expression, matched the way `apt search` matches its patterns: `camera` finds `rgb_camera`, `^rgb_camera$` only the exact name, `cam(era)?:v[12]` any combination of the alternatives. Matching is case-sensitive; prepend `(?i)` to a part for case-insensitive matching. A missing tag part matches every tag. Launchers carry no tag, so a bare name finds them, while a tag pattern only matches them when it matches the empty string (`demo:.*` does, `demo:v1` does not). The `:` splits the query, so a POSIX class like `[[:digit:]]` cannot be written; use `[0-9]`. `@<sha256>` keeps only the copies carrying exactly those bytes, wherever they are published, so `.*@<sha256>` finds a document knowing only its fingerprint.
 
-Several matching identities are listed with where each is stored, names the pattern matches outright first, then by name:
+Every matching identity is listed with where it is stored, names the pattern matches outright first, then by name:
 
 ```text
 camera
@@ -109,11 +109,19 @@ camera
 └──────────────┴───────────────────┴────────────────────────────────────────────────────────────┴────────────────────────────┴──────────┘
 ```
 
-The `SHA256` column shows the first eight characters of each document's fingerprint, as the `PIN` cells below do. A `@<sha256>` query takes the complete 64-character fingerprint; `--json` carries fingerprints whole.
+The `SHA256` column shows the first eight characters of each document's fingerprint, as the `PIN` cells of [`peppy repo show`](#show-what-a-query-matches) do. A `@<sha256>` query takes the complete 64-character fingerprint; `--json` carries fingerprints whole.
 
-A query that settles on one identity gets that identity's full report: either only one `name:tag` matches, or the name pattern spells exactly one of the matched names out in full, so `rgb_camera:v1` keeps its report even while the pattern also finds `sim_rgb_camera:v1` (those remaining matches are listed after the report). The report's first lines name each document of the identity with its kind, repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both, and one report covers them. For a contract or pairing, one section per way a node uses it follows: implementing it (`manifest.implements`), consuming it (`depends_on.contracts`), playing a role in it (`depends_on.pairings`), or observing one of its roles (`depends_on.pairing_observers`). Sections are grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality or `optional`), `PIN`, and `PATH` (the manifest path). A node, launcher, or MCP exposure has no usage sections; its published line is the whole answer. A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
+The search reads this machine's caches, so it reflects the last `peppy repo refresh` and needs no daemon (`--core-node` has no effect). A query nothing matches is an answer, not an error: the command says so and, when repositories are excluded, that one of them may have provided the item. `--json` prints the same answer as one JSON document with `query` (the parsed `raw`, `name`, `tag`, and `sha256` parts), `matches` (each with its `kind`, `name`, `tag`, `exact`, and `published` document), and `excluded`.
 
-`--full` prints that report for every matched identity instead of the match table, the way `apt search --full` prints every record whole: `peppy repo search 'rgb_camera:v[12]' --full` answers who still uses each version in one pass. An identity one repository publishes twice fails a full search the way it fails a settled one, since its report has no answer a launch would accept.
+### Show what a query matches
+
+```sh
+peppy repo show <name-regex>[:<tag-regex>][@<sha256>]
+```
+
+Takes the same query as [`peppy repo search`](#search-the-repositories) and prints the full report of every identity it matches, in the search's order, the way `apt show` prints one record per named package: `peppy repo show rgb_camera:v1` reports the one contract, and `peppy repo show 'rgb_camera:v[12]'` answers who still uses each version in one pass.
+
+A report's first lines name each document of the identity with its kind, repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both, and one report covers them. For a contract or pairing, one section per way a node uses it follows: implementing it (`manifest.implements`), consuming it (`depends_on.contracts`), playing a role in it (`depends_on.pairings`), or observing one of its roles (`depends_on.pairing_observers`). Sections are grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality or `optional`), `PIN`, and `PATH` (the manifest path). A node, launcher, or MCP exposure has no usage sections; its published line is the whole answer. A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
 
 ```text
 rgb_camera:v1
@@ -149,7 +157,7 @@ The `PIN` column says what a sync does with the claim's `sha256`:
 
 `(shadowed by <repository>)` means what it means in `peppy repo list`: a lower-`id` repository provides the same `name:tag`, so a launch resolves to that node, which may not make this claim at all.
 
-The search reads this machine's caches, so it reflects the last `peppy repo refresh` and needs no daemon (`--core-node` has no effect). A query nothing matches is an answer, not an error: the command says so and, when repositories are excluded, that one of them may have provided the item. `--json` prints the same answer as one JSON document with `query` (the parsed `raw`, `name`, `tag`, and `sha256` parts), `matches` (each with its `kind`, `name`, `tag`, `exact`, and `published` document), `detail` (the usage report with `implementers`, `consumers`, `participants`, and `observers`; `null` unless the query settles on one identity), `details` (one such report per matched identity under `--full`, in match order; empty otherwise), and `excluded`.
+The show reads the same caches as the search and needs no daemon. A query nothing matches is an error, since the command was asked for a report it cannot print, and so is an identity one repository publishes twice: its report has no answer a launch would accept. `--json` prints one JSON document with `query`, `matches`, and `excluded` as the search prints them, plus `reports`: one usage report per matched identity in match order, each with its `implementers`, `consumers`, `participants`, and `observers`.
 
 ### Refresh the index
 

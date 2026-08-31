@@ -23,8 +23,8 @@ pub use services::repo::index::{
 };
 pub use services::repo::{
     Consumer, Implementer, IndexedNode, InitOutcome, MatchedItem, Observer, Participant, PinStatus,
-    PublishedDoc, SearchOutcome, SearchQuery, SearchReport, ensure_default_repos,
-    search_repo_items,
+    PublishedDoc, SearchOutcome, SearchQuery, SearchReport, ShowOutcome, ensure_default_repos,
+    search_repo_items, show_repo_items,
 };
 pub use services::{
     CoreNode, CoreNodeArguments, CoreNodeConfig, NAME_CLAIM_LINKED_SETTLE, TEARDOWN_REAP_BUDGET,
