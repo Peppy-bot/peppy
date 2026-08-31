@@ -22,8 +22,9 @@ pub use services::repo::index::{
     publish_repository_index, read_repository_index, write_repository_index,
 };
 pub use services::repo::{
-    Consumer, Implementer, IndexedNode, InitOutcome, Observer, Participant, PinStatus,
-    PublishedDoc, SearchReport, ensure_default_repos, search_identity,
+    Consumer, Implementer, IndexedNode, InitOutcome, MatchedItem, Observer, Participant, PinStatus,
+    PublishedDoc, SearchOutcome, SearchQuery, SearchReport, ShowOutcome, ensure_default_repos,
+    search_repo_items, show_repo_items,
 };
 pub use services::{
     CoreNode, CoreNodeArguments, CoreNodeConfig, NAME_CLAIM_LINKED_SETTLE, TEARDOWN_REAP_BUDGET,

@@ -908,6 +908,7 @@ dependencies = [
  "peppylib-rs",
  "pmi",
  "rand 0.10.2",
+ "regex",
  "rstest",
  "rust-embed",
  "serde",

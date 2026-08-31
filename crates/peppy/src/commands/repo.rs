@@ -6,10 +6,12 @@ mod list;
 mod refresh;
 mod remove;
 mod search;
+mod show;
 
 pub use index::{CheckScope, check_index, repo_index};
 pub use init::repo_init_with_dirs;
 pub use search::search_rendered;
+pub use show::show_rendered;
 
 use std::sync::Arc;
 
@@ -66,16 +68,47 @@ pub enum RepoCommands {
     },
     /// List configured repositories
     List,
-    /// Show who uses a contract or pairing: the nodes that implement,
-    /// consume, participate in, or observe it, and whether their pins match
-    /// what is published.
+    /// Search the repositories for any indexed item (node, launcher,
+    /// contract, pairing, MCP exposure). Every match is listed with its
+    /// kind, repository, path, and fingerprint; `repo show` takes the
+    /// same query and prints each match's full report instead.
+    ///
+    /// Each query part is an unanchored regular expression, as `apt
+    /// search` reads its patterns: `camera` finds `rgb_camera`,
+    /// `^rgb_camera$` only the exact name, `cam(era)?:v[12]` any of four
+    /// identities. A missing tag part matches every tag (launchers carry
+    /// none), and `@<sha256>` keeps only the copies carrying exactly
+    /// those bytes.
     ///
     /// Reads this machine's repository caches, so it reflects the last
     /// `peppy repo refresh`; needs no daemon, and `--core-node` has no
     /// effect on it.
     Search {
-        /// The contract or pairing, as `<name>:<tag>`.
-        identity: String,
+        /// The query, as `<name-regex>[:<tag-regex>][@<sha256>]`.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the full report of every indexed item the query matches, as
+    /// `apt show` prints a package's record: where each document is
+    /// published and, for a contract or pairing, the nodes that
+    /// implement, consume, participate in, or observe it, with each pin
+    /// checked.
+    ///
+    /// Takes the same `<name-regex>[:<tag-regex>][@<sha256>]` query as
+    /// `repo search` and reports every identity it matches, in the
+    /// search's order. A query nothing matches is an error, and so is an
+    /// identity one repository publishes twice, since its report has no
+    /// answer a launch would accept.
+    ///
+    /// Reads the same caches as `repo search`; needs no daemon, and
+    /// `--core-node` has no effect on it.
+    Show {
+        /// The query, as `<name-regex>[:<tag-regex>][@<sha256>]`.
+        #[arg(allow_hyphen_values = true)]
+        query: String,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -142,7 +175,8 @@ impl Command for RepoCommand {
                 },
             ),
             RepoCommands::List => list::list_repos(ctx),
-            RepoCommands::Search { identity, json } => search::repo_search(&identity, json),
+            RepoCommands::Search { query, json } => search::repo_search(&query, json),
+            RepoCommands::Show { query, json } => show::repo_show(&query, json),
             RepoCommands::Refresh => refresh::repo_refresh(ctx),
             RepoCommands::Add {
                 source,

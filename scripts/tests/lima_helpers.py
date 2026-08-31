@@ -350,83 +350,133 @@ def setup_lima_guest(config: VMConfig, *, test_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-# Run once per Ubuntu guest before the install tests. Debian/Ubuntu cloud
-# images ship without dbus-user-session and without linger, so they have no
-# user D-Bus session bus. We install the package, enable linger, then wait for
-# the user bus to come up so install.sh's checks see the baseline a configured
-# Ubuntu host would have. Fedora and Arch already ship a working user session
-# bus, so they need no provisioning.
+# Run once per Ubuntu guest before the install tests. The Ubuntu 24.04 cloud
+# image ships dbus-user-session, so the user session bus needs no installing;
+# what a configured host has and a fresh guest lacks is linger for the user,
+# which install.sh's no-root mode checks. Fedora and Arch already ship a
+# working user session bus and get no provisioning at all.
 #
 # Nothing here may run before the guest has finished booting. `limactl start`
 # returns as soon as ssh answers, which is well before PID 1 has drained its
-# boot transaction, and logind serves enable-linger by asking PID 1 to start
-# user@<uid>.service and waiting for that job. Called into a still-settling
-# guest the reply outruns sd-bus's ~25s timeout and comes back as "Could not
-# enable linger: Connection timed out" -- the CI failure these waits exist to
-# prevent. Both waits are bounded and advisory: a guest that never reaches a
-# settled state still gets its linger attempts instead of hanging here.
+# boot transaction. Both waits are bounded and advisory: the named steps and
+# the baseline verification after them are the hard gates.
+#
+# Linger is established through its on-disk form rather than by asking logind
+# for it. `loginctl enable-linger` is served by logind over the bus, and these
+# guests can boot into a logind that never answers it: eight 25s calls in a
+# row came back "Could not enable linger: Connection timed out" while
+# `systemctl list-jobs` sat empty, twice on the same commit, so neither
+# settling nor retrying reaches such an instance. Writing the flag file,
+# restarting logind so it enumerates the linger directory afresh, and
+# restarting the user manager (systemctl run as root reaches PID 1 over its
+# private socket) need nothing from the wedged instance; the one
+# `loginctl enable-linger` at the end verifies that the restarted logind
+# serves the API install.sh's checks rely on.
 _UBUNTU_PROVISION_SCRIPT = """
 set -eu
-export DEBIAN_FRONTEND=noninteractive
 
 if command -v cloud-init >/dev/null 2>&1; then
     sudo timeout 120 cloud-init status --wait >/dev/null 2>&1 || true
 fi
 timeout 120 systemctl is-system-running --wait >/dev/null 2>&1 || true
 
-# Enable linger while logind is healthy, before the dbus install can restart
-# the system bus. A busy logind answers by timing out, so each failed attempt
-# has already waited ~25s: the attempt count, not the sleep, is the budget.
-for attempt in 1 2 3 4 5 6 7 8; do
-    if sudo timeout 30 loginctl enable-linger "$(id -un)"; then
-        break
-    fi
-    if [ "$attempt" -eq 8 ]; then
-        echo "provision: could not enable linger after 8 attempts" >&2
-        # Whatever logind is stuck behind shows up in one of these two: a boot
-        # job that never completed, or logind's own log. Without them the next
-        # occurrence is as opaque as the one that prompted this.
-        echo "--- systemctl list-jobs ---" >&2
-        systemctl list-jobs >&2 || true
+# Whatever logind is stuck behind shows up in one of these: a boot job that
+# never completed, the unit's own state, or its log. Without them the next
+# occurrence is as opaque as the one that prompted this.
+diagnose() {
+    echo "provision: $1" >&2
+    echo "--- systemctl list-jobs ---" >&2
+    systemctl list-jobs >&2 || true
+    echo "--- systemctl status systemd-logind ---" >&2
+    sudo systemctl status systemd-logind --no-pager >&2 || true
+    echo "--- journalctl -b -u systemd-logind ---" >&2
+    sudo journalctl -b -u systemd-logind --no-pager -n 50 >&2 || true
+    exit 1
+}
+
+# The user dbus.socket unit is what serves the session bus, and the cloud
+# image ships it (dbus-user-session is preinstalled). A template bump that
+# drops the package should fail here by name, not as a missing bus later.
+[ -f /usr/lib/systemd/user/dbus.socket ] \\
+    || diagnose "image does not ship dbus-user-session (no user dbus.socket)"
+
+# The flag file goes in first so the restarted logind enumerates the user as
+# lingering the moment it comes up. The 120s timeouts leave systemd room to
+# SIGKILL a logind that ignores its stop signal (90s) before they fire.
+user="$(id -un)"
+sudo mkdir -p /var/lib/systemd/linger
+sudo touch "/var/lib/systemd/linger/${user}"
+sudo timeout 120 systemctl restart systemd-logind \\
+    || diagnose "could not restart systemd-logind"
+
+# Restart rather than start: a user manager the boot brought up mid-transaction
+# is in whatever state that race left it, and one logind spawns for the linger
+# flag during its own restart may load against the same half-settled system.
+# The restart hands the tests a manager whose startup ran after everything
+# above, on a booted guest, with the dbus.socket unit in view.
+sudo timeout 120 systemctl restart "user@$(id -u).service" \\
+    || diagnose "could not restart the user manager"
+
+# install.sh's check_linger_enabled asks logind, not the linger directory, so
+# a logind that cannot answer has to fail provisioning here, with its state on
+# record, not twenty tests later.
+sudo timeout 30 loginctl enable-linger "${user}" \\
+    || diagnose "logind does not serve enable-linger after a restart"
+"""
+
+
+# The tests reach the guest exactly the way this script does: a fresh
+# `limactl shell` probing the bus as install.sh's check_dbus_session will.
+# provision_guest drops Lima's multiplexed ssh connection first, so the
+# session environment here (and in every test after it) is the one
+# pam_systemd computes against the restarted logind, not whatever the
+# boot-time master pinned. The loop only covers the user manager finishing
+# the restart provisioning just issued; exhausting it is a provisioning
+# failure with the broken link on record, never something to leave for
+# whichever test needs the bus first.
+_UBUNTU_BASELINE_SCRIPT = """
+set -eu
+uid="$(id -u)"
+attempt=1
+while ! busctl --user status >/dev/null 2>&1; do
+    if [ "$attempt" -ge 30 ]; then
+        echo "baseline: fresh session has no user D-Bus session bus" >&2
+        echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}" >&2
+        echo "--- ls -la /run/user/${uid} ---" >&2
+        ls -la "/run/user/${uid}" >&2 || true
+        echo "--- systemctl status user@${uid} ---" >&2
+        sudo systemctl status "user@${uid}" --no-pager >&2 || true
+        echo "--- systemctl --user status dbus.socket ---" >&2
+        systemctl --user status dbus.socket --no-pager >&2 || true
+        echo "--- loginctl list-sessions ---" >&2
+        loginctl list-sessions >&2 || true
+        echo "--- systemctl status systemd-logind ---" >&2
+        sudo systemctl status systemd-logind --no-pager >&2 || true
         echo "--- journalctl -b -u systemd-logind ---" >&2
         sudo journalctl -b -u systemd-logind --no-pager -n 50 >&2 || true
         exit 1
     fi
-    sleep 2
-done
-
-sudo apt-get update -qq
-sudo apt-get install -y -qq dbus-user-session
-
-# Best-effort wait for the user session bus to come up so install.sh's no-root
-# D-Bus check sees it in later sessions.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if busctl --user status >/dev/null 2>&1; then
-        break
-    fi
+    attempt=$((attempt + 1))
     sleep 1
 done
 """
 
 
-# Worst case for the script above: both boot waits run out (120s each), every
-# linger attempt spends its full 30s, and apt still has to fetch a package.
-# The budget has to cover that, or a slow guest trades the script's own
-# diagnostics for a bare TimeoutExpired traceback.
-_PROVISION_TIMEOUT = 900
+# Worst case for the provision script: both boot waits run out (120s each),
+# the logind and user manager restarts each spend their full 120s, and the
+# verification call its 30s. The budget has to cover that, or a slow guest
+# trades the script's own diagnostics for a bare TimeoutExpired traceback.
+_PROVISION_TIMEOUT = 600
+
+# The baseline script waits at most 30s for the bus, then spends the rest
+# printing diagnostics.
+_BASELINE_TIMEOUT = 180
 
 
-def provision_guest(config: VMConfig, env: dict[str, str]) -> None:
-    """Bring the guest to the baseline a properly-configured host would have.
-
-    On Ubuntu this installs the user D-Bus session bus and enables linger,
-    which install.sh's no-root mode requires and which a real Ubuntu user
-    running the peppy service would already have set up. Other distros are
-    left untouched (their cloud images already provide a user session bus).
-    """
-    if config.distro != "ubuntu":
-        return
-
+def _run_guest_script(
+    config: VMConfig, env: dict[str, str], script: str, *, what: str, timeout: int
+) -> None:
+    """Run one provisioning script in the guest, failing the fixture loudly."""
     cmd = [
         "limactl",
         "shell",
@@ -434,7 +484,7 @@ def provision_guest(config: VMConfig, env: dict[str, str]) -> None:
         "--",
         "bash",
         "-c",
-        _UBUNTU_PROVISION_SCRIPT,
+        script,
     ]
     try:
         result = subprocess.run(
@@ -442,18 +492,64 @@ def provision_guest(config: VMConfig, env: dict[str, str]) -> None:
             env=env,
             capture_output=True,
             text=True,
-            timeout=_PROVISION_TIMEOUT,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as expired:
         pytest.fail(
-            f"Ubuntu guest provisioning for {config.pytest_id()} did not finish "
-            f"within {_PROVISION_TIMEOUT}s{diagnostic(expired)}"
+            f"Ubuntu guest {what} for {config.pytest_id()} did not finish "
+            f"within {timeout}s{diagnostic(expired)}"
         )
     if result.returncode != 0:
         pytest.fail(
-            f"Ubuntu guest provisioning failed for {config.pytest_id()}"
+            f"Ubuntu guest {what} failed for {config.pytest_id()}"
             f"{diagnostic(result)}"
         )
+
+
+def _drop_ssh_master(instance: str) -> None:
+    """Close Lima's multiplexed ssh connection to the guest.
+
+    Every `limactl shell` rides one ControlMaster connection per instance, and
+    sshd computes the session environment once per connection: pam_systemd
+    asks logind for XDG_RUNTIME_DIR when the master first opens. A master
+    opened against the boot-time logind pins whatever answer it got for the
+    rest of the run, however many times logind is restarted behind it. Closing
+    the master makes the next shell (the baseline check, then the tests) open
+    a fresh connection whose environment comes from the restarted logind. A
+    guest without a master answers with an error, so the outcome is not
+    checked; a master that survives anyway is caught by the baseline check.
+    """
+    env = lima_env()
+    sock = Path(env["LIMA_HOME"]) / instance / "ssh.sock"
+    subprocess.run(
+        ["ssh", "-O", "exit", "-o", f"ControlPath={sock}", instance],
+        env=env,
+        capture_output=True,
+        timeout=30,
+    )
+
+
+def provision_guest(config: VMConfig, env: dict[str, str]) -> None:
+    """Bring the guest to the baseline a properly-configured host would have.
+
+    On Ubuntu this enables linger, which install.sh's no-root mode requires
+    and which a real Ubuntu user running the peppy service would already have
+    set up, then proves from a fresh connection that sessions get the user
+    D-Bus session bus the image ships. Other distros are left untouched (their
+    cloud images already serve a user session bus to every session).
+    """
+    if config.distro != "ubuntu":
+        return
+
+    _run_guest_script(
+        config, env, _UBUNTU_PROVISION_SCRIPT,
+        what="provisioning", timeout=_PROVISION_TIMEOUT,
+    )
+    _drop_ssh_master(config.instance_name)
+    _run_guest_script(
+        config, env, _UBUNTU_BASELINE_SCRIPT,
+        what="baseline verification", timeout=_BASELINE_TIMEOUT,
+    )
 
 
 def _keep_failed_vm() -> bool:
