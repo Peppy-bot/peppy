@@ -11,8 +11,8 @@
 
 use crate::services::repo::cache::{
     ContractCacheEntry, DeclaredLinks, LauncherCacheEntry, McpExposureCacheEntry, NodeCacheEntry,
-    PairingCacheEntry, RepoCacheEntry, excluded_repositories_hint, load_contract_cache,
-    load_node_cache, load_pairing_cache, load_repo_cache, lookup_repo_entry,
+    PairingCacheEntry, PairingSlot, RepoCacheEntry, excluded_repositories_hint,
+    load_contract_cache, load_node_cache, load_pairing_cache, load_repo_cache, lookup_repo_entry,
     lookup_repo_entry_by_sha256,
 };
 use crate::services::repo::{
@@ -216,6 +216,29 @@ pub struct Observer {
     pub pin: PinStatus,
 }
 
+/// One `depends_on.pairings` slot the searched node declares, with the
+/// slots that could fill it: a pairing has two roles, so a peer is any
+/// indexed node declaring the same pairing in the role this slot does not
+/// play.
+///
+/// Reported for node identities only, and only for participant slots. An
+/// observer watches a pair two other nodes form, so its slot is filled by
+/// that pair rather than by a complementary role, and a contract slot's
+/// candidates are the contract's implementers, one `repo show` away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotPeers {
+    /// The slot, as a launcher's `links:` names it.
+    pub link_id: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    /// The role the searched node plays; a peer plays the other one.
+    pub role: String,
+    /// The slot may run with no peer, so an empty `peers` is survivable.
+    pub optional: bool,
+    /// The complementary slots, ordered as every other section is.
+    pub peers: Vec<Participant>,
+}
+
 /// The document a reference resolves to: the lowest-id repository's copy,
 /// or, for a digest query, the copy carrying that digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,7 +290,9 @@ pub struct ShowOutcome {
 }
 
 /// Who uses one identity: the nodes that implement, consume, participate
-/// in, or observe it, read from the links `repo refresh` recorded.
+/// in, or observe it, read from the links `repo refresh` recorded. When the
+/// identity is a node, also what its own pairing slots can pair with, which
+/// is the same cache read in the other direction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchReport {
     pub name: String,
@@ -276,6 +301,10 @@ pub struct SearchReport {
     pub consumers: Vec<Consumer>,
     pub participants: Vec<Participant>,
     pub observers: Vec<Observer>,
+    /// The searched node's own `depends_on.pairings` slots in manifest
+    /// order, each with the peers that could fill it. Empty for every
+    /// other kind, and for a node that declares no pairing slot.
+    pub pairing_slots: Vec<SlotPeers>,
 }
 
 /// Searches this machine's caches for every indexed item the query
@@ -469,8 +498,10 @@ fn kind_rank(kind: RepoItemKind) -> u8 {
 }
 
 /// Who uses `name:tag`: the nodes whose cached links implement, consume,
-/// participate in, or observe it, with each claim's pin checked. Each
-/// section is ordered by repository id, then node name, tag and slot.
+/// participate in, or observe it, with each claim's pin checked, and, when
+/// `name:tag` is itself a node, what each of its pairing slots can pair
+/// with. Each section is ordered by repository id, then node name, tag and
+/// slot.
 fn usage_report(
     nodes: &[NodeCacheEntry],
     contracts: &[ContractCacheEntry],
@@ -490,10 +521,35 @@ fn usage_report(
         claim_name.as_str() == name && claim_tag == tag
     };
 
+    // The pairing slots `name:tag` declares when it is a node, read from
+    // the copy a launch resolves to, so the peers reported are the peers
+    // that node asks for. Empty for every other kind.
+    let own_slots: Vec<PairingSlot> = lookup_repo_entry(nodes, name, tag)
+        .map_err(|ambiguity| ambiguity.to_string())?
+        .map(|entry| entry.links.pairings.clone())
+        .unwrap_or_default();
+    // Each slot's pairing resolves to its own document, so a peer's pin is
+    // checked against the pairing it claims, not against `name:tag`.
+    let slot_docs: Vec<Option<PublishedDoc>> = own_slots
+        .iter()
+        .map(|slot| published_doc(pairings, repos, slot.name.as_str(), &slot.tag))
+        .collect::<Result<_, _>>()?;
+    let slot_pin = |index: usize, slot: &PairingSlot, sha256: Option<&str>| {
+        pin_status(
+            pairings,
+            slot_docs[index].as_ref(),
+            repos,
+            slot.name.as_str(),
+            &slot.tag,
+            sha256,
+        )
+    };
+
     let mut implementers = Vec::new();
     let mut consumers = Vec::new();
     let mut participants = Vec::new();
     let mut observers = Vec::new();
+    let mut slot_peers: Vec<Vec<Participant>> = vec![Vec::new(); own_slots.len()];
     for RepoNodes { repo, nodes } in nodes_by_repository(repos, nodes) {
         for node in &nodes {
             let DeclaredLinks {
@@ -539,12 +595,52 @@ fn usage_report(
                     pin: pairing_pin(slot.sha256.as_deref()),
                 });
             }
+            // The other direction: this node's pairing slots against the
+            // searched node's, one peer per slot of the same pairing in
+            // the role the searched slot leaves to the other end. What
+            // the role test leaves out is every slot playing the searched
+            // slot's own role, the searched slot included; a node
+            // declaring both roles pairs two of its own instances, so it
+            // is a peer of itself here.
+            for (index, own) in own_slots.iter().enumerate() {
+                let complementary = pairings.iter().filter(|slot| {
+                    slot.name.as_str() == own.name.as_str()
+                        && slot.tag == own.tag
+                        && slot.role != own.role
+                });
+                for slot in complementary {
+                    slot_peers[index].push(Participant {
+                        node: indexed(repo, node),
+                        role: slot.role.clone(),
+                        link_id: slot.link_id.clone(),
+                        optional: slot.optional,
+                        sha256: slot.sha256.clone(),
+                        pin: slot_pin(index, own, slot.sha256.as_deref()),
+                    });
+                }
+            }
         }
     }
     implementers.sort_by_key(|hit| hit_order(&hit.node, &hit.link_id));
     consumers.sort_by_key(|hit| hit_order(&hit.node, &hit.link_id));
     participants.sort_by_key(|hit| hit_order(&hit.node, &hit.link_id));
     observers.sort_by_key(|hit| hit_order(&hit.node, &hit.link_id));
+
+    let pairing_slots = own_slots
+        .into_iter()
+        .zip(slot_peers)
+        .map(|(slot, mut peers)| {
+            peers.sort_by_key(|hit| hit_order(&hit.node, &hit.link_id));
+            SlotPeers {
+                link_id: slot.link_id,
+                pairing_name: slot.name.as_str().to_owned(),
+                pairing_tag: slot.tag,
+                role: slot.role,
+                optional: slot.optional,
+                peers,
+            }
+        })
+        .collect();
 
     Ok(SearchReport {
         name: name.to_owned(),
@@ -553,6 +649,7 @@ fn usage_report(
         consumers,
         participants,
         observers,
+        pairing_slots,
     })
 }
 
@@ -963,6 +1060,161 @@ mod tests {
                 sha256: None,
                 pin: PinStatus::Unpinned,
             }]
+        );
+        assert_eq!(
+            report.pairing_slots,
+            vec![],
+            "no node is published as `rgb_camera:v1`, so it declares no slots"
+        );
+    }
+
+    /// A node's report reads its own pairing slots the other way: each
+    /// slot in manifest order, with the slots that could fill it, which
+    /// are the slots of the same pairing in the role the searched slot
+    /// leaves open. Same-role slots, observers, and the searched node's
+    /// own slot are not peers; a slot nothing complements reports none.
+    #[test]
+    fn a_nodes_pairing_slots_report_the_peers_that_could_fill_them() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        let pairing = pairing_entry("arm_link", "v1", fs(hub.join("pairings/arm.json5")));
+        let pairing_sha = pairing.sha256.as_str().to_owned();
+        home.cache(&[pairing]);
+        home.cache(&[
+            with_links(
+                node_entry("arm", "v1", fs(hub.join("arm/peppy.json5"))),
+                DeclaredLinks {
+                    pairings: vec![
+                        participates("arm_link", "v1", "arm", "link", false, None),
+                        participates("solo_link", "v1", "watcher", "solo", true, None),
+                    ],
+                    ..DeclaredLinks::default()
+                },
+            ),
+            with_links(
+                node_entry("controller", "v1", fs(hub.join("controller/peppy.json5"))),
+                DeclaredLinks {
+                    pairings: vec![participates(
+                        "arm_link",
+                        "v1",
+                        "controller",
+                        "arm",
+                        false,
+                        Some(&pairing_sha),
+                    )],
+                    ..DeclaredLinks::default()
+                },
+            ),
+            with_links(
+                node_entry("second_arm", "v1", fs(hub.join("second_arm/peppy.json5"))),
+                DeclaredLinks {
+                    pairings: vec![participates("arm_link", "v1", "arm", "link", true, None)],
+                    ..DeclaredLinks::default()
+                },
+            ),
+            with_links(
+                node_entry("logger", "v1", fs(hub.join("logger/peppy.json5"))),
+                DeclaredLinks {
+                    pairing_observers: vec![observes(
+                        "arm_link",
+                        "v1",
+                        "controller",
+                        "watch",
+                        Cardinality::One,
+                        None,
+                    )],
+                    ..DeclaredLinks::default()
+                },
+            ),
+        ]);
+
+        let outcome = show(&home, "arm:v1").expect("shows");
+
+        let report = &outcome.reports[0];
+        assert_eq!(
+            report.pairing_slots,
+            vec![
+                SlotPeers {
+                    link_id: "link".to_owned(),
+                    pairing_name: "arm_link".to_owned(),
+                    pairing_tag: "v1".to_owned(),
+                    role: "arm".to_owned(),
+                    optional: false,
+                    peers: vec![Participant {
+                        node: IndexedNode {
+                            node_name: "controller".to_owned(),
+                            node_tag: "v1".to_owned(),
+                            repo_id: 1,
+                            repo_label: label(&hub),
+                            source_type: RepoSourceKind::Fs,
+                            path: label(&hub.join("controller/peppy.json5")),
+                            shadowed_by: None,
+                        },
+                        role: "controller".to_owned(),
+                        link_id: "arm".to_owned(),
+                        optional: false,
+                        sha256: Some(pairing_sha),
+                        pin: PinStatus::Current,
+                    }],
+                },
+                SlotPeers {
+                    link_id: "solo".to_owned(),
+                    pairing_name: "solo_link".to_owned(),
+                    pairing_tag: "v1".to_owned(),
+                    role: "watcher".to_owned(),
+                    optional: true,
+                    peers: Vec::new(),
+                },
+            ],
+        );
+    }
+
+    /// A node declaring both roles of one pairing pairs two of its own
+    /// instances, so it is its own peer: only the searched slot itself is
+    /// left out, not every slot the node declares.
+    #[test]
+    fn a_node_playing_both_roles_is_its_own_peer() {
+        let home = Home::new();
+        let hub = home.repo("hub");
+        home.configure(&[(1, &hub)]);
+        home.cache(&[pairing_entry(
+            "arm_link",
+            "v1",
+            fs(hub.join("pairings/arm.json5")),
+        )]);
+        home.cache(&[with_links(
+            node_entry("backbone", "v1", fs(hub.join("backbone/peppy.json5"))),
+            DeclaredLinks {
+                pairings: vec![
+                    participates("arm_link", "v1", "controller", "downstream", false, None),
+                    participates("arm_link", "v1", "arm", "upstream", true, None),
+                ],
+                ..DeclaredLinks::default()
+            },
+        )]);
+
+        let outcome = show(&home, "backbone:v1").expect("shows");
+
+        let slots = &outcome.reports[0].pairing_slots;
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].link_id, "downstream");
+        assert_eq!(
+            slots[0]
+                .peers
+                .iter()
+                .map(|peer| peer.link_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["upstream"],
+            "the other role's slot on the same node fills it"
+        );
+        assert_eq!(
+            slots[1]
+                .peers
+                .iter()
+                .map(|peer| peer.link_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["downstream"],
         );
     }
 

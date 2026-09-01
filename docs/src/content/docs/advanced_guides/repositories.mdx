@@ -122,7 +122,7 @@ peppy repo show <name-regex>[:<tag-regex>][@<sha256>]
 
 Takes the same query as [`peppy repo search`](#search-the-repositories) and prints the full report of every identity it matches, in the search's order, the way `apt show` prints one record per named package: `peppy repo show '^rgb_camera$:^v1$'` reports the one contract (the anchors keep names like `sim_rgb_camera` out, since each unanchored part matches anywhere in the name or tag), and `peppy repo show 'rgb_camera:v[12]'` answers who still uses each version in one pass.
 
-A report's first lines name each document of the identity with its kind, repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both, and one report covers them. For a contract or pairing, one section per way a node uses it follows: implementing it (`manifest.implements`), consuming it (`depends_on.contracts`), playing a role in it (`depends_on.pairings`), or observing one of its roles (`depends_on.pairing_observers`). Sections are grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality or `optional`), `PIN`, and `PATH` (the manifest path). A node, launcher, or MCP exposure has no usage sections; its published line is the whole answer. A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
+A report's first lines name each document of the identity with its kind, repository, path, and sha256; contracts and pairings are separate namespaces, so an identity published as both is reported as both, and one report covers them. For a contract or pairing, one section per way a node uses it follows: implementing it (`manifest.implements`), consuming it (`depends_on.contracts`), playing a role in it (`depends_on.pairings`), or observing one of its roles (`depends_on.pairing_observers`). Sections are grouped by repository like `peppy repo list`, each group a table with one row per slot: `NODE` and `TAG`, `ROLE` (pairing sections only), `SLOT` (the `link_id`, with its cardinality or `optional`), `PIN`, and `PATH` (the manifest path). A launcher or an MCP exposure has no usage sections; its published line is the whole answer. A table wider than the terminal gives up width from its widest columns first, never below a header's width, and wraps over-long cells onto continuation lines inside the outline; piped output is never wrapped.
 
 ```text
 ^rgb_camera$:^v1$
@@ -146,6 +146,32 @@ Consumed by 1 indexed node
     └──────────────────┴─────┴──────────────────────┴──────────┴────────────────────────────────────────────┘
 ```
 
+For a **node**, the report reads the same cache the other way: one section per pairing slot the node declares (`depends_on.pairings`), in manifest order, listing the nodes whose own slot plays the pairing's other role. The title names the slot, the pairing it resolves through, the role this node plays, and `optional` where the slot may run with no peer; the rows are the peers' own slots, in the columns a pairing's own report uses, and the count is of nodes, so a node offering two complementary slots takes two rows and counts once. Being listed here is a match of pairing and role, which is what pairing requires and what the caches record; whether a stack of the two is one worth running is a launcher's business (see [Launch files](/guides/launch_files/)).
+
+```text
+^sim_rgb_camera$:^v1$
+  node sim_rgb_camera:v1 published by https://github.com/Peppy-bot/nodes-hub.git (ref: main) at sim_rgb_camera/peppy.json5 (sha256 34d40c0140066c9055879c2d4bd022a7f665752ab834247a9ff69e4fd68a1899)
+
+Slot engine (sim_rgb_camera_link:v1 as viewer) can pair with 2 indexed nodes
+  https://github.com/Peppy-bot/nodes-hub.git (ref: main):
+    ┌────────────────────┬─────┬────────┬────────────────────────┬──────────┬────────────────────────────────┐
+    │ NODE               │ TAG │ ROLE   │ SLOT                   │ PIN      │ PATH                           │
+    ├────────────────────┼─────┼────────┼────────────────────────┼──────────┼────────────────────────────────┤
+    │ openarm_sim_isaac  │ v1  │ camera │ wrist_left (optional)  │ unpinned │ openarm/sim_isaac/peppy.json5  │
+    │ openarm_sim_isaac  │ v1  │ camera │ wrist_right (optional) │ unpinned │ openarm/sim_isaac/peppy.json5  │
+    │ openarm_sim_mujoco │ v1  │ camera │ wrist_left (optional)  │ unpinned │ openarm/sim_mujoco/peppy.json5 │
+    │ openarm_sim_mujoco │ v1  │ camera │ wrist_right (optional) │ unpinned │ openarm/sim_mujoco/peppy.json5 │
+    └────────────────────┴─────┴────────┴────────────────────────┴──────────┴────────────────────────────────┘
+```
+
+A slot nothing complements keeps its line and says so, which on a slot that is not `optional` means no indexed node completes a launch of this one:
+
+```text
+Slot engine (sim_rgb_camera_link:v1 as viewer): no indexed node plays the other role
+```
+
+A node's other links have no such section: a contract slot's candidates are that contract's own implementers, one `peppy repo show` away, and an observer slot watches a pair two other nodes form rather than filling a role itself. A node that declares no pairing slot has no section at all, so its published line is the whole answer.
+
 The `PIN` column says what a sync does with the claim's `sha256`:
 
 | `PIN` value | Meaning |
@@ -158,7 +184,7 @@ The `PIN` column says what a sync does with the claim's `sha256`:
 
 `(shadowed by <repository>)` means what it means in `peppy repo list`: a lower-`id` repository provides the same `name:tag`, so a launch resolves to that node, which may not make this claim at all.
 
-The show reads the same caches as the search and needs no daemon. A query nothing matches is an error, since the command was asked for a report it cannot print, and so is an identity one repository publishes twice: its report has no answer a launch would accept. `--json` prints one JSON document with `query`, `matches`, and `excluded` as the search prints them, plus `reports`: one usage report per matched identity in match order, each with its `implementers`, `consumers`, `participants`, and `observers`.
+The show reads the same caches as the search and needs no daemon. A query nothing matches is an error, since the command was asked for a report it cannot print, and so is an identity one repository publishes twice: its report has no answer a launch would accept. `--json` prints one JSON document with `query`, `matches`, and `excluded` as the search prints them, plus `reports`: one usage report per matched identity in match order, each with its `implementers`, `consumers`, `participants`, `observers`, and `pairing_slots` (one entry per pairing slot a matched node declares, with its `link_id`, `pairing`, `role`, `optional`, and the `peers` that could fill it).
 
 ### Refresh the index
 

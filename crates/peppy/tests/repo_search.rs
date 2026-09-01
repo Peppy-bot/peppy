@@ -69,7 +69,8 @@ fn write_node(dir: &Path, name: &str, manifest_extra: &str, interfaces: &str) {
 /// One fs repository publishing every indexed kind: the `rgb_camera:v1`
 /// contract, the `arm_link:v1` pairing, the `demo` launcher, the
 /// `camera_surface:v1` MCP exposure, and a node for each way of using the
-/// contract and pairing, refreshed into the emulated daemon's caches.
+/// contract and pairing, both of the pairing's roles included, refreshed
+/// into the emulated daemon's caches.
 /// Returns the Peppy home, the repository root (canonical, as the caches
 /// record it) and the contract's fingerprint.
 fn seeded(
@@ -109,6 +110,12 @@ fn seeded(
         &repo_dir.join("follower_arm"),
         "follower_arm",
         r#", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "link", optional: true }] }"#,
+        "{}",
+    );
+    write_node(
+        &repo_dir.join("leader_arm"),
+        "leader_arm",
+        r#", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }] }"#,
         "{}",
     );
     write_node(
@@ -205,11 +212,15 @@ fn repo_show_reports_a_pairings_participants_and_observers() {
     );
     assert!(!text.contains("contract arm_link"), "{text}");
     assert!(
-        text.contains("\nPairing roles played by 1 indexed node\n"),
+        text.contains("\nPairing roles played by 2 indexed nodes\n"),
         "{text}"
     );
     assert!(
-        text.contains("    │ follower_arm │ v1  │ arm  │ link (optional) │ unpinned │ "),
+        text.contains("    │ follower_arm │ v1  │ arm        │ link (optional) │ unpinned │ "),
+        "{text}"
+    );
+    assert!(
+        text.contains("    │ leader_arm   │ v1  │ controller │ arm             │ unpinned │ "),
         "{text}"
     );
     assert!(text.contains("\nObserved by 1 indexed node\n"), "{text}");
@@ -219,6 +230,61 @@ fn repo_show_reports_a_pairings_participants_and_observers() {
     );
     assert!(!text.contains("Implemented by"), "{text}");
     assert!(!text.contains("Consumed by"), "{text}");
+}
+
+/// A node show reads the same cache the other way: its own pairing slots,
+/// each with the nodes playing the pairing's other role. The observer of
+/// the same pairing is not one of them, and neither is the node itself.
+#[test]
+fn repo_show_reports_a_nodes_pairing_slot_peers() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+    let (peppy_dirs, repo_dir, _) = seeded(&serve, &ctx);
+
+    let text = show_rendered(&peppy_dirs, "follower_arm:v1", false, None).expect("shows");
+
+    assert!(
+        text.contains(&format!(
+            "  node follower_arm:v1 published by {} at {} ",
+            repo_dir.display(),
+            repo_dir
+                .join("follower_arm")
+                .join(NODE_CONFIG_FILE)
+                .display(),
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nSlot link (arm_link:v1 as arm, optional) can pair with 1 indexed node\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("    │ leader_arm │ v1  │ controller │ arm  │ unpinned │ "),
+        "{text}"
+    );
+    assert!(
+        !text.contains("arm_logger"),
+        "an observer watches the pair, it does not fill a slot: {text}"
+    );
+    assert!(
+        !text.contains("follower_arm │"),
+        "a node's own slot is not its peer: {text}"
+    );
+
+    // The other end reports the mirror image, and a node with no pairing
+    // slot has nothing to add to its published line.
+    let leader = show_rendered(&peppy_dirs, "leader_arm:v1", false, None).expect("shows");
+    assert!(
+        leader.contains("\nSlot arm (arm_link:v1 as controller) can pair with 1 indexed node\n"),
+        "{leader}"
+    );
+    assert!(
+        leader.contains("    │ follower_arm │ v1  │ arm  │ link (optional) │"),
+        "{leader}"
+    );
+
+    let plain = show_rendered(&peppy_dirs, "plain:v1", false, None).expect("shows");
+    assert_eq!(plain.lines().count(), 2, "{plain}");
+    assert!(!plain.contains("Slot "), "{plain}");
 }
 
 /// A bare name is a pattern matching any tag: the contract's report comes

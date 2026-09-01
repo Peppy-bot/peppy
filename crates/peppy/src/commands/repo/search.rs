@@ -262,6 +262,7 @@ pub(super) mod fixtures {
             consumers: Vec::new(),
             participants: Vec::new(),
             observers: Vec::new(),
+            pairing_slots: Vec::new(),
         }
     }
 }
@@ -359,13 +360,21 @@ mod tests {
     #[test]
     fn human_output_phrases_a_single_match() {
         let outcome = SearchOutcome {
-            matches: vec![matched(RepoItemKind::Contract, "rgb_camera", "v1", contract())],
+            matches: vec![matched(
+                RepoItemKind::Contract,
+                "rgb_camera",
+                "v1",
+                contract(),
+            )],
             excluded_hint: String::new(),
         };
 
         let text = render_human(&query("rgb_camera:v1"), &outcome, false, None);
 
-        assert!(text.contains("\n1 item matches `rgb_camera:v1`\n"), "{text}");
+        assert!(
+            text.contains("\n1 item matches `rgb_camera:v1`\n"),
+            "{text}"
+        );
         assert!(text.contains("│ contract │ rgb_camera:v1 │"), "{text}");
     }
 
