@@ -242,6 +242,8 @@ Every machine of a simulated launch must serve simulated time, since a wall-mode
 <Tabs>
   <TabItem label="Python">
     ```python title="src/my_simulator/__main__.py"
+    import asyncio
+
     from peppylib.clock import SimTimePublisher
 
 
@@ -257,6 +259,8 @@ Every machine of a simulated launch must serve simulated time, since a wall-mode
     # running its physics on its own thread schedules it onto the node loop
     # rather than awaiting it there.
     def on_step(engine) -> None:
+        if engine.clock_publisher is None:
+            return
         loop.call_soon_threadsafe(
             lambda: asyncio.ensure_future(
                 engine.clock_publisher.publish(engine.time_ns())
