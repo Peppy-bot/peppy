@@ -1,10 +1,15 @@
 use std::collections::BTreeSet;
 
-use core_node::{IndexedNode, MatchedItem, PinStatus, SearchQuery, SearchReport, ShowOutcome};
+use core_node::{
+    IndexedNode, MatchedItem, Participant, PinStatus, SearchQuery, SearchReport, ShowOutcome,
+    SlotPeers,
+};
 use core_node_api::encoding::RepoItemKind;
 use daemon_config::consts::PeppyDirs;
 
-use super::search::{display_id, kind_label, matches_json, no_match_phrase, query_json, short_fingerprint};
+use super::search::{
+    display_id, kind_label, matches_json, no_match_phrase, query_json, short_fingerprint,
+};
 use crate::commands::colors::{BINDING_COLOR, COUNT_COLOR, NODE_COLOR, ORANGE, RED, paint};
 use crate::commands::table::render_table;
 use crate::error::{Error, Result};
@@ -88,10 +93,16 @@ fn render_human(
     out
 }
 
+/// The columns of a section listing claims on a contract, and of one
+/// listing roles played in a pairing.
+const CONTRACT_HEADERS: [&str; 5] = ["NODE", "TAG", "SLOT", "PIN", "PATH"];
+const PAIRING_HEADERS: [&str; 6] = ["NODE", "TAG", "ROLE", "SLOT", "PIN", "PATH"];
+
 /// One identity's report: one published line per document of the
-/// identity, then the four usage sections. A contract or pairing nobody
-/// uses says so; the other kinds have no usage sections to be empty, so
-/// their published line is the whole answer.
+/// identity, then the four usage sections, then, for a node, one section
+/// per pairing slot it declares. A contract or pairing nobody uses says
+/// so; a launcher or an MCP exposure has neither kind of section to be
+/// empty, so its published line is the whole answer.
 fn report_block(
     report: &SearchReport,
     items: &[&MatchedItem],
@@ -105,8 +116,6 @@ fn report_block(
     }
 
     let mut sections = String::new();
-    const CONTRACT_HEADERS: [&str; 5] = ["NODE", "TAG", "SLOT", "PIN", "PATH"];
-    const PAIRING_HEADERS: [&str; 6] = ["NODE", "TAG", "ROLE", "SLOT", "PIN", "PATH"];
     sections.push_str(&section(
         "Implemented by",
         &CONTRACT_HEADERS,
@@ -175,7 +184,55 @@ fn report_block(
         ));
     }
     out.push_str(&sections);
+    // Judged on the usage sections alone: an identity published as both a
+    // node and a contract still says the contract half is unused.
+    for slot in &report.pairing_slots {
+        out.push_str(&peer_section(slot, colorize, max_width));
+    }
     out
+}
+
+/// One declared pairing slot and what can fill it: the nodes playing the
+/// pairing's other role, under a title naming the slot, the pairing it
+/// resolves through and the role this node plays. The rows are the peers'
+/// own slots, so they read exactly as the pairing's own report does.
+///
+/// A slot no indexed node can pair with says so on one line rather than
+/// vanishing, because that is the answer, and on a slot that is not
+/// `optional` it is the answer that no indexed node completes a launch of
+/// this one. Being listed here is a match of pairing and role, which is
+/// what pairing requires and all the caches record; whether a stack of the
+/// two is one worth running is a launcher's business.
+fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> String {
+    let label = format!(
+        "Slot {} ({} as {}{})",
+        paint(colorize, BINDING_COLOR, &slot.link_id),
+        paint(
+            colorize,
+            NODE_COLOR,
+            &format!("{}:{}", slot.pairing_name, slot.pairing_tag)
+        ),
+        slot.role,
+        if slot.optional { ", optional" } else { "" },
+    );
+    if slot.peers.is_empty() {
+        return format!("\n{label}: no indexed node plays the other role\n");
+    }
+    section(
+        &format!("{label} can pair with"),
+        &PAIRING_HEADERS,
+        &slot.peers,
+        |hit| &hit.node,
+        |hit| {
+            vec![
+                hit.role.clone(),
+                slot_cell(&hit.link_id, hit.optional.then_some("optional"), colorize),
+                pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
+            ]
+        },
+        colorize,
+        max_width,
+    )
 }
 
 /// Where one matching document is stored: the copy a plain reference
@@ -318,7 +375,8 @@ fn render_json(query: &SearchQuery, outcome: &ShowOutcome) -> String {
 }
 
 /// One usage report: every section with each hit's node, slot facts, raw
-/// pin and pin state.
+/// pin and pin state, and, under `pairing_slots`, the node's own pairing
+/// slots with the peers each can take.
 fn report_json(report: &SearchReport) -> serde_json::Value {
     let implementers: Vec<serde_json::Value> = report
         .implementers
@@ -345,20 +403,8 @@ fn report_json(report: &SearchReport) -> serde_json::Value {
             })
         })
         .collect();
-    let participants: Vec<serde_json::Value> = report
-        .participants
-        .iter()
-        .map(|hit| {
-            serde_json::json!({
-                "node": node_json(&hit.node),
-                "role": hit.role,
-                "link_id": hit.link_id,
-                "optional": hit.optional,
-                "sha256": hit.sha256,
-                "pin": pin_json(&hit.pin),
-            })
-        })
-        .collect();
+    let participants: Vec<serde_json::Value> =
+        report.participants.iter().map(participant_json).collect();
     let observers: Vec<serde_json::Value> = report
         .observers
         .iter()
@@ -373,6 +419,19 @@ fn report_json(report: &SearchReport) -> serde_json::Value {
             })
         })
         .collect();
+    let pairing_slots: Vec<serde_json::Value> = report
+        .pairing_slots
+        .iter()
+        .map(|slot| {
+            serde_json::json!({
+                "link_id": slot.link_id,
+                "pairing": { "name": slot.pairing_name, "tag": slot.pairing_tag },
+                "role": slot.role,
+                "optional": slot.optional,
+                "peers": slot.peers.iter().map(participant_json).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
     serde_json::json!({
         "name": report.name,
         "tag": report.tag,
@@ -380,6 +439,20 @@ fn report_json(report: &SearchReport) -> serde_json::Value {
         "consumers": consumers,
         "participants": participants,
         "observers": observers,
+        "pairing_slots": pairing_slots,
+    })
+}
+
+/// One pairing role a node plays: the section's rows and a slot's peers
+/// are the same claim, so they carry the same fields.
+fn participant_json(hit: &Participant) -> serde_json::Value {
+    serde_json::json!({
+        "node": node_json(&hit.node),
+        "role": hit.role,
+        "link_id": hit.link_id,
+        "optional": hit.optional,
+        "sha256": hit.sha256,
+        "pin": pin_json(&hit.pin),
     })
 }
 
@@ -492,6 +565,123 @@ mod tests {
                 contract(),
             )],
         )
+    }
+
+    /// A node whose report carries its own pairing slots: one filled by
+    /// two engines, one nothing complements.
+    fn node_with_slots() -> ShowOutcome {
+        let report = SearchReport {
+            name: "sim_rgb_camera".to_owned(),
+            tag: "v1".to_owned(),
+            pairing_slots: vec![
+                SlotPeers {
+                    link_id: "engine".to_owned(),
+                    pairing_name: "sim_rgb_camera_link".to_owned(),
+                    pairing_tag: "v1".to_owned(),
+                    role: "viewer".to_owned(),
+                    optional: false,
+                    peers: vec![
+                        Participant {
+                            node: node("openarm_sim_isaac", "openarm/sim_isaac/peppy.json5"),
+                            role: "camera".to_owned(),
+                            link_id: "wrist_left".to_owned(),
+                            optional: true,
+                            sha256: None,
+                            pin: PinStatus::Unpinned,
+                        },
+                        Participant {
+                            node: node("openarm_sim_mujoco", "openarm/sim_mujoco/peppy.json5"),
+                            role: "camera".to_owned(),
+                            link_id: "wrist_left".to_owned(),
+                            optional: true,
+                            sha256: Some(sha('a')),
+                            pin: PinStatus::Current,
+                        },
+                    ],
+                },
+                SlotPeers {
+                    link_id: "clock".to_owned(),
+                    pairing_name: "sim_clock_link".to_owned(),
+                    pairing_tag: "v1".to_owned(),
+                    role: "follower".to_owned(),
+                    optional: true,
+                    peers: Vec::new(),
+                },
+            ],
+            ..empty_report()
+        };
+        shown(
+            vec![report],
+            vec![matched(
+                RepoItemKind::Node,
+                "sim_rgb_camera",
+                "v1",
+                PublishedDoc {
+                    repo_id: 1000,
+                    repo_label: HUB.to_owned(),
+                    path: "sim_rgb_camera/peppy.json5".to_owned(),
+                    sha256: ManifestFingerprint::parse(&sha('b')).unwrap(),
+                },
+            )],
+        )
+    }
+
+    /// A node's report ends with one section per pairing slot it
+    /// declares, titled with the slot, the pairing it resolves through
+    /// and the role the node plays, listing the peers' own slots. A slot
+    /// nothing can fill says so on one line instead of vanishing, and
+    /// carries the `optional` that decides whether that is fatal.
+    #[test]
+    fn human_output_lists_a_nodes_pairing_slot_peers() {
+        let text = render_human(&query("sim_rgb_camera:v1"), &node_with_slots(), false, None);
+
+        let expected = [
+            "sim_rgb_camera:v1",
+            "  node sim_rgb_camera:v1 published by https://github.com/Peppy-bot/nodes-hub.git (ref: main) at sim_rgb_camera/peppy.json5 (sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+            "",
+            "Slot engine (sim_rgb_camera_link:v1 as viewer) can pair with 2 indexed nodes",
+            "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
+            "    ┌────────────────────┬─────┬────────┬───────────────────────┬────────────────────────┬────────────────────────────────┐",
+            "    │ NODE               │ TAG │ ROLE   │ SLOT                  │ PIN                    │ PATH                           │",
+            "    ├────────────────────┼─────┼────────┼───────────────────────┼────────────────────────┼────────────────────────────────┤",
+            "    │ openarm_sim_isaac  │ v1  │ camera │ wrist_left (optional) │ unpinned               │ openarm/sim_isaac/peppy.json5  │",
+            "    │ openarm_sim_mujoco │ v1  │ camera │ wrist_left (optional) │ pin aaaaaaaa (current) │ openarm/sim_mujoco/peppy.json5 │",
+            "    └────────────────────┴─────┴────────┴───────────────────────┴────────────────────────┴────────────────────────────────┘",
+            "",
+            "Slot clock (sim_clock_link:v1 as follower, optional): no indexed node plays the other role",
+            "",
+        ]
+        .join("\n");
+        assert_eq!(text, expected, "\n{text}");
+        assert!(
+            !text.contains("No indexed node implements"),
+            "a node is not a thing other nodes implement or consume: {text}"
+        );
+    }
+
+    /// The slot and the pairing it resolves through are tinted like every
+    /// other link id and identity, and the count like every other count.
+    #[test]
+    fn human_output_tints_a_slots_peers_like_every_other_section() {
+        use crate::commands::colors::RESET;
+
+        let text = render_human(&query("sim_rgb_camera:v1"), &node_with_slots(), true, None);
+
+        assert!(
+            text.contains(&format!(
+                "Slot {BINDING_COLOR}engine{RESET} \
+                 ({NODE_COLOR}sim_rgb_camera_link:v1{RESET} as viewer) \
+                 can pair with {COUNT_COLOR}2{RESET} indexed nodes"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "Slot {BINDING_COLOR}clock{RESET} ({NODE_COLOR}sim_clock_link:v1{RESET} \
+                 as follower, optional): no indexed node plays the other role"
+            )),
+            "{text}"
+        );
     }
 
     /// Every section, with the published document first, rows aligned
@@ -907,10 +1097,49 @@ mod tests {
             })
         );
 
+        assert_eq!(
+            report["pairing_slots"],
+            serde_json::json!([]),
+            "a contract declares no slots of its own"
+        );
+
         let digest = sha('a');
         let text = render_json(&query(&format!("rgb_camera:v1@{digest}")), &full());
         let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(doc["query"]["sha256"], digest);
+    }
+
+    /// A node's JSON carries its pairing slots in manifest order, each
+    /// with the pairing it resolves through and its peers as full
+    /// participant records; a slot with no peer keeps its entry.
+    #[test]
+    fn json_output_carries_a_nodes_pairing_slots() {
+        let text = render_json(&query("sim_rgb_camera:v1"), &node_with_slots());
+
+        let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let slots = doc["reports"][0]["pairing_slots"]
+            .as_array()
+            .expect("array");
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0]["link_id"], "engine");
+        assert_eq!(
+            slots[0]["pairing"],
+            serde_json::json!({ "name": "sim_rgb_camera_link", "tag": "v1" })
+        );
+        assert_eq!(slots[0]["role"], "viewer");
+        assert_eq!(slots[0]["optional"], false);
+        let peers = slots[0]["peers"].as_array().expect("array");
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0]["node"]["node_name"], "openarm_sim_isaac");
+        assert_eq!(peers[0]["role"], "camera");
+        assert_eq!(peers[0]["link_id"], "wrist_left");
+        assert_eq!(peers[0]["optional"], true);
+        assert!(peers[0]["sha256"].is_null());
+        assert_eq!(peers[0]["pin"]["status"], "unpinned");
+        assert_eq!(peers[1]["pin"], serde_json::json!({ "status": "current" }));
+        assert_eq!(slots[1]["link_id"], "clock");
+        assert_eq!(slots[1]["optional"], true);
+        assert_eq!(slots[1]["peers"], serde_json::json!([]));
     }
 
     /// An unusable pin's JSON carries the reason a sync would print.
