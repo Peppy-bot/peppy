@@ -1,0 +1,21 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "sim_clock_source",
+    tag: "v1",
+    labels: ["clock"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "sim_clock_source"],
+    parameters: {
+      // The scripted ramp: ticks step_ns, 2*step_ns, ..., count*step_ns, one
+      // every interval_ms, then the final tick republished at the same
+      // cadence for the life of the node.
+      tick_step_ns: { $type: "u64", $default: 100000000 },
+      tick_count: { $type: "u32", $default: 50 },
+      tick_interval_ms: { $type: "u64", $default: 50 }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "sim_clock_probe",
+    tag: "v1",
+    labels: ["clock"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "sim_clock_probe"],
+    parameters: {
+      poll_interval_ms: { $type: "u64", $default: 50 }
+    }
+  }
+}
