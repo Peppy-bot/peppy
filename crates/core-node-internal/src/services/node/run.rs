@@ -460,12 +460,19 @@ pub(crate) async fn assemble_runtime_config(
         .await
         .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
 
+    // The one clock rule is enforced here, where the plan becomes a config
+    // on the daemon that spawns: simulated time, read or published, needs a
+    // daemon that serves it. Every spawn path (launches, `node run`, a peer's
+    // dispatched goal) passes through this call.
+    let node_instance = goal
+        .instance_plan
+        .clone()
+        .resolve(action_context.daemon_defaults.use_sim_time)
+        .map_err(|e| e.to_string())?;
     RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
-        goal.instance_plan
-            .clone()
-            .resolve(action_context.daemon_defaults.use_sim_time),
+        node_instance,
         goal.node_name.as_str(),
         goal.tag.as_str(),
         action_context.core_node_name.as_str(),

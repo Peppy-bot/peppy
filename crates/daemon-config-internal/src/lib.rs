@@ -102,7 +102,7 @@ pub mod launcher {
         SkippedAdjustment, VacantReason, ValidatedBindings, ValidatedLinkPlan,
         ValidatedObservations, ValidatedPairings, check_composition, compose,
         participant_vacancies, split_link_target, validate_bindings, validate_link_plan,
-        validate_link_slots, validate_observations, validate_pairings,
+        validate_link_slots, validate_observations, validate_pairings, validate_sim_time_source,
     };
 }
 

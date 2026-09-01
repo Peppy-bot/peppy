@@ -20,7 +20,9 @@ pub use flatten::{
     AppliedAdjustment, AppliedChange, ComponentSelection, CompositionError, FlattenReport,
     SelectionEntry, SelectionSource, SkipReason, SkippedAdjustment, check_composition, compose,
 };
-pub use links::{ValidatedLinkPlan, validate_link_plan, validate_link_slots};
+pub use links::{
+    ValidatedLinkPlan, validate_link_plan, validate_link_slots, validate_sim_time_source,
+};
 pub use observations::{PlannedObservation, ValidatedObservations, validate_observations};
 pub use pairings::{
     AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairEndpoint,

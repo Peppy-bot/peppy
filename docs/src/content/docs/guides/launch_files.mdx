@@ -247,9 +247,10 @@ The name and value rules exist because a container node receives its environment
 
 ### `framework` (optional)
 
-Framework knobs owned by peppylib rather than by the node author, so they mean the same thing for every node. The block holds one knob:
+Framework knobs owned by peppylib rather than by the node author, so they mean the same thing for every node. The block holds two knobs:
 
-- `use_sim_time`: read the clock from a simulator or bag replay instead of the daemon's wall clock. Setting it here wins over the daemon's `--clock-source` flag; omitting it falls through to that flag (which defaults to `wall`). See [System clock](/advanced_guides/system_clock/#sim-and-replay-clocks).
+- `use_sim_time`: read the clock from a simulator or bag replay instead of the daemon's wall clock. Omitting it falls through to the daemon's `--clock-source` flag (which defaults to `wall`). The two directions are not symmetric: `false` forces wall time on a daemon serving simulated time, while `true` needs a daemon started with `--clock-source=sim` and is refused on one serving wall time, because that daemon's own ticks land on the key the instance would read. See [System clock](/advanced_guides/system_clock/#sim-and-replay-clocks).
+- `publishes_sim_time`: this instance is the launch's source of simulated time. On a simulated launch it is handed every machine the launch runs on, and its `SimTimePublisher` feeds each machine's `clock` topic so a fleet shares one instant; on a wall-time launch it publishes nothing, so the same launcher works either way. At most one instance per launch may declare it, refused otherwise, and a simulated launch names its declared source in the launch feedback. See [One clock across a fleet](/advanced_guides/system_clock/#one-clock-across-a-fleet).
 
 An unknown key inside `framework` is an error rather than a no-op, so a typo like `use_simulation_time` fails the launch instead of silently leaving the instance on wall time.
 

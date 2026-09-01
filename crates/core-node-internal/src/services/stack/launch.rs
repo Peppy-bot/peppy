@@ -290,6 +290,119 @@ fn is_built_in(item: &PlannedDeployment) -> bool {
 /// and these adds operate on a tree materialized from an already-verified pin.
 pub const STACK_LAUNCH_GIT_HASH: &str = "stack-launch";
 
+/// The machines of the launch: every core node at least one planned instance
+/// runs on, parsed into the participant set a time source is handed. A
+/// core-node name and a runtime `Name` share one character set, so the
+/// conversion cannot fail for a name that reached a `Placements`; the error
+/// path exists so that invariant is checked, not assumed, and it is checked
+/// before anything is torn down.
+fn launch_fleet(
+    planned: &[PlannedDeployment],
+    placements: &daemon_config::launcher::Placements,
+) -> std::result::Result<config::runtime::SimTimeParticipants, String> {
+    let instance_ids: Vec<&str> = planned
+        .iter()
+        .flat_map(|item| &item.deployment.instances)
+        .map(|instance| instance.instance_id.as_str())
+        .collect();
+    let names = placements
+        .participants(instance_ids)
+        .into_iter()
+        .map(|core_node| {
+            config::runtime::Name::new(core_node)
+                .map_err(|e| format!("core node `{core_node}` is not a valid runtime name: {e}"))
+        })
+        .collect::<std::result::Result<Vec<_>, String>>()?;
+    config::runtime::SimTimeParticipants::try_from(names)
+        .map_err(|e| format!("the launch resolved no valid machine set: {e}"))
+}
+
+/// The coordinator's own half of the clock-agreement rule the federated
+/// preflight applies to each peer, asked only when the coordinator is one of
+/// the fleet's machines. A machine running none of the launch is not its
+/// business.
+///
+/// Only one refusal is reachable here: a wall-serving coordinator hosting a
+/// simulated launch, whose own ticks would feed the key those instances
+/// read. The demand is read off this same daemon, so a wall demand implies
+/// this daemon serves wall time; the mirror refusal (a sim machine in a wall
+/// launch) exists for peers alone, in the preflight.
+fn check_coordinator_clock(
+    coordinator_hosts: bool,
+    clock_demand: &federated::ClockDemand,
+    coordinator: &str,
+    coordinator_serves_sim_time: bool,
+) -> std::result::Result<(), String> {
+    if !coordinator_hosts {
+        return Ok(());
+    }
+    federated::check_clock_agreement(coordinator, coordinator_serves_sim_time, clock_demand)
+}
+
+/// One advisory line for each clock state a launch accepts but an operator
+/// probably did not intend; the states a launch refuses already speak for
+/// themselves.
+///
+/// A declared source in a wall launch resolves inert
+/// ([`config::runtime::NodeInstancePlan::resolve`]) so the launch succeeds
+/// silently; say so, or a forgotten `--clock-source=sim` is discoverable only
+/// from diverging timestamps. A simulated launch declaring no source starts,
+/// and then every sim-time instance waits at `clock not ready` for a tick
+/// nothing in the launch publishes; say who is missing. A fully-placed launch
+/// (`ClockDemand::HostsDecide`) learns its clock from its machines at
+/// preflight, after this point, so it gets no advisory here.
+async fn advise_on_clock_shape(
+    ctx: &ProcessLaunchContext,
+    planned: &[PlannedDeployment],
+    clock_demand: &federated::ClockDemand,
+) {
+    let declared_source = planned
+        .iter()
+        .flat_map(|item| &item.deployment.instances)
+        .find(|instance| instance.framework.publishes_sim_time);
+    match (declared_source, clock_demand) {
+        // Name the source on every launch that may run on its clock: a
+        // declared source that never publishes then hangs the fleet at
+        // `clock not ready` with a named suspect in the launch output.
+        (Some(instance), federated::ClockDemand::Sim(_) | federated::ClockDemand::HostsDecide) => {
+            publish_stdout(
+                ctx,
+                format!(
+                    "instance `{}` is this launch's source of simulated time",
+                    instance.instance_id
+                ),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+        }
+        (Some(instance), federated::ClockDemand::Wall) => {
+            publish_stdout(
+                ctx,
+                format!(
+                    "instance `{}` declares a simulated-time source, but this launch runs on \
+                     wall time, so it will publish nothing. Start the coordinating daemon with \
+                     `peppy service serve --clock-source=sim` to run on its clock.",
+                    instance.instance_id
+                ),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+        }
+        (None, federated::ClockDemand::Sim(_)) => {
+            publish_stderr(
+                ctx,
+                "this simulated launch declares no time source (no instance sets `framework: \
+                 { publishes_sim_time: true }`): every sim-time instance will wait at `clock \
+                 not ready` until an external publisher feeds each machine's `clock` topic."
+                    .to_owned(),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+        }
+        _ => {}
+    }
+}
+
 /// Which core nodes host at least one instance of `key`, in a stable order.
 ///
 /// A node is added and built on every machine that runs part of it, which is
@@ -762,7 +875,10 @@ async fn start_node_instances(
     planned_observations: &[daemon_config::launcher::PlannedObservation],
     placements: &daemon_config::launcher::Placements,
     federated: &federated::FederatedLaunch,
+    // Every machine of the launch, handed to the declared time source.
+    fleet: &config::runtime::SimTimeParticipants,
 ) -> std::result::Result<(), LaunchResult> {
+    let participants = federated.core_nodes();
     // Register the planned observations whose OBSERVER runs on this daemon,
     // keyed by observer instance. As each instance reaches Running its
     // `node_run` notifies the coordinator, which delivers the source pin to
@@ -924,7 +1040,6 @@ async fn start_node_instances(
             .insert(earlier.link_id.clone(), pair_target(earlier, later));
     }
 
-    let participants = federated.core_nodes();
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -955,6 +1070,7 @@ async fn start_node_instances(
             let instance_plan = config::runtime::NodeInstancePlan {
                 arguments: instance.arguments.clone(),
                 use_sim_time: instance.framework.use_sim_time,
+                sim_time_source: instance.framework.publishes_sim_time.then(|| fleet.clone()),
                 slot_bindings,
                 ..config::runtime::NodeInstancePlan::new(instance.instance_id.clone())
             };
@@ -1299,17 +1415,56 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
         return launch_result;
     }
 
-    // Step 4: Federated preflight. Reachability and reservations, each
-    // carrying its participant's pins, all BEFORE anything is torn down: a
-    // refusal at this point has cost no machine, including this one, its
-    // stack.
-    let federated = match federated::preflight(&ctx, &goal.launch_id, &planned, &placements).await {
-        Ok(federated) => federated,
+    // Step 3c: What the launch asks of every machine's clock. A simulated
+    // launch needs every machine it spans to serve simulated time, since a
+    // wall-mode daemon floods the key its sim-time nodes read; refusing the
+    // coordinator here, and each peer in the preflight below, keeps the check
+    // ahead of the teardown. The spawn-time rule
+    // (`NodeInstancePlan::resolve`) stays the backstop for every other path.
+    // The launch's machines, derived once and before anything is torn down:
+    // whether the coordinator is one of them shapes the clock demand, and the
+    // same set is what the launch's time source is handed when instances
+    // start.
+    let fleet = match launch_fleet(&planned, &placements) {
+        Ok(fleet) => fleet,
         Err(reason) => {
             publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
             return LaunchResult::failure(&ctx.log_path, reason);
         }
     };
+    let coordinator_hosts = fleet
+        .iter()
+        .any(|machine| machine.as_str() == ctx.bound_core_node);
+    let clock_demand = federated::ClockDemand::of(
+        planned.iter().flat_map(|item| &item.deployment.instances),
+        ctx.daemon_defaults.use_sim_time,
+        coordinator_hosts,
+    );
+    if let Err(reason) = check_coordinator_clock(
+        coordinator_hosts,
+        &clock_demand,
+        &ctx.bound_core_node,
+        ctx.daemon_defaults.use_sim_time,
+    ) {
+        publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+        return LaunchResult::failure(&ctx.log_path, reason);
+    }
+    advise_on_clock_shape(&ctx, &planned, &clock_demand).await;
+
+    // Step 4: Federated preflight. Reachability and reservations, each
+    // carrying its participant's pins, all BEFORE anything is torn down: a
+    // refusal at this point has cost no machine, including this one, its
+    // stack.
+    let federated =
+        match federated::preflight(&ctx, &goal.launch_id, &planned, &placements, &clock_demand)
+            .await
+        {
+            Ok(federated) => federated,
+            Err(reason) => {
+                publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+                return LaunchResult::failure(&ctx.log_path, reason);
+            }
+        };
     let participants = federated.core_nodes();
 
     // Step 4b: A planned instance id must not collide with a participant's
@@ -1444,6 +1599,7 @@ async fn process_launch(goal: LaunchGoal, ctx: ProcessLaunchContext) -> LaunchRe
             &planned_observations,
             &placements,
             &federated,
+            &fleet,
         )
         .await
     }
@@ -1847,6 +2003,118 @@ mod tests {
         assert!(error.contains("robot_inst"), "got: {error}");
     }
 
+    /// One deployment of plain instances, each optionally placed. Enough for
+    /// the placement-derived checks, which read instance ids and nothing else.
+    fn planned_deployment(
+        node_name: &str,
+        instances: &[(&str, Option<&str>)],
+    ) -> PlannedDeployment {
+        planned_container_deployment(
+            node_name,
+            DEFAULTED_OUTPUT_DIR,
+            &[],
+            &instances
+                .iter()
+                .map(|(id, core_node)| (*id, *core_node, BTreeMap::new()))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The fan-out list is every machine the launch actually runs on, the
+    /// coordinator included when it hosts something, each named once however
+    /// many instances it holds. This is what makes the clock reach a fleet
+    /// without any launcher naming a machine, and what keeps it right when a
+    /// launch grows more instances.
+    #[test]
+    fn the_sim_time_participants_are_every_machine_of_the_launch() {
+        let planned = vec![
+            planned_deployment("engine", &[("sim_inst", None)]),
+            planned_deployment(
+                "arm",
+                &[
+                    ("arm_a", Some("cn-robot-a")),
+                    ("arm_b", Some("cn-robot-b")),
+                    ("arm_c", Some("cn-robot-b")),
+                ],
+            ),
+        ];
+        let placements = placements_with(
+            "cn-sim",
+            &[
+                ("arm_a", "cn-robot-a"),
+                ("arm_b", "cn-robot-b"),
+                ("arm_c", "cn-robot-b"),
+            ],
+        );
+
+        let fleet =
+            launch_fleet(&planned, &placements).expect("core node names are valid runtime names");
+        assert_eq!(
+            fleet.iter().map(|name| name.as_str()).collect::<Vec<_>>(),
+            ["cn-robot-a", "cn-robot-b", "cn-sim"]
+        );
+
+        // A single-machine launch is the same derivation with one answer.
+        let solo = vec![planned_deployment("engine", &[("sim_inst", None)])];
+        let solo_fleet =
+            launch_fleet(&solo, &placements_with("cn-solo", &[])).expect("valid names");
+        assert_eq!(
+            solo_fleet
+                .iter()
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>(),
+            ["cn-solo"]
+        );
+    }
+
+    /// The one refusal reachable at the coordinator (a wall daemon hosting a
+    /// simulated launch) fires, and only when the coordinator is one of the
+    /// launch's machines.
+    #[test]
+    fn a_coordinator_hosting_part_of_a_launch_must_agree_with_its_clock() {
+        let sim_demand =
+            federated::ClockDemand::Sim(federated::SimDemandOrigin::Instance("relay".to_owned()));
+
+        let error = check_coordinator_clock(true, &sim_demand, "cn-sim", false)
+            .expect_err("a wall coordinator cannot host a simulated launch");
+        assert!(error.contains("`cn-sim`"), "got: {error}");
+        assert!(error.contains("--clock-source=sim"), "got: {error}");
+        assert!(
+            error.contains("instance `relay`"),
+            "the refusal names what committed the launch: {error}"
+        );
+
+        assert!(
+            check_coordinator_clock(true, &federated::ClockDemand::Wall, "cn-sim", false).is_ok(),
+            "a wall coordinator hosts a wall launch"
+        );
+        assert!(
+            check_coordinator_clock(
+                true,
+                &federated::ClockDemand::Sim(federated::SimDemandOrigin::CoordinatorClock),
+                "cn-sim",
+                true
+            )
+            .is_ok(),
+            "a sim-mode coordinator hosts a simulated launch"
+        );
+
+        // Everything placed on peers: the coordinator is not of the fleet, so
+        // its own clock mode is not this launch's business, in either mode.
+        for serves_sim_time in [false, true] {
+            for demand in [
+                sim_demand.clone(),
+                federated::ClockDemand::Wall,
+                federated::ClockDemand::HostsDecide,
+            ] {
+                assert!(
+                    check_coordinator_clock(false, &demand, "cn-sim", serves_sim_time).is_ok(),
+                    "a coordinator hosting nothing is never refused"
+                );
+            }
+        }
+    }
+
     fn plan_with(use_sim_time: Option<bool>) -> config::runtime::NodeInstancePlan {
         config::runtime::NodeInstancePlan {
             use_sim_time,
@@ -1856,25 +2124,52 @@ mod tests {
         }
     }
 
-    /// Per-instance override beats the daemon default in either direction.
-    /// `Some(true)` forces sim even when the daemon default is wall;
-    /// `Some(false)` forces wall even when the daemon default is sim.
-    ///
-    /// Resolution happens on the daemon that spawns the node, because only it
-    /// knows its own default. A plan shipped from another machine carries the
-    /// override unresolved, which is why this is tested on the plan rather than
-    /// on a launcher-side helper.
+    /// A per-instance override resolves against the daemon default on the
+    /// daemon that spawns the node, because only it knows its own default. A
+    /// plan shipped from another machine carries the override unresolved,
+    /// which is why this is tested on the plan rather than on a launcher-side
+    /// helper. `Some(false)` forces wall time on a sim-mode daemon; the other
+    /// direction is not an override but a refusal, since a wall-mode daemon
+    /// cannot serve the simulated time the instance asked for.
     #[test]
-    fn a_per_instance_use_sim_time_override_wins_over_the_daemon_default() {
-        assert!(plan_with(Some(true)).resolve(false).framework.use_sim_time);
-        assert!(!plan_with(Some(false)).resolve(true).framework.use_sim_time);
+    fn a_per_instance_use_sim_time_override_resolves_on_the_spawning_daemon() {
+        assert!(
+            !plan_with(Some(false))
+                .resolve(true)
+                .expect("forcing wall time on a sim daemon is legal")
+                .framework
+                .use_sim_time
+        );
+        assert!(
+            plan_with(Some(true))
+                .resolve(true)
+                .expect("sim time on a sim daemon resolves")
+                .framework
+                .use_sim_time
+        );
+        let refused = plan_with(Some(true))
+            .resolve(false)
+            .expect_err("sim time on a wall daemon is refused, not resolved");
+        assert_eq!(refused.instance_id, "inst_1");
     }
 
     /// When the instance omits the override, the spawning daemon decides.
     #[test]
     fn an_absent_override_falls_through_to_the_daemon_default() {
-        assert!(!plan_with(None).resolve(false).framework.use_sim_time);
-        assert!(plan_with(None).resolve(true).framework.use_sim_time);
+        assert!(
+            !plan_with(None)
+                .resolve(false)
+                .expect("wall on wall resolves")
+                .framework
+                .use_sim_time
+        );
+        assert!(
+            plan_with(None)
+                .resolve(true)
+                .expect("sim on sim resolves")
+                .framework
+                .use_sim_time
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer, MapAccess, Visitor},
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use crate::internal::source::DeploymentSource;
 
@@ -287,8 +287,9 @@ pub struct Deployment {
 impl DeploymentInstance {
     /// An instance entry carrying only its id, every other field at its
     /// default-empty value. Validation feeders use this to represent
-    /// already-running instances without fabricating per-instance data the
-    /// validators do not consult.
+    /// already-running instances. The default-empty `framework` reports the
+    /// instance as no simulated-time source, which is what an instance
+    /// started by an earlier launch is as far as this one is concerned.
     pub fn empty(instance_id: Name) -> Self {
         Self {
             instance_id,
@@ -873,13 +874,21 @@ impl<'de> Visitor<'de> for LinkEntriesVisitor {
 /// Per-instance framework knobs. Distinct from `arguments`: those are
 /// declared by the node author and validated against a per-node parameter
 /// schema; framework knobs are owned by peppylib, fixed-shape, and applied
-/// uniformly to every node. Each field is optional so the daemon can fall
-/// through to its own default when the instance omits the override.
+/// uniformly to every node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameworkOverrides {
+    /// Optional so the daemon falls through to its own `--clock-source`
+    /// default when the instance omits the override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_sim_time: Option<bool>,
+    /// This instance is the launch's one source of simulated time: the daemon
+    /// hands it every machine of the launch, and its `SimTimePublisher` feeds
+    /// each machine's `clock` topic. At most one instance per launch may say
+    /// so; a second is refused when the flattened document is checked, which
+    /// is what keeps a fleet on one timeline whatever expanded the document.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub publishes_sim_time: bool,
 }
 
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>
@@ -1024,6 +1033,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(with_sim.framework.use_sim_time, Some(true));
+        assert!(!with_sim.framework.publishes_sim_time);
+
+        let source: DeploymentInstance = serde_json5::from_str(
+            "{ instance_id: \"sim_inst\", framework: { publishes_sim_time: true } }",
+        )
+        .unwrap();
+        assert!(source.framework.publishes_sim_time);
+        assert_eq!(source.framework.use_sim_time, None);
+        let source_reparsed: DeploymentInstance =
+            serde_json5::from_str(&serde_json5::to_string(&source).unwrap()).unwrap();
+        assert!(source_reparsed.framework.publishes_sim_time);
 
         let with_wall: DeploymentInstance = serde_json5::from_str(
             "{ instance_id: \"camera_front\", framework: { use_sim_time: false } }",
@@ -1522,6 +1542,40 @@ mod tests {
             "unexpected error: {msg}"
         );
     }
+
+    fn core_node(name: &str) -> crate::core_node_name::CoreNodeName {
+        crate::core_node_name::CoreNodeName::new(name).expect("valid test core node name")
+    }
+
+    /// The participants are the machines the given instances actually run
+    /// on: the coordinator only when something defaulted to it, every placed
+    /// machine once however many instances it holds, in a stable order.
+    #[test]
+    fn placements_participants_are_the_machines_the_instances_run_on() {
+        let placements = Placements::new(
+            core_node("cn-coord"),
+            BTreeMap::from([
+                ("robot_a".to_owned(), core_node("cn-b")),
+                ("robot_b".to_owned(), core_node("cn-b")),
+                ("robot_c".to_owned(), core_node("cn-a")),
+            ]),
+        );
+
+        assert_eq!(
+            placements.participants(["sim", "robot_a", "robot_b", "robot_c"]),
+            BTreeSet::from(["cn-a", "cn-b", "cn-coord"])
+        );
+        assert_eq!(
+            placements.participants(["robot_a", "robot_b"]),
+            BTreeSet::from(["cn-b"]),
+            "a coordinator hosting nothing is no participant"
+        );
+        assert_eq!(
+            Placements::all_on(core_node("cn-solo")).participants(["sim", "robot"]),
+            BTreeSet::from(["cn-solo"])
+        );
+        assert!(placements.participants([]).is_empty());
+    }
 }
 
 /// Where every instance of one launch runs.
@@ -1592,5 +1646,17 @@ impl Placements {
         self.by_instance
             .values()
             .any(|core_node| core_node != &self.coordinator)
+    }
+
+    /// Every core node at least one of `instance_ids` runs on, deduplicated
+    /// and in a stable order: the machines a launch-wide fact (the clock's
+    /// fan-out) has to reach. Derived from the instances rather than from the
+    /// placement map alone, since an instance that named no `core_node` runs
+    /// on the coordinator and a coordinator hosting nothing is no participant.
+    pub fn participants<'a>(
+        &'a self,
+        instance_ids: impl IntoIterator<Item = &'a str>,
+    ) -> BTreeSet<&'a str> {
+        instance_ids.into_iter().map(|id| self.of(id)).collect()
     }
 }

@@ -176,7 +176,7 @@ pub async fn assert_clock_topic_emits_monotonic_ticks(
 
         let tick = ClockTick::decode(message.payload().as_ref())
             .expect("clock tick decode should succeed");
-        times.push(tick.time);
+        times.push(tick.time());
     }
 
     // Strict (not non-strict) so a publisher that re-emits the same payload

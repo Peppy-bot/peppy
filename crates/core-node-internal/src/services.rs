@@ -440,6 +440,7 @@ impl CoreNode {
             // versions never has two answers to choose between.
             peppy_version: CORE_NODE_TAG.to_owned(),
             root_instance_id: self.instance_id().to_owned(),
+            serves_sim_time: self.daemon_use_sim_time,
             shutdown_token: self.shutdown_token.clone(),
         }
     }
