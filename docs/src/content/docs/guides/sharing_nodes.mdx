@@ -27,6 +27,8 @@ or
 peppy node add --ref main https://github.com/some-user/custom_nodes.git/uvc_camera
 ```
 
+The URL may be HTTPS or an SSH URL (`git@host:owner/repo.git`); an SSH URL reaches a private repository under the authentication described in [Private git repositories over SSH](/advanced_guides/repositories/#private-git-repositories-over-ssh).
+
 :::note
 When `--ref` is used during `peppy node add`, it corresponds to the git tag/release or hash of the repo. On the other hand, the tag in `peppy node run uvc_camera:v1` corresponds to the tag found in `peppy.json5`. `--ref` is only accepted with a full git URL; for `name:tag` sources the ref is pinned once in `repositories.json5` when the repo is registered.
 :::
