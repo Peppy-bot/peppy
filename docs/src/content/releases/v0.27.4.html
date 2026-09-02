@@ -1,0 +1,38 @@
+<entry>
+  <title>v0.27.4</title>
+  <id>https://docs.peppy.bot/releases/v0-27-4/</id>
+  <updated>2026-09-02T00:00:00Z</updated>
+
+  <summary>A launch can name one instance its simulated-time source, fed to every machine, with one clock source enforced across the fleet.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.27.4&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;A launch can name one instance its simulated-time source, fed to every machine, with one clock source enforced across the fleet.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 2, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;In Rust, read a clock tick's instant with &lt;code&gt;tick.time()&lt;/code&gt; instead of the &lt;code&gt;tick.time&lt;/code&gt; field; Python keeps the &lt;code&gt;.time&lt;/code&gt; attribute.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Reading simulated time now requires a daemon that serves it, so an instance with &lt;code&gt;use_sim_time: true&lt;/code&gt; is refused on a wall-mode daemon instead of running; start it with &lt;code&gt;--clock-source=sim&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Declare one launch instance its simulated-time source with &lt;code&gt;framework: { publishes_sim_time: true }&lt;/code&gt;; peppy hands its &lt;code&gt;SimTimePublisher&lt;/code&gt; every machine of the launch so one clock reaches the whole fleet.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Federated launches require every machine to serve the same clock source; a sim/wall disagreement is refused at preflight, naming the machine and the flag that fixes it.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;A launch may declare only one simulated-time source; a second is refused when the launcher is checked, including by &lt;code&gt;peppy stack resolve&lt;/code&gt;.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;Launch feedback names the simulated-time source, and warns when a declared source runs on a wall launch or when a simulated launch declares none.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
