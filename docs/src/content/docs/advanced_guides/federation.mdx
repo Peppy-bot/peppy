@@ -395,6 +395,11 @@ the whole launch.
 
 - **Same Peppy version on every participant.** A mixed-version federation is
   refused during preflight, before any stack is touched.
+- **Same clock source on every participant.** Every machine of a launch serves
+  the same simulated or wall time; a participant whose `peppy service serve
+  --clock-source` disagrees with the launch is refused during preflight, before
+  any stack is touched. See [One clock across a
+  fleet](/advanced_guides/system_clock/#one-clock-across-a-fleet).
 - **A filesystem repository cannot back a deployment placed on another
   machine.** A deployment is pinned to wherever the coordinator's cache
   resolved it, and a filesystem repository entry (a directory registered with
