@@ -132,6 +132,14 @@ pub enum RepoCommands {
         /// Give the new repo top priority (assigns an id below the current min).
         #[arg(long)]
         top: bool,
+        /// Register the repository under this exact id instead of the next
+        /// free one. Take ids from the reserved band >= 2000: peppy's
+        /// bundled defaults (see its `assets/default_repositories.json5`)
+        /// stay below 2000, so a pinned id can never collide with a default
+        /// a future peppy release ships — which would silently skip that
+        /// default, since defaults are only appended for ids not taken.
+        #[arg(long, conflicts_with = "top")]
+        id: Option<u64>,
     },
     /// Remove a repository
     Remove {
@@ -182,7 +190,8 @@ impl Command for RepoCommand {
                 source,
                 git_ref,
                 top,
-            } => add::add_repo(ctx, &source, git_ref, top),
+                id,
+            } => add::add_repo(ctx, &source, git_ref, top, id),
             RepoCommands::Remove { id } => remove::remove_repo(ctx, id),
             RepoCommands::Exclude { source, git_ref } => {
                 exclude::exclude_repo(ctx, &source, git_ref)

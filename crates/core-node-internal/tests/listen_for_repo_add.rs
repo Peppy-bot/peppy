@@ -448,3 +448,79 @@ async fn listen_for_repo_add_same_git_url_different_refs_are_distinct() {
     assert!(refs.contains(&"main"));
     assert!(refs.contains(&"dev"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_explicit_id_succeed() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_fs("/tmp/private-hub").with_id(2000),
+    )
+    .await;
+    assert!(resp.success, "repo_add with explicit id should succeed");
+
+    let repos_path = repositories_list_path(&started.peppy_dirs);
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+
+    let added = repos
+        .iter()
+        .find(|e| e["path"] == "/tmp/private-hub")
+        .expect("added entry should be persisted");
+    assert_eq!(added["id"], 2000, "entry must carry the pinned id");
+    assert_eq!(
+        repos.iter().filter(|e| e["id"] == 2000).count(),
+        1,
+        "exactly one entry may hold the pinned id"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_explicit_id_collision_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    // 1000 is the id of the first bundled default; claiming it would merge
+    // the new repository's entries under that default's owner.
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_fs("/tmp/private-hub").with_id(1000),
+    )
+    .await;
+    assert!(!resp.success, "add pinning a taken id should fail");
+    assert!(
+        resp.error_message.contains("id 1000 is already in use"),
+        "error should name the taken id, got: {}",
+        resp.error_message
+    );
+
+    let repos_path = repositories_list_path(&started.peppy_dirs);
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> =
+        serde_json5::from_str(&content).expect("parse repos as JSON5");
+    assert!(
+        repos.iter().all(|e| e["path"] != "/tmp/private-hub"),
+        "refused entry must not be persisted"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_repo_add_explicit_id_with_top_fails() {
+    let started = start_core_node_with_mock_messenger().await;
+
+    let resp = send_repo_add(
+        &started,
+        &RepoAddRequest::new_fs("/tmp/private-hub")
+            .with_id(2000)
+            .with_top(true),
+    )
+    .await;
+    assert!(!resp.success, "id + top should fail");
+    assert!(
+        resp.error_message
+            .contains("cannot combine an explicit id with top priority"),
+        "error should explain the conflict, got: {}",
+        resp.error_message
+    );
+}

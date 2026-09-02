@@ -44,6 +44,7 @@ fn repo_remove_after_add_succeeds() {
             source: source.to_string(),
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx)
@@ -92,6 +93,7 @@ fn repo_remove_after_add_git_succeeds() {
             source: source.to_string(),
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx)

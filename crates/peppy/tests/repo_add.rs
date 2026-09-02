@@ -11,6 +11,7 @@ fn repo_add_git_url_succeeds() {
             source: "https://github.com/org/repo.git".to_string(),
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx);
@@ -31,6 +32,7 @@ fn repo_add_with_git_ref_succeeds() {
             source: "https://github.com/org/repo.git".to_string(),
             git_ref: Some("v1.0.0".to_string()),
             top: false,
+            id: None,
         },
     }
     .execute(&ctx);
@@ -56,6 +58,7 @@ fn repo_add_fs_path_succeeds() {
                 .to_string(),
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx);
@@ -79,6 +82,7 @@ fn repo_add_refuses_a_url_that_is_not_a_git_clone_url() {
             source: "https://example.com/packages".to_string(),
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx);
@@ -105,6 +109,7 @@ fn repo_add_duplicate_fails() {
             source: source.clone(),
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx)
@@ -116,6 +121,7 @@ fn repo_add_duplicate_fails() {
             source,
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx);
@@ -142,6 +148,7 @@ fn repo_add_fs_path_with_ref_fails() {
                 .to_string(),
             git_ref: Some("main".to_string()),
             top: false,
+            id: None,
         },
     }
     .execute(&ctx);
@@ -164,6 +171,7 @@ fn repo_add_top_assigns_id_below_current_min() {
             source: "https://example.com/first.git".to_string(),
             git_ref: None,
             top: false,
+            id: None,
         },
     }
     .execute(&ctx)
@@ -175,6 +183,7 @@ fn repo_add_top_assigns_id_below_current_min() {
             source: "https://example.com/second.git".to_string(),
             git_ref: None,
             top: true,
+            id: None,
         },
     }
     .execute(&ctx)
@@ -205,6 +214,54 @@ fn repo_add_top_assigns_id_below_current_min() {
 }
 
 #[test]
+fn repo_add_explicit_id_assigns_given_id() {
+    let (_rt, serve, ctx, _work_dir) = setup();
+
+    // An explicit id from the reserved >= 2000 band lands verbatim, not at
+    // the next free slot — organization setups rely on that stability.
+    RepoCommand {
+        command: RepoCommands::Add {
+            source: "/tmp/private-hub".to_string(),
+            git_ref: None,
+            top: false,
+            id: Some(2000),
+        },
+    }
+    .execute(&ctx)
+    .expect("explicit-id add should succeed");
+
+    let repos_path = serve.temp_dir().join("conf/repositories.json5");
+    let content = std::fs::read_to_string(&repos_path).expect("read repos file");
+    let repos: Vec<serde_json::Value> = serde_json5::from_str(&content).expect("parse repos");
+
+    let added = repos
+        .iter()
+        .find(|e| e["path"] == "/tmp/private-hub")
+        .expect("added entry missing");
+    assert_eq!(
+        added["id"], 2000,
+        "--id must assign exactly the given id, not the next free one"
+    );
+
+    // A second add claiming the same id is a refusal naming it.
+    let err = RepoCommand {
+        command: RepoCommands::Add {
+            source: "/tmp/other-hub".to_string(),
+            git_ref: None,
+            top: false,
+            id: Some(2000),
+        },
+    }
+    .execute(&ctx)
+    .expect_err("claiming a taken id should fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("id 2000 is already in use"),
+        "error should name the taken id, got: {msg}"
+    );
+}
+
+#[test]
 fn repo_add_https_url_with_ref_treated_as_git() {
     // When --ref is provided, a parseable HTTPS URL (without `.git` suffix)
     // should be treated as a git clone URL rather than rejected.
@@ -215,6 +272,7 @@ fn repo_add_https_url_with_ref_treated_as_git() {
             source: "https://github.com/org/repo".to_string(),
             git_ref: Some("main".to_string()),
             top: false,
+            id: None,
         },
     }
     .execute(&ctx);

@@ -60,9 +60,20 @@ fn handle_repo_add_request_inner(
     let request = RepoAddRequest::decode(payload.as_ref())?;
 
     debug!(
-        "Received `repo_add` request from {sender_instance_id}, source={:?}",
-        request.source
+        "Received `repo_add` request from {sender_instance_id}, source={:?}, id={:?}",
+        request.source, request.id
     );
+
+    // An explicit id and top priority answer the same question (which id the
+    // new entry takes) in incompatible ways; deriving one while pinning the
+    // other would silently ignore half the request.
+    if request.id.is_some() && request.top {
+        return RepoAddResponse::failure(
+            "cannot combine an explicit id with top priority: --id pins the id, --top derives one",
+        )
+        .encode()
+        .map_err(Into::into);
+    }
 
     let identity = source_identity(&request.source);
     if identity.trim().is_empty() {
@@ -95,7 +106,26 @@ fn handle_repo_add_request_inner(
             .map_err(Into::into);
     }
 
-    let next_id = if request.top {
+    let next_id = if let Some(id) = request.id {
+        // The caller pinned this id (typically from the >= 2000 band
+        // reserved for organization-added repositories) so it stays stable
+        // across re-runs of whatever setup registered it. Claiming an id
+        // another entry already holds would merge two repositories' entries
+        // under one owner, so it is a refusal naming the id.
+        if repos
+            .iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
+            .any(|existing| existing == id)
+        {
+            return RepoAddResponse::failure(format!(
+                "repository id {id} is already in use; pick another (ids >= 2000 are reserved \
+                 for manually pinned repositories)"
+            ))
+            .encode()
+            .map_err(Into::into);
+        }
+        id
+    } else if request.top {
         match repos
             .iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_u64()))
