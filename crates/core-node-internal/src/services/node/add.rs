@@ -1,6 +1,7 @@
 use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
+use super::git_utils::install_credentials;
 use super::sync::{
     self, AutoSyncParams, DepClosure, collect_all_deployment_interfaces,
     generate_peppygen_for_node, materialize_repo_deps, stack_resolver, stack_then_repo_resolver,
@@ -179,7 +180,10 @@ fn shallow_validate_config(
 
     let mut last_err = None;
     for refspec in &refspecs {
+        let mut callbacks = git2::RemoteCallbacks::new();
+        install_credentials(&mut callbacks);
         let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.remote_callbacks(callbacks);
         fetch_opts.depth(1);
         fetch_opts.download_tags(git2::AutotagOption::None);
 

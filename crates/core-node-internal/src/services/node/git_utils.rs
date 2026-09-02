@@ -1,6 +1,12 @@
 //! Git utilities shared by the node command handlers: repo-path
 //! sanitization, ref checkout, reading the commit a working tree sits on,
-//! and a clone that honors a deadline on the network transfer.
+//! and a clone that honors a deadline on the network transfer. Remote
+//! repositories are read over HTTPS or SSH; the SSH ones authenticate the
+//! way `ssh` itself would — the ssh-agent's key, then the default identity
+//! files — and have their host key checked against `~/.ssh/known_hosts`
+//! (see [`install_credentials`]), so a private repository is a
+//! `git@host:owner/repo.git` URL away rather than a local checkout this
+//! machine must register instead.
 
 use daemon_config::repository::GitCommit;
 use git2::Repository;
@@ -176,6 +182,7 @@ fn progress_callbacks<'cb>(
         .checked_sub(PROGRESS_REPORT_INTERVAL)
         .unwrap_or_else(Instant::now);
     let mut callbacks = git2::RemoteCallbacks::new();
+    install_credentials(&mut callbacks);
     callbacks.transfer_progress(move |progress| {
         if last_report.elapsed() >= PROGRESS_REPORT_INTERVAL {
             last_report = Instant::now();
@@ -190,4 +197,223 @@ fn progress_callbacks<'cb>(
         true
     });
     callbacks
+}
+
+/// The answer to libgit2's nth request for credentials on one connection.
+#[derive(Debug, PartialEq, Eq)]
+enum CredentialAnswer {
+    /// The ssh-agent's key, authing as this user.
+    AgentKey(String),
+    /// A default identity file, authing as this user.
+    KeyFile { user: String, key: PathBuf },
+    /// Just a username, for the username-only probe libgit2 makes on an
+    /// `ssh://` URL that carries no user.
+    Username(String),
+    /// Nothing left to offer, and why.
+    Refuse(&'static str),
+}
+
+/// The default identity files OpenSSH itself tries, in the order a modern
+/// host realistically holds them. The `*-sk` kinds are absent on purpose:
+/// they live on FIDO tokens, which no unattended libssh2 client can tap.
+const DEFAULT_SSH_IDENTITIES: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
+
+/// Resolves [`DEFAULT_SSH_IDENTITIES`] against `home`, skipping names that
+/// exist as directories (an `~/.ssh/id_ed25519/` is not a key).
+fn ssh_key_candidates(home: Option<&Path>) -> Vec<PathBuf> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    DEFAULT_SSH_IDENTITIES
+        .iter()
+        .map(|name| home.join(".ssh").join(name))
+        .filter(|path| path.is_file())
+        .collect()
+}
+
+/// What peppy answers when a remote asks for credentials.
+///
+/// A public HTTPS repository never asks, so libgit2 never calls back and the
+/// answer here is irrelevant to it. A private one asks for a username and
+/// password peppy does not hold; refusing keeps that a named failure that
+/// names the fix (credentials embedded in the URL, which libgit2 uses
+/// without asking). SSH always authenticates the client, and the answer
+/// mirrors what `ssh` itself would try: the ssh-agent's key for the URL's
+/// user — `git` for the scp-style `git@host:owner/repo.git` URLs the hub
+/// repositories use, and also for an `ssh://` URL that spells no user — and
+/// then the default identity files under `~/.ssh`. Each candidate is offered
+/// at most once: a repeated request means the remote refused it, and
+/// replaying would loop libgit2's auth retry until the server hangs up.
+///
+/// The host side of SSH is not peppy's to answer: libgit2 checks the host
+/// key against `~/.ssh/known_hosts` itself and refuses an unknown or
+/// mismatched one before any credentials are requested.
+fn credential_answer(
+    username: Option<&str>,
+    allowed: git2::CredentialType,
+    attempt: usize,
+    key_candidates: &[PathBuf],
+) -> CredentialAnswer {
+    let user = username.unwrap_or("git").to_owned();
+    if allowed.contains(git2::CredentialType::SSH_KEY) {
+        if attempt == 0 {
+            return CredentialAnswer::AgentKey(user);
+        }
+        let key = key_candidates.get(attempt - 1).cloned();
+        if let Some(key) = key {
+            return CredentialAnswer::KeyFile { user, key };
+        }
+        return CredentialAnswer::Refuse(
+            "the remote refused the ssh-agent's keys and the default identity files \
+             (~/.ssh/id_ed25519, id_ecdsa, id_rsa); load a key the remote accepts into the \
+             agent, or point the repository at an unencrypted default identity",
+        );
+    }
+    if allowed.contains(git2::CredentialType::USERNAME)
+        && !allowed
+            .intersects(git2::CredentialType::SSH_KEY | git2::CredentialType::USER_PASS_PLAINTEXT)
+    {
+        return CredentialAnswer::Username(user);
+    }
+    CredentialAnswer::Refuse(
+        "peppy authenticates git over ssh through the ssh-agent and the default identity \
+         files, and offers no other credentials; embed them in the repository URL instead",
+    )
+}
+
+/// Installs the credentials callback every peppy fetch of a remote goes
+/// through, so no two call sites can drift apart on what authentication a
+/// clone or fetch offers. See [`credential_answer`] for what is offered.
+///
+/// A candidate that fails to load — an agent with no keys, an encrypted
+/// identity file — advances to the next within the same request rather than
+/// failing the connection, exactly as `ssh` moves on from an identity it
+/// cannot use.
+pub(crate) fn install_credentials(callbacks: &mut git2::RemoteCallbacks<'_>) {
+    let mut attempt = 0usize;
+    let key_candidates = ssh_key_candidates(dirs::home_dir().as_deref());
+    callbacks.credentials(move |_url, username, allowed| {
+        loop {
+            match credential_answer(username, allowed, attempt, &key_candidates) {
+                CredentialAnswer::AgentKey(user) => {
+                    attempt += 1;
+                    if let Ok(cred) = git2::Cred::ssh_key_from_agent(&user) {
+                        return Ok(cred);
+                    }
+                }
+                CredentialAnswer::KeyFile { user, key } => {
+                    attempt += 1;
+                    if let Ok(cred) = git2::Cred::ssh_key(user.as_str(), None, &key, None) {
+                        return Ok(cred);
+                    }
+                }
+                CredentialAnswer::Username(user) => return git2::Cred::username(&user),
+                CredentialAnswer::Refuse(message) => return Err(git2::Error::from_str(message)),
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ssh_only() -> git2::CredentialType {
+        git2::CredentialType::SSH_KEY
+    }
+
+    #[test]
+    fn the_first_ssh_request_gets_the_agent_key_for_the_url_user() {
+        assert_eq!(
+            credential_answer(Some("git"), ssh_only(), 0, &[]),
+            CredentialAnswer::AgentKey("git".to_owned())
+        );
+    }
+
+    #[test]
+    fn ssh_requests_default_the_user_to_git() {
+        assert_eq!(
+            credential_answer(None, ssh_only(), 0, &[]),
+            CredentialAnswer::AgentKey("git".to_owned())
+        );
+    }
+
+    #[test]
+    fn later_ssh_requests_walk_the_default_identity_files_in_order() {
+        let keys = vec![
+            PathBuf::from("/home/peppy/.ssh/id_ed25519"),
+            PathBuf::from("/home/peppy/.ssh/id_ecdsa"),
+        ];
+        assert_eq!(
+            credential_answer(Some("git"), ssh_only(), 1, &keys),
+            CredentialAnswer::KeyFile {
+                user: "git".to_owned(),
+                key: PathBuf::from("/home/peppy/.ssh/id_ed25519")
+            }
+        );
+        assert_eq!(
+            credential_answer(Some("git"), ssh_only(), 2, &keys),
+            CredentialAnswer::KeyFile {
+                user: "git".to_owned(),
+                key: PathBuf::from("/home/peppy/.ssh/id_ecdsa")
+            }
+        );
+    }
+
+    #[test]
+    fn exhausting_the_candidates_refuses_instead_of_replaying_one() {
+        assert_eq!(
+            credential_answer(Some("git"), ssh_only(), 1, &[]),
+            CredentialAnswer::Refuse(
+                "the remote refused the ssh-agent's keys and the default identity files \
+                 (~/.ssh/id_ed25519, id_ecdsa, id_rsa); load a key the remote accepts into \
+                 the agent, or point the repository at an unencrypted default identity"
+            )
+        );
+    }
+
+    #[test]
+    fn username_only_requests_answer_the_user_git_would_auth_as() {
+        let username_only = git2::CredentialType::USERNAME;
+        assert_eq!(
+            credential_answer(Some("peppy"), username_only, 0, &[]),
+            CredentialAnswer::Username("peppy".to_owned())
+        );
+        assert_eq!(
+            credential_answer(None, username_only, 0, &[]),
+            CredentialAnswer::Username("git".to_owned())
+        );
+    }
+
+    #[test]
+    fn password_requests_refuse_with_the_embedded_url_hint() {
+        assert_eq!(
+            credential_answer(
+                Some("peppy"),
+                git2::CredentialType::USER_PASS_PLAINTEXT,
+                0,
+                &[]
+            ),
+            CredentialAnswer::Refuse(
+                "peppy authenticates git over ssh through the ssh-agent and the default \
+                 identity files, and offers no other credentials; embed them in the \
+                 repository URL instead"
+            )
+        );
+    }
+
+    #[test]
+    fn key_candidates_list_the_default_identities_that_exist_as_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ssh_dir = tmp.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        std::fs::write(ssh_dir.join("id_rsa"), b"key").unwrap();
+        std::fs::create_dir_all(ssh_dir.join("id_ed25519")).unwrap();
+
+        assert_eq!(
+            ssh_key_candidates(Some(tmp.path())),
+            vec![ssh_dir.join("id_rsa")]
+        );
+        assert!(ssh_key_candidates(None).is_empty());
+    }
 }
