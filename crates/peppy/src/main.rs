@@ -272,6 +272,29 @@ mod tests {
         );
     }
 
+    /// `--id` pins the repository id (the reserved >= 2000 band); it answers
+    /// the same question `--top` does, so the parser refuses the pair rather
+    /// than silently honoring one half.
+    #[test]
+    fn repo_add_id_flag_parses_and_conflicts_with_top() {
+        let cli = Cli::try_parse_from(["peppy", "repo", "add", "/hub", "--id", "2000"])
+            .expect("repo add --id parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Repo {
+                command: repo::RepoCommands::Add {
+                    id: Some(2000),
+                    top: false,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            Cli::try_parse_from(["peppy", "repo", "add", "/hub", "--id", "2000", "--top"]).is_err(),
+            "--id with --top is refused"
+        );
+    }
+
     /// Exposures are published by writing the document and listing it in a
     /// launcher; there is no publication command, and the parser knows no
     /// such word.

@@ -1,3 +1,13 @@
+// Default repositories peppy bundles and appends to the user's
+// `~/.peppy/conf/repositories.json5` (by id, on daemon startup and
+// `peppy repo init`).
+//
+// ID BANDS: entries here stay below 2000, and ids are never reused. Ids
+// >= 2000 are reserved for repositories pinned explicitly (`peppy repo add
+// --id`, e.g. organization setups registering a private collection), so a
+// pinned id can never collide with a default a future release ships — a
+// collision would silently skip that default, since defaults are only
+// appended for ids not already taken.
 [
   {
     id: 1000,
