@@ -50,6 +50,10 @@ pub(crate) struct FederationServiceContext {
     /// The daemon's own root-entity instance id, folded into the coordinator's
     /// global instance-id uniqueness check.
     pub(crate) root_instance_id: String,
+    /// Whether this daemon serves simulated time (`--clock-source=sim`),
+    /// reported on every reservation so a coordinator placing sim-time
+    /// instances here can refuse a wall-mode machine before touching it.
+    pub(crate) serves_sim_time: bool,
     /// Cancelled on daemon shutdown so a coordinator-presence watch does not
     /// outlive the daemon generation that spawned it.
     pub(crate) shutdown_token: CancellationToken,
@@ -190,9 +194,13 @@ async fn reserve_inner(
         ReserveOutcome::AlreadyHeld => {}
     }
 
-    ParticipantReserveResponse::accepted(&context.peppy_version, &context.root_instance_id)
-        .encode()
-        .map_err(Into::into)
+    ParticipantReserveResponse::accepted(
+        &context.peppy_version,
+        &context.root_instance_id,
+        context.serves_sim_time,
+    )
+    .encode()
+    .map_err(Into::into)
 }
 
 /// Decodes every deployment's pins and refuses any that could not be

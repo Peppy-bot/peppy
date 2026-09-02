@@ -21,6 +21,16 @@
         path: "nodes/reactive_policy/peppy.json5"
       }
     },
+    sim_clock_probe: {
+      v1: {
+        path: "nodes/sim_clock_probe/peppy.json5"
+      }
+    },
+    sim_clock_source: {
+      v1: {
+        path: "nodes/sim_clock_source/peppy.json5"
+      }
+    },
     uvc_camera_python_mock: {
       v1: {
         path: "nodes/uvc_camera_python_mock/peppy.json5"

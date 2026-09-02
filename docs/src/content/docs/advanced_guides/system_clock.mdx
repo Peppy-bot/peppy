@@ -108,7 +108,7 @@ Call `on_next_tick` in a loop to receive each tick; it returns `None` when the s
 
 The core node publishes ticks at **10 Hz** (every 100 ms) by default: high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`.
 
-Each `ClockTick` carries a single field, `time` (`u64` in Rust, `int` in Python): nanoseconds since the Unix epoch, stamped by the core node at emission. Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
+Each `ClockTick` carries a single instant, read with `time()` in Rust and the `time` attribute in Python: nanoseconds on the core node's timeline, stamped at emission. In wall mode that is the Unix epoch; under a simulator it is whatever origin the simulator counts from. The value is never `0`, which every sim-time cache reserves for "no tick observed yet". Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
 
 <Tabs>
   <TabItem label="Python">
@@ -159,7 +159,7 @@ Each `ClockTick` carries a single field, `time` (`u64` in Rust, `int` in Python)
                     .await
                     .expect("on_next_tick should not error")
                 {
-                    println!("core node wall time: {} ns", tick.time);
+                    println!("core node wall time: {} ns", tick.time());
                 }
                 // Subscription closed; core node went away.
             });
@@ -189,6 +189,8 @@ Resolution order, applied once in the daemon before each spawned node receives i
 1. The instance's `framework.use_sim_time` if it is set.
 2. The daemon's `--clock-source` flag (`wall` is the default).
 
+A daemon serving wall time publishes its own ticks on the `clock` topic, which is the same key a sim-time node on that machine reads. So reading simulated time needs a daemon that serves it: an instance whose `use_sim_time` resolves to `true` on a wall-mode daemon is refused as it starts, naming the instance and the flag that fixes it. Forcing the other direction (`use_sim_time: false` on a sim-mode daemon) is legal, since that node reads its OS clock and touches no topic.
+
 Standalone (daemon-less) runs resolve the same field from `StandaloneConfig`: `.with_use_sim_time(true)` in Rust, `.with_use_sim_time(True)` in Python (`false`, wall mode, is the default). Under the generated test harness the knob is `use_sim_time` on the harness config, and the harness serves the clock in either mode, with the test playing the external simulator in sim mode; see [the testing guide](/advanced_guides/testing/#the-clock).
 
 The wire format does not change. `ClockTick` and `ClockResponse` carry only timestamps; the daemon decides internally which source feeds them. In wall mode the daemon stamps every `t1`/`t2` and every published tick from its own OS clock. In sim mode the daemon stops publishing, subscribes to the `clock` topic, and answers `synchronize` from a cache populated by an external publisher. 
@@ -215,6 +217,76 @@ Subscribers see the same shape either way. Until that external publisher lands i
 ```
 
 Omit `framework` (or omit `use_sim_time` inside it) to fall through to the daemon default. Setting `use_sim_time: false` on an instance forces wall mode even when the daemon flag is `--clock-source=sim`.
+
+## One clock across a fleet
+
+The `clock` topic is keyed by the core node it belongs to, so a daemon and every sim-time node on its machine read that machine's key and nothing else. Reaching a second machine means publishing to a second key. A launch spanning several machines therefore names one instance its source of simulated time, and the daemon hands that instance every machine of the launch:
+
+```json5 title="peppy_launcher.json5"
+{
+  instance_id: "sim_inst",
+  framework: { publishes_sim_time: true },
+}
+```
+
+That instance builds a `SimTimePublisher`, and each `publish` lands one tick on every machine's `clock` topic, so the whole fleet reads one instant. Which machines those are comes from the launch's own placement, never from the launcher or the node: nothing in a simulator names a machine, and adding a robot changes no clock configuration.
+
+How often the source publishes is how finely the fleet can read time: `now_ns` returns the last tick observed, so a source ticking at 100 Hz gives every machine a 10 ms grid. Publish on the cadence the fleet needs to compare against, not on the physics step, which is usually far finer than anything reads.
+
+A launch runs on simulated time when the coordinating daemon serves it (`--clock-source=sim`), or when any instance names `framework: { use_sim_time: true }` outright, which commits the launch wherever that instance lands. Declaring a source does neither: on a wall-time launch the declaration resolves to no source at all and the instance publishes nothing, with an advisory line in the launch feedback saying so. One launcher describes the robot either way.
+
+At most one instance per launch may declare it. A second is refused when the launcher is checked (`peppy stack resolve` runs the same check), before anything starts, because two sources feeding the same keys are two timelines. `SimTimePublisher::for_node` returns `None` on a node the launch did not declare, so holding a publisher is the same fact as being the source, and an undeclared node cannot drive fleet time. Every simulated launch names its declared source in the launch feedback, so a source that never publishes leaves a named suspect rather than a silent hang.
+
+Every machine of a simulated launch must serve simulated time, since a wall-mode daemon there would flood the key the fleet's ticks land on, and every machine of a wall launch must serve wall time, since instances on a sim-mode machine would wait forever on a tick the launch never publishes. Both directions are refused at preflight, before any stack is touched, naming the machine, what committed the launch to its clock, and the flag that fixes it. A launch typed from a machine that hosts none of it takes its clock from the machines that do: they must agree among themselves, in either mode, and a split is refused naming one machine of each side. The bystander coordinator's own clock never commits such a launch.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_simulator/__main__.py"
+    import asyncio
+
+    from peppylib.clock import SimTimePublisher
+
+
+    async def setup(_params, node_runner) -> None:
+        # None on a wall-time launch, which runs on the daemons' own ticks
+        # and needs no source. Build the publisher once and keep the handle.
+        engine.clock_publisher = await SimTimePublisher.for_node(node_runner)
+        if engine.clock_publisher is None:
+            return
+
+
+    # Called from the engine's step callback. `publish` is async, so an engine
+    # running its physics on its own thread schedules it onto the node loop
+    # rather than awaiting it there.
+    def on_step(engine) -> None:
+        if engine.clock_publisher is None:
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(
+                engine.clock_publisher.publish(engine.time_ns())
+            )
+        )
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use peppylib::clock::SimTimePublisher;
+
+    // None on a wall-time launch, which runs on the daemons' own ticks and
+    // needs no source. Build the publisher once and keep the handle.
+    if let Some(publisher) = SimTimePublisher::for_node(&node_runner).await? {
+        // Then publish the engine's own clock from each step. Every machine
+        // of the launch reads this instant.
+        loop {
+            engine.step();
+            publisher.publish(engine.time_ns()).await?;
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+A time source stamps its own data from its engine clock directly rather than from `now_ns()`: reading its own tick back off the wire would round-trip through its own subscription and report not-ready until the first tick it published came back. Every follower reads the published tick, which is the point.
 
 ### `PeppyClock` and the generated `clock` module
 

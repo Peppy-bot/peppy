@@ -7,6 +7,7 @@ use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, DeploymentSource, ExternallyCoveredSlots,
     PairingValidationItem, PeppyLauncher, compose, validate_link_slots, validate_pairings,
+    validate_sim_time_source,
 };
 use daemon_config::repository::EntryOrigin;
 use tracing::info;
@@ -195,6 +196,7 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
         })
         .collect();
     let mut errors = validate_link_slots(&binding_items);
+    errors.extend(validate_sim_time_source(&binding_items));
     if errors.is_empty() {
         let pairing_items: Vec<PairingValidationItem<'_>> = manifests
             .iter()

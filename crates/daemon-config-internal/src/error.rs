@@ -162,6 +162,19 @@ pub struct DuplicateInstanceIdAcrossStack {
     pub tag_b: String,
 }
 
+/// Payload for [`ParsingError::MultipleSimTimeSources`]. More than one
+/// instance in the stack declared `framework.publishes_sim_time`, so the
+/// fleet would have two clocks feeding every machine's `clock` topic.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "instances {instance_ids} each declare `framework: {{ publishes_sim_time: true }}`; a launch \
+     has one source of simulated time, so keep the declaration on exactly one of them"
+)]
+pub struct MultipleSimTimeSources {
+    /// The declaring instance ids, quoted and comma-separated.
+    pub instance_ids: String,
+}
+
 /// Payload for [`ParsingError::LinkUnknownSlot`]. A `links:` key (or
 /// `--link KEY`) that names no declared slot of the instance's node across
 /// any family: `depends_on.{nodes,contracts}` producer slots or
@@ -572,6 +585,11 @@ pub enum ParsingError {
     /// variants.
     #[error(transparent)]
     DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
+    /// More than one instance declared itself the launch's simulated-time
+    /// source. Boxed for the same `result_large_err` reason as the other
+    /// binding variants.
+    #[error(transparent)]
+    MultipleSimTimeSources(Box<MultipleSimTimeSources>),
 
     // -- launcher/CLI: pairings
     #[error(transparent)]

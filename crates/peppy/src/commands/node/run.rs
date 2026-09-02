@@ -405,11 +405,13 @@ async fn validate_links_against_stack(
             target_implements = info.config.manifest.implements.clone();
             target_seen_in_stack = true;
         }
-        // The validator only reads `instance_id` and `bindings` for
-        // inert items (`bindings` is unused under `depends_on: None`,
-        // but kept empty to satisfy the type). `arguments`, `env_vars`,
-        // and `framework` are not consulted; default-initialize them
-        // rather than fabricating data the validator would ignore.
+        // The validator reads `instance_id` and `bindings` for inert items
+        // (`bindings` is unused under `depends_on: None`, but kept empty to
+        // satisfy the type), plus `framework` for the one-simulated-time-source
+        // rule. A default-empty `framework` is the right answer there: whether
+        // an already-running instance is a time source was settled by the
+        // launch that started it, not by this one. `arguments` and `env_vars`
+        // are not consulted.
         let instances: Vec<DeploymentInstance> = node
             .instances
             .iter()

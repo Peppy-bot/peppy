@@ -151,7 +151,7 @@ async fn run_clock_publisher(
 /// Each spawned node runs a watchdog subscribed to this topic; if the beats go
 /// silent past the configured grace period the node shuts itself down, so an
 /// uncatchable daemon death (SIGKILL / OOM / crash) does not leave orphans. The
-/// payload is a constant `ClockTick(0)` reused purely as a cheap carrier; the
+/// payload is a constant `ClockTick` reused purely as a cheap carrier; the
 /// node only cares that a message arrived, not its value.
 ///
 /// `SensorData` QoS (best-effort, newest-wins, no back-pressure) is correct for
@@ -184,7 +184,7 @@ async fn run_heartbeat_publisher(
 ) -> Result<()> {
     // The value is never read by the node (only the message's arrival matters)
     // so encode the constant payload once, outside the loop.
-    let payload = ClockTick::new(0).encode()?;
+    let payload = ClockTick::new(ClockTick::MIN_TIME_NS).encode()?;
     let mut ticker = tokio::time::interval(interval);
     // A late beat is uninteresting; skip catch-up bursts after a stall.
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -244,14 +244,10 @@ pub async fn subscribe_external_clock(
                     None => break,
                 },
             };
+            // A decoded tick is never `0` (`ClockTick` clamps on decode), so
+            // storing it can never write the cache's not-ready sentinel.
             match ClockTick::decode(message.payload_bytes().as_ref()) {
-                Ok(tick) => {
-                    // `0` is reserved as "not ready"; a simulator publishing
-                    // a literal zero would be a bug, and clamping it to 1 is a
-                    // safer surprise than silently masking the not-ready state.
-                    let stored = if tick.time == 0 { 1 } else { tick.time };
-                    cache.store(stored, Ordering::Relaxed);
-                }
+                Ok(tick) => cache.store(tick.time(), Ordering::Relaxed),
                 Err(e) => warn!("dropped malformed clock tick: {e}"),
             }
         }
