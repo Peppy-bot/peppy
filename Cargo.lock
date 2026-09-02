@@ -587,7 +587,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "sha2",
 ]
@@ -785,7 +785,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "askama",
  "git2",
@@ -931,7 +931,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -1313,7 +1313,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1462,7 +1462,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2696,7 +2696,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "serde",
  "serde_json",
@@ -3187,7 +3187,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3587,7 +3587,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "capnp",
  "clap",
@@ -3606,7 +3606,7 @@ dependencies = [
 [[package]]
 name = "peppy-mcp-catalog"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "indexmap 2.14.1",
  "peppy-config-model",
@@ -3618,7 +3618,7 @@ dependencies = [
 [[package]]
 name = "peppy-mcp-runtime"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3640,7 +3640,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3837,7 +3837,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#98874c01d6c4a39d8b0b2f6e693d53265951c7cd"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -4072,7 +4072,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.5",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4514,7 +4514,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4582,7 +4582,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4960,7 +4960,7 @@ version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 4.0.0",
 ]
 
 [[package]]
@@ -5309,7 +5309,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6225,7 +6225,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
