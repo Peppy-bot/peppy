@@ -90,6 +90,7 @@ pub(super) async fn build_node_directly(
     node_name: String,
     node_tag: String,
     env_vars: Vec<(String, String)>,
+    rebuild: bool,
 ) -> (std::result::Result<(), String>, Option<PathBuf>) {
     let log_dir = ctx.peppy_dirs.logs_dir_build();
     let timestamp = Local::now().format("%Y%m%d_%H%M%S_%3f").to_string();
@@ -122,6 +123,7 @@ pub(super) async fn build_node_directly(
             node_name.clone(),
             node_tag.clone(),
             env_vars,
+            rebuild,
             action_context,
             feedback_tx,
             log_file,

@@ -868,7 +868,7 @@ async fn run_node_async(
                     &node_name,
                     &tag,
                     &remaining_timeouts(&timeouts, start, "build")?,
-                    false,
+                    super::BuildOptions::default(),
                 )
                 .await?;
             }

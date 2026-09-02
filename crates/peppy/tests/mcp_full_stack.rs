@@ -782,6 +782,7 @@ impl Stack {
         .expect("write launcher");
         StackCommand {
             command: StackCommands::Launch {
+                rebuild: false,
                 place: Vec::new(),
                 local: false,
                 with: Default::default(),

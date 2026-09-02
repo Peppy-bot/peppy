@@ -52,6 +52,22 @@ pub fn write_feedback_log_line(log_file: &Arc<StdMutex<File>>, stream: FeedbackS
     let _ = writeln!(file, "[{}] [{}] {}", timestamp, stream.as_str(), line);
 }
 
+/// Announces a daemon-side build event: the line lands in the build log and
+/// on the feedback channel as stdout, the same two places a build
+/// subprocess's own output goes. A closed channel is ignored, as everywhere
+/// else on the feedback path.
+pub fn announce(
+    feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
+    log_file: &Arc<StdMutex<File>>,
+    line: String,
+) {
+    write_feedback_log_line(log_file, FeedbackStream::Stdout, &line);
+    let _ = feedback_tx.send(FeedbackLine {
+        stream: FeedbackStream::Stdout,
+        line,
+    });
+}
+
 /// Writes the canonical "executing a command" header to a log file in the
 /// `[timestamp] Executing {label}: {cmd} (working_dir: {dir}[, k: v...])`
 /// format used by every spawn-and-stream step. `extras` is appended as

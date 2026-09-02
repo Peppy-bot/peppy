@@ -13,11 +13,21 @@ use crate::context::AppContext;
 use crate::error::{Error, Result};
 use peppylib::core_node::transport::send_goal;
 
+/// The switches a build goal carries besides its identity and timeouts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BuildOptions {
+    /// Cancel an in-flight build of the same node and start this one.
+    pub force: bool,
+    /// Build from the staged sources even when storage holds an artifact
+    /// built from byte-identical sources.
+    pub rebuild: bool,
+}
+
 pub struct BuildNodeParams {
     pub node_name: String,
     pub node_tag: String,
     pub timeouts: TimeoutConfig,
-    pub force: bool,
+    pub options: BuildOptions,
 }
 
 pub fn build_node(ctx: &Arc<AppContext>, params: BuildNodeParams) -> Result<()> {
@@ -36,7 +46,7 @@ async fn build_node_async_with_connect(
         &params.node_name,
         &params.node_tag,
         &params.timeouts,
-        params.force,
+        params.options,
     )
     .await
 }
@@ -51,7 +61,7 @@ pub async fn build_node_async(
     node_name: &str,
     node_tag: &str,
     timeouts: &TimeoutConfig,
-    force: bool,
+    options: BuildOptions,
 ) -> Result<()> {
     build_node_on(
         messenger,
@@ -60,7 +70,7 @@ pub async fn build_node_async(
         node_name,
         node_tag,
         timeouts,
-        force,
+        options,
     )
     .await
 }
@@ -76,15 +86,14 @@ pub(crate) async fn build_node_on(
     node_name: &str,
     node_tag: &str,
     timeouts: &TimeoutConfig,
-    force: bool,
+    options: BuildOptions,
 ) -> Result<()> {
     info!("Building node {}:{}...", node_name, node_tag);
 
-    let mut goal = NodeBuildGoal::new(node_name, node_tag, timeouts.max_secs)
-        .with_env_vars(caller_env_overrides());
-    if force {
-        goal = goal.with_force(true);
-    }
+    let goal = NodeBuildGoal::new(node_name, node_tag, timeouts.max_secs)
+        .with_env_vars(caller_env_overrides())
+        .with_force(options.force)
+        .with_rebuild(options.rebuild);
 
     let mut action_handle = send_goal(
         &goal,

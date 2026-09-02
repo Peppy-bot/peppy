@@ -242,7 +242,7 @@ You can also combine both steps with `peppy node add ./my_node --build` (shortha
 Under the hood, Peppy runs `apptainer build` during the build phase to produce a `.sif` (Singularity Image Format) file.
 This replaces the `build_cmd` step used by process nodes; the entire build happens inside the container according to the `%post` section of the definition file.
 
-The resulting `.sif` file is stored in Peppy's internal storage and is ready to be started.
+The resulting `.sif` file is stored under `~/.peppy/built_nodes/<name>_<tag>/`, named after the fingerprint of the staged sources (see [Build caching](#build-caching)), and is ready to be started.
 
 :::note
 Container builds can take longer than regular builds because they install system packages and toolchains from scratch.
@@ -373,6 +373,48 @@ A literal blocked source (e.g., `/tmp`) is rejected at parse time. A source cont
 :::
 
 ## Build caching
+
+### Build artifact cache
+
+Every `peppy node build`, including the ones `peppy stack launch` runs for
+each deployment, fingerprints the staged node tree before building: the node
+sources, `peppy.json5`, the def file, the generated `.peppy/` code and the
+vendored peppylib, mixed with the peppy version, the host platform and the
+artifact kind. The artifact is stored under that fingerprint:
+
+```
+~/.peppy/built_nodes/<name>_<tag>/<fingerprint>.sif       container node
+~/.peppy/built_nodes/<name>_<tag>/<fingerprint>.tar.zst   process node
+```
+
+When the fingerprint already has an artifact on disk, the build reuses it
+instead of running `apptainer build` (or `build_cmd` for a process node),
+and the build log carries one line:
+
+```
+Reusing cached build of my_node:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/my_node_v1/3f9a1c2e5d7b8a4f.sif
+```
+
+The cache is a plain directory tree keyed by content, so it survives daemon
+restarts and reboots, and a disk prepared on one machine carries its built
+nodes to every machine of the same platform that boots from it. Each node
+identity keeps exactly one artifact: a build whose fingerprint differs
+replaces the previous one.
+
+Pass `--rebuild` to `peppy node build` or `peppy stack launch` to build from
+the staged sources even when a matching artifact exists; the result replaces
+it. Use it when something outside the fingerprint changed:
+
+- A floating base image tag (`From: peppybot/rust-cargo-base:latest`) that
+  now resolves to a different image. Pin the image with `@sha256:<digest>`
+  in the def file to make base image changes part of the fingerprint.
+- For a process node, the host toolchain or the environment `build_cmd` runs
+  with.
+
+`--rebuild` is independent of `--force`, which cancels an in-flight build of
+the same node.
+
+### Compile caches inside container builds
 
 Rust container builds reuse a shared cache across builds, without any
 per-node configuration. The daemon bind mounts `~/.peppy/cache/container_build`

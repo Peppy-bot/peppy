@@ -203,6 +203,61 @@ pub fn register_repo_caches(
     .expect("failed to write nodes.json5");
 }
 
+/// A `build_cmd` that appends one line to `counter` per run. The counter
+/// lives outside the node directory so it never enters the staged tree, which
+/// is what lets a test build the same sources twice and count the builds.
+pub fn counting_build_cmd(counter: &std::path::Path) -> Vec<String> {
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("echo built >> '{}'", counter.display()),
+    ]
+}
+
+/// How many times [`counting_build_cmd`] ran.
+pub fn build_count(counter: &std::path::Path) -> usize {
+    std::fs::read_to_string(counter)
+        .map(|contents| contents.lines().count())
+        .unwrap_or(0)
+}
+
+/// The build logs the daemon rooted at `peppy_root` wrote for `name:tag`,
+/// oldest first: their file names carry a millisecond timestamp, so name order
+/// is creation order.
+pub fn build_logs_for(peppy_root: &std::path::Path, name: &str, tag: &str) -> Vec<String> {
+    let log_dir = daemon_config::consts::PeppyDirs::new(peppy_root).logs_dir_build();
+    let prefix = format!("{name}_{tag}_");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&log_dir)
+        .unwrap_or_else(|e| panic!("build log dir {} should exist: {e}", log_dir.display()))
+        .map(|entry| entry.expect("dir entry").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| std::fs::read_to_string(path).expect("build log should be readable"))
+        .collect()
+}
+
+/// The artifacts stored for `name:tag` under `peppy_root`, in name order.
+pub fn built_artifacts_for(
+    peppy_root: &std::path::Path,
+    name: &str,
+    tag: &str,
+) -> Vec<std::path::PathBuf> {
+    let dir = daemon_config::consts::PeppyDirs::new(peppy_root).built_node_dir(name, tag);
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("built node dir {} should exist: {e}", dir.display()))
+        .map(|entry| entry.expect("dir entry").path())
+        .collect();
+    paths.sort();
+    paths
+}
+
 /// The standard local-path `node add` (no sync, build, no run), for tests
 /// that assert on the outcome themselves; [`add_built_node`] wraps it for the
 /// expect-success case.

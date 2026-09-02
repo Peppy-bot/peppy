@@ -144,15 +144,15 @@ $ peppy stack list
 │                                                                                                                                                                            │
 │ Node stack                                                                                                                                                                 │
 │                                                                                                                                                                            │
-│ ┌──────────────────────────────────────┬───────┬───────────┬───────────────────────────────────────────────────────────┐                                                   │
-│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                      │                                                   │
-│ ├──────────────────────────────────────┼───────┼───────────┼───────────────────────────────────────────────────────────┤                                                   │
-│ │ cn-adoring-wiles:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                         │                                                   │
-│ │ fake_openarm01_controller:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_openarm01_controller_v1.tar.zst │                                                   │
-│ │ fake_robot_brain:v1                  │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_robot_brain_v1.tar.zst          │                                                   │
-│ │ fake_uvc_camera:v1                   │ Ready │ 2 running │ ~/.peppy/built_nodes/fake_uvc_camera_v1.tar.zst           │                                                   │
-│ │ fake_video_reconstruction:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_video_reconstruction_v1.tar.zst │                                                   │
-│ └──────────────────────────────────────┴───────┴───────────┴───────────────────────────────────────────────────────────┘                                                   │
+│ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────────────┐                                  │
+│ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                                       │                                  │
+│ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────────────┤                                  │
+│ │ cn-adoring-wiles:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                          │                                  │
+│ │ fake_openarm01_controller:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_openarm01_controller_v1/b81d0e4c72a5f936.tar.zst │                                  │
+│ │ fake_robot_brain:v1                  │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_robot_brain_v1/6c2e9f0a1d47b385.tar.zst          │                                  │
+│ │ fake_uvc_camera:v1                   │ Ready │ 2 running │ ~/.peppy/built_nodes/fake_uvc_camera_v1/e57a3b91c0d64f28.tar.zst           │                                  │
+│ │ fake_video_reconstruction:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_video_reconstruction_v1/19d4c7e2a8b03f65.tar.zst │                                  │
+│ └──────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────────────┘                                  │
 │                                                                                                                                                                            │
 │ Instance bindings                                                                                                                                                          │
 │                                                                                                                                                                            │
@@ -314,6 +314,16 @@ instances: [
   },
 ]
 ```
+
+## Reusing built nodes across launches
+
+Every node build a launch performs goes through the [build artifact cache](/advanced_guides/containers/#build-caching): a deployment whose staged sources are byte-identical to an earlier build's reuses that build's artifact, so launching the same launcher again, after a daemon restart or on another machine booted from the same disk, spends seconds on the build phase instead of rebuilding every node. Each reuse is reported in the launch output and in that node's build log:
+
+```
+Reusing cached build of waldo:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/waldo_v1/3f9a1c2e5d7b8a4f.sif
+```
+
+`peppy stack launch --rebuild` builds every node of the launch from its staged sources even when a matching artifact exists, on the coordinator and on every peer; use it when something the fingerprint does not cover changed, such as the image behind a floating base image tag.
 
 ## Running one launcher across several machines
 

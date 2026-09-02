@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use config::node::NodeConfig;
+use config::node::{ContainerConfig, NodeConfig, PeppygenLanguage};
 use config::runtime::Name;
 use core_node_api::{
     InstanceState, NodeStage as SerializedNodeStage, SerializedInstance, SerializedNode,
@@ -16,9 +16,12 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::build_io::{FeedbackLine, FeedbackStream, OutputReaderHooks, spawn_output_reader_async};
+use crate::build_io::{
+    FeedbackLine, FeedbackStream, OutputReaderHooks, announce, spawn_output_reader_async,
+};
 use crate::error::{Error, Result};
 
+use super::build_artifact_cache::{ArtifactKind, prune_siblings, resolve_slot, reuse_line};
 use super::build_steps::{
     ContainerBuildInputs, archive_dir_to_storage, build_container_image, move_sif_to_storage,
     run_build_cmd,
@@ -237,7 +240,8 @@ pub struct BuildContext<'a> {
     /// then moved to peppy storage.
     pub working_dir: &'a Path,
     /// Resolved peppy directory layout. The built `.sif`/archive is placed
-    /// inside `peppy_dirs.built_nodes_dir()`.
+    /// inside `peppy_dirs.built_node_dir(name, tag)`, named after the
+    /// fingerprint of the staged tree.
     pub peppy_dirs: &'a PeppyDirs,
     /// Channel that streams stdout/stderr lines from the build child process
     /// (and from `build_cmd`, for process nodes) back to the caller.
@@ -253,6 +257,39 @@ pub struct BuildContext<'a> {
     /// SIGKILLs and reaps the build subprocess so the superseding build can
     /// reuse the working dir without racing a dying process.
     pub cancel_token: CancellationToken,
+    /// When set, an artifact already in storage for the staged tree's
+    /// fingerprint is ignored and this build's result replaces it.
+    pub rebuild: bool,
+}
+
+/// What [`NodeEntity::build`] snapshots under its Phase 1 write lock, so the
+/// I/O phases run without touching the entity again.
+struct BuildSnapshot {
+    node_name: String,
+    node_tag: String,
+    config_path: PathBuf,
+    container: Option<ContainerConfig>,
+    build_cmd: Option<Vec<String>>,
+    language: PeppygenLanguage,
+    generation: u64,
+}
+
+impl BuildSnapshot {
+    fn artifact_kind(&self) -> ArtifactKind {
+        if self.container.is_some() {
+            ArtifactKind::Container
+        } else {
+            ArtifactKind::Process
+        }
+    }
+
+    fn build_failed(&self, reason: String) -> Error {
+        Error::BuildFailed {
+            node_name: self.node_name.clone(),
+            node_tag: self.node_tag.clone(),
+            reason,
+        }
+    }
 }
 
 /// Inputs required to drive [`NodeEntity::prepare_and_spawn`] to completion.
@@ -579,6 +616,10 @@ impl NodeEntity {
 
     /// Drives the entity from `Added → Building → Ready`.
     ///
+    /// A staged tree whose fingerprint already has an artifact in storage is
+    /// not rebuilt unless `ctx.rebuild` is set (see
+    /// [`super::build_artifact_cache`]).
+    ///
     /// On success, returns the `PathBuf` of the artifact installed in storage.
     /// The caller MUST use this returned path rather than re-reading
     /// `entity.artifact_path()` afterwards, because a concurrent
@@ -589,15 +630,7 @@ impl NodeEntity {
     /// calling `NodeStack::remove_config`.
     pub async fn build(handle: &Arc<RwLock<NodeEntity>>, ctx: BuildContext<'_>) -> Result<PathBuf> {
         // ---- Phase 1: Added → Building, snapshot inputs (brief write lock) ----
-        let (
-            node_name,
-            node_tag,
-            config_path,
-            container_opt,
-            build_cmd,
-            language,
-            build_generation,
-        ) = {
+        let snapshot = {
             let mut guard = handle.write();
             if let Err(from) = guard.stage.ensure_buildable() {
                 return Err(Error::InvalidStageTransition {
@@ -611,15 +644,15 @@ impl NodeEntity {
                 unreachable!("ensure_buildable just verified Added")
             };
             let config_path = config_path.clone();
-            let snapshot = (
-                guard.config.manifest.name.as_str().to_owned(),
-                guard.config.manifest.tag.clone(),
-                config_path.clone(),
-                guard.config.execution.container.clone(),
-                guard.config.execution.build_cmd.clone(),
-                guard.config.execution.language,
-                guard.generation,
-            );
+            let snapshot = BuildSnapshot {
+                node_name: guard.config.manifest.name.as_str().to_owned(),
+                node_tag: guard.config.manifest.tag.clone(),
+                config_path: config_path.clone(),
+                container: guard.config.execution.container.clone(),
+                build_cmd: guard.config.execution.build_cmd.clone(),
+                language: guard.config.execution.language,
+                generation: guard.generation,
+            };
             // Atomic transition Added → Building under the same write lock as
             // the validation. Any second concurrent call now sees Building.
             guard.stage = NodeStage::Building { config_path };
@@ -627,114 +660,8 @@ impl NodeEntity {
             snapshot
         };
 
-        // ---- Phase 2: I/O without any entity lock ----
-        // For container nodes, build the .sif via apptainer.
-        // For process nodes, run the user-defined build_cmd (if any).
-        // Defer publishing the artifact into shared storage until *after*
-        // we re-confirm the entity is still `Building` under the write
-        // lock; otherwise a stale build could orphan/overwrite an artifact
-        // installed by a competing winner.
-        let is_container = container_opt.is_some();
-        let io_result: std::result::Result<(), Error> = async {
-            if let Some(container) = container_opt {
-                let apptainer_build_extra_args = container
-                    .apptainer_build_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-                let lima_shell_extra_args = container
-                    .lima_shell_extra_args
-                    .as_deref()
-                    .unwrap_or_default();
-
-                build_container_image(ContainerBuildInputs {
-                    working_dir: ctx.working_dir,
-                    node_name: &node_name,
-                    node_tag: &node_tag,
-                    def_file: &container.def_file,
-                    apptainer_build_extra_args,
-                    lima_shell_extra_args,
-                    language,
-                    feedback_tx: ctx.feedback_tx,
-                    log_file: Arc::clone(&ctx.log_file),
-                    peppy_dirs: ctx.peppy_dirs,
-                    cancel_token: &ctx.cancel_token,
-                })
-                .await
-                .map_err(|reason| Error::BuildFailed {
-                    node_name: node_name.clone(),
-                    node_tag: node_tag.clone(),
-                    reason,
-                })?;
-            } else {
-                // Process node: run build_cmd inside the working dir.
-                run_build_cmd(
-                    build_cmd.as_ref(),
-                    ctx.working_dir,
-                    ctx.env_vars,
-                    ctx.feedback_tx,
-                    Arc::clone(&ctx.log_file),
-                    &ctx.cancel_token,
-                )
-                .await
-                .map_err(|reason| Error::BuildFailed {
-                    node_name: node_name.clone(),
-                    node_tag: node_tag.clone(),
-                    reason: format!("build_cmd failed: {}", reason),
-                })?;
-            }
-            Ok(())
-        }
-        .await;
-
-        // ---- Phase 2.5: publish the artifact into shared storage ----
-        // This is blocking I/O (tar+zstd or fs::copy on potentially multi-GB
-        // images) so we run it via `spawn_blocking` off the tokio runtime
-        // worker. Done *before* acquiring the phase 3 write lock so the
-        // parking_lot guard is never held across blocking I/O.
-        let publish_result: std::result::Result<Option<PathBuf>, Error> = match &io_result {
-            Ok(()) => {
-                let working_dir = ctx.working_dir.to_path_buf();
-                let peppy_dirs = ctx.peppy_dirs.clone();
-                let node_name_pub = node_name.clone();
-                let node_tag_pub = node_tag.clone();
-                let join_res = tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
-                    if is_container {
-                        move_sif_to_storage(
-                            &working_dir,
-                            &node_name_pub,
-                            &node_tag_pub,
-                            &peppy_dirs,
-                        )
-                    } else {
-                        archive_dir_to_storage(
-                            &working_dir,
-                            &node_name_pub,
-                            &node_tag_pub,
-                            &peppy_dirs,
-                        )
-                    }
-                })
-                .await;
-                match join_res {
-                    Ok(Ok(path)) => Ok(Some(path)),
-                    Ok(Err(e)) => Err(Error::BuildFailed {
-                        node_name: node_name.clone(),
-                        node_tag: node_tag.clone(),
-                        reason: if is_container {
-                            format!("failed to move container image to storage: {}", e)
-                        } else {
-                            format!("failed to archive node directory: {}", e)
-                        },
-                    }),
-                    Err(e) => Err(Error::BuildFailed {
-                        node_name: node_name.clone(),
-                        node_tag: node_tag.clone(),
-                        reason: format!("storage publish task failed: {}", e),
-                    }),
-                }
-            }
-            Err(_) => Ok(None),
-        };
+        // ---- Phase 2: produce the artifact without any entity lock ----
+        let build_result = Self::produce_artifact(&snapshot, &ctx).await;
 
         // ---- Phase 3: apply transition or rollback (brief write lock) ----
         let mut guard = handle.write();
@@ -746,36 +673,159 @@ impl NodeEntity {
         // started (so the stage is `Building` again), the generation will
         // differ from what we captured in Phase 1.
         if !matches!(guard.stage, NodeStage::Building { .. })
-            || guard.generation != build_generation
+            || guard.generation != snapshot.generation
         {
             return Err(Error::InvalidStageTransition {
-                node_name,
-                node_tag,
+                node_name: snapshot.node_name,
+                node_tag: snapshot.node_tag,
                 from: guard.stage.name(),
                 to: "Ready",
             });
         }
 
-        match io_result {
-            Ok(()) => {
-                let artifact_path =
-                    publish_result?.expect("publish_result is Some when io_result is Ok");
+        // On failure the entity stays in `Building`; the caller owns cleanup
+        // (typically `NodeStack::remove_config`). See the failure contract in
+        // the doc comment on this method.
+        let artifact_path = build_result?;
+        guard.stage = NodeStage::Ready {
+            config_path: snapshot.config_path,
+            artifact: Artifact::Built(artifact_path.clone()),
+            instances: Vec::new(),
+        };
+        guard.broadcast_stage();
+        Ok(artifact_path)
+    }
 
-                guard.stage = NodeStage::Ready {
-                    config_path,
-                    artifact: Artifact::Built(artifact_path.clone()),
-                    instances: Vec::new(),
-                };
-                guard.broadcast_stage();
-                Ok(artifact_path)
+    /// Phase 2 of [`NodeEntity::build`]: the artifact for the snapshot's
+    /// staged tree, reused from storage when one built from the same tree is
+    /// already there, otherwise built and published to its slot. Runs
+    /// without any entity lock.
+    async fn produce_artifact(snapshot: &BuildSnapshot, ctx: &BuildContext<'_>) -> Result<PathBuf> {
+        let kind = snapshot.artifact_kind();
+
+        // Fingerprinting reads every staged file, so it runs on the blocking
+        // pool. It happens before any build I/O: the `.sif` apptainer writes
+        // into the working dir and whatever `build_cmd` leaves behind must not
+        // feed the key of the build producing them.
+        let slot = {
+            let peppy_dirs = ctx.peppy_dirs.clone();
+            let working_dir = ctx.working_dir.to_path_buf();
+            let node_name = snapshot.node_name.clone();
+            let node_tag = snapshot.node_tag.clone();
+            tokio::task::spawn_blocking(move || {
+                resolve_slot(&peppy_dirs, &node_name, &node_tag, &working_dir, kind)
+            })
+            .await
+            .map_err(|e| snapshot.build_failed(format!("fingerprint task failed: {e}")))?
+            .map_err(|e| {
+                snapshot.build_failed(format!(
+                    "failed to fingerprint the staged node tree at {}: {e}",
+                    ctx.working_dir.display()
+                ))
+            })?
+        };
+
+        if slot.cached && !ctx.rebuild {
+            announce(
+                ctx.feedback_tx,
+                &ctx.log_file,
+                reuse_line(
+                    &snapshot.node_name,
+                    &snapshot.node_tag,
+                    &slot.fingerprint,
+                    &slot.path,
+                ),
+            );
+            return Ok(slot.path);
+        }
+        let line = if slot.cached {
+            format!(
+                "Rebuilding {}:{} (fingerprint {}); replacing cached build at {}",
+                snapshot.node_name,
+                snapshot.node_tag,
+                slot.fingerprint,
+                slot.path.display()
+            )
+        } else {
+            format!(
+                "No cached build of {}:{} for fingerprint {}; building",
+                snapshot.node_name, snapshot.node_tag, slot.fingerprint
+            )
+        };
+        announce(ctx.feedback_tx, &ctx.log_file, line);
+
+        match &snapshot.container {
+            Some(container) => {
+                // Container node: build the .sif via apptainer.
+                let apptainer_build_extra_args = container
+                    .apptainer_build_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+                let lima_shell_extra_args = container
+                    .lima_shell_extra_args
+                    .as_deref()
+                    .unwrap_or_default();
+
+                build_container_image(ContainerBuildInputs {
+                    working_dir: ctx.working_dir,
+                    node_name: &snapshot.node_name,
+                    node_tag: &snapshot.node_tag,
+                    def_file: &container.def_file,
+                    apptainer_build_extra_args,
+                    lima_shell_extra_args,
+                    language: snapshot.language,
+                    feedback_tx: ctx.feedback_tx,
+                    log_file: Arc::clone(&ctx.log_file),
+                    peppy_dirs: ctx.peppy_dirs,
+                    cancel_token: &ctx.cancel_token,
+                })
+                .await
+                .map_err(|reason| snapshot.build_failed(reason))?;
             }
-            Err(e) => {
-                // Leave the entity in `Building`. The caller owns cleanup
-                // (typically `NodeStack::remove_config`). See the doc comment
-                // on this method for the failure contract.
-                Err(e)
+            None => {
+                // Process node: run build_cmd inside the working dir.
+                run_build_cmd(
+                    snapshot.build_cmd.as_ref(),
+                    ctx.working_dir,
+                    ctx.env_vars,
+                    ctx.feedback_tx,
+                    Arc::clone(&ctx.log_file),
+                    &ctx.cancel_token,
+                )
+                .await
+                .map_err(|reason| snapshot.build_failed(format!("build_cmd failed: {reason}")))?;
             }
         }
+
+        // Publishing is blocking I/O (tar+zstd or fs::copy on potentially
+        // multi-GB images), so it runs via `spawn_blocking` off the tokio
+        // runtime worker, and before the Phase 3 write lock so the
+        // parking_lot guard is never held across blocking I/O. Pruning runs
+        // after the publish so storage keeps this build's artifact only.
+        let working_dir = ctx.working_dir.to_path_buf();
+        let node_name = snapshot.node_name.clone();
+        let node_tag = snapshot.node_tag.clone();
+        let destination = slot.path;
+        tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
+            let published = match kind {
+                ArtifactKind::Container => {
+                    move_sif_to_storage(&working_dir, &node_name, &node_tag, &destination)?
+                }
+                ArtifactKind::Process => archive_dir_to_storage(&working_dir, &destination)?,
+            };
+            prune_siblings(&published);
+            Ok(published)
+        })
+        .await
+        .map_err(|e| snapshot.build_failed(format!("storage publish task failed: {e}")))?
+        .map_err(|e| {
+            snapshot.build_failed(match kind {
+                ArtifactKind::Container => {
+                    format!("failed to move container image to storage: {e}")
+                }
+                ArtifactKind::Process => format!("failed to archive node directory: {e}"),
+            })
+        })
     }
 
     /// Best-effort removal of an in-flight `Starting` instance. Used by
@@ -1590,6 +1640,78 @@ mod tests {
                 "/arm_control/v1/mcp".to_owned(),
             ],
         }
+    }
+
+    fn container_sensor_config() -> NodeConfig {
+        serde_json5::from_str::<NodeConfig>(
+            r#"{
+                peppy_schema: "node/v1",
+                manifest: { name: "sensor", tag: "v1" },
+                interfaces: {},
+                execution: {
+                    language: "python",
+                    container: { def_file: "sensor.def" },
+                }
+            }"#,
+        )
+        .expect("valid container sensor config")
+    }
+
+    /// A container build whose staged tree already has an image in storage
+    /// publishes that image without spawning apptainer. The def file here
+    /// names nothing buildable, so an apptainer run could only fail the
+    /// build.
+    #[tokio::test]
+    async fn a_container_build_with_a_cached_image_skips_apptainer() {
+        let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
+        let peppy_dirs = PeppyDirs::new(peppy_root.path());
+        let working_dir = tempfile::tempdir().expect("working_dir tempdir");
+        std::fs::write(working_dir.path().join("sensor.def"), b"Bootstrap: none\n")
+            .expect("stage def file");
+
+        let slot = resolve_slot(
+            &peppy_dirs,
+            "sensor",
+            "v1",
+            working_dir.path(),
+            ArtifactKind::Container,
+        )
+        .expect("resolve slot");
+        std::fs::create_dir_all(slot.path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&slot.path, b"SIF").expect("seed the cached image");
+
+        let handle = Arc::new(RwLock::new(NodeEntity::new(
+            container_sensor_config(),
+            "/tmp/sensor/peppy.json5",
+        )));
+        let log_file = Arc::new(StdMutex::new(
+            tempfile::tempfile().expect("tempfile should succeed"),
+        ));
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
+
+        let built = NodeEntity::build(
+            &handle,
+            BuildContext {
+                working_dir: working_dir.path(),
+                peppy_dirs: &peppy_dirs,
+                feedback_tx: &feedback_tx,
+                log_file,
+                env_vars: &[],
+                cancel_token: CancellationToken::new(),
+                rebuild: false,
+            },
+        )
+        .await
+        .expect("a cached image makes the build succeed without apptainer");
+
+        assert_eq!(built, slot.path);
+        assert_eq!(handle.read().artifact_path(), Some(slot.path.as_path()));
+        assert!(matches!(handle.read().stage(), NodeStage::Ready { .. }));
+        let line = feedback_rx.try_recv().expect("the reuse is announced").line;
+        assert_eq!(
+            line,
+            reuse_line("sensor", "v1", &slot.fingerprint, &slot.path)
+        );
     }
 
     #[test]

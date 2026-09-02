@@ -75,15 +75,19 @@ struct NodeBuildRun {
     /// the build to roll the entity back to `Added` (re-attaching the working
     /// dir) rather than removing it.
     cancel_token: CancellationToken,
+    /// See [`NodeBuildGoal::rebuild`].
+    rebuild: bool,
 }
 
 /// Drives a build for the entity named `(node_name, node_tag)` that is
 /// currently in `Added`. The caller supplies the log file/path and the
 /// feedback channel; everything else is recovered from the entity itself.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_node_build_for_entity(
     node_name: String,
     node_tag: String,
     env_vars: Vec<(String, String)>,
+    rebuild: bool,
     action_context: NodeBuildActionContext,
     feedback_tx: mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
@@ -134,6 +138,7 @@ pub(crate) async fn run_node_build_for_entity(
         log_path,
         // This helper drives a fresh build that nothing supersedes.
         cancel_token: CancellationToken::new(),
+        rebuild,
     })
     .await
 }
@@ -346,6 +351,7 @@ impl NodeBuildGoalHandler {
                 log_file,
                 log_path: log_path_clone,
                 cancel_token: cancel_token_for_task,
+                rebuild: goal.rebuild,
             })
             .await;
 
@@ -372,6 +378,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
         log_file,
         log_path,
         cancel_token,
+        rebuild,
     } = run;
 
     let log_file_for_panic = log_file.clone();
@@ -444,6 +451,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 log_file: Arc::clone(&log_file),
                 env_vars: &env_vars,
                 cancel_token: cancel_token.clone(),
+                rebuild,
             },
         )
         .await;

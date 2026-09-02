@@ -282,6 +282,7 @@ pub fn launch(
     node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
     max_timeout_secs: Option<u64>,
+    rebuild: bool,
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
@@ -292,6 +293,7 @@ pub fn launch(
         node_build_idle_timeout_secs,
         node_run_idle_timeout_secs,
         max_timeout_secs,
+        rebuild,
     ))
 }
 
@@ -305,6 +307,7 @@ async fn launch_async(
     node_build_idle_timeout_secs: u64,
     node_run_idle_timeout_secs: u64,
     max_timeout_secs: Option<u64>,
+    rebuild: bool,
 ) -> Result<()> {
     let launcher_origin = infer_launcher_origin(launcher_config_path)?;
 
@@ -385,7 +388,8 @@ async fn launch_async(
     )
     .with_env_vars(caller_env_overrides())
     .with_placement(placement)
-    .with_selections(with);
+    .with_selections(with)
+    .with_rebuild(rebuild);
 
     // CLI fallback ceiling: when the user opts into a max we grant the daemon a response-grace
     // window to surface its own error first, but never less than the absolute floor in case the

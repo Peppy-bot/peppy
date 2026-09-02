@@ -34,7 +34,7 @@ Log file: ~/.peppy/logs/add/hello_world_v1_20260121_224824_699.log
 Added node hello_world:v1 to the node stack
 ```
 This gives you access to the log file for debugging in case the `add` command fails.
-When a node is added to the node stack, a copy of the source is staged in a working directory under `~/.peppy/tmp/` to "snapshot" the node; the artifact that `peppy node build` produces later lands under `~/.peppy/built_nodes/`.
+When a node is added to the node stack, a copy of the source is staged in a working directory under `~/.peppy/tmp/` to "snapshot" the node; the artifact that `peppy node build` produces later lands under `~/.peppy/built_nodes/<name>_<tag>/`, named after a fingerprint of the staged sources.
 No two copies of the same node with the same name + tag can exist at the same time in the node stack.
 Re-adding a node with the same name and tag overrides the one that was previously in the node stack. The overwrite is refused when the re-add changes the node's interfaces while other nodes depend on it. If the node has live instances, `peppy node add` asks for confirmation and stops them before overwriting.
 
@@ -70,10 +70,18 @@ The output looks like:
 ```
 Building node hello_world:v1...
 Log file: ~/.peppy/logs/build/hello_world_v1_20260121_224901_312.log
-Built node hello_world:v1. Artifact: ~/.peppy/built_nodes/hello_world_v1.tar.zst
+Built node hello_world:v1. Artifact: ~/.peppy/built_nodes/hello_world_v1/3f9a1c2e5d7b8a4f.tar.zst
 ```
 
 The artifact is a `.tar.zst` archive. When you start an instance with `peppy node run`, the daemon extracts it into a per-instance directory and executes `run_cmd` there.
+
+The file name is the fingerprint of the staged sources. Building the node again from byte-identical sources reuses the artifact instead of running `build_cmd`, and the build log says so:
+
+```
+Reusing cached build of hello_world:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/hello_world_v1/3f9a1c2e5d7b8a4f.tar.zst
+```
+
+Pass `peppy node build hello_world:v1 --rebuild` to build from the sources anyway, for instance after a toolchain change on the host; the result replaces the cached artifact. See [Build caching](/advanced_guides/containers/#build-caching) for what the fingerprint covers.
 
 ## Starting your node
 
@@ -126,31 +134,31 @@ You should see something like:
 
 ```
 $ peppy stack list
-┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-funny-chatterjee (host: robot-host)                                                             │
-├───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Node stack                                                                                                    │
-│                                                                                                               │
-│ ┌─────────────────────────────────────────┬───────┬───────────┬─────────────────────────────────────────────┐ │
-│ │ NODE                                    │ STAGE │ INSTANCES │ PATH                                        │ │
-│ ├─────────────────────────────────────────┼───────┼───────────┼─────────────────────────────────────────────┤ │
-│ │ cn-funny-chatterjee:v0.10.0             │ Root  │ 1 running │ ~/.peppy/bin                                │ │
-│ │ hello_world:v1                          │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_world_v1.tar.zst │ │
-│ └─────────────────────────────────────────┴───────┴───────────┴─────────────────────────────────────────────┘ │
-│                                                                                                               │
-│ Instance bindings                                                                                             │
-│                                                                                                               │
-│ ┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┐  │
-│ │ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ BINDINGS │  │
-│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤  │
-│ │ cn-funny-chatterjee:v0.10.0             │ cn-funny-chatterjee             │ running │ healthy │ (none)   │  │
-│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤  │
-│ │ hello_world:v1                          │ suspicious-swanson-5880         │ running │ healthy │ (none)   │  │
-│ └─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┘  │
-│                                                                                                               │
-│ Dependencies                                                                                                  │
-│   (none)                                                                                                      │
-└───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Core node: cn-funny-chatterjee (host: robot-host)                                                                              │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Node stack                                                                                                                     │
+│                                                                                                                                │
+│ ┌─────────────────────────────────────────┬───────┬───────────┬──────────────────────────────────────────────────────────────┐ │
+│ │ NODE                                    │ STAGE │ INSTANCES │ PATH                                                         │ │
+│ ├─────────────────────────────────────────┼───────┼───────────┼──────────────────────────────────────────────────────────────┤ │
+│ │ cn-funny-chatterjee:v0.10.0             │ Root  │ 1 running │ ~/.peppy/bin                                                 │ │
+│ │ hello_world:v1                          │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_world_v1/3f9a1c2e5d7b8a4f.tar.zst │ │
+│ └─────────────────────────────────────────┴───────┴───────────┴──────────────────────────────────────────────────────────────┘ │
+│                                                                                                                                │
+│ Instance bindings                                                                                                              │
+│                                                                                                                                │
+│ ┌─────────────────────────────────────────┬─────────────────────────────────┬─────────┬─────────┬──────────┐                   │
+│ │ NODE                                    │ INSTANCE                        │ STATUS  │ HEALTH  │ BINDINGS │                   │
+│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤                   │
+│ │ cn-funny-chatterjee:v0.10.0             │ cn-funny-chatterjee             │ running │ healthy │ (none)   │                   │
+│ ├─────────────────────────────────────────┼─────────────────────────────────┼─────────┼─────────┼──────────┤                   │
+│ │ hello_world:v1                          │ suspicious-swanson-5880         │ running │ healthy │ (none)   │                   │
+│ └─────────────────────────────────────────┴─────────────────────────────────┴─────────┴─────────┴──────────┘                   │
+│                                                                                                                                │
+│ Dependencies                                                                                                                   │
+│   (none)                                                                                                                       │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 With no arguments, `stack list` discovers every live core node in the same messaging namespace and prints one outer panel per distinct core-node name: the local name first, then the others by name. The panel header identifies the core node and its hostname, while the enclosing border groups its node stack, instance bindings, and dependencies, plus, when present, an `Instance endpoints` table (one row per HTTP endpoint an instance serves, such as an [MCP exposure](/advanced_guides/mcp/)), an `Instance pairings` table, and launch-ownership lines (`Slice of launch ...`, and `Reserved for launch ...` naming the reset command that clears it). If multiple live daemons collide on one name, discovery deduplicates them into a single warning-bearing panel. Use `peppy stack list --core-node <name>` to filter the output to that one name. If a core node disappears between discovery and the stack query, the other panels still render, the failed panel contains an error line, and the command exits non-zero. The panels and their tables fit the terminal: the widest columns give way first, never below a header's width, and over-long cells or lines wrap inside the borders; piped output is never wrapped. `--json` prints the same discovery as one JSON document instead: one entry per core node with its identity, `launch` and `reservation`, and either the `stack` graph (`nodes` and `edges`) or the query `error`.
@@ -158,7 +166,7 @@ With no arguments, `stack list` discovers every live core node in the same messa
 The `STAGE` column reports each node's **stage**, its artifact-level lifecycle:
 
 - **`Added`**: the node is registered and a snapshot of the source has been taken, but `build_cmd` has not been run yet, so there is no runnable artifact.
-- **`Building`**: a build is in progress. A second concurrent `node build` on the same entity is rejected until this one finishes, unless it passes `--force`, which cancels and supersedes the in-progress build.
+- **`Building`**: a build is in progress. A second concurrent `node build` on the same entity is rejected until this one finishes, unless it passes `--force`, which cancels and supersedes the in-progress build. A build whose staged sources match a cached artifact passes through this stage without running `build_cmd`; `--rebuild` makes it build anyway.
 - **`Ready`**: the build artifact is on disk. The node can be run; it may currently have zero, one, or several instances.
 - **`Root`**: the synthetic core-node entity. Always present, and always reports exactly one running instance (the daemon itself).
 

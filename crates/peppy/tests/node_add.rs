@@ -1964,7 +1964,7 @@ fn node_add_build_force_supersedes_inflight_build() {
                     idle_secs: 120,
                     max_secs: 600,
                 },
-                false,
+                peppy::commands::node::BuildOptions::default(),
             )
             .await
         })

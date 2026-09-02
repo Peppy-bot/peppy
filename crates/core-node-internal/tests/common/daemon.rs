@@ -638,6 +638,7 @@ pub async fn real_build_and_spawn_instance(
             log_file: build_log,
             env_vars: &[],
             cancel_token: tokio_util::sync::CancellationToken::new(),
+            rebuild: false,
         },
     )
     .await
