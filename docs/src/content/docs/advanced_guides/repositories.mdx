@@ -55,13 +55,29 @@ The two `conf/` files are JSON5 arrays. Each entry has an `id` (auto-assigned if
 | Type | Fields | Description |
 |------|--------|-------------|
 | `fs` | `path` | A local directory, read through its committed [`peppy_repository.json5`](#the-repository-index). |
-| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and reads the same committed index. Use `ref` to pin a branch, tag, or commit. |
+| `git` | `url`, `ref` (optional) | A git repository. Peppy shallow-clones it and reads the same committed index. Use `ref` to pin a branch, tag, or commit. The `url` is HTTPS or an SSH URL (see [Private git repositories over SSH](#private-git-repositories-over-ssh)). |
 
 These are the only two source types. An entry with any other `type` fails its read as `unreachable` with an "unrecognized repository entry" detail.
 
 An `fs` repository is a path only this machine can read, so a deployment resolved from one must keep
 all of its instances on this daemon in a federated launch; serve the nodes from a `git` repository
 to place them on other machines (see [Federation limits](/advanced_guides/federation/#limits)).
+
+### Private git repositories over SSH
+
+A `git` repository's `url` may be HTTPS or SSH, so a private repository is reachable without embedding a
+credential in `repositories.json5`. Give it either the scp-style `git@host:owner/repo.git` or an
+`ssh://` URL, and Peppy authenticates the way `ssh` itself does:
+
+- The ssh-agent's key is offered first, as the URL's user (`git` when the URL names none).
+- The default identity files under `~/.ssh` follow, in the order `id_ed25519`, `id_ecdsa`, `id_rsa`,
+  each offered only when it exists as a file.
+- The host key is checked against `~/.ssh/known_hosts` before any key is offered, so a host missing
+  from that file, or one whose key has changed, is refused.
+
+Load a key the remote accepts into the ssh-agent, or keep an unencrypted default identity under
+`~/.ssh`, and both [`peppy repo add`](#add-a-repository) and `peppy node add` reach the repository
+over SSH.
 
 ## Commands
 
@@ -257,6 +273,9 @@ peppy repo add /path/to/my/nodes
 # Git repository
 peppy repo add https://github.com/org/repo.git
 
+# Private git repository over SSH (see "Private git repositories over SSH" above)
+peppy repo add git@github.com:org/private-repo.git
+
 # Git repository pinned to a branch or tag
 peppy repo add https://github.com/org/repo.git --ref v2.0
 
@@ -439,7 +458,7 @@ One constraint applies to this source shape:
 
 - `--ref` is rejected. The git ref (if any) is pinned once in `repositories.json5` when you register the repo, not per-add.
 
-If the node you want to add lives in a repository that is **not** in `repositories.json5`, keep using the full git URL or HTTP archive form shown in [Sharing nodes](/guides/sharing_nodes/).
+If the node you want to add lives in a repository that is **not** in `repositories.json5`, keep using the full git URL or HTTP archive form shown in [Sharing nodes](/guides/sharing_nodes/). That git URL may be HTTPS or SSH; an SSH URL (`git@host:owner/repo.git`) reaches a private repository under the same authentication described in [Private git repositories over SSH](#private-git-repositories-over-ssh).
 
 A manifest can also pin the exact content of a contract or pairing document it references with a `sha256` fingerprint, independent of which repository provides it; see [Content pins](/advanced_guides/lockfiles/).
 
