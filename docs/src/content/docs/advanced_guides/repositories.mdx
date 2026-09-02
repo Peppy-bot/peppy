@@ -245,7 +245,7 @@ A machine that has **never** read a repository successfully has nothing to fall 
 ### Add a repository
 
 ```sh
-peppy repo add <source> [--ref <tag-or-branch>] [--top]
+peppy repo add <source> [--ref <tag-or-branch>] [--top | --id <id>]
 ```
 
 Adds a new repository to `repositories.json5`. The source format is auto-detected:
@@ -262,9 +262,14 @@ peppy repo add https://github.com/org/repo.git --ref v2.0
 
 # Give the new repo top priority (lower `id` than every existing entry)
 peppy repo add /path/to/my/nodes --top
+
+# Pin the repo under an exact id from the reserved band (>= 2000)
+peppy repo add /path/to/my/nodes --id 2000
 ```
 
 The `--ref` flag is only valid for git sources. By default the new repository is appended with `id = max(existing ids) + 1`, so it has the lowest priority among configured repositories; pass `--top` to assign it an `id` just below the current minimum, giving it the highest priority. The priority `id` decides which repository wins when several of them provide the same `name:tag` (see [Refresh the index](#refresh-the-index)).
+
+Pass `--id <id>` to pin the new repository under that exact id instead of a derived one. Take ids from the reserved band `>= 2000`: Peppy's bundled defaults stay below 2000, so a pinned id never collides with a default. `--id` conflicts with `--top`, since both decide which id the entry takes. Pinning an id another entry already holds is refused, naming the id (for example `repository id 2000 is already in use`).
 
 ### Remove a repository
 
