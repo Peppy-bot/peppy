@@ -2,17 +2,19 @@
 //! sanitization, ref checkout, reading the commit a working tree sits on,
 //! and a clone that honors a deadline on the network transfer. Remote
 //! repositories are read over HTTPS or SSH; the SSH ones authenticate the
-//! way `ssh` itself would — the ssh-agent's key, then the default identity
-//! files — and have their host key checked against `~/.ssh/known_hosts`
-//! (see [`install_credentials`]), so a private repository is a
-//! `git@host:owner/repo.git` URL away rather than a local checkout this
-//! machine must register instead.
+//! way `ssh` itself would for the host, with the agent and identity files
+//! `~/.ssh/config` selects, and have their host key checked against
+//! `~/.ssh/known_hosts` (see [`install_credentials`]), so a private
+//! repository is a `git@host:owner/repo.git` URL away rather than a local
+//! checkout this machine must register instead.
 
+use crate::ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};
 use daemon_config::repository::GitCommit;
 use git2::Repository;
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
+use tracing::debug;
 
 /// Throttle window between consecutive `transfer_progress` reports surfaced
 /// to the user: fast enough to feel live, slow enough to avoid flooding
@@ -202,99 +204,278 @@ fn progress_callbacks<'cb>(
 /// The answer to libgit2's nth request for credentials on one connection.
 #[derive(Debug, PartialEq, Eq)]
 enum CredentialAnswer {
-    /// The ssh-agent's key, authing as this user.
+    /// The ssh agent's keys, authing as this user.
     AgentKey(String),
-    /// A default identity file, authing as this user.
+    /// An identity file, authing as this user.
     KeyFile { user: String, key: PathBuf },
     /// Just a username, for the username-only probe libgit2 makes on an
     /// `ssh://` URL that carries no user.
     Username(String),
     /// Nothing left to offer, and why.
-    Refuse(&'static str),
+    Refuse(String),
 }
 
-/// The default identity files OpenSSH itself tries, in the order a modern
-/// host realistically holds them. The `*-sk` kinds are absent on purpose:
-/// they live on FIDO tokens, which no unattended libssh2 client can tap.
+/// The identity files `ssh` itself tries when its configuration names none,
+/// in the order a modern host realistically holds them. Offered only when
+/// no `ssh` is installed to resolve the configured list; the `*-sk` kinds
+/// are absent on purpose: they live on FIDO tokens, which no unattended
+/// libssh2 client can tap.
 const DEFAULT_SSH_IDENTITIES: [&str; 3] = ["id_ed25519", "id_ecdsa", "id_rsa"];
 
-/// Resolves [`DEFAULT_SSH_IDENTITIES`] against `home`, skipping names that
-/// exist as directories (an `~/.ssh/id_ed25519/` is not a key).
-fn ssh_key_candidates(home: Option<&Path>) -> Vec<PathBuf> {
+/// Resolves [`DEFAULT_SSH_IDENTITIES`] against `home`.
+fn default_identity_files(home: Option<&Path>) -> Vec<PathBuf> {
     let Some(home) = home else {
         return Vec::new();
     };
     DEFAULT_SSH_IDENTITIES
         .iter()
         .map(|name| home.join(".ssh").join(name))
-        .filter(|path| path.is_file())
         .collect()
 }
 
-/// What peppy answers when a remote asks for credentials.
-///
-/// A public HTTPS repository never asks, so libgit2 never calls back and the
-/// answer here is irrelevant to it. A private one asks for a username and
-/// password peppy does not hold; refusing keeps that a named failure that
-/// names the fix (credentials embedded in the URL, which libgit2 uses
-/// without asking). SSH always authenticates the client, and the answer
-/// mirrors what `ssh` itself would try: the ssh-agent's key for the URL's
-/// user — `git` for the scp-style `git@host:owner/repo.git` URLs the hub
-/// repositories use, and also for an `ssh://` URL that spells no user — and
-/// then the default identity files under `~/.ssh`. Each candidate is offered
-/// at most once: a repeated request means the remote refused it, and
-/// replaying would loop libgit2's auth retry until the server hangs up.
-///
-/// The host side of SSH is not peppy's to answer: libgit2 checks the host
-/// key against `~/.ssh/known_hosts` itself and refuses an unknown or
-/// mismatched one before any credentials are requested.
-fn credential_answer(
-    username: Option<&str>,
-    allowed: git2::CredentialType,
-    attempt: usize,
-    key_candidates: &[PathBuf],
-) -> CredentialAnswer {
-    let user = username.unwrap_or("git").to_owned();
-    if allowed.contains(git2::CredentialType::SSH_KEY) {
-        if attempt == 0 {
-            return CredentialAnswer::AgentKey(user);
-        }
-        let key = key_candidates.get(attempt - 1).cloned();
-        if let Some(key) = key {
-            return CredentialAnswer::KeyFile { user, key };
-        }
-        return CredentialAnswer::Refuse(
-            "the remote refused the ssh-agent's keys and the default identity files \
-             (~/.ssh/id_ed25519, id_ecdsa, id_rsa); load a key the remote accepts into the \
-             agent, or point the repository at an unencrypted default identity",
-        );
+/// The agent whose keys open one ssh connection, or why none does.
+#[derive(Debug, PartialEq, Eq)]
+enum OfferedAgent {
+    /// The agent at this socket, which `SSH_AUTH_SOCK` names in this process.
+    Socket(PathBuf),
+    /// `SSH_AUTH_SOCK` is unset and the host's configuration names no agent.
+    Unset,
+    /// The host's configuration disables the agent (`IdentityAgent none`).
+    Disabled,
+}
+
+/// The credentials peppy offers on one ssh connection, in order: the
+/// agent's keys, then each identity file. Built once per connection from
+/// what `ssh` selects for the host.
+#[derive(Debug, PartialEq, Eq)]
+struct SshCredentialPlan {
+    user: String,
+    host: String,
+    agent: OfferedAgent,
+    /// The identity files that exist, offered after the agent.
+    key_files: Vec<PathBuf>,
+    /// The identity files the configuration names that are not files on
+    /// disk, named in the refusal so a typo in `~/.ssh/config` is visible.
+    absent_key_files: Vec<PathBuf>,
+}
+
+impl SshCredentialPlan {
+    /// The credentials in the order they are offered.
+    fn offers(&self) -> impl Iterator<Item = CredentialAnswer> + '_ {
+        let agent = matches!(self.agent, OfferedAgent::Socket(_))
+            .then(|| CredentialAnswer::AgentKey(self.user.clone()));
+        agent
+            .into_iter()
+            .chain(self.key_files.iter().map(|key| CredentialAnswer::KeyFile {
+                user: self.user.clone(),
+                key: key.clone(),
+            }))
     }
+
+    /// The answer to the nth credential request: each offer exactly once,
+    /// then a refusal naming everything the connection had.
+    fn answer(&self, attempt: usize) -> CredentialAnswer {
+        self.offers()
+            .nth(attempt)
+            .unwrap_or_else(|| CredentialAnswer::Refuse(self.refusal()))
+    }
+
+    fn refusal(&self) -> String {
+        let outcome = if self.offers().next().is_some() {
+            "the remote refused every credential peppy holds for"
+        } else {
+            "peppy holds no credential for"
+        };
+        format!(
+            "{outcome} {}@{}: {}, and {}; load a key the remote accepts into the agent, or keep \
+             an unencrypted identity file at one of those paths",
+            self.user,
+            self.host,
+            self.agent_description(),
+            self.identity_files_description()
+        )
+    }
+
+    fn agent_description(&self) -> String {
+        match &self.agent {
+            OfferedAgent::Socket(socket) if socket.exists() => {
+                format!("the keys in the ssh agent at {}", socket.display())
+            }
+            OfferedAgent::Socket(socket) => format!(
+                "the ssh agent at {}, whose socket does not exist",
+                socket.display()
+            ),
+            OfferedAgent::Unset => "no ssh agent (SSH_AUTH_SOCK is unset)".to_owned(),
+            OfferedAgent::Disabled => "no ssh agent (IdentityAgent none)".to_owned(),
+        }
+    }
+
+    fn identity_files_description(&self) -> String {
+        let absent = || {
+            format!(
+                "{} do not exist as files",
+                list_paths(&self.absent_key_files)
+            )
+        };
+        match (self.key_files.is_empty(), self.absent_key_files.is_empty()) {
+            (false, true) => format!("the identity files {}", list_paths(&self.key_files)),
+            (false, false) => format!(
+                "the identity files {} ({})",
+                list_paths(&self.key_files),
+                absent()
+            ),
+            (true, false) => format!("no identity file ({})", absent()),
+            (true, true) => "no identity file (the configuration names none)".to_owned(),
+        }
+    }
+}
+
+fn list_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Builds the plan for one connection from what `ssh` selects for the
+/// host. `host_config` is `None` when no `ssh` is installed to ask, in
+/// which case the agent `SSH_AUTH_SOCK` names and the default identity
+/// files stand in. `process_agent` is the socket `SSH_AUTH_SOCK` names in
+/// this process, the only agent libssh2 can reach; a host whose
+/// configuration selects a different one is refused by name, since the
+/// daemon binds its agent once at startup.
+fn plan_ssh_credentials(
+    user: String,
+    target: &SshTarget,
+    host_config: Option<SshHostConfig>,
+    process_agent: Option<PathBuf>,
+    default_identity_files: Vec<PathBuf>,
+) -> Result<SshCredentialPlan, String> {
+    let process_agent_offer = || match process_agent.clone() {
+        Some(socket) => OfferedAgent::Socket(socket),
+        None => OfferedAgent::Unset,
+    };
+    let (agent, identity_files) = match host_config {
+        None => (process_agent_offer(), default_identity_files),
+        Some(config) => {
+            let agent = match config.identity_agent {
+                IdentityAgent::FromEnvironment => process_agent_offer(),
+                IdentityAgent::Disabled => OfferedAgent::Disabled,
+                IdentityAgent::Socket(selected) if process_agent.as_ref() == Some(&selected) => {
+                    OfferedAgent::Socket(selected)
+                }
+                IdentityAgent::Socket(selected) => {
+                    return Err(agent_mismatch(target, &selected, process_agent.as_deref()));
+                }
+            };
+            (agent, config.identity_files)
+        }
+    };
+    let (key_files, absent_key_files) = identity_files.into_iter().partition(|path| path.is_file());
+    Ok(SshCredentialPlan {
+        user,
+        host: target.host.clone(),
+        agent,
+        key_files,
+        absent_key_files,
+    })
+}
+
+fn agent_mismatch(target: &SshTarget, selected: &Path, bound: Option<&Path>) -> String {
+    let bound = match bound {
+        Some(bound) => format!("the agent at {}", bound.display()),
+        None => "no agent (SSH_AUTH_SOCK is unset)".to_owned(),
+    };
+    format!(
+        "~/.ssh/config selects the ssh agent at {} for {} (IdentityAgent), but this daemon is \
+         bound to {bound} for its lifetime: when it starts it binds the agent ssh selects for a \
+         host with no host-specific configuration. Give every host that IdentityAgent (a \
+         `Host *` block) and restart the daemon",
+        selected.display(),
+        target.host
+    )
+}
+
+/// The plan for the connection libgit2 opened to `url`, authing as `user`.
+fn plan_for_url(url: &str, user: String) -> Result<SshCredentialPlan, String> {
+    let target = SshTarget::from_git_url(url)
+        .ok_or_else(|| format!("{url} is not an ssh URL peppy can read a host from"))?;
+    let host_config = resolve_host_config(&target)?;
+    let process_agent = std::env::var_os("SSH_AUTH_SOCK")
+        .filter(|socket| !socket.is_empty())
+        .map(PathBuf::from);
+    let plan = plan_ssh_credentials(
+        user,
+        &target,
+        host_config,
+        process_agent,
+        default_identity_files(dirs::home_dir().as_deref()),
+    )?;
+    debug!(
+        "git over ssh to {}@{}: offering {}, then {}",
+        plan.user,
+        plan.host,
+        plan.agent_description(),
+        plan.identity_files_description()
+    );
+    Ok(plan)
+}
+
+/// What peppy answers when a remote asks for something other than an ssh
+/// key. A public HTTPS repository never asks, so libgit2 never calls back
+/// and the answer here is irrelevant to it. A private one asks for a
+/// username and password peppy does not hold; refusing keeps that a named
+/// failure that names the fix (credentials embedded in the URL, which
+/// libgit2 uses without asking).
+fn non_ssh_answer(username: Option<&str>, allowed: git2::CredentialType) -> CredentialAnswer {
     if allowed.contains(git2::CredentialType::USERNAME)
-        && !allowed
-            .intersects(git2::CredentialType::SSH_KEY | git2::CredentialType::USER_PASS_PLAINTEXT)
+        && !allowed.intersects(git2::CredentialType::USER_PASS_PLAINTEXT)
     {
-        return CredentialAnswer::Username(user);
+        return CredentialAnswer::Username(username.unwrap_or("git").to_owned());
     }
     CredentialAnswer::Refuse(
-        "peppy authenticates git over ssh through the ssh-agent and the default identity \
-         files, and offers no other credentials; embed them in the repository URL instead",
+        "peppy authenticates git over ssh through the ssh agent and identity files, and offers \
+         no other credentials; embed them in the repository URL instead"
+            .to_owned(),
     )
 }
 
 /// Installs the credentials callback every peppy fetch of a remote goes
 /// through, so no two call sites can drift apart on what authentication a
-/// clone or fetch offers. See [`credential_answer`] for what is offered.
+/// clone or fetch offers.
 ///
-/// A candidate that fails to load — an agent with no keys, an encrypted
-/// identity file — advances to the next within the same request rather than
+/// SSH always authenticates the client, and the answer mirrors what `ssh`
+/// itself would try for the URL's host: the keys of the agent
+/// `~/.ssh/config` selects for it (`IdentityAgent`, else the one
+/// `SSH_AUTH_SOCK` names), then its `IdentityFile` list, each as the URL's
+/// user (`git` when the URL names none). See [`plan_ssh_credentials`] for
+/// how the plan is built and [`SshCredentialPlan::answer`] for the order.
+/// Each candidate is offered at most once: a repeated request means the
+/// remote refused it, and replaying would loop libgit2's auth retry until
+/// the server hangs up. A candidate that fails to load (an encrypted
+/// identity file) advances to the next within the same request rather than
 /// failing the connection, exactly as `ssh` moves on from an identity it
 /// cannot use.
+///
+/// The host side of SSH is not peppy's to answer: libgit2 checks the host
+/// key against `~/.ssh/known_hosts` itself and refuses an unknown or
+/// mismatched one before any credentials are requested.
 pub(crate) fn install_credentials(callbacks: &mut git2::RemoteCallbacks<'_>) {
     let mut attempt = 0usize;
-    let key_candidates = ssh_key_candidates(dirs::home_dir().as_deref());
-    callbacks.credentials(move |_url, username, allowed| {
+    let mut plan: Option<Result<SshCredentialPlan, String>> = None;
+    callbacks.credentials(move |url, username, allowed| {
         loop {
-            match credential_answer(username, allowed, attempt, &key_candidates) {
+            let answer = if allowed.contains(git2::CredentialType::SSH_KEY) {
+                let user = username.unwrap_or("git").to_owned();
+                match plan.get_or_insert_with(|| plan_for_url(url, user)) {
+                    Ok(plan) => plan.answer(attempt),
+                    Err(message) => CredentialAnswer::Refuse(message.clone()),
+                }
+            } else {
+                non_ssh_answer(username, allowed)
+            };
+            match answer {
                 CredentialAnswer::AgentKey(user) => {
                     attempt += 1;
                     if let Ok(cred) = git2::Cred::ssh_key_from_agent(&user) {
@@ -308,7 +489,7 @@ pub(crate) fn install_credentials(callbacks: &mut git2::RemoteCallbacks<'_>) {
                     }
                 }
                 CredentialAnswer::Username(user) => return git2::Cred::username(&user),
-                CredentialAnswer::Refuse(message) => return Err(git2::Error::from_str(message)),
+                CredentialAnswer::Refuse(message) => return Err(git2::Error::from_str(&message)),
             }
         }
     });
@@ -318,57 +499,221 @@ pub(crate) fn install_credentials(callbacks: &mut git2::RemoteCallbacks<'_>) {
 mod tests {
     use super::*;
 
-    fn ssh_only() -> git2::CredentialType {
-        git2::CredentialType::SSH_KEY
+    fn github() -> SshTarget {
+        SshTarget {
+            user: Some("git".to_owned()),
+            host: "github.com".to_owned(),
+            port: None,
+        }
+    }
+
+    fn agent_key() -> CredentialAnswer {
+        CredentialAnswer::AgentKey("git".to_owned())
+    }
+
+    fn key_file(key: &Path) -> CredentialAnswer {
+        CredentialAnswer::KeyFile {
+            user: "git".to_owned(),
+            key: key.to_path_buf(),
+        }
+    }
+
+    /// A `.ssh` directory holding `existing` as key files, plus a directory
+    /// at `id_ed25519`, which is not a key.
+    fn ssh_dir(existing: &[&str]) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ssh_dir = tmp.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        for name in existing {
+            std::fs::write(ssh_dir.join(name), b"key").unwrap();
+        }
+        std::fs::create_dir_all(ssh_dir.join("id_ed25519")).unwrap();
+        (tmp, ssh_dir)
+    }
+
+    fn plan_without_ssh(
+        process_agent: Option<PathBuf>,
+        home: &Path,
+    ) -> Result<SshCredentialPlan, String> {
+        plan_ssh_credentials(
+            "git".to_owned(),
+            &github(),
+            None,
+            process_agent,
+            default_identity_files(Some(home)),
+        )
+    }
+
+    fn plan_with_config(
+        identity_agent: IdentityAgent,
+        identity_files: Vec<PathBuf>,
+        process_agent: Option<PathBuf>,
+    ) -> Result<SshCredentialPlan, String> {
+        plan_ssh_credentials(
+            "git".to_owned(),
+            &github(),
+            Some(SshHostConfig {
+                identity_agent,
+                identity_files,
+            }),
+            process_agent,
+            vec![PathBuf::from("/never/offered")],
+        )
     }
 
     #[test]
-    fn the_first_ssh_request_gets_the_agent_key_for_the_url_user() {
+    fn without_ssh_the_environment_agent_leads_and_the_default_identities_follow() {
+        let (tmp, ssh_dir) = ssh_dir(&["id_rsa"]);
+        let socket = tmp.path().join("agent.sock");
+        let plan = plan_without_ssh(Some(socket.clone()), tmp.path()).unwrap();
+
+        assert_eq!(plan.agent, OfferedAgent::Socket(socket));
+        assert_eq!(plan.key_files, vec![ssh_dir.join("id_rsa")]);
         assert_eq!(
-            credential_answer(Some("git"), ssh_only(), 0, &[]),
-            CredentialAnswer::AgentKey("git".to_owned())
+            plan.absent_key_files,
+            vec![ssh_dir.join("id_ed25519"), ssh_dir.join("id_ecdsa")]
         );
+        assert_eq!(plan.answer(0), agent_key());
+        assert_eq!(plan.answer(1), key_file(&ssh_dir.join("id_rsa")));
+        assert!(matches!(plan.answer(2), CredentialAnswer::Refuse(_)));
     }
 
     #[test]
-    fn ssh_requests_default_the_user_to_git() {
-        assert_eq!(
-            credential_answer(None, ssh_only(), 0, &[]),
-            CredentialAnswer::AgentKey("git".to_owned())
-        );
-    }
-
-    #[test]
-    fn later_ssh_requests_walk_the_default_identity_files_in_order() {
-        let keys = vec![
-            PathBuf::from("/home/peppy/.ssh/id_ed25519"),
-            PathBuf::from("/home/peppy/.ssh/id_ecdsa"),
+    fn the_configured_identity_files_replace_the_defaults_in_their_order() {
+        let (_tmp, ssh_dir) = ssh_dir(&["work", "home"]);
+        let files = vec![
+            ssh_dir.join("work"),
+            ssh_dir.join("typo"),
+            ssh_dir.join("home"),
         ];
+        let plan = plan_with_config(IdentityAgent::FromEnvironment, files, None).unwrap();
+
+        assert_eq!(plan.agent, OfferedAgent::Unset);
         assert_eq!(
-            credential_answer(Some("git"), ssh_only(), 1, &keys),
-            CredentialAnswer::KeyFile {
-                user: "git".to_owned(),
-                key: PathBuf::from("/home/peppy/.ssh/id_ed25519")
-            }
+            plan.key_files,
+            vec![ssh_dir.join("work"), ssh_dir.join("home")]
         );
+        assert_eq!(plan.absent_key_files, vec![ssh_dir.join("typo")]);
+        assert_eq!(plan.answer(0), key_file(&ssh_dir.join("work")));
+        assert_eq!(plan.answer(1), key_file(&ssh_dir.join("home")));
+    }
+
+    #[test]
+    fn the_agent_the_configuration_selects_is_offered_when_the_process_is_bound_to_it() {
+        let socket = PathBuf::from("/run/agent.sock");
+        let plan = plan_with_config(
+            IdentityAgent::Socket(socket.clone()),
+            Vec::new(),
+            Some(socket.clone()),
+        )
+        .unwrap();
+        assert_eq!(plan.agent, OfferedAgent::Socket(socket));
+        assert_eq!(plan.answer(0), agent_key());
+    }
+
+    #[test]
+    fn an_agent_the_process_is_not_bound_to_is_refused_by_name() {
+        let selected = PathBuf::from("/run/1password.sock");
+        let refusal = plan_with_config(
+            IdentityAgent::Socket(selected.clone()),
+            Vec::new(),
+            Some(PathBuf::from("/run/launchd.sock")),
+        )
+        .unwrap_err();
         assert_eq!(
-            credential_answer(Some("git"), ssh_only(), 2, &keys),
-            CredentialAnswer::KeyFile {
-                user: "git".to_owned(),
-                key: PathBuf::from("/home/peppy/.ssh/id_ecdsa")
-            }
+            refusal,
+            "~/.ssh/config selects the ssh agent at /run/1password.sock for github.com \
+             (IdentityAgent), but this daemon is bound to the agent at /run/launchd.sock for its \
+             lifetime: when it starts it binds the agent ssh selects for a host with no \
+             host-specific configuration. Give every host that IdentityAgent (a `Host *` block) \
+             and restart the daemon"
+        );
+
+        let refusal =
+            plan_with_config(IdentityAgent::Socket(selected), Vec::new(), None).unwrap_err();
+        assert!(
+            refusal.contains("bound to no agent (SSH_AUTH_SOCK is unset)"),
+            "{refusal}"
         );
     }
 
     #[test]
-    fn exhausting_the_candidates_refuses_instead_of_replaying_one() {
+    fn a_disabled_agent_is_never_offered() {
+        let (tmp, ssh_dir) = ssh_dir(&["id_rsa"]);
+        let plan = plan_with_config(
+            IdentityAgent::Disabled,
+            vec![ssh_dir.join("id_rsa")],
+            Some(tmp.path().join("agent.sock")),
+        )
+        .unwrap();
+        assert_eq!(plan.agent, OfferedAgent::Disabled);
+        assert_eq!(plan.answer(0), key_file(&ssh_dir.join("id_rsa")));
+    }
+
+    #[test]
+    fn the_refusal_names_what_was_offered_and_what_was_not() {
+        let (tmp, ssh_dir) = ssh_dir(&["id_rsa"]);
+        let socket = tmp.path().join("agent.sock");
+        std::fs::write(&socket, b"").unwrap();
+        let plan = plan_without_ssh(Some(socket.clone()), tmp.path()).unwrap();
+
         assert_eq!(
-            credential_answer(Some("git"), ssh_only(), 1, &[]),
+            plan.answer(2),
+            CredentialAnswer::Refuse(format!(
+                "the remote refused every credential peppy holds for git@github.com: the keys \
+                 in the ssh agent at {}, and the identity files {} ({}, {} do not exist as \
+                 files); load a key the remote accepts into the agent, or keep an unencrypted \
+                 identity file at one of those paths",
+                socket.display(),
+                ssh_dir.join("id_rsa").display(),
+                ssh_dir.join("id_ed25519").display(),
+                ssh_dir.join("id_ecdsa").display(),
+            ))
+        );
+    }
+
+    #[test]
+    fn a_missing_agent_socket_is_named_as_such() {
+        let (tmp, _ssh_dir) = ssh_dir(&[]);
+        let socket = tmp.path().join("gone.sock");
+        let plan = plan_without_ssh(Some(socket.clone()), tmp.path()).unwrap();
+        let CredentialAnswer::Refuse(refusal) = plan.answer(1) else {
+            panic!("the second request has nothing left to offer");
+        };
+        assert!(
+            refusal.starts_with(&format!(
+                "the remote refused every credential peppy holds for git@github.com: the ssh \
+                 agent at {}, whose socket does not exist, and no identity file (",
+                socket.display()
+            )),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn a_connection_with_nothing_to_offer_refuses_the_first_request() {
+        let plan = plan_with_config(IdentityAgent::Disabled, Vec::new(), None).unwrap();
+        assert_eq!(
+            plan.answer(0),
             CredentialAnswer::Refuse(
-                "the remote refused the ssh-agent's keys and the default identity files \
-                 (~/.ssh/id_ed25519, id_ecdsa, id_rsa); load a key the remote accepts into \
-                 the agent, or point the repository at an unencrypted default identity"
+                "peppy holds no credential for git@github.com: no ssh agent (IdentityAgent \
+                 none), and no identity file (the configuration names none); load a key the \
+                 remote accepts into the agent, or keep an unencrypted identity file at one of \
+                 those paths"
+                    .to_owned()
             )
+        );
+
+        let plan = plan_without_ssh(None, Path::new("/nonexistent")).unwrap();
+        let CredentialAnswer::Refuse(refusal) = plan.answer(0) else {
+            panic!("nothing to offer");
+        };
+        assert!(
+            refusal.starts_with(
+                "peppy holds no credential for git@github.com: no ssh agent (SSH_AUTH_SOCK is \
+                 unset), and no identity file (/nonexistent/.ssh/id_ed25519, "
+            ),
+            "{refusal}"
         );
     }
 
@@ -376,11 +721,11 @@ mod tests {
     fn username_only_requests_answer_the_user_git_would_auth_as() {
         let username_only = git2::CredentialType::USERNAME;
         assert_eq!(
-            credential_answer(Some("peppy"), username_only, 0, &[]),
+            non_ssh_answer(Some("peppy"), username_only),
             CredentialAnswer::Username("peppy".to_owned())
         );
         assert_eq!(
-            credential_answer(None, username_only, 0, &[]),
+            non_ssh_answer(None, username_only),
             CredentialAnswer::Username("git".to_owned())
         );
     }
@@ -388,32 +733,26 @@ mod tests {
     #[test]
     fn password_requests_refuse_with_the_embedded_url_hint() {
         assert_eq!(
-            credential_answer(
-                Some("peppy"),
-                git2::CredentialType::USER_PASS_PLAINTEXT,
-                0,
-                &[]
-            ),
+            non_ssh_answer(Some("peppy"), git2::CredentialType::USER_PASS_PLAINTEXT),
             CredentialAnswer::Refuse(
-                "peppy authenticates git over ssh through the ssh-agent and the default \
-                 identity files, and offers no other credentials; embed them in the \
-                 repository URL instead"
+                "peppy authenticates git over ssh through the ssh agent and identity files, \
+                 and offers no other credentials; embed them in the repository URL instead"
+                    .to_owned()
             )
         );
     }
 
     #[test]
-    fn key_candidates_list_the_default_identities_that_exist_as_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ssh_dir = tmp.path().join(".ssh");
-        std::fs::create_dir_all(&ssh_dir).unwrap();
-        std::fs::write(ssh_dir.join("id_rsa"), b"key").unwrap();
-        std::fs::create_dir_all(ssh_dir.join("id_ed25519")).unwrap();
-
+    fn plans_are_built_for_ssh_urls_only() {
+        let refusal = plan_for_url(
+            "https://github.com/Peppy-bot/nodes-hub.git",
+            "git".to_owned(),
+        )
+        .unwrap_err();
         assert_eq!(
-            ssh_key_candidates(Some(tmp.path())),
-            vec![ssh_dir.join("id_rsa")]
+            refusal,
+            "https://github.com/Peppy-bot/nodes-hub.git is not an ssh URL peppy can read a host \
+             from"
         );
-        assert!(ssh_key_candidates(None).is_empty());
     }
 }
