@@ -17,6 +17,12 @@ use std::path::{Path, PathBuf};
 /// directory keeps the rename on the same filesystem (cross-fs
 /// `rename(2)` returns `EXDEV`). On any error (closure failure or
 /// rename failure), the tmp file is removed before returning.
+///
+/// The staged file is synced to disk before the rename, so a crash or
+/// power loss right after publication never leaves `final_path` naming
+/// a file whose data did not reach the disk. The rename itself is not
+/// synced: losing it means the file is absent, which every caller
+/// treats as "not published yet" and redoes.
 pub fn publish_atomic<F>(final_path: &Path, write: F) -> std::io::Result<PathBuf>
 where
     F: FnOnce(&Path) -> std::io::Result<()>,
@@ -39,6 +45,10 @@ where
     // ETXTBSY when the executable is launched immediately after publication.
     let tmp_path = tmp.into_temp_path();
     write(tmp_path.as_ref())?;
+    // Flush the data before the name becomes visible. Without this, the
+    // rename can be journaled ahead of the data it points at, and a power
+    // loss in between leaves a full-size file of zeros at `final_path`.
+    std::fs::File::open(&tmp_path)?.sync_all()?;
     tmp_path.persist(final_path).map_err(|e| e.error)?;
     Ok(final_path.to_path_buf())
 }
