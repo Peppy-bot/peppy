@@ -50,13 +50,16 @@ use types::{DeploymentInterface, LanguageGenerator};
 /// - populates that **host-wide shared crate cache** under `peppy_dirs` (using file locking and a
 ///   per-process staging dir); cache entries are keyed by content-hash + crate version and are not
 ///   pruned;
-/// - writes `node_dir/.peppy/git.hash` and the config fingerprint
-///   `…/peppygen/peppy.json5.sha256`, but **only after** generation succeeds, so a failed run
-///   leaves neither behind.
+/// - writes the config fingerprint `…/peppygen/peppy.json5.sha256` and, for the node's own
+///   source tree, `node_dir/.peppy/git.hash`, but **only after** generation succeeds, so a
+///   failed run leaves neither behind.
 ///
 /// `node_tree` says whether `node_dir` is the node's own source tree or a
-/// staged copy (see [`common::NodeTree`]); only the Python fixtures harness
-/// reads it.
+/// staged copy (see [`common::NodeTree`]). A staged copy gets no `git.hash`:
+/// `git_hash` names the peppy build, not the node's sources, and the daemon
+/// fingerprints the staged tree to reuse build artifacts, so writing it there
+/// would rebuild every node once per peppy commit. The Python fixtures
+/// harness also reads `node_tree` to decide whether to bake the tree's path.
 ///
 /// # Errors
 /// Returns an error if:
@@ -138,7 +141,9 @@ pub fn generate_peppygen_lib(
 
     // Only write git.hash and the fingerprint after successful generation.
     result?;
-    write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
+    if node_tree == common::NodeTree::Source {
+        write_if_changed(&peppy_dir.join("git.hash"), git_hash.as_bytes())?;
+    }
     config::fingerprint::generate_node_config_fingerprint(&node_config_path, &output_dir)?;
     Ok(())
 }
@@ -608,6 +613,48 @@ mod tests {
         assert!(
             !git_hash_path.exists(),
             "git.hash file should not exist when generation fails"
+        );
+    }
+
+    #[test]
+    fn staged_generation_writes_no_git_hash() {
+        let temp_dir = TempDir::new().expect("failed to create temp directory");
+        let node_dir = temp_dir.path().join("node");
+        fs::create_dir_all(&node_dir).unwrap();
+        fs::write(
+            node_dir.join(NODE_CONFIG_FILE),
+            r#"{
+              peppy_schema: "node/v1",
+              manifest: { name: "staged_node", tag: "v1" },
+              execution: { language: "rust", run_cmd: ["./target/release/staged_node"] }
+            }"#,
+        )
+        .unwrap();
+
+        let peppy_dirs = daemon_config::consts::PeppyDirs::default();
+        generate_peppygen_lib(
+            config::node::PeppygenLanguage::Rust,
+            &node_dir,
+            Vec::new(),
+            "daemon-build-hash",
+            &peppy_dirs,
+            common::CrateDeployMode::default(),
+            None,
+            common::NodeTree::Staged,
+        )
+        .expect("generation should succeed");
+
+        let peppy_dir = node_dir.join(daemon_config::consts::PEPPY_OUTPUT_DIR);
+        assert!(
+            !peppy_dir.join("git.hash").exists(),
+            "a staged tree must not record the peppy build hash: it is not a node source"
+        );
+        assert!(
+            node_dir
+                .join(config::consts::PEPPYGEN_OUTPUT_PATH)
+                .join("peppy.json5.sha256")
+                .exists(),
+            "the config fingerprint is still written for a staged tree"
         );
     }
 }

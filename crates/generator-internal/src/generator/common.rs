@@ -246,22 +246,26 @@ pub enum CrateDeployMode {
 }
 
 /// What the tree a generation writes into is, which decides whether the
-/// generated Python test harness bakes the tree's absolute path as its
+/// generation records the peppy build hash in `.peppy/git.hash` and whether
+/// the generated Python test harness bakes the tree's absolute path as its
 /// last-resort node directory (see `peppylib.testing.resolve_node_dir`).
 ///
 /// Generated code has to be a pure function of the node's sources: the
 /// daemon fingerprints a staged tree to reuse build artifacts, so a path
-/// into a per-add staging directory would make byte-identical sources build
-/// again on every add.
+/// into a per-add staging directory, or the hash of the daemon that staged
+/// it, would make byte-identical sources build again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NodeTree {
-    /// The node's own source tree, which stays where it is: the harness
-    /// bakes its path so a test run from any working directory finds
-    /// `peppy.json5`.
+    /// The node's own source tree, which stays where it is: `git.hash`
+    /// records which peppy build generated it, so a later `node add` can
+    /// tell a stale generation, and the harness bakes the tree's path so a
+    /// test run from any working directory finds `peppy.json5`.
     #[default]
     Source,
-    /// A copy staged for one build and deleted afterwards: the harness bakes
-    /// no path, since one into the staging directory would dangle.
+    /// A copy staged for one build and deleted afterwards: no `git.hash`,
+    /// since nothing reads it there and it would key the build artifact on
+    /// the daemon's commit; and no baked path, since one into the staging
+    /// directory would dangle.
     Staged,
 }
 
