@@ -3,6 +3,7 @@
 
 mod error;
 mod services;
+mod ssh_config;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -31,3 +32,4 @@ pub use services::{
     check_runtime_prerequisites, force_kill_deadline, idle_timeout_flag, slow_connection_hint,
     teardown_all_instances,
 };
+pub use ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};

@@ -1,5 +1,6 @@
 pub mod install;
 pub mod serve;
+mod ssh_agent;
 
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
@@ -72,14 +73,17 @@ impl Command for ServiceCommand {
                 messaging_engine,
                 core_node_name,
                 clock_source,
-            } => serve::ServeCommand {
-                messaging_engine,
-                core_node_name,
-                clock_source,
-                shutdown_token: None,
-                peppy_dirs: daemon_config::consts::PeppyDirs::default(),
+            } => {
+                ssh_agent::bind_ssh_agent_from_config();
+                serve::ServeCommand {
+                    messaging_engine,
+                    core_node_name,
+                    clock_source,
+                    shutdown_token: None,
+                    peppy_dirs: daemon_config::consts::PeppyDirs::default(),
+                }
+                .execute(app_ctx)
             }
-            .execute(app_ctx),
             ServiceCommands::Install {} => install::InstallCommand {}.execute(app_ctx),
             ServiceCommands::Stop {} => install::StopCommand {}.execute(app_ctx),
             ServiceCommands::Uninstall {} => install::UninstallCommand {}.execute(app_ctx),

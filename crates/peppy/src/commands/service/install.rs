@@ -288,14 +288,14 @@ fn is_root() -> bool {
 /// On SSH sessions and minimal installs, `XDG_RUNTIME_DIR` and
 /// `DBUS_SESSION_BUS_ADDRESS` may be missing, causing
 /// "Failed to connect to bus: No medium found".
-// This is the one function in the crate that keeps `unsafe`: `env::set_var` has
-// no safe equivalent in edition 2024, and `service-manager` shells out to
-// `systemctl --user` with the inherited environment, giving no hook to pass
-// these values to the child explicitly. The mutation is sound here because it
-// runs during synchronous, single-threaded CLI startup, before any tokio
-// runtime or other thread exists (see the SAFETY notes on each call). The rest
-// of the crate is `#![deny(unsafe_code)]`; this function carries the only
-// allowance, scoped and documented.
+// This function and `ssh_agent::bind_ssh_agent_from_config` are the two
+// `unsafe` allowances in the crate: `env::set_var` has no safe equivalent in
+// edition 2024, and `service-manager` shells out to `systemctl --user` with
+// the inherited environment, giving no hook to pass these values to the child
+// explicitly. The mutation is sound here because it runs during synchronous,
+// single-threaded CLI startup, before any tokio runtime or other thread exists
+// (see the SAFETY notes on each call). The rest of the crate is
+// `#![deny(unsafe_code)]`.
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 fn ensure_systemd_user_env() -> Result<()> {

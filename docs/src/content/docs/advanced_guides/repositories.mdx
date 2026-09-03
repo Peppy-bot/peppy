@@ -67,17 +67,33 @@ to place them on other machines (see [Federation limits](/advanced_guides/federa
 
 A `git` repository's `url` may be HTTPS or SSH, so a private repository is reachable without embedding a
 credential in `repositories.json5`. Give it either the scp-style `git@host:owner/repo.git` or an
-`ssh://` URL, and Peppy authenticates the way `ssh` itself does:
+`ssh://` URL, and Peppy authenticates the way `ssh` itself does for that host. It reads what
+`~/.ssh/config` selects for the URL's host, user and port through `ssh -G`, so every `Host` and
+`Match` block, `Include` file and system default applies exactly as it does to `ssh`:
 
-- The ssh-agent's key is offered first, as the URL's user (`git` when the URL names none).
-- The default identity files under `~/.ssh` follow, in the order `id_ed25519`, `id_ecdsa`, `id_rsa`,
-  each offered only when it exists as a file.
+- The keys of the agent the host's `IdentityAgent` names are offered first, as the URL's user (`git`
+  when the URL names none). Without that directive the agent is the one `SSH_AUTH_SOCK` names;
+  `IdentityAgent none` offers no agent.
+- The host's `IdentityFile` list follows, in `ssh`'s order, each path offered when it exists as a
+  file. That list is `ssh`'s own defaults under `~/.ssh` unless the configuration names others.
 - The host key is checked against `~/.ssh/known_hosts` before any key is offered, so a host missing
   from that file, or one whose key has changed, is refused.
 
-Load a key the remote accepts into the ssh-agent, or keep an unencrypted default identity under
-`~/.ssh`, and both [`peppy repo add`](#add-a-repository) and `peppy node add` reach the repository
-over SSH.
+A refusal names everything that was offered: the agent socket, the identity files that exist, and
+the configured paths that do not, so a typo in `~/.ssh/config` is visible in the message. Without
+`ssh` on the PATH, Peppy offers the agent `SSH_AUTH_SOCK` names and the default identity files
+`id_ed25519`, `id_ecdsa` and `id_rsa` under `~/.ssh`.
+
+The daemon binds one agent for its lifetime. When it starts, it points `SSH_AUTH_SOCK` at the agent
+`~/.ssh/config` selects for a host with no host-specific configuration (a `Host *` block, the way
+1Password, Secretive and gpg-agent are wired in), and logs which one. That is what makes those agents
+reachable from a daemon installed with `peppy service install`, which starts with a clean environment,
+and from a shell whose `SSH_AUTH_SOCK` names another agent. A host whose own block selects a different
+agent is refused by name; give every host the same `IdentityAgent` and restart the daemon.
+
+Load a key the remote accepts into the agent `ssh` uses, or keep an unencrypted identity file at one
+of the configured paths, and both [`peppy repo add`](#add-a-repository) and `peppy node add` reach the
+repository over SSH.
 
 ## Commands
 
