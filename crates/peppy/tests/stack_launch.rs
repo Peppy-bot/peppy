@@ -5050,9 +5050,11 @@ const CACHED_INSTANCE_ID: &str = "cached_launch_inst";
 struct CountedLaunch {
     serve: ServeCommandEmulation,
     ctx: Arc<AppContext>,
+    node_messenger: MessengerHandle,
     core_node_name: String,
     launcher_path: PathBuf,
     counter: PathBuf,
+    pidfile: PathBuf,
     _nodes_dir: tempfile::TempDir,
     _control: tempfile::TempDir,
     _instances: InstanceLifetime,
@@ -5091,8 +5093,8 @@ impl CountedLaunch {
         let peppy_json5_path = node_path.join(NODE_CONFIG_FILE);
         let instances = InstanceLifetime::new();
         // Records the daemon-tracked pid before waiting, so the cooperative
-        // shutdown below ends this exact process when a relaunch tears the
-        // stack down.
+        // shutdown [`Self::launch`] installs ends this exact process when a
+        // relaunch tears the stack down.
         override_run_cmd(
             &peppy_json5_path,
             vec![
@@ -5113,14 +5115,6 @@ impl CountedLaunch {
             &core_node_name,
             CACHED_NODE_NAME,
             CACHED_INSTANCE_ID,
-        )
-        .await;
-        emulate_cooperative_shutdown(
-            &node_messenger,
-            &core_node_name,
-            CACHED_NODE_NAME,
-            CACHED_INSTANCE_ID,
-            pidfile,
         )
         .await;
 
@@ -5145,16 +5139,23 @@ impl CountedLaunch {
         Self {
             serve,
             ctx,
+            node_messenger,
             core_node_name,
             launcher_path,
             counter,
+            pidfile,
             _nodes_dir: nodes_dir,
             _control: control,
             _instances: instances,
         }
     }
 
-    fn launch(&self, rebuild: bool) {
+    /// Launches the stack, then installs the shutdown listener for the
+    /// instance this launch started. A listener answers one shutdown request
+    /// and goes away with it, so each launch installs its own: the next
+    /// launch's teardown then ends the instance at once instead of waiting
+    /// out the force-kill deadline.
+    async fn launch(&self, rebuild: bool) {
         StackCommand {
             command: StackCommands::Launch {
                 rebuild,
@@ -5170,6 +5171,14 @@ impl CountedLaunch {
         }
         .execute(&self.ctx)
         .expect("launch command should succeed");
+        emulate_cooperative_shutdown(
+            &self.node_messenger,
+            &self.core_node_name,
+            CACHED_NODE_NAME,
+            CACHED_INSTANCE_ID,
+            self.pidfile.clone(),
+        )
+        .await;
     }
 
     fn builds(&self) -> usize {
@@ -5210,7 +5219,7 @@ impl CountedLaunch {
 async fn stack_launch_twice_reuses_the_cached_build() {
     let launch = CountedLaunch::start().await;
 
-    launch.launch(false);
+    launch.launch(false).await;
     assert_eq!(launch.builds(), 1);
     let artifacts = launch.artifacts();
     assert_eq!(artifacts.len(), 1, "got {artifacts:?}");
@@ -5223,7 +5232,7 @@ async fn stack_launch_twice_reuses_the_cached_build() {
     );
     assert_eq!(launch.instance_count().await, 1);
 
-    launch.launch(false);
+    launch.launch(false).await;
     assert_eq!(
         launch.builds(),
         1,
@@ -5246,12 +5255,12 @@ async fn stack_launch_twice_reuses_the_cached_build() {
 async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
     let launch = CountedLaunch::start().await;
 
-    launch.launch(false);
-    launch.launch(false);
+    launch.launch(false).await;
+    launch.launch(false).await;
     assert_eq!(launch.builds(), 1);
     let artifacts = launch.artifacts();
 
-    launch.launch(true);
+    launch.launch(true).await;
     assert_eq!(
         launch.builds(),
         2,

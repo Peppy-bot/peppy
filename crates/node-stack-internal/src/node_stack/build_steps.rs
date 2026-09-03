@@ -52,26 +52,17 @@ pub(super) fn archive_dir_to_storage(
     })
 }
 
-/// Moves the built `.sif` container image from the working directory to
-/// `destination`, the artifact slot the build resolved (see
+/// Moves the `.sif` container image [`build_container_image`] wrote at
+/// `sif_source` to `destination`, the artifact slot the build resolved (see
 /// [`super::build_artifact_cache`]). Missing parent directories are created.
-///
-/// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
-/// conventional output path produced by `apptainer build`.
 pub(super) fn move_sif_to_storage(
-    working_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
+    sif_source: &Path,
     destination: &Path,
 ) -> std::io::Result<PathBuf> {
-    validate_node_tag(node_tag)?;
-    let sif_name = format!("{}_{}.sif", node_name, node_tag);
-    let sif_source = working_dir.join(&sif_name);
-
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage.
     daemon_config::atomic_write::publish_atomic(destination, |tmp_path| {
-        std::fs::copy(&sif_source, tmp_path)
+        std::fs::copy(sif_source, tmp_path)
             .map(|_| ())
             .map_err(|e| {
                 std::io::Error::new(
@@ -145,17 +136,16 @@ fn failed_fetching_base_image(stderr_tail: &[String]) -> bool {
 /// [`crate::build_io::STDERR_TAIL_LINES`] lines of stderr are included in the
 /// error message.
 ///
-/// The resulting `.sif` file is left in `working_dir` for [`move_sif_to_storage`]
-/// to relocate.
+/// Returns the path of the resulting `.sif` file, left in `working_dir` for
+/// [`move_sif_to_storage`] to relocate.
 pub(super) async fn build_container_image(
     inputs: ContainerBuildInputs<'_>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<PathBuf, String> {
     // Validate the tag *before* it gets spliced into the SIF filename and
     // joined onto the working dir. Without this, a tag like `../evil` would
     // make `output_path` escape `working_dir` and apptainer would happily
-    // write the image outside the build sandbox. The downstream
-    // `move_sif_to_storage` already calls `validate_node_tag`, but only
-    // *after* apptainer has run, too late to prevent the escape.
+    // write the image outside the build sandbox. Nothing downstream checks
+    // the tag again.
     validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
 
     if !containers::Apptainer::is_lima_ready() {
@@ -339,7 +329,7 @@ pub(super) async fn build_container_image(
         };
 
         if status.success() {
-            return Ok(());
+            return Ok(output_path);
         }
 
         if attempt < CONTAINER_BUILD_ATTEMPTS
@@ -712,8 +702,9 @@ mod tests {
             .join("sensor_v1")
             .join("0123456789abcdef.sif");
 
-        let published = move_sif_to_storage(working_dir.path(), "sensor", "v1", &destination)
-            .expect("image should publish");
+        let published =
+            move_sif_to_storage(&working_dir.path().join("sensor_v1.sif"), &destination)
+                .expect("image should publish");
 
         assert_eq!(published, destination);
         assert_eq!(std::fs::read(&published).expect("read"), b"SIF");
@@ -724,9 +715,7 @@ mod tests {
         let working_dir = tempfile::tempdir().expect("tempdir");
         let storage = tempfile::tempdir().expect("tempdir");
         let err = move_sif_to_storage(
-            working_dir.path(),
-            "sensor",
-            "v1",
+            &working_dir.path().join("sensor_v1.sif"),
             &storage.path().join("sensor_v1").join("abc.sif"),
         )
         .expect_err("a missing image must fail");

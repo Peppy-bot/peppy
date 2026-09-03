@@ -397,9 +397,12 @@ Reusing cached build of my_node:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/bu
 
 The cache is a plain directory tree keyed by content, so it survives daemon
 restarts and reboots, and a disk prepared on one machine carries its built
-nodes to every machine of the same platform that boots from it. Each node
-identity keeps exactly one artifact: a build whose fingerprint differs
-replaces the previous one.
+nodes to every machine that boots from it with the same peppy version, OS
+and architecture. A process node's archive also embeds what the host
+toolchain produced, which the fingerprint does not cover, so those machines
+need a compatible build environment as well. Each node identity keeps
+exactly one artifact: a build whose fingerprint differs replaces the
+previous one.
 
 Pass `--rebuild` to `peppy node build` or `peppy stack launch` to build from
 the staged sources even when a matching artifact exists; the result replaces

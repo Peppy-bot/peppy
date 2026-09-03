@@ -40,7 +40,7 @@ Re-adding a node with the same name and tag overrides the one that was previousl
 
 ## Building `hello_world`
 
-An added node has no runnable artifact until it's built. Building runs the node's `build_cmd` (for example `uv sync` for Python or `cargo build --release` for Rust) against the snapshot that `peppy node add` staged:
+An added node has no runnable artifact until it's built. Building runs the node's `build_cmd` (for example `uv sync` for Python or `cargo build --release` for Rust) against the snapshot that `peppy node add` staged, unless an artifact built from that same snapshot is already cached (see below):
 
 ```sh
 peppy node build hello_world:v1
@@ -75,7 +75,7 @@ Built node hello_world:v1. Artifact: ~/.peppy/built_nodes/hello_world_v1/3f9a1c2
 
 The artifact is a `.tar.zst` archive. When you start an instance with `peppy node run`, the daemon extracts it into a per-instance directory and executes `run_cmd` there.
 
-The file name is the fingerprint of the staged sources. Building the node again from byte-identical sources reuses the artifact instead of running `build_cmd`, and the build log says so:
+The file name is the fingerprint of the staged sources, mixed with the peppy version, the host platform and the artifact kind. Building the node again from byte-identical sources with the same peppy version on the same platform reuses the artifact instead of running `build_cmd`, and the build log says so:
 
 ```
 Reusing cached build of hello_world:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/hello_world_v1/3f9a1c2e5d7b8a4f.tar.zst

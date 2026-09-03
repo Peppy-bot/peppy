@@ -754,7 +754,9 @@ impl NodeEntity {
         };
         announce(ctx.feedback_tx, &ctx.log_file, line);
 
-        match &snapshot.container {
+        // A container build hands back the image it wrote; a process build
+        // leaves its output in the working dir, which is archived whole.
+        let built_image = match &snapshot.container {
             Some(container) => {
                 // Container node: build the .sif via apptainer.
                 let apptainer_build_extra_args = container
@@ -780,7 +782,8 @@ impl NodeEntity {
                     cancel_token: &ctx.cancel_token,
                 })
                 .await
-                .map_err(|reason| snapshot.build_failed(reason))?;
+                .map(Some)
+                .map_err(|reason| snapshot.build_failed(reason))?
             }
             None => {
                 // Process node: run build_cmd inside the working dir.
@@ -794,8 +797,9 @@ impl NodeEntity {
                 )
                 .await
                 .map_err(|reason| snapshot.build_failed(format!("build_cmd failed: {reason}")))?;
+                None
             }
-        }
+        };
 
         // Publishing is blocking I/O (tar+zstd or fs::copy on potentially
         // multi-GB images), so it runs via `spawn_blocking` off the tokio
@@ -803,15 +807,11 @@ impl NodeEntity {
         // parking_lot guard is never held across blocking I/O. Pruning runs
         // after the publish so storage keeps this build's artifact only.
         let working_dir = ctx.working_dir.to_path_buf();
-        let node_name = snapshot.node_name.clone();
-        let node_tag = snapshot.node_tag.clone();
         let destination = slot.path;
         tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
-            let published = match kind {
-                ArtifactKind::Container => {
-                    move_sif_to_storage(&working_dir, &node_name, &node_tag, &destination)?
-                }
-                ArtifactKind::Process => archive_dir_to_storage(&working_dir, &destination)?,
+            let published = match &built_image {
+                Some(sif_source) => move_sif_to_storage(sif_source, &destination)?,
+                None => archive_dir_to_storage(&working_dir, &destination)?,
             };
             prune_siblings(&published);
             Ok(published)
