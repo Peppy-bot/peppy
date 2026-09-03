@@ -185,6 +185,7 @@ pub fn auto_sync_if_missing(
                 peppy_dirs,
                 generator::CrateDeployMode::default(),
                 None,
+                generator::NodeTree::Source,
             )?;
             Ok(())
         })();
@@ -237,6 +238,7 @@ pub fn auto_sync_if_missing(
 ///
 /// This function is designed to be called from within `spawn_blocking` contexts
 /// where the data has already been extracted and can be moved into the closure.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_peppygen_for_node(
     language: config::node::PeppygenLanguage,
     node_dir: impl AsRef<std::path::Path>,
@@ -245,6 +247,7 @@ pub fn generate_peppygen_for_node(
     peppy_dirs: &PeppyDirs,
     deploy_mode: generator::CrateDeployMode,
     config_path: Option<&std::path::Path>,
+    node_tree: generator::NodeTree,
 ) -> crate::Result<()> {
     generator::generate_peppygen_lib(
         language,
@@ -254,6 +257,7 @@ pub fn generate_peppygen_for_node(
         peppy_dirs,
         deploy_mode,
         config_path,
+        node_tree,
     )?;
 
     Ok(())

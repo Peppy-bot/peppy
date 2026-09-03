@@ -22,7 +22,7 @@ use crate::helpers::{
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
-use generator::{DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -129,6 +129,7 @@ fn python_handles_two_consumed_topics_sharing_topic_name() {
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib");
 

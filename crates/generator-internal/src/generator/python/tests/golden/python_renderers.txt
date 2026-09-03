@@ -6127,3 +6127,204 @@ async def _start(setup, parameters, instance_id, node_dir, use_sim_time) -> Harn
         await router.shutdown()
         raise
 
+================================================================
+Fixture :: harness
+================================================================
+"""Generated test harness: ephemeral router + started mocks + seeded StandaloneConfig + the node running in-process behind the readiness barriers. Construct with `start(...)`."""
+
+from peppygen import parameters as _parameters
+import os
+import peppylib
+import peppylib.testing
+
+FIXTURE_CORE_NODE = "fixture-core"
+FIXTURE_INSTANCE_ID = "fixture-observer"
+NODE_NAME = "staged_node"
+NODE_TAG = "v1"
+_NODE_CONFIG_FILE = "peppy.json5"
+_SYNC_TIME_NODE_DIR = None
+_DEFAULT_PARAMETERS = {}
+
+def _hydrate_parameters(parameters):
+    """The typed Parameters `setup` receives: the caller's override
+    verbatim, or the schema defaults hydrated the way `NodeBuilder().run`
+    would hydrate them."""
+    if parameters is not None:
+        return parameters
+    if _DEFAULT_PARAMETERS is None:
+        return None
+    return _parameters.Parameters.from_dict(_DEFAULT_PARAMETERS)
+
+class DepMocks:
+    """One attribute per mocked dependency slot."""
+
+class PairingMocks:
+    """One attribute per mocked pairing slot."""
+
+class ObservedMocks:
+    """One attribute per mocked observer slot."""
+
+# Aggregates the three namespace classes above and tears the whole set down.
+# Node-invariant, so it lives in peppylib.testing; bound here under its
+# historical name so `harness.mocks`'s type stays importable from this module.
+Mocks = peppylib.testing.Mocks
+
+class Emitted:
+    """Typed subscriptions to the node's emitted topics, opened before the node booted (so its very first publish is captured)."""
+
+class Harness:
+    """Generated test harness: ephemeral router + started mocks + seeded `StandaloneConfig` + the node running in-process behind the readiness barriers. Construct with `start(...)`; tear down with `await shutdown()` (or let `async with start(...)` do it)."""
+
+    def __init__(self, core, mocks, emitted, clock, session, router, instance_id) -> None:
+        self._core = core
+        #: Every started mock, one attribute-group per namespace.
+        self.mocks = mocks
+        #: Observation subscriptions to the node's own emissions.
+        self.emitted = emitted
+        #: The daemon-clock stand-in serving `peppylib.clock.synchronize` and
+        #: the `clock` topic: wall mode by default (skewable via
+        #: `set_offset_ns`), sim mode under `use_sim_time=True` (advanced with
+        #: `await clock.tick(...)`).
+        self.clock = clock
+        #: The fixture caller/observer session (not the node's).
+        self.session = session
+        self._router = router
+        #: The node-under-test's instance id.
+        self.instance_id = instance_id
+
+    @property
+    def node_runner(self):
+        """The running node, for calling its runtime surface directly."""
+        return self._core.node_runner
+
+    def node_producer_ref(self) -> peppylib.ProducerRef:
+        """The node-under-test's wire identity."""
+        return peppylib.ProducerRef(self._core.bound_core_node(), self.instance_id)
+
+    def setup_finished(self) -> bool:
+        """Whether the node's `setup` has returned."""
+        return self._core.setup_finished()
+
+    async def shutdown(self) -> None:
+        """Tears the fixture down in lifecycle order: node convergence
+        (cancel -> bounded setup await -> shutdown hooks, propagating a setup
+        error), then the clock stand-in, the fixture session and the mocks,
+        then the router."""
+        try:
+            await self._core.shutdown()
+        finally:
+            clock = self.clock
+            self.clock = None
+            if clock is not None:
+                await clock.close()
+            self.emitted = None
+            self.session = None
+            mocks = self.mocks
+            self.mocks = None
+            if mocks is not None:
+                await mocks.stop_all()
+            router = self._router
+            self._router = None
+            if router is not None:
+                await router.shutdown()
+
+class _HarnessStart:
+    """What `start` returns: awaitable (`harness = await start(...)`) and async context manager (`async with start(...) as harness:`, shutdown runs even when the test body fails)."""
+
+    def __init__(self, coro) -> None:
+        self._coro = coro
+        self._harness = None
+
+    def __await__(self):
+        return self._coro.__await__()
+
+    async def __aenter__(self) -> Harness:
+        self._harness = await self._coro
+        return self._harness
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        harness = self._harness
+        self._harness = None
+        if harness is not None:
+            await harness.shutdown()
+
+def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_time=False):
+    """Boots the full fixture: ephemeral router + started mocks + seeded
+    StandaloneConfig + the node running in-process behind the readiness
+    barriers. `setup` is the node's real entry point (the exact
+    `async def setup(params, node_runner)` shape `NodeBuilder().run`
+    takes), spawned only after every readiness barrier passed.
+
+    Usable both ways:
+
+        harness = await start(setup)   # then: await harness.shutdown()
+        async with start(setup) as harness: ...   # shutdown on exit
+
+    `parameters` is the typed `peppygen.parameters.Parameters` override
+    (`None` uses the schema defaults); `instance_id` overrides the unique
+    generated one; `node_dir` points at the directory holding the node's
+    peppy.json5 when neither the working directory nor the sync-time path
+    resolves it; `use_sim_time=True` boots the node in sim time, as a
+    launcher's `framework: { use_sim_time: true }` would, with the harness
+    clock in sim mode so no time exists until the test advances it with
+    `await harness.clock.tick(...)`.
+    """
+    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, use_sim_time))
+
+async def _start(setup, parameters, instance_id, node_dir, use_sim_time) -> Harness:
+    node_dir = peppylib.testing.resolve_node_dir(node_dir, _SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)
+    if instance_id is None:
+        instance_id = peppylib.testing.unique_test_instance_id()
+    router = await peppylib.testing.EphemeralRouter.start()
+    try:
+        session = await router.connect()
+        # The daemon-clock stand-in lives on the fixture session under the
+        # standalone core-node identity, where the node's `synchronize` polls
+        # and its clock subscription listens.
+        if use_sim_time:
+            clock = await peppylib.testing.MockClock.start_sim(
+                session,
+                peppylib.testing.STANDALONE_CORE_NODE,
+                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+            )
+        else:
+            clock = await peppylib.testing.MockClock.start_wall(
+                session,
+                peppylib.testing.STANDALONE_CORE_NODE,
+                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+            )
+        standalone = (
+            peppylib.StandaloneConfig()
+            .with_messaging(router.host, router.port)
+            .with_instance_id(instance_id)
+            .with_use_sim_time(use_sim_time)
+        )
+        if parameters is not None:
+            standalone = standalone.with_parameters(parameters)
+        publisher_readiness = []
+        service_readiness = [clock.readiness()]
+        core = await peppylib.testing.HarnessCore.start(
+            os.path.join(node_dir, _NODE_CONFIG_FILE),
+            standalone,
+            publisher_readiness,
+            setup,
+            parameters=_hydrate_parameters(parameters),
+            service_readiness=service_readiness,
+        )
+        return Harness(
+            core=core,
+            mocks=Mocks(
+                deps=DepMocks(),
+                pairings=PairingMocks(),
+                observed=ObservedMocks(),
+            ),
+            emitted=Emitted(),
+            clock=clock,
+            session=session,
+            router=router,
+            instance_id=instance_id,
+        )
+    except BaseException:
+        await router.shutdown()
+        raise
+

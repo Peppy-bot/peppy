@@ -12,6 +12,13 @@ pub struct RuffFacade {
     ruff_path: PathBuf,
 }
 
+/// Flags every ruff run shares. `--no-cache` keeps ruff from writing a
+/// `.ruff_cache/` directory into the tree it formats: generated code is part
+/// of the staged tree the daemon fingerprints to reuse build artifacts, and a
+/// cache keyed by absolute paths and mtimes would make byte-identical
+/// sources fingerprint differently on every add.
+const COMMON_ARGS: [&str; 2] = ["--quiet", "--no-cache"];
+
 impl RuffFacade {
     /// Creates a new `RuffFacade`, extracting the embedded ruff binary if needed.
     pub fn new() -> std::io::Result<Self> {
@@ -21,7 +28,7 @@ impl RuffFacade {
 
     /// Formats Python files at the given path using `ruff format`.
     pub fn format(&self, path: &Path) -> std::io::Result<()> {
-        let output = self.run(&["format", "--quiet"], path)?;
+        let output = self.run(&["format"], path)?;
 
         if !output.status.success() {
             return Err(std::io::Error::other(format!(
@@ -35,7 +42,7 @@ impl RuffFacade {
 
     /// Lints and auto-fixes Python files at the given path using `ruff check --fix`.
     pub fn check_and_fix(&self, path: &Path) -> std::io::Result<()> {
-        let output = self.run(&["check", "--fix", "--quiet"], path)?;
+        let output = self.run(&["check", "--fix"], path)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -69,7 +76,12 @@ impl RuffFacade {
 
         let mut attempt = 0u32;
         loop {
-            match Command::new(&self.ruff_path).args(args).arg(path).output() {
+            match Command::new(&self.ruff_path)
+                .args(args)
+                .args(COMMON_ARGS)
+                .arg(path)
+                .output()
+            {
                 Ok(output) => return Ok(output),
                 Err(e) if is_transient_exec_error(&e) && attempt < MAX_RETRIES => {
                     attempt += 1;
@@ -236,5 +248,32 @@ mod tests {
 
         let formatted = std::fs::read_to_string(&py_file).unwrap();
         assert_eq!(formatted, "x = 1\ny = 2\nz = {\"a\": 1, \"b\": 2}\n");
+    }
+
+    /// The tree ruff formats is fingerprinted by the daemon, so a run must
+    /// leave nothing behind but the formatted sources.
+    #[test]
+    fn ruff_runs_leave_no_cache_in_the_tree() {
+        let facade = RuffFacade::new().expect("ruff binary should be built by build.rs");
+
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"probe\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("probe.py"), "import os\nx=1\n").unwrap();
+
+        facade.format(dir.path()).expect("ruff format failed");
+        facade
+            .check_and_fix(dir.path())
+            .expect("ruff check --fix failed");
+
+        let mut entries: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        assert_eq!(entries, ["probe.py", "pyproject.toml"]);
     }
 }

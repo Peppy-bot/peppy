@@ -23,6 +23,10 @@
 //! digest behind a floating base image tag in the def file, and the host
 //! toolchain of a process node. A build that must not reuse an artifact for
 //! one of those reasons sets `rebuild` on its goal.
+//!
+//! The generated `.peppy/` tree is part of the fingerprint, so generation
+//! into a staged copy has to be a pure function of the sources: nothing in
+//! it may name the staging directory (see `generator::NodeTree::Staged`).
 
 use std::fmt;
 use std::fs::{self, File};

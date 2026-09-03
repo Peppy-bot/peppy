@@ -6,7 +6,8 @@ use config::node::{
     TypeToken,
 };
 use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
+    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
+    generate_peppygen_lib,
 };
 use indexmap::IndexMap;
 use std::fs;
@@ -90,6 +91,7 @@ fn nests_contract_backed_actions_under_link_id() {
         &peppy_dirs,
         CrateDeployMode::default(),
         Some(&peppy_node_config),
+        NodeTree::Source,
     )
     .expect("generation should succeed");
 

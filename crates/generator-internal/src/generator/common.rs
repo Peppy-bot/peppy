@@ -245,6 +245,26 @@ pub enum CrateDeployMode {
     Copy,
 }
 
+/// What the tree a generation writes into is, which decides whether the
+/// generated Python test harness bakes the tree's absolute path as its
+/// last-resort node directory (see `peppylib.testing.resolve_node_dir`).
+///
+/// Generated code has to be a pure function of the node's sources: the
+/// daemon fingerprints a staged tree to reuse build artifacts, so a path
+/// into a per-add staging directory would make byte-identical sources build
+/// again on every add.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeTree {
+    /// The node's own source tree, which stays where it is: the harness
+    /// bakes its path so a test run from any working directory finds
+    /// `peppy.json5`.
+    #[default]
+    Source,
+    /// A copy staged for one build and deleted afterwards: the harness bakes
+    /// no path, since one into the staging directory would dangle.
+    Staged,
+}
+
 // ---------------------------------------------------------------------------
 // Shared crate-vendoring utilities
 // ---------------------------------------------------------------------------

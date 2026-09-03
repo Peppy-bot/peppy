@@ -29,6 +29,8 @@ use config::node::{
 };
 use encoding::MessageFormatMapper;
 use std::collections::HashMap;
+
+use super::common::NodeTree;
 use std::path::Path;
 
 /// Schema metadata needed by code generation functions to emit capnp load/init code.
@@ -44,6 +46,7 @@ pub struct PythonGenerator {
     parameters: config::ParameterSchema,
     schemas: HashMap<String, CapnpSchema>,
     is_container: bool,
+    node_tree: NodeTree,
     testgen: crate::generator::testgen::TestGenRegistry,
 }
 
@@ -79,6 +82,12 @@ impl PythonGenerator {
     /// host platform's `.so` is used.
     pub fn set_container(&mut self, is_container: bool) {
         self.is_container = is_container;
+    }
+
+    /// Declares what the output tree is, so the fixtures harness knows
+    /// whether a path into it is worth baking (see [`NodeTree`]).
+    pub fn set_node_tree(&mut self, node_tree: NodeTree) {
+        self.node_tree = node_tree;
     }
 
     fn push_section(&mut self, section: InterfaceArtifact) {

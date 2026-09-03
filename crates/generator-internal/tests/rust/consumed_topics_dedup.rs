@@ -17,7 +17,7 @@
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedTopic, MessageFormat, PeppygenLanguage};
-use generator::{DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -100,6 +100,7 @@ fn rust_handles_two_consumed_topics_sharing_topic_name() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib");
 

@@ -124,6 +124,7 @@ fn handle_node_init_request_inner(
         peppy_dirs,
         generator::CrateDeployMode::default(),
         None,
+        generator::NodeTree::Source,
     ) {
         return NodeInitResponse::failure(format!("Failed to generate peppygen: {}", e))
             .encode()

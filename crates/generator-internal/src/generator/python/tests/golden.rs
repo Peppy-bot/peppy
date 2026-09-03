@@ -427,6 +427,18 @@ fn render_bare_harness(node_dir: &Path) -> Vec<InterfaceArtifact> {
     generator.into_artifacts()
 }
 
+/// The harness of a tree staged for one build: it bakes no sync-time node
+/// directory, so the same sources render the same bytes wherever the daemon
+/// stages them.
+fn render_staged_harness(node_dir: &Path) -> Vec<InterfaceArtifact> {
+    let mut generator = PythonGenerator::new();
+    generator.set_node_identity("staged_node", "v1");
+    generator.set_node_tree(crate::generator::common::NodeTree::Staged);
+    let registry = std::mem::take(&mut generator.testgen);
+    super::super::fixtures::render(&mut generator, &registry, node_dir).unwrap();
+    generator.into_artifacts()
+}
+
 /// The rendered surface as one reviewable document, with the sync-time node
 /// directory (a per-run temp path) normalized away.
 fn rendered_document(node_dir: &Path, artifacts: Vec<InterfaceArtifact>) -> String {
@@ -457,6 +469,7 @@ fn python_renderers_emit_the_golden_document() {
     let mut artifacts = render_everything(node_dir.path());
     artifacts.extend(render_bodyless_surface(node_dir.path()));
     artifacts.extend(render_bare_harness(node_dir.path()));
+    artifacts.extend(render_staged_harness(node_dir.path()));
     let rendered = rendered_document(node_dir.path(), artifacts);
 
     let golden_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN_PATH);

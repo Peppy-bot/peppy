@@ -54,12 +54,17 @@ use types::{DeploymentInterface, LanguageGenerator};
 ///   `…/peppygen/peppy.json5.sha256`, but **only after** generation succeeds, so a failed run
 ///   leaves neither behind.
 ///
+/// `node_tree` says whether `node_dir` is the node's own source tree or a
+/// staged copy (see [`common::NodeTree`]); only the Python fixtures harness
+/// reads it.
+///
 /// # Errors
 /// Returns an error if:
 /// - The configuration file (either `config_path` or the default
 ///   `node_dir/peppy.json5`) does not exist
 /// - The configuration file cannot be parsed
 /// - Code generation fails
+#[allow(clippy::too_many_arguments)]
 pub fn generate_peppygen_lib(
     language: PeppygenLanguage,
     node_dir: impl AsRef<Path>,
@@ -68,6 +73,7 @@ pub fn generate_peppygen_lib(
     peppy_dirs: &PeppyDirs,
     deploy_mode: common::CrateDeployMode,
     config_path: Option<&Path>,
+    node_tree: common::NodeTree,
 ) -> Result<()> {
     let node_dir = node_dir.as_ref();
     let node_config_path = config_path
@@ -115,6 +121,7 @@ pub fn generate_peppygen_lib(
             let mut python_generator = PythonGenerator::new();
             python_generator.set_parameters(execution.parameters);
             python_generator.set_container(execution.container.is_some());
+            python_generator.set_node_tree(node_tree);
             python_generator.set_node_identity(
                 node_config.manifest.name.as_str(),
                 node_config.manifest.tag.as_str(),
@@ -527,6 +534,7 @@ mod tests {
             &peppy_dirs,
             common::CrateDeployMode::default(),
             Some(custom_path.as_path()),
+            common::NodeTree::Source,
         )
         .expect("generation should succeed");
 
@@ -578,6 +586,7 @@ mod tests {
             &peppy_dirs,
             common::CrateDeployMode::default(),
             None,
+            common::NodeTree::Source,
         );
 
         assert!(

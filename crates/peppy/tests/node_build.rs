@@ -33,7 +33,7 @@ struct CountedNode {
 }
 
 impl CountedNode {
-    fn scaffold(ctx: &Arc<AppContext>, name: &'static str) -> Self {
+    fn scaffold(ctx: &Arc<AppContext>, name: &'static str, toolchain: Toolchain) -> Self {
         let node_root = TempDir::new().expect("node root tempdir");
         let control = TempDir::new().expect("control tempdir");
         let counter = control.path().join("builds");
@@ -42,7 +42,7 @@ impl CountedNode {
             command: NodeCommands::Init {
                 node_name: NodeName::new(name).expect("valid node name"),
                 to_dir: Some(node_root.path().to_path_buf()),
-                toolchain: Toolchain::Cargo,
+                toolchain,
                 with_container: false,
             },
         }
@@ -125,7 +125,7 @@ fn node_build_reuses_the_artifact_of_identical_sources_and_rebuilds_on_change() 
         .block_on(ServeCommandEmulation::with_mock())
         .expect("serve emulation");
     let ctx = app_context(&serve);
-    let node = CountedNode::scaffold(&ctx, "cache_probe");
+    let node = CountedNode::scaffold(&ctx, "cache_probe", Toolchain::Cargo);
     let root = serve.temp_dir();
 
     node.add_and_build(&ctx, false);
@@ -169,6 +169,36 @@ fn node_build_reuses_the_artifact_of_identical_sources_and_rebuilds_on_change() 
     );
 }
 
+/// The Python scaffold generates a test harness into the staged tree. Every
+/// add stages into a fresh directory, so the harness must not bake that
+/// directory's path, or identical sources would never share a fingerprint.
+#[test]
+fn node_build_reuses_the_artifact_of_identical_python_sources() {
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let serve = rt
+        .block_on(ServeCommandEmulation::with_mock())
+        .expect("serve emulation");
+    let ctx = app_context(&serve);
+    let node = CountedNode::scaffold(&ctx, "python_cache_probe", Toolchain::Uv);
+    let root = serve.temp_dir();
+
+    node.add_and_build(&ctx, false);
+    node.add_and_build(&ctx, false);
+    assert_eq!(
+        node.builds(),
+        1,
+        "identical Python sources staged twice must share one fingerprint"
+    );
+    let logs = node.logs(root);
+    assert_eq!(logs.len(), 2);
+    assert!(
+        reused(&logs[1]),
+        "the second build reports the reuse:\n{}",
+        logs[1]
+    );
+    assert_eq!(node.artifacts(root).len(), 1);
+}
+
 #[test]
 fn node_build_rebuild_flag_bypasses_a_cache_hit() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -176,7 +206,7 @@ fn node_build_rebuild_flag_bypasses_a_cache_hit() {
         .block_on(ServeCommandEmulation::with_mock())
         .expect("serve emulation");
     let ctx = app_context(&serve);
-    let node = CountedNode::scaffold(&ctx, "rebuild_probe");
+    let node = CountedNode::scaffold(&ctx, "rebuild_probe", Toolchain::Cargo);
     let root = serve.temp_dir();
 
     node.add_and_build(&ctx, false);
@@ -214,7 +244,7 @@ fn node_build_reuses_the_artifact_after_a_daemon_restart() {
         .block_on(ServeCommandEmulation::with_mock_in(root.path()))
         .expect("serve emulation");
     let ctx = app_context(&serve);
-    let node = CountedNode::scaffold(&ctx, "restart_probe");
+    let node = CountedNode::scaffold(&ctx, "restart_probe", Toolchain::Cargo);
     node.add_and_build(&ctx, false);
     assert_eq!(node.builds(), 1);
     drop(ctx);

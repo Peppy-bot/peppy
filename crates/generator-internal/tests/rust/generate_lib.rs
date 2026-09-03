@@ -3,8 +3,8 @@ use config::{
     node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
 use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
-use generator::generate_peppygen_lib;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
+use generator::{NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -82,6 +82,7 @@ fn generate_peppygen_lib_minimal_config() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate library for minimal config");
 
@@ -123,6 +124,7 @@ fn generate_peppygen_lib_copy_mode_deploys_real_dirs() {
         &helpers::test_peppy_dirs(),
         generator::CrateDeployMode::Copy,
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate library in Copy mode");
 
@@ -318,6 +320,7 @@ fn generate_peppygen_lib_missing_config() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     );
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
@@ -368,6 +371,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -424,6 +428,7 @@ fn generate_peppygen_rust_lib_emitted_and_consumed_topics() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -486,6 +491,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -548,6 +554,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_services() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -629,6 +636,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -717,6 +725,7 @@ fn generate_peppygen_rust_lib_exposed_and_consumed_actions() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -783,6 +792,7 @@ fn generate_peppygen_rust_lib_renders_optional_accessor_for_a_zero_or_one_contra
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 

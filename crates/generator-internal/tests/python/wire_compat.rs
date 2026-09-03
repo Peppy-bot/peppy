@@ -41,7 +41,7 @@ use config::node::{
 use config::runtime::Name;
 use config::runtime::{NodeInstanceConfig, RuntimeConfig};
 use generator::{
-    ConsumedActionMessage, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
+    ConsumedActionMessage, DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib,
 };
 use std::path::Path;
 use std::{fs, time::Duration};
@@ -196,6 +196,7 @@ async fn actions_preserve_result_field_order() {
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("generate peppygen for producer");
 
@@ -306,6 +307,7 @@ if __name__ == "__main__":
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("generate peppygen for consumer");
 
@@ -594,6 +596,7 @@ async fn services_preserve_response_field_order() {
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("generate peppygen for producer");
 
@@ -675,6 +678,7 @@ if __name__ == "__main__":
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("generate peppygen for consumer");
 
@@ -946,6 +950,7 @@ async fn topics_preserve_message_field_order() {
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("generate peppygen for producer");
 
@@ -1023,6 +1028,7 @@ if __name__ == "__main__":
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("generate peppygen for consumer");
 

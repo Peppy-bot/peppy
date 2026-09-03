@@ -5,7 +5,7 @@ use config::consts::{
 };
 use config::node::{MessageFormat, PeppygenLanguage};
 use daemon_config::consts::{PEPPYLIB_OUTPUT_PATH, PeppyDirs};
-use generator::generate_peppygen_lib;
+use generator::{NodeTree, generate_peppygen_lib};
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::ServiceTarget;
 use peppylib::messaging::{ActionMessenger, NODE_HEALTH_SERVICE, SHUTDOWN_SERVICE};
@@ -820,6 +820,7 @@ pub fn run_generate_peppygen_lib_test(
         &peppy_dirs,
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate library");
 

@@ -33,7 +33,7 @@ mod generator;
 
 pub use error::Error as GeneratorError;
 
-pub use generator::common::CrateDeployMode;
+pub use generator::common::{CrateDeployMode, NodeTree};
 pub use generator::generate_peppygen_lib;
 pub use generator::python::PythonGenerator;
 pub use generator::rust::RustGenerator;
