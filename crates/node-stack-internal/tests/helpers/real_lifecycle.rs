@@ -140,6 +140,7 @@ pub async fn build_ready(
             log_file: Arc::clone(&harness.log_file),
             env_vars: &[],
             cancel_token: tokio_util::sync::CancellationToken::new(),
+            rebuild: false,
         },
     )
     .await

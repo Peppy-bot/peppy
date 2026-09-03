@@ -365,6 +365,7 @@ pub fn init_test_node_project(node_name: &str, node_tag: &str, build_project: bo
         &peppy_dirs,
         Default::default(),
         None,
+        generator::NodeTree::Source,
     )
     .expect("failed to generate peppygen for test node");
 

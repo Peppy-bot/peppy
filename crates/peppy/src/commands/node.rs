@@ -23,7 +23,7 @@ use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
 
 pub use add::{AddNodeParams, add_node};
-pub use builder::build_node_async;
+pub use builder::{BuildOptions, build_node_async};
 pub use init::NodeInitBuilder;
 #[cfg(feature = "test-support")]
 pub use run::run_instance_async;
@@ -354,6 +354,11 @@ pub enum NodeCommands {
         /// Cancel any in-progress build for this node and start a new one
         #[arg(short = 'f', long)]
         force: bool,
+        /// Build from the staged sources even when a cached artifact built
+        /// from byte-identical sources exists. Independent of `--force`,
+        /// which only cancels an in-flight build of this node.
+        #[arg(long)]
+        rebuild: bool,
     },
     /// Regenerate the node's interface code (peppygen) based on peppy.json5
     Sync {
@@ -542,6 +547,7 @@ impl Command for NodeCommand {
                 idle_timeout,
                 max_timeout,
                 force,
+                rebuild,
             } => {
                 let timeouts = TimeoutConfig {
                     idle_secs: idle_timeout,
@@ -553,7 +559,7 @@ impl Command for NodeCommand {
                         node_name,
                         node_tag,
                         timeouts,
-                        force,
+                        options: BuildOptions { force, rebuild },
                     },
                 )
             }

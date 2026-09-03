@@ -14,8 +14,7 @@ use tracing::debug;
 use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::build_io::{
-    FeedbackLine, FeedbackStream, spawn_in_process_group, stream_child_output,
-    write_feedback_log_line,
+    FeedbackLine, FeedbackStream, announce, spawn_in_process_group, stream_child_output,
 };
 use crate::build_progress::BuildProgressMonitor;
 use crate::node_stack::container_build_cache;
@@ -30,22 +29,16 @@ pub(super) fn validate_node_tag(node_tag: &str) -> std::io::Result<()> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
 }
 
-/// Archives the contents of `source_dir` into a `.tar.zst` file in the
-/// peppy built nodes directory.
-///
-/// The archive path follows the format: `<storage_dir>/<node_name>_<tag>.tar.zst`
+/// Archives the contents of `source_dir` into the `.tar.zst` file at
+/// `destination`, the artifact slot the build resolved (see
+/// [`super::build_artifact_cache`]). Missing parent directories are created.
 ///
 /// Uses zstd compression level 1 (fastest speed).
 pub(super) fn archive_dir_to_storage(
     source_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
-    peppy_dirs: &PeppyDirs,
+    destination: &Path,
 ) -> std::io::Result<PathBuf> {
-    validate_node_tag(node_tag)?;
-    let storage_dir = peppy_dirs.built_nodes_dir();
-    let archive_name = format!("{}_{}.tar.zst", node_name, node_tag);
-    daemon_config::atomic_write::publish_atomic(&storage_dir.join(&archive_name), |tmp_path| {
+    daemon_config::atomic_write::publish_atomic(destination, |tmp_path| {
         let file = File::create(tmp_path)?;
         let encoder = ZstdEncoder::new(file, 1)?;
         let mut tar_builder = tar::Builder::new(encoder);
@@ -59,27 +52,17 @@ pub(super) fn archive_dir_to_storage(
     })
 }
 
-/// Moves the built `.sif` container image from the working directory to peppy storage.
-///
-/// The image is expected at `working_dir/{node_name}_{node_tag}.sif`, which is the
-/// conventional output path produced by `apptainer build`.
-///
-/// Returns the final storage path: `<built_nodes_dir>/<node_name>_<tag>.sif`.
+/// Moves the `.sif` container image [`build_container_image`] wrote at
+/// `sif_source` to `destination`, the artifact slot the build resolved (see
+/// [`super::build_artifact_cache`]). Missing parent directories are created.
 pub(super) fn move_sif_to_storage(
-    working_dir: &Path,
-    node_name: &str,
-    node_tag: &str,
-    peppy_dirs: &PeppyDirs,
+    sif_source: &Path,
+    destination: &Path,
 ) -> std::io::Result<PathBuf> {
-    validate_node_tag(node_tag)?;
-    let sif_name = format!("{}_{}.sif", node_name, node_tag);
-    let sif_source = working_dir.join(&sif_name);
-    let storage_dir = peppy_dirs.built_nodes_dir();
-
     // Copy + rename (not rename alone) because the working dir may be on a
     // different filesystem than storage.
-    daemon_config::atomic_write::publish_atomic(&storage_dir.join(&sif_name), |tmp_path| {
-        std::fs::copy(&sif_source, tmp_path)
+    daemon_config::atomic_write::publish_atomic(destination, |tmp_path| {
+        std::fs::copy(sif_source, tmp_path)
             .map(|_| ())
             .map_err(|e| {
                 std::io::Error::new(
@@ -153,17 +136,16 @@ fn failed_fetching_base_image(stderr_tail: &[String]) -> bool {
 /// [`crate::build_io::STDERR_TAIL_LINES`] lines of stderr are included in the
 /// error message.
 ///
-/// The resulting `.sif` file is left in `working_dir` for [`move_sif_to_storage`]
-/// to relocate.
+/// Returns the path of the resulting `.sif` file, left in `working_dir` for
+/// [`move_sif_to_storage`] to relocate.
 pub(super) async fn build_container_image(
     inputs: ContainerBuildInputs<'_>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<PathBuf, String> {
     // Validate the tag *before* it gets spliced into the SIF filename and
     // joined onto the working dir. Without this, a tag like `../evil` would
     // make `output_path` escape `working_dir` and apptainer would happily
-    // write the image outside the build sandbox. The downstream
-    // `move_sif_to_storage` already calls `validate_node_tag`, but only
-    // *after* apptainer has run, too late to prevent the escape.
+    // write the image outside the build sandbox. Nothing downstream checks
+    // the tag again.
     validate_node_tag(inputs.node_tag).map_err(|e| format!("invalid node tag: {}", e))?;
 
     if !containers::Apptainer::is_lima_ready() {
@@ -223,10 +205,7 @@ pub(super) async fn build_container_image(
         .map_err(|e| format!("Build cache preparation task failed: {}", e))?
     };
     if let Some(cache) = &build_cache {
-        let _ = inputs.feedback_tx.send(FeedbackLine {
-            stream: FeedbackStream::Stdout,
-            line: cache.summary.clone(),
-        });
+        announce(inputs.feedback_tx, &inputs.log_file, cache.summary.clone());
     }
 
     // On macOS the build runs inside a Lima VM, so SIGKILL'ing the host
@@ -350,7 +329,7 @@ pub(super) async fn build_container_image(
         };
 
         if status.success() {
-            return Ok(());
+            return Ok(output_path);
         }
 
         if attempt < CONTAINER_BUILD_ATTEMPTS
@@ -358,15 +337,14 @@ pub(super) async fn build_container_image(
             && failed_fetching_base_image(&stderr_tail)
         {
             let delay = CONTAINER_BUILD_RETRY_DELAYS[attempt - 1];
-            let line = format!(
-                "Base image fetch failed; retrying apptainer build in {delay:?} \
-                 (attempt {attempt} of {CONTAINER_BUILD_ATTEMPTS})"
+            announce(
+                inputs.feedback_tx,
+                &inputs.log_file,
+                format!(
+                    "Base image fetch failed; retrying apptainer build in {delay:?} \
+                     (attempt {attempt} of {CONTAINER_BUILD_ATTEMPTS})"
+                ),
             );
-            write_feedback_log_line(&inputs.log_file, FeedbackStream::Stdout, &line);
-            let _ = inputs.feedback_tx.send(FeedbackLine {
-                stream: FeedbackStream::Stdout,
-                line,
-            });
             tokio::time::sleep(delay).await;
             continue;
         }
@@ -680,6 +658,71 @@ mod tests {
         )
         .await
         .expect("the stub tool must resolve through the env_vars PATH alone");
+    }
+
+    /// The destination is the keyed slot under `built_nodes/<name>_<tag>/`,
+    /// which does not exist before the first build of that identity.
+    #[test]
+    fn archive_dir_to_storage_publishes_at_a_nested_destination() {
+        let source = tempfile::tempdir().expect("tempdir");
+        std::fs::write(source.path().join("hello.txt"), b"hi").expect("write");
+        let storage = tempfile::tempdir().expect("tempdir");
+        let destination = storage
+            .path()
+            .join("built_nodes")
+            .join("sensor_v1")
+            .join("0123456789abcdef.tar.zst");
+
+        let published =
+            archive_dir_to_storage(source.path(), &destination).expect("archive should publish");
+
+        assert_eq!(published, destination);
+        let file = std::fs::File::open(&published).expect("open archive");
+        let decoder = zstd::stream::read::Decoder::new(file).expect("zstd decoder");
+        let mut archive = tar::Archive::new(decoder);
+        let names: Vec<PathBuf> = archive
+            .entries()
+            .expect("tar entries")
+            .map(|entry| entry.expect("tar entry").path().expect("path").into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|p| p.ends_with("hello.txt")),
+            "archive should contain hello.txt, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn move_sif_to_storage_publishes_at_a_nested_destination() {
+        let working_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(working_dir.path().join("sensor_v1.sif"), b"SIF").expect("write");
+        let storage = tempfile::tempdir().expect("tempdir");
+        let destination = storage
+            .path()
+            .join("built_nodes")
+            .join("sensor_v1")
+            .join("0123456789abcdef.sif");
+
+        let published =
+            move_sif_to_storage(&working_dir.path().join("sensor_v1.sif"), &destination)
+                .expect("image should publish");
+
+        assert_eq!(published, destination);
+        assert_eq!(std::fs::read(&published).expect("read"), b"SIF");
+    }
+
+    #[test]
+    fn move_sif_to_storage_names_the_missing_image() {
+        let working_dir = tempfile::tempdir().expect("tempdir");
+        let storage = tempfile::tempdir().expect("tempdir");
+        let err = move_sif_to_storage(
+            &working_dir.path().join("sensor_v1.sif"),
+            &storage.path().join("sensor_v1").join("abc.sif"),
+        )
+        .expect_err("a missing image must fail");
+        assert!(
+            err.to_string().contains("Expected container image at"),
+            "got: {err}"
+        );
     }
 
     #[test]

@@ -4,8 +4,8 @@ use config::{
     node::{ConsumedAction, ConsumedService, ConsumedTopic, MessageFormat, PeppygenLanguage},
 };
 use daemon_config::consts::PEPPYLIB_OUTPUT_PATH;
-use generator::generate_peppygen_lib;
 use generator::{ConsumedActionMessage, DeploymentInterface, InterfaceVariant};
+use generator::{NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -201,6 +201,7 @@ fn generate_peppygen_lib_python_repeat_generation_is_idempotent() {
             &helpers::test_peppy_dirs(),
             Default::default(),
             None,
+            NodeTree::Source,
         )
         .unwrap_or_else(|e| panic!("generation run {run} failed: {e}"));
     }
@@ -236,6 +237,7 @@ fn python_node_venv_installs_local_peppylib() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib");
 
@@ -303,6 +305,7 @@ fn generate_peppygen_lib_minimal_config() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate library for minimal config");
 
@@ -326,6 +329,7 @@ fn generate_peppygen_lib_missing_config() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     );
     assert!(result.is_err(), "should fail when peppy.json5 is missing");
 }
@@ -377,6 +381,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -434,6 +439,7 @@ fn generate_peppygen_python_lib_emitted_and_consumed_topics() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -497,6 +503,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -560,6 +567,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_services() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -642,6 +650,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for exposed node");
 
@@ -731,6 +740,7 @@ fn generate_peppygen_python_lib_exposed_and_consumed_actions() {
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 
@@ -796,6 +806,7 @@ fn generate_peppygen_python_lib_renders_optional_accessor_for_a_zero_or_one_cont
         &helpers::test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib for consumer node");
 

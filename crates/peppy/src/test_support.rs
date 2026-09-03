@@ -15,6 +15,9 @@ use tokio::task::JoinHandle;
 // In-memory `tracing` sink shared with the daemon crates' own tests; this
 // crate's integration tests reach it as `peppy::test_support::LogCapture`.
 pub use core_node::test_support::LogCapture;
+// The line a build writes when it reuses a cached artifact, so the tests that
+// read build logs match the one string the daemon emits.
+pub use node_stack::CACHED_BUILD_REUSE_PREFIX;
 
 /// Reads a node config, applies a mutation, writes it back, and regenerates the fingerprint.
 fn modify_node_config(peppy_json5: &Path, modify: impl FnOnce(&mut config::node::NodeConfig)) {
@@ -150,6 +153,15 @@ pub fn disable_build_cmd(peppy_json5: &Path) {
     });
 }
 
+/// Overrides the node `run_cmd` to the given command and leaves `build_cmd`
+/// alone, for tests that need both a specific instance process (a keep-alive
+/// that records its pid, say) and a real build step.
+pub fn override_run_cmd(peppy_json5: &Path, cmd: Vec<String>) {
+    modify_node_config(peppy_json5, |cfg| {
+        cfg.execution.run_cmd = Some(cmd);
+    });
+}
+
 /// Overrides the node `build_cmd` to the given command, used by timeout tests that need a
 /// long/quiet/loud build subprocess.
 pub fn override_build_cmd(peppy_json5: &Path, cmd: Vec<String>) {
@@ -202,7 +214,10 @@ enum MessengerInstance {
 }
 
 pub struct ServeCommandEmulation {
-    _temp_dir: TempDir,
+    /// The daemon's data root. Owned when the emulation created it, borrowed
+    /// when a test supplied one so that a later emulation can reopen it.
+    root: PathBuf,
+    _temp_dir: Option<TempDir>,
     _instance: Option<MessengerInstance>,
     _core_node_task: JoinHandle<core_node::Result<()>>,
     shutdown_token: tokio_util::sync::CancellationToken,
@@ -220,6 +235,28 @@ impl ServeCommandEmulation {
     pub async fn with_mock_named(
         core_node_name: &str,
     ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
+        Self::with_mock_named_in(
+            core_node_name,
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir),
+        )
+        .await
+    }
+
+    /// Starts a daemon on a fresh mock router over an existing data root, the
+    /// way a daemon restarted by an operator reopens the root the previous
+    /// one left behind. The caller owns `root`; two emulations may use it in
+    /// sequence, never at once.
+    pub async fn with_mock_in(root: &Path) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
+        Self::with_mock_named_in("test-core-node", root.to_path_buf(), None).await
+    }
+
+    async fn with_mock_named_in(
+        core_node_name: &str,
+        root: PathBuf,
+        owned: Option<TempDir>,
+    ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
         let mut instance = MockAdapter::start_router().await?;
         instance.messenger().start_session().await?;
         let messenger = instance.take_messenger();
@@ -229,6 +266,8 @@ impl ServeCommandEmulation {
             port,
             Some(MessengerInstance::Mock(instance)),
             core_node_name,
+            root,
+            owned,
         )
         .await
     }
@@ -242,7 +281,16 @@ impl ServeCommandEmulation {
         core_node_name: &str,
     ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
         let port = shared_messenger.lock().await.get_host().port();
-        Self::setup(shared_messenger, port, None, core_node_name).await
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
+        Self::setup(
+            shared_messenger,
+            port,
+            None,
+            core_node_name,
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir),
+        )
+        .await
     }
 
     pub async fn with_zenoh() -> Result<Self, pmi::PeppyMessagingInterfaceError> {
@@ -265,11 +313,14 @@ impl ServeCommandEmulation {
         instance.messenger().start_session().await?;
         let port = instance.port;
         let messenger = instance.take_messenger();
+        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
         Self::setup(
             Arc::new(TokioMutex::new(messenger)),
             port,
             Some(MessengerInstance::Zenoh(instance)),
             "test-core-node",
+            temp_dir.path().to_path_buf(),
+            Some(temp_dir),
         )
         .await
     }
@@ -279,11 +330,12 @@ impl ServeCommandEmulation {
         port: u16,
         instance: Option<MessengerInstance>,
         core_node_name: &str,
+        root: PathBuf,
+        owned: Option<TempDir>,
     ) -> Result<Self, pmi::PeppyMessagingInterfaceError> {
-        let temp_dir = TempDir::new().expect("failed to create temp dir for test");
-        let daemon_state_path = DaemonState::state_file_in(temp_dir.path());
+        let daemon_state_path = DaemonState::state_file_in(&root);
 
-        let peppy_dirs = PeppyDirs::new(temp_dir.path());
+        let peppy_dirs = PeppyDirs::new(&root);
 
         // Pre-write an empty repositories.json5 so the daemon's `ensure_default_repos`
         // sees an existing file and treats it as the user's config rather than
@@ -309,7 +361,7 @@ impl ServeCommandEmulation {
                 // is authoritative immediately, with no links to settle.
                 name_claim_settle: Duration::ZERO,
             },
-            root_dir: temp_dir.path().to_path_buf(),
+            root_dir: root.clone(),
             peppy_dirs,
             peppy_config: daemon_config::peppy_config::PeppyConfig::default(),
             namespace: config::namespace::Namespace::local(),
@@ -350,7 +402,8 @@ impl ServeCommandEmulation {
             .expect("failed to write daemon state");
 
         Ok(Self {
-            _temp_dir: temp_dir,
+            root,
+            _temp_dir: owned,
             _instance: instance,
             _core_node_task: core_node_task,
             shutdown_token,
@@ -365,7 +418,7 @@ impl ServeCommandEmulation {
     }
 
     pub fn temp_dir(&self) -> &Path {
-        self._temp_dir.path()
+        &self.root
     }
 
     pub fn daemon_state_path(&self) -> &Path {

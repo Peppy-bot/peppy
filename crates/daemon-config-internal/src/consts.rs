@@ -91,9 +91,20 @@ impl PeppyDirs {
         &self.root
     }
 
-    /// Build outputs from `node build` (`.sif` container images and `.tar.zst` archives).
+    /// Build outputs from `node build`: one directory per node identity (see
+    /// [`PeppyDirs::built_node_dir`]) holding the `.sif` container image or
+    /// `.tar.zst` archive named after the fingerprint of the staged sources
+    /// it was built from.
     pub fn built_nodes_dir(&self) -> PathBuf {
         self.root.join("built_nodes")
+    }
+
+    /// Directory holding the build artifact of one node identity,
+    /// `<built_nodes_dir>/<node_name>_<node_tag>`. Callers validate the tag
+    /// before splicing it into the path.
+    pub fn built_node_dir(&self, node_name: &str, node_tag: &str) -> PathBuf {
+        self.built_nodes_dir()
+            .join(format!("{node_name}_{node_tag}"))
     }
 
     /// Extracted archives for running node instances.

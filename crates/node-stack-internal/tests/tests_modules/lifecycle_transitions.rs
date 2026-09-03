@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use config::runtime::Name;
 use node_stack::{
-    Artifact, BuildContext, InstanceState, NodeEntity, NodeStack, NodeStackError, NodeStage,
-    WorkingDirGuard,
+    Artifact, BuildContext, CACHED_BUILD_REUSE_PREFIX, InstanceState, NodeEntity, NodeStack,
+    NodeStackError, NodeStage, WorkingDirGuard,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -441,6 +441,7 @@ async fn concurrent_builds_are_rejected_immediately() {
                     log_file,
                     env_vars: &[],
                     cancel_token: CancellationToken::new(),
+                    rebuild: false,
                 },
             )
             .await
@@ -463,6 +464,7 @@ async fn concurrent_builds_are_rejected_immediately() {
             log_file: Arc::clone(&log_file),
             env_vars: &[],
             cancel_token: CancellationToken::new(),
+            rebuild: false,
         },
     )
     .await;
@@ -487,7 +489,8 @@ async fn concurrent_builds_are_rejected_immediately() {
 
     // Entity ended up in Ready, with the archive present exactly once.
     assert!(matches!(handle.read().stage(), NodeStage::Ready { .. }));
-    let archive = peppy_dirs.built_nodes_dir().join("sensor_v1.tar.zst");
+    let archive = winner_result.expect("checked above");
+    assert_keyed_artifact_path(&archive, &peppy_dirs);
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 }
 
@@ -537,7 +540,29 @@ struct BuildHarness {
     peppy_dirs: daemon_config::consts::PeppyDirs,
     log_file: Arc<StdMutex<std::fs::File>>,
     feedback_tx: tokio::sync::mpsc::UnboundedSender<node_stack::build_io::FeedbackLine>,
-    _feedback_rx: tokio::sync::mpsc::UnboundedReceiver<node_stack::build_io::FeedbackLine>,
+    feedback_rx: tokio::sync::mpsc::UnboundedReceiver<node_stack::build_io::FeedbackLine>,
+}
+
+impl BuildHarness {
+    /// Every feedback line emitted since the previous drain.
+    fn drain_feedback(&mut self) -> Vec<String> {
+        let mut lines = Vec::new();
+        while let Ok(line) = self.feedback_rx.try_recv() {
+            lines.push(line.line);
+        }
+        lines
+    }
+
+    /// Entries of the storage directory holding `sensor:v1`'s artifacts.
+    fn sensor_artifacts(&self) -> Vec<PathBuf> {
+        let mut entries: Vec<PathBuf> =
+            std::fs::read_dir(self.peppy_dirs.built_node_dir("sensor", "v1"))
+                .expect("built node dir should exist")
+                .map(|entry| entry.expect("dir entry").path())
+                .collect();
+        entries.sort();
+        entries
+    }
 }
 
 fn build_harness() -> BuildHarness {
@@ -548,7 +573,7 @@ fn build_harness() -> BuildHarness {
     let log_file = Arc::new(StdMutex::new(
         std::fs::File::create(&log_path).expect("create log"),
     ));
-    let (feedback_tx, _feedback_rx) =
+    let (feedback_tx, feedback_rx) =
         tokio::sync::mpsc::unbounded_channel::<node_stack::build_io::FeedbackLine>();
     BuildHarness {
         working_dir,
@@ -556,8 +581,75 @@ fn build_harness() -> BuildHarness {
         peppy_dirs,
         log_file,
         feedback_tx,
-        _feedback_rx,
+        feedback_rx,
     }
+}
+
+/// A `build_cmd` that appends one line to `counter`. The counter lives
+/// outside the working dir, so running it never changes the staged tree's
+/// fingerprint.
+fn counting_build_cmd(counter: &std::path::Path) -> String {
+    format!("echo built >> '{}'", counter.display())
+}
+
+fn build_count(counter: &std::path::Path) -> usize {
+    std::fs::read_to_string(counter)
+        .map(|contents| contents.lines().count())
+        .unwrap_or(0)
+}
+
+/// Pushes a fresh `sensor:v1` entity with `build_cmd_shell` into a new stack
+/// and drives the real `NodeEntity::build` over the harness's working dir,
+/// returning the published artifact.
+async fn build_sensor(h: &BuildHarness, build_cmd_shell: &str, rebuild: bool) -> PathBuf {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
+    stack
+        .push_config(
+            sensor_config_with_build_cmd(build_cmd_shell),
+            false,
+            &config_path,
+        )
+        .expect("push_config should succeed");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
+    NodeEntity::build(
+        &handle,
+        BuildContext {
+            working_dir: h.working_dir.path(),
+            peppy_dirs: &h.peppy_dirs,
+            feedback_tx: &h.feedback_tx,
+            log_file: Arc::clone(&h.log_file),
+            env_vars: &[],
+            cancel_token: CancellationToken::new(),
+            rebuild,
+        },
+    )
+    .await
+    .expect("build should succeed")
+}
+
+fn assert_keyed_artifact_path(
+    path: &std::path::Path,
+    peppy_dirs: &daemon_config::consts::PeppyDirs,
+) {
+    assert_eq!(
+        path.parent(),
+        Some(peppy_dirs.built_node_dir("sensor", "v1").as_path()),
+        "the artifact lives in the node identity's directory"
+    );
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("file name");
+    let stem = file_name
+        .strip_suffix(".tar.zst")
+        .unwrap_or_else(|| panic!("a process artifact ends in .tar.zst, got {file_name}"));
+    assert_eq!(
+        stem.len(),
+        16,
+        "the stem is the 16-hex fingerprint, got {stem}"
+    );
+    assert!(stem.chars().all(|c| c.is_ascii_hexdigit()), "got {stem}");
 }
 
 #[tokio::test]
@@ -575,7 +667,7 @@ async fn build_runs_add_cmd_for_process_node() {
     let handle = stack.find("sensor", "v1").expect("entity should exist");
     let h = build_harness();
 
-    NodeEntity::build(
+    let archive = NodeEntity::build(
         &handle,
         BuildContext {
             working_dir: h.working_dir.path(),
@@ -584,6 +676,7 @@ async fn build_runs_add_cmd_for_process_node() {
             log_file: Arc::clone(&h.log_file),
             env_vars: &[],
             cancel_token: CancellationToken::new(),
+            rebuild: false,
         },
     )
     .await
@@ -592,10 +685,12 @@ async fn build_runs_add_cmd_for_process_node() {
     // Entity is in Built.
     let guard = handle.read();
     assert!(matches!(guard.stage(), NodeStage::Ready { .. }));
+    assert_eq!(guard.artifact_path(), Some(archive.as_path()));
     drop(guard);
 
-    // The archive exists and contains the marker file produced by build_cmd.
-    let archive = h.peppy_dirs.built_nodes_dir().join("sensor_v1.tar.zst");
+    // The archive sits at its keyed slot and contains the marker file
+    // produced by build_cmd.
+    assert_keyed_artifact_path(&archive, &h.peppy_dirs);
     assert!(archive.is_file(), "expected archive at {:?}", archive);
 
     // Decode the archive and look for the marker.
@@ -619,6 +714,131 @@ async fn build_runs_add_cmd_for_process_node() {
     // Keep harness alive (so tempdirs survive until the assertions above).
     drop(h.peppy_root);
     drop(h.working_dir);
+}
+
+#[tokio::test]
+async fn a_second_build_of_an_identical_tree_reuses_the_archive_without_running_build_cmd() {
+    let mut h = build_harness();
+    let control = tempfile::tempdir().expect("control tempdir");
+    let counter = control.path().join("builds");
+    let build_cmd = counting_build_cmd(&counter);
+    std::fs::write(h.working_dir.path().join("hello.txt"), b"hi").expect("stage sources");
+
+    let first = build_sensor(&h, &build_cmd, false).await;
+    assert_eq!(build_count(&counter), 1);
+    let first_lines = h.drain_feedback();
+    assert!(
+        !first_lines
+            .iter()
+            .any(|line| line.starts_with(CACHED_BUILD_REUSE_PREFIX)),
+        "a first build has nothing to reuse, got {first_lines:?}"
+    );
+
+    let second = build_sensor(&h, &build_cmd, false).await;
+    assert_eq!(second, first, "the same tree resolves to the same artifact");
+    assert_eq!(build_count(&counter), 1, "build_cmd must not run on a hit");
+    assert_eq!(h.sensor_artifacts(), vec![first.clone()]);
+    let second_lines = h.drain_feedback();
+    assert!(
+        second_lines
+            .iter()
+            .any(|line| line.starts_with(&format!("{CACHED_BUILD_REUSE_PREFIX} sensor:v1"))),
+        "the hit is announced on the feedback channel, got {second_lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_changed_tree_rebuilds_and_prunes_the_previous_artifact() {
+    let h = build_harness();
+    let control = tempfile::tempdir().expect("control tempdir");
+    let counter = control.path().join("builds");
+    let build_cmd = counting_build_cmd(&counter);
+    let source = h.working_dir.path().join("hello.txt");
+    std::fs::write(&source, b"hi").expect("stage sources");
+
+    let first = build_sensor(&h, &build_cmd, false).await;
+
+    std::fs::write(&source, b"hello").expect("edit sources");
+    let second = build_sensor(&h, &build_cmd, false).await;
+
+    assert_ne!(second, first, "a changed tree has a new fingerprint");
+    assert_eq!(build_count(&counter), 2);
+    assert_eq!(
+        h.sensor_artifacts(),
+        vec![second.clone()],
+        "storage keeps one artifact per node identity"
+    );
+}
+
+#[tokio::test]
+async fn rebuild_replaces_a_cached_artifact() {
+    let mut h = build_harness();
+    let control = tempfile::tempdir().expect("control tempdir");
+    let counter = control.path().join("builds");
+    let build_cmd = counting_build_cmd(&counter);
+    std::fs::write(h.working_dir.path().join("hello.txt"), b"hi").expect("stage sources");
+
+    let first = build_sensor(&h, &build_cmd, false).await;
+    h.drain_feedback();
+
+    let rebuilt = build_sensor(&h, &build_cmd, true).await;
+    assert_eq!(
+        rebuilt, first,
+        "an unchanged tree publishes over the same slot"
+    );
+    assert_eq!(build_count(&counter), 2, "--rebuild runs build_cmd again");
+    assert_eq!(h.sensor_artifacts(), vec![first]);
+    let lines = h.drain_feedback();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("Rebuilding sensor:v1")),
+        "the bypass is announced, got {lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with(CACHED_BUILD_REUSE_PREFIX)),
+        "a rebuild never reports a reuse, got {lines:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_working_dir_fails_the_build_at_fingerprinting() {
+    let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
+    let config_path = PathBuf::from("/tmp/sensor/peppy.json5");
+    stack
+        .push_config(sensor_config_with_build_cmd("true"), false, &config_path)
+        .expect("push_config should succeed");
+    let handle = stack.find("sensor", "v1").expect("entity should exist");
+    let h = build_harness();
+
+    let err = NodeEntity::build(
+        &handle,
+        BuildContext {
+            working_dir: std::path::Path::new("/nonexistent-peppy-staged-tree"),
+            peppy_dirs: &h.peppy_dirs,
+            feedback_tx: &h.feedback_tx,
+            log_file: Arc::clone(&h.log_file),
+            env_vars: &[],
+            cancel_token: CancellationToken::new(),
+            rebuild: false,
+        },
+    )
+    .await
+    .expect_err("a tree that cannot be read cannot be built");
+
+    match err {
+        NodeStackError::BuildFailed { reason, .. } => assert!(
+            reason.contains("fingerprint"),
+            "the failure names the fingerprinting step, got: {reason}"
+        ),
+        other => panic!("expected BuildFailed, got {other:?}"),
+    }
+    assert!(
+        matches!(handle.read().stage(), NodeStage::Building { .. }),
+        "the failure contract leaves the entity in Building"
+    );
 }
 
 // ===========================================================================
@@ -1145,6 +1365,7 @@ async fn rollback_to_added_if_matches_rolls_building_back_and_reattaches_working
                 log_file: log_file_clone,
                 env_vars: &[],
                 cancel_token: CancellationToken::new(),
+                rebuild: false,
             },
         )
         .await

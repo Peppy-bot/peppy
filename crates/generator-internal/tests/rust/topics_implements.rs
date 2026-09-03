@@ -20,7 +20,8 @@ use config::node::{
     MessageFormat, NativeEmittedTopic, PeppygenLanguage, QoSProfile, SchemaType, TypeToken,
 };
 use generator::{
-    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, generate_peppygen_lib,
+    ContractOrigin, CrateDeployMode, DeploymentInterface, InterfaceVariant, NodeTree,
+    generate_peppygen_lib,
 };
 use indexmap::IndexMap;
 use std::fs;
@@ -127,6 +128,7 @@ fn nests_contract_backed_topics_under_link_id() {
         &peppy_dirs,
         CrateDeployMode::default(),
         Some(&peppy_node_config),
+        NodeTree::Source,
     )
     .expect("generation should succeed");
 
@@ -276,6 +278,7 @@ fn hyphenated_link_id_lands_in_underscore_directory() {
         &peppy_dirs,
         CrateDeployMode::default(),
         Some(&peppy_node_config),
+        NodeTree::Source,
     )
     .expect("generation should succeed");
 

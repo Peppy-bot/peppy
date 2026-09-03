@@ -977,15 +977,32 @@ From: {DEFAULT_ALPINE_BASE_IMAGE}
         root_path.display()
     );
 
+    assert_eq!(
+        root_path.parent(),
+        Some(
+            started_core_node
+                .peppy_dirs
+                .built_node_dir(TARGET_NODE_NAME, TARGET_NODE_TAG)
+                .as_path()
+        ),
+        "the image lives in the node identity's directory, got: {}",
+        root_path.display()
+    );
     let file_name = root_path
         .file_name()
         .and_then(|n| n.to_str())
         .expect("should have file name");
+    let fingerprint = file_name
+        .strip_suffix(".sif")
+        .unwrap_or_else(|| panic!("stored image should end in .sif, got: {file_name}"));
     assert_eq!(
-        file_name,
-        format!("{TARGET_NODE_NAME}_{TARGET_NODE_TAG}.sif"),
-        "stored image should be '<node_name>_<tag>.sif', got: {}",
-        file_name
+        fingerprint.len(),
+        16,
+        "the file stem is the 16-hex fingerprint of the staged tree, got: {fingerprint}"
+    );
+    assert!(
+        fingerprint.chars().all(|c| c.is_ascii_hexdigit()),
+        "got: {fingerprint}"
     );
 
     assert!(

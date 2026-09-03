@@ -313,6 +313,7 @@ async fn handle_node_sync_request_inner(
             &peppy_dirs,
             generator::CrateDeployMode::default(),
             None,
+            generator::NodeTree::Source,
         )
     })
     .await

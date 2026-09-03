@@ -13,7 +13,7 @@ use crate::helpers::{
 };
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
 use config::node::{ConsumedService, MessageFormat, PeppygenLanguage};
-use generator::{DeploymentInterface, InterfaceVariant, generate_peppygen_lib};
+use generator::{DeploymentInterface, InterfaceVariant, NodeTree, generate_peppygen_lib};
 use std::fs;
 use tempfile::TempDir;
 
@@ -151,6 +151,7 @@ fn python_cross_producer_same_service_name_keeps_schemas_separate() {
         &test_peppy_dirs(),
         Default::default(),
         None,
+        NodeTree::Source,
     )
     .expect("failed to generate peppygen lib");
 

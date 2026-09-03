@@ -8,6 +8,7 @@ use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
 use daemon_config::peppy_config::{
     ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
 };
+use peppy::test_support::CACHED_BUILD_REUSE_PREFIX;
 use pmi::{RouterId, ZenohAdapter, ZenohNetProtocol, render_router_config};
 use testcontainers::core::client::docker_client_instance;
 use testcontainers::core::{AccessMode, CmdWaitFor, ExecCommand, Host, Mount};
@@ -1606,6 +1607,77 @@ async fn fixture_nodes_build_and_run_inside_a_daemon_container() {
         .robot
         .wait_for_node_log("probe_arm_inst", "[arm] published joint_states")
         .await;
+}
+
+/// A second launch of the same launcher reuses the container image the first
+/// one built, under a real apptainer: the image is keyed by the staged
+/// sources, so the relaunch spends no time in `apptainer build`. Read off the
+/// node's build logs on the daemon's disk, which is where the reuse is
+/// recorded whatever the CLI shows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_relaunch_reuses_the_cached_container_build() {
+    let federation = start_federation("peppy-relaunch").await;
+    let launcher = container_launcher(NODE_PROBE_LAUNCHER_FILE);
+
+    let first = federation
+        .robot
+        .peppy(&["stack", "launch", &launcher])
+        .await;
+    assert!(
+        first.success(),
+        "the first launch must build and start the fixture nodes:\n{}",
+        first.text
+    );
+
+    let second = federation
+        .robot
+        .peppy(&["stack", "launch", &launcher])
+        .await;
+    assert!(
+        second.success(),
+        "the relaunch must start the fixture nodes from the cached image:\n{}",
+        second.text
+    );
+    federation
+        .robot
+        .wait_for_node_log("probe_cam_inst", "[uvc_camera] Emitted frame")
+        .await;
+
+    let build_logs = format!("{CONTAINER_PEPPY_HOME}/logs/build/uvc_camera_python_mock_v1_*.log");
+    let oldest = require_success(
+        federation
+            .robot
+            .exec(vec![
+                "/bin/sh",
+                "-c",
+                &format!("ls {build_logs} | sort | head -n 1 | xargs cat"),
+            ])
+            .await,
+        "reading the first build log",
+    );
+    let newest = require_success(
+        federation
+            .robot
+            .exec(vec![
+                "/bin/sh",
+                "-c",
+                &format!("ls {build_logs} | sort | tail -n 1 | xargs cat"),
+            ])
+            .await,
+        "reading the second build log",
+    );
+    assert!(
+        oldest.contains("Starting build..."),
+        "the first launch ran apptainer build:\n{oldest}"
+    );
+    assert!(
+        newest.contains(CACHED_BUILD_REUSE_PREFIX),
+        "the relaunch reused the image:\n{newest}"
+    );
+    assert!(
+        !newest.contains("Starting build..."),
+        "the relaunch never ran apptainer build:\n{newest}"
+    );
 }
 
 /// The caller's environment stays on the caller's machine.

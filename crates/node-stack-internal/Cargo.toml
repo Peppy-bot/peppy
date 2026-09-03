@@ -24,6 +24,8 @@ tokio = { version = "1", features = [
 tokio-util = "0.7"
 tar = "0.4"
 zstd = "0.13.3"
+# Fingerprints the staged node tree that keys the build artifact cache.
+sha2 = "0.11"
 chrono = "0.4"
 tracing = "0.1"
 parking_lot = { workspace = true }
@@ -39,5 +41,7 @@ nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
 serde_json5 = "0.2.1"
+# `mkfifo` and `geteuid` for the build artifact cache fingerprint tests.
+nix = { version = "0.31", default-features = false, features = ["fs", "user"] }
 # `start_paused` virtual-clock tests for the build progress monitor.
 tokio = { version = "1", features = ["test-util"] }

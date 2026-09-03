@@ -11,6 +11,7 @@
 //! [`set_node_identity`](super::PythonGenerator::set_node_identity): the
 //! harness cannot pin the node's own targets without the manifest identity.
 
+use super::super::common::NodeTree;
 use super::super::naming::non_empty_str;
 use super::super::testgen::{
     DepLinkSpec, EmittedSpec, ExposedActionSpec, ExposedServiceSpec, FIXTURE_CORE_NODE,
@@ -84,14 +85,17 @@ pub(super) fn render(
         generator.push_section(artifact);
     }
 
-    let node_dir = sync_time_node_dir(to_path);
+    let node_dir = match generator.node_tree {
+        NodeTree::Source => Some(sync_time_node_dir(to_path)),
+        NodeTree::Staged => None,
+    };
     let harness = render_harness(
         &generator.parameters,
         registry,
         &node_name,
         &node_tag,
         &emitted_members,
-        &node_dir,
+        node_dir.as_deref(),
     )?;
     generator.push_section(InterfaceArtifact {
         module_path: vec!["harness".to_string()],
@@ -101,10 +105,10 @@ pub(super) fn render(
     Ok(())
 }
 
-/// The absolute node directory baked at generation time: the canonicalized
-/// output path minus the trailing `.peppy/libs/peppygen`. Last-resort
-/// fallback for the harness's node-dir resolution (after the explicit
-/// argument and the cwd walk).
+/// The absolute node directory baked at generation time into a
+/// [`NodeTree::Source`] harness: the canonicalized output path minus the
+/// trailing `.peppy/libs/peppygen`. Last-resort fallback for the harness's
+/// node-dir resolution (after the explicit argument and the cwd walk).
 fn sync_time_node_dir(to_path: &Path) -> String {
     let canonical = std::fs::canonicalize(to_path).unwrap_or_else(|_| to_path.to_path_buf());
     let node_dir = if canonical.ends_with(config::consts::PEPPYGEN_OUTPUT_PATH) {
@@ -816,7 +820,7 @@ fn render_harness(
     node_name: &str,
     node_tag: &str,
     emitted_members: &[EmittedMember],
-    node_dir: &str,
+    node_dir: Option<&str>,
 ) -> Result<String> {
     let mut builder = PythonCodeBuilder::new();
     builder.add_import("import os");
@@ -1016,7 +1020,10 @@ fn render_harness(
     builder.line(&format!("NODE_NAME = {node_name:?}"));
     builder.line(&format!("NODE_TAG = {node_tag:?}"));
     builder.line("_NODE_CONFIG_FILE = \"peppy.json5\"");
-    builder.line(&format!("_SYNC_TIME_NODE_DIR = {node_dir:?}"));
+    builder.line(&match node_dir {
+        Some(node_dir) => format!("_SYNC_TIME_NODE_DIR = {node_dir:?}"),
+        None => "_SYNC_TIME_NODE_DIR = None".to_string(),
+    });
     match default_parameters_literal(parameters) {
         Some(literal) => builder.line(&format!("_DEFAULT_PARAMETERS = {literal}")),
         None => builder.py(r#"

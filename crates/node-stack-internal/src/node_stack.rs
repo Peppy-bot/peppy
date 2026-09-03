@@ -1,10 +1,12 @@
 pub mod add_steps;
+mod build_artifact_cache;
 mod build_steps;
 mod container_build_cache;
 mod entity;
 mod pairing;
 mod run_steps;
 
+pub use build_artifact_cache::CACHED_BUILD_REUSE_PREFIX;
 use entity::serialize_node_entity;
 pub use entity::{
     Artifact, BuildContext, BuiltInLaunch, NodeEntity, NodeStage, OutputSinks, StartContext,

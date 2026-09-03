@@ -587,7 +587,7 @@ dependencies = [
 [[package]]
 name = "build-helpers"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "sha2",
 ]
@@ -785,7 +785,7 @@ dependencies = [
 [[package]]
 name = "config-test-support"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "askama",
  "git2",
@@ -931,7 +931,7 @@ dependencies = [
 [[package]]
 name = "core-node-api"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -2696,7 +2696,7 @@ dependencies = [
 [[package]]
 name = "json5-pretty"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "serde",
  "serde_json",
@@ -3144,6 +3144,7 @@ dependencies = [
  "process-wrap",
  "rand 0.10.2",
  "serde_json5",
+ "sha2",
  "tar",
  "tempfile",
  "thiserror 2.0.20",
@@ -3587,7 +3588,7 @@ dependencies = [
 [[package]]
 name = "peppy-config-model"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "capnp",
  "clap",
@@ -3606,7 +3607,7 @@ dependencies = [
 [[package]]
 name = "peppy-mcp-catalog"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "indexmap 2.14.1",
  "peppy-config-model",
@@ -3618,7 +3619,7 @@ dependencies = [
 [[package]]
 name = "peppy-mcp-runtime"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3640,7 +3641,7 @@ version = "0.0.1"
 [[package]]
 name = "peppylib-rs"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "build-helpers",
  "bytes",
@@ -3837,7 +3838,7 @@ dependencies = [
 [[package]]
 name = "pmi"
 version = "0.1.0"
-source = "git+https://github.com/Peppy-bot/public-peppy-libs#7d156fecf76e22532246b7a7154b63528f7ce130"
+source = "git+https://github.com/Peppy-bot/public-peppy-libs#05d537f7e563e62992c69b248e88a4be9ddac05b"
 dependencies = [
  "build-helpers",
  "bytes",

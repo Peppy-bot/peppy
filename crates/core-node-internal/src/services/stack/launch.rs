@@ -254,6 +254,21 @@ struct PlannedDeployment {
     pin_manifests: Vec<config::node::Manifest>,
 }
 
+/// The build goal a peer receives for one deployment of `goal`: the launch's
+/// identity, so the peer accepts it while reserved for that launch, and the
+/// launch's `rebuild` switch, so a `--rebuild` launch ignores cached
+/// artifacts on every machine, not only on the coordinator.
+fn remote_build_goal(
+    goal: &LaunchGoal,
+    node_name: String,
+    node_tag: String,
+    budget: Duration,
+) -> NodeBuildGoal {
+    NodeBuildGoal::new(node_name, node_tag, budget.as_secs())
+        .with_launch_id(&goal.launch_id)
+        .with_rebuild(goal.rebuild)
+}
+
 /// The add source a deployment dispatches with: its root, encoded at the
 /// point of dispatch beside the closure pins, so the local arm and the goal a
 /// peer receives cannot disagree on how the pins travel.
@@ -588,7 +603,7 @@ async fn add_and_build_group(
         // `Added` entity isn't actually buildable from the user's
         // perspective until `node build` has run.
         let (build_result, build_log_path) =
-            build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone()).await;
+            build_node_directly(ctx, node_name, node_tag, ctx.env_vars.clone(), goal.rebuild).await;
 
         let build_failed = build_result.is_err();
         if let Some(path) = build_log_path {
@@ -665,12 +680,12 @@ async fn add_and_build_remotely(
         return Ok(());
     }
 
-    let build_goal = NodeBuildGoal::new(
+    let build_goal = remote_build_goal(
+        goal,
         added.node_name.unwrap_or_else(|| item.node_name.clone()),
         added.node_tag.unwrap_or_else(|| item.node_tag.clone()),
-        ctx.idle_timeouts.build.as_secs(),
-    )
-    .with_launch_id(&goal.launch_id);
+        ctx.idle_timeouts.build,
+    );
     match federated::run_remote_goal(ctx, core_node, &build_goal, ctx.idle_timeouts.build).await {
         Ok(run) => {
             outcome.build_logs.push(NodeBuildLogEntry {
@@ -1685,6 +1700,44 @@ mod tests {
             }
             _ = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
         }
+    }
+
+    #[test]
+    fn remote_build_goal_carries_the_launch_rebuild_switch() {
+        let launch = LaunchGoal::new(
+            core_node_api::encoding::LauncherOrigin::repository("openarm_v2"),
+            "launch-abc123",
+            1,
+            1,
+            1,
+            None,
+        )
+        .with_rebuild(true);
+
+        let build = remote_build_goal(
+            &launch,
+            "waldo".to_string(),
+            "v1".to_string(),
+            Duration::from_secs(90),
+        );
+
+        assert_eq!(build.node_name, "waldo");
+        assert_eq!(build.node_tag, "v1");
+        assert_eq!(build.timeout_secs, 90);
+        assert_eq!(build.launch_id.as_deref(), Some("launch-abc123"));
+        assert!(build.rebuild, "the launch's --rebuild reaches the peer");
+        assert!(
+            !build.force,
+            "a dispatched build never supersedes a peer's own build"
+        );
+
+        let plain = remote_build_goal(
+            &launch.with_rebuild(false),
+            "waldo".to_string(),
+            "v1".to_string(),
+            Duration::from_secs(90),
+        );
+        assert!(!plain.rebuild);
     }
 
     #[tokio::test(start_paused = true)]

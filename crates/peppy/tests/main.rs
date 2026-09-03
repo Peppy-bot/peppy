@@ -6,6 +6,7 @@ mod daemon_singleton;
 mod info;
 mod mcp_full_stack;
 mod node_add;
+mod node_build;
 mod node_info;
 mod node_init;
 mod node_observe;

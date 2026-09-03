@@ -1530,6 +1530,9 @@ async fn process_node_add_inner(
         doc_pins.as_ref(),
         &interface_feedback,
     )?;
+    // The working dir is a copy staged for this build: generated code must
+    // carry no path into it, or byte-identical sources would fingerprint
+    // differently on every add and never reuse a cached artifact.
     generate_peppygen_for_node(
         language,
         &working_dir,
@@ -1538,6 +1541,7 @@ async fn process_node_add_inner(
         &ctx.action.peppy_dirs,
         deploy_mode,
         None,
+        generator::NodeTree::Staged,
     )
     .map_err(|e| format!("Failed to generate peppygen library: {}", e))?;
 

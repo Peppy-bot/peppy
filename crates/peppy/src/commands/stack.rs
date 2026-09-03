@@ -54,6 +54,11 @@ pub enum StackCommands {
         /// Optional absolute max timeout in seconds for the entire launch. If unset, only idle timeouts apply.
         #[arg(long)]
         max_timeout_secs: Option<u64>,
+        /// Build every node from its staged sources even when a cached
+        /// artifact built from byte-identical sources exists. Applies to
+        /// each node build of the launch, on this daemon and on every peer.
+        #[arg(long)]
+        rebuild: bool,
     },
     /// List the nodes in the current node stack
     List {
@@ -178,6 +183,7 @@ impl Command for StackCommand {
                 node_build_idle_timeout_secs,
                 node_run_idle_timeout_secs,
                 max_timeout_secs,
+                rebuild,
             } => {
                 info!("Launching stack...");
                 launch::launch(
@@ -192,6 +198,7 @@ impl Command for StackCommand {
                     node_build_idle_timeout_secs,
                     node_run_idle_timeout_secs,
                     max_timeout_secs,
+                    rebuild,
                 )
             }
             StackCommands::Benchmark {

@@ -1,7 +1,8 @@
 use config::node::Toolchain;
 use peppy::commands::repo::{RepoCommand, RepoCommands};
 use peppy::test_support::{
-    LogCapture, ServeCommandEmulation, override_build_cmd, override_run_cmd_silent,
+    CACHED_BUILD_REUSE_PREFIX, InstanceLifetime, LogCapture, ServeCommandEmulation,
+    override_build_cmd, override_run_cmd, override_run_cmd_silent,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,8 +22,10 @@ use peppylib::services::ready::listen_for_node_ready;
 use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
-    install_node_manifest, read_daemon_git_hash, register_repo_caches, run_cmd_json5,
-    test_node_target, write_node_config_for_helper,
+    build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
+    emulate_cooperative_shutdown, emulate_startup_services, install_node_manifest,
+    read_daemon_git_hash, register_repo_caches, run_cmd_json5, test_node_target,
+    write_node_config_for_helper,
 };
 use peppylib::core_node::transport::poll;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -262,6 +265,7 @@ async fn node_launch_command_succeed() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -464,6 +468,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
 
     let launch_result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -622,6 +627,7 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -663,6 +669,7 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -712,6 +719,7 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
     let started = Instant::now();
     let result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -913,6 +921,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -1141,6 +1150,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -1283,6 +1293,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
 
     let err = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -1381,6 +1392,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -1680,6 +1692,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -1833,6 +1846,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -1977,6 +1991,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -2255,6 +2270,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -2515,6 +2531,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -2666,6 +2683,7 @@ async fn stack_launch_rejects_unbound_slot() {
 
     let result = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -2863,6 +2881,7 @@ async fn stack_launch_establishes_launcher_pairings() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -3045,6 +3064,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -3300,6 +3320,7 @@ async fn stack_launch_delivers_observer_member_sets() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -3467,6 +3488,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
 
     let err = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -3522,6 +3544,7 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
 
     let err = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -3786,6 +3809,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -4041,6 +4065,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -4198,6 +4223,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
 
     let err = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: Default::default(),
@@ -4361,6 +4387,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
 
     StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: WithSelection {
@@ -4437,6 +4464,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
     .expect("flat launcher should be writable");
     let err = StackCommand {
         command: StackCommands::Launch {
+            rebuild: false,
             place: Vec::new(),
             local: false,
             with: WithSelection {
@@ -4476,6 +4504,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
     let launch_with = |with: Vec<String>, path: PathBuf| {
         StackCommand {
             command: StackCommands::Launch {
+                rebuild: false,
                 place: Vec::new(),
                 local: false,
                 with: WithSelection { words: with },
@@ -5005,4 +5034,250 @@ fn stack_resolve_never_reads_a_bare_name_from_the_current_directory() {
         printed.contains("launcher `openarm_v2` not found"),
         "the refusal comes from the repository lookup:\n{printed}"
     );
+}
+
+// ===========================================================================
+// Build artifact cache: a relaunch reuses the nodes the previous launch built
+// ===========================================================================
+
+const CACHED_NODE_NAME: &str = "cached_launch_node";
+const CACHED_INSTANCE_ID: &str = "cached_launch_inst";
+
+/// One Cargo-scaffolded node named by a launcher, whose `build_cmd` counts
+/// its runs and whose instance is a keep-alive the test can end at once.
+/// Every launch goes through the same daemon and the same repo cache entry,
+/// so only the build artifact cache decides whether `build_cmd` runs.
+struct CountedLaunch {
+    serve: ServeCommandEmulation,
+    ctx: Arc<AppContext>,
+    node_messenger: MessengerHandle,
+    core_node_name: String,
+    launcher_path: PathBuf,
+    counter: PathBuf,
+    pidfile: PathBuf,
+    _nodes_dir: tempfile::TempDir,
+    _control: tempfile::TempDir,
+    _instances: InstanceLifetime,
+}
+
+impl CountedLaunch {
+    async fn start() -> Self {
+        let serve = ServeCommandEmulation::with_mock()
+            .await
+            .expect("failed to create serve emulation");
+        let shared_messenger = serve.messenger();
+        let core_node_name = serve.core_node_name().to_string();
+        let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+        let control = tempfile::tempdir().expect("failed to create control directory");
+        let counter = control.path().join("builds");
+        let pidfile = control.path().join("instance.pid");
+
+        let ctx = Arc::new(
+            AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
+                .with_daemon_state_file(serve.daemon_state_path()),
+        );
+
+        NodeCommand {
+            command: NodeCommands::Init {
+                node_name: peppy::commands::node::NodeName::new(CACHED_NODE_NAME)
+                    .expect("valid node name"),
+                to_dir: None,
+                toolchain: Toolchain::Cargo,
+                with_container: false,
+            },
+        }
+        .execute(&ctx)
+        .expect("node init command should succeed");
+
+        let node_path = nodes_dir.path().join(CACHED_NODE_NAME);
+        let peppy_json5_path = node_path.join(NODE_CONFIG_FILE);
+        let instances = InstanceLifetime::new();
+        // Records the daemon-tracked pid before waiting, so the cooperative
+        // shutdown [`Self::launch`] installs ends this exact process when a
+        // relaunch tears the stack down.
+        override_run_cmd(
+            &peppy_json5_path,
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "echo $$ > '{}'; {}",
+                    pidfile.display(),
+                    instances.keep_alive_script()
+                ),
+            ],
+        );
+        override_build_cmd(&peppy_json5_path, counting_build_cmd(&counter));
+
+        let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+        emulate_startup_services(
+            &node_messenger,
+            &core_node_name,
+            CACHED_NODE_NAME,
+            CACHED_INSTANCE_ID,
+        )
+        .await;
+
+        let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+        fs::write(
+            &launcher_path,
+            format!(
+                r#"{{
+                    peppy_schema: "launcher/v1",
+                    deployments: [
+                        {{
+                            source: {{ name: "{CACHED_NODE_NAME}:v1" }},
+                            instances: [{{ instance_id: "{CACHED_INSTANCE_ID}" }}]
+                        }}
+                    ]
+                }}"#
+            ),
+        )
+        .expect("launcher config should be writable");
+        register_repo_caches(serve.temp_dir(), &[(CACHED_NODE_NAME, "v1", &node_path)]);
+
+        Self {
+            serve,
+            ctx,
+            node_messenger,
+            core_node_name,
+            launcher_path,
+            counter,
+            pidfile,
+            _nodes_dir: nodes_dir,
+            _control: control,
+            _instances: instances,
+        }
+    }
+
+    /// Launches the stack, then installs the shutdown listener for the
+    /// instance this launch started. A listener answers one shutdown request
+    /// and goes away with it, so each launch installs its own: the next
+    /// launch's teardown then ends the instance at once instead of waiting
+    /// out the force-kill deadline.
+    async fn launch(&self, rebuild: bool) {
+        StackCommand {
+            command: StackCommands::Launch {
+                rebuild,
+                place: Vec::new(),
+                local: false,
+                with: Default::default(),
+                launcher_config_path: self.launcher_path.clone(),
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(3600),
+            },
+        }
+        .execute(&self.ctx)
+        .expect("launch command should succeed");
+        emulate_cooperative_shutdown(
+            &self.node_messenger,
+            &self.core_node_name,
+            CACHED_NODE_NAME,
+            CACHED_INSTANCE_ID,
+            self.pidfile.clone(),
+        )
+        .await;
+    }
+
+    fn builds(&self) -> usize {
+        build_count(&self.counter)
+    }
+
+    fn artifacts(&self) -> Vec<PathBuf> {
+        built_artifacts_for(self.serve.temp_dir(), CACHED_NODE_NAME, "v1")
+    }
+
+    fn build_logs(&self) -> Vec<String> {
+        build_logs_for(self.serve.temp_dir(), CACHED_NODE_NAME, "v1")
+    }
+
+    async fn instance_count(&self) -> usize {
+        let response = poll(
+            &StackListRequest::new(),
+            self.ctx
+                .messenger_handle()
+                .expect("messenger handle should be available"),
+            &self.core_node_name,
+            CALLER_INSTANCE_ID,
+            &self.core_node_name,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("stack_list request should complete");
+        let graph: SerializedNodeGraph =
+            serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+        graph
+            .find_node(CACHED_NODE_NAME, "v1")
+            .map(|node| node.instance_count())
+            .unwrap_or(0)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_twice_reuses_the_cached_build() {
+    let launch = CountedLaunch::start().await;
+
+    launch.launch(false).await;
+    assert_eq!(launch.builds(), 1);
+    let artifacts = launch.artifacts();
+    assert_eq!(artifacts.len(), 1, "got {artifacts:?}");
+    let logs = launch.build_logs();
+    assert_eq!(logs.len(), 1);
+    assert!(
+        !logs[0].contains(CACHED_BUILD_REUSE_PREFIX),
+        "a first launch has nothing to reuse:\n{}",
+        logs[0]
+    );
+    assert_eq!(launch.instance_count().await, 1);
+
+    launch.launch(false).await;
+    assert_eq!(
+        launch.builds(),
+        1,
+        "a relaunch of identical sources must not run build_cmd"
+    );
+    assert_eq!(launch.artifacts(), artifacts);
+    let logs = launch.build_logs();
+    assert_eq!(logs.len(), 2);
+    assert!(
+        logs[1].contains(&format!(
+            "{CACHED_BUILD_REUSE_PREFIX} {CACHED_NODE_NAME}:v1"
+        )),
+        "the relaunch reports the reuse:\n{}",
+        logs[1]
+    );
+    assert_eq!(launch.instance_count().await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
+    let launch = CountedLaunch::start().await;
+
+    launch.launch(false).await;
+    launch.launch(false).await;
+    assert_eq!(launch.builds(), 1);
+    let artifacts = launch.artifacts();
+
+    launch.launch(true).await;
+    assert_eq!(
+        launch.builds(),
+        2,
+        "--rebuild runs build_cmd despite the hit"
+    );
+    let logs = launch.build_logs();
+    assert_eq!(logs.len(), 3);
+    assert!(
+        !logs[2].contains(CACHED_BUILD_REUSE_PREFIX),
+        "a rebuild reports no reuse:\n{}",
+        logs[2]
+    );
+    assert!(
+        logs[2].contains(&format!("Rebuilding {CACHED_NODE_NAME}:v1")),
+        "the bypass is announced:\n{}",
+        logs[2]
+    );
+    assert_eq!(launch.artifacts(), artifacts);
+    assert_eq!(launch.instance_count().await, 1);
 }
