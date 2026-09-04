@@ -1,0 +1,22 @@
+<entry>
+  <title>v0.27.6</title>
+  <id>https://docs.peppy.bot/releases/v0-27-6/</id>
+  <updated>2026-09-04T00:00:00Z</updated>
+
+  <summary>Peppy authenticates git over SSH using the agent and identity files your ~/.ssh/config selects per host, so 1Password, Secretive, and gpg-agent work.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.27.6&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Peppy authenticates git over SSH using the agent and identity files your ~/.ssh/config selects per host, so 1Password, Secretive, and gpg-agent work.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 4, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;ul&gt;
+&lt;li&gt;Git over SSH now authenticates with the agent and identity files &lt;code&gt;~/.ssh/config&lt;/code&gt; selects for each host through &lt;code&gt;ssh -G&lt;/code&gt;, honoring your &lt;code&gt;Host&lt;/code&gt;, &lt;code&gt;Match&lt;/code&gt;, &lt;code&gt;Include&lt;/code&gt;, &lt;code&gt;IdentityAgent&lt;/code&gt;, and &lt;code&gt;IdentityFile&lt;/code&gt; settings.&lt;/li&gt;
+&lt;li&gt;The daemon binds the agent your &lt;code&gt;IdentityAgent&lt;/code&gt; names once at startup and logs which one, making 1Password, Secretive, and gpg-agent reachable even from a service installed with &lt;code&gt;peppy service install&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;SSH credential failures now name the agent socket, the identity files offered, and any configured paths that do not exist, so a typo in &lt;code&gt;~/.ssh/config&lt;/code&gt; is visible in the message.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
