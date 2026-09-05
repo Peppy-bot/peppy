@@ -98,10 +98,13 @@ fn every_harness_carries_the_daemon_clock_stand_in() {
         &[
             "pub use_sim_time: bool",
             "use_sim_time: false",
+            "pub sim_time_participants: Vec<String>",
+            "sim_time_participants: Vec::new()",
             "MockClock::start_sim(",
             "MockClock::start_wall(",
             "MOCK_CLOCK_INSTANCE_ID",
             ".with_use_sim_time(config.use_sim_time)",
+            ".with_sim_time_participants(config.sim_time_participants.clone())",
             "service_readiness.push(clock.readiness()?);",
             "pub clock: peppylib::testing::MockClock",
         ],
