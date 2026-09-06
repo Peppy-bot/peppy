@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -14,6 +15,7 @@ from functions.build_release import (
     _commit_notes_and_align_main,
     _confirm_release_content,
     _find_open_docs_sync_pr,
+    _offer_pending_upload,
     _open_docs_pr,
     _open_editor,
     _parse_editable,
@@ -33,10 +35,43 @@ from functions.docs import (
     UpdateResult,
 )
 from functions.github import RepoSlug
+from functions.pending_upload import load_pending_upload, record_pending_upload
 from functions.release_summary import ReleaseChanges, ReleaseContent
 
 DEV_COMMIT = "1111111111111111111111111111111111111111"
 MAIN_COMMIT = "2222222222222222222222222222222222222222"
+
+RELEASE_CONTENT = ReleaseContent(
+    title="Topics API hardening",
+    description="Hardened the topics API against deadlocks.",
+    notes="## What's Changed\n- Fixed topics public API (#265)\n",
+)
+
+
+@pytest.fixture(autouse=True)
+def _dist_dir_under_repo_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the dist directory under the fake repo root whatever the host's env says."""
+    monkeypatch.delenv("PEPPY_DIST_DIR", raising=False)
+
+
+def _unwrapped(console_output: str) -> str:
+    """Console output with rich's line wrapping undone, for phrase assertions."""
+    return " ".join(console_output.split())
+
+
+def _write_release_archives(dist_dir: Path) -> list[BuildArtifact]:
+    """Write one small fake archive per release target and describe them."""
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    artifacts: list[BuildArtifact] = []
+    for name, triple in (
+        ("a", "aarch64-apple-darwin"),
+        ("b", "x86_64-unknown-linux-gnu"),
+        ("c", "aarch64-unknown-linux-gnu"),
+    ):
+        asset_path = dist_dir / f"peppy-{name}.tgz"
+        asset_path.write_bytes(f"archive {name}".encode())
+        artifacts.append(BuildArtifact(f"peppy-{name}.tgz", asset_path, triple))
+    return artifacts
 
 
 def test_build_release_payload_includes_body_and_draft() -> None:
@@ -118,11 +153,64 @@ def test_run_local_mode_empty_tag_raises(
         _run_local()
 
 
+@patch("functions.build_release.build_github_client")
+@patch("functions.build_release.github_repo_slug")
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
+@patch("functions.build_release.get_repo_root")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
 @patch("functions.build_release.is_macos_arm64", return_value=False)
-def test_run_full_rejects_non_macos(mock_platform: MagicMock) -> None:
+def test_run_full_rejects_building_off_macos(
+    mock_platform: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_branch_state: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    tmp_path: Path,
+) -> None:
+    mock_repo_root.return_value = tmp_path
+
     with pytest.raises(
         ReleaseError, match="full releases can only be created from macOS ARM64"
     ):
+        _run_full()
+
+    # Only git is needed to get as far as the pending-upload offer; the build
+    # tools are checked with the build host, once a build is actually due.
+    assert mock_validate.call_args.kwargs["required_commands"] == ("git",)
+
+
+@patch("functions.build_release.need_cmd")
+@patch("functions.build_release.build_github_client")
+@patch("functions.build_release.github_repo_slug")
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
+@patch("functions.build_release.get_repo_root")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
+@patch("functions.build_release.is_macos_arm64", return_value=True)
+def test_run_full_requires_the_build_tools_before_building(
+    mock_platform: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_branch_state: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    mock_need_cmd: MagicMock,
+    tmp_path: Path,
+) -> None:
+    mock_repo_root.return_value = tmp_path
+
+    def missing_cargo(cmd: str) -> str:
+        if cmd == "cargo":
+            raise ReleaseError("missing required command: cargo")
+        return f"/usr/bin/{cmd}"
+
+    mock_need_cmd.side_effect = missing_cargo
+
+    with pytest.raises(ReleaseError, match="missing required command: cargo"):
         _run_full()
 
 
@@ -254,21 +342,14 @@ def _setup_run_full_mocks(
     # The tag is the only typed prompt; Claude-drafted content is mocked.
     mock_prompt.return_value = "v0.1.0"
     mock_prompt_yn.return_value = True
-    mock_prepare.return_value = ReleaseContent(
-        title="Topics API hardening",
-        description="Hardened the topics API against deadlocks.",
-        notes="## What's Changed\n- Fixed topics public API (#265)\n",
-    )
+    mock_prepare.return_value = RELEASE_CONTENT
     mock_targets.return_value = [
         "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",
     ]
-    mock_build_all.return_value = [
-        BuildArtifact("peppy-a.tgz", tmp_path / "a.tgz", "aarch64-apple-darwin"),
-        BuildArtifact("peppy-b.tgz", tmp_path / "b.tgz", "x86_64-unknown-linux-gnu"),
-        BuildArtifact("peppy-c.tgz", tmp_path / "c.tgz", "aarch64-unknown-linux-gnu"),
-    ]
+    # The archives exist on disk: the pending-upload manifest hashes them.
+    mock_build_all.return_value = _write_release_archives(tmp_path / "dist")
     mock_slug.return_value = RepoSlug(owner="test-owner", repo="test-repo")
     mock_client.return_value = MagicMock()
     # First call: POST creates draft (GitHub assigns a temporary untagged URL).
@@ -372,6 +453,9 @@ def test_run_full_uploads_all_artifacts(
     # after the release is published.
     mock_align.assert_called_once_with(notes_path, "v0.1.0")
 
+    # The release is live, so there is nothing left to resume.
+    assert not (tmp_path / "dist" / "pending-upload.json").exists()
+
     # The displayed URL must be the published release URL, not the draft's untagged URL
     captured = capfd.readouterr()
     assert "releases/tag/v0.1.0" in captured.err
@@ -418,6 +502,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_prepare: MagicMock,
     mock_docs_gate: MagicMock,
     tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     _setup_run_full_mocks(
         tmp_path,
@@ -441,6 +526,18 @@ def test_run_full_cleans_up_draft_on_upload_failure(
         mock_client.return_value, 1, mock_slug.return_value
     )
     mock_publish.assert_not_called()
+
+    # The archives survived the failure: the manifest describing them is kept
+    # for the next run to resume from, and the user is told so.
+    pending = load_pending_upload(tmp_path / "dist" / "pending-upload.json")
+    assert pending is not None
+    assert pending.tag == "v0.1.0"
+    assert pending.release_commit == DEV_COMMIT
+    assert pending.content == RELEASE_CONTENT
+    assert pending.artifacts == mock_build_all.return_value
+    output = _unwrapped(capfd.readouterr().err)
+    assert "offers to upload them again" in output
+    assert f"checkout of 'dev' at {DEV_COMMIT[:12]} on another machine" in output
 
 
 @patch("functions.build_release._verify_docs_up_to_date")
@@ -583,6 +680,236 @@ def test_run_full_reports_manual_steps_when_git_align_fails(
     assert "git push origin dev:main" in message
     # The published release is never rolled back over a git failure.
     mock_publish.assert_called_once()
+
+
+@patch("functions.build_release._verify_docs_up_to_date")
+@patch("functions.build_release._commit_notes_and_align_main")
+@patch("functions.build_release._prepare_release_content")
+@patch("functions.build_release.generate_release_notes_file")
+@patch("functions.build_release.fetch_release_body_html", return_value="<p>notes</p>")
+@patch("functions.build_release.publish_release")
+@patch("functions.build_release.replace_and_upload_asset")
+@patch("functions.build_release.parse_release_response")
+@patch("functions.build_release.github_api")
+@patch("functions.build_release.build_github_client")
+@patch("functions.build_release.github_repo_slug")
+@patch("functions.build_release._build_all_targets")
+@patch("functions.build_release.get_targets_for_platform")
+@patch("functions.build_release.prompt_yn")
+@patch("functions.build_release.prompt")
+@patch("functions.build_release.has_uncommitted_changes", return_value=True)
+@patch("functions.build_release._verify_release_branch_state", return_value=DEV_COMMIT)
+@patch("functions.build_release.get_repo_root")
+@patch(
+    "functions.build_release.validate_release_environment", return_value="test-token"
+)
+@patch("functions.build_release.need_cmd")
+@patch("functions.build_release.is_macos_arm64", return_value=False)
+def test_run_full_publishes_archives_copied_from_another_machine(
+    mock_platform: MagicMock,
+    mock_need_cmd: MagicMock,
+    mock_validate: MagicMock,
+    mock_repo_root: MagicMock,
+    mock_branch_state: MagicMock,
+    mock_uncommitted: MagicMock,
+    mock_prompt: MagicMock,
+    mock_prompt_yn: MagicMock,
+    mock_targets: MagicMock,
+    mock_build_all: MagicMock,
+    mock_slug: MagicMock,
+    mock_client: MagicMock,
+    mock_api: MagicMock,
+    mock_parse: MagicMock,
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_fetch_html: MagicMock,
+    mock_gen_notes: MagicMock,
+    mock_prepare: MagicMock,
+    mock_align: MagicMock,
+    mock_docs_gate: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _setup_run_full_mocks(
+        tmp_path,
+        mock_repo_root=mock_repo_root,
+        mock_prompt=mock_prompt,
+        mock_prompt_yn=mock_prompt_yn,
+        mock_prepare=mock_prepare,
+        mock_targets=mock_targets,
+        mock_build_all=mock_build_all,
+        mock_slug=mock_slug,
+        mock_client=mock_client,
+        mock_api=mock_api,
+        mock_parse=mock_parse,
+    )
+    # On the macOS build machine, a run built the archives for v0.2.0 and
+    # failed to publish them; the content it recorded differs from what Claude
+    # would draft now.
+    mac_dist = tmp_path / "mac" / "dist"
+    archives = _write_release_archives(mac_dist)
+    recorded_content = ReleaseContent(
+        title="Recorded title", description="Recorded description", notes="- recorded"
+    )
+    record_pending_upload(
+        mac_dist / "pending-upload.json", "v0.2.0", DEV_COMMIT, recorded_content, archives
+    )
+
+    # The dist directory is copied as-is into a staging folder on a Linux host
+    # that has its own checkout of `dev` at the release commit and no build
+    # tools; PEPPY_DIST_DIR points the release at that folder.
+    linux_repo = tmp_path / "linux" / "repo"
+    staging = tmp_path / "linux" / "staging"
+    shutil.copytree(mac_dist, staging)
+    linux_repo.mkdir(parents=True)
+    mock_repo_root.return_value = linux_repo
+    monkeypatch.setenv("PEPPY_DIST_DIR", str(staging))
+    notes_path = linux_repo / "docs" / "v0.2.0.html"
+    mock_gen_notes.return_value = notes_path
+
+    _run_full()
+
+    # The archives were built elsewhere: this host is not macOS ARM64 and is
+    # never asked for cargo, rustc, or claude, only for git.
+    assert mock_validate.call_args.kwargs["required_commands"] == ("git",)
+    mock_need_cmd.assert_not_called()
+
+    # The only question asked is whether to resume: no tag is typed, nothing
+    # is drafted, the docs gate and the uncommitted-changes prompt are skipped
+    # (the archives are already built), and nothing is rebuilt.
+    mock_prompt_yn.assert_called_once()
+    assert "instead of rebuilding" in mock_prompt_yn.call_args.args[0]
+    mock_prompt.assert_not_called()
+    mock_prepare.assert_not_called()
+    mock_docs_gate.assert_not_called()
+    mock_build_all.assert_not_called()
+
+    # The draft carries the recorded content, pinned to the recorded commit.
+    create_payload = mock_api.call_args_list[0].kwargs["json_data"]
+    assert create_payload["tag_name"] == "v0.2.0"
+    assert create_payload["name"] == "Recorded title"
+    assert create_payload["body"] == "- recorded"
+    assert create_payload["target_commitish"] == DEV_COMMIT
+
+    # The copies in the staging folder are what gets uploaded, then the
+    # release goes live and the notes are committed as for a fresh release.
+    uploaded = [
+        (call.args[2], call.args[3]) for call in mock_upload.call_args_list
+    ]
+    assert uploaded == [(a.asset_name, staging / a.asset_name) for a in archives]
+    mock_publish.assert_called_once_with(mock_client.return_value, 1, mock_slug.return_value)
+    assert mock_gen_notes.call_args.args[0].description == "Recorded description"
+    mock_align.assert_called_once_with(notes_path, "v0.2.0")
+    # Publishing consumes the staging folder's manifest and nothing else: the
+    # archives stay, and the build machine's copy is another machine's business.
+    assert not (staging / "pending-upload.json").exists()
+    assert all((staging / a.asset_name).is_file() for a in archives)
+    assert (mac_dist / "pending-upload.json").is_file()
+
+
+# --- offering a pending upload ---
+
+
+def _record_pending(tmp_path: Path, release_commit: str = DEV_COMMIT) -> Path:
+    """Write a manifest for freshly built fake archives and return its path."""
+    manifest_path = tmp_path / "dist" / "pending-upload.json"
+    archives = _write_release_archives(tmp_path / "dist")
+    record_pending_upload(manifest_path, "v0.1.0", release_commit, RELEASE_CONTENT, archives)
+    return manifest_path
+
+
+@patch("functions.build_release.prompt_yn")
+def test_offer_pending_upload_is_silent_without_a_manifest(
+    mock_prompt_yn: MagicMock, tmp_path: Path
+) -> None:
+    assert _offer_pending_upload(tmp_path / "dist" / "pending-upload.json", DEV_COMMIT) is None
+    mock_prompt_yn.assert_not_called()
+
+
+@patch("functions.build_release.prompt_yn", return_value=True)
+def test_offer_pending_upload_returns_the_manifest_when_accepted(
+    mock_prompt_yn: MagicMock, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    manifest_path = _record_pending(tmp_path)
+
+    pending = _offer_pending_upload(manifest_path, DEV_COMMIT)
+
+    assert pending is not None
+    assert pending.tag == "v0.1.0"
+    assert pending.content == RELEASE_CONTENT
+    # The offer names what would be published: the tag, its title, the commit,
+    # and every archive.
+    output = _unwrapped(capfd.readouterr().err)
+    assert "v0.1.0" in output
+    assert RELEASE_CONTENT.title in output
+    assert DEV_COMMIT[:12] in output
+    for artifact in pending.artifacts:
+        assert artifact.asset_name in output
+    # Accepting is the default answer: resuming is why the manifest exists.
+    assert mock_prompt_yn.call_args.kwargs["default_yes"] is True
+    # Publishing removes the manifest; the offer itself leaves it in place.
+    assert manifest_path.exists()
+
+
+@patch("functions.build_release.prompt_yn", return_value=False)
+def test_offer_pending_upload_keeps_the_manifest_when_refused(
+    mock_prompt_yn: MagicMock, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    manifest_path = _record_pending(tmp_path)
+
+    assert _offer_pending_upload(manifest_path, DEV_COMMIT) is None
+
+    # Refusing means "not this time": the archives and the manifest stay until
+    # a rebuild writes over them, so a stray "no" costs nothing.
+    assert manifest_path.exists()
+    assert "Starting a fresh release" in _unwrapped(capfd.readouterr().err)
+
+
+@patch("functions.build_release.prompt_yn")
+def test_offer_pending_upload_discards_archives_built_from_another_commit(
+    mock_prompt_yn: MagicMock, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    manifest_path = _record_pending(tmp_path, release_commit=MAIN_COMMIT)
+
+    assert _offer_pending_upload(manifest_path, DEV_COMMIT) is None
+
+    # `dev` moved on since the build: the tag would pin an older commit than
+    # the one `main` is fast-forwarded to, so the archives are not offered.
+    mock_prompt_yn.assert_not_called()
+    assert not manifest_path.exists()
+    output = _unwrapped(capfd.readouterr().err)
+    assert f"built from {MAIN_COMMIT[:12]}" in output
+    assert f"'dev' is now at {DEV_COMMIT[:12]}" in output
+
+
+@patch("functions.build_release.prompt_yn")
+def test_offer_pending_upload_discards_archives_that_changed_since_the_build(
+    mock_prompt_yn: MagicMock, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    manifest_path = _record_pending(tmp_path)
+    # A `--local` build in between wrote a different archive over one of them
+    # and another one is gone.
+    (tmp_path / "dist" / "peppy-b.tgz").write_bytes(b"rebuilt locally")
+    (tmp_path / "dist" / "peppy-c.tgz").unlink()
+
+    assert _offer_pending_upload(manifest_path, DEV_COMMIT) is None
+
+    mock_prompt_yn.assert_not_called()
+    assert not manifest_path.exists()
+    output = _unwrapped(capfd.readouterr().err)
+    assert "peppy-b.tgz changed since it was built" in output
+    assert "peppy-c.tgz is missing" in output
+
+
+def test_offer_pending_upload_rejects_a_manifest_it_cannot_parse(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "dist" / "pending-upload.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text("{not json")
+
+    with pytest.raises(ReleaseError, match="not a valid pending-upload manifest"):
+        _offer_pending_upload(manifest_path, DEV_COMMIT)
 
 
 # --- release branch state ---

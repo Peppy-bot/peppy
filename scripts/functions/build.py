@@ -196,6 +196,16 @@ def find_build_dir(
     )
 
 
+def release_dist_dir(repo_root: Path) -> Path:
+    """The directory release archives are written to.
+
+    PEPPY_DIST_DIR overrides the default of {repo_root}/dist. Everything that
+    reads or writes release archives resolves the directory here, so the
+    override is honoured consistently.
+    """
+    return Path(os.environ.get("PEPPY_DIST_DIR", str(repo_root / "dist")))
+
+
 def _sanitize_tar_member(member: tarfile.TarInfo) -> tarfile.TarInfo:
     """Zero member ownership so the archive never carries the packer's uid,
     gid, or user and group names. A root install restoring them would either
@@ -226,7 +236,7 @@ def package_release(
 
     Writes the archive to {dist_dir}/peppy-{target_triple}.tgz.
     """
-    dist_dir = Path(os.environ.get("PEPPY_DIST_DIR", str(repo_root / "dist")))
+    dist_dir = release_dist_dir(repo_root)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
     asset_name = f"peppy-{target_triple}.tgz"

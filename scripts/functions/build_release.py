@@ -17,8 +17,15 @@ Requires:
   - git, cargo, rustc on PATH
   - Lima VM (macOS only, auto-managed)
 
+Publishing archives a previous run built needs only git and the token: the
+dist directory is self-contained, so it can also be copied to a checkout of
+the same commit on another machine (any OS) and published from there.
+
 Outputs:
   - Tar.gz archives in ./dist/
+  - A pending-upload manifest next to them (unless --local), kept until the
+    release is published so a run that fails while uploading can be resumed
+    from the upload rather than from the build
   - A release notes HTML file in ./docs/src/content/releases/ (unless --local),
     committed on `dev` and pushed to `dev` and `main`
 """
@@ -42,6 +49,7 @@ from .cli import (
     console,
     get_targets_for_platform,
     is_macos_arm64,
+    need_cmd,
     prompt,
     prompt_choice,
     prompt_yn,
@@ -49,6 +57,7 @@ from .cli import (
     validate_release_environment,
 )
 from .github import (
+    ReleaseInfo,
     RepoSlug,
     build_github_client,
     delete_release,
@@ -60,6 +69,14 @@ from .github import (
     replace_and_upload_asset,
 )
 from .lima import ensure_lima_vm, ensure_rust_in_vm, find_limactl, stop_lima_vm
+from .pending_upload import (
+    PendingUpload,
+    archive_problems,
+    discard_pending_upload,
+    load_pending_upload,
+    pending_upload_path,
+    record_pending_upload,
+)
 from .docs import (
     RequiredChange,
     check_docs,
@@ -104,6 +121,11 @@ ALIGNED_BRANCH = "main"
 # The directory the docs check owns end to end: it is regenerated wholesale and
 # committed on a branch of its own when the release finds it stale.
 DOCS_DIR = "docs"
+
+# Commands a fresh release needs on top of git: cargo and rustc build the
+# archives, claude runs the docs check and drafts the notes. Publishing
+# archives a previous run built needs none of them.
+BUILD_COMMANDS = ("cargo", "rustc", "claude")
 
 # Prefix of the throwaway branch carrying a regenerated docs tree. The release
 # commit is appended, so re-running the release for the same commit reuses the
@@ -785,6 +807,219 @@ def _commit_notes_and_align_main(notes_path: Path, tag: str) -> None:
     set_branch_ref(ALIGNED_BRANCH, get_commit(RELEASE_BRANCH))
 
 
+def _offer_pending_upload(
+    manifest_path: Path,
+    release_commit: str,
+) -> PendingUpload | None:
+    """Offer to publish archives a previous run built but failed to upload.
+
+    Returns the pending upload to publish, or None when there is nothing to
+    resume or the user prefers a fresh build. Refusing keeps the archives and
+    the manifest: a rebuild writes over them, and publishing removes them.
+
+    A manifest is only offered when it still describes a release this run
+    could produce itself. The archives must be byte for byte what was built
+    and verified (a `--local` build in between writes different ones over
+    them), and `dev` must still be at the commit they were built from, because
+    the release tags that commit and fast-forwards `main` to the current `dev`
+    tip. Either mismatch discards the manifest and the release starts from
+    scratch.
+    """
+    pending = load_pending_upload(manifest_path)
+    if pending is None:
+        return None
+
+    built_from = pending.release_commit[:12]
+    if pending.release_commit != release_commit:
+        console.print(
+            f"[yellow]The archives for {pending.tag} were built from {built_from}, "
+            f"but '{RELEASE_BRANCH}' is now at {release_commit[:12]}. They no "
+            f"longer match the release branch, so they are rebuilt.[/yellow]"
+        )
+        discard_pending_upload(manifest_path)
+        return None
+
+    problems = archive_problems(pending)
+    if problems:
+        console.print(
+            f"[yellow]The archives for {pending.tag} are no longer the ones that "
+            f"were built and verified, so they are rebuilt:[/yellow]"
+        )
+        for problem in problems:
+            console.print(f"  {problem}")
+        discard_pending_upload(manifest_path)
+        return None
+
+    console.print(
+        f"\nA previous run built the archives for [bold]{pending.tag}[/bold] "
+        f"({pending.content.title}) at {built_from} but did not publish them:"
+    )
+    for artifact in pending.artifacts:
+        console.print(f"  {artifact.asset_path}")
+    if prompt_yn(
+        "Upload and publish them now instead of rebuilding?", default_yes=True
+    ):
+        return pending
+    console.print(
+        f"Starting a fresh release. The archives stay in "
+        f"'{manifest_path.parent}' until they are rebuilt or published."
+    )
+    return None
+
+
+def _create_draft_release(
+    client: httpx.Client,
+    slug: RepoSlug,
+    pending: PendingUpload,
+) -> ReleaseInfo:
+    """Create the draft release the archives are uploaded to.
+
+    The draft is invisible until every upload succeeds. Its tag is pinned to
+    the exact commit the archives were built from rather than to the branch
+    name, so a push to `dev` during the upload cannot retag the release.
+    """
+    payload = _build_release_payload(
+        pending.tag,
+        pending.content.title,
+        pending.release_commit,
+        pending.content.notes,
+    )
+    console.print(f"Creating draft release [bold]{slug.full}@{pending.tag}[/bold]...")
+    response = github_api(
+        client,
+        "POST",
+        f"https://api.github.com/repos/{slug.full}/releases",
+        json_data=payload,
+    )
+    return parse_release_response(response)
+
+
+def _upload_archives_and_publish(
+    client: httpx.Client,
+    slug: RepoSlug,
+    info: ReleaseInfo,
+    artifacts: list[BuildArtifact],
+) -> None:
+    """Upload every archive to the draft, then publish it.
+
+    The draft is deleted on any failure so no half-uploaded release lingers
+    on GitHub; the failure itself propagates to the caller.
+    """
+    try:
+        for artifact in artifacts:
+            replace_and_upload_asset(
+                client, info.release_id, artifact.asset_name, artifact.asset_path, slug
+            )
+
+        console.print("Publishing release...")
+        publish_release(client, info.release_id, slug)
+    except Exception:
+        console.print("[red]Upload or publish failed. Cleaning up draft release...[/red]")
+        try:
+            delete_release(client, info.release_id, slug)
+            console.print("[yellow]Draft release deleted.[/yellow]")
+        except Exception as cleanup_err:
+            console.print(
+                f"[red]WARNING: Failed to delete draft release "
+                f"(id={info.release_id}): {cleanup_err}[/red]\n"
+                f"[red]Manual cleanup required: "
+                f"https://github.com/{slug.full}/releases[/red]"
+            )
+        raise
+
+
+def _publish_pending_upload(
+    client: httpx.Client,
+    slug: RepoSlug,
+    pending: PendingUpload,
+    manifest_path: Path,
+    repo_root: Path,
+) -> None:
+    """Publish the release described by *pending* and record it in the repo.
+
+    Everything up to the publish call can fail on the network alone, so the
+    manifest is kept until the release is live, and the failure says so: the
+    next run offers to upload the same archives again rather than rebuilding
+    them. Once published, the manifest is removed before the notes are
+    written, so a later git failure (which leaves the release live) can never
+    lead to a second upload of the same tag.
+    """
+    try:
+        info = _create_draft_release(client, slug, pending)
+        _upload_archives_and_publish(client, slug, info, pending.artifacts)
+    except Exception:
+        console.print(
+            f"[yellow]The archives are kept in '{manifest_path.parent}'. The "
+            f"next run offers to upload them again without rebuilding; that "
+            f"directory can also be copied to a checkout of '{RELEASE_BRANCH}' "
+            f"at {pending.release_commit[:12]} on another machine and "
+            f"published from there.[/yellow]"
+        )
+        raise
+    discard_pending_upload(manifest_path)
+
+    # Fetch and write release notes for docs (only after publish succeeds)
+    console.print("Fetching release notes...")
+    body_html = fetch_release_body_html(client, info.release_id, slug)
+    release_details = github_api(
+        client,
+        "GET",
+        f"https://api.github.com/repos/{slug.full}/releases/{info.release_id}",
+    )
+
+    notes_input = ReleaseNotesInput(
+        tag=pending.tag,
+        description=pending.content.description,
+        release_details=release_details,
+        body_html=body_html,
+    )
+    releases_dir = repo_root / "docs" / "src" / "content" / "releases"
+    notes_path = generate_release_notes_file(notes_input, releases_dir)
+
+    release_url = release_details.get("html_url") or f"https://github.com/{slug.full}/releases/tag/{pending.tag}"
+    console.print(f"\n[green]Release created:[/green] {release_url}")
+
+    # The release is live, so a git failure past this point leaves only the
+    # docs side unfinished; say exactly how to finish it by hand.
+    try:
+        _commit_notes_and_align_main(notes_path, pending.tag)
+    except ReleaseError as e:
+        raise ReleaseError(
+            f"{e}\n"
+            f"The GitHub release {pending.tag} is published; only the git side is "
+            f"unfinished. From '{RELEASE_BRANCH}', complete it with:\n"
+            f"  git add {notes_path}\n"
+            f'  git commit -m "docs: add release notes for {pending.tag}"\n'
+            f"  git push {GIT_REMOTE} {RELEASE_BRANCH}\n"
+            f"  git push {GIT_REMOTE} {RELEASE_BRANCH}:{ALIGNED_BRANCH}"
+        ) from e
+
+    console.print(
+        f"[green]Release notes committed on '{RELEASE_BRANCH}' and "
+        f"'{ALIGNED_BRANCH}' fast-forwarded to it.[/green] They feed "
+        "https://forum.peppy.bot/c/peppy-os/announcements/6 and "
+        "https://docs.peppy.bot/reference/changelog/"
+    )
+
+
+def _verify_build_host() -> None:
+    """Check the host can build a complete release.
+
+    Only macOS ARM64 can: a release contains all 3 targets (macOS + 2 Linux)
+    and macOS cannot be built from Linux. The build tools and claude (docs
+    check, release notes) are checked here for the same reason. Runs after the
+    pending-upload offer, so archives built elsewhere publish from any host.
+    """
+    if not is_macos_arm64():
+        raise ReleaseError(
+            "full releases can only be created from macOS ARM64 "
+            "(a release must contain all 3 targets: "
+            "macos-aarch64, linux-x86_64, linux-aarch64)"
+        )
+    for cmd in BUILD_COMMANDS:
+        need_cmd(cmd)
+
+
 def _run_local() -> None:
     """Build release artifacts locally without uploading to GitHub."""
     validate_release_environment(require_token=False)
@@ -813,18 +1048,16 @@ def _run_full(
 ) -> None:
     """Build all 3 targets and publish a full GitHub release from `dev`.
 
-    Only allowed on macOS ARM64, because a complete release requires
-    all 3 targets (macOS + 2 Linux) and macOS cannot be built from Linux.
+    When a previous run built the archives but failed to publish them, the
+    user is offered to publish those instead. Accepting skips the docs gate,
+    the tag prompt, the drafted notes, and the build: the archives already
+    went through all of them. The offer comes before the build host is
+    checked, so archives are published from any machine holding a checkout
+    of `dev` at their commit and a copy of the dist directory; only building
+    needs macOS ARM64 and the build tools.
     """
-    if not is_macos_arm64():
-        raise ReleaseError(
-            "full releases can only be created from macOS ARM64 "
-            "(a release must contain all 3 targets: "
-            "macos-aarch64, linux-x86_64, linux-aarch64)"
-        )
-
     token = validate_release_environment(
-        required_commands=("git", "cargo", "rustc", "claude"),
+        required_commands=("git",),
         skip_prod_router_check=skip_prod_cert_check,
     )
     repo_root = get_repo_root()
@@ -832,18 +1065,26 @@ def _run_full(
 
     release_commit = _verify_release_branch_state()
 
+    # Resolve the repo slug and client up front: the docs gate below may have to
+    # open a pull request, and the release notes are drafted from the changes
+    # since the last release and reviewed, all before the long cross-compile.
+    slug = github_repo_slug()
+    client = build_github_client(token)
+
+    manifest_path = pending_upload_path(repo_root)
+    pending = _offer_pending_upload(manifest_path, release_commit)
+    if pending is not None:
+        _publish_pending_upload(client, slug, pending, manifest_path, repo_root)
+        return
+
+    _verify_build_host()
+
     if has_uncommitted_changes():
         if not prompt_yn(
             "Working tree has uncommitted changes; they end up in the archives "
             "but not in the tagged commit. Continue?"
         ):
             sys.exit(1)
-
-    # Resolve the repo slug and client up front: the docs gate below may have to
-    # open a pull request, and the release notes are drafted from the changes
-    # since the last release and reviewed, all before the long cross-compile.
-    slug = github_repo_slug()
-    client = build_github_client(token)
 
     if skip_docs_check:
         console.print(
@@ -867,86 +1108,12 @@ def _run_full(
     targets = get_targets_for_platform()
     artifacts = _build_all_targets(tag, targets, repo_root)
 
-    # Create a draft release (invisible until all uploads succeed). The tag is
-    # pinned to the exact commit the archives were built from rather than to the
-    # branch name, so a push to `dev` during the build cannot retag the release.
-    payload = _build_release_payload(
-        tag, content.title, release_commit, content.notes
+    # Everything the publish step needs is recorded next to the archives before
+    # the first request goes out, so a failure there is resumable.
+    pending = record_pending_upload(
+        manifest_path, tag, release_commit, content, artifacts
     )
-    console.print(f"Creating draft release [bold]{slug.full}@{tag}[/bold]...")
-    release_response = github_api(
-        client,
-        "POST",
-        f"https://api.github.com/repos/{slug.full}/releases",
-        json_data=payload,
-    )
-    info = parse_release_response(release_response)
-
-    # Upload all artifacts, then publish. Clean up the draft on any failure.
-    try:
-        for artifact in artifacts:
-            replace_and_upload_asset(
-                client, info.release_id, artifact.asset_name, artifact.asset_path, slug
-            )
-
-        console.print("Publishing release...")
-        publish_release(client, info.release_id, slug)
-    except Exception:
-        console.print("[red]Upload or publish failed. Cleaning up draft release...[/red]")
-        try:
-            delete_release(client, info.release_id, slug)
-            console.print("[yellow]Draft release deleted.[/yellow]")
-        except Exception as cleanup_err:
-            console.print(
-                f"[red]WARNING: Failed to delete draft release "
-                f"(id={info.release_id}): {cleanup_err}[/red]\n"
-                f"[red]Manual cleanup required: "
-                f"https://github.com/{slug.full}/releases[/red]"
-            )
-        raise
-
-    # Fetch and write release notes for docs (only after publish succeeds)
-    console.print("Fetching release notes...")
-    body_html = fetch_release_body_html(client, info.release_id, slug)
-    release_details = github_api(
-        client,
-        "GET",
-        f"https://api.github.com/repos/{slug.full}/releases/{info.release_id}",
-    )
-
-    notes_input = ReleaseNotesInput(
-        tag=tag,
-        description=content.description,
-        release_details=release_details,
-        body_html=body_html,
-    )
-    releases_dir = repo_root / "docs" / "src" / "content" / "releases"
-    notes_path = generate_release_notes_file(notes_input, releases_dir)
-
-    release_url = release_details.get("html_url") or f"https://github.com/{slug.full}/releases/tag/{tag}"
-    console.print(f"\n[green]Release created:[/green] {release_url}")
-
-    # The release is live, so a git failure past this point leaves only the
-    # docs side unfinished; say exactly how to finish it by hand.
-    try:
-        _commit_notes_and_align_main(notes_path, tag)
-    except ReleaseError as e:
-        raise ReleaseError(
-            f"{e}\n"
-            f"The GitHub release {tag} is published; only the git side is "
-            f"unfinished. From '{RELEASE_BRANCH}', complete it with:\n"
-            f"  git add {notes_path}\n"
-            f'  git commit -m "docs: add release notes for {tag}"\n'
-            f"  git push {GIT_REMOTE} {RELEASE_BRANCH}\n"
-            f"  git push {GIT_REMOTE} {RELEASE_BRANCH}:{ALIGNED_BRANCH}"
-        ) from e
-
-    console.print(
-        f"[green]Release notes committed on '{RELEASE_BRANCH}' and "
-        f"'{ALIGNED_BRANCH}' fast-forwarded to it.[/green] They feed "
-        "https://forum.peppy.bot/c/peppy-os/announcements/6 and "
-        "https://docs.peppy.bot/reference/changelog/"
-    )
+    _publish_pending_upload(client, slug, pending, manifest_path, repo_root)
 
 
 def main() -> None:
