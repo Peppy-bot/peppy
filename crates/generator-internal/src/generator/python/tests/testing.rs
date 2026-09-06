@@ -96,11 +96,13 @@ fn every_harness_carries_the_daemon_clock_stand_in() {
         &rendered,
         &[
             "use_sim_time=False",
+            "sim_time_participants=()",
             "if use_sim_time:",
             "MockClock.start_sim(",
             "MockClock.start_wall(",
             "MOCK_CLOCK_INSTANCE_ID",
             ".with_use_sim_time(use_sim_time)",
+            ".with_sim_time_participants(list(sim_time_participants))",
             "service_readiness = [clock.readiness()]",
             "clock=clock,",
         ],

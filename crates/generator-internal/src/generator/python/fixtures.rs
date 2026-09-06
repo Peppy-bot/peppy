@@ -1187,7 +1187,7 @@ async def __aexit__(self, exc_type, exc, tb) -> None:
     builder.block(
         &format!(
             "def start(setup, *, parameters=None, instance_id=None, node_dir=None, \
-             use_sim_time=False{kwarg_params}):"
+             use_sim_time=False, sim_time_participants=(){kwarg_params}):"
         ),
         |builder| {
             builder.py(r#"
@@ -1209,7 +1209,12 @@ peppy.json5 when neither the working directory nor the sync-time path
 resolves it; `use_sim_time=True` boots the node in sim time, as a
 launcher's `framework: { use_sim_time: true }` would, with the harness
 clock in sim mode so no time exists until the test advances it with
-`await harness.clock.tick(...)`.
+`await harness.clock.tick(...)`; `sim_time_participants` makes the node
+the launch's source of simulated time, as a launcher's
+`framework: { publishes_sim_time: true }` would: the core nodes it
+publishes its clock to (under the harness the fleet is one machine,
+`peppylib.testing.STANDALONE_CORE_NODE`), meaningful with
+`use_sim_time=True`, and then the test never ticks `harness.clock`.
 "#);
             // One paragraph per slot the deployment lets a test vary.
             if !slot_kwargs.is_empty() {
@@ -1219,7 +1224,7 @@ clock in sim mode so no time exists until the test advances it with
             builder.line("\"\"\"");
             builder.line(&format!(
                 "return _HarnessStart(_start(setup, parameters, instance_id, node_dir, \
-                 use_sim_time{kwarg_args}))"
+                 use_sim_time, sim_time_participants{kwarg_args}))"
             ));
         },
     );
@@ -1228,7 +1233,7 @@ clock in sim mode so no time exists until the test advances it with
     builder.block(
         &format!(
             "async def _start(setup, parameters, instance_id, node_dir, \
-             use_sim_time{kwarg_args}) -> Harness:"
+             use_sim_time, sim_time_participants{kwarg_args}) -> Harness:"
         ),
         |builder| {
             builder.py(r#"
@@ -1262,6 +1267,7 @@ standalone = (
     .with_messaging(router.host, router.port)
     .with_instance_id(instance_id)
     .with_use_sim_time(use_sim_time)
+    .with_sim_time_participants(list(sim_time_participants))
 )
 if parameters is not None:
     standalone = standalone.with_parameters(parameters)

@@ -1029,6 +1029,17 @@ fn render_harness(
             /// default) is wall mode: the harness clock serves and ticks OS
             /// wall time like a wall-mode daemon.
             pub use_sim_time: bool,
+            /// Make the node the launch's source of simulated time, as a
+            /// launcher's `framework: { publishes_sim_time: true }` would:
+            /// the core nodes it publishes its clock to, one `clock` topic
+            /// each, which is what `SimTimePublisher::for_node` hands it a
+            /// publisher for. Under the harness the fleet is one machine,
+            /// `peppylib::testing::STANDALONE_CORE_NODE`, so a subscription
+            /// on the node runner (`peppylib::clock::subscribe`) sees every
+            /// tick the node publishes. Meaningful with `use_sim_time`, and
+            /// then the test never ticks [`Harness::clock`]: the node is the
+            /// simulator. Empty (the default) leaves the node a follower.
+            pub sim_time_participants: Vec<String>,
             #( #config_fields ),*
         }
 
@@ -1041,6 +1052,7 @@ fn render_harness(
                     parameters: None,
                     instance_id: None,
                     use_sim_time: false,
+                    sim_time_participants: Vec::new(),
                     #( #config_defaults ),*
                 }
             }
@@ -1147,7 +1159,8 @@ fn render_harness(
                 let mut standalone = peppylib::runtime::StandaloneConfig::new()
                     .with_messaging(router.host(), router.port())
                     .with_instance_id(instance_id.clone())
-                    .with_use_sim_time(config.use_sim_time);
+                    .with_use_sim_time(config.use_sim_time)
+                    .with_sim_time_participants(config.sim_time_participants.clone());
                 #parameters_seed
                 #( #seeding )*
 
