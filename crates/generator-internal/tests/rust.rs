@@ -11,6 +11,8 @@ mod codec_wire;
 mod consumed_services_dedup;
 #[path = "rust/consumed_topics_dedup.rs"]
 mod consumed_topics_dedup;
+#[path = "rust/consumed_topics_distinct_formats.rs"]
+mod consumed_topics_distinct_formats;
 #[path = "rust/generate_lib.rs"]
 mod generate_lib;
 #[path = "rust/multi_binding_communication.rs"]

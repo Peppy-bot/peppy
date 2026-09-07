@@ -1209,20 +1209,44 @@ mod tests {
     }
 }
 
+/// One generated Cap'n Proto schema file, keyed by its file stem.
+///
+/// `source` is the schema text exactly as the message-format mapper rendered
+/// it (root struct still named `Message`); `schema` is what gets written to
+/// disk, with the root struct renamed to the generator's chosen identity.
+/// The unsubstituted `source` is what `register_schema` compares when a
+/// second registration lands on the same file stem: identical text is the
+/// consumer and the mock of one slot sharing a file, anything else is a
+/// naming collision that must fail loudly.
 #[derive(Clone)]
 pub struct CapnpSchema {
+    schema_key: String,
     file_stem: String,
     struct_module: String,
+    source: String,
     schema: String,
 }
 
 impl CapnpSchema {
-    pub fn new(file_stem: String, struct_module: String, schema: String) -> Self {
+    pub fn new(
+        schema_key: String,
+        file_stem: String,
+        struct_module: String,
+        source: String,
+        schema: String,
+    ) -> Self {
         Self {
+            schema_key,
             file_stem,
             struct_module,
+            source,
             schema,
         }
+    }
+
+    /// The raw schema key the first registration used for this file.
+    pub fn schema_key(&self) -> &str {
+        &self.schema_key
     }
 
     pub fn file_stem(&self) -> &str {
@@ -1233,6 +1257,12 @@ impl CapnpSchema {
         &self.struct_module
     }
 
+    /// The mapper's schema text before the root-struct rename.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The schema text written to disk.
     pub fn schema(&self) -> &str {
         &self.schema
     }

@@ -9,6 +9,8 @@ mod actions_implements;
 mod consumed_services_dedup;
 #[path = "python/consumed_topics_dedup.rs"]
 mod consumed_topics_dedup;
+#[path = "python/consumed_topics_distinct_formats.rs"]
+mod consumed_topics_distinct_formats;
 #[path = "python/generate_lib.rs"]
 mod generate_lib;
 #[path = "python/pairing_lib.rs"]

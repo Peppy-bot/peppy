@@ -404,6 +404,10 @@ fn render_dep_topic(
 ) -> Result<MemberModule> {
     let topic_name = spec.name.as_str();
     let production = production_module("consumed_topics", &[&spec.module_link, topic_name]);
+    // `module_link` is the slot's consumer-side link_id, the same value
+    // `add_consumed_topic` keys the schema on. The mock must pass exactly what
+    // the consumer passes so both resolve one per-slot capnp file (and the
+    // `register_schema` mismatch guard sees identical text, not a collision).
     let schema_key =
         crate::generator::naming::consumed_topic_schema_key(&spec.module_link, topic_name);
     let struct_prefix = format!(

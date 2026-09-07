@@ -1,18 +1,19 @@
-//! Regression guard for the case where two consumed topics share the same
-//! producer node + topic name but use different `link_id`s. The generator
-//! deduplicates the cap'n proto schema by `file_stem`; before the fix, the
-//! second consumer's `register_schema` call overwrote the capnp struct name
-//! while the first consumer's already-emitted per-link Rust module still
-//! referenced the now-dead earlier name, producing
-//! `error[E0433]: cannot find <link>_<topic>_message in <topic>_message_capnp`
-//! at compile time.
+//! Guard for two consumed topics that share one producer node and one topic
+//! name on two different `link_id`s. Consumed-topic cap'n proto schemas are
+//! keyed per slot (`on_next_<link_id>_<topic>`), so each slot gets its own
+//! schema file and its own struct identity; this test checks that two
+//! same-named consumers on one producer still generate side by side and
+//! build together, with neither per-link Rust module referencing a struct
+//! that lives in the other slot's file.
 //!
 //! This is the Rust counterpart of the Python integration test
 //! `python_handles_two_consumed_topics_sharing_topic_name` in
 //! `tests/python/consumed_topics_dedup.rs`. The Python test installs the
 //! generated package with `uv sync` and runs Python that imports both modules;
 //! here we generate a peppygen lib, wire it into a user crate, and invoke
-//! `cargo build` against the result.
+//! `cargo build` against the result. The distinct-formats case (same topic
+//! name, different `message_format`) lives in
+//! `consumed_topics_distinct_formats.rs`.
 
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
