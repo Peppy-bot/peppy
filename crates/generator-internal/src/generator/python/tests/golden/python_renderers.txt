@@ -933,8 +933,8 @@ import peppylib
 import types
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_uvc_camera_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_uvc_camera_video_stream_message.capnp"))
 
 @dataclass
 class MessageHeader:
@@ -948,7 +948,7 @@ class Message:
 
 
 def _deserialize_payload(payload: bytes) -> Message:
-    with _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.from_bytes(payload) as capnp_msg:
+    with _on_next_uvc_camera_video_stream_message_capnp().OnNextUvcCameraVideoStreamMessage.from_bytes(payload) as capnp_msg:
         reader_0 = capnp_msg.header
         timestamp_1 = reader_0.stamp
         stamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
@@ -1104,8 +1104,8 @@ import peppylib
 import types
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_spare_camera_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_spare_camera_video_stream_message.capnp"))
 
 @dataclass
 class MessageHeader:
@@ -1119,7 +1119,7 @@ class Message:
 
 
 def _deserialize_payload(payload: bytes) -> Message:
-    with _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.from_bytes(payload) as capnp_msg:
+    with _on_next_spare_camera_video_stream_message_capnp().OnNextSpareCameraVideoStreamMessage.from_bytes(payload) as capnp_msg:
         reader_0 = capnp_msg.header
         timestamp_1 = reader_0.stamp
         stamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
@@ -1278,8 +1278,8 @@ import peppylib
 import types
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_camera_bank_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_camera_bank_video_stream_message.capnp"))
 
 @dataclass
 class MessageHeader:
@@ -1293,7 +1293,7 @@ class Message:
 
 
 def _deserialize_payload(payload: bytes) -> Message:
-    with _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.from_bytes(payload) as capnp_msg:
+    with _on_next_camera_bank_video_stream_message_capnp().OnNextCameraBankVideoStreamMessage.from_bytes(payload) as capnp_msg:
         reader_0 = capnp_msg.header
         timestamp_1 = reader_0.stamp
         stamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
@@ -1451,8 +1451,8 @@ import peppylib
 import types
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_camera_pool_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_camera_pool_video_stream_message.capnp"))
 
 @dataclass
 class MessageHeader:
@@ -1466,7 +1466,7 @@ class Message:
 
 
 def _deserialize_payload(payload: bytes) -> Message:
-    with _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.from_bytes(payload) as capnp_msg:
+    with _on_next_camera_pool_video_stream_message_capnp().OnNextCameraPoolVideoStreamMessage.from_bytes(payload) as capnp_msg:
         reader_0 = capnp_msg.header
         timestamp_1 = reader_0.stamp
         stamp_2 = peppylib.encoding.convert_time_from_capnp(timestamp_1.sec, timestamp_1.nsec)
@@ -2326,11 +2326,11 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_uvc_camera_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_uvc_camera_video_stream_message.capnp"))
 
 def _serialize_video_stream_message(value: _video_stream.Message) -> bytes:
-    capnp_msg = _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.new_message()
+    capnp_msg = _on_next_uvc_camera_video_stream_message_capnp().OnNextUvcCameraVideoStreamMessage.new_message()
     builder_0 = capnp_msg.init("header")
     timestamp_1 = peppylib.encoding.convert_time(value.header.stamp)
     builder_2 = builder_0.init("stamp")
@@ -2504,11 +2504,11 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_spare_camera_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_spare_camera_video_stream_message.capnp"))
 
 def _serialize_video_stream_message(value: _video_stream.Message) -> bytes:
-    capnp_msg = _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.new_message()
+    capnp_msg = _on_next_spare_camera_video_stream_message_capnp().OnNextSpareCameraVideoStreamMessage.new_message()
     builder_0 = capnp_msg.init("header")
     timestamp_1 = peppylib.encoding.convert_time(value.header.stamp)
     builder_2 = builder_0.init("stamp")
@@ -2682,11 +2682,11 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_camera_bank_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_camera_bank_video_stream_message.capnp"))
 
 def _serialize_video_stream_message(value: _video_stream.Message) -> bytes:
-    capnp_msg = _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.new_message()
+    capnp_msg = _on_next_camera_bank_video_stream_message_capnp().OnNextCameraBankVideoStreamMessage.new_message()
     builder_0 = capnp_msg.init("header")
     timestamp_1 = peppylib.encoding.convert_time(value.header.stamp)
     builder_2 = builder_0.init("stamp")
@@ -2860,11 +2860,11 @@ def producer_ref_for(instance_id: str) -> peppylib.ProducerRef:
     return peppylib.ProducerRef(MOCK_CORE_NODE, instance_id)
 
 @lru_cache(maxsize=1)
-def _on_next_video_stream_message_capnp() -> types.ModuleType:
-    return capnp.load(str(files("peppygen") / "capnp" / "on_next_video_stream_message.capnp"))
+def _on_next_camera_pool_video_stream_message_capnp() -> types.ModuleType:
+    return capnp.load(str(files("peppygen") / "capnp" / "on_next_camera_pool_video_stream_message.capnp"))
 
 def _serialize_video_stream_message(value: _video_stream.Message) -> bytes:
-    capnp_msg = _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.new_message()
+    capnp_msg = _on_next_camera_pool_video_stream_message_capnp().OnNextCameraPoolVideoStreamMessage.new_message()
     builder_0 = capnp_msg.init("header")
     timestamp_1 = peppylib.encoding.convert_time(value.header.stamp)
     builder_2 = builder_0.init("stamp")

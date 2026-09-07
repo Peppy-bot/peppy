@@ -1,20 +1,19 @@
-//! Regression guard for the case where two consumed topics share the same
-//! producer node + topic name but use different `link_id`s. The generator
-//! deduplicates the cap'n proto schema by `file_stem`; before the fix on the
-//! Rust path, the per-link Rust module would reference a struct name that had
-//! been overwritten in the deduplicated capnp source. Python's
-//! `register_schema` already derives the struct identity from the file_stem,
-//! so this test passes both before and after the fix, but it acts as a
-//! forward-looking guardrail so the Python generator can't regress into the
-//! same divergence.
+//! Guard for two consumed topics that share one producer node and one topic
+//! name on two different `link_id`s. Consumed-topic cap'n proto schemas are
+//! keyed per slot (`on_next_<link_id>_<topic>`), so each slot gets its own
+//! schema file and its own struct identity; this test checks that two
+//! same-named consumers on one producer still generate side by side and
+//! import together, with each per-link module's `_deserialize_payload`
+//! resolving a struct that exists in the file that module loads.
 //!
 //! This is the Python equivalent of the Rust test
-//! `compile_lib_with_two_consumed_topics_sharing_topic_name` in
-//! `src/generator/rust/tests/topics.rs`. The Rust test compiles the generated
-//! crate via `cargo build`; here we install the generated package with
-//! `uv sync` and execute Python that imports both per-link modules and
-//! force-resolves the cap'n proto struct each module's `_deserialize_payload`
-//! references.
+//! `rust_handles_two_consumed_topics_sharing_topic_name` in
+//! `tests/rust/consumed_topics_dedup.rs`. The Rust test compiles the
+//! generated crate via `cargo build`; here we install the generated package
+//! with `uv sync` and execute Python that imports both per-link modules and
+//! force-resolves the cap'n proto struct each module references. The
+//! distinct-formats case (same topic name, different `message_format`) lives
+//! in `consumed_topics_distinct_formats.rs`.
 
 use crate::helpers::TOPIC_DEDUP_SHARED_FORMAT as SHARED_FORMAT;
 use crate::helpers::{
@@ -50,8 +49,8 @@ const RIGHT_CONSUMER: &str = r#"{ link_id: "right_arm", name: "joint_states" }"#
 
 /// Probes the generated Python modules by importing both per-link consumers
 /// and accessing the cap'n proto struct each one's `_deserialize_payload`
-/// references. If the dedup logic ever drifts so that a consumer module
-/// references a struct name not present in the shared capnp file, the
+/// references. If the per-slot keying ever drifts so that a consumer module
+/// references a struct name not present in the capnp file it loads, the
 /// `getattr` call here raises `AttributeError` and the subprocess exits
 /// non-zero.
 const PYTHON_PROBE: &str = r#"
@@ -83,8 +82,8 @@ left_struct_name = referenced_struct(left)
 right_struct_name = referenced_struct(right)
 
 # Force-resolve each referenced struct. AttributeError here means the per-link
-# Python module references a struct that doesn't exist in the deduplicated
-# cap'n proto file, the same class of bug that bit the Rust generator.
+# Python module references a struct that doesn't exist in the per-slot
+# cap'n proto file it loads.
 getattr(left_schema, left_struct_name)
 getattr(right_schema, right_struct_name)
 

@@ -584,16 +584,16 @@ fn consumed_topic() {
         ],
     );
 
-    // Lazy cached schema loader using `importlib.resources`. The
-    // `on_next_` prefix on the file_stem comes from the shared
-    // `consumed_topic_schema_key` helper in `naming.rs`, matching the Rust
-    // generator's output.
+    // Lazy cached schema loader using `importlib.resources`. The file_stem
+    // comes from the shared `consumed_topic_schema_key` helper in
+    // `naming.rs` (matching the Rust generator's output) and is keyed per
+    // slot: `on_next_<link_id>_<topic>`, here the `uvc_camera` slot.
     assert_contains_all(
         &rendered,
         &[
             "@lru_cache(maxsize=1)",
-            "def _on_next_video_stream_message_capnp() -> types.ModuleType:",
-            "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"on_next_video_stream_message.capnp\"))",
+            "def _on_next_uvc_camera_video_stream_message_capnp() -> types.ModuleType:",
+            "return capnp.load(str(files(\"peppygen\") / \"capnp\" / \"on_next_uvc_camera_video_stream_message.capnp\"))",
         ],
     );
 
@@ -614,7 +614,7 @@ fn consumed_topic() {
         &rendered,
         &[
             "def _deserialize_payload(payload: bytes) -> Message:",
-            "with _on_next_video_stream_message_capnp().OnNextVideoStreamMessage.from_bytes(payload) as capnp_msg:",
+            "with _on_next_uvc_camera_video_stream_message_capnp().OnNextUvcCameraVideoStreamMessage.from_bytes(payload) as capnp_msg:",
         ],
     );
 

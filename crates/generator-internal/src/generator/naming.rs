@@ -255,24 +255,25 @@ pub(crate) fn sanitize_or(raw: &str, fallback: &str) -> String {
     }
 }
 
-/// Schema key for the cap'n proto message backing a consumed topic.
+/// Schema key for the cap'n proto message backing a consumed topic:
+/// `on_next_<link_id>_<topic>`, one file per slot.
 ///
-/// Same output in both generators so a Rust node and a Python node that
-/// consume identical topics produce matching capnp file_stems. The producer
-/// node is intentionally NOT part of the key: two consumers of the same
-/// topic name from different producers share one capnp file, and the
-/// per-language `register_schema` collision check makes the dedup safe by
-/// reusing the first registration's struct identity for any later one.
-pub(crate) fn consumed_topic_schema_key(producer_name: &str, topic_name: &str) -> String {
-    let topic = sanitize_component(topic_name);
-    let producer = sanitize_component(producer_name);
-    if !topic.is_empty() {
-        format!("on_next_{topic}")
-    } else if !producer.is_empty() {
-        format!("on_next_{producer}")
-    } else {
-        String::from("on_next_topic")
-    }
+/// The slot's `link_id` is part of the key because a topic name says nothing
+/// about its format: `rgb_camera:v1` and `rgbd_camera:v1` both emit
+/// `video_stream`, and only the rgbd header carries `align_mode`. Sharing one
+/// file across slots by topic name would hand one of those consumers a schema
+/// its decode code does not match. Two slots consuming the same producer topic
+/// therefore write two identical schema files, the price pairing topics
+/// already pay (see [`peer_schema_key`]).
+///
+/// Shared by the Rust and Python generators and by both mock generators, so
+/// the consumer of a slot and the mock of that same slot resolve one file,
+/// and a Rust node and a Python node consuming identical slots produce
+/// matching capnp file_stems.
+pub(crate) fn consumed_topic_schema_key(link_id: &str, topic_name: &str) -> String {
+    let link = sanitize_or(link_id, "slot");
+    let topic = sanitize_or(topic_name, "topic");
+    format!("on_next_{link}_{topic}")
 }
 
 /// Request-message schema key for a consumed service. Includes the producer
@@ -334,10 +335,11 @@ pub(crate) fn consumed_action_schema_keys(
     }
 }
 
-/// Schema key for a pairing topic: `peer_<link_id>_<topic>`. Per-slot capnp
-/// duplication is accepted (same policy as consumed topics): two slots of the
-/// same pairing each get their own schema entry so the nested
-/// `paired_topics.<link_id>.<topic>` namespace stays unambiguous.
+/// Schema key for a pairing topic: `peer_<link_id>_<topic>`, one file per
+/// slot, the same policy [`consumed_topic_schema_key`] applies to consumed
+/// topics. Two slots of the same pairing each get their own schema entry so
+/// the nested `paired_topics.<link_id>.<topic>` namespace stays unambiguous;
+/// the duplicated few hundred bytes of schema are accepted.
 pub fn peer_schema_key(link_id: &str, topic_name: &str) -> String {
     format!("peer_{link_id}_{topic_name}")
 }
@@ -453,6 +455,37 @@ mod tests {
         assert_eq!(
             peer_schema_key("arm", "joint_states"),
             "peer_arm_joint_states"
+        );
+    }
+
+    #[test]
+    fn consumed_topic_schema_key_is_link_id_keyed() {
+        // One schema file per slot: two slots consuming a same-named topic
+        // never resolve to the same file, whatever producer backs them.
+        assert_eq!(
+            consumed_topic_schema_key("wrist_left", "video_stream"),
+            "on_next_wrist_left_video_stream"
+        );
+        assert_ne!(
+            consumed_topic_schema_key("chest", "video_stream"),
+            consumed_topic_schema_key("wrist_left", "video_stream")
+        );
+    }
+
+    #[test]
+    fn consumed_topic_schema_key_sanitizes_and_falls_back() {
+        assert_eq!(
+            consumed_topic_schema_key("Wrist-Left", "Video Stream"),
+            "on_next_wrist_left_video_stream"
+        );
+        assert_eq!(consumed_topic_schema_key("", ""), "on_next_slot_topic");
+        assert_eq!(
+            consumed_topic_schema_key("--", "video_stream"),
+            "on_next_slot_video_stream"
+        );
+        assert_eq!(
+            consumed_topic_schema_key("wrist", "   "),
+            "on_next_wrist_topic"
         );
     }
 }

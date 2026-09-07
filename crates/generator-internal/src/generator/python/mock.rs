@@ -427,6 +427,10 @@ fn render_dep_topic(
     let alias = format!("_{attr}");
     builder.add_import(&production_import_line(&production, &alias));
     let camel = to_camel_case(&attr);
+    // `module_link` is the slot's consumer-side link_id, the same value
+    // `add_consumed_topic` keys the schema on. The mock must pass exactly what
+    // the consumer passes so both resolve one per-slot capnp file (and the
+    // `register_schema` mismatch guard sees identical text, not a collision).
     let schema_key =
         crate::generator::naming::consumed_topic_schema_key(&spec.module_link, topic_name);
     let serialize_fn = format!("_serialize_{attr}_message");

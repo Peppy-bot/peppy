@@ -119,13 +119,39 @@ impl PythonGenerator {
 
         let resolved = resolve_schema_file_stem(schema_key);
         let struct_name = format!("{}Message", to_camel_case(&resolved.base_name));
+
+        // A file stem registered twice is the consumer of a slot and the mock
+        // publisher of that slot resolving the slot's key for one and the
+        // same message: keep the first entry. Two different formats on one
+        // stem is a schema-key naming bug; overwriting would silently decode
+        // one caller's payloads through the other's schema, so fail instead.
+        if let Some(existing) = self.schemas.get(&resolved.file_stem) {
+            if existing.source() != schema_source {
+                return Err(crate::error::Error::SchemaFileStemCollision {
+                    file_stem: resolved.file_stem,
+                    first_key: existing.schema_key().to_string(),
+                    second_key: schema_key.to_string(),
+                });
+            }
+            return Ok(PythonSchemaInfo {
+                file_stem: resolved.file_stem,
+                struct_name,
+            });
+        }
+
         let schema_text =
             schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
         let struct_module = crate::generator::naming::normalize_snake_case(&struct_name);
         self.schemas.insert(
             resolved.file_stem.clone(),
-            CapnpSchema::new(resolved.file_stem.clone(), struct_module, schema_text),
+            CapnpSchema::new(
+                schema_key.to_string(),
+                resolved.file_stem.clone(),
+                struct_module,
+                schema_source,
+                schema_text,
+            ),
         );
 
         Ok(PythonSchemaInfo {

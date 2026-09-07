@@ -96,4 +96,19 @@ sanitize to the module name `{sanitized}`"
         second: String,
         sanitized: String,
     },
+    /// Two schema registrations with different message formats resolved to
+    /// the same capnp file stem. Schema keys are built to make this
+    /// unrepresentable (consumed topics and pairings carry the slot's
+    /// link_id, services and actions the producer name), so this is a hard
+    /// error naming both keys rather than a silent reuse or overwrite of the
+    /// first file.
+    #[error(
+        "capnp schema file collision on `{file_stem}.capnp`: schema keys `{first_key}` and \
+`{second_key}` resolve to the same file but describe different message formats"
+    )]
+    SchemaFileStemCollision {
+        file_stem: String,
+        first_key: String,
+        second_key: String,
+    },
 }

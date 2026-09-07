@@ -115,26 +115,42 @@ impl RustGenerator {
         artifacts: &CapnpSchemaArtifacts,
     ) -> Result<SchemaInfo> {
         let resolved = resolve_schema_file_stem(schema_key);
+        let schema_source = artifacts.encoding_schema();
 
-        // When multiple callers (e.g. two consumed topics sharing producer+topic
-        // with different link_ids) resolve to the same capnp file, the schema
-        // file is written once but every caller still needs a Rust-side
-        // reference to a struct that actually exists in it. Reuse the first
-        // registration's struct identity for every subsequent collision.
+        // The same file stem is registered more than once only when two
+        // callers describe the very same message: the consumer of a slot and
+        // the mock publisher of that slot both resolve the slot's key. The
+        // file is written once and every caller gets a Rust-side reference to
+        // the struct that actually exists in it, so reuse the first
+        // registration's struct identity. Any other collision means two
+        // different formats want one file; that is a schema-key naming bug
+        // and must fail here rather than hand a caller a schema its decode
+        // code does not match.
         if let Some(existing) = self.schemas.get(&resolved.file_stem) {
+            if existing.source() != schema_source {
+                return Err(Error::SchemaFileStemCollision {
+                    file_stem: resolved.file_stem,
+                    first_key: existing.schema_key().to_string(),
+                    second_key: schema_key.to_string(),
+                });
+            }
             return Ok(SchemaInfo {
                 file_stem: resolved.file_stem,
                 struct_module: existing.struct_module().to_string(),
             });
         }
 
-        let schema_source = artifacts.encoding_schema();
         let struct_name = format!("{struct_prefix}Message");
         let struct_module = crate::generator::naming::normalize_snake_case(&struct_name);
         let schema = schema_source.replacen("struct Message", &format!("struct {struct_name}"), 1);
 
-        let capnp_schema =
-            CapnpSchema::new(resolved.file_stem.clone(), struct_module.clone(), schema);
+        let capnp_schema = CapnpSchema::new(
+            schema_key.to_string(),
+            resolved.file_stem.clone(),
+            struct_module.clone(),
+            schema_source.to_string(),
+            schema,
+        );
         self.schemas
             .insert(resolved.file_stem.clone(), capnp_schema);
 
@@ -177,8 +193,10 @@ impl RustGenerator {
         schema_key: &str,
         dependency: &DependencyContext,
     ) -> Result<(TokenStream, Vec<TokenStream>, bool)> {
-        let request_artifacts =
-            map_message_format(&format!("{schema_key}_request"), request_format)?;
+        // Each format is mapped under the exact key it is registered under so
+        // the rendered schema (file id included) is identical to what the mock
+        // and fixture generators produce for the same key.
+        let request_artifacts = map_message_format(schema_key, request_format)?;
         let response_artifacts =
             map_message_format(&format!("{schema_key}_response"), response_format)?;
 
@@ -781,7 +799,8 @@ impl LanguageGenerator for RustGenerator {
         let struct_prefix = String::from("Message");
 
         let mut context = GenerationContext::default();
-        let format_artifacts = map_message_format(&fn_name_str, topic.message_format.as_ref())?;
+        let scoped_key = scoped_schema_key(origin, &fn_name_str);
+        let format_artifacts = map_message_format(&scoped_key, topic.message_format.as_ref())?;
         let params = collect_function_params(
             format_artifacts.as_ref(),
             None,
@@ -789,7 +808,6 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             None,
         )?;
-        let scoped_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
             &scoped_key,
             &schema_prefix,
@@ -836,10 +854,11 @@ impl LanguageGenerator for RustGenerator {
 
         let mut context = GenerationContext::default();
         let request_format = non_empty_message_format(service.request_message_format.as_ref());
-        let request_wire_artifacts =
-            map_message_format(&format!("{fn_name_str}_request"), request_format)?;
+        let scoped_request_key = scoped_schema_key(origin, &fn_name_str);
+        let scoped_response_key = scoped_schema_key(origin, &format!("{fn_name_str}_response"));
+        let request_wire_artifacts = map_message_format(&scoped_request_key, request_format)?;
         let response_artifacts = map_message_format(
-            &format!("{fn_name_str}_response"),
+            &scoped_response_key,
             service.response_message_format.as_ref(),
         )?;
         let wire_params = collect_function_params(
@@ -849,7 +868,6 @@ impl LanguageGenerator for RustGenerator {
             &mut context,
             Some(&generic_response_ident),
         )?;
-        let scoped_request_key = scoped_schema_key(origin, &fn_name_str);
         let encoding = self.prepare_message_encoding(
             &scoped_request_key,
             &struct_prefix,
@@ -879,9 +897,8 @@ impl LanguageGenerator for RustGenerator {
 
         let response_spec = if let Some(return_artifacts) = response_artifacts.as_ref() {
             let response_prefix = format!("{struct_prefix}Response");
-            let schema_key = scoped_schema_key(origin, &format!("{fn_name_str}_response"));
             let schema_info =
-                self.register_schema(&schema_key, &response_prefix, return_artifacts)?;
+                self.register_schema(&scoped_response_key, &response_prefix, return_artifacts)?;
             Some(ServiceResponseSpec {
                 format: return_artifacts.message_format(),
                 struct_ident: generic_response_ident.clone(),
@@ -974,13 +991,15 @@ impl LanguageGenerator for RustGenerator {
             let goal_service = action.goal_service.as_ref();
             let label = format!("{base_name}_goal");
             let schema_struct_prefix = format!("{action_prefix}Goal");
+            let scoped_goal_key = scoped_schema_key(origin, &label);
+            let scoped_goal_response_key = scoped_schema_key(origin, &format!("{label}_response"));
 
             let request_artifacts = map_message_format(
-                &format!("{label}_request"),
+                &scoped_goal_key,
                 goal_service.and_then(|goal| goal.request_message_format.as_ref()),
             )?;
             let response_artifacts = map_message_format(
-                &format!("{label}_response"),
+                &scoped_goal_response_key,
                 goal_service.and_then(|goal| goal.response_message_format.as_ref()),
             )?;
 
@@ -1010,7 +1029,6 @@ impl LanguageGenerator for RustGenerator {
                 goal_request_data_struct.as_ref(),
             );
 
-            let scoped_goal_key = scoped_schema_key(origin, &label);
             let encoding = self.prepare_message_encoding(
                 &scoped_goal_key,
                 &schema_struct_prefix,
@@ -1044,9 +1062,11 @@ impl LanguageGenerator for RustGenerator {
             let response_serialization = if let Some(return_artifacts) = response_artifacts.as_ref()
             {
                 let response_schema_prefix = format!("{schema_struct_prefix}Response");
-                let schema_key = scoped_schema_key(origin, &format!("{label}_response"));
-                let schema_info =
-                    self.register_schema(&schema_key, &response_schema_prefix, return_artifacts)?;
+                let schema_info = self.register_schema(
+                    &scoped_goal_response_key,
+                    &response_schema_prefix,
+                    return_artifacts,
+                )?;
                 let spec = ServiceResponseSpec {
                     format: return_artifacts.message_format(),
                     struct_ident: Ident::new("GoalResponse", Span::call_site()),
@@ -1079,9 +1099,10 @@ impl LanguageGenerator for RustGenerator {
         if let Some(feedback) = action.feedback_topic.as_ref() {
             let label = format!("publish_feedback {}", action.name);
             let struct_prefix = format!("{action_prefix}Feedback");
-            let feedback_schema_name = format!("{base_name}_feedback");
+            let feedback_schema_key =
+                scoped_schema_key(origin, &format!("emit_{base_name}_feedback"));
             let format_artifacts =
-                map_message_format(&feedback_schema_name, Some(&feedback.message_format))?;
+                map_message_format(&feedback_schema_key, Some(&feedback.message_format))?;
             let params = collect_function_params(
                 format_artifacts.as_ref(),
                 None,
@@ -1091,7 +1112,7 @@ impl LanguageGenerator for RustGenerator {
             )?;
             let encoding = self
                 .prepare_message_encoding(
-                    &scoped_schema_key(origin, &format!("emit_{base_name}_feedback")),
+                    &feedback_schema_key,
                     &struct_prefix,
                     format_artifacts.as_ref(),
                     &params,
@@ -1112,11 +1133,10 @@ impl LanguageGenerator for RustGenerator {
         if let Some(result) = action.result_service.as_ref() {
             let label = format!("{base_name}_result");
             let schema_struct_prefix = format!("{action_prefix}Result");
+            let scoped_result_key = scoped_schema_key(origin, &format!("{label}_response"));
 
-            let response_artifacts = map_message_format(
-                &format!("{label}_response"),
-                result.response_message_format.as_ref(),
-            )?;
+            let response_artifacts =
+                map_message_format(&scoped_result_key, result.response_message_format.as_ref())?;
 
             // The result-response fields become `complete(fields…)` parameters.
             let result_params = collect_function_params(
@@ -1127,7 +1147,7 @@ impl LanguageGenerator for RustGenerator {
                 None,
             )?;
             let encoding = self.prepare_message_encoding(
-                &scoped_schema_key(origin, &format!("{label}_response")),
+                &scoped_result_key,
                 &schema_struct_prefix,
                 response_artifacts.as_ref(),
                 &result_params,
@@ -1293,23 +1313,20 @@ impl LanguageGenerator for RustGenerator {
         let request_arguments = non_empty_message_format(Some(request_arguments));
         let response_arguments = non_empty_message_format(Some(response_arguments));
 
-        let service_ident = prefixed_ident("", non_empty_str(service.name.as_str()), "service");
-        let service_name_component = service_ident.to_string();
-
-        let request_artifacts = map_message_format(
-            &format!("{service_name_component}_request"),
-            request_arguments,
-        )?;
-        let response_artifacts = map_message_format(
-            &format!("{service_name_component}_response"),
-            response_arguments,
-        )?;
-        let struct_prefix = identifiers::consumed_service_struct_prefix(service.name.as_str());
-
         let method_label = crate::generator::naming::consumed_service_request_schema_key(
             dependency_node_name,
             service.name.as_str(),
         );
+        let response_schema_key = crate::generator::naming::consumed_service_response_schema_key(
+            dependency_node_name,
+            service.name.as_str(),
+        );
+
+        // Mapped under the exact keys they are registered under so the
+        // rendered schemas (file ids included) match the mock's for this slot.
+        let request_artifacts = map_message_format(&method_label, request_arguments)?;
+        let response_artifacts = map_message_format(&response_schema_key, response_arguments)?;
+        let struct_prefix = identifiers::consumed_service_struct_prefix(service.name.as_str());
         let method_ident = Ident::new("poll", Span::call_site());
 
         let mut context = GenerationContext::default();
@@ -1427,11 +1444,6 @@ impl LanguageGenerator for RustGenerator {
             if let Some(response_artifacts) = response_artifacts.as_ref() {
                 let response_struct_name = format!("{struct_prefix}Response");
 
-                let response_schema_key =
-                    crate::generator::naming::consumed_service_response_schema_key(
-                        dependency_node_name,
-                        service.name.as_str(),
-                    );
                 let response_schema = self.register_schema(
                     &response_schema_key,
                     &response_struct_name,
