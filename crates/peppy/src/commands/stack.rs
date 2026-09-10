@@ -204,8 +204,10 @@ pub struct WithWords {
     /// Select one option of a `components` axis: `option` or `axis=option`.
     /// Repeatable and comma-separated. At launch the words swap what the
     /// launcher deploys on its `one` axes and turn `zero_or_one` axes on,
-    /// reaching the axes of the fragments those selections run; at join they
-    /// select the copied option's own axes.
+    /// reaching the axes of the fragments those selections run, and
+    /// `NAME.option` or `NAME.axis=option` selects the own axis of the copy
+    /// NAME the file deploys; at join they select the copied option's own
+    /// axes.
     ///
     /// The words travel to the coordinator verbatim, like `--local`:
     /// only the daemon holds a repository launcher's document, so only
@@ -227,8 +229,8 @@ fn parse_with_word(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(format!(
-            "a --with entry is `option` or `axis=option`, never blank (check for a stray comma \
-             in \"{raw}\")"
+            "a --with entry is `option`, `axis=option` or, at launch, `NAME.option` or \
+             `NAME.axis=option`, never blank (check for a stray comma in {raw:?})"
         ));
     }
     Ok(trimmed.to_owned())

@@ -24,9 +24,10 @@ use serde::{
 use std::collections::{BTreeMap, HashSet};
 
 /// The `deployments` keys an entry is read by, and so the names a component
-/// cannot have: an entry with `source` deploys a node; `instances`, `with`
-/// and `arguments` belong to an option entry.
-const RESERVED_COMPONENT_NAMES: [&str; 4] = ["source", "instances", "with", "arguments"];
+/// cannot have: an entry with `source` deploys a node; `instances`, `with`,
+/// `arguments` and `adjustments` belong to an option entry.
+const RESERVED_COMPONENT_NAMES: [&str; 5] =
+    ["source", "instances", "with", "arguments", "adjustments"];
 
 /// Argument overrides an option entry or one of its copies writes, keyed by
 /// the instance id written in the option's fragment and then by argument.
@@ -322,22 +323,77 @@ where
 
 /// One option entry of a `deployments` list, `{ <axis>: "<option>" }`: the
 /// option the document deploys on that axis. On a `zero_or_more` axis the
-/// entry lists the copies it runs as under `instances`; its own `with` and
-/// `arguments` apply to each of them, a copy's own winning per axis and
-/// per argument.
+/// entry lists the copies it runs as under `instances`; its own `with`,
+/// `arguments` and `adjustments` apply to each of them, a copy's own
+/// winning per axis and per argument and running after the entry's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionDeployment {
     pub axis: String,
     pub option: String,
     pub with: BTreeMap<String, String>,
     pub arguments: ArgumentOverrides,
+    pub adjustments: Vec<Adjustment>,
     pub instances: Vec<CopyEntry>,
 }
 
+/// One adjustment with the origin the report names it by.
+#[derive(Clone)]
+pub(crate) struct OriginatedAdjustment<'a> {
+    pub adjustment: &'a Adjustment,
+    pub origin: String,
+}
+
+/// What one copy the file deploys selects and writes: the entry's settings
+/// with the copy's own on top.
+pub(crate) struct CopySettings<'a> {
+    pub with: BTreeMap<String, String>,
+    pub arguments: ArgumentOverrides,
+    /// The entry's adjustments, then the copy's.
+    pub adjustments: Vec<OriginatedAdjustment<'a>>,
+}
+
+/// The shape of a copy's or an option entry's `with` and `arguments`:
+/// named axes and options, named instances, at least one argument each.
+fn check_copy_settings(
+    with: &BTreeMap<String, String>,
+    arguments: &ArgumentOverrides,
+    origin: &str,
+) -> Result<(), String> {
+    for (axis, option) in with {
+        if axis.trim().is_empty() || option.trim().is_empty() {
+            return Err(format!(
+                "{origin} selects with an empty axis or option name"
+            ));
+        }
+    }
+    for (target, values) in arguments {
+        if target.trim().is_empty() {
+            return Err(format!(
+                "{origin} overrides arguments of an instance with an empty id"
+            ));
+        }
+        if values.is_empty() {
+            return Err(format!(
+                "{origin} overrides no argument of `{target}`; name at least one"
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl OptionDeployment {
-    /// One copy's selection and argument overrides: the entry's, with the
-    /// copy's own on top.
-    pub fn settings_for(&self, copy: &CopyEntry) -> (BTreeMap<String, String>, ArgumentOverrides) {
+    /// Whether the entry carries `with`, `arguments` or `adjustments` for
+    /// the copies it lists.
+    pub fn has_copy_settings(&self) -> bool {
+        !self.with.is_empty() || !self.arguments.is_empty() || !self.adjustments.is_empty()
+    }
+
+    /// The origin the report names this entry's adjustments by.
+    pub(crate) fn adjustments_origin(&self) -> String {
+        format!("adjustments of `{}: {}`", self.axis, self.option)
+    }
+
+    pub(crate) fn settings_for<'a>(&'a self, copy: &'a CopyEntry) -> CopySettings<'a> {
         let mut with = self.with.clone();
         with.extend(copy.with.iter().map(|(k, v)| (k.clone(), v.clone())));
         let mut arguments = self.arguments.clone();
@@ -347,14 +403,35 @@ impl OptionDeployment {
                 .or_default()
                 .extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
-        (with, arguments)
+        let adjustments = self
+            .adjustments
+            .iter()
+            .map(|adjustment| OriginatedAdjustment {
+                adjustment,
+                origin: self.adjustments_origin(),
+            })
+            .chain(
+                copy.adjustments
+                    .iter()
+                    .map(|adjustment| OriginatedAdjustment {
+                        adjustment,
+                        origin: copy.adjustments_origin(),
+                    }),
+            )
+            .collect();
+        CopySettings {
+            with,
+            arguments,
+            adjustments,
+        }
     }
 }
 
 /// One named copy of a `zero_or_more` axis's option: `instance_id` prefixes
 /// every id the option's fragments define (`alpha_backbone_inst`), `with`
-/// selects the option's own axes, and `arguments` overrides the arguments of
-/// the option's instances, keyed by the ids written in the fragment.
+/// selects the option's own axes, `arguments` overrides the arguments of
+/// the option's instances, keyed by the ids written in the fragment, and
+/// `adjustments` write to those instances with the adjustment verbs.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CopyEntry {
     pub instance_id: Name,
@@ -362,6 +439,15 @@ pub struct CopyEntry {
     pub with: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub arguments: ArgumentOverrides,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adjustments: Vec<Adjustment>,
+}
+
+impl CopyEntry {
+    /// The origin the report names this copy's adjustments by.
+    pub(crate) fn adjustments_origin(&self) -> String {
+        format!("adjustments of copy `{}`", self.instance_id)
+    }
 }
 
 impl<'de> Deserialize<'de> for CopyEntry {
@@ -374,6 +460,8 @@ impl<'de> Deserialize<'de> for CopyEntry {
             with: BTreeMap<String, String>,
             #[serde(default)]
             arguments: ArgumentOverrides,
+            #[serde(default)]
+            adjustments: Vec<Adjustment>,
             #[serde(default, deserialize_with = "present")]
             core_node: Option<de::IgnoredAny>,
             #[serde(default, deserialize_with = "present")]
@@ -381,6 +469,10 @@ impl<'de> Deserialize<'de> for CopyEntry {
         }
 
         let raw = Declaration::deserialize(deserializer)?;
+        for adjustment in &raw.adjustments {
+            validate_adjustment(adjustment, &format!("copy `{}`", raw.instance_id))
+                .map_err(de::Error::custom)?;
+        }
         if raw.core_node.is_some() {
             return Err(de::Error::custom(format!(
                 "copy `{}` declares `core_node`; a copy is placed as a whole with \
@@ -395,32 +487,17 @@ impl<'de> Deserialize<'de> for CopyEntry {
                 raw.instance_id
             )));
         }
-        for (axis, option) in &raw.with {
-            if axis.trim().is_empty() || option.trim().is_empty() {
-                return Err(de::Error::custom(format!(
-                    "copy `{}` selects with an empty axis or option name",
-                    raw.instance_id
-                )));
-            }
-        }
-        for (target, arguments) in &raw.arguments {
-            if target.trim().is_empty() {
-                return Err(de::Error::custom(format!(
-                    "copy `{}` overrides arguments of an instance with an empty id",
-                    raw.instance_id
-                )));
-            }
-            if arguments.is_empty() {
-                return Err(de::Error::custom(format!(
-                    "copy `{}` overrides no argument of `{target}`; name at least one",
-                    raw.instance_id
-                )));
-            }
-        }
+        check_copy_settings(
+            &raw.with,
+            &raw.arguments,
+            &format!("copy `{}`", raw.instance_id),
+        )
+        .map_err(de::Error::custom)?;
         Ok(Self {
             instance_id: raw.instance_id,
             with: raw.with,
             arguments: raw.arguments,
+            adjustments: raw.adjustments,
         })
     }
 }
@@ -551,17 +628,24 @@ fn read_deployment_entry(
         Some(value) => BTreeMap::<String, BTreeMap<String, AnyType>>::deserialize(value.clone())
             .map_err(|e| EntryRefusal::Option(format!("`arguments` of `{axis}: {option}`: {e}")))?,
     };
-    if (!with.is_empty() || !arguments.is_empty()) && instances.is_empty() {
-        return Err(EntryRefusal::Option(format!(
-            "`{axis}: {option}` carries `with` or `arguments` but lists no copies under \
-             `instances`; they apply to the copies the entry lists"
-        )));
+    let adjustments = match entry.get("adjustments") {
+        None => Vec::new(),
+        Some(value) => Vec::<Adjustment>::deserialize(value.clone()).map_err(|e| {
+            EntryRefusal::Option(format!("`adjustments` of `{axis}: {option}`: {e}"))
+        })?,
+    };
+    for adjustment in &adjustments {
+        validate_adjustment(adjustment, &format!("`{axis}: {option}`"))
+            .map_err(EntryRefusal::Option)?;
     }
+    check_copy_settings(&with, &arguments, &format!("`{axis}: {option}`"))
+        .map_err(EntryRefusal::Option)?;
     Ok(DeploymentEntry::Option(OptionDeployment {
         axis,
         option,
         with,
         arguments,
+        adjustments,
         instances,
     }))
 }
@@ -595,6 +679,9 @@ impl Serialize for OptionDeployment {
         }
         if !self.arguments.is_empty() {
             map.serialize_entry("arguments", &self.arguments)?;
+        }
+        if !self.adjustments.is_empty() {
+            map.serialize_entry("adjustments", &self.adjustments)?;
         }
         if !self.instances.is_empty() {
             map.serialize_entry("instances", &self.instances)?;
@@ -718,7 +805,7 @@ pub struct SelectionConstraint {
 /// One change to an instance defined elsewhere, in the base or in another
 /// selected fragment. Every change names its operation; nothing is inferred
 /// from a value's JSON type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Adjustment {
     /// The instance to change. Whether an instance exists is declared by the
@@ -935,7 +1022,8 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
         if RESERVED_COMPONENT_NAMES.contains(&axis.name.as_str()) {
             return Err(format!(
                 "`{}` cannot be a component name: a `deployments` entry with a `source` key \
-                 deploys a node, and `instances` lists a deployment's copies",
+                 deploys a node, and `instances`, `with`, `arguments` and `adjustments` belong \
+                 to an option entry",
                 axis.name
             ));
         }
@@ -1034,10 +1122,12 @@ pub(crate) fn validate_option_deployments(
         }
         match axis.cardinality {
             ComponentCardinality::One => {
-                if !entry.instances.is_empty() {
+                if !entry.instances.is_empty() || entry.has_copy_settings() {
                     return Err(format!(
                         "axis `{}` has cardinality `one`: its option runs once, ids as \
-                         written, so drop `instances` from `{{ {}: \"{}\" }}`",
+                         written, so `{{ {}: \"{}\" }}` takes no `instances`, `with`, \
+                         `arguments` or `adjustments`; `--with` selects its axes at launch \
+                         and the launcher's `adjustments` write to its instances",
                         entry.axis, entry.axis, entry.option
                     ));
                 }
@@ -1555,6 +1645,7 @@ mod tests {
                 option: "web".into(),
                 with: BTreeMap::new(),
                 arguments: BTreeMap::new(),
+                adjustments: Vec::new(),
                 instances: Vec::new()
             }]
         );
@@ -1779,7 +1870,7 @@ mod tests {
             r#"{ simulation: "waldo", instances: [{ instance_id: "a" }] }"#,
         )
         .expect_err("a `one` axis has no copies");
-        assert!(error.contains("drop `instances`"), "got: {error}");
+        assert!(error.contains("takes no `instances`"), "got: {error}");
         let error = deployed(
             SIM_AXIS,
             r#"{ simulation: "waldo" }, { simulation: "mujoco" }"#,

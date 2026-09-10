@@ -12,7 +12,7 @@ use super::error::CompositionError;
 use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit};
 use super::load::{LoadedComposition, launcher_file_label, load_composition};
 use super::report::{CompositionReport, SkipReason, SkippedAdjustment};
-use super::select::{self, UnitSelection};
+use super::select::{self, LaunchWords, UnitSelection};
 use config::runtime::Name;
 use core_node_api::encoding::ArgumentOverride;
 use std::collections::HashSet;
@@ -91,14 +91,38 @@ impl PreparedLauncher {
                 report: CompositionReport::default(),
             });
         }
-        let selection = select::resolve_stack(&self.launcher, &self.loaded, words)?;
+        let LaunchWords { scoped, stack } = select::split_scoped_words(&self.launcher, words)?;
+        let selection = select::resolve_stack(&self.launcher, &self.loaded, &stack)?;
         let bare = self.compose_stack(&selection)?;
         let mut taken = bare.core_nodes.clone();
         let mut copies: Vec<ComposedCopy> = Vec::new();
         for entry in &self.launcher.option_deployments {
             let loaded = self.loaded.option(&entry.axis, &entry.option);
             for instance in &entry.instances {
-                let (with, arguments) = entry.settings_for(instance);
+                let settings = entry.settings_for(instance);
+                let mut with = settings.with;
+                if let Some(rests) = scoped.get(instance.instance_id.as_str()) {
+                    // A refusal names the word as typed, copy and all.
+                    let as_typed = |rest: &str| format!("{}.{rest}", instance.instance_id);
+                    let chosen =
+                        select::copy_words(loaded, rests).map_err(|error| match error {
+                            CompositionError::UnknownCopySelection { word, option, menu } => {
+                                CompositionError::UnknownCopySelection {
+                                    word: as_typed(&word),
+                                    option,
+                                    menu,
+                                }
+                            }
+                            CompositionError::AmbiguousSelection { word, axes } => {
+                                CompositionError::AmbiguousSelection {
+                                    word: as_typed(&word),
+                                    axes,
+                                }
+                            }
+                            other => other,
+                        })?;
+                    with.extend(chosen);
+                }
                 let copy = compose_copy(
                     self,
                     &selection,
@@ -108,7 +132,8 @@ impl PreparedLauncher {
                         loaded,
                         name: &instance.instance_id,
                         with: &with,
-                        arguments: &arguments,
+                        arguments: &settings.arguments,
+                        adjustments: &settings.adjustments,
                     },
                     &taken,
                 )?;
@@ -125,19 +150,27 @@ impl PreparedLauncher {
         };
         for copy in copies {
             let record = copy.record();
+            // A line about a stack instance names the copy behind it.
+            let owned = |target: &str| record.instance_ids.iter().any(|id| id.as_str() == target);
+            let attributed = |origin: &str, target: &str| {
+                if owned(target) {
+                    origin.to_owned()
+                } else {
+                    format!("{origin}, copy `{}`", record.name)
+                }
+            };
             report
                 .applied
                 .extend(copy.applied.into_iter().map(|mut entry| {
-                    let own = record
-                        .instance_ids
-                        .iter()
-                        .any(|id| id.as_str() == entry.target);
-                    if !own {
-                        entry.origin = format!("{}, copy `{}`", entry.origin, record.name);
-                    }
+                    entry.origin = attributed(&entry.origin, &entry.target);
                     entry
                 }));
-            report.skipped.extend(copy.skipped);
+            report
+                .skipped
+                .extend(copy.skipped.into_iter().map(|mut entry| {
+                    entry.origin = attributed(&entry.origin, &entry.target);
+                    entry
+                }));
             report.copies.push(record);
         }
         Ok(ComposedLaunch {
@@ -177,6 +210,7 @@ impl PreparedLauncher {
                 name: request.name,
                 with: &with,
                 arguments: &arguments,
+                adjustments: &[],
             },
             &stack.launcher.core_nodes,
         )?;
@@ -269,6 +303,7 @@ impl PreparedLauncher {
             fragments,
             base_adjustments,
             base_origin: base_origin.clone(),
+            copy_adjustments: Vec::new(),
             selection: selection.clone(),
         };
         let mut expanded = expand_unit(&unit, &self.launcher.core_nodes)?;

@@ -368,7 +368,7 @@ A `deployments` entry deploys a node, `{ source, instances }`, or a component's 
 - A `zero_or_one` axis is never deployed by the file, since nothing on the command line could switch it off. `--with` turns it on. A feature that is on by default and switchable is a `one` axis with a `none` option (its body can be empty), deployed by the file and swapped off with `--with none`.
 - On a `zero_or_more` axis the entry lists the copies that run, each under `instances` with a name; see [copies](#copies). `--with` cannot name one, since a copy needs a name.
 
-Each `--with` entry is either `option` (looked up across every axis in reach) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. An axis takes one option; repeating it, or naming it once bare and once as `axis=option`, selects it once. The `default` and `optional` keys are refused: the file's `deployments` entry is the default, and `cardinality: "zero_or_one"` is what optional means.
+Each `--with` entry is either `option` (looked up across every axis in reach) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. An axis takes one option; repeating it, or naming it once bare and once as `axis=option`, selects it once. The `default` and `optional` keys are refused: the file's `deployments` entry is the default, and `cardinality: "zero_or_one"` is what optional means. On `stack launch`, `NAME.option` or `NAME.axis=option` selects the own axis of a copy the file deploys, over the file's `with`.
 
 A launch of a launcher with components echoes the full resolution before anything runs, marking the axes the file filled:
 
@@ -427,13 +427,19 @@ deployments: [
 ],
 ```
 
-A copy entry has three fields: `instance_id`, the copy's name; `with`, the selection of the option's own axes, an axis left out taking what the fragment deploys; and `arguments`, overrides of the copy's instances' arguments, keyed by the id written in the fragment and then by argument. The option entry itself takes `with` and `arguments` too, shared by every copy it lists, and a copy's own values win per axis and per argument:
+A copy entry has four fields: `instance_id`, the copy's name; `with`, the selection of the option's own axes, an axis left out taking what the fragment deploys; `arguments`, overrides of the copy's instances' arguments, keyed by the id written in the fragment and then by argument; and `adjustments`, the fragment verbs over the copy's instances. The option entry itself takes `with` and `arguments` too, shared by every copy it lists, and a copy's own values win per axis and per argument:
 
 ```json5
 { robot: "openarm_v2_sim", with: { robot_commander: "xr_commander" }, instances: [
     { instance_id: "alpha" },
     { instance_id: "bravo", arguments: { commander_inst: { https_port: 4444 } } },
 ] },
+```
+
+An entry and a copy also take `adjustments`, the same verbs a fragment's adjustments use (`set_arguments`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch`, a `--with` word `NAME.axis=option` or `NAME.option` selects one file copy's own axis for that launch, over the file's `with`:
+
+```sh
+peppy stack launch simulation --with mujoco,alpha.xr_commander
 ```
 
 One robot, two robots, many:

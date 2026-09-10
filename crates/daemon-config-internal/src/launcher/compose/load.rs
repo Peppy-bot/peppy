@@ -3,8 +3,8 @@
 //! selection-independent checks.
 
 use super::super::composition::{
-    ComponentAxis, Fragment, FragmentPart, FragmentSpec, LauncherFragmentParser, OptionDeployment,
-    validate_fragment_references,
+    ComponentAxis, CopySettings, Fragment, FragmentPart, FragmentSpec, LauncherFragmentParser,
+    OptionDeployment, OriginatedAdjustment, validate_fragment_references, validate_guard,
 };
 use super::super::types::PeppyLauncher;
 use super::constraints::{constraint_names_axis, names_axis};
@@ -468,8 +468,19 @@ fn check_file_copies(
     for entry in &launcher.option_deployments {
         let OptionDeployment { axis, option, .. } = entry;
         let loaded_option = loaded.option(axis, option);
+        // A copy's guards read the stack's axes and the copy's own; every
+        // copy axis, its own included, is filled by the copy's name alone.
+        let in_reach: Vec<&ComponentAxis> = launcher
+            .stack_axes()
+            .chain(loaded_option.axes.iter())
+            .collect();
+        let definable = loaded_option.definable_ids();
         for copy in &entry.instances {
-            let (with, arguments) = entry.settings_for(copy);
+            let CopySettings {
+                with,
+                arguments,
+                adjustments,
+            } = entry.settings_for(copy);
             let own = resolve_copy(loaded_option, axis, copy.instance_id.as_str(), &with)?;
             let defined: BTreeSet<&str> = loaded_option
                 .fragments_for(&own)
@@ -478,6 +489,39 @@ fn check_file_copies(
                 .flat_map(|deployment| &deployment.instances)
                 .map(|instance| instance.instance_id.as_str())
                 .collect();
+            for OriginatedAdjustment { adjustment, origin } in &adjustments {
+                if let Some(when) = &adjustment.when {
+                    if let Some(copy_axis) = launcher
+                        .repeatable_axes()
+                        .find(|copy_axis| names_axis(Some(when), &copy_axis.name))
+                    {
+                        return Err(CompositionError::CopyAdjustmentOnCopyAxis {
+                            origin: origin.clone(),
+                            axis: copy_axis.name.clone(),
+                        });
+                    }
+                    validate_guard(when, &in_reach, origin).map_err(|detail| {
+                        CompositionError::CopyAdjustmentGuard {
+                            origin: origin.clone(),
+                            detail,
+                        }
+                    })?;
+                }
+                // An unguarded adjustment writes what the copy runs; a
+                // guarded one may await an option another selection brings.
+                let reachable: &dyn Fn(&str) -> bool = if adjustment.when.is_some() {
+                    &|target| definable.contains(target)
+                } else {
+                    &|target| defined.contains(target)
+                };
+                if !reachable(adjustment.target.as_str()) {
+                    return Err(CompositionError::CopyAdjustmentTarget {
+                        origin: origin.clone(),
+                        target: adjustment.target.to_string(),
+                        available: crate::error::format_quoted_list(defined.iter().copied()),
+                    });
+                }
+            }
             for target in arguments.keys() {
                 if !defined.contains(target.as_str()) {
                     return Err(CompositionError::ArgumentTargetAbsent {

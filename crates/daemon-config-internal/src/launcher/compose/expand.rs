@@ -2,7 +2,7 @@
 //! collected and merged by source, its adjustments planned and applied in
 //! order, and the report of what they did.
 
-use super::super::composition::Adjustment;
+use super::super::composition::{Adjustment, OriginatedAdjustment};
 use super::super::types::{Deployment, DeploymentInstance, LinkTargets, LinkValue, Selection};
 use super::constraints::{guard_holds, render_guard};
 use super::error::CompositionError;
@@ -28,6 +28,8 @@ pub(super) struct Unit<'a> {
     pub fragments: Vec<&'a LoadedFragment>,
     pub base_adjustments: Vec<&'a Adjustment>,
     pub base_origin: String,
+    /// A copy's own adjustments; they run after the base's.
+    pub copy_adjustments: Vec<OriginatedAdjustment<'a>>,
     pub selection: UnitSelection,
 }
 
@@ -151,8 +153,8 @@ fn union_core_nodes(unit: &Unit<'_>, core_nodes: &[String]) -> Vec<String> {
     links
 }
 
-/// The adjustments that run, in order (fragments in collection order, then
-/// the base), and the ones skipped with their reason.
+/// The adjustments that run, in order (fragments in collection order, the
+/// base, then the copy's own), and the ones skipped with their reason.
 fn plan_adjustments<'a>(
     unit: &Unit<'a>,
     defined: &HashMap<&str, &str>,
@@ -179,7 +181,12 @@ fn plan_adjustments<'a>(
                     origin: unit.base_origin.clone(),
                     fragment_id: None,
                 }),
-        );
+        )
+        .chain(unit.copy_adjustments.iter().map(|entry| PlannedAdjustment {
+            adjustment: entry.adjustment,
+            origin: entry.origin.clone(),
+            fragment_id: None,
+        }));
     let mut running = Vec::new();
     let mut skipped = Vec::new();
     for step in planned {

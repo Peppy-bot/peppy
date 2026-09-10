@@ -12,7 +12,11 @@ use common::{fragment_file, words, write};
 /// A fleet: one stack axis holding the engine, one axis running as copies
 /// holding the robot, whose fragments carry the commander axis of their own.
 fn fleet(deployments: &str) -> PreparedLauncher {
-    load(&format!(
+    load(&fleet_document(deployments))
+}
+
+fn fleet_document(deployments: &str) -> String {
+    format!(
         r#"{{
         peppy_schema: "launcher/v1",
         components: [
@@ -70,7 +74,7 @@ fn fleet(deployments: &str) -> PreparedLauncher {
                 ] }
             ] }
         } }"#
-    ))
+    )
 }
 
 fn load(document: &str) -> PreparedLauncher {
@@ -1747,8 +1751,216 @@ fn an_option_entry_shares_its_settings_with_the_copies_it_lists() {
     )
     .unwrap_err()
     .to_string();
+    assert!(error.contains("runs as named copies"), "{error}");
+}
+
+/// An entry's and a copy's own `adjustments` write to the copy's instances
+/// after the launcher's adjustments and before its `arguments`, guarded by
+/// the copy's selection; a target no option of the copy defines is refused.
+#[test]
+fn copy_adjustments_run_after_the_launchers_and_before_the_copys_arguments() {
+    let prepared = fleet(
+        r#"{ robot: "sim",
+            adjustments: [{ target: "arm_inst", set_arguments: { speed: 0.6 } }],
+            arguments: { arm_inst: { torque: 3 } },
+            instances: [
+              { instance_id: "alpha" },
+              { instance_id: "bravo",
+                adjustments: [
+                  { target: "commander_inst", when: { commander: "xr" }, set_arguments: { https_port: 4444 } },
+                  { target: "arm_inst", set_arguments: { speed: 0.7 } },
+                ],
+                arguments: { arm_inst: { speed: 0.8 } } },
+            ] }"#,
+    );
+    let launched = prepared.launch(&words(&["engine"])).unwrap();
+    // The entry's argument survives beside the copy's own key.
+    assert_eq!(
+        instance(&launched.launcher, "bravo_arm_inst").arguments["torque"],
+        AnyType::Int(3)
+    );
+    // The launcher's guarded adjustment sets 0.5, the entry's 0.6 on top.
+    assert_eq!(
+        instance(&launched.launcher, "alpha_arm_inst").arguments["speed"],
+        AnyType::Float(0.6)
+    );
+    // The copy's adjustment sets 0.7, its `arguments` 0.8 last.
+    assert_eq!(
+        instance(&launched.launcher, "bravo_arm_inst").arguments["speed"],
+        AnyType::Float(0.8)
+    );
     assert!(
-        error.contains("lists no copies under `instances`"),
+        !instance(&launched.launcher, "bravo_commander_inst")
+            .arguments
+            .contains_key("https_port"),
+        "the guard on the copy's commander does not hold for the web commander"
+    );
+    let skipped: Vec<_> = launched
+        .report
+        .skipped
+        .iter()
+        .map(|entry| (entry.target.as_str(), entry.origin.as_str()))
+        .collect();
+    assert!(
+        skipped.contains(&("bravo_commander_inst", "adjustments of copy `bravo`")),
+        "{skipped:?}"
+    );
+    let origins = |target: &str| -> Vec<String> {
+        launched
+            .report
+            .applied
+            .iter()
+            .filter(|entry| entry.target == target)
+            .map(|entry| entry.origin.clone())
+            .collect()
+    };
+    assert_eq!(
+        origins("alpha_arm_inst"),
+        [
+            "fleet.json5 (base)",
+            "adjustments of `robot: sim`",
+            "arguments of copy `alpha`",
+        ]
+    );
+    assert_eq!(
+        origins("bravo_arm_inst"),
+        [
+            "fleet.json5 (base)",
+            "adjustments of `robot: sim`",
+            "adjustments of copy `bravo`",
+            "arguments of copy `bravo`",
+            "arguments of copy `bravo`",
+        ]
+    );
+
+    let error = load_error(&fleet_document(
+        r#"{ robot: "sim", instances: [
+            { instance_id: "alpha", adjustments: [{ target: "nowhere_inst", set_arguments: { x: 1 } }] },
+        ] }"#,
+    ));
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentTarget { target, origin, .. }
+            if target == "nowhere_inst" && origin == "adjustments of copy `alpha`"),
+        "{error}"
+    );
+}
+
+/// A launch word `NAME.axis=option` or `NAME.option` selects one file
+/// copy's own axis for that launch, over the file's `with`; a word naming
+/// a copy the file does not deploy is refused with the file's copies.
+#[test]
+fn a_launch_word_selects_a_file_copys_own_axis() {
+    let prepared = fleet(
+        r#"{ robot: "real", instances: [
+            { instance_id: "alpha", with: { commander: "web" } },
+            { instance_id: "bravo" },
+        ] }"#,
+    );
+    let launched = prepared.launch(&words(&["alpha.xr"])).unwrap();
+    assert_eq!(
+        launched
+            .copies()
+            .iter()
+            .map(|copy| copy.selection.echo())
+            .collect::<Vec<_>>(),
+        [
+            "robot=real  commander=xr",
+            "robot=real  commander=web (from file)"
+        ]
+    );
+    let launched = prepared
+        .launch(&words(&["bravo.commander=xr", "engine"]))
+        .unwrap();
+    assert_eq!(
+        launched
+            .copies()
+            .iter()
+            .map(|copy| copy.selection.echo())
+            .collect::<Vec<_>>(),
+        ["robot=real  commander=web", "robot=real  commander=xr"]
+    );
+    assert!(ids(&launched.launcher).contains(&"engine_inst".to_owned()));
+
+    let error = prepared.launch(&words(&["charlie.xr"])).unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::ScopedSelectionUnknownCopy { word, copy, copies }
+            if word == "charlie.xr" && copy == "charlie"
+                && copies.starts_with("the file deploys `alpha`, `bravo`")),
+        "{error}"
+    );
+    let error = prepared.launch(&words(&["alpha.nope"])).unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::UnknownCopySelection { word, option, .. }
+            if word == "alpha.nope" && option == "real"),
+        "{error}"
+    );
+}
+
+/// Refusals of copy adjustments and scoped words: conflicting words for one
+/// copy, a guard on a copy axis, a stack instance as target, a word with no
+/// copy before the dot, and settings on a `one` axis entry.
+#[test]
+fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
+    let prepared = fleet(r#"{ robot: "real", instances: [{ instance_id: "alpha" }] }"#);
+    let error = prepared
+        .launch(&words(&["alpha.xr", "alpha.commander=web"]))
+        .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::ConflictingSelection { .. }),
+        "{error}"
+    );
+    let error = prepared.launch(&words(&[".xr"])).unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::ScopedWordNamesNoCopy { word } if word == ".xr"),
+        "{error}"
+    );
+    let error = prepared.launch(&words(&["alpha."])).unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::ScopedWordNamesNoOption { word, copy }
+            if word == "alpha." && copy == "alpha"),
+        "{error}"
+    );
+
+    let error = load_error(&fleet_document(
+        r#"{ robot: "real", instances: [{ instance_id: "alpha",
+            adjustments: [{ target: "arm_inst", when: { robot: "sim" }, set_arguments: { speed: 1 } }] }] }"#,
+    ));
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentOnCopyAxis { origin, axis }
+            if origin == "adjustments of copy `alpha`" && axis == "robot"),
+        "{error}"
+    );
+    let error = load_error(&fleet_document(
+        r#"{ robot: "sim", adjustments: [{ target: "engine_inst", set_arguments: { hardware: "v1" } }],
+            instances: [{ instance_id: "alpha" }] }"#,
+    ));
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentTarget { origin, target, available }
+            if origin == "adjustments of `robot: sim`" && target == "engine_inst"
+                && available == "`arm_inst`, `commander_inst`"),
+        "{error}"
+    );
+    let error = load_error(&fleet_document(
+        r#"{ robot: "real", instances: [{ instance_id: "alpha",
+            adjustments: [{ target: "arm_inst", when: { nope: "x" }, set_arguments: { speed: 1 } }] }] }"#,
+    ));
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentGuard { origin, .. }
+            if origin == "adjustments of copy `alpha`"),
+        "{error}"
+    );
+
+    let error = PeppyLauncherParser::from_content(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "simulation", options: { engine: {} } }],
+        deployments: [{ simulation: "engine", with: { x: "y" } }],
+    }"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("takes no `instances`, `with`, `arguments` or `adjustments`"),
         "{error}"
     );
 }

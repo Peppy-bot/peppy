@@ -228,6 +228,44 @@ pub enum CompositionError {
         menu: String,
     },
 
+    #[error("`--with {word}` names copy `{copy}`, which the file does not deploy; {copies}")]
+    ScopedSelectionUnknownCopy {
+        word: String,
+        copy: String,
+        /// The file's copies and where a copy comes from.
+        copies: String,
+    },
+
+    #[error(
+        "`--with {word}` names no copy before the dot; a launch word is `option`, \
+         `axis=option`, `NAME.option` or `NAME.axis=option`"
+    )]
+    ScopedWordNamesNoCopy { word: String },
+    #[error(
+        "`{word}` names copy `{copy}` and nothing after the dot; a launch word selects a file \
+         copy's own axis as `NAME.axis=option` or `NAME.option`"
+    )]
+    ScopedWordNamesNoOption { word: String, copy: String },
+
+    #[error(
+        "{origin} is guarded on axis `{axis}`, which runs as copies; a copy's adjustments are \
+         guarded on the launcher's other axes and the copy's own"
+    )]
+    CopyAdjustmentOnCopyAxis { origin: String, axis: String },
+
+    #[error("{origin}: {detail}")]
+    CopyAdjustmentGuard { origin: String, detail: String },
+
+    #[error(
+        "{origin} targets `{target}`, which is not an instance of the copy ({available}); a \
+         write to a stack instance belongs in the option's fragment `adjustments`"
+    )]
+    CopyAdjustmentTarget {
+        origin: String,
+        target: String,
+        available: String,
+    },
+
     #[error(
         "copy `{copy}` mints `{id}`, an instance id the stack already runs; choose another name"
     )]

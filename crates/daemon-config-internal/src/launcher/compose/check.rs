@@ -76,6 +76,7 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
     }
     let mut ledger = Ledger::new(&prepared);
     let stacks = legal_stacks(&prepared, &mut ledger, &label, &mut problems);
+    problems.extend(check_file_copies_over(&prepared, &stacks, &label));
     let legal_copies = check_copies_over(
         &prepared,
         &repeatable,
@@ -161,6 +162,56 @@ fn legal_stacks(
     legal
 }
 
+/// The copies the file deploys, with their settings, over every legal
+/// stack: what `stack launch --with ...` composes for each selection.
+fn check_file_copies_over(
+    prepared: &PreparedLauncher,
+    stacks: &[UnitSelection],
+    label: &str,
+) -> Vec<String> {
+    let launcher = &prepared.launcher;
+    let mut problems = Vec::new();
+    for stack in stacks {
+        let Ok((_, bare)) = prepared.flat_stack(stack) else {
+            // Reported once, by the stack pass.
+            continue;
+        };
+        let mut taken = bare.core_nodes.clone();
+        let mut copies = Vec::new();
+        for entry in &launcher.option_deployments {
+            let loaded = prepared.loaded.option(&entry.axis, &entry.option);
+            for instance in &entry.instances {
+                let settings = entry.settings_for(instance);
+                let echo = format!("{} + file copy `{}`", stack.echo(), instance.instance_id);
+                match compose_copy(
+                    prepared,
+                    stack,
+                    &bare,
+                    CopyRequest {
+                        axis: &entry.axis,
+                        loaded,
+                        name: &instance.instance_id,
+                        with: &settings.with,
+                        arguments: &settings.arguments,
+                        adjustments: &settings.adjustments,
+                    },
+                    &taken,
+                ) {
+                    Ok(copy) => {
+                        taken.extend(copy.core_nodes.iter().cloned());
+                        copies.push(copy);
+                    }
+                    Err(e) => problems.push(format!("{label} ({echo}): {e}")),
+                }
+            }
+        }
+        if let Err(e) = combine(launcher, &bare, &copies) {
+            problems.push(format!("{label} ({}): {e}", stack.echo()));
+        }
+    }
+    problems
+}
+
 /// Every copy every legal stack can run: as a launch of one copy, and as a
 /// join onto the bare stack. A copy that writes to a stack instance is
 /// launch-only, which the join refuses by name at the time. Returns the
@@ -224,6 +275,7 @@ fn check_copies_over(
                         name: &name,
                         with: &with,
                         arguments: &BTreeMap::new(),
+                        adjustments: &[],
                     },
                     &bare.core_nodes,
                 ) {

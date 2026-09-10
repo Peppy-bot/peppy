@@ -147,6 +147,69 @@ fn match_word<'a>(word: &str, candidates: impl Iterator<Item = &'a ComponentAxis
     }
 }
 
+/// A launch's `--with` words, split by what they name.
+pub(super) struct LaunchWords {
+    /// By file copy: the parts after the copy's name of the words scoping
+    /// that copy's own axes, `NAME.axis=option` or `NAME.option`.
+    pub scoped: BTreeMap<String, Vec<String>>,
+    /// The words naming the launcher's axes.
+    pub stack: Vec<String>,
+}
+
+/// Splits a launch's `--with` words into the file copies' and the stack's.
+pub(super) fn split_scoped_words(
+    launcher: &PeppyLauncher,
+    words: &[String],
+) -> Result<LaunchWords, CompositionError> {
+    let copies: Vec<&str> = launcher
+        .option_deployments
+        .iter()
+        .flat_map(|entry| &entry.instances)
+        .map(|copy| copy.instance_id.as_str())
+        .collect();
+    let mut scoped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut stack = Vec::new();
+    for word in words {
+        let selector = word.split_once('=').map_or(word.as_str(), |(head, _)| head);
+        let Some((copy, tail)) = selector.split_once('.') else {
+            stack.push(word.clone());
+            continue;
+        };
+        if copy.is_empty() {
+            return Err(CompositionError::ScopedWordNamesNoCopy { word: word.clone() });
+        }
+        if tail.is_empty() {
+            return Err(CompositionError::ScopedWordNamesNoOption {
+                word: word.clone(),
+                copy: copy.to_owned(),
+            });
+        }
+        if !copies.contains(&copy) {
+            let join = format!("`peppy stack join OPTION -i {copy} --with ...` adds a copy");
+            return Err(CompositionError::ScopedSelectionUnknownCopy {
+                word: word.clone(),
+                copy: copy.to_owned(),
+                copies: if launcher.repeatable_axes().next().is_none() {
+                    String::from("this launcher declares no axis running as copies")
+                } else if copies.is_empty() {
+                    format!("the file deploys no copies, and {join}")
+                } else {
+                    format!(
+                        "the file deploys {}; a launch word selects a file copy's own axis as \
+                         `NAME.axis=option` or `NAME.option`, and {join}",
+                        crate::error::format_quoted_list(copies.iter().copied())
+                    )
+                },
+            });
+        }
+        scoped
+            .entry(copy.to_owned())
+            .or_default()
+            .push(word[copy.len() + 1..].to_owned());
+    }
+    Ok(LaunchWords { scoped, stack })
+}
+
 /// The `--with` words and the file's deployments over the launcher's own
 /// axes and the axes of the options they select.
 pub(super) fn resolve_stack(
@@ -469,7 +532,11 @@ pub(super) fn copy_words(
                 return Err(CompositionError::UnknownCopySelection {
                     word: word.clone(),
                     option: loaded.name.clone(),
-                    menu: axes_menu(loaded.axes.iter()),
+                    menu: if loaded.axes.is_empty() {
+                        String::from(" It declares none.")
+                    } else {
+                        axes_menu(loaded.axes.iter())
+                    },
                 });
             }
             Match::Several(axes) => return Err(ambiguous(word, &axes)),

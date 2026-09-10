@@ -2,7 +2,7 @@
 //! ids minted under that name, and the way copies are folded into the
 //! stack, at launch, at join and at removal.
 
-use super::super::composition::ArgumentOverrides;
+use super::super::composition::{ArgumentOverrides, OriginatedAdjustment};
 use super::super::types::{
     Deployment, DeploymentInstance, LinkTargets, LinkValue, PeppyLauncher, Selection,
     split_link_target,
@@ -111,6 +111,9 @@ pub(super) struct CopyRequest<'a> {
     pub name: &'a Name,
     pub with: &'a BTreeMap<String, String>,
     pub arguments: &'a ArgumentOverrides,
+    /// The copy's own adjustments, run after the launcher's and before
+    /// `arguments`.
+    pub adjustments: &'a [OriginatedAdjustment<'a>],
 }
 
 /// A copy's name is its placement link, so it is held to a core node
@@ -146,6 +149,7 @@ pub(super) fn compose_copy(
         name,
         with,
         arguments,
+        adjustments,
     } = request;
     check_copy_name(name)?;
     if taken.iter().any(|link| link == name.as_str()) {
@@ -211,6 +215,7 @@ pub(super) fn compose_copy(
         fragments,
         base_adjustments,
         base_origin: format!("{} (base)", prepared.label),
+        copy_adjustments: adjustments.to_vec(),
         selection,
     };
     let mut expanded = expand_unit(&unit, &[])?;
