@@ -30,24 +30,21 @@ rstest = "0.26"
 # capability builder is needed).
 rmcp = { version = "3.1.2", default-features = false }
 
-# Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
-# `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
-# path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
-# crate follows the repo's default branch (`main`); the resolved revision is
-# recorded in Cargo.lock and moved forward with `cargo update`. `config` and
-# `peppylib` are renamed via `package` (their crate names are `peppy-config-model`
-# and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
-# directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
-# `git_fixtures`) are added at each use site with `{ workspace = true, features = [...] }`.
-config = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppy-config-model" }
-peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppylib-rs" }
-pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-peppy-mcp-catalog = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-peppy-mcp-runtime = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+# Shared public-facing crates come from the public-peppy-libs peppy-shared
+# workspace. Pin them together so daemon messages and generated SDKs use the
+# same protocol. `config` and `peppylib` alias peppy-config-model and peppylib-rs;
+# `pmi` is the package in the peppy-messaging-interface directory. Per-crate
+# features (zenoh, fingerprint_test_helpers, git_fixtures) are selected at each
+# use site with { workspace = true, features = [...] }.
+config = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb", package = "peppy-config-model" }
+peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb", package = "peppylib-rs" }
+pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb" }
+core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb" }
+json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb" }
+config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb" }
+build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb" }
+peppy-mcp-catalog = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb" }
+peppy-mcp-runtime = { git = "https://github.com/Peppy-bot/public-peppy-libs", rev = "39d6dfa108048597789e74f393c3c3e381cd4fbb" }
 
 # Internal workspace crates (members under `crates/`). Centralized here so each
 # member references them with `{ workspace = true }` instead of repeating a

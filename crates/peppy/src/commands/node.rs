@@ -142,7 +142,7 @@ pub(crate) fn parse_key_at_target(
     let key = key.trim();
     let value = value.trim();
     // Name each half with the caller's own vocabulary (`KEY`/`TARGET` for
-    // `--link`, `CORE_NODE_LINK`/`CORE_NODE` for `--place`) so a shared parser
+    // `--link`, `NAME`/`CORE_NODE` for `--place`) so a shared parser
     // never makes one flag speak in the other's terms.
     let (key_label, target_label) = shape.split_once('@').unwrap_or((shape, shape));
     if key.is_empty() {

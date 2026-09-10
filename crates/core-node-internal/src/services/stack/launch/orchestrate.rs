@@ -1,10 +1,11 @@
 use super::feedback::{publish_stderr, publish_stdout, spawn_feedback_forwarder};
 use super::phases::run_phase;
-use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
+use super::{NodeKey, PlannedDeployment};
 use crate::services::node::{
     NodeAddActionContext, NodeBuildActionContext, NodeRunActionContext, create_action_log_file,
     dispatch_node_add, log_label_from_source, run_node_build_for_entity, run_node_run,
 };
+use crate::services::stack::action::StackChangeContext;
 use chrono::Local;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
@@ -15,10 +16,9 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Notify;
-use tokio_util::sync::CancellationToken;
 
-pub(super) async fn add_node_directly(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn add_node_directly(
+    ctx: &StackChangeContext,
     node_add_goal: NodeAddGoal,
 ) -> (std::result::Result<NodeAddResult, String>, Option<PathBuf>) {
     // Create log file before source resolution so clone/download output is captured.
@@ -62,7 +62,8 @@ pub(super) async fn add_node_directly(
         ),
         activity_notify,
         ctx.idle_timeouts.add,
-        ctx.launch_deadline,
+        ctx.change_deadline,
+        &ctx.cancellation,
         &log_file_for_timeout,
         LaunchFeedbackStep::AddingNode,
         |reason| NodeAddResult::failure(&log_path_for_timeout, reason),
@@ -85,8 +86,8 @@ pub(super) async fn add_node_directly(
     }
 }
 
-pub(super) async fn build_node_directly(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn build_node_directly(
+    ctx: &StackChangeContext,
     node_name: String,
     node_tag: String,
     env_vars: Vec<(String, String)>,
@@ -131,7 +132,8 @@ pub(super) async fn build_node_directly(
         ),
         activity_notify,
         ctx.idle_timeouts.build,
-        ctx.launch_deadline,
+        ctx.change_deadline,
+        &ctx.cancellation,
         &log_file_for_timeout,
         LaunchFeedbackStep::BuildingNode,
         |reason| core_node_api::encoding::NodeBuildResult::failure(&log_path_for_timeout, reason),
@@ -153,8 +155,8 @@ pub(super) async fn build_node_directly(
     }
 }
 
-pub(super) async fn start_node_directly(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn start_node_directly(
+    ctx: &StackChangeContext,
     node_run_goal: NodeRunGoal,
     log_path: PathBuf,
     log_file: Arc<StdMutex<File>>,
@@ -187,7 +189,7 @@ pub(super) async fn start_node_directly(
     // Token triggered by `run_phase_with_timeouts` on idle/max timeout; observed
     // inside `run_node_run` to abort a half-spawned node instance (SIGKILL the
     // child + unregister its `Starting` entry) before we return the failure.
-    let run_cancel_token = CancellationToken::new();
+    let run_cancel_token = ctx.cancellation.child_token();
 
     // Assemble here, from the daemon's own state, exactly as the action-server
     // path does. The launch never builds a config it hands to something else.
@@ -210,7 +212,8 @@ pub(super) async fn start_node_directly(
         ),
         activity_notify,
         ctx.idle_timeouts.run,
-        ctx.launch_deadline,
+        ctx.change_deadline,
+        &ctx.cancellation,
         &log_file_for_timeout,
         LaunchFeedbackStep::RunningNode,
         NodeRunResult::failure,
@@ -238,8 +241,8 @@ pub(super) async fn start_node_directly(
 /// it down at the clear step, so on failure there is nothing to roll back to;
 /// the honest end state is an empty stack rather than orphaned half-started
 /// instances.
-pub(super) async fn fail_and_clear_stack(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn fail_and_clear_stack(
+    ctx: &StackChangeContext,
     reason: String,
     participants: &[String],
 ) -> LaunchResult {
@@ -269,9 +272,9 @@ pub(super) async fn fail_and_clear_stack(
 /// entry is never empty).
 type ResolvedSlotBindings = std::collections::BTreeMap<String, config::runtime::SlotBindings>;
 
-/// Step 3: Validate dependencies and compute a stable topological order.
-pub(super) async fn validate_and_order_dependencies(
-    ctx: &ProcessLaunchContext,
+/// Validates dependencies and computes a stable topological order.
+pub(in crate::services::stack) async fn validate_and_order_dependencies(
+    ctx: &StackChangeContext,
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
     placements: &daemon_config::launcher::Placements,
@@ -379,8 +382,9 @@ pub(super) async fn validate_and_order_dependencies(
         });
     }
     // Pairing and observation share one item list, each reading its own slot
-    // list off it. A launch replaces the previous stack, so there are no
-    // preexisting instances or already-claimed slots to fold in.
+    // list off it. Every instance of the plan is validated as one stack,
+    // the ones already running included; a join keeps the pairs and
+    // observations that involve its new instances.
     let pairing_items: Vec<daemon_config::launcher::PairingValidationItem<'_>> = planned
         .iter()
         .map(|p| daemon_config::launcher::PairingValidationItem {
@@ -408,8 +412,8 @@ pub(super) async fn validate_and_order_dependencies(
         &binding_items,
         &pairing_items,
         &daemon_config::launcher::AlreadyPairedSlots::new(),
-        // A launch plan holds every endpoint, so nothing is covered outside
-        // the validator's view.
+        // The plan holds every endpoint of the stack, so nothing is covered
+        // outside the validator's view.
         &daemon_config::launcher::ExternallyCoveredSlots::new(),
         placements,
     );
@@ -541,13 +545,14 @@ fn topological_sort(
     Ok(ordered)
 }
 
-/// Step 4: Stop the currently-running stack and clear it.
+/// Stops the currently-running stack and clears it.
 ///
 /// Cooperatively shuts down every running instance, force-killing the process
 /// group of any straggler, before dropping them from the stack, so a relaunch
 /// never orphans the previous stack's processes. Also reused by the launch
 /// failure path to tear down a partial new stack. Infallible.
-pub(super) async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
+pub(in crate::services::stack) async fn teardown_and_reset_stack(ctx: &StackChangeContext) {
+    *ctx.slice_ownership.active.lock() = None;
     publish_stdout(
         ctx,
         "Stopping current node stack",

@@ -1,5 +1,6 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
+use config::runtime::CoreNodeName;
 use config::runtime::Name;
 use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::{
@@ -7,7 +8,6 @@ use core_node_api::encoding::{
     NodeRunResult, ObservationTarget, ObservationTargets, PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
-use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, LinkValue, PairingValidationItem, Placements,
     split_link_target, validate_link_plan,

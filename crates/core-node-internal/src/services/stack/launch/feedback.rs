@@ -1,5 +1,5 @@
-use super::ProcessLaunchContext;
 use crate::services::node::{FeedbackLine, FeedbackStream};
+use crate::services::stack::action::StackChangeContext;
 use chrono::Local;
 use core_node_api::encoding::{LaunchFeedback, LaunchFeedbackStep};
 use parking_lot::Mutex as StdMutex;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 
-async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) {
+async fn publish_feedback(ctx: &StackChangeContext, feedback: LaunchFeedback) {
     {
         let mut file = ctx.log_file.lock();
         let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
@@ -26,16 +26,16 @@ async fn publish_feedback(ctx: &ProcessLaunchContext, feedback: LaunchFeedback) 
     }
 }
 
-pub(super) async fn publish_stdout(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn publish_stdout(
+    ctx: &StackChangeContext,
     line: impl Into<String>,
     step: LaunchFeedbackStep,
 ) {
     publish_feedback(ctx, LaunchFeedback::stdout(line, step)).await;
 }
 
-pub(super) async fn publish_stderr(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn publish_stderr(
+    ctx: &StackChangeContext,
     line: impl Into<String>,
     step: LaunchFeedbackStep,
 ) {
@@ -55,7 +55,7 @@ pub(super) async fn publish_stderr(
 /// Returns the sender end (to pass into the process context) and a join handle
 /// for the consumer task. Drop the sender to signal completion, then await the
 /// handle to drain remaining messages.
-pub(super) fn spawn_feedback_forwarder(
+pub(in crate::services::stack) fn spawn_feedback_forwarder(
     feedback_publisher: &ActionFeedbackPublisher,
     step: LaunchFeedbackStep,
     log_file: &Arc<StdMutex<File>>,

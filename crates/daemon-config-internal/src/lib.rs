@@ -30,7 +30,6 @@ mod internal {
     pub mod atomic_write;
     pub mod consts;
     pub mod contract;
-    pub mod core_node_name;
     pub mod env;
     pub mod launcher;
     pub mod mcp_deployment;
@@ -46,16 +45,6 @@ pub use error::{
     BindingTargetMismatch, DuplicateInstanceIdAcrossStack, Error as DaemonConfigError,
     LinkUnknownSlot, ParsingError, SlotKind, format_bulleted, format_quoted_list,
 };
-
-// -- core_node_name --
-//
-// The ONE core-node-name validator. `peppy_config`, the daemon's serve flag,
-// the CLI's `--core-node` override, `--place` targets, and launcher core node
-// link ids all go through it, so the rules (charset, length cap, and the
-// `self` reservation) are stated once instead of re-derived per call site.
-pub mod core_node_name {
-    pub use crate::internal::core_node_name::{CoreNodeName, CoreNodeNameError, SELF_CORE_NODE};
-}
 
 // -- atomic_write --
 pub mod atomic_write {
@@ -84,25 +73,27 @@ pub mod peppy_config {
     pub use crate::internal::peppy_config::{
         DAEMON_HEARTBEAT_INTERVAL_SECS, DEFAULT_API_URL, DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS,
         ExternalZenohConfig, FederationConfig, LifecycleConfig, LocalNodesTopology,
-        MAX_CORE_NODE_NAME_LEN, ManagedZenohConfig, ParsedEndpointBuf, PeppyConfig,
-        ResourceServers, ZenohConfig, load_or_create,
+        ManagedZenohConfig, ParsedEndpointBuf, PeppyConfig, ResourceServers, ZenohConfig,
+        load_or_create,
     };
 }
 
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        Adjustment, AlreadyPairedSlots, AppliedAdjustment, AppliedChange, BindingValidationItem,
-        ComponentAxis, ComponentSelection, CompositionError, Deployment, DeploymentInstance,
-        DeploymentSource, DuplicateLinkTarget, EmptyVacantReason, ExternallyCoveredSlots,
-        FlattenReport, Fragment, FragmentPart, FragmentSpec, FrameworkOverrides, LauncherFragment,
-        LauncherFragmentParser, LinkTargets, LinkValue, PairingValidationItem, PeppyLauncher,
-        PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint, PlannedPairing,
-        Selection, SelectionConstraint, SelectionEntry, SelectionSource, SkipReason,
-        SkippedAdjustment, VacantReason, ValidatedBindings, ValidatedLinkPlan,
-        ValidatedObservations, ValidatedPairings, check_composition, compose,
-        participant_vacancies, split_link_target, validate_bindings, validate_link_plan,
-        validate_link_slots, validate_observations, validate_pairings, validate_sim_time_source,
+        Adjustment, AlreadyPairedSlots, AppliedAdjustment, AppliedChange, ArgumentOverrides,
+        BindingValidationItem, ComponentAxis, ComponentCardinality, ComposedJoin, ComposedLaunch,
+        CompositionError, CompositionReport, CopyEntry, CopyRecord, Deployment, DeploymentInstance,
+        DeploymentSource, DuplicateLinkTarget, EmptyVacantReason, ExternallyCoveredSlots, Fragment,
+        FragmentPart, FragmentSpec, FrameworkOverrides, JoinRequest, LauncherFragment,
+        LauncherFragmentParser, LinkTargets, LinkValue, OptionDeployment, PairingValidationItem,
+        PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint,
+        PlannedPairing, PreparedLauncher, RunningStack, Selection, SelectionConstraint,
+        SelectionEntry, SelectionSource, SkipReason, SkippedAdjustment, UnitSelection,
+        VacantReason, ValidatedBindings, ValidatedLinkPlan, ValidatedObservations,
+        ValidatedPairings, check_composition, participant_vacancies, split_link_target,
+        validate_bindings, validate_link_plan, validate_link_slots, validate_observations,
+        validate_pairings, validate_sim_time_source,
     };
 }
 

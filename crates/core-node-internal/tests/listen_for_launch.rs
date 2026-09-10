@@ -1,4 +1,6 @@
 mod common;
+#[path = "listen_for_launch/copies.rs"]
+mod copies;
 
 use common::{AbortOnDrop, CALLER_INSTANCE_ID, start_core_node_with_health_timeout};
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
@@ -6,7 +8,7 @@ use config::node::NodeConfigParser;
 use config::runtime::Name;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin,
+    LaunchFeedback, LaunchGoal, LaunchGoalResponse, LaunchResult, LauncherOrigin, StackBudgets,
 };
 use daemon_config::consts::PEPPY_OUTPUT_DIR;
 use git2::{Repository, Signature};
@@ -397,12 +399,8 @@ async fn send_launch_origin_and_wait(
     let goal = LaunchGoal::new(
         launcher_origin,
         "launch-test-fixture",
-        300,
-        300,
-        300,
-        Some(3600),
-    )
-    .with_env_vars(env_vars);
+        StackBudgets::new(300, 300, 300, Some(3600)).with_env_vars(env_vars),
+    );
     let goal_payload = goal
         .encode()
         .map_err(|e| format!("Failed to encode launch goal: {e}"))?;

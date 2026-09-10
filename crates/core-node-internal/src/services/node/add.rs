@@ -37,7 +37,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ureq::Error as HttpError;
 
@@ -1172,10 +1171,13 @@ async fn handle_goal_request(
     // Before the gate, because the gate is per-action and this exclusion is
     // per-machine: a coordinator halfway through replacing this stack must not
     // race a locally-typed `peppy node add`.
-    if let Err(reason) = slice_ownership.refuse_if_reserved_elsewhere(&goal) {
-        reject_goal(pending, encode_rejected_goal(reason)).await;
-        return;
-    }
+    let admission = match slice_ownership.admit_node_goal(&goal) {
+        Ok(admission) => admission,
+        Err(reason) => {
+            reject_goal(pending, encode_rejected_goal(reason)).await;
+            return;
+        }
+    };
 
     let generation = match admit_node_add_goal(&gate, &goal) {
         Ok(generation) => generation,
@@ -1252,8 +1254,11 @@ async fn handle_goal_request(
         .feedback_publisher()
         .expect("node_add declares a feedback topic");
     let log_path_clone = log_path.clone();
-    let cancel_token = CancellationToken::new();
+    let cancel_token = slice_ownership.stack.cancellation();
     let cancel_token_clone = cancel_token.clone();
+    // A forced node add cancels this goal's own token; a stack reset cancels
+    // the stack's, which every goal token descends from.
+    let reset_token = slice_ownership.stack.cancellation();
     let log_path_for_cancel = log_path.clone();
     let gate_for_task = gate.clone();
     let task_handle = tokio::spawn(async move {
@@ -1278,16 +1283,19 @@ async fn handle_goal_request(
                 timestamp,
             ) => result,
             _ = cancel_token_clone.cancelled() => {
-                NodeAddResult::failure(
-                    &log_path_for_cancel,
-                    "add cancelled by --force".to_string(),
-                )
+                let reason = if reset_token.is_cancelled() {
+                    "node add cancelled by stack reset"
+                } else {
+                    "node add superseded by a forced node add"
+                };
+                NodeAddResult::failure(&log_path_for_cancel, reason.to_string())
             }
         };
 
         // Drain the feedback consumer before completing so the end-of-stream
         // sentinel never races ahead of the last feedback line.
         let _ = consumer_handle.await;
+        drop(admission);
         if let Ok(payload) = result.encode() {
             slot.release_then_complete(&goal_ctx, payload).await;
         }

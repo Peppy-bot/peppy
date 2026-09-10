@@ -68,7 +68,7 @@ const OFFSET_SAMPLES: u32 = 5;
 /// is suppressed: it means the clocks are not adequately synchronized.
 const IMPLAUSIBLE_DELIVERY_NS: i128 = 5_000_000_000;
 
-pub async fn listen_for_stack_benchmark(
+pub(crate) async fn listen_for_stack_benchmark(
     messenger: &MessengerHandle,
     core_node_name: &str,
     instance_id: &str,

@@ -189,10 +189,13 @@ impl NodeBuildGoalHandler {
         // Before the gate, because the gate is per-action and this exclusion is
         // per-machine: a coordinator halfway through replacing this stack must
         // not race a locally-typed `peppy node build`.
-        if let Err(reason) = self.slice_ownership.refuse_if_reserved_elsewhere(&goal) {
-            reject_goal(pending, encode_rejected_goal(reason)).await;
-            return;
-        }
+        let admission = match self.slice_ownership.admit_node_goal(&goal) {
+            Ok(admission) => admission,
+            Err(reason) => {
+                reject_goal(pending, encode_rejected_goal(reason)).await;
+                return;
+            }
+        };
 
         if goal.force {
             debug!("Force flag set: superseding any previous node_build task");
@@ -324,7 +327,8 @@ impl NodeBuildGoalHandler {
         // into the build so `run_node_build` owns cancellation end-to-end: it
         // SIGKILLs + reaps the build child and rolls the entity back to `Added`
         // (re-attaching the working dir) instead of being `abort()`ed mid-flight.
-        let cancel_token = CancellationToken::new();
+        let reset_cancellation = self.slice_ownership.stack.cancellation();
+        let cancel_token = reset_cancellation.child_token();
         let cancel_token_for_task = cancel_token.clone();
         let gate_for_task = self.gate.clone();
 
@@ -339,7 +343,7 @@ impl NodeBuildGoalHandler {
                     NodeBuildFeedback::from_stream(line.stream, &line.line).encode()
                 });
 
-            let result = run_node_build(NodeBuildRun {
+            let work = run_node_build(NodeBuildRun {
                 node_name: goal.node_name,
                 node_tag: goal.node_tag,
                 env_vars: goal.env_vars,
@@ -349,13 +353,21 @@ impl NodeBuildGoalHandler {
                 action_context,
                 feedback_tx,
                 log_file,
-                log_path: log_path_clone,
-                cancel_token: cancel_token_for_task,
+                log_path: log_path_clone.clone(),
+                cancel_token: cancel_token_for_task.clone(),
                 rebuild: goal.rebuild,
-            })
-            .await;
+            });
+            let result =
+                crate::services::node::gate::finish_on_reset(work, &reset_cancellation, || {
+                    NodeBuildResult::failure(
+                        &log_path_clone,
+                        "node build cancelled by stack reset".to_owned(),
+                    )
+                })
+                .await;
 
             let _ = consumer_handle.await;
+            drop(admission);
             if let Ok(payload) = result.encode() {
                 slot.release_then_complete(&goal_ctx, payload).await;
             }

@@ -1,26 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
-use core_node::{idle_timeout_flag, slow_connection_hint};
-use core_node_api::encoding::{
-    LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse, LaunchResult,
-    LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, PlacementSpec,
-};
-use daemon_config::core_node_name::CoreNodeName;
-use daemon_config::launcher::{PeppyLauncher, PeppyLauncherParser, compose};
-use peppylib::ActionMessenger;
-use peppylib::messaging::ResultStatus;
+use config::runtime::CoreNodeName;
+use core_node_api::encoding::{LaunchGoal, LauncherOrigin, PlacementSpec, StackBudgets};
+use daemon_config::launcher::{PeppyLauncher, PeppyLauncherParser, PreparedLauncher};
 use tracing::info;
 
+use super::goal::drive_stack_goal;
 use crate::commands::node::caller_env_overrides;
-use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use crate::terminal::ScrollingOutput;
-
-use peppylib::core_node::transport::send_goal;
 
 /// Mints the identity of one federated launch.
 ///
@@ -29,127 +19,6 @@ use peppylib::core_node::transport::send_goal;
 /// wrong one), and nothing may depend on clock agreement across machines.
 fn new_launch_id() -> String {
     format!("launch-{}", names_generator2::get_random(rand::rng()))
-}
-// Minimum CLI fallback ceiling when the user opts into `--max-timeout-secs`. Ensures the CLI's
-// safety net never fires before the daemon's own per-phase timeout, so users see a precise
-// daemon-side error rather than a generic CLI fallback. When the user omits the flag, no CLI
-// ceiling is installed; the contract is idle-only (daemon-side `max_timeout_secs = None`).
-const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
-// Headroom granted to the daemon to surface its own timeout error before the CLI's fallback
-// ceiling fires. Keeps the error the user sees specific ("build idle timeout exceeded...") rather
-// than a generic CLI-side "daemon hung" message.
-const DAEMON_RESPONSE_GRACE: Duration = Duration::from_secs(60);
-const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
-
-// CLI wall-clock fallback ceiling. `None` means idle-only (daemon-side contract honored).
-// When the user opts into `--max-timeout-secs`, add DAEMON_RESPONSE_GRACE and enforce
-// CLI_MAX_TIMEOUT_FLOOR so the daemon's per-phase error fires first.
-fn compute_cli_max_timeout(max_timeout_secs: Option<u64>) -> Option<Duration> {
-    max_timeout_secs.map(|n| {
-        Duration::from_secs(n)
-            .saturating_add(DAEMON_RESPONSE_GRACE)
-            .max(CLI_MAX_TIMEOUT_FLOOR)
-    })
-}
-
-/// One line of the "Node log files" listing:
-/// `node_name:tag@core-node: /path/to/log`, with a ` [FAILED]` marker before
-/// the colon when the phase failed. The core node names the machine whose
-/// filesystem holds the log file.
-fn node_log_line(node_label: &str, core_node: &str, failed: bool, log_path: &Path) -> String {
-    let marker = if failed { " [FAILED]" } else { "" };
-    format!("{node_label}@{core_node}{marker}: {}", log_path.display())
-}
-
-fn display_node_log_files(
-    add_logs: &[NodeAddLogEntry],
-    build_logs: &[NodeBuildLogEntry],
-    run_logs: &[NodeRunLogEntry],
-) {
-    if add_logs.is_empty() && build_logs.is_empty() && run_logs.is_empty() {
-        return;
-    }
-    let line = |node_label: &str, core_node: &str, failed: bool, log_path: &Path| {
-        (
-            node_log_line(node_label, core_node, failed, log_path),
-            failed,
-        )
-    };
-    let sections = [
-        (
-            "Add",
-            add_logs
-                .iter()
-                .map(|e| line(&e.node_label, &e.core_node, e.failed, &e.log_path))
-                .collect::<Vec<_>>(),
-        ),
-        (
-            "Build",
-            build_logs
-                .iter()
-                .map(|e| line(&e.node_label, &e.core_node, e.failed, &e.log_path))
-                .collect(),
-        ),
-        (
-            "Run",
-            run_logs
-                .iter()
-                .map(|e| line(&e.node_label, &e.core_node, e.failed, &e.log_path))
-                .collect(),
-        ),
-    ];
-    info!("Node log files:");
-    for (title, lines) in sections {
-        if lines.is_empty() {
-            continue;
-        }
-        info!("  {title}:");
-        for (text, failed) in lines {
-            if failed {
-                tracing::error!("    {text}");
-            } else {
-                info!("    {text}");
-            }
-        }
-    }
-}
-
-fn handle_feedback(
-    feedback: &LaunchFeedback,
-    scrolling_output: &mut Option<ScrollingOutput>,
-    current_scrolling_step: &mut Option<LaunchFeedbackStep>,
-) {
-    // Check if we're switching between steps
-    let step_changed = current_scrolling_step
-        .as_ref()
-        .map(|s| std::mem::discriminant(s) != std::mem::discriminant(&feedback.step))
-        .unwrap_or(true);
-
-    if step_changed {
-        // Clear existing scrolling output if we were in a scrolling step
-        if let Some(output) = scrolling_output.as_mut() {
-            output.clear();
-            *scrolling_output = None;
-        }
-        *current_scrolling_step = Some(feedback.step);
-    }
-
-    match &feedback.step {
-        LaunchFeedbackStep::LauncherStep => {
-            if feedback.is_stdout() {
-                info!("{}", feedback.line);
-            } else {
-                tracing::warn!("{}", feedback.line);
-            }
-        }
-        LaunchFeedbackStep::AddingNode
-        | LaunchFeedbackStep::BuildingNode
-        | LaunchFeedbackStep::RunningNode => {
-            let output = scrolling_output
-                .get_or_insert_with(|| ScrollingOutput::new(SCROLLING_OUTPUT_LINES));
-            output.add_line(&feedback.line);
-        }
-    }
 }
 
 /// True when `input` syntactically looks like a filesystem path: it carries a path separator
@@ -272,41 +141,30 @@ impl PlacementArgs {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     placement: PlacementArgs,
-    with: Vec<String>,
-    node_add_idle_timeout_secs: u64,
-    node_build_idle_timeout_secs: u64,
-    node_run_idle_timeout_secs: u64,
-    max_timeout_secs: Option<u64>,
+    words: Vec<String>,
+    budgets: StackBudgets,
     rebuild: bool,
 ) -> Result<()> {
     crate::commands::block_on(launch_async(
         ctx,
         launcher_config_path,
         placement,
-        with,
-        node_add_idle_timeout_secs,
-        node_build_idle_timeout_secs,
-        node_run_idle_timeout_secs,
-        max_timeout_secs,
+        words,
+        budgets,
         rebuild,
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn launch_async(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     placement: PlacementArgs,
-    with: Vec<String>,
-    node_add_idle_timeout_secs: u64,
-    node_build_idle_timeout_secs: u64,
-    node_run_idle_timeout_secs: u64,
-    max_timeout_secs: Option<u64>,
+    words: Vec<String>,
+    budgets: StackBudgets,
     rebuild: bool,
 ) -> Result<()> {
     let launcher_origin = infer_launcher_origin(launcher_config_path)?;
@@ -318,7 +176,9 @@ async fn launch_async(
     // COORDINATOR read, so that a repository launcher and a file one resolve identically.
     if let LauncherOrigin::Fs(path) = &launcher_origin {
         let parsed = parse_launcher_file(path)?;
-        compose(&parsed, path, &with).map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        PreparedLauncher::load(&parsed, path)
+            .and_then(|prepared| prepared.launch(&words))
+            .map_err(|error| Error::ExecutionFailed(error.to_string()))?;
     }
 
     let conn = ctx.connect_to_daemon().await?;
@@ -381,219 +241,18 @@ async fn launch_async(
         // and recorded by every participant alongside its slice. That is what
         // makes the global stack reconstructible by query afterwards.
         new_launch_id(),
-        node_add_idle_timeout_secs,
-        node_build_idle_timeout_secs,
-        node_run_idle_timeout_secs,
-        max_timeout_secs,
+        budgets.with_env_vars(caller_env_overrides()),
     )
-    .with_env_vars(caller_env_overrides())
     .with_placement(placement)
-    .with_selections(with)
+    .with_selections(words)
     .with_rebuild(rebuild);
 
-    // CLI fallback ceiling: when the user opts into a max we grant the daemon a response-grace
-    // window to surface its own error first, but never less than the absolute floor in case the
-    // daemon hangs entirely. `None` honors the daemon's idle-only contract; no CLI ceiling.
-    let cli_max_timeout: Option<Duration> = compute_cli_max_timeout(max_timeout_secs);
-
-    // CLI-side liveness watchdog: trips if no feedback arrives from any phase. Must cover the
-    // longest per-phase idle budget (only one phase runs at a time) plus a grace window so the
-    // daemon's phase-specific timeout always fires first and surfaces a precise error.
-    let cli_idle_timeout = Duration::from_secs(
-        node_add_idle_timeout_secs
-            .max(node_build_idle_timeout_secs)
-            .max(node_run_idle_timeout_secs),
-    )
-    .saturating_add(DAEMON_RESPONSE_GRACE);
-
-    let mut action_handle = send_goal(
-        &goal,
-        conn.messenger,
-        &conn.core_node_name,
-        CALLER_INSTANCE_ID,
-        Some(&conn.target_core_node),
-        GOAL_TIMEOUT,
-    )
-    .await
-    .map_err(|e| Error::ExecutionFailed(format!("Failed to send launch goal: {}", e)))?;
-
-    let goal_response = LaunchGoalResponse::decode(&action_handle.goal_reply().body)
-        .map_err(|e| Error::ExecutionFailed(format!("Failed to decode goal response: {}", e)))?;
-
-    if !goal_response.accepted {
-        let reason = goal_response
-            .rejection_reason
-            .unwrap_or_else(|| "unknown reason".to_string());
-        return Err(Error::ExecutionFailed(format!(
-            "Launch goal rejected: {}",
-            reason
-        )));
-    }
-
-    info!(
-        "Launch goal accepted, log file: {}",
-        goal_response.log_path.display()
-    );
-
-    let absolute_deadline: Option<tokio::time::Instant> =
-        cli_max_timeout.and_then(|d| tokio::time::Instant::now().checked_add(d));
-    let mut last_activity = tokio::time::Instant::now();
-    let mut scrolling_output: Option<ScrollingOutput> = None;
-    let mut current_scrolling_step: Option<LaunchFeedbackStep> = None;
-
-    // Drain feedback until the server closes the stream on completion,
-    // honoring the idle / max-timeout budgets.
-    loop {
-        let now = tokio::time::Instant::now();
-        if let Some(deadline) = absolute_deadline
-            && now >= deadline
-        {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-            return Err(Error::ExecutionFailed(format!(
-                "Launch timed out: max timeout exceeded. Log file: {}",
-                goal_response.log_path.display()
-            )));
-        }
-        if now.duration_since(last_activity) >= cli_idle_timeout {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-            // Name the phase that went quiet and the flag that raises its
-            // budget, so a slow-connection user is pointed at the fix instead
-            // of a bare timeout.
-            let (phase, hint) = match current_scrolling_step {
-                Some(step) => (
-                    format!(" during the {} phase", step.phase_label()),
-                    idle_timeout_flag(step)
-                        .map(|flag| format!("; {}", slow_connection_hint(flag)))
-                        .unwrap_or_default(),
-                ),
-                None => (String::new(), String::new()),
-            };
-            return Err(Error::ExecutionFailed(format!(
-                "Launch timed out: no output received for {}s{phase}{hint}. Log file: {}",
-                cli_idle_timeout.as_secs(),
-                goal_response.log_path.display()
-            )));
-        }
-
-        match tokio::time::timeout(FEEDBACK_DRAIN_TIMEOUT, action_handle.on_next_feedback()).await {
-            Ok(Ok(msg)) => {
-                last_activity = tokio::time::Instant::now();
-                let payload = msg.payload_bytes();
-                if let Ok(feedback) = LaunchFeedback::decode(payload.as_ref()) {
-                    handle_feedback(
-                        &feedback,
-                        &mut scrolling_output,
-                        &mut current_scrolling_step,
-                    );
-                }
-            }
-            Ok(Err(_)) => break, // end-of-stream: the goal has completed
-            Err(_) => {}         // drain slice elapsed; re-check timeouts and keep draining
-        }
-    }
-
-    // The goal has completed; fetch its (server-buffered) result once. Give it
-    // the remaining max budget so it resolves promptly.
-    let now = tokio::time::Instant::now();
-    let result_timeout = match absolute_deadline {
-        Some(deadline) => deadline
-            .saturating_duration_since(now)
-            .max(Duration::from_secs(1)),
-        None => Duration::from_secs(30),
-    };
-    match ActionMessenger::request_result(conn.messenger, &action_handle, result_timeout).await {
-        Ok(reply) => {
-            let body = match reply.status {
-                ResultStatus::Completed | ResultStatus::Cancelled => reply.body,
-                ResultStatus::Abandoned => {
-                    if let Some(output) = scrolling_output.as_mut() {
-                        output.clear();
-                    }
-                    return Err(Error::ExecutionFailed(
-                        "the launch goal was abandoned by its worker before producing a result"
-                            .to_string(),
-                    ));
-                }
-                ResultStatus::Expired => {
-                    if let Some(output) = scrolling_output.as_mut() {
-                        output.clear();
-                    }
-                    return Err(Error::ExecutionFailed(
-                        "the launch result expired before it could be fetched".to_string(),
-                    ));
-                }
-            };
-            let result = LaunchResult::decode(body.as_ref()).map_err(|err| {
-                Error::ExecutionFailed(format!("Failed to decode launch result: {}", err))
-            })?;
-
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-
-            display_node_log_files(
-                &result.node_add_logs,
-                &result.node_build_logs,
-                &result.node_run_logs,
-            );
-
-            if !result.success {
-                let error_msg = result
-                    .error_message
-                    .unwrap_or_else(|| "unknown error".to_string());
-                return Err(Error::ExecutionFailed(format!(
-                    "Launch failed: {}. Log file: {}",
-                    error_msg,
-                    result.log_path.display()
-                )));
-            }
-
-            info!("Launch configuration applied successfully");
-            Ok(())
-        }
-        Err(err) => {
-            if let Some(output) = scrolling_output.as_mut() {
-                output.clear();
-            }
-            Err(Error::ExecutionFailed(format!(
-                "Failed to get launch result: {}",
-                err
-            )))
-        }
-    }
+    drive_stack_goal(&conn, &goal, &goal.budgets).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn none_preserves_idle_only_contract() {
-        assert_eq!(compute_cli_max_timeout(None), None);
-    }
-
-    #[test]
-    fn small_value_hits_the_floor() {
-        let got = compute_cli_max_timeout(Some(60)).expect("some");
-        assert_eq!(got, CLI_MAX_TIMEOUT_FLOOR);
-    }
-
-    #[test]
-    fn large_value_dominates_the_floor() {
-        let n = CLI_MAX_TIMEOUT_FLOOR.as_secs() * 2;
-        let got = compute_cli_max_timeout(Some(n)).expect("some");
-        assert_eq!(got, Duration::from_secs(n) + DAEMON_RESPONSE_GRACE);
-    }
-
-    #[test]
-    fn saturating_add_does_not_panic_at_u64_max() {
-        let got = compute_cli_max_timeout(Some(u64::MAX)).expect("some");
-        assert_eq!(got, Duration::MAX);
-    }
 
     #[test]
     fn resolve_launcher_path_appends_json5_when_sibling_exists() {
@@ -825,34 +484,5 @@ mod tests {
     fn launch_ids_are_distinct_per_launch() {
         assert_ne!(new_launch_id(), new_launch_id());
         assert!(new_launch_id().starts_with("launch-"));
-    }
-
-    #[test]
-    fn node_log_line_names_the_core_node_holding_the_file() {
-        let line = node_log_line(
-            "deliberative_planner:v1",
-            "cn-vibrant-chaplygin",
-            false,
-            Path::new("/tmp/.peppy/logs/add/deliberative_planner_v1.log"),
-        );
-        assert_eq!(
-            line,
-            "deliberative_planner:v1@cn-vibrant-chaplygin: \
-             /tmp/.peppy/logs/add/deliberative_planner_v1.log"
-        );
-    }
-
-    #[test]
-    fn node_log_line_marks_a_failed_phase_before_the_colon() {
-        let line = node_log_line(
-            "reactive_policy:v1",
-            "cn-robot-7",
-            true,
-            Path::new("/tmp/.peppy/logs/build/reactive_policy_v1.log"),
-        );
-        assert_eq!(
-            line,
-            "reactive_policy:v1@cn-robot-7 [FAILED]: /tmp/.peppy/logs/build/reactive_policy_v1.log"
-        );
     }
 }

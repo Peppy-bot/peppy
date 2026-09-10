@@ -1363,3 +1363,64 @@ async fn listen_for_node_build_logs_error_on_spawn_failure() {
         log_content
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_reset_cancels_a_running_build_and_allows_a_new_add() {
+    let started = start_core_node_with_mock_messenger().await;
+    let source = tempfile::tempdir().unwrap();
+    let control = tempfile::tempdir().unwrap();
+    let pid_file = control.path().join("build.pid");
+    let build_script = format!("echo $$ > '{}'; exec sleep 300", pid_file.display());
+    write_peppy_json5(
+        source.path(),
+        &format!(
+            r#"{{
+        peppy_schema: "node/v1",
+        manifest: {{ name: "reset_build", tag: "v1" }},
+        execution: {{
+            language: "rust",
+            build_cmd: [{}],
+            run_cmd: ["true"],
+        }},
+    }}"#,
+            serde_json::to_string(&build_script).unwrap()
+        ),
+    );
+    let (name, tag) = stage_node_for_build(&started, source.path(), RESULT_TIMEOUT).await;
+    let build = {
+        let messenger = started.caller_handle.clone();
+        let core = started.core_node_name.clone();
+        tokio::spawn(async move {
+            send_node_build_and_wait(
+                &messenger,
+                &core,
+                &name,
+                &tag,
+                GOAL_TIMEOUT,
+                RESULT_TIMEOUT,
+                Vec::new(),
+                None,
+            )
+            .await
+        })
+    };
+    let pid: u32 = wait_for_pid_file(&pid_file).await.trim().parse().unwrap();
+    let response = peppylib::core_node::transport::poll(
+        &core_node_api::encoding::StackResetRequest::new(),
+        &started.caller_handle,
+        &started.core_node_name,
+        common::CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        RESULT_TIMEOUT,
+    )
+    .await
+    .unwrap();
+    assert!(response.success, "{:?}", response.error_message);
+    assert!(
+        !common::is_process_running(pid),
+        "reset must reap the build process"
+    );
+    assert_eq!(started.node_stack.len(), 1, "only the daemon remains");
+    assert!(!build.await.unwrap().unwrap().success);
+    stage_node_for_build(&started, source.path(), RESULT_TIMEOUT).await;
+}

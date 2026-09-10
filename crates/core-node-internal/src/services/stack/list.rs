@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
-pub async fn listen_for_stack_list(
+pub(crate) async fn listen_for_stack_list(
     messenger: &MessengerHandle,
     core_node_node: &str,
     instance_id: &str,
@@ -93,6 +93,10 @@ fn handle_node_list_request_inner(
     // slice.
     let mut response =
         StackListResponse::new(graph_json, core_node, instance_id, current_host_name());
+    response.shutdown_grace_secs = node_stack.shutdown_grace().as_secs();
+    if let Some(active) = ownership.active.lock().as_ref() {
+        response.copies = active.copies();
+    }
     if let Some(launch) = ownership.slice() {
         response = response.with_launch(launch);
     }

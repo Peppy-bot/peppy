@@ -1,12 +1,13 @@
 use super::feedback::{publish_stderr, publish_stdout, spawn_feedback_forwarder};
-use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
+use super::{NodeKey, PlannedDeployment};
 use crate::services::node::pins;
 use crate::services::node::{FeedbackLine, stdout_line_sender};
 use crate::services::repo::cache as repo_cache;
+use crate::services::stack::action::StackChangeContext;
+use config::runtime::CoreNodeName;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, PlacementSpec,
 };
-use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use daemon_config::repository::{DeploymentRoot, PinnedItem};
@@ -19,7 +20,16 @@ fn deployment_label(deployment: &Deployment) -> String {
     deployment.source.label()
 }
 
-/// Step 1: Parse launcher configuration from file path, resolving the
+/// The launcher as the coordinator read it: the document its copies join
+/// onto, the composition the launch selection produced, and where each
+/// instance runs.
+pub(in crate::services::stack) struct ParsedLaunch {
+    pub(in crate::services::stack) prepared: daemon_config::launcher::PreparedLauncher,
+    pub(in crate::services::stack) composed: daemon_config::launcher::ComposedLaunch,
+    pub(in crate::services::stack) placements: Placements,
+}
+
+/// Parses the launcher configuration from its file path, resolving the
 /// `--with` selection the caller asked for when the launcher declares
 /// component axes.
 ///
@@ -29,10 +39,10 @@ fn deployment_label(deployment: &Deployment) -> String {
 /// caller that resolved selections itself could do so for a filesystem
 /// launcher and not for a repository one, and the two origins would drift
 /// into meaning different things.
-pub(super) async fn parse_launcher_config(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn parse_launcher_config(
+    ctx: &StackChangeContext,
     goal: &LaunchGoal,
-) -> std::result::Result<(Vec<Deployment>, Placements), LaunchResult> {
+) -> std::result::Result<ParsedLaunch, LaunchResult> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -76,33 +86,41 @@ pub(super) async fn parse_launcher_config(
         }
     };
 
-    let peppy_launcher =
-        match daemon_config::launcher::compose(&parsed, &launch_file, &goal.selections) {
-            Ok((flat, report)) => {
-                if !parsed.components.is_empty() {
-                    // The full resolution is echoed before anything runs, so the
-                    // operator sees which stack this launch is of while there is
-                    // still time to interrupt it.
-                    publish_stdout(
-                        ctx,
-                        format!("components: {}", report.selection.echo()),
-                        LaunchFeedbackStep::LauncherStep,
-                    )
-                    .await;
+    let prepared = daemon_config::launcher::PreparedLauncher::load(&parsed, &launch_file)
+        .map_err(|e| LaunchResult::failure(&ctx.log_path, e.to_string()))?;
+    let composed = match prepared.launch(&goal.selections) {
+        Ok(composed) => {
+            if !parsed.components.is_empty() {
+                // The full resolution is echoed before anything runs, so the
+                // operator sees which stack this launch is of, and which
+                // copies, while there is still time to interrupt it.
+                for line in composed.report.selection_lines() {
+                    publish_stdout(ctx, line, LaunchFeedbackStep::LauncherStep).await;
                 }
-                flat
             }
-            Err(e) => {
-                // Not a parse failure: the document was already read fine. The
-                // composition errors themselves name the axis and its options,
-                // so the prefix only says which step refused.
-                let msg = format!("Cannot resolve the launcher's components: {e}");
-                publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-                return Err(LaunchResult::failure(&ctx.log_path, msg));
-            }
-        };
+            composed
+        }
+        Err(e) => {
+            // Not a parse failure: the document was already read fine. The
+            // composition errors themselves name the axis and its options,
+            // so the prefix only says which step refused.
+            let msg = format!("Cannot resolve the launcher's components: {e}");
+            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            return Err(LaunchResult::failure(&ctx.log_path, msg));
+        }
+    };
 
-    let placements = match resolve_placements(&peppy_launcher, goal, ctx.bound_core_node.as_str()) {
+    let copy_names: Vec<&str> = composed
+        .copies()
+        .iter()
+        .map(|copy| copy.name.as_str())
+        .collect();
+    let placements = match resolve_placements(
+        &composed.launcher,
+        goal,
+        &copy_names,
+        ctx.bound_core_node.as_str(),
+    ) {
         Ok(placements) => placements,
         Err(msg) => {
             publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
@@ -110,8 +128,11 @@ pub(super) async fn parse_launcher_config(
         }
     };
 
-    let deployments = peppy_launcher.deployments.clone();
-    Ok((deployments, placements))
+    Ok(ParsedLaunch {
+        prepared,
+        composed,
+        placements,
+    })
 }
 
 /// Binds the launcher's declared core node links to the machines the caller
@@ -124,9 +145,10 @@ pub(super) async fn parse_launcher_config(
 /// intent and is expanded here against what the document actually declares.
 /// Expanding it caller-side would work for a file launcher and silently do
 /// nothing for a repository one.
-pub(super) fn resolve_placements(
+pub(in crate::services::stack) fn resolve_placements(
     launcher: &daemon_config::launcher::PeppyLauncher,
     goal: &LaunchGoal,
+    copies: &[&str],
     coordinator: &str,
 ) -> std::result::Result<Placements, String> {
     // The daemon's own name, re-parsed rather than assumed: this is the only
@@ -134,7 +156,17 @@ pub(super) fn resolve_placements(
     let coordinator = CoreNodeName::new(coordinator)
         .map_err(|reason| format!("this daemon's core node name is invalid: {reason}"))?;
     let declared: BTreeSet<&str> = launcher.core_nodes.iter().map(String::as_str).collect();
-    let links = wire_core_node_links(&goal.placement, &declared, &coordinator)?;
+    // A copy's name is its placement link, and a copy nobody placed runs on
+    // the coordinator.
+    let mut placement = goal.placement.clone();
+    if let PlacementSpec::Places(places) = &mut placement {
+        for copy in copies {
+            places
+                .entry((*copy).to_string())
+                .or_insert_with(|| coordinator.to_string());
+        }
+    }
+    let links = wire_core_node_links(&placement, &declared, &coordinator)?;
 
     let mut by_instance = BTreeMap::new();
     for deployment in &launcher.deployments {
@@ -259,7 +291,7 @@ fn wire_core_node_links<'a>(
 /// idle watcher runs during resolve; the streaming exists for the CLI watchdog, which
 /// resets on any published feedback.
 async fn resolve_launcher_origin(
-    ctx: &ProcessLaunchContext,
+    ctx: &StackChangeContext,
     origin: &LauncherOrigin,
 ) -> std::result::Result<PathBuf, String> {
     match origin {
@@ -292,7 +324,7 @@ async fn resolve_launcher_origin(
     }
 }
 
-/// Step 2: Resolve every deployment, once, on this daemon.
+/// Resolves every deployment, once, on this daemon.
 ///
 /// The coordinator decides which bytes the whole launch runs: every
 /// deployment resolves its `name:tag` to a transitive closure here, every
@@ -304,8 +336,8 @@ async fn resolve_launcher_origin(
 /// Runs BEFORE the federated preflight: resolution touches no other machine
 /// and tears nothing down, so every refusal here is free, and the pins must
 /// exist before a reservation can carry them.
-pub(super) async fn resolve_deployments(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn resolve_deployments(
+    ctx: &StackChangeContext,
     deployments: Vec<Deployment>,
     placements: &Placements,
 ) -> std::result::Result<Vec<PlannedDeployment>, LaunchResult> {
@@ -477,7 +509,7 @@ fn refuse_unportable_pins<'a>(
 }
 
 async fn resolve_one(
-    ctx: &ProcessLaunchContext,
+    ctx: &StackChangeContext,
     deployment: &Deployment,
     placements: &Placements,
     node_entries: &Arc<Vec<repo_cache::NodeCacheEntry>>,
@@ -564,8 +596,8 @@ async fn resolve_one(
 ///
 /// The pins land on each deployment's `closure_pins`, beside its
 /// dependency-node pins, so every add of the deployment carries them.
-pub(super) async fn mint_doc_pins(
-    ctx: &ProcessLaunchContext,
+pub(in crate::services::stack) async fn mint_doc_pins(
+    ctx: &StackChangeContext,
     planned: &mut [PlannedDeployment],
     placements: &Placements,
 ) -> std::result::Result<(), LaunchResult> {

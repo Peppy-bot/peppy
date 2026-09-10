@@ -1,15 +1,16 @@
 ---
 /*
- * Animated node graph of the stack `peppy stack launch openarm_v2
- * --with=mujoco,web_commander` brings up, laid out as the bimanual robot
+ * Animated node graph of the stack `peppy stack launch openarm_fleet -i alpha
+ * --with openarm_v2_sim,mujoco,web_commander` brings up, laid out as the bimanual robot
  * rather than as a left-to-right flow chart. The eight circles are the eight
  * instances that selection declares, and the arrows are the links between
  * them:
  *
- *   commander_inst (the browser panel) streams targets down to backbone_inst,
- *   backbone_inst streams governed setpoints out to the four limb relays
- *   (left/right_arm_inst, left/right_grip_inst), each relay leads its matching
- *   limb inside sim_inst (the MuJoCo engine), and robot_init_inst gathers the
+ *   alpha_commander_inst (the browser panel) streams targets down to alpha_backbone_inst,
+ *   alpha_backbone_inst streams governed setpoints out to the four limb relays
+ *   (alpha_left_arm_inst, alpha_right_arm_inst, alpha_left_gripper_inst,
+ *   alpha_right_gripper_inst), each relay leads its matching limb inside engine_inst (the
+ *   MuJoCo engine, a stack instance), and alpha_init_inst gathers the
  *   four relays' readiness and reports it back up to the backbone.
  *
  * Node positions form a T-pose: panel on top, backbone as the torso, the arm
@@ -30,7 +31,7 @@
  * Deliberately not drawn: the commander's four observed_* links (it watches
  * each relay's measured state directly). They span the full height of the
  * graph and would bury the command path; the caption covers them instead. Keep
- * the node and link set in step with launchers-hub/openarm/openarm_v2.json5
+ * the node and link set in step with launchers-hub/openarm/openarm_fleet.json5
  * and the fragments its mujoco and web_commander options pull in, if those
  * change.
  */
@@ -40,7 +41,7 @@
 	class="stack-graph"
 	viewBox="0 -12 660 518"
 	role="img"
-	aria-label="Node graph of the openarm_v2 launcher with the mujoco and web_commander options, drawn as a bimanual robot. commander_inst, the browser control panel, sits at the top and streams commands down to backbone_inst, the coordinator. The backbone streams governed setpoints out to four limb relays: left_arm_inst and right_arm_inst on the shoulders, left_grip_inst and right_grip_inst below them. Each of the four relays leads its matching limb inside sim_inst, the MuJoCo engine at the base, and reports readiness to robot_init_inst on the spine, which reports back up to the backbone. Each pairing streams measured state back the other way, and the panel also observes the four relays."
+	aria-label="Node graph of the openarm_fleet launcher with the mujoco and web_commander options, drawn as a bimanual robot. alpha_commander_inst, the browser control panel, sits at the top and streams commands down to alpha_backbone_inst, the coordinator. The backbone streams governed setpoints out to four limb relays: alpha_left_arm_inst and alpha_right_arm_inst on the shoulders, alpha_left_gripper_inst and alpha_right_gripper_inst below them. Each of the four relays leads its matching limb inside engine_inst, the MuJoCo engine at the base, and reports readiness to alpha_init_inst on the spine, which reports back up to the backbone. Each pairing streams measured state back the other way, and the panel also observes the four relays."
 >
 	<defs>
 		<radialGradient id="sgHaloViolet" cx="50%" cy="50%" r="50%">
@@ -118,7 +119,7 @@
 		<line x1="431" y1="372" x2="362" y2="408"></line>
 	</g>
 
-	<!-- commander_inst: the browser control panel -->
+	<!-- alpha_commander_inst: the browser control panel -->
 	<g class="stack-graph__node stack-graph__node--violet" transform="translate(330 56)">
 		<g class="stack-graph__float" style="--bob-dur: 2.9s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloViolet)"></circle>
@@ -136,10 +137,10 @@
 					r="2"></circle>
 			</g>
 		</g>
-		<text class="stack-graph__label" y="-46" text-anchor="middle">commander_inst</text>
+		<text class="stack-graph__label" y="-46" text-anchor="middle">alpha_commander_inst</text>
 	</g>
 
-	<!-- backbone_inst: the coordinator running the self-collision governor -->
+	<!-- alpha_backbone_inst: the coordinator running the self-collision governor -->
 	<g class="stack-graph__node stack-graph__node--orange" transform="translate(330 160)">
 		<g class="stack-graph__float" style="--bob-dur: 2.5s; --bob-delay: 0.4s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloOrange)" style="--halo-delay: 0.5s"
@@ -153,10 +154,10 @@
 				<circle class="stack-graph__icon-fill stack-graph__blink" cx="0" cy="3.5" r="1.6"></circle>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="42" y="4" text-anchor="start">backbone_inst</text>
+		<text class="stack-graph__label" x="42" y="4" text-anchor="start">alpha_backbone_inst</text>
 	</g>
 
-	<!-- left_arm_inst: engine-agnostic arm relay -->
+	<!-- alpha_left_arm_inst: engine-agnostic arm relay -->
 	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(200 250)">
 		<g class="stack-graph__float" style="--bob-dur: 2.3s; --bob-delay: 0.9s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloCyan)" style="--halo-delay: 0.9s"
@@ -173,10 +174,10 @@
 				<path d="M8,-4 L11,-5.5 L11.6,-7.6 M8,-4 L11,-2.5 L11.6,-0.4" stroke-width="1.3"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">left_arm_inst</text>
+		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">alpha_left_arm_inst</text>
 	</g>
 
-	<!-- right_arm_inst: the same relay for the other arm -->
+	<!-- alpha_right_arm_inst: the same relay for the other arm -->
 	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(460 250)">
 		<g class="stack-graph__float" style="--bob-dur: 2.7s; --bob-delay: 0.2s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloCyan)" style="--halo-delay: 0.3s"
@@ -193,10 +194,10 @@
 				<path d="M8,-4 L11,-5.5 L11.6,-7.6 M8,-4 L11,-2.5 L11.6,-0.4" stroke-width="1.3"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="88" y="5" text-anchor="start">right_arm_inst</text>
+		<text class="stack-graph__label" x="88" y="5" text-anchor="start">alpha_right_arm_inst</text>
 	</g>
 
-	<!-- left_grip_inst: gripper relay, mirroring the arm relay over gripper_link -->
+	<!-- alpha_left_gripper_inst: gripper relay, mirroring the arm relay over gripper_link -->
 	<g class="stack-graph__node stack-graph__node--teal" transform="translate(200 358)">
 		<g class="stack-graph__float" style="--bob-dur: 2.6s; --bob-delay: 1.2s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloTeal)" style="--halo-delay: 1.2s"
@@ -211,10 +212,10 @@
 					stroke-linejoin="round"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">left_grip_inst</text>
+		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">alpha_left_gripper_inst</text>
 	</g>
 
-	<!-- right_grip_inst: the same relay for the other gripper -->
+	<!-- alpha_right_gripper_inst: the same relay for the other gripper -->
 	<g class="stack-graph__node stack-graph__node--teal" transform="translate(460 358)">
 		<g class="stack-graph__float" style="--bob-dur: 2.4s; --bob-delay: 0.6s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloTeal)" style="--halo-delay: 0.7s"
@@ -229,10 +230,10 @@
 					stroke-linejoin="round"></path>
 			</g>
 		</g>
-		<text class="stack-graph__label" x="88" y="5" text-anchor="start">right_grip_inst</text>
+		<text class="stack-graph__label" x="88" y="5" text-anchor="start">alpha_right_gripper_inst</text>
 	</g>
 
-	<!-- robot_init_inst: ready once every limb's physics is live -->
+	<!-- alpha_init_inst: ready once every limb's physics is live -->
 	<g class="stack-graph__node stack-graph__node--green" transform="translate(330 300)">
 		<g class="stack-graph__float" style="--bob-dur: 3.1s; --bob-delay: 0.8s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloGreen)" style="--halo-delay: 1.4s"
@@ -262,10 +263,10 @@
 					style="--tick-delay: 1.05s"></circle>
 			</g>
 		</g>
-		<text class="stack-graph__label" y="48" text-anchor="middle">robot_init_inst</text>
+		<text class="stack-graph__label" y="48" text-anchor="middle">alpha_init_inst</text>
 	</g>
 
-	<!-- sim_inst: the MuJoCo engine every relay leads -->
+	<!-- engine_inst: the MuJoCo engine every relay leads -->
 	<g class="stack-graph__node stack-graph__node--blue" transform="translate(330 424)">
 		<g class="stack-graph__float" style="--bob-dur: 3.4s; --bob-delay: 0.3s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloBlue)" style="--halo-delay: 0.2s"
@@ -279,7 +280,7 @@
 				></circle>
 			</g>
 		</g>
-		<text class="stack-graph__label" y="48" text-anchor="middle">sim_inst</text>
+		<text class="stack-graph__label" y="48" text-anchor="middle">engine_inst</text>
 	</g>
 
 	<!-- Legend. Each class carries its own dash pattern as well as its own color,

@@ -36,6 +36,8 @@ pub struct StackSection {
     /// reservation without a matching live launch is a machine every new
     /// launch bounces off, so it must be visible here.
     pub reservation: Option<LaunchIdentity>,
+    /// The copies joined onto this daemon's slice, as it reports them.
+    pub copies: Vec<core_node_api::encoding::CopyInfo>,
     pub outcome: std::result::Result<(Vec<SerializedNode>, Vec<SerializedEdge>), String>,
 }
 
@@ -149,6 +151,7 @@ async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
                     live_claimants,
                     launch: response.launch,
                     reservation: response.reservation,
+                    copies: response.copies,
                     outcome: crate::commands::parse_stack_graph(&response.graph_json)
                         .map(|mut graph| {
                             sort_graph(&mut graph.nodes, &mut graph.edges);
@@ -163,6 +166,7 @@ async fn collect_sections(ctx: &Arc<AppContext>) -> Result<Vec<StackSection>> {
                     live_claimants,
                     launch: None,
                     reservation: None,
+                    copies: Vec::new(),
                     outcome: Err(error.to_string()),
                 },
             }
@@ -212,6 +216,7 @@ pub fn render_stack_json(sections: &[StackSection]) -> String {
                 "live_claimants": section.live_claimants,
                 "launch": launch_json(&section.launch),
                 "reservation": launch_json(&section.reservation),
+                "copies": section.copies,
                 "stack": stack,
                 "error": error,
             })
@@ -326,6 +331,30 @@ pub fn format_stack_list(
             let _ = writeln!(body);
         }
 
+        for copy in &section.copies {
+            let selection = if copy.selections.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", copy.selections.join(", "))
+            };
+            let _ = writeln!(
+                body,
+                "Copy {} of {} on {}{selection}",
+                copy.name, copy.option, copy.core_node
+            );
+            let _ = writeln!(
+                body,
+                "  Instances: {}",
+                copy.instance_ids
+                    .iter()
+                    .map(config::runtime::Name::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if !section.copies.is_empty() {
+            let _ = writeln!(body);
+        }
         match &section.outcome {
             Ok((nodes, edges)) => {
                 body.push_str(&format_stack_body(nodes, edges, colorize, inner_width));
@@ -964,6 +993,7 @@ mod tests {
             live_claimants: 1,
             launch: None,
             reservation: None,
+            copies: Vec::new(),
             outcome: Ok((
                 vec![node(core_node, "v1", NodeStage::Root, vec![])],
                 Vec::new(),
@@ -994,6 +1024,7 @@ mod tests {
             live_claimants: 2,
             launch: None,
             reservation: Some(LaunchIdentity::new("launch-2", "cn-coordinator")),
+            copies: Vec::new(),
             outcome: Err("query timed out".to_string()),
         };
 
@@ -1052,6 +1083,45 @@ mod tests {
         assert!(
             out.contains("`peppy stack reset --core-node cn-participant`"),
             "the reservation line must spell the command that clears THIS machine:\n{out}"
+        );
+    }
+
+    #[test]
+    fn copies_are_listed_with_option_host_selection_and_instances() {
+        let sections = vec![StackSection {
+            copies: vec![
+                core_node_api::encoding::CopyInfo {
+                    name: config::runtime::Name::new("alpha").unwrap(),
+                    option: "openarm_v2".to_string(),
+                    core_node: config::runtime::CoreNodeName::new("jetson-1").unwrap(),
+                    instance_ids: vec![
+                        config::runtime::Name::new("alpha_arm_inst").unwrap(),
+                        config::runtime::Name::new("alpha_commander_inst").unwrap(),
+                    ],
+                    selections: vec!["commander=web_commander".to_string()],
+                },
+                core_node_api::encoding::CopyInfo {
+                    name: config::runtime::Name::new("bravo").unwrap(),
+                    option: "openarm_v2".to_string(),
+                    core_node: config::runtime::CoreNodeName::new("jetson-2").unwrap(),
+                    instance_ids: vec![config::runtime::Name::new("bravo_arm_inst").unwrap()],
+                    selections: Vec::new(),
+                },
+            ],
+            ..successful_section("cn-coordinator", "robo-a")
+        }];
+        let out = format_stack_list(&sections, false, None);
+        assert!(
+            out.contains("Copy alpha of openarm_v2 on jetson-1: commander=web_commander"),
+            "the copy names its option, host and selection:\n{out}"
+        );
+        assert!(
+            out.contains("Instances: alpha_arm_inst, alpha_commander_inst"),
+            "the copy lists its minted instances:\n{out}"
+        );
+        assert!(
+            out.contains("Copy bravo of openarm_v2 on jetson-2") && !out.contains("jetson-2:"),
+            "a copy with no selection of its own ends at its host:\n{out}"
         );
     }
 
@@ -1175,6 +1245,7 @@ mod tests {
             live_claimants: 3,
             launch: None,
             reservation: None,
+            copies: Vec::new(),
             outcome: Err("daemon disappeared".to_string()),
         }];
         let out = format_stack_list(&sections, false, None);

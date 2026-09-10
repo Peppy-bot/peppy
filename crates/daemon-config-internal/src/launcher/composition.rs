@@ -1,63 +1,165 @@
-//! The composition grammar: the `components` axes and `adjustments` a
-//! `launcher/v1` document may declare, and the `launcher_fragment/v1`
-//! documents its options reference.
+//! The composition grammar: the `components` axes a `launcher/v1` or
+//! `launcher_fragment/v1` document declares, the option entries a
+//! `deployments` list may carry beside its nodes, and the `adjustments` and
+//! `constraints` both document kinds may state.
 //!
-//! A launcher without `components` is a flat stack and never reaches this
-//! module's types. A launcher with them describes a FAMILY of stacks whose
-//! members differ in which implementation fills each axis, selected at launch
-//! time with `--with`. Flattening ( [`super::flatten`] ) turns a launcher plus
-//! a selection into the ordinary flat document the rest of the pipeline
-//! consumes; this module is only the grammar and the checks that need no I/O
-//! and no selection.
+//! Components declare what may run; deployments say what runs. A launcher
+//! whose `components` fill once (`one`, `zero_or_one`) describes a FAMILY of
+//! stacks whose members differ in which option fills each axis, selected by
+//! the file's `deployments` and swapped at launch with `--with`. An axis
+//! with cardinality `zero_or_more` runs as named copies, each listed under
+//! `deployments` or added with `stack join`. A fragment declares its own
+//! axes the same way, filled once per copy of it. Composition
+//! ( [`super::compose`] ) turns a launcher plus a selection into the
+//! ordinary flat document the rest of the pipeline consumes; this module is
+//! the grammar and the checks that need no I/O and no selection.
 
 use super::types::{Deployment, LinkValue};
 use config::{AnyType, runtime::Name, schema::PeppySchema};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer, MapAccess, SeqAccess, Visitor},
-    ser::SerializeSeq,
+    ser::{SerializeMap, SerializeSeq},
 };
 use std::collections::{BTreeMap, HashSet};
 
-/// One axis declaration in a launcher's `components` list.
+/// The `deployments` keys an entry is read by, and so the names a component
+/// cannot have: an entry with `source` deploys a node; `instances`, `with`
+/// and `arguments` belong to an option entry.
+const RESERVED_COMPONENT_NAMES: [&str; 4] = ["source", "instances", "with", "arguments"];
+
+/// Argument overrides an option entry or one of its copies writes, keyed by
+/// the instance id written in the option's fragment and then by argument.
+pub type ArgumentOverrides = BTreeMap<String, BTreeMap<String, AnyType>>;
+
+/// How many selections of an axis a document allows. `one` and
+/// `zero_or_one` are filled once, by a `deployments` entry or `--with`, and
+/// their instances keep the ids they are written with. `zero_or_more` runs
+/// as named copies, each minting its ids under its name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentCardinality {
+    #[default]
+    One,
+    ZeroOrOne,
+    ZeroOrMore,
+}
+
+impl ComponentCardinality {
+    pub fn is_one(&self) -> bool {
+        *self == Self::One
+    }
+
+    pub fn allows_empty(self) -> bool {
+        self != Self::One
+    }
+
+    /// Whether the axis runs as named copies.
+    pub fn is_repeatable(self) -> bool {
+        self == Self::ZeroOrMore
+    }
+}
+
+/// One axis declaration in a `components` list.
 ///
 /// The list is ORDERED, and the order is load-bearing: it fixes the order
 /// fragments are collected in and therefore the order adjustments apply and
 /// deployments appear, the same way `deployments` order fixes start order.
-/// An axis names the alternative `options` that fill it; exactly one option
-/// per axis is ever selected (§ "an axis takes one option, never two").
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// An axis names the `options` that fill it, bounded by its cardinality.
+#[derive(Debug, Clone, Serialize)]
 pub struct ComponentAxis {
-    /// The axis's name, unique within the launcher and spelled with the same
-    /// identifier grammar as every other name in a peppy document. Used by
-    /// `--with axis=option` and by `when` guards.
+    /// The axis's name, unique within its document and spelled with the
+    /// same identifier grammar as every other name in a peppy document. Used
+    /// by `--with axis=option`, by `when` guards, and by the `deployments`
+    /// entry that fills it.
     pub name: String,
     /// The alternatives that fill this axis, at least one. A value is an
-    /// inline fragment object, a path relative to the launcher's own
+    /// inline fragment object, a path relative to the declaring document's
     /// directory, or a list mixing both (merged in list order).
     pub options: BTreeMap<String, FragmentSpec>,
-    /// Chosen when `--with` names nothing on this axis. Forbidden together
-    /// with `optional`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
-    /// When true the axis may be left unfilled: an unselected optional axis
-    /// contributes nothing to the stack.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub optional: bool,
+    #[serde(default, skip_serializing_if = "ComponentCardinality::is_one")]
+    pub cardinality: ComponentCardinality,
     /// The axis's interface: every option must define all of these instance
     /// ids in its deployments, so a link or adjustment written against one is
-    /// valid regardless of which option the operator picks.
+    /// valid regardless of which option the operator picks. On a repeatable
+    /// axis the ids are checked as written, before a copy's name prefixes
+    /// them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides: Vec<Name>,
+}
+
+impl ComponentAxis {
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+}
+
+impl<'de> Deserialize<'de> for ComponentAxis {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The keys an axis accepts, plus the ones a reader may reach for
+        /// from another document shape, each refused with its replacement.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Declaration {
+            name: String,
+            #[serde(default)]
+            options: Option<BTreeMap<String, FragmentSpec>>,
+            #[serde(default)]
+            cardinality: ComponentCardinality,
+            #[serde(default)]
+            provides: Vec<Name>,
+            #[serde(default, deserialize_with = "present")]
+            default: Option<de::IgnoredAny>,
+            #[serde(default, deserialize_with = "present")]
+            optional: Option<de::IgnoredAny>,
+            #[serde(default, deserialize_with = "present")]
+            components: Option<de::IgnoredAny>,
+        }
+
+        let raw = Declaration::deserialize(deserializer)?;
+        if raw.default.is_some() {
+            return Err(de::Error::custom(format!(
+                "axis `{}` declares `default`; the option a document starts with is a \
+                 `deployments` entry, `{{ {}: \"<option>\" }}`, which `--with` swaps",
+                raw.name, raw.name
+            )));
+        }
+        if raw.optional.is_some() {
+            return Err(de::Error::custom(format!(
+                "axis `{}` declares `optional`; write `cardinality: \"zero_or_one\"` for an \
+                 axis that may stay unfilled",
+                raw.name
+            )));
+        }
+        if raw.components.is_some() {
+            return Err(de::Error::custom(format!(
+                "axis `{}` declares `components`; an option's own axes are declared by its \
+                 fragment, under that fragment's `components`",
+                raw.name
+            )));
+        }
+        let Some(options) = raw.options else {
+            return Err(de::Error::missing_field("options"));
+        };
+        Ok(Self {
+            name: raw.name,
+            options,
+            cardinality: raw.cardinality,
+            provides: raw.provides,
+        })
+    }
+}
+
+fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<de::IgnoredAny>, D::Error> {
+    de::IgnoredAny::deserialize(deserializer).map(Some)
 }
 
 /// One option's fragment set, in the order the option declared it: an inline
 /// fragment, a path, or a list mixing both all parse into the same shape.
 ///
 /// The two origins parse identically but live differently: an inline fragment
-/// is part of the launcher file, while a path is resolved and read when the
-/// composition is loaded ( [`super::flatten`] ), never here.
+/// is part of the declaring document, while a path is resolved and read when
+/// the composition is loaded ( [`super::compose`] ), never here.
 #[derive(Debug, Clone, Default)]
 pub struct FragmentSpec(pub Vec<FragmentPart>);
 
@@ -69,22 +171,95 @@ pub enum FragmentPart {
     File(String),
 }
 
-/// The body of one fragment: what a `--with` selection pulls in.
+/// The body of one fragment: what selecting its option pulls in.
 ///
-/// `deployments` uses the same grammar as the launcher's own, `core_nodes`
-/// are unioned with the base's, and `adjustments` reach instances the
-/// fragment does not own. A fragment cannot declare `components` (no
-/// nesting) and cannot declare `peppy_schema` when inline: the file form
-/// wraps this body in [`LauncherFragment`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// `deployments` uses the same grammar as the launcher's own, node entries
+/// and option entries alike, `core_nodes` are unioned with the base's, and
+/// `adjustments` reach instances the fragment does not own. A fragment
+/// declares its own `components`, filled once per copy of it, and the
+/// `constraints` among them; it cannot declare `peppy_schema` when inline,
+/// since the file form wraps this body in [`LauncherFragment`].
+#[derive(Debug, Clone, Default)]
 pub struct Fragment {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The node entries of `deployments`.
     pub deployments: Vec<Deployment>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The option entries of `deployments`: the options this fragment
+    /// deploys on its own axes unless a copy's `with` says otherwise.
+    pub option_deployments: Vec<OptionDeployment>,
+    pub components: Vec<ComponentAxis>,
+    pub constraints: Vec<SelectionConstraint>,
     pub adjustments: Vec<Adjustment>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub core_nodes: Vec<String>,
+}
+
+/// The document shape a fragment body is read from and written to.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFragment {
+    #[serde(default)]
+    deployments: DeploymentEntries,
+    #[serde(default)]
+    components: Vec<ComponentAxis>,
+    #[serde(default)]
+    constraints: Vec<SelectionConstraint>,
+    #[serde(default)]
+    adjustments: Vec<Adjustment>,
+    #[serde(default)]
+    core_nodes: Vec<String>,
+}
+
+impl Fragment {
+    fn from_raw<E: de::Error>(raw: RawFragment) -> Result<Self, E> {
+        validate_axes(&raw.components, AxisScope::Fragment).map_err(E::custom)?;
+        validate_option_deployments(&raw.deployments.options, &raw.components)
+            .map_err(E::custom)?;
+        validate_constraint_shapes(&raw.constraints, "this fragment").map_err(E::custom)?;
+        for adjustment in &raw.adjustments {
+            validate_adjustment(adjustment, "this fragment").map_err(E::custom)?;
+        }
+        Ok(Self {
+            deployments: raw.deployments.nodes,
+            option_deployments: raw.deployments.options,
+            components: raw.components,
+            constraints: raw.constraints,
+            adjustments: raw.adjustments,
+            core_nodes: raw.core_nodes,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for Fragment {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Fragment::from_raw(RawFragment::deserialize(deserializer)?)
+    }
+}
+
+impl Serialize for Fragment {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        if !self.deployments.is_empty() || !self.option_deployments.is_empty() {
+            map.serialize_entry(
+                "deployments",
+                &DeploymentEntriesRef {
+                    nodes: &self.deployments,
+                    options: &self.option_deployments,
+                },
+            )?;
+        }
+        if !self.components.is_empty() {
+            map.serialize_entry("components", &self.components)?;
+        }
+        if !self.constraints.is_empty() {
+            map.serialize_entry("constraints", &self.constraints)?;
+        }
+        if !self.adjustments.is_empty() {
+            map.serialize_entry("adjustments", &self.adjustments)?;
+        }
+        if !self.core_nodes.is_empty() {
+            map.serialize_entry("core_nodes", &self.core_nodes)?;
+        }
+        map.end()
+    }
 }
 
 /// A `launcher_fragment/v1` document: a [`Fragment`] body in its own file,
@@ -110,7 +285,11 @@ impl<'de> Deserialize<'de> for LauncherFragment {
             #[serde(deserialize_with = "deserialize_launcher_fragment_v1_schema")]
             peppy_schema: PeppySchema,
             #[serde(default)]
-            deployments: Vec<Deployment>,
+            deployments: DeploymentEntries,
+            #[serde(default)]
+            components: Vec<ComponentAxis>,
+            #[serde(default)]
+            constraints: Vec<SelectionConstraint>,
             #[serde(default)]
             adjustments: Vec<Adjustment>,
             #[serde(default)]
@@ -120,11 +299,13 @@ impl<'de> Deserialize<'de> for LauncherFragment {
         let raw = RawLauncherFragment::deserialize(deserializer)?;
         Ok(LauncherFragment {
             peppy_schema: raw.peppy_schema,
-            body: Fragment {
+            body: Fragment::from_raw(RawFragment {
                 deployments: raw.deployments,
+                components: raw.components,
+                constraints: raw.constraints,
                 adjustments: raw.adjustments,
                 core_nodes: raw.core_nodes,
-            },
+            })?,
         })
     }
 }
@@ -139,7 +320,351 @@ where
     PeppySchema::deserialize_expecting(deserializer, PeppySchema::LauncherFragmentV1)
 }
 
-/// One rule about which selections this launcher refuses to be: `when` a
+/// One option entry of a `deployments` list, `{ <axis>: "<option>" }`: the
+/// option the document deploys on that axis. On a `zero_or_more` axis the
+/// entry lists the copies it runs as under `instances`; its own `with` and
+/// `arguments` apply to each of them, a copy's own winning per axis and
+/// per argument.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptionDeployment {
+    pub axis: String,
+    pub option: String,
+    pub with: BTreeMap<String, String>,
+    pub arguments: ArgumentOverrides,
+    pub instances: Vec<CopyEntry>,
+}
+
+impl OptionDeployment {
+    /// One copy's selection and argument overrides: the entry's, with the
+    /// copy's own on top.
+    pub fn settings_for(&self, copy: &CopyEntry) -> (BTreeMap<String, String>, ArgumentOverrides) {
+        let mut with = self.with.clone();
+        with.extend(copy.with.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let mut arguments = self.arguments.clone();
+        for (target, values) in &copy.arguments {
+            arguments
+                .entry(target.clone())
+                .or_default()
+                .extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        (with, arguments)
+    }
+}
+
+/// One named copy of a `zero_or_more` axis's option: `instance_id` prefixes
+/// every id the option's fragments define (`alpha_backbone_inst`), `with`
+/// selects the option's own axes, and `arguments` overrides the arguments of
+/// the option's instances, keyed by the ids written in the fragment.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CopyEntry {
+    pub instance_id: Name,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub with: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub arguments: ArgumentOverrides,
+}
+
+impl<'de> Deserialize<'de> for CopyEntry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Declaration {
+            instance_id: Name,
+            #[serde(default)]
+            with: BTreeMap<String, String>,
+            #[serde(default)]
+            arguments: ArgumentOverrides,
+            #[serde(default, deserialize_with = "present")]
+            core_node: Option<de::IgnoredAny>,
+            #[serde(default, deserialize_with = "present")]
+            links: Option<de::IgnoredAny>,
+        }
+
+        let raw = Declaration::deserialize(deserializer)?;
+        if raw.core_node.is_some() {
+            return Err(de::Error::custom(format!(
+                "copy `{}` declares `core_node`; a copy is placed as a whole with \
+                 `--place {}@CORE_NODE`, its name being its placement link",
+                raw.instance_id, raw.instance_id
+            )));
+        }
+        if raw.links.is_some() {
+            return Err(de::Error::custom(format!(
+                "copy `{}` declares `links`; a copy's wiring is written in its option's \
+                 fragment, and `with` selects the fragment's own axes",
+                raw.instance_id
+            )));
+        }
+        for (axis, option) in &raw.with {
+            if axis.trim().is_empty() || option.trim().is_empty() {
+                return Err(de::Error::custom(format!(
+                    "copy `{}` selects with an empty axis or option name",
+                    raw.instance_id
+                )));
+            }
+        }
+        for (target, arguments) in &raw.arguments {
+            if target.trim().is_empty() {
+                return Err(de::Error::custom(format!(
+                    "copy `{}` overrides arguments of an instance with an empty id",
+                    raw.instance_id
+                )));
+            }
+            if arguments.is_empty() {
+                return Err(de::Error::custom(format!(
+                    "copy `{}` overrides no argument of `{target}`; name at least one",
+                    raw.instance_id
+                )));
+            }
+        }
+        Ok(Self {
+            instance_id: raw.instance_id,
+            with: raw.with,
+            arguments: raw.arguments,
+        })
+    }
+}
+
+/// A `deployments` list, read into its node entries and its option entries.
+/// An entry with a `source` key deploys a node; otherwise its one key beside
+/// `instances` names a component and the value that component's option.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DeploymentEntries {
+    pub(crate) nodes: Vec<Deployment>,
+    pub(crate) options: Vec<OptionDeployment>,
+}
+
+impl<'de> Deserialize<'de> for DeploymentEntries {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EntriesVisitor;
+
+        impl<'de> Visitor<'de> for EntriesVisitor {
+            type Value = DeploymentEntries;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(
+                    "a list of deployments: `{ source: { name, tag }, instances: [...] }` for \
+                     a node, `{ <component>: \"<option>\" }` for a component's option",
+                )
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut entries = DeploymentEntries::default();
+                let mut index = 0usize;
+                while let Some(entry) =
+                    seq.next_element::<serde_json::Map<String, serde_json::Value>>()?
+                {
+                    match read_deployment_entry(entry).map_err(|refusal| match refusal {
+                        // A node entry's own refusals carry their structure
+                        // and their field path; an option entry's name the
+                        // entry by position.
+                        EntryRefusal::Node(message) => de::Error::custom(message),
+                        EntryRefusal::Option(reason) => {
+                            de::Error::custom(format!("deployments[{index}]: {reason}"))
+                        }
+                    })? {
+                        DeploymentEntry::Node(deployment) => entries.nodes.push(deployment),
+                        DeploymentEntry::Option(option) => entries.options.push(option),
+                    }
+                    index += 1;
+                }
+                Ok(entries)
+            }
+        }
+
+        deserializer.deserialize_seq(EntriesVisitor)
+    }
+}
+
+enum DeploymentEntry {
+    Node(Deployment),
+    Option(OptionDeployment),
+}
+
+/// Why one `deployments` entry was refused: a node entry's message, kept
+/// as its own parser wrote it, or an option entry's reason.
+enum EntryRefusal {
+    Node(String),
+    Option(String),
+}
+
+/// Reads one `deployments` entry by its keys.
+fn read_deployment_entry(
+    entry: serde_json::Map<String, serde_json::Value>,
+) -> Result<DeploymentEntry, EntryRefusal> {
+    if entry.contains_key("source") {
+        let deployment = Deployment::deserialize(serde_json::Value::Object(entry))
+            .map_err(|e| EntryRefusal::Node(e.to_string()))?;
+        return Ok(DeploymentEntry::Node(deployment));
+    }
+    if ["name", "tag", "exposures"]
+        .iter()
+        .any(|key| entry.contains_key(*key))
+    {
+        return Err(EntryRefusal::Option(
+            "a node deployment names what it runs under `source`: `{ source: { name, tag }, \
+             instances: [...] }`"
+                .to_owned(),
+        ));
+    }
+    let mut keys = entry
+        .keys()
+        .filter(|key| !RESERVED_COMPONENT_NAMES.contains(&key.as_str()));
+    let Some(axis) = keys.next().cloned() else {
+        return Err(EntryRefusal::Option(
+            "an entry deploys a node (`{ source: { name, tag }, instances: [...] }`) or a \
+             component's option (`{ <component>: \"<option>\" }`); this one names neither"
+                .to_owned(),
+        ));
+    };
+    if let Some(second) = keys.next() {
+        return Err(EntryRefusal::Option(format!(
+            "an entry deploys one component's option; this one names `{axis}` and `{second}`"
+        )));
+    }
+    let option = match &entry[&axis] {
+        serde_json::Value::String(option) => option.clone(),
+        other => {
+            return Err(EntryRefusal::Option(format!(
+                "`{axis}` must name one of its options as a string, e.g. `{{ {axis}: \
+                 \"<option>\" }}`; found {other}"
+            )));
+        }
+    };
+    if option.trim().is_empty() {
+        return Err(EntryRefusal::Option(format!(
+            "`{axis}` names an empty option"
+        )));
+    }
+    let instances = match entry.get("instances") {
+        None => Vec::new(),
+        Some(value) => Vec::<CopyEntry>::deserialize(value.clone())
+            .map_err(|e| EntryRefusal::Option(format!("`instances` of `{axis}: {option}`: {e}")))?,
+    };
+    let with = match entry.get("with") {
+        None => BTreeMap::new(),
+        Some(value) => BTreeMap::<String, String>::deserialize(value.clone())
+            .map_err(|e| EntryRefusal::Option(format!("`with` of `{axis}: {option}`: {e}")))?,
+    };
+    let arguments = match entry.get("arguments") {
+        None => BTreeMap::new(),
+        Some(value) => BTreeMap::<String, BTreeMap<String, AnyType>>::deserialize(value.clone())
+            .map_err(|e| EntryRefusal::Option(format!("`arguments` of `{axis}: {option}`: {e}")))?,
+    };
+    if (!with.is_empty() || !arguments.is_empty()) && instances.is_empty() {
+        return Err(EntryRefusal::Option(format!(
+            "`{axis}: {option}` carries `with` or `arguments` but lists no copies under \
+             `instances`; they apply to the copies the entry lists"
+        )));
+    }
+    Ok(DeploymentEntry::Option(OptionDeployment {
+        axis,
+        option,
+        with,
+        arguments,
+        instances,
+    }))
+}
+
+/// A `deployments` list written back in document order: node entries first,
+/// then the option entries.
+pub(crate) struct DeploymentEntriesRef<'a> {
+    pub(crate) nodes: &'a [Deployment],
+    pub(crate) options: &'a [OptionDeployment],
+}
+
+impl Serialize for DeploymentEntriesRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.nodes.len() + self.options.len()))?;
+        for node in self.nodes {
+            seq.serialize_element(node)?;
+        }
+        for option in self.options {
+            seq.serialize_element(option)?;
+        }
+        seq.end()
+    }
+}
+
+impl Serialize for OptionDeployment {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry(&self.axis, &self.option)?;
+        if !self.with.is_empty() {
+            map.serialize_entry("with", &self.with)?;
+        }
+        if !self.arguments.is_empty() {
+            map.serialize_entry("arguments", &self.arguments)?;
+        }
+        if !self.instances.is_empty() {
+            map.serialize_entry("instances", &self.instances)?;
+        }
+        map.end()
+    }
+}
+
+/// An axis matches any of these distinct option names. Construction requires at least one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConditionOptions(Vec<Name>);
+
+impl ConditionOptions {
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(Name::as_str)
+    }
+
+    pub fn contains(&self, option: &str) -> bool {
+        self.iter().any(|name| name == option)
+    }
+}
+
+impl<'de> Deserialize<'de> for ConditionOptions {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Options {
+            One(Name),
+            AnyOf(Vec<Name>),
+        }
+
+        let mut names = match Options::deserialize(deserializer)? {
+            Options::One(name) => vec![name],
+            Options::AnyOf(names) => names,
+        };
+        if names.is_empty() {
+            return Err(de::Error::custom(
+                "a condition must name at least one option",
+            ));
+        }
+        names.sort();
+        if names.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(de::Error::custom("a condition must name each option once"));
+        }
+        Ok(Self(names))
+    }
+}
+
+impl Serialize for ConditionOptions {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [name] => name.serialize(serializer),
+            names => names.serialize(serializer),
+        }
+    }
+}
+
+impl std::fmt::Display for ConditionOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.as_slice() {
+            [name] => write!(f, "{name}"),
+            _ => write!(f, "[{}]", self.iter().collect::<Vec<_>>().join(", ")),
+        }
+    }
+}
+
+/// All named axes must match; each axis accepts one or several option names.
+pub type SelectionCondition = BTreeMap<String, ConditionOptions>;
+
+/// One rule about which selections a document refuses to be: `when` a
 /// guard holds, the selection must also satisfy at least one `requires`
 /// alternative and match no `forbids` entry, or the whole selection is
 /// refused before anything is pinned or started.
@@ -152,28 +677,27 @@ where
 /// option to satisfy itself, because a `--with` whose meaning shifts as
 /// constraints evolve would launch stacks the operator did not name.
 ///
-/// Constraints live in the launcher, not in fragments: they speak in axis
-/// and option names, which are the launcher's vocabulary (fragments are
-/// deliberately reusable across launchers whose axes differ).
+/// A launcher's constraints speak in the launcher's axis and option names; a
+/// fragment's speak in its own axes and the launcher's.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectionConstraint {
     /// Guard: the selections this constraint speaks about, in the same
-    /// `axis: option` grammar as an adjustment's `when` (several pairs are an
-    /// AND). Absent means every selection; an unfilled optional axis matches
-    /// no pair, so a constraint guarded on its option stays quiet when the
-    /// axis is off.
+    /// `axis: options` grammar as an adjustment's `when` (several axes are an
+    /// AND, several options on one axis an OR). Absent means every selection;
+    /// an unfilled axis matches no entry, so a constraint guarded on its
+    /// option stays quiet when the axis is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub when: Option<BTreeMap<String, String>>,
+    pub when: Option<SelectionCondition>,
     /// The alternatives, at least one of which the selection must satisfy
-    /// wholly: each is an `axis: option` map (an AND), and listing several is
-    /// an OR. An unfilled optional axis satisfies no pair, which is exactly
+    /// wholly: each is an `axis: options` map (an AND), and listing several is
+    /// an OR. An unfilled axis satisfies no entry, which is exactly
     /// how "this option needs a consumer" is written: require the axes that
     /// can consume it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requires: Vec<BTreeMap<String, String>>,
+    pub requires: Vec<SelectionCondition>,
     /// The combinations the guarded selections must not contain: each entry
-    /// is an `axis: option` map (an AND), and matching any entry refuses the
+    /// is an `axis: options` map (an AND), and matching any entry refuses the
     /// selection. The direct form of "these options never launch together",
     /// which `requires` cannot say about an OPTIONAL axis's option (nothing
     /// requirable means "that axis stays off"). Where the axis is required,
@@ -183,7 +707,7 @@ pub struct SelectionConstraint {
     ///
     /// A constraint states at least one of `requires` and `forbids`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub forbids: Vec<BTreeMap<String, String>>,
+    pub forbids: Vec<SelectionCondition>,
     /// Why the refused selections must not launch, quoted verbatim in the
     /// refusal. Required, like a vacancy's reason: the engine can render
     /// what was required, but only the author knows what the dead
@@ -202,10 +726,10 @@ pub struct Adjustment {
     /// selection does not define is skipped, not refused; a target no option
     /// of the launcher defines anywhere is a dead reference and a parse error.
     pub target: Name,
-    /// Guard: every named axis must match the named option for this
+    /// Guard: every named axis must hold one of its named options for this
     /// adjustment to run. Absent means unconditional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub when: Option<BTreeMap<String, String>>,
+    pub when: Option<SelectionCondition>,
     /// Replaces the target's value for each named top-level argument key,
     /// creating it when absent. Nested objects replace wholesale; the node's
     /// parameter schema validates the final value.
@@ -244,12 +768,12 @@ impl Serialize for FragmentSpec {
 }
 
 /// One fragment part read from a path string: the fragment lives in its
-/// own `launcher_fragment/v1` file next to the launcher.
+/// own `launcher_fragment/v1` file next to the declaring document.
 fn fragment_part_from_str<E: de::Error>(v: &str) -> Result<FragmentPart, E> {
     if v.trim().is_empty() {
         return Err(de::Error::custom(
             "a fragment path cannot be empty: name a `launcher_fragment/v1` file relative to \
-             the launcher's directory",
+             the declaring document's directory",
         ));
     }
     Ok(FragmentPart::File(v.to_owned()))
@@ -290,7 +814,7 @@ impl<'de> Deserialize<'de> for FragmentSpec {
             }
 
             /// The list form: parts merge in list order before the option's
-            /// contribution enters flattening.
+            /// contribution enters composition.
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 let mut parts = Vec::with_capacity(seq.size_hint().unwrap_or(0));
                 while let Some(part) = seq.next_element::<FragmentPart>()? {
@@ -299,8 +823,8 @@ impl<'de> Deserialize<'de> for FragmentSpec {
                 if parts.is_empty() {
                     return Err(de::Error::custom(
                         "a fragment list cannot be empty: an option with no body has nothing to \
-                         contribute, and an off-by-default feature is written as an optional axis \
-                         instead",
+                         contribute; an off-by-default feature is an axis with cardinality \
+                         `zero_or_one`",
                     ));
                 }
                 Ok(FragmentSpec(parts))
@@ -354,7 +878,7 @@ impl Serialize for FragmentPart {
 ///
 /// Fragment files have no fixed name: any `.json5` file whose body declares
 /// the fragment schema is one. A fragment is inert on its own; it only ever
-/// contributes to the launcher whose option references it.
+/// contributes to the document whose option references it.
 pub struct LauncherFragmentParser;
 
 impl LauncherFragmentParser {
@@ -389,18 +913,32 @@ pub(crate) fn check_axis_or_option_name(kind: &str, name: &str) -> Result<(), St
     Ok(())
 }
 
-/// The launcher-local checks on a `components` list: the ones needing no
-/// fragment file and no selection. Runs while the launcher document parses,
-/// so an author hears them from any reader of the file.
+/// Which document declares a `components` list: the rules differ in what a
+/// fragment's axes may be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AxisScope {
+    Launcher,
+    Fragment,
+}
+
+/// The document-local checks on a `components` list: the ones needing no
+/// fragment file and no selection. Runs while the document parses, so an
+/// author hears them from any reader of the file.
 ///
 /// What it deliberately does NOT check: that an option defines its axis's
-/// `provides` ids (needs the fragments loaded, [`super::flatten`]) and that
-/// `when` guards name real axes and options (checked for base and inline
-/// adjustments here, for file fragments when they are read).
-pub(crate) fn validate_axes(axes: &[ComponentAxis]) -> Result<(), String> {
+/// `provides` ids and that `when` guards name real axes and options, both of
+/// which need the fragments loaded ( [`super::compose`] ).
+pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<(), String> {
     let mut axis_names = HashSet::with_capacity(axes.len());
     for axis in axes {
         check_axis_or_option_name("an axis", &axis.name)?;
+        if RESERVED_COMPONENT_NAMES.contains(&axis.name.as_str()) {
+            return Err(format!(
+                "`{}` cannot be a component name: a `deployments` entry with a `source` key \
+                 deploys a node, and `instances` lists a deployment's copies",
+                axis.name
+            ));
+        }
         if !axis_names.insert(axis.as_str()) {
             return Err(format!(
                 "`components` declares the axis `{}` more than once; axis names must be unique",
@@ -417,21 +955,12 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis]) -> Result<(), String> {
         for option in axis.options.keys() {
             check_axis_or_option_name(&format!("an option of axis `{}`", axis.name), option)?;
         }
-        if axis.optional && axis.default.is_some() {
+        if scope == AxisScope::Fragment && axis.cardinality.is_repeatable() {
             return Err(format!(
-                "axis `{}` declares both `optional: true` and a `default`: an optional axis is \
-                 left unfilled by omitting it, so it has nothing to fall back to",
+                "axis `{}` declares `zero_or_more` inside a fragment; copies are the \
+                 launcher's to deploy, so declare this axis in the launcher, or give it \
+                 `one` or `zero_or_one`",
                 axis.name
-            ));
-        }
-        if let Some(default) = &axis.default
-            && !axis.options.contains_key(default)
-        {
-            return Err(format!(
-                "axis `{}` names `{}` as its `default`, which is not one of its options: {}",
-                axis.name,
-                default,
-                crate::error::format_quoted_list(axis.options.keys())
             ));
         }
     }
@@ -439,7 +968,7 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis]) -> Result<(), String> {
     // A bare `--with` word resolves against option names, so an axis name
     // sharing a name with another axis's option would make that word name two
     // different things. An axis and its OWN option may share a name: a
-    // single-option optional axis is a feature toggle, and both readings of
+    // single-option `zero_or_one` axis is a feature toggle, and both readings of
     // the word select the same option.
     for axis in axes {
         for other in axes {
@@ -455,18 +984,104 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis]) -> Result<(), String> {
             }
         }
     }
+    // `peppy stack join OPTION` names a copy by its option alone, so the
+    // options of the axes that run as copies are distinct across those axes.
+    let mut copy_options: BTreeMap<&str, &str> = BTreeMap::new();
+    for axis in axes.iter().filter(|axis| axis.cardinality.is_repeatable()) {
+        for option in axis.options.keys() {
+            if let Some(first) = copy_options.insert(option, &axis.name) {
+                return Err(format!(
+                    "`{option}` is an option of both `{first}` and `{}`, which run as copies; \
+                     `peppy stack join {option}` would not say which one, so give one of them \
+                     another name",
+                    axis.name
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
-impl ComponentAxis {
-    pub fn as_str(&self) -> &str {
-        &self.name
+/// The document-local checks on the option entries of a `deployments` list:
+/// each names a declared axis and one of its options, deploys it the way
+/// its cardinality allows, and names its copies once.
+pub(crate) fn validate_option_deployments(
+    entries: &[OptionDeployment],
+    axes: &[ComponentAxis],
+) -> Result<(), String> {
+    let mut deployed_axes: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut copies: HashSet<&str> = HashSet::new();
+    for entry in entries {
+        let Some(axis) = axes.iter().find(|axis| axis.name == entry.axis) else {
+            return Err(format!(
+                "`deployments` deploys `{}: \"{}\"`, but this document declares no axis \
+                 `{}`. Axes: {}",
+                entry.axis,
+                entry.option,
+                entry.axis,
+                crate::error::format_quoted_list(axes.iter().map(ComponentAxis::as_str))
+            ));
+        };
+        if !axis.options.contains_key(&entry.option) {
+            return Err(format!(
+                "`deployments` deploys `{}: \"{}\"`, which axis `{}` does not declare. Its \
+                 options: {}",
+                entry.axis,
+                entry.option,
+                entry.axis,
+                crate::error::format_quoted_list(axis.options.keys())
+            ));
+        }
+        match axis.cardinality {
+            ComponentCardinality::One => {
+                if !entry.instances.is_empty() {
+                    return Err(format!(
+                        "axis `{}` has cardinality `one`: its option runs once, ids as \
+                         written, so drop `instances` from `{{ {}: \"{}\" }}`",
+                        entry.axis, entry.axis, entry.option
+                    ));
+                }
+                if let Some(first) = deployed_axes.insert(&entry.axis, &entry.option) {
+                    return Err(format!(
+                        "`deployments` deploys axis `{}` twice (`{first}`, `{}`); a `one` \
+                         axis deploys one option",
+                        entry.axis, entry.option
+                    ));
+                }
+            }
+            ComponentCardinality::ZeroOrOne => {
+                return Err(format!(
+                    "axis `{}` has cardinality `zero_or_one` and cannot be deployed by the \
+                     file, since nothing on the command line could switch it off. Select it \
+                     at launch with `--with {}`, or declare the axis `one`",
+                    entry.axis, entry.option
+                ));
+            }
+            ComponentCardinality::ZeroOrMore => {
+                if entry.instances.is_empty() {
+                    return Err(format!(
+                        "axis `{}` runs as named copies: `{{ {}: \"{}\", instances: [{{ \
+                         instance_id: \"alpha\" }}] }}`",
+                        entry.axis, entry.axis, entry.option
+                    ));
+                }
+                for copy in &entry.instances {
+                    if !copies.insert(copy.instance_id.as_str()) {
+                        return Err(format!(
+                            "`deployments` names copy `{}` twice; each copy has its own name",
+                            copy.instance_id
+                        ));
+                    }
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 /// The shape checks on one adjustment: names that say something, operations
 /// that exist, targets that are well-formed. Selection-independent, so they
-/// run wherever the adjustment is read (launcher parse for the base and
+/// run wherever the adjustment is read (document parse for the base and
 /// inline fragments, fragment load for files).
 pub(crate) fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), String> {
     if let Some(when) = &adjustment.when
@@ -474,7 +1089,7 @@ pub(crate) fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Resu
     {
         return Err(format!(
             "adjustment on `{}` in {origin} declares an empty `when`: a guard names at least \
-             one `axis: option` pair, or omits `when` entirely",
+             one axis, or omits `when` entirely",
             adjustment.target
         ));
     }
@@ -581,36 +1196,38 @@ fn check_non_empty_keys<'a>(
     Ok(())
 }
 
-/// That a `when` guard names axes this launcher declares and options those
-/// axes declare. A guard is what licenses an adjustment to depend on the
-/// shape those options define, so naming something else is a dead reference.
+/// That a `when` guard names axes `axes` declares and options those axes
+/// declare. A guard is what licenses an adjustment to depend on the shape
+/// those options define, so naming something else is a dead reference.
 pub(crate) fn validate_guard(
-    when: &BTreeMap<String, String>,
-    axes: &[ComponentAxis],
+    when: &SelectionCondition,
+    axes: &[&ComponentAxis],
     origin: &str,
 ) -> Result<(), String> {
     validate_selection_map(when, axes, "a `when` guard", origin)
 }
 
-/// The shared half of guard and constraint validation: every `axis: option`
-/// pair names an axis this launcher declares and an option that axis
-/// declares. `what` names the map's role in the error (a `when` guard, a
-/// `requires` alternative), which is all that differs between them.
+/// The shared half of guard and constraint validation: every `axis: options`
+/// entry names an axis in `axes` and options that axis declares. `what`
+/// names the map's role in the error (a `when` guard, a `requires`
+/// alternative), which is all that differs between them.
 fn validate_selection_map(
-    map: &BTreeMap<String, String>,
-    axes: &[ComponentAxis],
+    map: &SelectionCondition,
+    axes: &[&ComponentAxis],
     what: &str,
     origin: &str,
 ) -> Result<(), String> {
-    for (axis_name, option_name) in map {
+    for (axis_name, options) in map {
         let Some(axis) = axes.iter().find(|axis| axis.name == *axis_name) else {
             return Err(format!(
-                "{what} in {origin} names axis `{axis_name}`, which this launcher does \
-                 not declare. Axes: {}",
-                crate::error::format_quoted_list(axes.iter().map(ComponentAxis::as_str))
+                "{what} in {origin} names axis `{axis_name}`, which is not in reach. Axes: {}",
+                crate::error::format_quoted_list(axes.iter().map(|axis| axis.as_str()))
             ));
         };
-        if !axis.options.contains_key(option_name) {
+        if let Some(option_name) = options
+            .iter()
+            .find(|option| !axis.options.contains_key(*option))
+        {
             return Err(format!(
                 "{what} in {origin} names option `{option_name}` on axis \
                  `{axis_name}`, which the axis does not declare. Its options: {}",
@@ -621,25 +1238,24 @@ fn validate_selection_map(
     Ok(())
 }
 
-/// The launcher-local checks on a `constraints` list: shapes that say
-/// something and references that resolve. Selection-independent, so it runs
-/// while the launcher document parses; whether a given selection violates a
-/// constraint is [`super::flatten`]'s question.
-pub(crate) fn validate_constraints(
+/// The shape checks on a `constraints` list: entries that say something and
+/// lists that agree with themselves. Reference checks (that the axes and
+/// options named exist) are [`validate_constraint_references`]'s, run once
+/// the axes in reach are known.
+pub(crate) fn validate_constraint_shapes(
     constraints: &[SelectionConstraint],
-    axes: &[ComponentAxis],
+    document: &str,
 ) -> Result<(), String> {
     for (index, constraint) in constraints.iter().enumerate() {
-        let origin = format!("the launcher's `constraints` entry {}", index + 1);
-        if let Some(when) = &constraint.when {
-            if when.is_empty() {
-                return Err(format!(
-                    "{origin} declares an empty `when`: a guard names at least one \
-                     `axis: option` pair, or omits `when` entirely to speak about every \
-                     selection"
-                ));
-            }
-            validate_selection_map(when, axes, "a `when` guard", &origin)?;
+        let origin = constraint_origin(document, index);
+        if let Some(when) = &constraint.when
+            && when.is_empty()
+        {
+            return Err(format!(
+                "{origin} declares an empty `when`: a guard names at least one \
+                 axis, or omits `when` entirely to speak about every \
+                 selection"
+            ));
         }
         if constraint.requires.is_empty() && constraint.forbids.is_empty() {
             return Err(format!(
@@ -652,18 +1268,19 @@ pub(crate) fn validate_constraints(
             (&constraint.requires, "`requires` alternative", "requires"),
             (&constraint.forbids, "`forbids` entry", "forbids"),
         ] {
-            let mut seen: Vec<&BTreeMap<String, String>> = Vec::with_capacity(entries.len());
+            let mut seen: Vec<&SelectionCondition> = Vec::with_capacity(entries.len());
             for entry in entries {
                 if entry.is_empty() {
                     return Err(format!(
-                        "{origin} lists an empty {kind}: an entry names at least one \
-                         `axis: option` pair"
+                        "{origin} lists an empty {kind}: an entry names at least one axis"
                     ));
                 }
-                validate_selection_map(entry, axes, &format!("a {kind}"), &origin)?;
                 if let Some(when) = &constraint.when {
                     for axis_name in entry.keys() {
-                        if when.contains_key(axis_name) {
+                        if when
+                            .get(axis_name)
+                            .is_some_and(|options| options.0.len() == 1)
+                        {
                             return Err(format!(
                                 "{origin} {verb} axis `{axis_name}` inside a constraint whose \
                                  `when` already fixes that axis: under the guard the entry is \
@@ -682,7 +1299,7 @@ pub(crate) fn validate_constraints(
         for alternative in &constraint.requires {
             if constraint.forbids.contains(alternative) {
                 return Err(format!(
-                    "{origin} lists the same `axis: option` map in `requires` and `forbids`: \
+                    "{origin} lists the same `axis: options` map in `requires` and `forbids`: \
                      a combination cannot be both what satisfies the constraint and what it \
                      refuses"
                 ));
@@ -698,35 +1315,96 @@ pub(crate) fn validate_constraints(
     Ok(())
 }
 
-/// Every adjustment the launcher document itself carries: the base
-/// `adjustments` list, plus the adjustments of every INLINE fragment (file
-/// fragments are checked when they are read, against the same axes).
+/// That every axis and option a `constraints` list names is in reach.
+pub(crate) fn validate_constraint_references(
+    constraints: &[SelectionConstraint],
+    axes: &[&ComponentAxis],
+    document: &str,
+) -> Result<(), String> {
+    for (index, constraint) in constraints.iter().enumerate() {
+        let origin = constraint_origin(document, index);
+        if let Some(when) = &constraint.when {
+            validate_selection_map(when, axes, "a `when` guard", &origin)?;
+        }
+        for entry in &constraint.requires {
+            validate_selection_map(entry, axes, "a `requires` alternative", &origin)?;
+        }
+        for entry in &constraint.forbids {
+            validate_selection_map(entry, axes, "a `forbids` entry", &origin)?;
+        }
+    }
+    Ok(())
+}
+
+fn constraint_origin(document: &str, index: usize) -> String {
+    format!("{document}'s `constraints` entry {}", index + 1)
+}
+
+/// The document-local checks on a launcher's `constraints`: shapes, and
+/// references against the launcher's own axes.
+pub(crate) fn validate_launcher_constraints(
+    constraints: &[SelectionConstraint],
+    axes: &[ComponentAxis],
+) -> Result<(), String> {
+    validate_constraint_shapes(constraints, "the launcher")?;
+    let in_reach: Vec<&ComponentAxis> = axes.iter().collect();
+    validate_constraint_references(constraints, &in_reach, "the launcher")
+}
+
+/// Every adjustment and constraint the launcher document itself carries:
+/// the base `adjustments` list against the launcher's axes, plus the
+/// adjustments and constraints of every INLINE fragment against the
+/// launcher's axes and the fragment's own (file fragments are checked when
+/// they are read, against the same reach).
 pub(crate) fn validate_launcher_adjustments(
     adjustments: &[Adjustment],
     axes: &[ComponentAxis],
 ) -> Result<(), String> {
+    let launcher_axes: Vec<&ComponentAxis> = axes.iter().collect();
     for adjustment in adjustments {
         validate_adjustment(adjustment, "the launcher's `adjustments`")?;
         if let Some(when) = &adjustment.when {
-            validate_guard(when, axes, "the launcher's `adjustments`")?;
+            validate_guard(when, &launcher_axes, "the launcher's `adjustments`")?;
         }
     }
     for axis in axes {
         for (option, spec) in &axis.options {
+            let origin = format!("inline option `{}.{}`", axis.name, option);
+            let own_axes: Vec<&ComponentAxis> = spec
+                .0
+                .iter()
+                .filter_map(|part| match part {
+                    FragmentPart::Inline(fragment) => Some(fragment.components.iter()),
+                    FragmentPart::File(_) => None,
+                })
+                .flatten()
+                .collect();
+            let in_reach: Vec<&ComponentAxis> =
+                launcher_axes.iter().copied().chain(own_axes).collect();
             for part in &spec.0 {
-                if let FragmentPart::Inline(fragment) = part {
-                    let origin = format!("inline option `{}.{}`", axis.name, option);
-                    for adjustment in &fragment.adjustments {
-                        validate_adjustment(adjustment, &origin)?;
-                        if let Some(when) = &adjustment.when {
-                            validate_guard(when, axes, &origin)?;
-                        }
-                    }
-                }
+                let FragmentPart::Inline(fragment) = part else {
+                    continue;
+                };
+                validate_fragment_references(fragment, &in_reach, &origin)?;
             }
         }
     }
     Ok(())
+}
+
+/// The reference checks on one fragment body once the axes in its reach are
+/// known: its guards and constraints name those axes and their options.
+pub(crate) fn validate_fragment_references(
+    fragment: &Fragment,
+    in_reach: &[&ComponentAxis],
+    origin: &str,
+) -> Result<(), String> {
+    for adjustment in &fragment.adjustments {
+        if let Some(when) = &adjustment.when {
+            validate_guard(when, in_reach, origin)?;
+        }
+    }
+    validate_constraint_references(&fragment.constraints, in_reach, origin)
 }
 
 #[cfg(test)]
@@ -845,29 +1523,186 @@ mod tests {
         );
     }
 
+    // -- a fragment's own axes and deployed options ---------------------------
+
+    fn parse_fragment(body: &str) -> Result<LauncherFragment, String> {
+        LauncherFragmentParser::from_content(&format!(
+            r#"{{ peppy_schema: "launcher_fragment/v1", {body} }}"#
+        ))
+        .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_fragment_declares_axes_and_deploys_one_of_their_options() {
+        let fragment = parse_fragment(
+            r#"components: [
+                 { name: "commander", provides: ["commander_inst"],
+                   options: { web: "web.json5", xr: "xr.json5" } },
+                 { name: "recorder", cardinality: "zero_or_one", options: { on: "rec.json5" } },
+               ],
+               deployments: [
+                 { source: { name: "backbone", tag: "v1" }, instances: [{ instance_id: "backbone_inst" }] },
+                 { commander: "web" },
+               ]"#,
+        )
+        .expect("a fragment with axes parses");
+        assert_eq!(fragment.body.components.len(), 2);
+        assert_eq!(fragment.body.deployments.len(), 1);
+        assert_eq!(
+            fragment.body.option_deployments,
+            [OptionDeployment {
+                axis: "commander".into(),
+                option: "web".into(),
+                with: BTreeMap::new(),
+                arguments: BTreeMap::new(),
+                instances: Vec::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_fragment_axis_cannot_be_repeatable() {
+        let error = parse_fragment(
+            r#"components: [{ name: "cameras", cardinality: "zero_or_more", options: { a: "a.json5" } }]"#,
+        )
+        .expect_err("copies belong to the launcher");
+        assert!(error.contains("zero_or_more"), "got: {error}");
+        assert!(error.contains("launcher"), "got: {error}");
+    }
+
+    #[test]
+    fn a_fragment_serializes_its_deployments_as_one_list() {
+        let fragment = parse_fragment(
+            r#"components: [{ name: "commander", options: { web: "web.json5" } }],
+               deployments: [
+                 { source: { name: "backbone", tag: "v1" }, instances: [{ instance_id: "backbone_inst" }] },
+                 { commander: "web" },
+               ]"#,
+        )
+        .unwrap();
+        let written = serde_json5::to_string(&fragment.body).unwrap();
+        let reparsed: Fragment = serde_json5::from_str(&written).unwrap();
+        assert_eq!(reparsed.deployments.len(), 1);
+        assert_eq!(
+            reparsed.option_deployments,
+            fragment.body.option_deployments
+        );
+    }
+
+    // -- deployment entries ---------------------------------------------------
+
+    fn parse_entries(list: &str) -> Result<DeploymentEntries, String> {
+        serde_json5::from_str(list).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_node_entry_and_an_option_entry_read_by_their_keys() {
+        let entries = parse_entries(
+            r#"[
+                { source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] },
+                { simulation: "waldo" },
+                { robot: "openarm_v2_sim", instances: [
+                    { instance_id: "alpha", with: { commander: "web" },
+                      arguments: { commander_inst: { http_port: 8765 } } } ] },
+            ]"#,
+        )
+        .expect("entries parse");
+        assert_eq!(entries.nodes.len(), 1);
+        assert_eq!(entries.options.len(), 2);
+        let robot = &entries.options[1];
+        assert_eq!(
+            (robot.axis.as_str(), robot.option.as_str()),
+            ("robot", "openarm_v2_sim")
+        );
+        let alpha = &robot.instances[0];
+        assert_eq!(alpha.instance_id.as_str(), "alpha");
+        assert_eq!(alpha.with["commander"], "web");
+        assert_eq!(
+            alpha.arguments["commander_inst"]["http_port"],
+            AnyType::Int(8765)
+        );
+    }
+
+    #[test]
+    fn an_entry_naming_a_node_without_source_says_the_shape() {
+        let error = parse_entries(r#"[{ name: "engine", tag: "v1", instances: [] }]"#)
+            .expect_err("a node deployment has a source");
+        assert!(error.contains("under `source`"), "got: {error}");
+        assert!(error.contains("deployments[0]"), "got: {error}");
+    }
+
+    #[test]
+    fn an_entry_naming_two_components_is_refused() {
+        let error = parse_entries(r#"[{ simulation: "waldo", robot: "sim" }]"#)
+            .expect_err("one component per entry");
+        assert!(
+            error.contains("`simulation`") && error.contains("`robot`"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn an_option_that_is_not_a_string_is_refused() {
+        let error =
+            parse_entries(r#"[{ simulation: ["waldo"] }]"#).expect_err("an option is a string");
+        assert!(error.contains("as a string"), "got: {error}");
+    }
+
+    #[test]
+    fn a_copy_cannot_declare_its_own_placement_or_links() {
+        let error = parse_entries(
+            r#"[{ robot: "sim", instances: [{ instance_id: "alpha", core_node: "jetson" }] }]"#,
+        )
+        .expect_err("a copy is placed by name");
+        assert!(error.contains("--place alpha@CORE_NODE"), "got: {error}");
+        let error = parse_entries(
+            r#"[{ robot: "sim", instances: [{ instance_id: "alpha", links: { a: "b" } }] }]"#,
+        )
+        .expect_err("a copy's wiring is its fragment's");
+        assert!(error.contains("`links`"), "got: {error}");
+    }
+
+    #[test]
+    fn a_copy_override_naming_no_argument_is_refused() {
+        let error = parse_entries(
+            r#"[{ robot: "sim", instances: [{ instance_id: "alpha", arguments: { commander_inst: {} } }] }]"#,
+        )
+        .expect_err("an empty override says nothing");
+        assert!(error.contains("overrides no argument"), "got: {error}");
+    }
+
     // -- validate_axes ------------------------------------------------------
 
-    fn one_axis(body: &str) -> Result<Vec<ComponentAxis>, String> {
+    fn launcher_axes(body: &str) -> Result<Vec<ComponentAxis>, String> {
         let axes: Vec<ComponentAxis> =
             serde_json5::from_str(&format!("[{body}]")).map_err(|e| e.to_string())?;
-        validate_axes(&axes).map(|()| axes)
+        validate_axes(&axes, AxisScope::Launcher).map(|()| axes)
     }
 
     #[test]
     fn a_well_formed_axis_passes() {
-        let axes = one_axis(
-            r#"{ name: "robot", provides: ["left_arm_inst"], default: "real",
+        let axes = launcher_axes(
+            r#"{ name: "robot", provides: ["left_arm_inst"],
                  options: { real: { deployments: [] } } }"#,
         )
         .expect("valid axis");
         assert_eq!(axes[0].name, "robot");
-        assert_eq!(axes[0].default.as_deref(), Some("real"));
+    }
+
+    #[test]
+    fn a_default_is_refused_and_says_where_it_went() {
+        let error = launcher_axes(
+            r#"{ name: "robot", default: "real", options: { real: { deployments: [] } } }"#,
+        )
+        .expect_err("default has left the grammar");
+        assert!(error.contains("`default`"), "got: {error}");
+        assert!(error.contains(r#"{ robot: "<option>" }"#), "got: {error}");
     }
 
     #[test]
     fn an_unwireable_axis_name_is_refused() {
         for name in ["has space", "has=equals", "has,comma"] {
-            let error = one_axis(&format!(
+            let error = launcher_axes(&format!(
                 r#"{{ name: "{name}", options: {{ real: {{ deployments: [] }} }} }}"#
             ))
             .expect_err("an unwireable name must be refused");
@@ -876,35 +1711,26 @@ mod tests {
     }
 
     #[test]
+    fn a_reserved_axis_name_is_refused() {
+        for name in RESERVED_COMPONENT_NAMES {
+            let error = launcher_axes(&format!(
+                r#"{{ name: "{name}", options: {{ real: {{ deployments: [] }} }} }}"#
+            ))
+            .expect_err("a deployments key cannot be an axis");
+            assert!(error.contains("cannot be a component name"), "got: {error}");
+        }
+    }
+
+    #[test]
     fn an_axis_with_no_options_is_refused() {
-        let error = one_axis(r#"{ name: "robot", options: {} }"#)
+        let error = launcher_axes(r#"{ name: "robot", options: {} }"#)
             .expect_err("an empty options map must be refused");
         assert!(error.contains("declares no `options`"), "got: {error}");
     }
 
     #[test]
-    fn optional_with_a_default_is_refused() {
-        let error = one_axis(
-            r#"{ name: "robot", optional: true, default: "real",
-                 options: { real: { deployments: [] } } }"#,
-        )
-        .expect_err("optional and default are exclusive");
-        assert!(error.contains("both"), "got: {error}");
-    }
-
-    #[test]
-    fn a_default_naming_a_missing_option_is_refused() {
-        let error = one_axis(
-            r#"{ name: "robot", default: "sim", options: { real: { deployments: [] } } }"#,
-        )
-        .expect_err("a default must name a declared option");
-        assert!(error.contains("`sim`"), "got: {error}");
-        assert!(error.contains("`real`"), "got: {error}");
-    }
-
-    #[test]
     fn a_duplicated_axis_name_is_refused() {
-        let error = one_axis(
+        let error = launcher_axes(
             r#"{ name: "robot", options: { a: { deployments: [] } } },
                 { name: "robot", options: { b: { deployments: [] } } }"#,
         )
@@ -914,15 +1740,15 @@ mod tests {
 
     #[test]
     fn an_axis_may_share_a_name_with_its_own_option() {
-        one_axis(
-            r#"{ name: "cameras", optional: true, options: { cameras: { deployments: [] } } }"#,
+        launcher_axes(
+            r#"{ name: "cameras", cardinality: "zero_or_one", options: { cameras: { deployments: [] } } }"#,
         )
-        .expect("a single-option optional axis is a feature toggle");
+        .expect("a single-option `zero_or_one` axis is a feature toggle");
     }
 
     #[test]
     fn an_axis_sharing_another_axis_option_name_is_refused() {
-        let error = one_axis(
+        let error = launcher_axes(
             r#"{ name: "robot", options: { real: { deployments: [] } } },
                 { name: "real", options: { x: { deployments: [] } } }"#,
         )
@@ -931,16 +1757,83 @@ mod tests {
         assert!(error.contains("`real`"), "got: {error}");
     }
 
+    // -- validate_option_deployments -------------------------------------------
+
+    fn deployed(axes: &str, entries: &str) -> Result<(), String> {
+        let axes: Vec<ComponentAxis> =
+            serde_json5::from_str(&format!("[{axes}]")).map_err(|e| e.to_string())?;
+        let entries: DeploymentEntries =
+            serde_json5::from_str(&format!("[{entries}]")).map_err(|e| e.to_string())?;
+        validate_option_deployments(&entries.options, &axes)
+    }
+
+    const SIM_AXIS: &str = r#"{ name: "simulation", options: { waldo: {}, mujoco: {} } }"#;
+    const ROBOT_AXIS: &str =
+        r#"{ name: "robot", cardinality: "zero_or_more", options: { sim: {}, real: {} } }"#;
+
+    #[test]
+    fn a_one_axis_deploys_one_option_without_copies() {
+        deployed(SIM_AXIS, r#"{ simulation: "waldo" }"#).expect("deploys once");
+        let error = deployed(
+            SIM_AXIS,
+            r#"{ simulation: "waldo", instances: [{ instance_id: "a" }] }"#,
+        )
+        .expect_err("a `one` axis has no copies");
+        assert!(error.contains("drop `instances`"), "got: {error}");
+        let error = deployed(
+            SIM_AXIS,
+            r#"{ simulation: "waldo" }, { simulation: "mujoco" }"#,
+        )
+        .expect_err("one option per `one` axis");
+        assert!(error.contains("twice"), "got: {error}");
+    }
+
+    #[test]
+    fn a_zero_or_one_axis_cannot_be_deployed_by_the_file() {
+        let error = deployed(
+            r#"{ name: "recorder", cardinality: "zero_or_one", options: { on: {} } }"#,
+            r#"{ recorder: "on" }"#,
+        )
+        .expect_err("nothing could switch it off");
+        assert!(error.contains("--with on"), "got: {error}");
+    }
+
+    #[test]
+    fn a_repeatable_axis_deploys_named_copies() {
+        deployed(
+            ROBOT_AXIS,
+            r#"{ robot: "sim", instances: [{ instance_id: "alpha" }, { instance_id: "bravo" }] }"#,
+        )
+        .expect("copies deploy");
+        let error = deployed(ROBOT_AXIS, r#"{ robot: "sim" }"#).expect_err("copies need names");
+        assert!(error.contains("instance_id"), "got: {error}");
+        let error = deployed(
+            ROBOT_AXIS,
+            r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] },
+               { robot: "real", instances: [{ instance_id: "alpha" }] }"#,
+        )
+        .expect_err("copy names are unique");
+        assert!(error.contains("twice"), "got: {error}");
+    }
+
+    #[test]
+    fn an_entry_naming_an_unknown_axis_or_option_lists_the_choices() {
+        let error = deployed(SIM_AXIS, r#"{ scene: "x" }"#).expect_err("unknown axis");
+        assert!(error.contains("`simulation`"), "got: {error}");
+        let error = deployed(SIM_AXIS, r#"{ simulation: "isaac" }"#).expect_err("unknown option");
+        assert!(error.contains("`waldo`"), "got: {error}");
+    }
+
     // -- validate_constraints -----------------------------------------------
 
-    /// Two axes shaped like the cases constraints exist for: a defaulted
-    /// choice and an optional feature toggle.
+    /// Two axes shaped like the cases constraints exist for: a choice and an
+    /// optional feature toggle.
     fn constraint_axes() -> Vec<ComponentAxis> {
         serde_json5::from_str(
             r#"[
-                { name: "robot", default: "real",
+                { name: "robot",
                   options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
-                { name: "recorder", optional: true,
+                { name: "recorder", cardinality: "zero_or_one",
                   options: { on: { deployments: [] } } },
             ]"#,
         )
@@ -950,7 +1843,7 @@ mod tests {
     fn one_constraint(body: &str) -> Result<(), String> {
         let constraints: Vec<SelectionConstraint> =
             serde_json5::from_str(&format!("[{body}]")).map_err(|e| e.to_string())?;
-        validate_constraints(&constraints, &constraint_axes())
+        validate_launcher_constraints(&constraints, &constraint_axes())
     }
 
     #[test]
@@ -1146,8 +2039,8 @@ mod tests {
                 .when
                 .as_ref()
                 .and_then(|w| w.get("commander"))
-                .map(String::as_str),
-            Some("xr_commander")
+                .map(|options| options.iter().collect::<Vec<_>>()),
+            Some(vec!["xr_commander"])
         );
     }
 
@@ -1186,9 +2079,10 @@ mod tests {
         let axes: Vec<ComponentAxis> =
             serde_json5::from_str(r#"[{ name: "robot", options: { real: { deployments: [] } } }]"#)
                 .expect("axes parse");
+        let in_reach: Vec<&ComponentAxis> = axes.iter().collect();
         let error = validate_guard(
-            &BTreeMap::from([("commander".to_owned(), "web".to_owned())]),
-            &axes,
+            &serde_json5::from_str("{ commander: 'web' }").unwrap(),
+            &in_reach,
             "a test fragment",
         )
         .expect_err("an unknown axis is a dead reference");
@@ -1201,12 +2095,42 @@ mod tests {
         let axes: Vec<ComponentAxis> =
             serde_json5::from_str(r#"[{ name: "robot", options: { real: { deployments: [] } } }]"#)
                 .expect("axes parse");
+        let in_reach: Vec<&ComponentAxis> = axes.iter().collect();
         let error = validate_guard(
-            &BTreeMap::from([("robot".to_owned(), "sim".to_owned())]),
-            &axes,
+            &serde_json5::from_str("{ robot: 'sim' }").unwrap(),
+            &in_reach,
             "a test fragment",
         )
         .expect_err("an unknown option is a dead reference");
         assert!(error.contains("`sim`"), "got: {error}");
+    }
+
+    #[test]
+    fn condition_options_are_nonempty_distinct_names_and_round_trip() {
+        for input in ["[]", "['real', 'real']", "['bad/name']", "[1]", "null"] {
+            assert!(
+                serde_json5::from_str::<ConditionOptions>(input).is_err(),
+                "{input}"
+            );
+        }
+        for input in ["'real'", "['real']", "['sim', 'real']"] {
+            let options: ConditionOptions = serde_json5::from_str(input).unwrap();
+            assert!(options.contains("real"));
+            let encoded = serde_json5::to_string(&options).unwrap();
+            assert_eq!(
+                serde_json5::from_str::<ConditionOptions>(&encoded).unwrap(),
+                options
+            );
+        }
+        let axes: Vec<ComponentAxis> =
+            serde_json5::from_str("[{ name: 'robot', options: { real: { deployments: [] } } }]")
+                .unwrap();
+        let in_reach: Vec<&ComponentAxis> = axes.iter().collect();
+        let guard = serde_json5::from_str("{ robot: ['real', 'sim'] }").unwrap();
+        assert!(
+            validate_guard(&guard, &in_reach, "test")
+                .unwrap_err()
+                .contains("`sim`")
+        );
     }
 }

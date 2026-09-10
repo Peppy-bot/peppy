@@ -2,11 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use config::node::{NodeConfig, NodeConfigParser};
+use core_node_api::encoding::ArgumentOverride;
 use core_node_api::encoding::LauncherOrigin;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, DeploymentSource, ExternallyCoveredSlots,
-    PairingValidationItem, PeppyLauncher, compose, validate_link_slots, validate_pairings,
+    PairingValidationItem, PeppyLauncher, PreparedLauncher, validate_link_slots, validate_pairings,
     validate_sim_time_source,
 };
 use daemon_config::repository::EntryOrigin;
@@ -15,6 +16,47 @@ use tracing::info;
 use super::launch::{infer_launcher_origin, parse_launcher_file};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+
+/// The name a previewed copy runs under when none is given.
+const PREVIEW_COPY_NAME: &str = "preview";
+
+/// Preview one more copy joined onto the resolved launch.
+#[derive(clap::Args, Debug)]
+pub struct JoinPreview {
+    /// Include a copy of this option, as `stack join OPTION` would add it.
+    #[arg(long = "join", value_name = "OPTION")]
+    pub option: Option<String>,
+    /// The previewed copy's name: `-i` on `stack join`.
+    #[arg(long = "join-name", requires = "option", value_name = "NAME",
+        default_value = PREVIEW_COPY_NAME, value_parser = super::parse_copy_name)]
+    pub name: config::runtime::Name,
+    /// Select the copied option's own axes: `--with` on `stack join`.
+    // `resolve` carries both `--with` and `--join-with`, whose fields share a
+    // name, so this one spells its clap id out.
+    #[arg(id = "join_words", long = "join-with", requires = "option",
+        value_name = "option|axis=option", value_delimiter = ',',
+        value_parser = super::parse_with_word)]
+    pub words: Vec<String>,
+    /// Override a joined instance's argument with a JSON5 value:
+    /// `--set-arguments` on `stack join`.
+    #[arg(
+        long = "join-set-arguments",
+        requires = "option",
+        value_name = "INSTANCE.ARGUMENT=JSON5"
+    )]
+    pub arguments: Vec<ArgumentOverride>,
+}
+
+impl Default for JoinPreview {
+    fn default() -> Self {
+        Self {
+            option: None,
+            name: config::runtime::Name::new(PREVIEW_COPY_NAME).expect("a plain identifier"),
+            words: Vec::new(),
+            arguments: Vec::new(),
+        }
+    }
+}
 
 /// `peppy stack resolve <name|path> [--with ...]`: print the flat launcher
 /// a composed launch would run, and the report of what the selection did.
@@ -35,9 +77,11 @@ use crate::error::{Error, Result};
 pub fn resolve(
     _ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
-    with: Vec<String>,
+    words: Vec<String>,
+    join: JoinPreview,
 ) -> Result<()> {
-    let (document, report) = resolve_rendered(&PeppyDirs::default(), launcher_config_path, &with)?;
+    let (document, report) =
+        resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &join)?;
     for line in report {
         eprintln!("{line}");
     }
@@ -46,15 +90,15 @@ pub fn resolve(
 }
 
 /// The resolve command's whole verdict in printable form: the flattened
-/// document for stdout and the report lines for stderr. Split from
-/// [`resolve`] so a test can read the output instead of capturing stdout,
-/// and handed its `PeppyDirs` so a test validates against a root it wrote
-/// rather than whatever this machine's caches hold. Link-rule violations
-/// are an `Err`, exactly as the launch they predict would be.
+/// document for stdout and the report lines for stderr, validated against
+/// the `PeppyDirs` it is handed, so a test can read both halves and point
+/// the check at a root it wrote. Link-rule violations are an `Err`, exactly
+/// as the launch they predict would be.
 pub fn resolve_rendered(
     dirs: &PeppyDirs,
     launcher_config_path: PathBuf,
-    with: &[String],
+    words: &[String],
+    join: &JoinPreview,
 ) -> Result<(String, Vec<String>)> {
     let path = match infer_launcher_origin(launcher_config_path)? {
         LauncherOrigin::Fs(path) => path,
@@ -65,10 +109,35 @@ pub fn resolve_rendered(
     };
 
     let parsed = parse_launcher_file(&path)?;
-    let (flat, report) =
-        compose(&parsed, &path, with).map_err(|e| Error::ExecutionFailed(e.to_string()))?;
-
-    let mut lines = report.render_lines();
+    let prepared = PreparedLauncher::load(&parsed, &path)
+        .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    let composed = prepared
+        .launch(words)
+        .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    let mut flat = composed.launcher;
+    let mut lines = composed.report.render_lines();
+    if let Some(option) = &join.option {
+        let joined = prepared
+            .join(
+                daemon_config::launcher::JoinRequest {
+                    option,
+                    name: &join.name,
+                    words: &join.words,
+                    arguments: &join.arguments,
+                },
+                daemon_config::launcher::RunningStack {
+                    selection: &composed.selection,
+                    launcher: &flat,
+                },
+            )
+            .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+        flat = joined.launcher;
+        lines.push(format!(
+            "copy `{name}` of `{option}` joined:",
+            name = join.name
+        ));
+        lines.extend(joined.report.render_lines());
+    }
     check_link_plan(&flat, dirs, &mut lines)?;
 
     let document = json5_pretty::to_string_pretty(&flat)

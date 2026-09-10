@@ -37,6 +37,7 @@ pub use run::{DaemonDefaults, NodeRunServiceConfig, listen_for_node_run};
 pub use stop::{
     TEARDOWN_REAP_BUDGET, force_kill_deadline, listen_for_node_stop, teardown_all_instances,
 };
+pub(crate) use stop::{stop_named_instances, teardown_timeout};
 pub use sync::listen_for_node_sync;
 
 pub(crate) use add::{NodeAddActionContext, dispatch_node_add, log_label_from_source};

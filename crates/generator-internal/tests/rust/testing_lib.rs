@@ -215,7 +215,7 @@ pub async fn setup_sim_source(
         .expect("the harness declared this node the launch's time source");
     let status =
         peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
-    let participants: Vec<&str> = publisher.participants().collect();
+    let participants = publisher.participants();
     status
         .publish(peppygen::emitted_topics::status::build_message(format!(
             "source of {}",

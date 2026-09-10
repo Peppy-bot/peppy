@@ -36,8 +36,9 @@ use core_node_api::encoding::{
 use peppylib::ActionMessenger;
 use peppylib::core_node::transport::{poll, send_goal};
 
-use super::super::ProcessLaunchContext;
 use super::super::feedback::{publish_stderr, publish_stdout};
+use super::super::watchers::{LifecycleWatchers, set_local_watchers};
+use crate::services::stack::action::StackChangeContext;
 
 /// Bound on a peer accepting a dispatched goal. Accepting is a cheap
 /// admission check on the peer, so a healthy one answers well inside this; the
@@ -163,7 +164,7 @@ pub(in crate::services::stack) struct RemoteGoalRun<T> {
 /// deadline applies unchanged, because it bounds the whole operation the
 /// operator started, wherever the work is running.
 pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
-    ctx: &ProcessLaunchContext,
+    ctx: &StackChangeContext,
     core_node: &str,
     goal: &G,
     idle_timeout: Duration,
@@ -186,9 +187,9 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
         let mut last_activity = tokio::time::Instant::now();
         loop {
             let now = tokio::time::Instant::now();
-            if ctx.launch_deadline.is_some_and(|deadline| now >= deadline) {
+            if ctx.change_deadline.is_some_and(|deadline| now >= deadline) {
                 return Err(format!(
-                    "max launch timeout exceeded while `{core_node}` was running {}",
+                    "max timeout exceeded while `{core_node}` was running {}",
                     G::label()
                 ));
             }
@@ -206,7 +207,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
             // any earlier than the deadline that would end the wait is pure spin,
             // multiplied by every peer running a goal concurrently.
             let idle_expiry = last_activity + idle_timeout;
-            let wake_at = match ctx.launch_deadline {
+            let wake_at = match ctx.change_deadline {
                 Some(deadline) => idle_expiry.min(deadline),
                 None => idle_expiry,
             };
@@ -225,7 +226,7 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
         }
 
         let result_timeout = ctx
-            .launch_deadline
+            .change_deadline
             .map(|deadline| {
                 deadline
                     .saturating_duration_since(tokio::time::Instant::now())
@@ -257,19 +258,96 @@ pub(in crate::services::stack) async fn run_remote_goal<G: RemoteGoal>(
 /// how a misspelled file bind looks, and the operator watching this launch is
 /// the one who can tell the two apart.
 pub(in crate::services::stack) async fn begin_participant_slices(
-    ctx: &ProcessLaunchContext,
+    ctx: &StackChangeContext,
     launch_id: &str,
     participants: &[String],
     mount_sources_by_machine: &HashMap<String, Vec<String>>,
+    watchers: &LifecycleWatchers,
+    placements: &daemon_config::launcher::Placements,
+    // A join adds to the slice of this launch each participant holds; a
+    // launch replaces whatever slice it holds.
+    append: bool,
 ) -> std::result::Result<(), String> {
-    let outcomes = futures::future::join_all(participants.iter().map(|core_node| {
-        let request = ParticipantSliceBeginRequest::new(
+    set_local_watchers(ctx, watchers, placements);
+    ask_participant_slices(ctx, participants, |core_node| {
+        let mut request = ParticipantSliceBeginRequest::new(
             launch_id,
             mount_sources_by_machine
                 .get(core_node)
                 .cloned()
                 .unwrap_or_default(),
         );
+        request.append = append;
+        request.lifecycle_watchers = watchers_hosted_by(watchers, placements, core_node);
+        request
+    })
+    .await
+    .map_err(|refusals| {
+        format!(
+            "could not take over every participant's stack:\n  {}",
+            refusals.join("\n  ")
+        )
+    })
+}
+
+/// Points every source back at the watchers the previous plan gave it, on
+/// this machine and on each participant hosting one, as part of undoing a
+/// change that failed.
+pub(in crate::services::stack) async fn restore_participant_watchers(
+    ctx: &StackChangeContext,
+    launch_id: &str,
+    participants: &[String],
+    watchers: &LifecycleWatchers,
+    placements: &daemon_config::launcher::Placements,
+) {
+    set_local_watchers(ctx, watchers, placements);
+    let Err(refusals) = ask_participant_slices(ctx, participants, |core_node| {
+        let mut request = ParticipantSliceBeginRequest::new(launch_id, Vec::new());
+        request.append = true;
+        request.lifecycle_watchers = watchers_hosted_by(watchers, placements, core_node);
+        request
+    })
+    .await
+    else {
+        return;
+    };
+    publish_stderr(
+        ctx,
+        format!(
+            "could not put the watchers back on every machine; the sources there keep the \
+             watchers this {} set, until the next change replaces them:\n  {}",
+            ctx.action.label(),
+            refusals.join("\n  ")
+        ),
+        LaunchFeedbackStep::LauncherStep,
+    )
+    .await;
+}
+
+/// The watcher lists of the sources `core_node` hosts, as that participant is
+/// handed them.
+fn watchers_hosted_by(
+    watchers: &LifecycleWatchers,
+    placements: &daemon_config::launcher::Placements,
+    core_node: &str,
+) -> LifecycleWatchers {
+    watchers
+        .iter()
+        .filter(|(instance, _)| placements.of(instance.as_str()) == core_node)
+        .map(|(instance, hosts)| (instance.clone(), hosts.clone()))
+        .collect()
+}
+
+/// Asks each participant to hold this launch's slice, with the request
+/// `request` builds for it, and names the machines that refused or went
+/// unanswered.
+async fn ask_participant_slices(
+    ctx: &StackChangeContext,
+    participants: &[String],
+    request: impl Fn(&str) -> ParticipantSliceBeginRequest,
+) -> std::result::Result<(), Vec<String>> {
+    let outcomes = futures::future::join_all(participants.iter().map(|core_node| {
+        let request = request(core_node);
         async move {
             let outcome = poll(
                 &request,
@@ -311,20 +389,14 @@ pub(in crate::services::stack) async fn begin_participant_slices(
     if refusals.is_empty() {
         return Ok(());
     }
-    Err(format!(
-        "could not take over every participant's stack:\n  {}",
-        refusals.join("\n  ")
-    ))
+    Err(refusals)
 }
 
-/// Clears every participant's slice after a failure, naming each one.
-///
-/// There is no rollback: a launch REPLACES the previous stack, so by the time
-/// anything can fail there is nothing to roll back to. The honest end state is
-/// an empty slice on every machine the launch touched, which is what this
-/// leaves behind, and the operator is told which machines those were.
+/// Clears every named participant's slice after a failure, naming each
+/// one: a failed launch leaves an empty slice on every machine it touched,
+/// and a failed join clears the machines that held nothing before it.
 pub(in crate::services::stack) async fn clear_participant_slices(
-    ctx: &ProcessLaunchContext,
+    ctx: &StackChangeContext,
     participants: &[String],
 ) {
     if participants.is_empty() {
@@ -333,7 +405,8 @@ pub(in crate::services::stack) async fn clear_participant_slices(
     publish_stderr(
         ctx,
         format!(
-            "Clearing the slice this launch started on: {}",
+            "Clearing the slice this {} started on: {}",
+            ctx.action.label(),
             daemon_config::format_quoted_list(participants)
         ),
         LaunchFeedbackStep::LauncherStep,

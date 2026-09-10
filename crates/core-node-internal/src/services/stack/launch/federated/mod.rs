@@ -38,8 +38,12 @@
 
 mod dispatch;
 
-pub(super) use dispatch::{begin_participant_slices, clear_participant_slices, run_remote_goal};
+pub(in crate::services::stack) use dispatch::{
+    begin_participant_slices, clear_participant_slices, restore_participant_watchers,
+    run_remote_goal,
+};
 
+use crate::services::stack::action::StackChangeContext;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -66,6 +70,7 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 struct ParticipantSlice {
     core_node: String,
+    serves_sim_time: bool,
     /// This participant's root-entity instance id, folded into the
     /// coordinator's stack-wide instance-id uniqueness check.
     root_instance_id: String,
@@ -85,7 +90,7 @@ struct ParticipantSlice {
 /// mode; on a wall-mode machine the declaration resolves to no participants
 /// and the source publishes nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ClockDemand {
+pub(in crate::services::stack) enum ClockDemand {
     Wall,
     Sim(SimDemandOrigin),
     /// The coordinator hosts none of the launch and no instance forces a
@@ -100,7 +105,9 @@ pub(super) enum ClockDemand {
 /// and rendered into the clock refusals so the operator sees every fix, not
 /// only the restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SimDemandOrigin {
+pub(in crate::services::stack) enum SimDemandOrigin {
+    /// An existing launcher session has already established its clock mode.
+    ActiveLaunch,
     /// The coordinating daemon serves simulated time, so every launch typed
     /// at it is simulated.
     CoordinatorClock,
@@ -113,6 +120,7 @@ impl SimDemandOrigin {
     /// The refusal clause naming what committed the launch.
     fn because(&self) -> String {
         match self {
+            Self::ActiveLaunch => "because the active launcher serves simulation time".to_owned(),
             Self::CoordinatorClock => "because the coordinating daemon serves it".to_owned(),
             Self::Instance(instance_id) => {
                 format!("because instance `{instance_id}` sets `use_sim_time: true`")
@@ -123,7 +131,7 @@ impl SimDemandOrigin {
     /// The refusal's alternative remedy, where one exists.
     fn alternative(&self) -> String {
         match self {
-            Self::CoordinatorClock => String::new(),
+            Self::CoordinatorClock | Self::ActiveLaunch => String::new(),
             Self::Instance(instance_id) => {
                 format!(", or drop `{instance_id}`'s `use_sim_time` override")
             }
@@ -131,13 +139,41 @@ impl SimDemandOrigin {
     }
 }
 
+/// The coordinating daemon's part in a plan's clock: the kind of time it
+/// serves, and whether it runs any of the plan.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::services::stack) struct Coordinator {
+    pub serves_sim_time: bool,
+    pub hosts: bool,
+}
+
 impl ClockDemand {
-    pub(super) fn of<'a>(
+    /// The demand of a plan, with the coordinator's part in it.
+    pub(in crate::services::stack) fn of_plan(
+        ctx: &StackChangeContext,
+        planned: &[super::PlannedDeployment],
+        fleet: Option<&config::runtime::SimTimeParticipants>,
+    ) -> (Self, Coordinator) {
+        let coordinator = Coordinator {
+            serves_sim_time: ctx.daemon_defaults.use_sim_time,
+            hosts: fleet.is_some_and(|fleet| {
+                fleet
+                    .iter()
+                    .any(|machine| machine.as_str() == ctx.bound_core_node)
+            }),
+        };
+        let demand = Self::of(
+            planned.iter().flat_map(|item| &item.deployment.instances),
+            coordinator,
+        );
+        (demand, coordinator)
+    }
+
+    pub(in crate::services::stack) fn of<'a>(
         instances: impl IntoIterator<Item = &'a daemon_config::launcher::DeploymentInstance>,
-        coordinator_serves_sim_time: bool,
-        coordinator_hosts: bool,
+        coordinator: Coordinator,
     ) -> Self {
-        if coordinator_hosts && coordinator_serves_sim_time {
+        if coordinator.hosts && coordinator.serves_sim_time {
             return Self::Sim(SimDemandOrigin::CoordinatorClock);
         }
         if let Some(reader) = instances
@@ -146,7 +182,7 @@ impl ClockDemand {
         {
             return Self::Sim(SimDemandOrigin::Instance(reader.instance_id.to_string()));
         }
-        if coordinator_hosts {
+        if coordinator.hosts {
             return Self::Wall;
         }
         Self::HostsDecide
@@ -281,6 +317,7 @@ async fn reserve_participants(
                         host_clocks.push((core_node.clone(), response.serves_sim_time));
                         slices.push(ParticipantSlice {
                             core_node,
+                            serves_sim_time: response.serves_sim_time,
                             root_instance_id: response.root_instance_id,
                         });
                     }
@@ -374,7 +411,7 @@ fn check_clock_source(
 /// wall launch is the mirror: every instance placed there resolves to
 /// simulated time that nothing in this launch publishes, so each one waits at
 /// "clock not ready" for as long as it runs.
-pub(super) fn check_clock_agreement(
+pub(in crate::services::stack) fn check_clock_agreement(
     core_node: &str,
     serves_sim_time: bool,
     clock_demand: &ClockDemand,
@@ -407,7 +444,9 @@ pub(super) fn check_clock_agreement(
 /// hosts run the launch on the declared source's ticks; unanimous wall hosts
 /// run it on their own; a split is refused naming one machine of each side,
 /// with every reservation released.
-pub(super) fn check_hosts_agree(hosts: &[(String, bool)]) -> std::result::Result<(), String> {
+pub(in crate::services::stack) fn check_hosts_agree(
+    hosts: &[(String, bool)],
+) -> std::result::Result<(), String> {
     let sim_machine = hosts.iter().find(|(_, serves)| *serves);
     let wall_machine = hosts.iter().find(|(_, serves)| !*serves);
     match (sim_machine, wall_machine) {
@@ -421,10 +460,82 @@ pub(super) fn check_hosts_agree(hosts: &[(String, bool)]) -> std::result::Result
     }
 }
 
-/// Best-effort release of every named participant. Failures are logged, not
-/// returned: this runs on paths that are already failing or already finished,
-/// and a release that does not land is covered by the presence lease.
-pub(crate) async fn release_participants(
+/// The peers a stack change reserved, and what each of them reported while
+/// answering. Released on the way out of the change, or from `Drop` when the
+/// change's future is dropped, as a reset drops one that outlives its cleanup
+/// budget.
+pub(in crate::services::stack) struct ReservedParticipants {
+    messenger: MessengerHandle,
+    coordinator: String,
+    caller_instance_id: String,
+    launch_id: String,
+    participants: ParticipantSlices,
+    released: bool,
+}
+
+impl ReservedParticipants {
+    fn new(ctx: &StackChangeContext, launch_id: &str, slices: Vec<ParticipantSlice>) -> Self {
+        Self {
+            messenger: ctx.messenger.clone(),
+            coordinator: ctx.bound_core_node.clone(),
+            caller_instance_id: ctx.core_instance_id.clone(),
+            launch_id: launch_id.to_owned(),
+            participants: ParticipantSlices { slices },
+            released: false,
+        }
+    }
+
+    /// Releases every participant. A release interrupted midway leaves
+    /// the flag clear, so the drop releases the rest.
+    pub(in crate::services::stack) async fn release(mut self) {
+        release_participants(
+            &self.messenger,
+            &self.coordinator,
+            &self.caller_instance_id,
+            &self.launch_id,
+            &self.core_nodes(),
+        )
+        .await;
+        self.released = true;
+    }
+}
+
+impl Drop for ReservedParticipants {
+    fn drop(&mut self) {
+        if self.released || self.participants.is_empty() {
+            return;
+        }
+        let core_nodes = self.core_nodes();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                "launch `{}` ended outside its runtime while holding {}; their reservations \
+                 drop when this coordinator reserves them again or leaves the federation",
+                self.launch_id,
+                format_quoted_list(&core_nodes)
+            );
+            return;
+        };
+        let messenger = self.messenger.clone();
+        let coordinator = std::mem::take(&mut self.coordinator);
+        let caller_instance_id = std::mem::take(&mut self.caller_instance_id);
+        let launch_id = std::mem::take(&mut self.launch_id);
+        runtime.spawn(async move {
+            release_participants(
+                &messenger,
+                &coordinator,
+                &caller_instance_id,
+                &launch_id,
+                &core_nodes,
+            )
+            .await;
+        });
+    }
+}
+
+/// Releases each participant's reservation for the launch. A refusal or a
+/// transport failure is logged: the reservation clears when this coordinator
+/// reserves the participant again or leaves the federation.
+async fn release_participants(
     messenger: &MessengerHandle,
     coordinator: &str,
     caller_instance_id: &str,
@@ -463,13 +574,6 @@ pub(crate) async fn release_participants(
     .await;
 }
 
-/// What a federated launch established before anything was torn down.
-#[derive(Default)]
-pub(super) struct FederatedLaunch {
-    /// Empty for a single-machine launch.
-    participants: Vec<ParticipantSlice>,
-}
-
 /// The whole preflight, in the order the plan requires.
 ///
 /// Runs AFTER this daemon resolved every deployment (so the reservations can
@@ -477,15 +581,15 @@ pub(super) struct FederatedLaunch {
 /// refusal here leaves the coordinator's existing stack, and every
 /// participant's, exactly as it was. That ordering is the feature: a launch
 /// that cannot succeed must not cost you the stack you already had.
-pub(super) async fn preflight(
-    ctx: &super::ProcessLaunchContext,
+pub(in crate::services::stack) async fn preflight(
+    ctx: &StackChangeContext,
     launch_id: &str,
     planned: &[super::PlannedDeployment],
     placements: &Placements,
     clock_demand: &ClockDemand,
-) -> std::result::Result<FederatedLaunch, String> {
+) -> std::result::Result<ReservedParticipants, String> {
     if !placements.is_federated() {
-        return Ok(FederatedLaunch::default());
+        return Ok(ReservedParticipants::new(ctx, launch_id, Vec::new()));
     }
 
     let peers = partition_reservations(
@@ -511,17 +615,81 @@ pub(super) async fn preflight(
     )
     .await?;
 
-    Ok(FederatedLaunch { participants })
+    Ok(ReservedParticipants::new(ctx, launch_id, participants))
 }
 
-impl FederatedLaunch {
+impl ReservedParticipants {
     /// Every peer taking part, in a stable order so failure messages and
     /// release fan-outs read the same way twice.
-    pub(super) fn core_nodes(&self) -> Vec<String> {
+    pub(in crate::services::stack) fn core_nodes(&self) -> Vec<String> {
+        self.participants.core_nodes()
+    }
+
+    pub(in crate::services::stack) fn established_clock(
+        &self,
+        demand: &ClockDemand,
+    ) -> std::result::Result<ClockDemand, String> {
+        self.participants.established_clock(demand)
+    }
+
+    pub(in crate::services::stack) fn serves_sim_time(&self, core_node: &str) -> Option<bool> {
+        self.participants.serves_sim_time(core_node)
+    }
+
+    pub(in crate::services::stack) fn root_instance_collisions(
+        &self,
+        planned_instance_ids: &BTreeSet<&str>,
+    ) -> Vec<String> {
         self.participants
+            .root_instance_collisions(planned_instance_ids)
+    }
+}
+
+/// What the machines of a change reported while answering its reservation.
+/// Empty for a change confined to the coordinator.
+#[derive(Default)]
+struct ParticipantSlices {
+    slices: Vec<ParticipantSlice>,
+}
+
+impl ParticipantSlices {
+    /// The clock the stack keeps once its machines answered: a demand the
+    /// hosts decide takes the kind of time the first participant serves.
+    fn established_clock(&self, demand: &ClockDemand) -> std::result::Result<ClockDemand, String> {
+        match demand {
+            ClockDemand::HostsDecide => {
+                let participant = self.slices.first().ok_or_else(|| {
+                    String::from(
+                        "no machine hosts this change, so none decides its clock; place its \
+                         instances with --place NAME@CORE_NODE",
+                    )
+                })?;
+                Ok(if participant.serves_sim_time {
+                    ClockDemand::Sim(SimDemandOrigin::ActiveLaunch)
+                } else {
+                    ClockDemand::Wall
+                })
+            }
+            fixed => Ok(fixed.clone()),
+        }
+    }
+
+    fn serves_sim_time(&self, core_node: &str) -> Option<bool> {
+        self.slices
+            .iter()
+            .find(|participant| participant.core_node == core_node)
+            .map(|participant| participant.serves_sim_time)
+    }
+
+    fn core_nodes(&self) -> Vec<String> {
+        self.slices
             .iter()
             .map(|slice| slice.core_node.clone())
             .collect()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.slices.is_empty()
     }
 
     /// Instance ids in the plan that collide with a participant's own root
@@ -533,11 +701,8 @@ impl FederatedLaunch {
     /// asking, which is why the reservation response carries it: a collision
     /// would otherwise surface as a confusing failure on the peer, after that
     /// machine's stack had already been replaced.
-    pub(super) fn root_instance_collisions(
-        &self,
-        planned_instance_ids: &BTreeSet<&str>,
-    ) -> Vec<String> {
-        self.participants
+    fn root_instance_collisions(&self, planned_instance_ids: &BTreeSet<&str>) -> Vec<String> {
+        self.slices
             .iter()
             .filter(|slice| planned_instance_ids.contains(slice.root_instance_id.as_str()))
             .map(|slice| {
@@ -554,9 +719,7 @@ impl FederatedLaunch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The one spelling of a git-backed node pin, defined in the parent
-    // module's tests so this module and `launch.rs` cannot drift apart.
-    use super::super::tests::test_root_pin as pin;
+    use crate::services::stack::fixtures::test_root_pin as pin;
     use daemon_config::launcher::DeploymentInstance;
 
     fn instance(id: &str) -> DeploymentInstance {
@@ -571,8 +734,8 @@ mod tests {
         }
     }
 
-    fn core_node(name: &str) -> daemon_config::core_node_name::CoreNodeName {
-        daemon_config::core_node_name::CoreNodeName::new(name).expect("valid test core node name")
+    fn core_node(name: &str) -> config::runtime::CoreNodeName {
+        config::runtime::CoreNodeName::new(name).expect("valid test core node name")
     }
 
     fn placements(pairs: &[(&str, &str)]) -> Placements {
@@ -747,41 +910,57 @@ mod tests {
         let forced_wall = parse(r#"{ instance_id: "cam", framework: { use_sim_time: false } }"#);
         let reader = parse(r#"{ instance_id: "relay", framework: { use_sim_time: true } }"#);
         let source = parse(r#"{ instance_id: "sim", framework: { publishes_sim_time: true } }"#);
+        let wall_host = Coordinator {
+            serves_sim_time: false,
+            hosts: true,
+        };
+        let sim_host = Coordinator {
+            serves_sim_time: true,
+            hosts: true,
+        };
+        let wall_bystander = Coordinator {
+            serves_sim_time: false,
+            hosts: false,
+        };
+        let sim_bystander = Coordinator {
+            serves_sim_time: true,
+            hosts: false,
+        };
 
         assert_eq!(
-            ClockDemand::of([&wall, &forced_wall], false, true),
+            ClockDemand::of([&wall, &forced_wall], wall_host),
             ClockDemand::Wall
         );
         assert_eq!(
-            ClockDemand::of([&wall, &reader], false, true),
+            ClockDemand::of([&wall, &reader], wall_host),
             ClockDemand::Sim(SimDemandOrigin::Instance("relay".to_owned())),
             "the demand carries which instance committed the launch"
         );
         assert_eq!(
-            ClockDemand::of([&source], false, true),
+            ClockDemand::of([&source], wall_host),
             ClockDemand::Wall,
             "a declared source alone leaves a wall-mode launch on wall time"
         );
         assert_eq!(
-            ClockDemand::of([&wall], true, true),
+            ClockDemand::of([&wall], sim_host),
             ClockDemand::Sim(SimDemandOrigin::CoordinatorClock)
         );
-        assert_eq!(ClockDemand::of([], false, true), ClockDemand::Wall);
+        assert_eq!(ClockDemand::of([], wall_host), ClockDemand::Wall);
 
         // A coordinator hosting none of the launch does not get a vote: the
         // hosting machines decide, unless an instance forces the clock, which
         // commits the launch wherever it lands.
         assert_eq!(
-            ClockDemand::of([&wall], false, false),
+            ClockDemand::of([&wall], wall_bystander),
             ClockDemand::HostsDecide
         );
         assert_eq!(
-            ClockDemand::of([&wall], true, false),
+            ClockDemand::of([&wall], sim_bystander),
             ClockDemand::HostsDecide,
             "a non-hosting sim workstation cannot commit a launch to its clock"
         );
         assert_eq!(
-            ClockDemand::of([&wall, &reader], false, false),
+            ClockDemand::of([&wall, &reader], wall_bystander),
             ClockDemand::Sim(SimDemandOrigin::Instance("relay".to_owned()))
         );
     }
@@ -813,6 +992,7 @@ mod tests {
         ParticipantSlice {
             core_node: core_node.to_owned(),
             root_instance_id: format!("{core_node}_root"),
+            serves_sim_time: false,
         }
     }
 
@@ -821,8 +1001,8 @@ mod tests {
     /// there. The coordinator cannot see it without asking.
     #[test]
     fn an_instance_id_colliding_with_a_peers_root_entity_is_refused() {
-        let federated = FederatedLaunch {
-            participants: vec![slice("cn-atlas")],
+        let federated = ParticipantSlices {
+            slices: vec![slice("cn-atlas")],
         };
 
         let collisions =
@@ -845,7 +1025,7 @@ mod tests {
     /// and none of it costs anything.
     #[test]
     fn a_single_machine_launch_refuses_nothing() {
-        let federated = FederatedLaunch::default();
+        let federated = ParticipantSlices::default();
         assert!(federated.core_nodes().is_empty());
         assert!(
             federated

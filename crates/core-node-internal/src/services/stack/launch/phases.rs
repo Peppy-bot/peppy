@@ -9,9 +9,9 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// The `peppy stack launch` flag that raises the idle budget of the phase a
-/// feedback step belongs to. `None` for the launcher step, whose work
-/// (parse/resolve) has no per-phase flag — the CLI watchdog alone bounds it.
+/// The flag that raises the idle budget of the phase a feedback step belongs
+/// to. `None` for the launcher step, whose work (parse/resolve) has no
+/// per-phase flag: the CLI watchdog alone bounds it.
 ///
 /// The one place the step→flag mapping lives: both the daemon's per-phase
 /// timeout message (below) and the CLI watchdog's timeout message consume it,
@@ -56,7 +56,7 @@ pub(super) enum PhaseOutcome<T> {
 /// Wraps a phase future with idle-timeout enforcement and an optional whole-launch deadline.
 ///
 /// The idle watcher always runs (idle protection is always on); the deadline only wraps when
-/// `launch_deadline` is `Some`. Returns:
+/// `change_deadline` is `Some`. Returns:
 /// - `Completed(T)` if the phase finished within both bounds
 /// - `IdleTimeout` if `idle_timeout` elapsed without subprocess activity
 /// - `MaxTimeout` if the launch deadline fired
@@ -76,7 +76,7 @@ async fn run_phase_with_timeouts<F, T>(
     phase: F,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
+    change_deadline: Option<Instant>,
     cancel_and_drain: Option<CancellationToken>,
 ) -> PhaseOutcome<T>
 where
@@ -84,14 +84,14 @@ where
 {
     match cancel_and_drain {
         None => {
-            run_phase_drop_on_timeout(phase, activity_notify, idle_timeout, launch_deadline).await
+            run_phase_drop_on_timeout(phase, activity_notify, idle_timeout, change_deadline).await
         }
         Some(token) => {
             run_phase_cancel_on_timeout(
                 phase,
                 activity_notify,
                 idle_timeout,
-                launch_deadline,
+                change_deadline,
                 token,
             )
             .await
@@ -105,7 +105,7 @@ async fn run_phase_drop_on_timeout<F, T>(
     phase: F,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
+    change_deadline: Option<Instant>,
 ) -> PhaseOutcome<T>
 where
     F: std::future::Future<Output = T>,
@@ -118,7 +118,7 @@ where
         }
     };
 
-    match launch_deadline {
+    match change_deadline {
         Some(deadline) => match tokio::time::timeout_at(deadline, inner).await {
             Ok(Some(value)) => PhaseOutcome::Completed(value),
             Ok(None) => PhaseOutcome::IdleTimeout,
@@ -140,7 +140,7 @@ pub(super) async fn run_phase_cancel_on_timeout<F, T>(
     phase: F,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
+    change_deadline: Option<Instant>,
     cancel_token: CancellationToken,
 ) -> PhaseOutcome<T>
 where
@@ -151,7 +151,7 @@ where
     // `sleep_until(past-instant)` resolves immediately, so we model "no
     // deadline" as a far-future sleep and let idle/phase race win.
     let deadline_sleep = async {
-        match launch_deadline {
+        match change_deadline {
             Some(deadline) => tokio::time::sleep_until(deadline).await,
             None => std::future::pending::<()>().await,
         }
@@ -188,7 +188,8 @@ pub(super) async fn run_phase<F, T>(
     phase: F,
     activity_notify: Arc<Notify>,
     idle_timeout: Duration,
-    launch_deadline: Option<Instant>,
+    change_deadline: Option<Instant>,
+    reset: &CancellationToken,
     log_file: &Arc<StdMutex<File>>,
     step: LaunchFeedbackStep,
     build_failure: impl FnOnce(String) -> T,
@@ -197,15 +198,29 @@ pub(super) async fn run_phase<F, T>(
 where
     F: std::future::Future<Output = T>,
 {
-    match run_phase_with_timeouts(
+    let drain = cancel_and_drain.clone();
+    let phase = run_phase_with_timeouts(
         phase,
         activity_notify,
         idle_timeout,
-        launch_deadline,
+        change_deadline,
         cancel_and_drain,
-    )
-    .await
-    {
+    );
+    tokio::pin!(phase);
+    let outcome = tokio::select! {
+        biased;
+        _ = reset.cancelled() => {
+            if let Some(token) = drain {
+                token.cancel();
+                let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, phase.as_mut()).await;
+            }
+            let reason = "stack operation cancelled by stack reset".to_owned();
+            write_error_to_log(log_file, &reason);
+            return build_failure(reason);
+        }
+        outcome = phase.as_mut() => outcome,
+    };
+    match outcome {
         PhaseOutcome::Completed(result) => result,
         PhaseOutcome::IdleTimeout => {
             let mut reason = format!(
@@ -220,9 +235,125 @@ where
             build_failure(reason)
         }
         PhaseOutcome::MaxTimeout => {
-            let reason = "timeout: max launch timeout exceeded".to_string();
+            let reason = "timeout: max timeout exceeded".to_string();
             write_error_to_log(log_file, &reason);
             build_failure(reason)
         }
+    }
+}
+
+/// Regression tests for the run-phase cancel-and-drain contract.
+///
+/// The invariant under test: when a run-phase timeout fires,
+/// `run_phase_cancel_on_timeout` must signal the cancel token *and* drive the
+/// phase future to completion so its cleanup runs, not drop it. Using
+/// `tokio::time::pause()` + manual advancement so these tests are
+/// deterministic (no wall-clock dependency, no risk of CI flake).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Builds a phase future that signals `cleanup_ran` if it observes the
+    /// cancel token, simulating `run_node_run`'s `abort_started` branch.
+    /// If instead the outer runner drops this future, the flag stays false
+    /// and the test fails, matching the real-world orphan bug.
+    async fn cancellable_phase(
+        cancel: CancellationToken,
+        cleanup_ran: Arc<AtomicBool>,
+    ) -> &'static str {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                cleanup_ran.store(true, Ordering::SeqCst);
+                "cleaned_up"
+            }
+            _ = std::future::pending::<()>() => unreachable!("phase should never complete on its own in these tests"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_on_timeout_awaits_cleanup_on_idle_timeout() {
+        let notify = Arc::new(Notify::new());
+        let token = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+
+        let outcome = run_phase_cancel_on_timeout(
+            cancellable_phase(token.clone(), Arc::clone(&cleanup_ran)),
+            Arc::clone(&notify),
+            Duration::from_millis(100),
+            None,
+            token,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, PhaseOutcome::IdleTimeout),
+            "idle timeout branch expected",
+        );
+        assert!(
+            cleanup_ran.load(Ordering::SeqCst),
+            "phase future must be awaited after cancel so cleanup runs; \
+             dropping it would leave this flag false (the orphan-process bug)",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_on_timeout_awaits_cleanup_on_max_deadline() {
+        let notify = Arc::new(Notify::new());
+        let token = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let outcome = run_phase_cancel_on_timeout(
+            cancellable_phase(token.clone(), Arc::clone(&cleanup_ran)),
+            Arc::clone(&notify),
+            // Idle much larger than max so only the deadline branch can fire.
+            Duration::from_secs(600),
+            Some(deadline),
+            token,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, PhaseOutcome::MaxTimeout),
+            "max timeout branch expected",
+        );
+        assert!(
+            cleanup_ran.load(Ordering::SeqCst),
+            "phase future must be awaited after max-deadline cancel so cleanup runs",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancel_on_timeout_returns_value_when_phase_completes_first() {
+        let notify = Arc::new(Notify::new());
+        let token = CancellationToken::new();
+        let cleanup_ran = Arc::new(AtomicBool::new(false));
+        let cleanup_ran_for_phase = Arc::clone(&cleanup_ran);
+
+        // Phase completes immediately with a value; no timeout should fire.
+        let phase = async move {
+            // Reset-like ping proves we keep the happy-path contract (no cancel signal).
+            let _ = cleanup_ran_for_phase;
+            "ok"
+        };
+
+        let outcome = run_phase_cancel_on_timeout(
+            phase,
+            Arc::clone(&notify),
+            Duration::from_millis(100),
+            Some(Instant::now() + Duration::from_millis(100)),
+            token.clone(),
+        )
+        .await;
+
+        match outcome {
+            PhaseOutcome::Completed(v) => assert_eq!(v, "ok"),
+            _ => panic!("phase should complete before any timeout fires"),
+        }
+        assert!(
+            !token.is_cancelled(),
+            "happy path must not cancel the token",
+        );
     }
 }
