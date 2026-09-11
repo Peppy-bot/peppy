@@ -24,10 +24,19 @@ use serde::{
 use std::collections::{BTreeMap, HashSet};
 
 /// The `deployments` keys an entry is read by, and so the names a component
-/// cannot have: an entry with `source` deploys a node; `instances`, `with`,
-/// `arguments` and `adjustments` belong to an option entry.
-const RESERVED_COMPONENT_NAMES: [&str; 5] =
-    ["source", "instances", "with", "arguments", "adjustments"];
+/// cannot have: an entry with `source`, `name`, `tag` or `exposures` deploys
+/// a node; `instances`, `with`, `arguments` and `adjustments` belong to an
+/// option entry.
+const RESERVED_COMPONENT_NAMES: [&str; 8] = [
+    "source",
+    "name",
+    "tag",
+    "exposures",
+    "instances",
+    "with",
+    "arguments",
+    "adjustments",
+];
 
 /// Argument overrides an option entry or one of its copies writes, keyed by
 /// the instance id written in the option's fragment and then by argument.
@@ -97,8 +106,8 @@ impl ComponentAxis {
 
 impl<'de> Deserialize<'de> for ComponentAxis {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        /// The keys an axis accepts, plus the ones a reader may reach for
-        /// from another document shape, each refused with its replacement.
+        /// The keys an axis accepts, plus `components`, which belongs to a
+        /// fragment and is refused with its place.
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Declaration {
@@ -110,28 +119,10 @@ impl<'de> Deserialize<'de> for ComponentAxis {
             #[serde(default)]
             provides: Vec<Name>,
             #[serde(default, deserialize_with = "present")]
-            default: Option<de::IgnoredAny>,
-            #[serde(default, deserialize_with = "present")]
-            optional: Option<de::IgnoredAny>,
-            #[serde(default, deserialize_with = "present")]
             components: Option<de::IgnoredAny>,
         }
 
         let raw = Declaration::deserialize(deserializer)?;
-        if raw.default.is_some() {
-            return Err(de::Error::custom(format!(
-                "axis `{}` declares `default`; the option a document starts with is a \
-                 `deployments` entry, `{{ {}: \"<option>\" }}`, which `--with` swaps",
-                raw.name, raw.name
-            )));
-        }
-        if raw.optional.is_some() {
-            return Err(de::Error::custom(format!(
-                "axis `{}` declares `optional`; write `cardinality: \"zero_or_one\"` for an \
-                 axis that may stay unfilled",
-                raw.name
-            )));
-        }
         if raw.components.is_some() {
             return Err(de::Error::custom(format!(
                 "axis `{}` declares `components`; an option's own axes are declared by its \
@@ -384,12 +375,12 @@ fn check_copy_settings(
 impl OptionDeployment {
     /// Whether the entry carries `with`, `arguments` or `adjustments` for
     /// the copies it lists.
-    pub fn has_copy_settings(&self) -> bool {
+    fn has_copy_settings(&self) -> bool {
         !self.with.is_empty() || !self.arguments.is_empty() || !self.adjustments.is_empty()
     }
 
     /// The origin the report names this entry's adjustments by.
-    pub(crate) fn adjustments_origin(&self) -> String {
+    fn adjustments_origin(&self) -> String {
         format!("adjustments of `{}: {}`", self.axis, self.option)
     }
 
@@ -445,7 +436,7 @@ pub struct CopyEntry {
 
 impl CopyEntry {
     /// The origin the report names this copy's adjustments by.
-    pub(crate) fn adjustments_origin(&self) -> String {
+    fn adjustments_origin(&self) -> String {
         format!("adjustments of copy `{}`", self.instance_id)
     }
 }
@@ -986,7 +977,7 @@ impl LauncherFragmentParser {
 /// unwireable from the very surface it exists for. (`,` separates `--with`
 /// entries and `=` splits the `axis=option` form; both are outside the
 /// identifier grammar.)
-pub(crate) fn check_axis_or_option_name(kind: &str, name: &str) -> Result<(), String> {
+fn check_axis_or_option_name(kind: &str, name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err(format!("`components` declares {kind} with an empty name"));
     }
@@ -1021,9 +1012,9 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
         check_axis_or_option_name("an axis", &axis.name)?;
         if RESERVED_COMPONENT_NAMES.contains(&axis.name.as_str()) {
             return Err(format!(
-                "`{}` cannot be a component name: a `deployments` entry with a `source` key \
-                 deploys a node, and `instances`, `with`, `arguments` and `adjustments` belong \
-                 to an option entry",
+                "`{}` cannot be a component name: a `deployments` entry with a `source`, \
+                 `name`, `tag` or `exposures` key deploys a node, and `instances`, `with`, \
+                 `arguments` and `adjustments` belong to an option entry",
                 axis.name
             ));
         }
@@ -1173,7 +1164,7 @@ pub(crate) fn validate_option_deployments(
 /// that exist, targets that are well-formed. Selection-independent, so they
 /// run wherever the adjustment is read (document parse for the base and
 /// inline fragments, fragment load for files).
-pub(crate) fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), String> {
+fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), String> {
     if let Some(when) = &adjustment.when
         && when.is_empty()
     {
@@ -1332,7 +1323,7 @@ fn validate_selection_map(
 /// lists that agree with themselves. Reference checks (that the axes and
 /// options named exist) are [`validate_constraint_references`]'s, run once
 /// the axes in reach are known.
-pub(crate) fn validate_constraint_shapes(
+fn validate_constraint_shapes(
     constraints: &[SelectionConstraint],
     document: &str,
 ) -> Result<(), String> {
@@ -1406,7 +1397,7 @@ pub(crate) fn validate_constraint_shapes(
 }
 
 /// That every axis and option a `constraints` list names is in reach.
-pub(crate) fn validate_constraint_references(
+fn validate_constraint_references(
     constraints: &[SelectionConstraint],
     axes: &[&ComponentAxis],
     document: &str,
@@ -1441,11 +1432,10 @@ pub(crate) fn validate_launcher_constraints(
     validate_constraint_references(constraints, &in_reach, "the launcher")
 }
 
-/// Every adjustment and constraint the launcher document itself carries:
-/// the base `adjustments` list against the launcher's axes, plus the
-/// adjustments and constraints of every INLINE fragment against the
-/// launcher's axes and the fragment's own (file fragments are checked when
-/// they are read, against the same reach).
+/// The launcher document's own `adjustments`, against the launcher's axes.
+/// Every fragment's adjustments and constraints, inline or file, are
+/// checked when the composition loads, against the launcher's axes and the
+/// fragment's own.
 pub(crate) fn validate_launcher_adjustments(
     adjustments: &[Adjustment],
     axes: &[ComponentAxis],
@@ -1455,28 +1445,6 @@ pub(crate) fn validate_launcher_adjustments(
         validate_adjustment(adjustment, "the launcher's `adjustments`")?;
         if let Some(when) = &adjustment.when {
             validate_guard(when, &launcher_axes, "the launcher's `adjustments`")?;
-        }
-    }
-    for axis in axes {
-        for (option, spec) in &axis.options {
-            let origin = format!("inline option `{}.{}`", axis.name, option);
-            let own_axes: Vec<&ComponentAxis> = spec
-                .0
-                .iter()
-                .filter_map(|part| match part {
-                    FragmentPart::Inline(fragment) => Some(fragment.components.iter()),
-                    FragmentPart::File(_) => None,
-                })
-                .flatten()
-                .collect();
-            let in_reach: Vec<&ComponentAxis> =
-                launcher_axes.iter().copied().chain(own_axes).collect();
-            for part in &spec.0 {
-                let FragmentPart::Inline(fragment) = part else {
-                    continue;
-                };
-                validate_fragment_references(fragment, &in_reach, &origin)?;
-            }
         }
     }
     Ok(())
@@ -1781,13 +1749,14 @@ mod tests {
     }
 
     #[test]
-    fn a_default_is_refused_and_says_where_it_went() {
-        let error = launcher_axes(
-            r#"{ name: "robot", default: "real", options: { real: { deployments: [] } } }"#,
-        )
-        .expect_err("default has left the grammar");
-        assert!(error.contains("`default`"), "got: {error}");
-        assert!(error.contains(r#"{ robot: "<option>" }"#), "got: {error}");
+    fn a_key_outside_the_axis_grammar_is_refused() {
+        for key in [r#"default: "real""#, "optional: true"] {
+            let error = launcher_axes(&format!(
+                r#"{{ name: "robot", {key}, options: {{ real: {{ deployments: [] }} }} }}"#
+            ))
+            .expect_err("an axis declares name, options, cardinality and provides");
+            assert!(error.contains("unknown field"), "got: {error}");
+        }
     }
 
     #[test]

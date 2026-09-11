@@ -7,7 +7,7 @@ mod remove;
 mod reset;
 mod resolve;
 
-pub use list::{StackListReport, list_nodes_collecting, list_nodes_json_collecting};
+pub use list::{list_nodes_collecting, list_nodes_json_collecting};
 pub use resolve::{JoinPreview, resolve_rendered};
 
 use std::path::PathBuf;
@@ -16,8 +16,10 @@ use std::sync::Arc;
 use clap::Subcommand;
 use tracing::info;
 
+use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
+
 use super::Command;
-use super::node::{DEFAULT_BUILD_IDLE_TIMEOUT_SECS, DEFAULT_IDLE_TIMEOUT_SECS};
+use super::node::DEFAULT_BUILD_IDLE_TIMEOUT_SECS;
 use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
@@ -148,10 +150,7 @@ pub enum StackCommands {
 fn parse_copy_name(raw: &str) -> Result<config::runtime::Name, String> {
     use config::runtime::{CoreNodeName, CoreNodeNameError};
     let placement = CoreNodeName::new(raw).map_err(|error| match error {
-        CoreNodeNameError::Reserved => format!(
-            "`{raw}` names the daemon this command targets, so no copy may be named it; choose \
-             another name"
-        ),
+        CoreNodeNameError::Reserved => daemon_config::launcher::SELF_COPY_NAME_REFUSAL.to_owned(),
         CoreNodeNameError::Malformed => {
             format!("a copy's name is its placement link, so it {error}")
         }
@@ -259,7 +258,7 @@ impl Command for StackCommand {
                 launcher_config_path,
                 with,
                 join,
-            } => resolve::resolve(ctx, launcher_config_path, with.words, join),
+            } => resolve::resolve(launcher_config_path, with.words, join),
             StackCommands::Launch {
                 launcher_config_path,
                 place,

@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::ArgumentOverride;
@@ -14,7 +13,6 @@ use daemon_config::repository::EntryOrigin;
 use tracing::info;
 
 use super::launch::{infer_launcher_origin, parse_launcher_file};
-use crate::context::AppContext;
 use crate::error::{Error, Result};
 
 /// The name a previewed copy runs under when none is given.
@@ -74,12 +72,7 @@ impl Default for JoinPreview {
 /// node manifests come from this machine's nodes cache; when one is not
 /// readable locally the check is skipped and says so, because a partial
 /// item list would misreport rules that need both endpoints.
-pub fn resolve(
-    _ctx: &Arc<AppContext>,
-    launcher_config_path: PathBuf,
-    words: Vec<String>,
-    join: JoinPreview,
-) -> Result<()> {
+pub fn resolve(launcher_config_path: PathBuf, words: Vec<String>, join: JoinPreview) -> Result<()> {
     let (document, report) =
         resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &join)?;
     for line in report {

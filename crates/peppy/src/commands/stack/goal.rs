@@ -15,6 +15,7 @@ use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
+use super::super::action_poll::FEEDBACK_DRAIN_TIMEOUT;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT, SCROLLING_OUTPUT_LINES};
 use crate::error::{Error, Result};
 use crate::terminal::ScrollingOutput;
@@ -28,9 +29,6 @@ const CLI_MAX_TIMEOUT_FLOOR: Duration = Duration::from_secs(7200);
 // ceiling fires. Keeps the error the user sees specific ("build idle timeout exceeded...") rather
 // than a generic CLI-side "daemon hung" message.
 const DAEMON_RESPONSE_GRACE: Duration = Duration::from_secs(60);
-/// How long one drain slice waits on feedback before the timeouts are
-/// re-checked.
-pub(super) const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 
 // CLI wall-clock fallback ceiling. `None` means idle-only (daemon-side contract honored).
 // When the user opts into `--max-timeout-secs`, add DAEMON_RESPONSE_GRACE and enforce

@@ -34,8 +34,7 @@ pub use types::NodeName;
 // re-export at all.)
 pub(crate) use env::caller_env_overrides;
 
-/// Default idle timeout in seconds (resets on output).
-pub(crate) const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
+pub(crate) use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
 /// Default idle timeout for the container BUILD phase (`peppy node build`,
 /// `peppy stack launch --node-build-idle-timeout-secs`), tighter than
 /// [`DEFAULT_IDLE_TIMEOUT_SECS`] on purpose: the build's idle clock no longer
@@ -326,7 +325,7 @@ pub enum NodeCommands {
         )]
         vacant_links: Vec<(String, VacantReason)>,
         /// Idle timeout in seconds; resets whenever output is received
-        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
@@ -346,7 +345,7 @@ pub enum NodeCommands {
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
         /// Idle timeout in seconds; resets on build output or image-download/write progress
-        #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS)]
+        #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]
@@ -428,7 +427,7 @@ pub enum NodeCommands {
         )]
         vacant_links: Vec<(String, VacantReason)>,
         /// Idle timeout in seconds; resets whenever output is received
-        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
         #[arg(long, default_value_t = DEFAULT_MAX_TIMEOUT_SECS)]

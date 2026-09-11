@@ -81,19 +81,16 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        Adjustment, AlreadyPairedSlots, AppliedAdjustment, AppliedChange, ArgumentOverrides,
-        BindingValidationItem, ComponentAxis, ComponentCardinality, ComposedJoin, ComposedLaunch,
-        CompositionError, CompositionReport, CopyEntry, CopyRecord, Deployment, DeploymentInstance,
-        DeploymentSource, DuplicateLinkTarget, EmptyVacantReason, ExternallyCoveredSlots, Fragment,
-        FragmentPart, FragmentSpec, FrameworkOverrides, JoinRequest, LauncherFragment,
-        LauncherFragmentParser, LinkTargets, LinkValue, OptionDeployment, PairingValidationItem,
-        PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation, PlannedPairEndpoint,
-        PlannedPairing, PreparedLauncher, RunningStack, Selection, SelectionConstraint,
-        SelectionEntry, SelectionSource, SkipReason, SkippedAdjustment, UnitSelection,
-        VacantReason, ValidatedBindings, ValidatedLinkPlan, ValidatedObservations,
-        ValidatedPairings, check_composition, participant_vacancies, split_link_target,
-        validate_bindings, validate_link_plan, validate_link_slots, validate_observations,
-        validate_pairings, validate_sim_time_source,
+        AlreadyPairedSlots, AppliedChange, BindingValidationItem, ComponentAxis, ComposedJoin,
+        ComposedLaunch, CompositionError, CompositionReport, CopyRecord, Deployment,
+        DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, FragmentPart, FragmentSpec,
+        FrameworkOverrides, JoinRequest, LauncherFragmentParser, LinkTargets, LinkValue,
+        PairingValidationItem, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
+        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, RunningStack,
+        SELF_COPY_NAME_REFUSAL, Selection, SkipReason, SkippedAdjustment, UnitSelection,
+        VacantReason, check_composition, participant_vacancies, split_link_target,
+        validate_bindings, validate_link_plan, validate_link_slots, validate_pairings,
+        validate_sim_time_source,
     };
 }
 

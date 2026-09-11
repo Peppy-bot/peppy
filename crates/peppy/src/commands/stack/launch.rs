@@ -87,7 +87,7 @@ pub(super) fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
 /// a launch that took some placements from one and some from the other would be
 /// legible to nobody.
 #[derive(Debug, Clone, Default)]
-pub struct PlacementArgs {
+pub(super) struct PlacementArgs {
     pub places: Vec<(String, String)>,
     pub local: bool,
 }
@@ -141,7 +141,7 @@ impl PlacementArgs {
     }
 }
 
-pub fn launch(
+pub(super) fn launch(
     ctx: &Arc<AppContext>,
     launcher_config_path: PathBuf,
     placement: PlacementArgs,

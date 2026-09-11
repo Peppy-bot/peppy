@@ -17,7 +17,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// One independently queried core-node stack. Query and decode failures stay
 /// in their section so a disappearing daemon does not hide healthy peers.
 #[derive(Debug)]
-pub struct StackSection {
+struct StackSection {
     /// Attributed from the response's self-reported identity; falls back to
     /// the queried name when the query failed.
     pub core_node: String,
@@ -191,7 +191,7 @@ fn failed_names(sections: &[StackSection]) -> Vec<String> {
 /// section's identity facts, its `launch` and `reservation`, and either
 /// the `stack` graph (`nodes` and `edges`, exactly as the daemon
 /// serialized them) or the query `error`; exactly one of the two is null.
-pub fn render_stack_json(sections: &[StackSection]) -> String {
+fn render_stack_json(sections: &[StackSection]) -> String {
     let launch_json = |identity: &Option<LaunchIdentity>| match identity {
         Some(identity) => serde_json::json!({
             "launch_id": identity.launch_id,
@@ -268,7 +268,7 @@ fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
 /// Pure multi-core-node formatter for `peppy stack list`. Each distinct name
 /// keeps its graph, host annotation, duplicate-name warning, or query error in
 /// a separate outer panel.
-pub fn format_stack_list(
+fn format_stack_list(
     sections: &[StackSection],
     colorize: bool,
     max_width: Option<usize>,

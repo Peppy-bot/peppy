@@ -31,7 +31,7 @@ use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
-use super::goal::FEEDBACK_DRAIN_TIMEOUT;
+use super::super::action_poll::FEEDBACK_DRAIN_TIMEOUT;
 use crate::commands::colors::{
     BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
     MEASURE_SERVICE_COLOR, NODE_COLOR, paint,

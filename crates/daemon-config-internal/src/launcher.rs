@@ -11,28 +11,21 @@ mod types;
 // The conventional filename is `peppy_launcher.json5` for standalone projects,
 // but the parser is filename-agnostic; repository discovery accepts any
 // `.json5` file whose body declares the launcher schema.
-pub use bindings::{BindingValidationItem, ValidatedBindings, validate_bindings};
+pub use bindings::{BindingValidationItem, validate_bindings};
 pub use compose::{
-    AppliedAdjustment, AppliedChange, ComposedJoin, ComposedLaunch, CompositionError,
-    CompositionReport, CopyRecord, JoinRequest, PreparedLauncher, RunningStack, SelectionEntry,
-    SelectionSource, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
+    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyRecord,
+    JoinRequest, PreparedLauncher, RunningStack, SELF_COPY_NAME_REFUSAL, SkipReason,
+    SkippedAdjustment, UnitSelection, check_composition,
 };
-pub use composition::{
-    Adjustment, ArgumentOverrides, ComponentAxis, ComponentCardinality, CopyEntry, Fragment,
-    FragmentPart, FragmentSpec, LauncherFragment, LauncherFragmentParser, OptionDeployment,
-    SelectionConstraint,
-};
-pub use links::{
-    ValidatedLinkPlan, validate_link_plan, validate_link_slots, validate_sim_time_source,
-};
-pub use observations::{PlannedObservation, ValidatedObservations, validate_observations};
+pub use composition::{ComponentAxis, FragmentPart, FragmentSpec, LauncherFragmentParser};
+pub use links::{validate_link_plan, validate_link_slots, validate_sim_time_source};
+pub use observations::PlannedObservation;
 pub use pairings::{
     AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairEndpoint,
-    PlannedPairing, ValidatedPairings, validate_pairings,
+    PlannedPairing, validate_pairings,
 };
 pub use parse::PeppyLauncherParser;
 pub use types::{
-    Deployment, DeploymentInstance, DeploymentSource, DuplicateLinkTarget, EmptyVacantReason,
-    FrameworkOverrides, LinkTargets, LinkValue, PeppyLauncher, Placements, Selection, VacantReason,
-    participant_vacancies, split_link_target,
+    Deployment, DeploymentInstance, DeploymentSource, FrameworkOverrides, LinkTargets, LinkValue,
+    PeppyLauncher, Placements, Selection, VacantReason, participant_vacancies, split_link_target,
 };

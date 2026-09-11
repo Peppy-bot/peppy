@@ -1113,7 +1113,6 @@ dependencies = [
  "const_format",
  "core-node-api",
  "dirs 6.0.0",
- "indexmap 2.14.1",
  "peppy-config-model",
  "peppy-mcp-catalog",
  "serde",

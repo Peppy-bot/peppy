@@ -22,10 +22,8 @@ mod report;
 mod select;
 
 pub use check::check_composition;
-pub use copy::CopyRecord;
+pub use copy::{CopyRecord, SELF_COPY_NAME_REFUSAL};
 pub use error::CompositionError;
 pub use prepared::{ComposedJoin, ComposedLaunch, JoinRequest, PreparedLauncher, RunningStack};
-pub use report::{
-    AppliedAdjustment, AppliedChange, CompositionReport, SkipReason, SkippedAdjustment,
-};
-pub use select::{SelectionEntry, SelectionSource, UnitSelection};
+pub use report::{AppliedChange, CompositionReport, SkipReason, SkippedAdjustment};
+pub use select::UnitSelection;
