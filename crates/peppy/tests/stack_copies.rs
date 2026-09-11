@@ -1,5 +1,6 @@
 use clap::Parser;
-use config::runtime::Name;
+use config::runtime::{CoreNodeName, Name};
+use core_node_api::encoding::JoinPlacement;
 use daemon_config::consts::PeppyDirs;
 use peppy::commands::stack::{JoinPreview, StackCommands, resolve_rendered};
 
@@ -22,7 +23,7 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
         "--set-arguments",
         "arm_inst.speed=0.2",
         "--place",
-        "alpha@jetson-1",
+        "jetson-1",
         "--node-build-idle-timeout-secs",
         "900",
     ])
@@ -43,7 +44,12 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
     assert_eq!(name.as_str(), "alpha");
     assert_eq!(with.words, ["xr"]);
     assert_eq!(arguments, ["arm_inst.speed=0.2".parse().unwrap()]);
-    assert_eq!(place, [("alpha".into(), "jetson-1".into())]);
+    assert_eq!(
+        place,
+        Some(JoinPlacement::CoreNode(
+            CoreNodeName::new("jetson-1").unwrap()
+        ))
+    );
     assert_eq!(timeouts.node_build_idle_timeout_secs, 900);
     for args in [
         vec!["stack", "join"],
@@ -71,17 +77,26 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
     ] {
         assert!(StackCli::try_parse_from(&args).is_err(), "{args:?}");
     }
-    // `--place` reads the same on launch and on join.
-    for command in [
-        vec!["stack", "launch", "fleet", "--place", "alpha"],
-        vec!["stack", "join", "real", "-i", "alpha", "--place", "alpha"],
-    ] {
-        let error = StackCli::try_parse_from(&command)
-            .err()
-            .expect("--place needs a core node")
-            .to_string();
-        assert!(error.contains("expected NAME@CORE_NODE"), "{error}");
-    }
+    // On launch `--place` wires a link to a machine; on join it names the
+    // machine, the copy's name being its one link.
+    let error = StackCli::try_parse_from(["stack", "launch", "fleet", "--place", "alpha"])
+        .err()
+        .expect("--place on launch needs a link and a core node")
+        .to_string();
+    assert!(error.contains("expected NAME@CORE_NODE"), "{error}");
+    let error = StackCli::try_parse_from([
+        "stack",
+        "join",
+        "real",
+        "-i",
+        "alpha",
+        "--place",
+        "alpha@jetson-1",
+    ])
+    .err()
+    .expect("--place on join names a machine")
+    .to_string();
+    assert!(error.contains("`--place jetson-1`"), "{error}");
 }
 
 #[test]

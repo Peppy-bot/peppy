@@ -17,15 +17,15 @@ pub(super) fn join(
     name: Name,
     words: Vec<String>,
     arguments: Vec<ArgumentOverride>,
-    places: Vec<(String, String)>,
+    place: Option<JoinPlacement>,
     timeouts: StackTimeouts,
 ) -> Result<()> {
-    let placement = copy_placement(&name, &places).map_err(Error::ExecutionFailed)?;
+    check_join_words(&words).map_err(Error::ExecutionFailed)?;
     let budgets = timeouts.budgets().with_env_vars(caller_env_overrides());
     let goal = StackJoinGoal {
         selections: words,
         arguments,
-        placement,
+        placement: place.unwrap_or(JoinPlacement::Local),
         ..StackJoinGoal::new(name, option, budgets)
     };
     crate::commands::block_on(async {
@@ -34,27 +34,33 @@ pub(super) fn join(
     })
 }
 
-/// Where a copy runs: the coordinator, or the one machine
-/// `--place NAME@CORE_NODE` wires its name to, `self` naming the
-/// coordinator.
-fn copy_placement(
-    name: &Name,
-    places: &[(String, String)],
-) -> std::result::Result<JoinPlacement, String> {
-    match places {
-        [] => Ok(JoinPlacement::Local),
-        [(link, target)] if link == name.as_str() => {
-            if CoreNodeName::is_self_keyword(target) {
-                return Ok(JoinPlacement::Local);
-            }
-            CoreNodeName::new(target)
-                .map(JoinPlacement::CoreNode)
-                .map_err(|error| format!("invalid --place target `{target}`: {error}"))
-        }
-        _ => Err(format!(
-            "a copy has one placement link, its name; use --place {name}@CORE_NODE"
+/// A join's `--with` words name options of the copied option's own axes;
+/// a word scoped to a copy, `NAME.option`, belongs to `stack launch`.
+fn check_join_words(words: &[String]) -> std::result::Result<(), String> {
+    match words.iter().find(|word| word.contains('.')) {
+        Some(word) => Err(format!(
+            "`--with {word}`: a join's words name options of the copied option's own axes, \
+             as `option` or `axis=option`; `NAME.option` selects a file copy's axis on \
+             `peppy stack launch`"
         )),
+        None => Ok(()),
     }
+}
+
+/// `--place CORE_NODE`: the machine the whole copy runs on, `self` naming
+/// the coordinator.
+pub(super) fn parse_placement(raw: &str) -> std::result::Result<JoinPlacement, String> {
+    if let Some((_, machine)) = raw.split_once('@') {
+        return Err(format!(
+            "a join places the whole copy on one machine: `--place {machine}`"
+        ));
+    }
+    if CoreNodeName::is_self_keyword(raw) {
+        return Ok(JoinPlacement::Local);
+    }
+    CoreNodeName::new(raw)
+        .map(JoinPlacement::CoreNode)
+        .map_err(|error| format!("invalid --place target `{raw}`: {error}"))
 }
 
 #[cfg(test)]
@@ -62,32 +68,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_copy_has_exactly_one_placement() {
-        let name = Name::new("alpha").unwrap();
-        let place = |link: &str, target: &str| (link.to_owned(), target.to_owned());
-        assert_eq!(copy_placement(&name, &[]).unwrap(), JoinPlacement::Local);
+    fn a_joins_words_are_never_scoped_to_a_copy() {
+        assert!(check_join_words(&["xr".into(), "recorder=lerobot".into()]).is_ok());
+        let refusal = check_join_words(&["alpha.xr".into()]).unwrap_err();
+        assert!(refusal.contains("`peppy stack launch`"), "{refusal}");
+    }
+
+    #[test]
+    fn a_placement_names_a_core_node_or_the_coordinator() {
+        assert_eq!(parse_placement("self").unwrap(), JoinPlacement::Local);
         assert_eq!(
-            copy_placement(&name, &[place("alpha", "self")]).unwrap(),
-            JoinPlacement::Local
-        );
-        assert_eq!(
-            copy_placement(&name, &[place("alpha", "jetson-1")]).unwrap(),
+            parse_placement("jetson-1").unwrap(),
             JoinPlacement::CoreNode(CoreNodeName::new("jetson-1").unwrap())
         );
         assert!(
-            copy_placement(&name, &[place("alpha", "not a core node")])
+            parse_placement("not a core node")
                 .unwrap_err()
                 .contains("invalid --place target")
         );
-        for places in [
-            vec![place("bravo", "jetson-1")],
-            vec![place("alpha", "jetson-1"), place("bravo", "jetson-2")],
-        ] {
-            assert!(
-                copy_placement(&name, &places)
-                    .unwrap_err()
-                    .contains("--place alpha@CORE_NODE")
-            );
-        }
+        assert!(
+            parse_placement("alpha@jetson-1")
+                .unwrap_err()
+                .contains("`--place jetson-1`")
+        );
     }
 }

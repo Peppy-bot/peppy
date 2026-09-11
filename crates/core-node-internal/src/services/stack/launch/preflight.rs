@@ -67,7 +67,7 @@ fn check_clock_established(
         (ClockDemand::Wall, ClockDemand::Sim(origin)) => Err(match origin {
             SimDemandOrigin::CoordinatorClock => String::from(
                 "the active stack uses wall time and this daemon serves simulated time; place \
-                 the copy on a wall-time machine with --place NAME@CORE_NODE",
+                 the copy on a wall-time machine with --place CORE_NODE",
             ),
             SimDemandOrigin::Instance(instance) => format!(
                 "the active stack uses wall time; drop `{instance}`'s `use_sim_time: true` \
@@ -80,7 +80,7 @@ fn check_clock_established(
         }),
         (ClockDemand::Sim(_), ClockDemand::Wall) => Err(String::from(
             "the active stack uses simulated time and this daemon serves wall time; place \
-             the copy on a simulated-time machine with --place NAME@CORE_NODE",
+             the copy on a simulated-time machine with --place CORE_NODE",
         )),
         _ => Ok(()),
     }
@@ -98,10 +98,7 @@ mod tests {
         let coordinator =
             check_clock_established(&wall, &ClockDemand::Sim(SimDemandOrigin::CoordinatorClock))
                 .unwrap_err();
-        assert!(
-            coordinator.contains("--place NAME@CORE_NODE"),
-            "{coordinator}"
-        );
+        assert!(coordinator.contains("--place CORE_NODE"), "{coordinator}");
         let instance = check_clock_established(
             &wall,
             &ClockDemand::Sim(SimDemandOrigin::Instance("cam_inst".into())),
@@ -119,7 +116,7 @@ mod tests {
         );
         let wall_coordinator = check_clock_established(&sim, &ClockDemand::Wall).unwrap_err();
         assert!(
-            wall_coordinator.contains("--place NAME@CORE_NODE"),
+            wall_coordinator.contains("--place CORE_NODE"),
             "{wall_coordinator}"
         );
     }

@@ -453,17 +453,17 @@ peppy stack launch simulation --with mujoco
 
 # Another robot in place of the first, on another machine, then its removal.
 peppy stack remove alpha
-peppy stack join openarm_v2_sim -i bravo --with xr_commander --place bravo@jetson-2
+peppy stack join openarm_v2_sim -i bravo --with xr_commander --place jetson-2
 peppy stack list
 peppy stack remove bravo
 
 # A stack with no robot yet, then robots as they arrive.
 peppy stack launch fleet
-peppy stack join openarm_v2 -i alpha --place alpha@jetson-1
-peppy stack join openarm_v1 -i bravo --with xr_commander --place bravo@jetson-2
+peppy stack join openarm_v2 -i alpha --place jetson-1
+peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
 ```
 
-`stack join` names the option to copy and, with `-i`, the copy's name, the way `node run` names a node and an instance. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` runs the whole copy there, at launch or at join, and a copy with no placement runs on the coordinator.
+`stack join` names the option to copy and, with `-i`, the copy's name, the way `node run` names a node and an instance. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
 
 `--set-arguments INSTANCE.ARGUMENT=JSON5` on `stack join` overrides one argument of one of the copy's instances, named as the fragment writes it, the way a copy entry's `arguments` does in the file. It applies after every adjustment, once per argument. Numbers must be finite; quote string values:
 

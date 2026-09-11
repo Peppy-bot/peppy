@@ -2606,15 +2606,7 @@ async fn copies_receive_shared_simulation_time_when_joining_late() {
         require_success(
             fleet
                 .coordinator
-                .peppy(&[
-                    "stack",
-                    "join",
-                    "probe",
-                    "-i",
-                    name,
-                    "--place",
-                    &format!("{name}@{host}"),
-                ])
+                .peppy(&["stack", "join", "probe", "-i", name, "--place", host])
                 .await,
             "join late clock consumer",
         );
@@ -2669,15 +2661,7 @@ async fn copies_join_and_remove_with_an_offline_neighbor() {
         require_success(
             federation
                 .robot
-                .peppy(&[
-                    "stack",
-                    "join",
-                    "arm",
-                    "-i",
-                    name,
-                    "--place",
-                    &format!("{name}@{host}"),
-                ])
+                .peppy(&["stack", "join", "arm", "-i", name, "--place", host])
                 .await,
             "join copy",
         );
@@ -2754,7 +2738,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
             .await,
         "launch shared node",
     );
-    let place_on_cloud = format!("failed@{}", federation.cloud_core_node);
+    let place_on_cloud = federation.cloud_core_node.clone();
     require_success(
         federation
             .robot

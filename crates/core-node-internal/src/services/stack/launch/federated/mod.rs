@@ -661,7 +661,7 @@ impl ParticipantSlices {
                 let participant = self.slices.first().ok_or_else(|| {
                     String::from(
                         "no machine hosts this change, so none decides its clock; place its \
-                         instances with --place NAME@CORE_NODE",
+                         instances on a machine with --place",
                     )
                 })?;
                 Ok(if participant.serves_sim_time {

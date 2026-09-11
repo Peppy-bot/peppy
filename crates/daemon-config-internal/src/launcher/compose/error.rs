@@ -206,8 +206,24 @@ pub enum CompositionError {
     ConstraintSpansCopyAxes { position: usize, axes: String },
 
     #[error(
+        "the launcher's adjustment of `{target}` names copy axes {axes}; a copy fills one \
+         axis, so a guard names one copy axis"
+    )]
+    AdjustmentSpansCopyAxes { target: String, axes: String },
+
+    #[error(
+        "copy `{name}` releases the vacant slot `{instance}.links.{slot}` and pairs nothing into \
+         it; link into it as `{instance}/{slot}` from the copy's own instance `links`"
+    )]
+    JoinReleasesUnpairedVacancy {
+        name: String,
+        instance: String,
+        slot: String,
+    },
+
+    #[error(
         "{origin} declares `core_nodes`, which a copy of `{axis}` cannot use; a copy is placed \
-         by its name with --place NAME@CORE_NODE"
+         whole: `--place NAME@CORE_NODE` at launch, `--place CORE_NODE` at join"
     )]
     CopyFragmentCoreNodes { origin: String, axis: String },
 

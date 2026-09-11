@@ -424,8 +424,8 @@ A launcher whose `components` include a `zero_or_more` axis runs that axis as co
 
 ```sh
 peppy stack launch fleet
-peppy stack join openarm_v2 -i alpha --place alpha@jetson-1
-peppy stack join openarm_v1 -i bravo --with xr_commander --place bravo@jetson-2
+peppy stack join openarm_v2 -i alpha --place jetson-1
+peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
 peppy stack list
 peppy stack remove bravo
 peppy stack reset --federated

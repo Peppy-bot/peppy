@@ -59,7 +59,7 @@ pub enum StackCommands {
         #[arg(value_name = "OPTION")]
         option: String,
         /// The copy's name: the prefix of every instance id it creates and
-        /// its placement link for --place.
+        /// its placement link.
         #[arg(short = 'i', long = "instance-id", value_name = "NAME", value_parser = parse_copy_name)]
         name: config::runtime::Name,
         #[command(flatten)]
@@ -68,10 +68,10 @@ pub enum StackCommands {
         /// value; the instance id is the one written in the option's fragment.
         #[arg(long = "set-arguments", value_name = "INSTANCE.ARGUMENT=JSON5")]
         arguments: Vec<core_node_api::encoding::ArgumentOverride>,
-        /// Run the whole copy on a machine: `NAME@<core-node>`, with NAME the
-        /// copy's name. Defaults to the coordinator, which `self` also names.
-        #[arg(long = "place", value_name = "NAME@CORE_NODE", value_parser = parse_place)]
-        place: Vec<(String, String)>,
+        /// Run the whole copy on a machine. Defaults to the coordinator,
+        /// which `self` also names.
+        #[arg(long = "place", value_name = "CORE_NODE", value_parser = join::parse_placement)]
+        place: Option<core_node_api::encoding::JoinPlacement>,
         #[command(flatten)]
         timeouts: StackTimeouts,
     },
@@ -159,26 +159,27 @@ fn parse_copy_name(raw: &str) -> Result<config::runtime::Name, String> {
     Ok(config::runtime::Name::new(placement.into_string()).expect("a core node name is a name"))
 }
 
-/// `--place NAME@CORE_NODE`, on launch and on join: NAME is a core node link
-/// the flat launcher carries, which every copy's name is one of.
+/// `--place NAME@CORE_NODE` on launch: NAME is a core node link the flat
+/// launcher carries, which every copy's name is one of.
 fn parse_place(raw: &str) -> Result<(String, String), String> {
     crate::commands::node::parse_key_at_target(raw, "--place", "NAME@CORE_NODE")
 }
 
-/// The phase budgets a launch or a join runs under.
-#[derive(clap::Args, Debug, Default)]
+/// The phase budgets a launch or a join runs under, each idle budget a
+/// positive number of seconds.
+#[derive(clap::Args, Debug)]
 pub struct StackTimeouts {
     /// Idle timeout in seconds for the node add phase (resets on git/http
     /// progress or sub-process output).
-    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_add_idle_timeout_secs: u64,
     /// Idle timeout in seconds for the node build phase (resets on build
     /// output or image-download/write progress).
-    #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS)]
+    #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_build_idle_timeout_secs: u64,
     /// Idle timeout in seconds for the node run-startup phase (resets on
     /// subprocess output until the node signals ready).
-    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
+    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_run_idle_timeout_secs: u64,
     /// Absolute maximum in seconds for the whole operation. Unset, only the
     /// idle timeouts apply.
