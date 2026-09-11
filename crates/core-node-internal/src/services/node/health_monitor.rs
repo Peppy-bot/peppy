@@ -53,7 +53,6 @@ pub(crate) enum HealthEdge {
 pub(crate) struct HealthTracker {
     failure_threshold: NonZeroU32,
     consecutive_misses: u32,
-    healthy: bool,
 }
 
 impl HealthTracker {
@@ -63,12 +62,11 @@ impl HealthTracker {
         Self {
             failure_threshold,
             consecutive_misses: 0,
-            healthy: true,
         }
     }
 
     pub(crate) fn healthy(&self) -> bool {
-        self.healthy
+        self.consecutive_misses < self.failure_threshold.get()
     }
 
     /// Misses recorded since the last pass.
@@ -78,21 +76,18 @@ impl HealthTracker {
 
     /// Folds one probe outcome in and reports the health edge it caused.
     pub(crate) fn record(&mut self, probe_passed: bool) -> Option<HealthEdge> {
-        if probe_passed {
-            self.consecutive_misses = 0;
-            if self.healthy {
-                return None;
-            }
-            self.healthy = true;
-            return Some(HealthEdge::Up);
-        }
+        let was_healthy = self.healthy();
+        self.consecutive_misses = if probe_passed {
+            0
+        } else {
+            self.consecutive_misses.saturating_add(1)
+        };
 
-        self.consecutive_misses = self.consecutive_misses.saturating_add(1);
-        if !self.healthy || self.consecutive_misses < self.failure_threshold.get() {
-            return None;
+        match (was_healthy, self.healthy()) {
+            (true, false) => Some(HealthEdge::Down),
+            (false, true) => Some(HealthEdge::Up),
+            _ => None,
         }
-        self.healthy = false;
-        Some(HealthEdge::Down)
     }
 }
 
@@ -360,6 +355,29 @@ mod tests {
         assert_eq!(tracker.record(true), Some(HealthEdge::Up));
         assert!(tracker.healthy());
         assert_eq!(tracker.consecutive_misses(), 0);
+    }
+
+    #[test]
+    fn recovery_rearms_the_full_failure_threshold_for_each_episode() {
+        let mut tracker = HealthTracker::new(threshold(3));
+
+        for _ in 0..3 {
+            for misses in 1..3 {
+                assert_eq!(tracker.record(false), None);
+                assert!(tracker.healthy());
+                assert_eq!(tracker.consecutive_misses(), misses);
+            }
+            assert_eq!(tracker.record(false), Some(HealthEdge::Down));
+            assert!(!tracker.healthy());
+            assert_eq!(tracker.consecutive_misses(), 3);
+            assert_eq!(tracker.record(false), None);
+            assert_eq!(tracker.consecutive_misses(), 4);
+
+            assert_eq!(tracker.record(true), Some(HealthEdge::Up));
+            assert!(tracker.healthy());
+            assert_eq!(tracker.consecutive_misses(), 0);
+            assert_eq!(tracker.record(true), None);
+        }
     }
 
     #[test]

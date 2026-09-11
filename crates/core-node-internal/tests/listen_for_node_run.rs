@@ -1974,33 +1974,22 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
         "unhealthy instance should remain tracked in the stack"
     );
 
-    // Verify the stack log recorded the unhealthy transition.
+    // The monitor appends the transition after updating the health flag, so
+    // wait for this instance's log entry independently of the flag.
     let stack_log_path = started.peppy_dirs.stack_log_path();
-    assert!(
-        stack_log_path.exists(),
-        "stack log file should exist at {:?}",
-        stack_log_path
+    let unhealthy_entry = format!(
+        "Instance '{TARGET_INSTANCE_ID}' of node '{TARGET_NODE_NAME}:{TARGET_NODE_TAG}' became \
+         unhealthy: 3 consecutive health checks failed, last: "
     );
-    let log_content =
-        std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
-    assert!(
-        log_content.contains(TARGET_INSTANCE_ID),
-        "stack log should mention the instance id, got:
-{}",
-        log_content
-    );
-    assert!(
-        log_content.contains("unhealthy"),
-        "stack log should record the unhealthy transition, got:
-{}",
-        log_content
-    );
-    assert!(
-        log_content.contains(TARGET_NODE_NAME),
-        "stack log should mention the node name, got:
-{}",
-        log_content
-    );
+    poll_until(
+        Duration::from_secs(5),
+        "stack log should record three consecutive failed health checks for the unhealthy instance",
+        || {
+            let content = std::fs::read_to_string(&stack_log_path).ok()?;
+            content.contains(&unhealthy_entry).then_some(())
+        },
+    )
+    .await;
 
     // Cleanup: the node was deliberately left alive so the monitor could flag
     // it unhealthy. Stop its process now that the assertions are done.
