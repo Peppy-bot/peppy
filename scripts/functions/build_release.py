@@ -854,8 +854,10 @@ def _offer_pending_upload(
         f"\nA previous run built the archives for [bold]{pending.tag}[/bold] "
         f"({pending.content.title}) at {built_from} but did not publish them:"
     )
+    # Paths print whole: rich would otherwise fold one longer than the console
+    # over several lines, and a path broken mid-word cannot be copied.
     for artifact in pending.artifacts:
-        console.print(f"  {artifact.asset_path}")
+        console.print(f"  {artifact.asset_path}", soft_wrap=True)
     if prompt_yn(
         "Upload and publish them now instead of rebuilding?", default_yes=True
     ):
@@ -1039,7 +1041,7 @@ def _run_local() -> None:
 
     console.print()
     for artifact in artifacts:
-        console.print(f"[green]Built:[/green] {artifact.asset_path}")
+        console.print(f"[green]Built:[/green] {artifact.asset_path}", soft_wrap=True)
 
 
 def _run_full(

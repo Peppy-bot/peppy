@@ -859,6 +859,28 @@ def test_offer_pending_upload_returns_the_manifest_when_accepted(
     assert manifest_path.exists()
 
 
+@patch("functions.build_release.prompt_yn", return_value=True)
+def test_offer_pending_upload_prints_every_archive_path_whole(
+    mock_prompt_yn: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A console narrower than any archive path. Rich folds an over-long word
+    # across lines, and a path split mid-word can neither be read back by this
+    # suite nor copied by the user: each one has to come out on a line of its own.
+    monkeypatch.setenv("COLUMNS", "40")
+    manifest_path = _record_pending(tmp_path)
+
+    pending = _offer_pending_upload(manifest_path, DEV_COMMIT)
+
+    assert pending is not None
+    printed = [line.strip() for line in capfd.readouterr().err.splitlines()]
+    for artifact in pending.artifacts:
+        assert len(str(artifact.asset_path)) > 40
+        assert str(artifact.asset_path) in printed
+
+
 @patch("functions.build_release.prompt_yn", return_value=False)
 def test_offer_pending_upload_keeps_the_manifest_when_refused(
     mock_prompt_yn: MagicMock, tmp_path: Path, capfd: pytest.CaptureFixture[str]
