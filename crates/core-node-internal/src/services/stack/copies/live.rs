@@ -65,7 +65,7 @@ pub(super) async fn check_live_stack(
         let holds_nodes = graph
             .nodes
             .iter()
-            .any(|node| node.stage != Some(core_node_api::NodeStage::Root));
+            .any(|node| node.stage != core_node_api::NodeStage::Root);
         if host != &ctx.bound_core_node && !holds_nodes {
             fresh_hosts.push(host.clone());
         }

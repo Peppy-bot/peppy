@@ -345,7 +345,7 @@ async fn validate_links_against_stack(
     let stack_nodes: Vec<_> = graph
         .nodes
         .iter()
-        .filter(|n| !matches!(n.stage, Some(NodeStage::Root)))
+        .filter(|n| !matches!(n.stage, NodeStage::Root))
         .collect();
 
     let info_futures = stack_nodes.iter().map(|node| async move {

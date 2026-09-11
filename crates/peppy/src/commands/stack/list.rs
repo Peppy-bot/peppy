@@ -254,8 +254,8 @@ fn live_instance_count(core_node: &str, live: Vec<pmi::CoreNodePresence>) -> usi
 
 fn sort_graph(nodes: &mut [SerializedNode], edges: &mut [SerializedEdge]) {
     nodes.sort_by(|a, b| {
-        let a_is_daemon = a.stage == Some(NodeStage::Root);
-        let b_is_daemon = b.stage == Some(NodeStage::Root);
+        let a_is_daemon = a.stage == NodeStage::Root;
+        let b_is_daemon = b.stage == NodeStage::Root;
         match (a_is_daemon, b_is_daemon) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
@@ -538,7 +538,7 @@ fn render_nodes_table(
         .map(|n| {
             vec![
                 paint(colorize, NODE_COLOR, &n.label()),
-                n.stage_label().to_string(),
+                n.stage.as_str().to_string(),
                 paint(colorize, COUNT_COLOR, &format_instances_compact(n)),
                 display_path(n),
             ]
@@ -885,7 +885,7 @@ mod tests {
             core_node: "core-a".to_string(),
             config_path: format!("/tmp/{}.json5", name),
             artifact_path: None,
-            stage: Some(stage),
+            stage,
             instances: instances
                 .into_iter()
                 .map(|(id, state)| SerializedInstance {
@@ -961,7 +961,7 @@ mod tests {
             core_node: "core-a".to_string(),
             config_path: format!("/tmp/{}.json5", name),
             artifact_path: None,
-            stage: Some(NodeStage::Ready),
+            stage: NodeStage::Ready,
             instances: instances
                 .into_iter()
                 .map(|(id, state, binds)| SerializedInstance {
@@ -1574,7 +1574,7 @@ mod tests {
             core_node: "core-a".to_string(),
             config_path: "/tmp/arm.json5".to_string(),
             artifact_path: None,
-            stage: Some(NodeStage::Ready),
+            stage: NodeStage::Ready,
             instances: vec![
                 SerializedInstance {
                     instance_id: "healthy-1".to_string(),

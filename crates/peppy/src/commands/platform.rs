@@ -276,10 +276,7 @@ fn daemon_has_user_nodes(ctx: &Arc<AppContext>) -> bool {
 /// would be wiped by a restart. Pure over the graph so the decision is
 /// unit-testable without a live daemon.
 fn stack_has_user_nodes(graph: &SerializedNodeGraph) -> bool {
-    graph
-        .nodes
-        .iter()
-        .any(|node| node.stage != Some(NodeStage::Root))
+    graph.nodes.iter().any(|node| node.stage != NodeStage::Root)
 }
 
 /// After credentials change, poke the running daemon over its control socket so
@@ -710,7 +707,7 @@ mod tests {
             core_node: "test-core".to_string(),
             config_path: format!("/tmp/{name}.json5"),
             artifact_path: None,
-            stage: Some(stage),
+            stage,
             instances: Vec::new(),
         }
     }

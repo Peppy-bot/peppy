@@ -729,7 +729,7 @@ async fn removing_the_last_copy_leaves_the_launcher_active_on_an_empty_stack() {
     let running: Vec<_> = graph
         .nodes
         .iter()
-        .filter(|node| node.stage != Some(core_node_api::NodeStage::Root))
+        .filter(|node| node.stage != core_node_api::NodeStage::Root)
         .flat_map(|node| &node.instances)
         .map(|instance| instance.instance_id.as_str())
         .collect();
