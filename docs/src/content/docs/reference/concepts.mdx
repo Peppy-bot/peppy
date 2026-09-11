@@ -62,7 +62,7 @@ A **Node Instance** represents a single running execution of a node. Each instan
 
 - **Instance ID**: A unique identifier for this running process
 - **State**: Its runtime lifecycle state: `starting` while it comes up, `running` once started, then the terminal `finished` (clean exit) or `failed` (crash) if its process exits on its own
-- **Health**: The result of the core node's latest liveness probe against a running instance, `healthy` or `unhealthy` (not applicable once the instance is terminal)
+- **Health**: Whether a running instance answers the core node's liveness probes, `healthy` or `unhealthy`; it turns `unhealthy` only after three consecutive missed probes (not applicable once the instance is terminal)
 
 A node can have multiple instances running simultaneously. For example, you might run multiple instances of a camera node, each connected to separate physical devices.
 
@@ -77,7 +77,7 @@ The **Node Stack** is the central data structure that manages all active nodes i
 
 1. **Dependency Management**: Tracks which nodes depend on which other nodes
 2. **Interface Validation**: Ensures nodes expose the interfaces their dependents require
-3. **Instance Lifecycle**: Manages the creation, health tracking, and removal of node instances. Running instances are continuously health-probed; a failing probe flags an instance `unhealthy` but never removes it, so an instance leaves the stack only when it is explicitly stopped or removed. See [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle) for details.
+3. **Instance Lifecycle**: Manages the creation, health tracking, and removal of node instances. Running instances are continuously health-probed; a sustained run of missed probes flags an instance `unhealthy` but never removes it, so an instance leaves the stack only when it is explicitly stopped or removed. See [Instance health and lifecycle](/guides/node_stack/#instance-health-and-lifecycle) for details.
 4. **Root Node**: Always contains a root node (the core node) that cannot be removed
 
 ### How dependencies work

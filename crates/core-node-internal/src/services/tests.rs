@@ -3,6 +3,7 @@ use crate::test_support::LogCapture;
 use daemon_config::consts::PeppyDirs;
 use peppylib::CoreNodePresenceMessenger;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -101,8 +102,11 @@ fn test_node_arguments() -> CoreNodeArguments {
     CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(5),
         node_start_health_timeout: Duration::from_secs(5),
-        health_monitor_interval: Duration::from_secs(5),
-        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor: HealthMonitorPolicy {
+            interval: Duration::from_secs(5),
+            timeout: Duration::from_secs(3),
+            failure_threshold: NonZeroU32::new(3).expect("non-zero"),
+        },
         clock_publish_interval: Duration::from_millis(100),
         heartbeat_interval: Duration::from_secs(5),
         daemon_use_sim_time: false,

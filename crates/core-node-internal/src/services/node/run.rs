@@ -1,5 +1,6 @@
 use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::gate::ConcurrencyGate;
+use super::health_monitor::{HealthMonitorParams, HealthMonitorPolicy, spawn_health_monitor};
 use super::pairing::plan_requested_pairs;
 use super::{
     FeedbackLine, FeedbackStream, RelationshipCoordinators, create_action_log_file,
@@ -151,8 +152,7 @@ pub struct NodeRunServiceConfig {
     pub node_startup_timeout: Duration,
     pub node_start_health_timeout: Duration,
     pub peppy_dirs: PeppyDirs,
-    pub health_monitor_interval: Duration,
-    pub health_monitor_timeout: Duration,
+    pub health_monitor: HealthMonitorPolicy,
     pub daemon_defaults: DaemonDefaults,
     /// Daemon-shutdown signal. Cancelled at the start of a clean shutdown so the
     /// per-node health monitors stop probing before the stack is torn down,
@@ -173,8 +173,7 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) node_startup_timeout: Duration,
     pub(crate) node_start_health_timeout: Duration,
     pub(crate) peppy_dirs: PeppyDirs,
-    pub(crate) health_monitor_interval: Duration,
-    pub(crate) health_monitor_timeout: Duration,
+    pub(crate) health_monitor: HealthMonitorPolicy,
     pub(crate) daemon_defaults: DaemonDefaults,
     pub(crate) shutdown_token: CancellationToken,
     pub(crate) relationships: RelationshipCoordinators,
@@ -237,8 +236,7 @@ pub async fn listen_for_node_run(
             node_startup_timeout: config.node_startup_timeout,
             node_start_health_timeout: config.node_start_health_timeout,
             peppy_dirs: config.peppy_dirs,
-            health_monitor_interval: config.health_monitor_interval,
-            health_monitor_timeout: config.health_monitor_timeout,
+            health_monitor: config.health_monitor,
             daemon_defaults: config.daemon_defaults,
             shutdown_token: config.shutdown_token,
             relationships: config.relationships,
@@ -1367,8 +1365,7 @@ async fn process_node_run(
                         node_tag: tag.clone(),
                         node_stack: Arc::clone(&ctx.action.node_stack),
                         peppy_dirs: ctx.action.peppy_dirs.clone(),
-                        interval: ctx.action.health_monitor_interval,
-                        timeout: ctx.action.health_monitor_timeout,
+                        policy: ctx.action.health_monitor,
                         shutdown_token: ctx.action.shutdown_token.clone(),
                         instance_done,
                     });
@@ -1765,189 +1762,6 @@ async fn wait_for_ready_signal(
             }
         }
     }
-}
-
-struct HealthMonitorParams {
-    messenger: MessengerHandle,
-    core_node_name: String,
-    caller_instance_id: String,
-    to_node_name: String,
-    target_core_node: String,
-    target_instance_id: Name,
-    node_tag: String,
-    node_stack: Arc<NodeStack>,
-    peppy_dirs: PeppyDirs,
-    interval: Duration,
-    timeout: Duration,
-    shutdown_token: CancellationToken,
-    /// Cancelled by the instance's exit watcher once its process exits on its
-    /// own, so the monitor stops the moment the instance goes terminal rather
-    /// than running one more probe (which would fail against the dead process
-    /// and log a misleading "became unhealthy" for a node that simply finished).
-    instance_done: CancellationToken,
-}
-
-/// Spawns a background task that periodically polls the node's health service
-/// and records the outcome on the instance's health flag, which `stack list`
-/// and `node info` surface. A failing probe marks the instance `unhealthy`; a
-/// later passing probe marks it `healthy` again. This task never removes the
-/// instance from the stack, so an unhealthy node stays visible until it
-/// recovers or is stopped explicitly (e.g. `node stop`).
-///
-/// The task exits when the instance is no longer found in the stack (stopped
-/// externally), when `instance_done` is cancelled (the instance's process
-/// exited on its own and the exit watcher has moved it to a terminal state), or
-/// when `shutdown_token` is cancelled (the daemon is shutting down, so the
-/// monitored nodes are being torn down on purpose and must not be reported
-/// unhealthy for it).
-fn spawn_health_monitor(p: HealthMonitorParams) {
-    tokio::spawn(async move {
-        let instance_id_str = p.target_instance_id.as_str().to_owned();
-        let request_payload = match NodeHealthRequest::new().encode() {
-            Ok(payload) => payload,
-            Err(e) => {
-                tracing::warn!(
-                    "Health monitor for '{}' failed to encode request: {}",
-                    instance_id_str,
-                    e
-                );
-                return;
-            }
-        };
-
-        // Tracks the previously observed health so the monitor logs only on
-        // transitions (a node going down or recovering), not on every failing
-        // tick. Instances start healthy, matching the flag's initial value.
-        let mut was_healthy = true;
-
-        loop {
-            // Wait out the probe interval, but bail the instant the daemon starts
-            // shutting down: probing nodes that are intentionally being torn down
-            // would log spurious "unhealthy" / "Session not initialized" warnings
-            // for the whole teardown window.
-            tokio::select! {
-                _ = p.shutdown_token.cancelled() => return,
-                _ = p.instance_done.cancelled() => return,
-                _ = tokio::time::sleep(p.interval) => {}
-            }
-
-            // Resolve the monitored instance once per tick. If it was removed
-            // externally (e.g. user ran `node stop`), our job is done: skip the
-            // poll and exit. The returned clone shares the instance's health
-            // flag (an `Arc<AtomicBool>`), so recording the probe result on it
-            // after the poll still updates the tracked instance even though it
-            // was resolved beforehand. Should the instance be removed during the
-            // poll, that write lands on a now-detached flag no reader can reach,
-            // so it is harmless.
-            let Some(instance) = p.node_stack.find_by_instance_id(&p.target_instance_id) else {
-                debug!(
-                    "Health monitor: instance '{}' no longer in stack, exiting",
-                    instance_id_str
-                );
-                return;
-            };
-
-            // Bound to a local so the borrow in `ServiceTarget::Producer` outlives
-            // the `select!` expansion (a temporary would be dropped too early).
-            let producer_ref = peppylib::messaging::ProducerRef::new(
-                p.target_core_node.as_str(),
-                p.target_instance_id.as_str(),
-            );
-            // Abandon an in-flight probe the moment shutdown starts, so a probe
-            // racing the session close cannot emit a teardown-time warning.
-            let poll_result = tokio::select! {
-                biased;
-                _ = p.shutdown_token.cancelled() => return,
-                _ = p.instance_done.cancelled() => return,
-                result = ServiceMessenger::poll(
-                    &p.messenger,
-                    &p.core_node_name,
-                    &p.caller_instance_id,
-                    SenderTarget::node_from_validated(&p.to_node_name, &p.node_tag),
-                    NODE_HEALTH_SERVICE,
-                    ServiceTarget::Producer(&producer_ref),
-                    request_payload.clone(),
-                    p.timeout,
-                ) => result,
-            };
-
-            let probe_succeeded = poll_result.is_ok();
-            let probe_error = poll_result.err();
-
-            // If either cancellation fired while this probe was in flight, stop
-            // here without recording or logging. `instance_done` means the
-            // instance's process exited on its own and the exit watcher is moving
-            // it to a terminal state, so a node that simply finished never
-            // produces a trailing "became unhealthy". `shutdown_token` means the
-            // daemon is tearing down on purpose, so a probe that raced the session
-            // close must not emit a teardown-time warning.
-            if p.instance_done.is_cancelled() || p.shutdown_token.is_cancelled() {
-                return;
-            }
-
-            // Record the probe result so `stack list` and `node info` can report
-            // health without re-probing. A failed probe flags the instance
-            // unhealthy; a later successful probe clears the flag. The instance
-            // is never removed here, so an unhealthy node stays visible in the
-            // stack until it recovers or is stopped explicitly.
-            instance.set_healthy(probe_succeeded);
-
-            // Log only on health edges so a node that stays down
-            // does not re-emit the same warning every tick.
-            match (was_healthy, probe_succeeded) {
-                // Down edge: alert once when a healthy node first fails.
-                (true, false) => {
-                    let reason = probe_error
-                        .as_ref()
-                        .map(|e| e.to_string())
-                        .unwrap_or_default();
-                    tracing::warn!(
-                        "Health monitor: instance '{}' of node '{}:{}' became unhealthy: {}",
-                        instance_id_str,
-                        p.to_node_name,
-                        p.node_tag,
-                        reason
-                    );
-                    super::append_stack_log(
-                        &p.peppy_dirs,
-                        &format!(
-                            "Instance '{}' of node '{}:{}' became unhealthy: \
-                             failed health check ({})",
-                            instance_id_str, p.to_node_name, p.node_tag, reason,
-                        ),
-                    );
-                }
-                // Up edge: the node came back.
-                (false, true) => {
-                    tracing::info!(
-                        "Health monitor: instance '{}' of node '{}:{}' recovered",
-                        instance_id_str,
-                        p.to_node_name,
-                        p.node_tag
-                    );
-                    super::append_stack_log(
-                        &p.peppy_dirs,
-                        &format!(
-                            "Instance '{}' of node '{}:{}' recovered after a failed health check",
-                            instance_id_str, p.to_node_name, p.node_tag,
-                        ),
-                    );
-                }
-                // No edge: a low-noise debug heartbeat while still failing; the
-                // `if let` makes the still-healthy case a no-op.
-                (false, false) | (true, true) => {
-                    if let Some(err) = &probe_error {
-                        debug!(
-                            "Health monitor: instance '{}' health check still failing: {}",
-                            instance_id_str, err
-                        );
-                    }
-                }
-            }
-
-            was_healthy = probe_succeeded;
-        }
-    });
 }
 
 struct ExitWatcherParams {

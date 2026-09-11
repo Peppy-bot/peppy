@@ -1,9 +1,10 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::NodeConfigParser;
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -352,8 +353,11 @@ impl ServeCommandEmulation {
             arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),
-                health_monitor_interval: Duration::from_secs(5),
-                health_monitor_timeout: Duration::from_secs(3),
+                health_monitor: HealthMonitorPolicy {
+                    interval: Duration::from_secs(5),
+                    timeout: Duration::from_secs(3),
+                    failure_threshold: NonZeroU32::new(3).expect("non-zero"),
+                },
                 clock_publish_interval: Duration::from_millis(100),
                 heartbeat_interval: Duration::from_secs(5),
                 daemon_use_sim_time: false,

@@ -3,12 +3,13 @@
 use super::poll::AbortOnDrop;
 use super::test_node_target;
 use config::consts::DEFAULT_MESSAGING_HOST;
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
 use peppylib::runtime::spawn;
 use pmi::{Messenger, MessengerAdapter, MessengerBackend, MockAdapter};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -54,8 +55,11 @@ fn default_node_arguments() -> CoreNodeArguments {
     CoreNodeArguments {
         node_startup_timeout: Duration::from_secs(10),
         node_start_health_timeout: Duration::from_secs(30),
-        health_monitor_interval: Duration::from_secs(5),
-        health_monitor_timeout: Duration::from_secs(3),
+        health_monitor: HealthMonitorPolicy {
+            interval: Duration::from_secs(5),
+            timeout: Duration::from_secs(3),
+            failure_threshold: NonZeroU32::new(3).expect("non-zero"),
+        },
         // Faster than the production default (100 ms) so publish_clock tests
         // observe several ticks within a small fixed budget without flaking.
         clock_publish_interval: Duration::from_millis(50),
@@ -265,15 +269,26 @@ pub async fn start_core_node_with_health_timeout(
     .await
 }
 
+/// A health monitor policy that probes every 200ms with a 100ms budget, so
+/// tests observe transitions within a few hundred milliseconds. The threshold
+/// is the test's choice: the production value (3) to exercise the real
+/// tolerance, or 1 when the test asserts that no transition is ever logged and
+/// wants a regressed monitor to show itself on the first missed probe.
+pub fn fast_health_monitor(failure_threshold: u32) -> HealthMonitorPolicy {
+    HealthMonitorPolicy {
+        interval: Duration::from_millis(200),
+        timeout: Duration::from_millis(100),
+        failure_threshold: NonZeroU32::new(failure_threshold).expect("non-zero threshold"),
+    }
+}
+
 pub async fn start_core_node_with_health_monitor(
-    health_monitor_interval: Duration,
-    health_monitor_timeout: Duration,
+    health_monitor: HealthMonitorPolicy,
 ) -> StartedCoreNode {
     let (data_dir, peppy_dirs) = init_test_data_dir();
     let shared_messenger = create_mock_messenger().await;
     let mut args = default_node_arguments();
-    args.health_monitor_interval = health_monitor_interval;
-    args.health_monitor_timeout = health_monitor_timeout;
+    args.health_monitor = health_monitor;
     start_core_node_with_messenger(
         shared_messenger,
         args,

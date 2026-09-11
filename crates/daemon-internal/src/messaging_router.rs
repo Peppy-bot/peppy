@@ -13,9 +13,10 @@ use tracing::{error, info, warn};
 /// [`WATCHDOG_MAX_FAILURES`]) is tuned so the watchdog detects a wedge, respawns
 /// a managed zenohd, and lets node sessions reconnect promptly. An adopted
 /// router is reported loudly but remains under operator control. While a session
-/// is down the core node's health monitor flags the affected nodes unhealthy and
-/// clears the flag once they reconnect, so a transient router hang surfaces as
-/// a brief unhealthy blip rather than tearing the stack down.
+/// is down the core node's health monitor counts each node's missed probes and
+/// flags a node unhealthy only once they reach its threshold, so a short router
+/// hang leaves the stack's health untouched and a long one surfaces as an
+/// unhealthy window rather than tearing the stack down.
 const WATCHDOG_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 /// Per-probe timeout. A wedged router exceeds any real localhost round-trip.
 const WATCHDOG_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
