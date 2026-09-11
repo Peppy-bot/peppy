@@ -364,6 +364,7 @@ def _setup_run_full_mocks(
     )
 
 
+@patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._commit_notes_and_align_main")
 @patch("functions.build_release._prepare_release_content")
@@ -407,6 +408,7 @@ def test_run_full_uploads_all_artifacts(
     mock_prepare: MagicMock,
     mock_align: MagicMock,
     mock_docs_gate: MagicMock,
+    mock_need_cmd: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -462,6 +464,7 @@ def test_run_full_uploads_all_artifacts(
     assert "untagged" not in captured.err
 
 
+@patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.delete_release")
@@ -501,6 +504,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_delete_release: MagicMock,
     mock_prepare: MagicMock,
     mock_docs_gate: MagicMock,
+    mock_need_cmd: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -540,6 +544,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     assert f"checkout of 'dev' at {DEV_COMMIT[:12]} on another machine" in output
 
 
+@patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._prepare_release_content")
 @patch("functions.build_release.delete_release")
@@ -579,6 +584,7 @@ def test_run_full_warns_on_cleanup_failure(
     mock_delete_release: MagicMock,
     mock_prepare: MagicMock,
     mock_docs_gate: MagicMock,
+    mock_need_cmd: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -605,6 +611,7 @@ def test_run_full_warns_on_cleanup_failure(
     mock_publish.assert_not_called()
 
 
+@patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch(
     "functions.build_release._commit_notes_and_align_main",
@@ -651,6 +658,7 @@ def test_run_full_reports_manual_steps_when_git_align_fails(
     mock_prepare: MagicMock,
     mock_align: MagicMock,
     mock_docs_gate: MagicMock,
+    mock_need_cmd: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -1569,6 +1577,7 @@ def test_find_open_docs_sync_pr_returns_none_when_there_is_no_pr(
     )
 
 
+@patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release.build_github_client")
 @patch("functions.build_release.github_repo_slug")
@@ -1590,6 +1599,7 @@ def test_run_full_skips_the_docs_gate_when_asked(
     mock_slug: MagicMock,
     mock_client: MagicMock,
     mock_docs_gate: MagicMock,
+    mock_need_cmd: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
