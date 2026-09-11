@@ -68,6 +68,15 @@ pub(super) struct HostedNode {
     pub(super) core_node: CoreNodeName,
 }
 
+/// A node whose add on a peer outlived its budget: whether the peer holds
+/// it is known by asking, and the fingerprint tells the join's entity from
+/// one that was there before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct UnresolvedAdd {
+    pub(super) hosted: HostedNode,
+    pub(super) config_sha256: String,
+}
+
 /// The copy a join is adding, read by the launch phases that run for the
 /// join and by its rollback: which nodes already run and are reused as
 /// they are, which nodes the join brings to which machines, which machines
@@ -291,7 +300,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // first: if one refuses, this daemon still has its own stack. Each one is
     // handed the bind sources its slice needs, to prepare while it is empty.
     let participants = change.reserved.core_nodes();
-    if let Err(reason) = federated::begin_participant_slices(
+    if let Err(refusal) = federated::begin_participant_slices(
         &ctx,
         &goal.launch_id,
         &participants,
@@ -302,11 +311,16 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     )
     .await
     {
-        publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-        federated::clear_participant_slices(&ctx, &participants).await;
+        publish_stderr(
+            &ctx,
+            refusal.reason.clone(),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
+        federated::clear_participant_slices(&ctx, &refusal.holders_among(&participants)).await;
         return release_and_fail(
             change.reserved,
-            LaunchResult::failure(&ctx.log_path, reason),
+            LaunchResult::failure(&ctx.log_path, refusal.reason),
         )
         .await;
     }
@@ -370,6 +384,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &placements,
             &mut add_log_paths,
             &mut build_log_paths,
+            // A failed launch clears every participant's slice, and with it
+            // whatever a peer holds for an add that outlived its budget.
+            &mut Vec::new(),
         )
         .await?;
 

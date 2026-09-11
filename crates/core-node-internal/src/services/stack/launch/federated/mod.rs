@@ -39,8 +39,8 @@
 mod dispatch;
 
 pub(in crate::services::stack) use dispatch::{
-    begin_participant_slices, clear_participant_slices, restore_participant_watchers,
-    run_remote_goal,
+    RemoteGoalFailure, begin_participant_slices, clear_participant_slices, run_remote_goal,
+    set_participant_watchers,
 };
 
 use crate::services::stack::action::StackChangeContext;
@@ -228,6 +228,22 @@ fn partition_reservations<'a>(
     Ok(by_core_node)
 }
 
+/// The core nodes live on the federation right now, read from zenoh presence.
+pub(in crate::services::stack) async fn live_core_nodes(
+    messenger: &MessengerHandle,
+) -> std::result::Result<BTreeSet<String>, String> {
+    Ok(CoreNodePresenceMessenger::list_live(
+        messenger,
+        None,
+        CoreNodePresenceMessenger::LIST_TIMEOUT,
+    )
+    .await
+    .map_err(|e| format!("could not enumerate the federation: {e}"))?
+    .into_iter()
+    .map(|claim| claim.core_node)
+    .collect())
+}
+
 /// Refuses any wired core node that is not live on the federation.
 ///
 /// Liveness is read from zenoh presence, not from the platform HTTP roster: a
@@ -237,17 +253,7 @@ async fn reject_unreachable_core_nodes(
     messenger: &MessengerHandle,
     wanted: &BTreeSet<String>,
 ) -> std::result::Result<(), String> {
-    let live: BTreeSet<String> = CoreNodePresenceMessenger::list_live(
-        messenger,
-        None,
-        CoreNodePresenceMessenger::LIST_TIMEOUT,
-    )
-    .await
-    .map_err(|e| format!("could not enumerate the federation: {e}"))?
-    .into_iter()
-    .map(|claim| claim.core_node)
-    .collect();
-
+    let live = live_core_nodes(messenger).await?;
     let missing: Vec<&String> = wanted.difference(&live).collect();
     if missing.is_empty() {
         return Ok(());

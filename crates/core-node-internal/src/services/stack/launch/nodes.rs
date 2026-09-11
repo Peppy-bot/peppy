@@ -1,11 +1,15 @@
 //! The add-and-build phase of a stack change: every node of the plan present
 //! and built on each machine that runs part of it, before any instance starts.
 
+use super::federated::RemoteGoalFailure;
 use super::feedback::publish_stdout;
 use super::orchestrate::{add_node_directly, build_node_directly};
-use super::{NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, federated};
+use super::{
+    HostedNode, NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, UnresolvedAdd, federated,
+};
 use crate::services::node::pins::encode_pins;
 use crate::services::stack::action::StackChangeContext;
+use config::runtime::CoreNodeName;
 use core_node_api::encoding::{
     LaunchFeedbackStep, NodeAddGoal, NodeAddLogEntry, NodeBuildGoal, NodeBuildLogEntry, NodeSource,
 };
@@ -67,12 +71,16 @@ fn is_built_in(item: &PlannedDeployment) -> bool {
 fn hosts_of(
     item: &PlannedDeployment,
     placements: &daemon_config::launcher::Placements,
-) -> Vec<String> {
-    let mut hosts: Vec<String> = item
+) -> Vec<CoreNodeName> {
+    let mut hosts: Vec<CoreNodeName> = item
         .deployment
         .instances
         .iter()
-        .map(|instance| placements.of(instance.instance_id.as_str()).to_owned())
+        .map(|instance| {
+            placements
+                .core_node_of(instance.instance_id.as_str())
+                .clone()
+        })
         .collect();
     hosts.sort();
     hosts.dedup();
@@ -89,6 +97,9 @@ fn hosts_of(
 /// launch twice as slow for no invariant. Within a group the order is exactly
 /// what a single-machine launch does, because that is where the ordering
 /// actually matters (a node's transitive dependencies).
+///
+/// `unresolved` collects the nodes whose add on a peer outlived its budget:
+/// whether each landed is known only by asking that peer.
 #[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 pub(in crate::services::stack) async fn add_nodes_to_stack(
     ctx: &StackChangeContext,
@@ -99,6 +110,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     placements: &daemon_config::launcher::Placements,
     add_log_paths: &mut Vec<NodeAddLogEntry>,
     build_log_paths: &mut Vec<NodeBuildLogEntry>,
+    unresolved: &mut Vec<UnresolvedAdd>,
 ) -> std::result::Result<(), String> {
     publish_stdout(
         ctx,
@@ -107,7 +119,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     )
     .await;
 
-    let mut by_core_node: BTreeMap<String, Vec<&NodeKey>> = BTreeMap::new();
+    let mut by_core_node: BTreeMap<CoreNodeName, Vec<&NodeKey>> = BTreeMap::new();
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
             continue;
@@ -127,6 +139,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
     for group in groups {
         add_log_paths.extend(group.add_logs);
         build_log_paths.extend(group.build_logs);
+        unresolved.extend(group.unresolved);
         // Report the FIRST failure but keep collecting every group's logs: a
         // launch that failed on one machine still produced logs on the others,
         // and those are usually what explains it.
@@ -146,6 +159,7 @@ pub(in crate::services::stack) async fn add_nodes_to_stack(
 struct GroupOutcome {
     add_logs: Vec<NodeAddLogEntry>,
     build_logs: Vec<NodeBuildLogEntry>,
+    unresolved: Vec<UnresolvedAdd>,
     failure: Option<String>,
 }
 
@@ -153,7 +167,7 @@ async fn add_and_build_group(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
     change: PhaseChange<'_>,
-    core_node: &str,
+    core_node: &CoreNodeName,
     keys: &[&NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     local: &str,
@@ -165,7 +179,7 @@ async fn add_and_build_group(
             continue;
         };
 
-        if change.reuses(key, core_node) {
+        if change.reuses(key, core_node.as_str()) {
             continue;
         }
 
@@ -176,7 +190,7 @@ async fn add_and_build_group(
         )
         .await;
 
-        if core_node != local {
+        if core_node.as_str() != local {
             if let Err(reason) =
                 add_and_build_remotely(ctx, phase, core_node, key, item, &mut outcome).await
             {
@@ -296,7 +310,7 @@ async fn add_and_build_group(
 async fn add_and_build_remotely(
     ctx: &StackChangeContext,
     phase: &PhaseGoal,
-    core_node: &str,
+    core_node: &CoreNodeName,
     key: &NodeKey,
     item: &PlannedDeployment,
     outcome: &mut GroupOutcome,
@@ -312,15 +326,26 @@ async fn add_and_build_remotely(
     .with_launch_id(&phase.launch_id)
     .with_pins(encode_pins(&item.closure_pins)?);
     let added =
-        match federated::run_remote_goal(ctx, core_node, &add_goal, ctx.idle_timeouts.add).await {
+        match federated::run_remote_goal(ctx, core_node.as_str(), &add_goal, ctx.idle_timeouts.add)
+            .await
+        {
             Ok(run) => {
                 outcome.add_logs.push(NodeAddLogEntry {
                     node_label: key.label(),
                     log_path: run.log_path,
                     failed: run.outcome.is_err(),
-                    core_node: core_node.to_owned(),
+                    core_node: core_node.to_string(),
                 });
-                run.outcome
+                if matches!(run.outcome, Err(RemoteGoalFailure::Unresolved(_))) {
+                    outcome.unresolved.push(UnresolvedAdd {
+                        hosted: HostedNode {
+                            node: key.clone(),
+                            core_node: core_node.clone(),
+                        },
+                        config_sha256: item.config_sha256.clone(),
+                    });
+                }
+                run.outcome.map_err(|failure| failure.to_string())
             }
             Err(reason) => Err(reason),
         }
@@ -336,15 +361,22 @@ async fn add_and_build_remotely(
         added.node_tag.unwrap_or_else(|| item.node_tag.clone()),
         ctx.idle_timeouts.build,
     );
-    match federated::run_remote_goal(ctx, core_node, &build_goal, ctx.idle_timeouts.build).await {
+    match federated::run_remote_goal(
+        ctx,
+        core_node.as_str(),
+        &build_goal,
+        ctx.idle_timeouts.build,
+    )
+    .await
+    {
         Ok(run) => {
             outcome.build_logs.push(NodeBuildLogEntry {
                 node_label: key.label(),
                 log_path: run.log_path,
                 failed: run.outcome.is_err(),
-                core_node: core_node.to_owned(),
+                core_node: core_node.to_string(),
             });
-            run.outcome
+            run.outcome.map_err(|failure| failure.to_string())
         }
         Err(reason) => Err(reason),
     }

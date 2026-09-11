@@ -381,7 +381,7 @@ async fn start_remotely(
                 failed: run.outcome.is_err(),
                 core_node: core_node.to_owned(),
             });
-            run.outcome
+            run.outcome.map_err(|failure| failure.to_string())
         }
         Err(reason) => Err(reason),
     }

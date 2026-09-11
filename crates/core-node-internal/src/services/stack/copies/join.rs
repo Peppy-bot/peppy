@@ -6,19 +6,21 @@ use super::super::action::StackChangeContext;
 use super::super::container_mounts::{
     LocalMounts, hosts_container_nodes, prepare_local_container_mounts,
 };
-use super::super::launch::clock::{TimeSource, plan_fleet};
+use super::super::launch::clock::{TimeSource, plan_fleet, warn_when_no_time_source};
 use super::super::launch::feedback::publish_stdout;
 use super::super::launch::nodes::add_nodes_to_stack;
 use super::super::launch::orchestrate::validate_and_order_dependencies;
 use super::super::launch::preflight::preflight_change;
 use super::super::launch::start::start_node_instances;
-use super::super::launch::watchers::{lifecycle_watchers, watchers_to_restore};
-use super::super::launch::{HostedNode, JoinScope, NodeKey, PhaseChange, PhaseGoal, federated};
+use super::super::launch::watchers::{lifecycle_watchers, watchers_replacing};
+use super::super::launch::{
+    HostedNode, JoinScope, NodeKey, PhaseChange, PhaseGoal, UnresolvedAdd, federated,
+};
 use super::super::state::{ActiveLaunch, StackCopy, instance_ids_in_start_order};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
 use super::{
     change_active_launch,
-    live::{LiveCheck, check_live_stack},
+    live::{LiveCheck, check_live_stack, node_info_on},
     plan::{ResolvedJoin, join_dependencies, selected_instances},
     reason,
     remove::stop_copy,
@@ -50,11 +52,14 @@ pub(in crate::services::stack) async fn join(
     result.with_node_logs(logs.add, logs.build, logs.run)
 }
 
+/// What the join's node phases produced: the log of every add, build and
+/// run, and the nodes whose add on a peer outlived its budget.
 #[derive(Default)]
 struct JoinLogs {
     add: Vec<NodeAddLogEntry>,
     build: Vec<NodeBuildLogEntry>,
     run: Vec<NodeRunLogEntry>,
+    unresolved: Vec<UnresolvedAdd>,
 }
 
 /// How far a join got, so its rollback undoes what happened and nothing
@@ -173,6 +178,7 @@ async fn join_inner(
     let mut stage = JoinStage::Planned;
     let operation = async {
         let clock = change.reserved.established_clock(&change.clock)?;
+        warn_when_no_time_source(ctx, &planned, &clock).await;
         let live = check_live_stack(
             ctx,
             LiveCheck {
@@ -211,7 +217,7 @@ async fn join_inner(
                 })
             })
             .collect();
-        let scope: &JoinScope = scope.insert(JoinScope {
+        let scope: &mut JoinScope = scope.insert(JoinScope {
             name: goal.name.clone(),
             copy: record.clone(),
             existing_nodes: live.reusable,
@@ -219,7 +225,7 @@ async fn join_inner(
             fresh_hosts: live.fresh_hosts,
             participants: participants.clone(),
             placements: placements.clone(),
-            restored_watchers: watchers_to_restore(&previous.watchers, &watchers),
+            restored_watchers: watchers_replacing(&watchers, &previous.watchers),
         });
         stage = JoinStage::SlicesBegun;
         federated::begin_participant_slices(
@@ -231,7 +237,15 @@ async fn join_inner(
             &placements,
             true,
         )
-        .await?;
+        .await
+        .map_err(|refusal| {
+            // A machine that refused kept its own stack and takes no
+            // watchers; the rollback clears the fresh machines that took
+            // the slice and re-points the rest.
+            scope.fresh_hosts = refusal.holders_among(&scope.fresh_hosts);
+            scope.participants = refusal.holders_among(&scope.participants);
+            refusal.reason
+        })?;
         stage = JoinStage::RecordChanged;
         active.flat = combined;
         active.planned = planned;
@@ -254,6 +268,7 @@ async fn join_inner(
             &placements,
             &mut logs.add,
             &mut logs.build,
+            &mut logs.unresolved,
         )
         .await?;
         let pairings: Vec<_> = pairings
@@ -289,7 +304,7 @@ async fn join_inner(
         .unwrap_or_else(|panic| Err(format!("join failed: {}", panic_message(&*panic))));
     let outcome = match (outcome, scope) {
         (Err(error), Some(scope)) => {
-            match rollback_join(ctx, &scope, stage, &logs.add, previous, active).await {
+            match rollback_join(ctx, &scope, stage, logs, previous, active).await {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(format!("{error}; {cleanup}")),
             }
@@ -313,7 +328,8 @@ async fn join_inner(
 }
 
 /// Undoes what the failed join's stage did: stops what it started, removes
-/// the nodes it added, puts every machine's sources back on their previous
+/// the nodes it added and the nodes a peer holds for an add that outlived
+/// its budget, puts every machine's sources back on their previous
 /// watchers, clears the machines that held nothing before it, hands the
 /// time source its previous participants, and restores the record it
 /// started from. A cleanup that fails leaves the copy recorded, so `stack
@@ -322,7 +338,7 @@ async fn rollback_join(
     ctx: &StackChangeContext,
     scope: &JoinScope,
     stage: JoinStage,
-    added: &[NodeAddLogEntry],
+    logs: &JoinLogs,
     previous: ActiveLaunch,
     active: &mut ActiveLaunch,
 ) -> ChangeResult<()> {
@@ -333,17 +349,24 @@ async fn rollback_join(
             stop_copy(ctx, launch_id, &scope.copy).await?;
         }
         if plan.removes_added_nodes {
-            for hosted in scope.added_nodes().filter(|hosted| landed(added, hosted)) {
+            for hosted in scope.added_nodes() {
                 if scope.fresh_hosts.contains(&hosted.core_node.to_string()) {
                     continue;
                 }
-                remove_node(ctx, launch_id, hosted).await?;
+                let present = landed(&logs.add, hosted)
+                    || match logs.unresolved.iter().find(|add| add.hosted == *hosted) {
+                        Some(add) => holds_node(ctx, hosted, &add.config_sha256).await?,
+                        None => false,
+                    };
+                if present {
+                    remove_node(ctx, launch_id, hosted).await?;
+                }
             }
         }
         if plan.clears_slices {
             // Ahead of the clearing: a machine takes watchers for this launch
             // only while it holds its slice.
-            federated::restore_participant_watchers(
+            federated::set_participant_watchers(
                 ctx,
                 launch_id,
                 &scope.participants,
@@ -370,6 +393,21 @@ async fn rollback_join(
     })?;
     *active = previous;
     Ok(())
+}
+
+/// Whether `hosted`'s machine holds the node the join added, asked after
+/// an add that outlived its budget: an entity of that name with another
+/// fingerprint was there before the join.
+async fn holds_node(
+    ctx: &StackChangeContext,
+    hosted: &HostedNode,
+    config_sha256: &str,
+) -> ChangeResult<bool> {
+    let response = node_info_on(ctx, hosted.core_node.as_str(), &hosted.node).await?;
+    Ok(matches!(
+        response,
+        core_node_api::encoding::NodeInfoResponse::Found(info) if info.config_integrity == config_sha256
+    ))
 }
 
 /// Whether the add phase put `hosted` on its machine.

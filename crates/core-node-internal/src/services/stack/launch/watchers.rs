@@ -43,20 +43,25 @@ pub(in crate::services::stack) fn set_local_watchers(
     }
 }
 
-/// The lists that put `previous` back over `established`: the previous plan's
-/// watchers, and an empty list for each source the change introduced.
-pub(in crate::services::stack) fn watchers_to_restore(
-    previous: &LifecycleWatchers,
-    established: &LifecycleWatchers,
+/// The lists that turn `current` into `next`: `next`'s list for every source
+/// whose machines differ, an empty list for a source `next` does not watch.
+pub(in crate::services::stack) fn watchers_replacing(
+    current: &LifecycleWatchers,
+    next: &LifecycleWatchers,
 ) -> LifecycleWatchers {
-    established
+    let none = BTreeSet::new();
+    current
         .keys()
-        .map(|source| (source.clone(), BTreeSet::new()))
-        .chain(
-            previous
-                .iter()
-                .map(|(source, hosts)| (source.clone(), hosts.clone())),
-        )
+        .chain(next.keys())
+        .filter(|source| {
+            current.get(*source).unwrap_or(&none) != next.get(*source).unwrap_or(&none)
+        })
+        .map(|source| {
+            (
+                source.clone(),
+                next.get(source).cloned().unwrap_or_default(),
+            )
+        })
         .collect()
 }
 
@@ -114,32 +119,31 @@ mod tests {
         assert!(local[&source].is_empty());
     }
 
-    /// Every source a change re-pointed is named again: one the previous plan
-    /// watched gets its own machines back, one the change introduced gets an
-    /// empty list, and a source neither plan watched stays absent.
+    /// Every source whose machines change is named: one the next plan
+    /// watches from other machines gets that list, one the next plan does not
+    /// watch gets an empty list, and one watched the same way by both plans
+    /// stays absent.
     #[test]
-    fn the_restore_lists_undo_every_source_the_change_re_pointed() {
+    fn the_replacing_lists_name_every_source_whose_watchers_change() {
         let source = |id: &str| Name::new(id).unwrap();
         let hosts = |host: &str| BTreeSet::from([CoreNodeName::new(host).unwrap()]);
-        let previous = LifecycleWatchers::from([
-            (source("arm_inst"), hosts("cloud")),
-            (source("shared_inst"), BTreeSet::new()),
-        ]);
-        let established = LifecycleWatchers::from([
+        let current = LifecycleWatchers::from([
             (source("arm_inst"), hosts("edge")),
             (source("alpha_arm_inst"), hosts("cloud")),
+            (source("shared_inst"), hosts("cloud")),
+        ]);
+        let next = LifecycleWatchers::from([
+            (source("arm_inst"), hosts("cloud")),
+            (source("shared_inst"), hosts("cloud")),
         ]);
 
         assert_eq!(
-            watchers_to_restore(&previous, &established),
+            watchers_replacing(&current, &next),
             LifecycleWatchers::from([
                 (source("arm_inst"), hosts("cloud")),
                 (source("alpha_arm_inst"), BTreeSet::new()),
-                (source("shared_inst"), BTreeSet::new()),
             ])
         );
-        assert!(
-            watchers_to_restore(&LifecycleWatchers::new(), &LifecycleWatchers::new()).is_empty()
-        );
+        assert!(watchers_replacing(&next, &next).is_empty());
     }
 }

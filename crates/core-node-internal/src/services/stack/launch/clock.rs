@@ -117,15 +117,39 @@ pub(super) async fn advise_on_clock_shape(
         (None, federated::ClockDemand::Sim(_)) => {
             publish_stderr(
                 ctx,
-                "this simulated launch declares no time source (no instance sets `framework: \
-                 { publishes_sim_time: true }`): every sim-time instance will wait at `clock \
-                 not ready` until an external publisher feeds each machine's `clock` topic."
-                    .to_owned(),
+                NO_TIME_SOURCE.to_owned(),
                 LaunchFeedbackStep::LauncherStep,
             )
             .await;
         }
         _ => {}
+    }
+}
+
+/// The warning for a simulated-time stack with no declared source.
+const NO_TIME_SOURCE: &str = "this simulated launch declares no time source (no instance sets \
+                              `framework: { publishes_sim_time: true }`): every sim-time instance \
+                              will wait at `clock not ready` until an external publisher feeds \
+                              each machine's `clock` topic.";
+
+/// A join onto a simulated-time stack that declares no source warns, as the
+/// launch did: the copy's sim-time instances wait at `clock not ready`.
+pub(in crate::services::stack) async fn warn_when_no_time_source(
+    ctx: &StackChangeContext,
+    planned: &[PlannedDeployment],
+    clock_demand: &federated::ClockDemand,
+) {
+    let declared = planned
+        .iter()
+        .flat_map(|item| &item.deployment.instances)
+        .any(|instance| instance.framework.publishes_sim_time);
+    if !declared && matches!(clock_demand, federated::ClockDemand::Sim(_)) {
+        publish_stderr(
+            ctx,
+            NO_TIME_SOURCE.to_owned(),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
     }
 }
 

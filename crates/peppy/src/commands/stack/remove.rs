@@ -1,6 +1,7 @@
 //! `peppy stack remove`: one copy off the running stack.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use core_node_api::encoding::StackBudgets;
 use peppylib::core_node::transport::poll;
@@ -9,6 +10,9 @@ use super::goal::drive_stack_goal;
 use crate::commands::{CALLER_INSTANCE_ID, GOAL_TIMEOUT};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
+
+/// How long the copy's host has to report its shutdown grace.
+const HOST_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) fn remove(ctx: &Arc<AppContext>, name: config::runtime::Name) -> Result<()> {
     crate::commands::block_on(async {
@@ -30,22 +34,21 @@ pub(super) fn remove(ctx: &Arc<AppContext>, name: config::runtime::Name) -> Resu
                 let grace = if copy.core_node.as_str() == conn.target_core_node {
                     stack.shutdown_grace_secs
                 } else {
+                    // The host's grace sizes the watchdog. A host that does
+                    // not answer in time is one the daemon drops the copy
+                    // from when it is off the federation, or stops under
+                    // that host's own grace when it is merely slow; the
+                    // coordinator's grace stands in for it then.
                     poll(
                         &core_node_api::encoding::StackListRequest::new(),
                         conn.messenger,
                         &conn.core_node_name,
                         CALLER_INSTANCE_ID,
                         copy.core_node.as_str(),
-                        GOAL_TIMEOUT,
+                        HOST_PROBE_TIMEOUT,
                     )
                     .await
-                    .map_err(|error| {
-                        Error::ExecutionFailed(format!(
-                            "cannot inspect shutdown settings on `{}`: {error}",
-                            copy.core_node,
-                        ))
-                    })?
-                    .shutdown_grace_secs
+                    .map_or(stack.shutdown_grace_secs, |host| host.shutdown_grace_secs)
                 };
                 removal_idle_timeout(grace, copy.instance_ids.len())
             }

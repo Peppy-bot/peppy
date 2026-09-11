@@ -61,11 +61,11 @@ pub(crate) struct FederationServiceContext {
 
 /// Declares the listener for one federation endpoint.
 ///
-/// The five endpoints differ only in which [`ServiceId`] they bind and which
+/// The six endpoints differ only in which [`ServiceId`] they bind and which
 /// handler they run; binding, spawning, and turning the handler's `Result` into
 /// a service response are identical for all of them. Stating that once is what
-/// stops a change to how these endpoints are served from landing on four of the
-/// five.
+/// stops a change to how these endpoints are served from landing on five of the
+/// six.
 macro_rules! federation_endpoint {
     ($listen:ident, $service:expr, $inner:ident) => {
         pub(crate) async fn $listen(

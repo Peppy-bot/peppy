@@ -1032,12 +1032,25 @@ const NODE_PROBE_LAUNCHER: &str = r#"{
 "#;
 
 const NAMED_FLEET_LAUNCHER_FILE: &str = "named_fleet.json5";
+const COPIES_ONLY_LAUNCHER_FILE: &str = "copies_only.json5";
+const SOURCELESS_CLOCK_LAUNCHER_FILE: &str = "sourceless_clock_fleet.json5";
 const NAMED_CLOCK_LAUNCHER_FILE: &str = "named_clock_fleet.json5";
 const NAMED_FLEET_TWO_NODES_LAUNCHER_FILE: &str = "named_fleet_two_nodes.json5";
 const NAMED_FLEET_LAUNCHER: &str = r#"{
   peppy_schema: "launcher/v1",
   deployments: [{ source: { name: "my_python_robot_arm", tag: "v1" },
     instances: [{ instance_id: "shared_inst" }] }],
+  components: [{ name: "robot", cardinality: "zero_or_more", options: {
+    arm: { deployments: [{ source: { name: "my_python_robot_arm", tag: "v1" },
+      instances: [{ instance_id: "arm_inst" }] }] }
+  } }]
+}"#;
+
+/// The named fleet's robot axis alone: a launch that starts nothing and
+/// takes copies.
+const COPIES_ONLY_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  deployments: [],
   components: [{ name: "robot", cardinality: "zero_or_more", options: {
     arm: { deployments: [{ source: { name: "my_python_robot_arm", tag: "v1" },
       instances: [{ instance_id: "arm_inst" }] }] }
@@ -1163,6 +1176,14 @@ fn named_clock_launcher() -> String {
             }] }
         }
     }]);
+    serde_json::to_string(&launcher).unwrap()
+}
+
+/// The named clock fleet without its source: a simulated-time stack that
+/// declares no time source and takes probe copies.
+fn sourceless_clock_launcher() -> String {
+    let mut launcher: serde_json::Value = serde_json5::from_str(&named_clock_launcher()).unwrap();
+    launcher["deployments"] = serde_json::json!([]);
     serde_json::to_string(&launcher).unwrap()
 }
 
@@ -1304,6 +1325,32 @@ fn holds_instance(stack: &str, instance_id: &str) -> bool {
         .any(|cell| cell.trim() == instance_id)
 }
 
+/// The coordinator's section of a `stack list --json` report.
+fn coordinator_section(listed: &str, core_node: &str) -> serde_json::Value {
+    let document = listed
+        .lines()
+        .find(|line| line.starts_with('{'))
+        .unwrap_or_else(|| panic!("missing stack JSON: {listed}"));
+    let report: serde_json::Value = serde_json::from_str(document).unwrap();
+    report["core_nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|section| section["core_node"] == core_node)
+        .unwrap_or_else(|| panic!("no section for `{core_node}`: {listed}"))
+        .clone()
+}
+
+/// The names of the copies a `stack list --json` section lists.
+fn copy_names(section: &serde_json::Value) -> Vec<String> {
+    section["copies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|copy| copy["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
 fn assert_holds_exactly(stack: &str, daemon: &str, expected: &[&str], forbidden: &[&str]) {
     for instance in expected {
         assert!(
@@ -1383,6 +1430,8 @@ impl Substrate {
         });
         for (file_name, launcher) in [
             (NAMED_FLEET_LAUNCHER_FILE, NAMED_FLEET_LAUNCHER.to_owned()),
+            (COPIES_ONLY_LAUNCHER_FILE, COPIES_ONLY_LAUNCHER.to_owned()),
+            (SOURCELESS_CLOCK_LAUNCHER_FILE, sourceless_clock_launcher()),
             (
                 NAMED_FLEET_TWO_NODES_LAUNCHER_FILE,
                 NAMED_FLEET_TWO_NODES_LAUNCHER.to_owned(),
@@ -2578,6 +2627,43 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
     );
 }
 
+/// A join onto a simulated-time stack that declares no time source warns,
+/// as the launch does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_join_onto_a_sourceless_simulated_stack_warns() {
+    let fleet = start_sim_fleet("peppy-sourceless-join").await;
+    require_success(
+        fleet
+            .coordinator
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(SOURCELESS_CLOCK_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the sourceless clock fleet",
+    );
+    let joined = fleet
+        .coordinator
+        .peppy(&[
+            "stack",
+            "join",
+            "probe",
+            "-i",
+            "alpha",
+            "--place",
+            FLEET_STATION_A_CORE_NODE,
+            "--node-run-idle-timeout-secs",
+            "15",
+        ])
+        .await;
+    assert!(
+        joined.text.contains("declares no time source"),
+        "{}",
+        joined.text
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn copies_receive_shared_simulation_time_when_joining_late() {
     let fleet = start_sim_fleet("peppy-named-clock").await;
@@ -2685,39 +2771,94 @@ async fn copies_join_and_remove_with_an_offline_neighbor() {
         federation.robot.peppy(&["stack", "remove", "alpha"]).await,
         "remove healthy member while its neighbor is offline",
     );
-    let failed = federation.robot.peppy(&["stack", "remove", "bravo"]).await;
-    assert!(!failed.success(), "{}", failed.text);
+    let removed = federation.robot.peppy(&["stack", "remove", "bravo"]).await;
+    assert!(removed.success(), "{}", removed.text);
+    assert!(
+        removed
+            .text
+            .contains(&format!("`{}` is not live", federation.cloud_core_node)),
+        "{}",
+        removed.text
+    );
     let listed = require_success(
         federation.robot.peppy(&["stack", "list", "--json"]).await,
-        "failed removal retains its copy for retry",
+        "the copy on the offline host leaves the record",
     );
-    let document = listed
-        .lines()
-        .find(|line| line.starts_with('{'))
-        .unwrap_or_else(|| panic!("missing stack JSON: {listed}"));
-    let report: serde_json::Value = serde_json::from_str(document).unwrap();
-    let coordinator = report["core_nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|section| section["core_node"] == federation.robot_core_node)
-        .unwrap();
-    let names: Vec<_> = coordinator["copies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|fragment| fragment["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["bravo"]);
+    let coordinator = coordinator_section(&listed, &federation.robot_core_node);
+    assert!(copy_names(&coordinator).is_empty(), "{listed}");
     let instances: Vec<_> = coordinator["stack"]["nodes"]
         .as_array()
         .unwrap()
         .iter()
         .flat_map(|node| node["instances"].as_array().unwrap())
-        .map(|instance| instance["instance_id"].as_str().unwrap())
+        .map(|instance| instance["instance_id"].as_str().unwrap().to_owned())
         .collect();
-    assert!(instances.contains(&"shared_inst"));
-    assert!(!instances.contains(&"alpha_arm_inst"));
+    assert!(instances.contains(&"shared_inst".to_owned()));
+    assert!(!instances.contains(&"alpha_arm_inst".to_owned()));
+}
+
+/// A machine that coordinates its own stack refuses to take a slice of
+/// another launch, and the join that asked leaves that stack alone: the
+/// refusal is reported, and the machine keeps the launch it coordinates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_refused_by_a_machine_with_its_own_stack_leaves_that_stack_alone() {
+    let federation = start_federation("peppy-refused-slice").await;
+    require_success(
+        federation
+            .cloud
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(COPIES_ONLY_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the copies-only launcher on cloud",
+    );
+    let own_launch =
+        |listed: &str| coordinator_section(listed, &federation.cloud_core_node)["launch"].clone();
+    let before = own_launch(&require_success(
+        federation.cloud.peppy(&["stack", "list", "--json"]).await,
+        "cloud's launch before the refused join",
+    ));
+    assert_eq!(before["coordinator_core_node"], federation.cloud_core_node);
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(NAMED_FLEET_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch shared node on robot",
+    );
+    let refused = federation
+        .robot
+        .peppy(&[
+            "stack",
+            "join",
+            "arm",
+            "-i",
+            "alpha",
+            "--place",
+            &federation.cloud_core_node,
+        ])
+        .await;
+    assert!(!refused.success(), "{}", refused.text);
+    assert!(refused.text.contains("different stack"), "{}", refused.text);
+    assert!(
+        !refused.text.contains("Clearing the slice"),
+        "{}",
+        refused.text
+    );
+    let after = own_launch(&require_success(
+        federation.cloud.peppy(&["stack", "list", "--json"]).await,
+        "cloud's launch after the refused join",
+    ));
+    assert_eq!(
+        after, before,
+        "the refused join must leave cloud's launch as it was"
+    );
 }
 
 /// A copy whose run fails on a peer that already holds part of the launch
@@ -2749,7 +2890,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
                 "-i",
                 "bravo",
                 "--place",
-                &format!("bravo@{}", federation.cloud_core_node),
+                &federation.cloud_core_node,
             ])
             .await,
         "join remote arm",
@@ -2830,6 +2971,61 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
     );
 }
 
+/// A join whose work on a peer outlives the join's deadline leaves nothing
+/// there: the peer is told to cancel, and the rollback removes what the
+/// peer still holds for the add.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_whose_peer_work_outlives_its_deadline_leaves_nothing_on_the_peer() {
+    let federation = start_federation("peppy-deadline-join").await;
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(NAMED_FLEET_TWO_NODES_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch shared node",
+    );
+    let expired = federation
+        .robot
+        .peppy(&[
+            "stack",
+            "join",
+            "cam",
+            "-i",
+            "late",
+            "--place",
+            &federation.cloud_core_node,
+            "--max-timeout-secs",
+            "5",
+        ])
+        .await;
+    assert!(!expired.success(), "{}", expired.text);
+    assert!(expired.text.contains("max timeout"), "{}", expired.text);
+    assert!(!expired.text.contains("cleanup failed"), "{}", expired.text);
+    let remote = require_success(
+        federation
+            .cloud
+            .stack_list(Some(&federation.cloud_core_node))
+            .await,
+        "remote stack after the deadline",
+    );
+    assert!(
+        !remote.contains("uvc_camera_python_mock"),
+        "the peer keeps no node the expired join added:\n{remote}"
+    );
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "copy metadata",
+    );
+    assert!(
+        copy_names(&coordinator_section(&listed, &federation.robot_core_node)).is_empty(),
+        "{listed}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
     let federation = start_federation("peppy-named-fleet").await;
@@ -2862,7 +3058,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
                     "-i",
                     name,
                     "--place",
-                    &format!("{name}@{}", federation.cloud_core_node),
+                    &federation.cloud_core_node,
                 ])
                 .await,
             "join remote arm",
@@ -2924,7 +3120,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
             "-i",
             "failed",
             "--place",
-            &format!("failed@{}", federation.cloud_core_node),
+            &federation.cloud_core_node,
         ])
         .await;
     assert!(!failed.success(), "{}", failed.text);
@@ -2994,7 +3190,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
                 "-i",
                 "bravo",
                 "--place",
-                &format!("bravo@{}", federation.cloud_core_node),
+                &federation.cloud_core_node,
             ])
             .await,
         "rejoin remote bravo",
@@ -3003,9 +3199,9 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
         federation.robot.peppy(&["stack", "list", "--json"]).await,
         "copy metadata",
     );
-    assert!(
-        listed.contains("copies") && listed.contains("bravo"),
-        "{listed}"
+    assert_eq!(
+        copy_names(&coordinator_section(&listed, &federation.robot_core_node)),
+        ["alpha", "bravo", "charlie"]
     );
     for name in ["alpha", "bravo", "charlie"] {
         require_success(

@@ -1,14 +1,17 @@
 //! Taking one copy off the running stack: stopping its instances on the
-//! machine that runs them and dropping it from the launch's record, which
+//! machine that runs them, pointing the sources it observed at their
+//! remaining watchers, and dropping it from the launch's record, which
 //! leaves the launcher active and every other copy running.
 
 use super::super::action::StackChangeContext;
-use super::super::launch::feedback::publish_stdout;
+use super::super::launch::feedback::{publish_stderr, publish_stdout};
+use super::super::launch::orchestrate::validate_and_order_dependencies;
 use super::super::launch::preflight::preflight_change;
+use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watchers_replacing};
 use super::super::launch::{PlannedDeployment, federated};
 use super::super::state::{ActiveLaunch, StackCopy};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
-use super::{change_active_launch, plan::selected_instances, stack_list_on};
+use super::{change_active_launch, plan::selected_instances, reason, stack_list_on};
 use crate::services::node::stop_named_instances;
 use config::runtime::Name;
 use core_node_api::encoding::{
@@ -28,7 +31,9 @@ pub fn copy_removal_budget(shutdown_grace_secs: u64, instances: usize) -> Durati
 
 /// Stops the copy's instances and takes it out of the record. The record
 /// follows what runs: once the instances are stopped the copy is gone from
-/// it, whether or not the time source could be told.
+/// it, whether or not the time source could be told. A copy whose machine
+/// is off the federation leaves the record too; its instances stay for that
+/// machine's `stack reset`.
 pub(in crate::services::stack) async fn remove(
     goal: StackRemoveGoal,
     ctx: StackChangeContext,
@@ -76,7 +81,18 @@ async fn remove_inner(
             return Err(consumers.refusal(name));
         }
     }
-    let touched = removal_deployments(active, &copy);
+    let root = ctx.node_stack.root().read().config().clone();
+    let (_, _, _, observations) =
+        validate_and_order_dependencies(ctx, &remaining_planned, &root, &active.placements)
+            .await
+            .map_err(reason)?;
+    let watchers = lifecycle_watchers(&observations, &active.placements)?;
+    let repointed = watchers_replacing(&active.watchers, &watchers);
+    let host_live = copy.core_node.as_str() == ctx.bound_core_node
+        || federated::live_core_nodes(&ctx.messenger)
+            .await?
+            .contains(copy.core_node.as_str());
+    let touched = removal_deployments(active, &copy, host_live, removes_clock, &repointed);
     let change = preflight_change(
         ctx,
         &active.launch_id,
@@ -87,10 +103,33 @@ async fn remove_inner(
     )
     .await?;
     let outcome = async {
-        stop_copy(ctx, &active.launch_id, &copy).await?;
+        if host_live {
+            stop_copy(ctx, &active.launch_id, &copy).await?;
+        } else {
+            publish_stderr(
+                ctx,
+                format!(
+                    "`{}` is not live on the federation, so the copy's instances there are not \
+                     stopped; clear that machine with `peppy stack reset` from there when it \
+                     returns",
+                    copy.core_node
+                ),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+        }
         active.copies.remove(name);
         active.flat = remaining;
         active.planned = remaining_planned;
+        active.watchers = watchers;
+        federated::set_participant_watchers(
+            ctx,
+            &active.launch_id,
+            &change.reserved.core_nodes(),
+            &repointed,
+            &active.placements,
+        )
+        .await;
         if let Some(federated::ClockDemand::Sim(federated::SimDemandOrigin::Instance(instance))) =
             &active.clock
             && removed.contains(instance.as_str())
@@ -188,17 +227,27 @@ impl TimeConsumers {
     }
 }
 
-/// Removal reserves the copy's host and its clock source's host.
-fn removal_deployments(active: &ActiveLaunch, copy: &StackCopy) -> Vec<PlannedDeployment> {
+/// Removal reserves the copy's host while it is live, its clock source's
+/// host while the source stays and is handed the remaining fleet, and the
+/// host of every source whose watchers change.
+fn removal_deployments(
+    active: &ActiveLaunch,
+    copy: &StackCopy,
+    host_live: bool,
+    removes_clock: bool,
+    repointed: &LifecycleWatchers,
+) -> Vec<PlannedDeployment> {
     selected_instances(&active.planned, |instance| {
         let host = active
             .placements
             .core_node_of(instance.instance_id.as_str());
-        host == &copy.core_node
-            || active
-                .time_source
-                .as_ref()
-                .is_some_and(|source| host == &source.core_node)
+        (host_live && host == &copy.core_node)
+            || (!removes_clock
+                && active
+                    .time_source
+                    .as_ref()
+                    .is_some_and(|source| host == &source.core_node))
+            || repointed.contains_key(&instance.instance_id)
     })
 }
 

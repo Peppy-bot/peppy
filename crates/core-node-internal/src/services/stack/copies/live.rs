@@ -11,6 +11,24 @@ use super::stack_list_on;
 use daemon_config::launcher::Placements;
 use std::collections::HashSet;
 
+/// What `host` holds for `node`.
+pub(super) async fn node_info_on(
+    ctx: &StackChangeContext,
+    host: &str,
+    node: &NodeKey,
+) -> ChangeResult<core_node_api::encoding::NodeInfoResponse> {
+    peppylib::core_node::transport::poll(
+        &core_node_api::encoding::NodeInfoRequest::new(&node.name, &node.tag),
+        &ctx.messenger,
+        &ctx.bound_core_node,
+        &ctx.core_instance_id,
+        host,
+        STACK_QUERY_TIMEOUT,
+    )
+    .await
+    .map_err(|e| format!("cannot inspect {} on `{host}`: {e}", node.label()))
+}
+
 async fn graph_on(
     ctx: &StackChangeContext,
     host: &str,
@@ -99,21 +117,8 @@ pub(super) async fn check_live_stack(
                     item.node_name, item.node_tag
                 ));
             }
-            let response = peppylib::core_node::transport::poll(
-                &core_node_api::encoding::NodeInfoRequest::new(&item.node_name, &item.node_tag),
-                &ctx.messenger,
-                &ctx.bound_core_node,
-                &ctx.core_instance_id,
-                host,
-                STACK_QUERY_TIMEOUT,
-            )
-            .await
-            .map_err(|e| {
-                format!(
-                    "cannot inspect {}:{} on `{host}`: {e}",
-                    item.node_name, item.node_tag
-                )
-            })?;
+            let response =
+                node_info_on(ctx, host, &NodeKey::new(&item.node_name, &item.node_tag)).await?;
             if !matches!(response, core_node_api::encoding::NodeInfoResponse::Found(info) if info.config_integrity == item.config_sha256)
             {
                 return Err(format!(
