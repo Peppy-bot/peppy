@@ -1,16 +1,15 @@
 ---
 /*
- * Animated node graph of the stack `peppy stack launch openarm_fleet -i alpha
- * --with openarm_v2_sim,mujoco,web_commander` brings up, laid out as the bimanual robot
- * rather than as a left-to-right flow chart. The eight circles are the eight
- * instances that selection declares, and the arrows are the links between
- * them:
+ * Animated node graph of the stack `peppy stack launch simulation --with mujoco`
+ * brings up, laid out as the bimanual robot. The eight circles are the eight
+ * instances that launch declares, the copy `alpha` and the simulation, and
+ * the arrows are the links between them:
  *
  *   alpha_commander_inst (the browser panel) streams targets down to alpha_backbone_inst,
  *   alpha_backbone_inst streams governed setpoints out to the four limb relays
  *   (alpha_left_arm_inst, alpha_right_arm_inst, alpha_left_gripper_inst,
- *   alpha_right_gripper_inst), each relay leads its matching limb inside engine_inst (the
- *   MuJoCo engine, a stack instance), and alpha_init_inst gathers the
+ *   alpha_right_gripper_inst), each relay leads its matching limb inside simulation_inst
+ *   (the MuJoCo simulation, a stack instance), and alpha_init_inst gathers the
  *   four relays' readiness and reports it back up to the backbone.
  *
  * Node positions form a T-pose: panel on top, backbone as the torso, the arm
@@ -31,9 +30,8 @@
  * Deliberately not drawn: the commander's four observed_* links (it watches
  * each relay's measured state directly). They span the full height of the
  * graph and would bury the command path; the caption covers them instead. Keep
- * the node and link set in step with launchers-hub/openarm/openarm_fleet.json5
- * and the fragments its mujoco and web_commander options pull in, if those
- * change.
+ * the node and link set in step with launchers-hub/simulation.json5, its mujoco
+ * option and the web_commander option of the copy it deploys, if those change.
  */
 ---
 
@@ -41,7 +39,7 @@
 	class="stack-graph"
 	viewBox="0 -12 660 518"
 	role="img"
-	aria-label="Node graph of the openarm_fleet launcher with the mujoco and web_commander options, drawn as a bimanual robot. alpha_commander_inst, the browser control panel, sits at the top and streams commands down to alpha_backbone_inst, the coordinator. The backbone streams governed setpoints out to four limb relays: alpha_left_arm_inst and alpha_right_arm_inst on the shoulders, alpha_left_gripper_inst and alpha_right_gripper_inst below them. Each of the four relays leads its matching limb inside engine_inst, the MuJoCo engine at the base, and reports readiness to alpha_init_inst on the spine, which reports back up to the backbone. Each pairing streams measured state back the other way, and the panel also observes the four relays."
+	aria-label="Node graph of the simulation launcher with the mujoco option, drawn as a bimanual robot. alpha_commander_inst, the browser control panel, sits at the top and streams commands down to alpha_backbone_inst, the coordinator. The backbone streams governed setpoints out to four limb relays: alpha_left_arm_inst and alpha_right_arm_inst on the shoulders, alpha_left_gripper_inst and alpha_right_gripper_inst below them. Each of the four relays leads its matching limb inside simulation_inst, the MuJoCo simulation at the base, and reports readiness to alpha_init_inst on the spine, which reports back up to the backbone. Each pairing streams measured state back the other way, and the panel also observes the four relays."
 >
 	<defs>
 		<radialGradient id="sgHaloViolet" cx="50%" cy="50%" r="50%">
@@ -266,7 +264,7 @@
 		<text class="stack-graph__label" y="48" text-anchor="middle">alpha_init_inst</text>
 	</g>
 
-	<!-- engine_inst: the MuJoCo engine every relay leads -->
+	<!-- simulation_inst: the MuJoCo simulation every relay leads -->
 	<g class="stack-graph__node stack-graph__node--blue" transform="translate(330 424)">
 		<g class="stack-graph__float" style="--bob-dur: 3.4s; --bob-delay: 0.3s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloBlue)" style="--halo-delay: 0.2s"
@@ -280,7 +278,7 @@
 				></circle>
 			</g>
 		</g>
-		<text class="stack-graph__label" y="48" text-anchor="middle">engine_inst</text>
+		<text class="stack-graph__label" y="48" text-anchor="middle">simulation_inst</text>
 	</g>
 
 	<!-- Legend. Each class carries its own dash pattern as well as its own color,

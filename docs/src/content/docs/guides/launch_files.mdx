@@ -368,16 +368,118 @@ A `deployments` entry deploys a node, `{ source, instances }`, or a component's 
 - A `zero_or_one` axis is never deployed by the file, since nothing on the command line could switch it off. `--with` turns it on. A feature that is on by default and switchable is a `one` axis with a `none` option (its body can be empty), deployed by the file and swapped off with `--with none`.
 - On a `zero_or_more` axis the entry lists the copies that run, each under `instances` with a name; see [copies](#copies). `--with` cannot name one, since a copy needs a name.
 
-Each `--with` entry is either `option` (looked up across every axis in reach) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. An axis takes one option; repeating it, or naming it once bare and once as `axis=option`, selects it once. The `default` and `optional` keys are refused: the file's `deployments` entry is the default, and `cardinality: "zero_or_one"` is what optional means. On `stack launch`, `NAME.option` or `NAME.axis=option` selects the own axis of a copy the file deploys, over the file's `with`.
+Each `--with` entry is either `option` (looked up across every axis in reach) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. An axis takes one option; repeating it, or naming it once bare and once as `axis=option`, selects it once. On `stack launch`, `NAME.option` or `NAME.axis=option` selects the own axis of a copy the file deploys, over the file's `with`.
 
-A launch of a launcher with components echoes the full resolution before anything runs, marking the axes the file filled:
+A launch of a launcher with components echoes the full resolution before anything runs, marking the axes a `deployments` entry filled:
 
 ```
-components: simulation=waldo (from file)  scene_commander=(off)
-copy alpha: robot=openarm_v2_sim  robot_commander=web_commander  recorder=(off)  camera_rig=(off)
+components: simulation=mujoco
+copy alpha: robot=openarm_v2_sim  control=control_common (from file)  robot_commander=web_commander (from file)  recorder=(off)  camera_rig=(off)  brain=(off)
 ```
 
 Passing `--with` to a launcher that declares no `components` is refused.
+
+## Adjustments
+
+A family of stacks often needs more than swapped deployments: the recorder attaches itself to whichever commander was selected, and the headset flips a mode argument on the backbone. An **adjustment** names one instance defined elsewhere and one change to it, and every change names its operation:
+
+```json5
+adjustments: [
+  {
+    target: "backbone_inst",              // the instance to change
+    when: { robot_commander: "xr_commander" },  // optional guard, see below
+
+    set_arguments: { upstream_mode: "pose" },
+    set_links: { collision_ctrl: { vacant: "the headset never produces governor_control" } },
+    add_links: { recorder: ["recorder_inst"] },
+    unset_links: ["leader_left_arm_pose"],
+  },
+]
+```
+
+| Operation | Effect |
+|---|---|
+| `set_arguments` | Replaces the target's value for each named argument key, creating it when absent. Nested objects replace wholesale. |
+| `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
+| `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent fragments each contribute bindings to one multi-cardinality slot. |
+| `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
+
+Fragments refuse to fight: two selected fragments writing the same argument key or the same slot on one target are refused, naming both. The launcher's own top-level `adjustments` apply after all fragment adjustments and may override anything a fragment set, which is how one launcher specializes fragments it shares with another. Within the launcher's own list, a later entry wins over an earlier one: both lines live in one file one author edits. A launcher adjustment guarded on a `zero_or_more` axis applies to every [copy](#copies) of the matching option, its target resolved inside each copy.
+
+An adjustment whose target the current selection does not define is **skipped**, not refused: the recorder's attach simply does not run when no recorder was selected. A target no option of the launcher defines anywhere is a dead reference and fails when the launcher is read. `when` guards are for conditions existence cannot express, mostly shape: two leaders may both provide `commander_inst`, but only one of them has camera slots. A launcher's guards name the launcher's axes; a fragment's name [its own axes](#a-fragments-own-axes) and the launcher's. Each axis accepts an option name or a nonempty list of option names. Lists match **any** listed option (OR); **every** named axis must match (AND).
+
+For example, the OpenArm real-robot fragment binds physical-driver alerts for either commander that consumes alerts:
+
+```json5
+when: { robot_commander: ["web_commander", "xr_commander"] }
+```
+
+This guard matches both, and the MCP commander does not match. The same scalar-or-list syntax applies inside constraint `when`, `requires`, and `forbids` conditions.
+
+The ownership rule of thumb: if a value is something the operator genuinely decides, make it another option on the axis, visible in the command line. If it is a *consequence* of a choice already made, write the adjustment into that option's own fragment, where it needs no guard: it runs exactly when its fragment is selected and skips when its target is absent.
+
+## Constraints
+
+Adjustments change what a selection builds; a **constraint** refuses selections nobody should run. Some members of a family are stacks no operator should be able to name: the ZED camera that films only the physical rig must not launch against the simulator. Those members flatten cleanly, so neither `provides` (which only promises ids exist) nor an adjustment's `when` guard (which only decides whether one adjustment applies inside a legal selection) can say it. A constraint can, and it only ever refuses: a violating selection is rejected before anything is pinned or started. It never picks an option to satisfy itself.
+
+```json5
+constraints: [
+  // With the ZED camera selected, the robot must be the real one.
+  { when: { camera: "zed" }, requires: [{ robot: "real" }],
+    reason: "the ZED films the physical rig" },
+
+  // The whole combination is refused, no guard needed.
+  { forbids: [{ robot: "mujoco", camera: "zed" }],
+    reason: "the stereo camera pairs with the real rig only" },
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `when` | The guard: the selections this constraint speaks about, in the same `axis: options` grammar as an adjustment's `when`: every named axis holds one of its listed options (an AND across axes, an OR within one). Omit it to speak about every selection. |
+| `requires` | What the guarded selections must also contain: a list of alternatives, at least one of which must match wholly. Each alternative is an `axis: options` map where every axis must match (an AND); listing several alternatives is an OR. |
+| `forbids` | What the guarded selections must not contain: a list of `axis: options` maps, and matching any one of them (each an AND of its axes) refuses the selection outright. |
+| `reason` | Why the refused selections must not run. Required, and quoted verbatim in the refusal: peppy can render what was required or forbidden, but only the author knows what the dead combination would have done. |
+
+A constraint states at least one of `requires` and `forbids`; with neither it refuses nothing, and the document is refused when it is read. The rest of the shape is held to the same standard: `when` and every entry name at least one axis, an entry may not repeat an axis the guard already fixes (under the guard that axis is decided before anything is selected), the same map may not be listed twice in one list, and one map may not appear in both lists.
+
+Matching treats an unfilled axis as matching no entry, on either side: a guard on `camera: "zed"` stays quiet when the camera axis is off, and a `requires` alternative naming that option is satisfied only by selecting it, never by leaving the axis unfilled. That asymmetry is the tool for optional features: `requires` is how an option demands company, while `forbids` is the only way to say an optional option never launches with another one (nothing requirable means "that axis stays off"). Where the axis is required, prefer `requires` of the wanted option instead: `requires` fails closed for options added later, while a `forbids` list names today's options and stays silent about tomorrow's.
+
+The refusal happens at selection time and names the document that declared the constraint, the full resolution (with its `(from file)` markers showing the axes the operator never named), what was required or forbidden, and the author's `reason`. When several constraints overlap, the first declared one refuses, so the author controls which reason the operator reads.
+
+A launcher's constraints speak in the launcher's axis and option names; a fragment's speak in [its own axes](#a-fragments-own-axes) and the launcher's, which is where a rule about an option's own axes belongs. `peppy repo index --check` holds them to leaving a usable family behind: a constraint that refuses no selection, an option no legal selection can pick, and a bare launch that violates a constraint are each reported when the launcher is indexed.
+
+## Fragments: splitting a launcher across files
+
+An option's body can live in its own file, called a **fragment**. This is an organizational choice, never a requirement: a launcher whose options are all inline is self-contained. Extract a fragment once a second launcher wants the same body, so the body is stated once.
+
+A fragment file carries the `launcher_fragment/v1` tag:
+
+<Code code={zedCameraFragment} lang="json5" title="fragments/zed_camera.json5" />
+
+The launcher references it by path, and the option value becomes that path string:
+
+```json5
+options: {
+  uvc: { deployments: [ /* inline, as above */ ] },
+  zed: "fragments/zed_camera.json5",
+}
+```
+
+Fragment paths are relative to the declaring document's directory: the launcher's for its options, the fragment file's for the options of its own axes. Inside a Peppy repository, the nearest ancestor containing a valid `peppy_repository.json5` sets the boundary: `openarm/fragments/openarm_v2_sim.json5` can include `../../robot_commanders/fragments/xr_commander.json5`. Parent segments and resolved symlinks must stay within that repository. Standalone launchers use their own directory as the boundary. Absolute paths are rejected. Repository names and filesystem paths use the same resolution rules.
+
+Two options can share one body with the list form, which merges its parts in order before the option contributes anything:
+
+```json5
+options: {
+  mujoco: ["fragments/relays.json5", "fragments/mujoco.json5"],
+  isaac_sim: ["fragments/relays.json5", "fragments/isaac_sim.json5"],
+}
+```
+
+The parts of one option declare its axes between them, each axis once, and deploy each of those axes once. Besides `deployments`, `components`, `constraints` and `adjustments`, a fragment may declare `core_nodes`: additional placement placeholders its instances need, unioned with the launcher's own, so selecting the option makes the matching `--place` bindings required exactly as if the launcher declared them.
+
+A fragment is not a stack. The repository indexer never lists a fragment as a launchable launcher, it needs no entry in `peppy_repository.json5`, and it cannot collide with a launcher name. `peppy repo index --check` validates every fragment a launcher references and flattens every legal selection of its axes, so a broken combination is refused on the branch that introduced it.
 
 ## A fragment's own axes
 
@@ -396,20 +498,24 @@ An option's fragment can declare `components` of its own: the axes that belong t
     { name: "control", provides: ["init_inst", "backbone_inst"],
       options: { control_common: "control_common.json5" } },
     { name: "robot_commander", provides: ["commander_inst"],
-      options: { web_commander: "web_commander.json5", xr_commander: "../../robot_commanders/fragments/xr_commander.json5" } },
+      options: { web_commander: "web_commander.json5", xr_commander: "../../robot_commanders/fragments/xr_commander.json5", mcp_commander: "mcp_commander.json5" } },
     { name: "recorder", cardinality: "zero_or_one", provides: ["recorder_inst"],
       options: { lerobot_recorder: "../../recording/fragments/lerobot_recorder.json5" } },
+    { name: "camera_rig", cardinality: "zero_or_one", provides: ["wrist_left", "wrist_right", "chest"],
+      options: { cameras_sim: "cameras_sim.json5" } },
+    { name: "brain", cardinality: "zero_or_one", provides: ["brain_inst", "brain_mcp_inst"],
+      options: { ai_brain: "ai_brain.json5" } },
   ],
 }
 ```
 
-A fragment's axes are `one` or `zero_or_one`; how many robots run is the launcher's `robot` axis. They are in reach whenever the fragment runs once: on the SO-101 launcher, whose `robot` axis is `one`, `--with xr_commander` reaches into the robot's fragment, and `--with robot_commander=xr_commander` says so explicitly. A fragment's `adjustments` and `constraints` speak in its own axis names and the launcher's, so the recorder's shape guard and the "cameras need a consumer" rule live beside the axes they speak about, and a v1 robot's "MuJoCo or Isaac Sim" requirement names the launcher's `simulation` axis. A launcher's own `adjustments` and `constraints` speak in the launcher's axis names. A fragment two levels below the launcher declares no axes: an option of a fragment's axis is a plain fragment.
+A fragment's axes are `one` or `zero_or_one`; how many robots run is the launcher's `robot` axis. They are in reach whenever the fragment runs once: on a launcher whose `robot` axis is `one`, `--with xr_commander` reaches into the robot's fragment, and `--with robot_commander=xr_commander` says so explicitly. A fragment's `adjustments` and `constraints` speak in its own axis names and the launcher's, so the recorder's shape guard and the "cameras need a consumer" rule live beside the axes they speak about, and a v1 robot's "MuJoCo or Isaac Sim" requirement names the launcher's `simulation` axis. A launcher's own `adjustments` and `constraints` speak in the launcher's axis names. A fragment two levels below the launcher declares no axes: an option of a fragment's axis is a plain fragment.
 
 ## Copies
 
 An axis with cardinality `zero_or_more` runs as **copies**: named instances of one of its options, exactly as a node runs as named instances. The launcher's `deployments` list the copies a launch starts, `peppy stack join` adds one to a running stack, and `peppy stack remove` takes one out. Every instance a copy's fragments define is minted as `NAME_<id>`, so any number of copies run side by side under one launcher.
 
-The simulated OpenArm fleet holds the simulation as a `one` axis, and the robot as copies:
+The `simulation` launcher holds the simulation as a `one` axis, and the robot as copies:
 
 ```json5
 components: [
@@ -421,8 +527,7 @@ components: [
 deployments: [
   { simulation: "waldo" },
   { robot: "openarm_v2_sim", instances: [
-      { instance_id: "alpha", with: { robot_commander: "web_commander" },
-        arguments: { commander_inst: { http_port: 8765 } } },
+      { instance_id: "alpha", arguments: { commander_inst: { http_port: 8765 } } },
   ] },
 ],
 ```
@@ -473,9 +578,9 @@ peppy stack join openarm_v2 -i charlie --with xr_commander \
   --set-arguments commander_inst.https_port=4444
 ```
 
-A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. Constraints see the stack's selection and the copy's together, so `openarm_v1_sim` on a Waldo stack is refused at join with the v1 fragment's reason. A copy's adjustments may write to a stack instance, and each field they write is what the copy needs of it: two copies deployed together must agree on every field they both write, and a join may write to a stack instance only what already runs there, except that its relays may pair into the slots the instance declares vacant: the relay's own `links` name the slot, and the copy's fragment releases the vacancy with `unset_links` on the instance. A join that would change a running instance is refused, naming the instance and each field that differs. That is why the OpenArm v1 simulation, which sets the simulation's hardware generation, and the rendered camera rig, which turns the simulation's rendering on, are selected in the file at launch.
+A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. Constraints see the stack's selection and the copy's together, so `openarm_v1_sim` on a Waldo stack is refused at join with the v1 fragment's reason. A copy's adjustments may write to a stack instance, and each field they write is what the copy needs of it: two copies deployed together must agree on every field they both write, and a join may write to a stack instance only what already runs there, except that its own instances may pair into the slots the instance declares vacant: the pairing instance's `links` name the slot, and the copy's fragment releases the vacancy with `unset_links` on the instance. A join that would change a running instance is refused, naming the instance and each field that differs. That is why the OpenArm v1 simulation, which sets the simulation's hardware generation, and the rendered camera rig, which turns the simulation's rendering on, are selected in the file at launch.
 
-One simulation per stack, and the simulations available today pair with one simulated robot: the simulated fleet ships one copy, and a second simulated robot in one simulation is refused where its relays reach for limb slots the first one paired, so remove the first before joining the second. Physical robots join beside a simulated one.
+One simulation per stack, and the simulations available today pair with one simulated robot: the `simulation` launcher ships one copy, and a second simulated robot in one simulation is refused where its relays reach for limb slots the first one paired, so remove the first before joining the second. Physical robots join beside a simulated one.
 
 `stack remove NAME` stops the copy's instances in reverse dependency order and takes it out of the stack; a copy another copy links to is refused until that copy goes first, and a copy the stack's own instances link to stays until the next launch. Removal leaves the stack's own instances running: removing the simulated robot leaves the simulation up with its model loaded, and `stack reset` stops everything. A failed join stops what it started, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
 
@@ -490,127 +595,25 @@ Join and remove run on the coordinator (`--core-node NAME` reaches it from anoth
 
 `peppy repo index --check` composes every legal selection the way a launch does: the stack under every selection of its axes, then every copy a `zero_or_more` axis can add, as a launch beside the stack and as a join onto it.
 
-## Adjustments
-
-A family of stacks often needs more than swapped deployments: the recorder attaches itself to whichever commander was selected, and the headset flips a mode argument on the backbone. An **adjustment** names one instance defined elsewhere and one change to it, and every change names its operation:
-
-```json5
-adjustments: [
-  {
-    target: "backbone_inst",              // the instance to change
-    when: { robot_commander: "xr_commander" },  // optional guard, see below
-
-    set_arguments: { upstream_mode: "pose" },
-    set_links: { collision_ctrl: { vacant: "the headset never produces governor_control" } },
-    add_links: { recorder: ["recorder_inst"] },
-    unset_links: ["leader_left_arm_pose"],
-  },
-]
-```
-
-| Operation | Effect |
-|---|---|
-| `set_arguments` | Replaces the target's value for each named argument key, creating it when absent. Nested objects replace wholesale. |
-| `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
-| `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent fragments each contribute bindings to one multi-cardinality slot. |
-| `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
-
-Fragments refuse to fight: two selected fragments writing the same argument key or the same slot on one target are refused, naming both. The launcher's own top-level `adjustments` apply after all fragment adjustments and may override anything a fragment set, which is how one launcher specializes fragments it shares with another. Within the launcher's own list, a later entry wins over an earlier one: both lines live in one file one author edits. A launcher adjustment guarded on a `zero_or_more` axis applies to every copy of the matching option, its target resolved inside each copy.
-
-An adjustment whose target the current selection does not define is **skipped**, not refused: the recorder's attach simply does not run when no recorder was selected. A target no option of the launcher defines anywhere is a dead reference and fails when the launcher is read. `when` guards are for conditions existence cannot express, mostly shape: two leaders may both provide `commander_inst`, but only one of them has camera slots. A launcher's guards name the launcher's axes; a fragment's name its own axes and the launcher's. Each axis accepts an option name or a nonempty list of option names. Lists match **any** listed option (OR); **every** named axis must match (AND).
-
-For example, the OpenArm real-robot fragment binds physical-driver alerts for either commander that consumes alerts:
-
-```json5
-when: { robot_commander: ["web_commander", "xr_commander"] }
-```
-
-This guard matches both, and the MCP commander does not match. The same scalar-or-list syntax applies inside constraint `when`, `requires`, and `forbids` conditions.
-
-The ownership rule of thumb: if a value is something the operator genuinely decides, make it another option on the axis, visible in the command line. If it is a *consequence* of a choice already made, write the adjustment into that option's own fragment, where it needs no guard: it runs exactly when its fragment is selected and skips when its target is absent.
-
-## Constraints
-
-Adjustments change what a selection builds; a **constraint** refuses selections nobody should run. Some members of a family are stacks no operator should be able to name: the ZED camera that films only the physical rig must not launch against the simulator. Those members flatten cleanly, so neither `provides` (which only promises ids exist) nor an adjustment's `when` guard (which only decides whether one adjustment applies inside a legal selection) can say it. A constraint can, and it only ever refuses: a violating selection is rejected before anything is pinned or started. It never picks an option to satisfy itself, because a `--with` whose meaning shifted as constraints evolve would launch stacks the operator did not name.
-
-```json5
-constraints: [
-  // With the ZED camera selected, the robot must be the real one.
-  { when: { camera: "zed" }, requires: [{ robot: "real" }],
-    reason: "the ZED films the physical rig" },
-
-  // The whole combination is refused, no guard needed.
-  { forbids: [{ robot: "mujoco", camera: "zed" }],
-    reason: "the stereo camera pairs with the real rig only" },
-]
-```
-
-| Field | Meaning |
-|---|---|
-| `when` | The guard: the selections this constraint speaks about, in the same `axis: options` grammar as an adjustment's `when`: every named axis holds one of its listed options (an AND across axes, an OR within one). Omit it to speak about every selection. |
-| `requires` | What the guarded selections must also contain: a list of alternatives, at least one of which must match wholly. Each alternative is an `axis: options` map where every axis must match (an AND); listing several alternatives is an OR. |
-| `forbids` | What the guarded selections must not contain: a list of `axis: options` maps, and matching any one of them (each an AND of its axes) refuses the selection outright. |
-| `reason` | Why the refused selections must not run. Required, and quoted verbatim in the refusal: peppy can render what was required or forbidden, but only the author knows what the dead combination would have done. |
-
-A constraint states at least one of `requires` and `forbids`; with neither it refuses nothing, and the document is refused when it is read. The rest of the shape is held to the same standard: `when` and every entry name at least one axis, an entry may not repeat an axis the guard already fixes (under the guard that axis is decided before anything is selected), the same map may not be listed twice in one list, and one map may not appear in both lists.
-
-Matching treats an unfilled axis as matching no entry, on either side: a guard on `camera: "zed"` stays quiet when the camera axis is off, and a `requires` alternative naming that option is satisfied only by selecting it, never by leaving the axis unfilled. That asymmetry is the tool for optional features: `requires` is how an option demands company, while `forbids` is the only way to say an optional option never launches with another one (nothing requirable means "that axis stays off"). Where the axis is required, prefer `requires` of the wanted option instead: `requires` fails closed for options added later, while a `forbids` list names today's options and stays silent about tomorrow's.
-
-The refusal happens at selection time and names the document that declared the constraint, the full resolution (with its `(from file)` markers showing the axes the operator never named), what was required or forbidden, and the author's `reason`. When several constraints overlap, the first declared one refuses, so the author controls which reason the operator reads.
-
-A launcher's constraints speak in the launcher's axis and option names; a fragment's speak in its own axes and the launcher's, which is where a rule about an option's own axes belongs. `peppy repo index --check` holds them to leaving a usable family behind: a constraint that refuses no selection, an option no legal selection can pick, and a bare launch that violates a constraint are each reported when the launcher is indexed.
-
-## Fragments: splitting a launcher across files
-
-An option's body can live in its own file, called a **fragment**. This is an organizational choice, never a requirement: a launcher whose options are all inline is self-contained. Extract a fragment once a second launcher wants the same body, so the body is stated once.
-
-A fragment file carries the `launcher_fragment/v1` tag:
-
-<Code code={zedCameraFragment} lang="json5" title="fragments/zed_camera.json5" />
-
-The launcher references it by path, and the option value becomes that path string:
-
-```json5
-options: {
-  uvc: { deployments: [ /* inline, as above */ ] },
-  zed: "fragments/zed_camera.json5",
-}
-```
-
-Fragment paths are relative to the declaring document's directory: the launcher's for its options, the fragment file's for the options of its own axes. Inside a Peppy repository, the nearest ancestor containing a valid `peppy_repository.json5` sets the boundary: `openarm/fragments/openarm_v2_sim.json5` can include `../../robot_commanders/fragments/xr_commander.json5`. Parent segments and resolved symlinks must stay within that repository. Standalone launchers use their own directory as the boundary. Absolute paths are rejected. Repository names and filesystem paths use the same resolution rules.
-
-Two options can share one body with the list form, which merges its parts in order before the option contributes anything:
-
-```json5
-options: {
-  mujoco: ["fragments/relays.json5", "fragments/mujoco.json5"],
-  isaac_sim: ["fragments/relays.json5", "fragments/isaac_sim.json5"],
-}
-```
-
-The parts of one option declare its axes between them, each axis once, and deploy each of those axes once. Besides `deployments`, `components`, `constraints` and `adjustments`, a fragment may declare `core_nodes`: additional placement placeholders its instances need, unioned with the launcher's own, so selecting the option makes the matching `--place` bindings required exactly as if the launcher declared them.
-
-A fragment is not a stack. The repository indexer never lists a fragment as a launchable launcher, it needs no entry in `peppy_repository.json5`, and it cannot collide with a launcher name. `peppy repo index --check` validates every fragment a launcher references and flattens every legal selection of its axes, so a broken combination is refused on the branch that introduced it.
-
 ## Auditing a composed launch
 
 Composition changes instances from a distance, so it ships with an audit command:
 
 ```sh
-peppy stack resolve so101 --with xr_commander,lerobot_recorder
+peppy stack resolve fleet --join so101 --join-name alpha --join-with xr_commander,lerobot_recorder
 ```
 
 `stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr. An excerpt:
 
 ```
-components: robot=so101 (from file)  robot_commander=xr_commander  recorder=lerobot_recorder  camera_rig=(off)
-
+components: simulation=(off)
+copy `alpha` of `so101` joined:
+copy alpha: robot=so101  robot_commander=xr_commander  recorder=lerobot_recorder  camera_rig=(off)
 adjustments applied:
-  backbone_inst.arguments.upstream_mode: "joints" -> "pose"  (fragments/so101.json5)
-  recorder_inst.arguments.robot_type: (absent) -> "so101"  (fragments/so101.json5)
-  commander_inst.links.recorder: + recorder_inst  (../recording/fragments/lerobot_recorder.json5)
-
-link rules hold: slot keys, vacancies and pairing coverage checked over 6 node manifest(s)
+  alpha_backbone_inst.arguments.upstream_mode: "joints" -> "pose"  (so101/fragments/so101.json5)
+  alpha_recorder_inst.arguments.robot_type: (absent) -> "so101"  (so101/fragments/so101.json5)
+  alpha_commander_inst.links.recorder: + alpha_recorder_inst  (recording/fragments/lerobot_recorder.json5)
+link rules hold: slot keys, vacancies and pairing coverage checked over 4 node manifest(s)
 ```
 
 Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION` previews one more joined onto it, with `--join-name`, `--join-with` and `--join-set-arguments` standing in for the join's own flags. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
