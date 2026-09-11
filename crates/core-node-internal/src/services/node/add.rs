@@ -1,4 +1,6 @@
-use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use super::super::action_loop::{
+    GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
+};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
 use super::git_utils::install_credentials;
@@ -1256,8 +1258,8 @@ async fn handle_goal_request(
     let log_path_clone = log_path.clone();
     let cancel_token = slice_ownership.stack.cancellation();
     let cancel_token_clone = cancel_token.clone();
-    // A forced node add cancels this goal's own token; a stack reset cancels
-    // the stack's, which every goal token descends from.
+    // A forced node add and the goal's caller cancel this goal's own token; a
+    // stack reset cancels the stack's, which every goal token descends from.
     let reset_token = slice_ownership.stack.cancellation();
     let log_path_for_cancel = log_path.clone();
     let gate_for_task = gate.clone();
@@ -1272,25 +1274,30 @@ async fn handle_goal_request(
                 NodeAddFeedback::from_stream(line.stream, &line.line).encode()
             });
 
-        let result = tokio::select! {
-            biased;
-            result = dispatch_node_add(
-                goal,
-                action_context,
-                feedback_tx,
-                log_file,
-                log_path_clone,
-                timestamp,
-            ) => result,
-            _ = cancel_token_clone.cancelled() => {
-                let reason = if reset_token.is_cancelled() {
-                    "node add cancelled by stack reset"
-                } else {
-                    "node add superseded by a forced node add"
-                };
-                NodeAddResult::failure(&log_path_for_cancel, reason.to_string())
+        let work = async {
+            tokio::select! {
+                biased;
+                result = dispatch_node_add(
+                    goal,
+                    action_context,
+                    feedback_tx,
+                    log_file,
+                    log_path_clone,
+                    timestamp,
+                ) => result,
+                _ = cancel_token_clone.cancelled() => {
+                    let reason = if reset_token.is_cancelled() {
+                        "node add cancelled by stack reset"
+                    } else if goal_ctx.is_cancelled() {
+                        "node add cancelled by its caller"
+                    } else {
+                        "node add superseded by a forced node add"
+                    };
+                    NodeAddResult::failure(&log_path_for_cancel, reason.to_string())
+                }
             }
         };
+        let result = under_goal_cancel(&goal_ctx, &cancel_token_clone, work).await;
 
         // Drain the feedback consumer before completing so the end-of-stream
         // sentinel never races ahead of the last feedback line.

@@ -1,4 +1,6 @@
-use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use super::super::action_loop::{
+    GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
+};
 use super::gate::{COOPERATIVE_TEARDOWN_BUDGET, ConcurrencyGate};
 use super::write_error_to_log;
 use super::{FeedbackLine, FeedbackStream, create_action_log_file};
@@ -323,10 +325,11 @@ impl NodeBuildGoalHandler {
             .expect("node_build declares a feedback topic");
         let action_context = self.context.clone();
         let log_path_clone = log_path.clone();
-        // Stored in the gate so a later `--force` goal can signal it, and threaded
-        // into the build so `run_node_build` owns cancellation end-to-end: it
+        // Stored in the gate so a later `--force` goal can signal it, signalled
+        // by the goal's caller through its cancel request, and threaded into
+        // the build so `run_node_build` owns cancellation end-to-end: it
         // SIGKILLs + reaps the build child and rolls the entity back to `Added`
-        // (re-attaching the working dir) instead of being `abort()`ed mid-flight.
+        // (re-attaching the working dir).
         let reset_cancellation = self.slice_ownership.stack.cancellation();
         let cancel_token = reset_cancellation.child_token();
         let cancel_token_for_task = cancel_token.clone();
@@ -357,6 +360,7 @@ impl NodeBuildGoalHandler {
                 cancel_token: cancel_token_for_task.clone(),
                 rebuild: goal.rebuild,
             });
+            let work = under_goal_cancel(&goal_ctx, &cancel_token_for_task, work);
             let result =
                 crate::services::node::gate::finish_on_reset(work, &reset_cancellation, || {
                     NodeBuildResult::failure(
@@ -479,13 +483,12 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                 NodeBuildResult::success(artifact_path, &log_path)
             }
             Err(_) if cancel_token.is_cancelled() => {
-                // Superseded by a `--force` build (the build I/O returned a
-                // cancellation error after SIGKILL'ing + reaping the child).
-                // Roll the entity back to `Added` and re-attach the staged
-                // working dir so the forced rebuild can reuse it, the only
-                // surviving copy of the source. (Removing it, as the genuine
-                // failure path does, would delete the working dir and make the
-                // rebuild impossible.)
+                // Cancelled: superseded by a `--force` build or cancelled by
+                // the goal's caller (the build I/O returned a cancellation
+                // error after SIGKILL'ing + reaping the child). Roll the
+                // entity back to `Added` and re-attach the staged working
+                // dir, the only surviving copy of the source, so a rebuild
+                // can reuse it.
                 let _ = action_context.node_stack.rollback_to_added_if_matches(
                     &node_name,
                     &node_tag,
@@ -493,7 +496,7 @@ async fn run_node_build(run: NodeBuildRun) -> NodeBuildResult {
                     expected_generation,
                     Arc::clone(&working_dir_guard),
                 );
-                NodeBuildResult::failure(&log_path, "build cancelled by --force".to_string())
+                NodeBuildResult::failure(&log_path, "build cancelled".to_string())
             }
             Err(e) => {
                 // `NodeEntity::build` leaves the entity in `Building` on

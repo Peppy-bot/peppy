@@ -1,4 +1,6 @@
-use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use super::super::action_loop::{
+    GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
+};
 use super::gate::ConcurrencyGate;
 use super::pairing::plan_requested_pairs;
 use super::{
@@ -635,7 +637,10 @@ async fn handle_goal_request(
         .feedback_publisher()
         .expect("node_run declares a feedback topic");
     let gate_for_task = gate.clone();
-    let cancellation = slice_ownership.stack.cancellation();
+    // A stack reset cancels the stack's token; the goal's caller cancels
+    // this goal's own, which descends from it.
+    let reset = slice_ownership.stack.cancellation();
+    let cancellation = reset.child_token();
     tokio::spawn(async move {
         // Frees the gate slot on every exit: explicitly before completion on the
         // normal path (via `release_then_complete` below), or on unwind for a
@@ -658,7 +663,8 @@ async fn handle_goal_request(
             sender_instance_id,
             cancellation.clone(),
         );
-        let work = crate::services::node::gate::finish_on_reset(work, &cancellation, || {
+        let work = under_goal_cancel(&goal_ctx, &cancellation, work);
+        let work = crate::services::node::gate::finish_on_reset(work, &reset, || {
             NodeRunResult::failure("node run cancelled by stack reset")
         });
         tokio::pin!(work);

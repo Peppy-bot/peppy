@@ -17,6 +17,7 @@ use peppylib::PeppyResult;
 use peppylib::messaging::{ConcurrentAction, GoalContext, PendingGoal};
 use peppylib::types::Payload;
 use std::future::Future;
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 /// Handles a single received goal for a built-in single-goal action.
@@ -64,6 +65,25 @@ pub(crate) async fn accept_goal(
         Err(err) => {
             debug!("failed to encode goal acceptance: {err}");
             None
+        }
+    }
+}
+
+/// Runs `work` under its goal's cancellation: a cancel request from the
+/// goal's caller signals `token`, and the work finishes through its own
+/// cancel path.
+pub(crate) async fn under_goal_cancel<T>(
+    goal_ctx: &GoalContext,
+    token: &CancellationToken,
+    work: impl Future<Output = T>,
+) -> T {
+    tokio::pin!(work);
+    tokio::select! {
+        biased;
+        result = work.as_mut() => result,
+        _ = goal_ctx.cancel_signal() => {
+            token.cancel();
+            work.await
         }
     }
 }
