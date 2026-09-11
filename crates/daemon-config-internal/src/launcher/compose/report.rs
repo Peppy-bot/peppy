@@ -41,6 +41,16 @@ impl AppliedChange {
         }
     }
 
+    /// The value the change leaves in its field, as a conflict names it.
+    pub(super) fn written(&self) -> String {
+        match self {
+            AppliedChange::Argument { new, .. } => render(new),
+            AppliedChange::LinkSet { new, .. } => render(new),
+            AppliedChange::LinkAdded { target, .. } => format!("+ {target}"),
+            AppliedChange::LinkRemoved { .. } => String::from("(absent)"),
+        }
+    }
+
     fn render(&self) -> String {
         match self {
             AppliedChange::Argument { old, new, .. } => {

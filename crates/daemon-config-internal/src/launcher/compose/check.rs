@@ -8,11 +8,14 @@ use super::constraints::{
     ConstraintInPlay, ConstraintScope, LAUNCHER, constraint_satisfied, constraints_in_play,
     render_constraint,
 };
-use super::copy::{CopyRequest, attach, combine, compose_copy};
+use super::copy::{ComposedCopy, CopyRequest, attach, combine, compose_copy};
 use super::error::CompositionError;
+use super::expand::Expanded;
 use super::load::{LoadedComposition, LoadedOption, launcher_file_label};
 use super::prepared::PreparedLauncher;
-use super::select::{SelectionEntry, SelectionSource, UnitSelection, check_reach};
+use super::select::{
+    CopyOrigin, SelectionEntry, SelectionSource, UnitSelection, check_reach, resolve_copy,
+};
 use config::runtime::Name;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -24,8 +27,32 @@ use std::path::Path;
 /// combinations must fail or it looks like it checked them all.
 const COMBINATION_CEILING: usize = 2048;
 
-/// The name every checked copy runs under.
+/// The name a checked copy runs under, numbered past a stack that
+/// declares it as a core node link or prefixes an instance id with it.
 const CHECK_COPY: &str = "composition_check";
+
+/// The checked copy's name over `bare`: the first of `composition_check`,
+/// `composition_check_2`, ... that the stack neither declares as a core
+/// node link nor prefixes an instance id with.
+fn check_copy_name(bare: &Expanded) -> Name {
+    let ids: Vec<&str> = bare
+        .deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+        .map(|instance| instance.instance_id.as_str())
+        .collect();
+    (1..)
+        .map(|number| match number {
+            1 => CHECK_COPY.to_owned(),
+            _ => format!("{CHECK_COPY}_{number}"),
+        })
+        .find(|name| {
+            let prefix = format!("{name}_");
+            !bare.core_nodes.contains(name) && !ids.iter().any(|id| id.starts_with(&prefix))
+        })
+        .map(|name| Name::try_from(name).expect("a plain identifier"))
+        .expect("the numbered names are unbounded")
+}
 
 /// One option of a repeatable axis, as the check enumerates copies of it.
 struct Repeatable<'a> {
@@ -98,11 +125,13 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
 
 /// The bare launch must stay a member of the family: what the file
 /// deploys, with nothing selected on top, has to compose. A `one` axis the
-/// file leaves for `--with` has no bare launch, and that is the author's
-/// call.
+/// file leaves for `--with`, on the launcher or on a file copy, has no bare
+/// launch, and that is the author's call.
 fn check_bare_launch(prepared: &PreparedLauncher, label: &str) -> Vec<String> {
     match prepared.launch(&[]) {
-        Ok(_) | Err(CompositionError::UnresolvedAxis { .. }) => Vec::new(),
+        Ok(_)
+        | Err(CompositionError::UnresolvedAxis { .. })
+        | Err(CompositionError::UnresolvedCopyAxis { .. }) => Vec::new(),
         Err(e) => vec![format!(
             "{label}: the bare launch (no `--with`) fails: {e}. A launch of what the file \
              deploys must start"
@@ -178,35 +207,82 @@ fn check_file_copies_over(
         };
         let mut taken = bare.core_nodes.clone();
         let mut copies = Vec::new();
+        // A copy whose `one` axis the file leaves for a launch word, once
+        // per option the word may name; each runs beside the file's other
+        // copies.
+        let mut variants: Vec<(String, ComposedCopy)> = Vec::new();
         for entry in &launcher.option_deployments {
             let loaded = prepared.loaded.option(&entry.axis, &entry.option);
             for instance in &entry.instances {
                 let settings = entry.settings_for(instance);
-                let echo = format!("{} + file copy `{}`", stack.echo(), instance.instance_id);
-                match compose_copy(
-                    prepared,
-                    stack,
-                    &bare,
-                    CopyRequest {
-                        axis: &entry.axis,
-                        loaded,
-                        name: &instance.instance_id,
-                        with: &settings.with,
-                        arguments: &settings.arguments,
-                        adjustments: &settings.adjustments,
-                    },
-                    &taken,
+                let file_copy = format!("{} + file copy `{}`", stack.echo(), instance.instance_id);
+                let attempts: Vec<(String, BTreeMap<String, String>)> = match resolve_copy(
+                    loaded,
+                    &entry.axis,
+                    instance.instance_id.as_str(),
+                    &settings.with,
+                    CopyOrigin::File,
                 ) {
-                    Ok(copy) => {
-                        taken.extend(copy.core_nodes.iter().cloned());
-                        copies.push(copy);
+                    Ok(_) => vec![(file_copy.clone(), settings.with.clone())],
+                    Err(CompositionError::UnresolvedCopyAxis { axis, .. }) => loaded
+                        .axis(&axis)
+                        .into_iter()
+                        .flat_map(|left| left.options.keys())
+                        .map(|option| {
+                            let mut with = settings.with.clone();
+                            with.insert(axis.clone(), option.clone());
+                            (format!("{file_copy} ({axis}={option})"), with)
+                        })
+                        .collect(),
+                    Err(e) => {
+                        problems.push(format!("{label} ({file_copy}): {e}"));
+                        continue;
                     }
-                    Err(e) => problems.push(format!("{label} ({echo}): {e}")),
+                };
+                // Every variant of one copy carries the copy's name, so each
+                // composes against the links taken before it.
+                let filled = attempts.len() == 1;
+                let taken_before = taken.clone();
+                let mut links: Option<Vec<String>> = None;
+                for (echo, with) in &attempts {
+                    match compose_copy(
+                        prepared,
+                        stack,
+                        &bare,
+                        CopyRequest {
+                            axis: &entry.axis,
+                            loaded,
+                            name: &instance.instance_id,
+                            with,
+                            arguments: &settings.arguments,
+                            adjustments: &settings.adjustments,
+                            origin: CopyOrigin::File,
+                        },
+                        &taken_before,
+                    ) {
+                        Ok(copy) => {
+                            links.get_or_insert_with(|| copy.core_nodes.clone());
+                            if filled {
+                                copies.push(copy);
+                            } else {
+                                variants.push((echo.clone(), copy));
+                            }
+                        }
+                        Err(e) => problems.push(format!("{label} ({echo}): {e}")),
+                    }
                 }
+                taken.extend(links.into_iter().flatten());
             }
         }
         if let Err(e) = combine(launcher, &bare, &copies) {
             problems.push(format!("{label} ({}): {e}", stack.echo()));
+        }
+        for (echo, variant) in variants {
+            let mut together = copies.clone();
+            together.push(variant);
+            if let Err(e) = combine(launcher, &bare, &together) {
+                problems.push(format!("{label} ({echo}): {e}"));
+            }
         }
     }
     problems
@@ -225,7 +301,6 @@ fn check_copies_over(
     problems: &mut Vec<String>,
 ) -> Vec<(String, UnitSelection)> {
     let launcher = &prepared.launcher;
-    let name = Name::try_from(CHECK_COPY.to_owned()).expect("a plain identifier");
     let mut legal_copies: Vec<(String, UnitSelection)> = Vec::new();
     for item in repeatable {
         for copy_selection in enumerate_copy(item.loaded, &item.axis.name) {
@@ -255,6 +330,7 @@ fn check_copies_over(
                     // Reported once, by the stack pass.
                     Err(_) => continue,
                 };
+                let name = check_copy_name(&bare);
                 let with: BTreeMap<String, String> = copy_selection
                     .own_axes(&item.axis.name)
                     .filter_map(|entry| Some((entry.axis.clone(), entry.option.clone()?)))
@@ -276,6 +352,7 @@ fn check_copies_over(
                         with: &with,
                         arguments: &BTreeMap::new(),
                         adjustments: &[],
+                        origin: CopyOrigin::Join,
                     },
                     &bare.core_nodes,
                 ) {

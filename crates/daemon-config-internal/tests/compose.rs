@@ -1508,6 +1508,45 @@ fn check_composition_checks_a_fragments_own_axes_and_copies() {
     );
 }
 
+/// The check's own copy name stays clear of a launcher's core node links
+/// and instance ids.
+#[test]
+fn check_composition_names_its_copy_clear_of_the_launcher() {
+    let dir = tempdir().unwrap();
+    let fleet = write(
+        &dir.path().join("placed.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            core_nodes: ["composition_check"],
+            components: [
+                { name: "robot", cardinality: "zero_or_more", options: {
+                    arm: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] } } },
+            ],
+            deployments: [{ source: { name: "engine", tag: "v1" },
+                instances: [{ instance_id: "composition_check_engine_inst", core_node: "composition_check" }] }],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&fleet).unwrap());
+    let problems = check_composition(&parsed, &fleet);
+    assert!(problems.is_empty(), "got: {problems:?}");
+
+    let prefixed = write(
+        &dir.path().join("prefixed.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", cardinality: "zero_or_more", options: {
+                    arm: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] } } },
+            ],
+            deployments: [{ source: { name: "engine", tag: "v1" },
+                instances: [{ instance_id: "composition_check_arm_inst" }] }],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&prefixed).unwrap());
+    let problems = check_composition(&parsed, &prefixed);
+    assert!(problems.is_empty(), "got: {problems:?}");
+}
+
 #[test]
 fn constraints_without_components_are_refused() {
     let err = PeppyLauncherParser::from_content(

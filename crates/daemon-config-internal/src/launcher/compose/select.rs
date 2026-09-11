@@ -360,12 +360,25 @@ fn choose(
     Ok(())
 }
 
+/// Who names a copy's selection: the file's `deployments` entry, whose
+/// `one` axes a launch word may fill, or a `stack join`, whose words fill
+/// them.
+#[derive(Clone, Copy)]
+pub(super) enum CopyOrigin {
+    File,
+    Join,
+}
+
 /// Who an axis belongs to, for the refusal when nothing fills it.
 #[derive(Clone, Copy)]
 enum Owner<'a> {
     Launcher,
     Option(&'a str),
-    Copy { copy: &'a str, option: &'a str },
+    Copy {
+        copy: &'a str,
+        option: &'a str,
+        origin: CopyOrigin,
+    },
 }
 
 /// One axis's entry: the explicit choice, else what the file deploys, else
@@ -393,10 +406,22 @@ fn fill(
                     origin: format!(" of `{option}`"),
                     options,
                 },
-                Owner::Copy { copy, option } => CompositionError::UnresolvedCopyAxis {
+                Owner::Copy {
+                    copy,
+                    option,
+                    origin,
+                } => CompositionError::UnresolvedCopyAxis {
                     copy: copy.to_owned(),
                     option: option.to_owned(),
                     axis: axis.name.clone(),
+                    fix: match origin {
+                        CopyOrigin::File => format!(
+                            "add `with: {{ {}: \"<option>\" }}` to the copy, or `--with {copy}.{}=<option>` \
+                             on `peppy stack launch`",
+                            axis.name, axis.name
+                        ),
+                        CopyOrigin::Join => String::from("`--with <option>` on `peppy stack join`"),
+                    },
                     options,
                 },
             });
@@ -475,6 +500,7 @@ pub(super) fn resolve_copy(
     parent_axis: &str,
     copy: &str,
     with: &BTreeMap<String, String>,
+    origin: CopyOrigin,
 ) -> Result<UnitSelection, CompositionError> {
     for (axis_name, option) in with {
         let Some(axis) = loaded.axis(axis_name) else {
@@ -509,6 +535,7 @@ pub(super) fn resolve_copy(
             Owner::Copy {
                 copy,
                 option: &loaded.name,
+                origin,
             },
         )?);
     }

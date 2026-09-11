@@ -12,7 +12,7 @@ use super::error::CompositionError;
 use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit};
 use super::load::{LoadedComposition, launcher_file_label, load_composition};
 use super::report::{CompositionReport, SkipReason, SkippedAdjustment};
-use super::select::{self, LaunchWords, UnitSelection};
+use super::select::{self, CopyOrigin, LaunchWords, UnitSelection};
 use config::runtime::Name;
 use core_node_api::encoding::ArgumentOverride;
 use std::collections::HashSet;
@@ -134,6 +134,7 @@ impl PreparedLauncher {
                         with: &with,
                         arguments: &settings.arguments,
                         adjustments: &settings.adjustments,
+                        origin: CopyOrigin::File,
                     },
                     &taken,
                 )?;
@@ -211,6 +212,7 @@ impl PreparedLauncher {
                 with: &with,
                 arguments: &arguments,
                 adjustments: &[],
+                origin: CopyOrigin::Join,
             },
             &stack.launcher.core_nodes,
         )?;
@@ -219,7 +221,7 @@ impl PreparedLauncher {
         let report = CompositionReport {
             selection: stack.selection.clone(),
             copies: vec![record.clone()],
-            applied: copy.applied,
+            applied: copy::against_running(stack.launcher, copy.applied),
             skipped: copy.skipped,
         };
         Ok(ComposedJoin {

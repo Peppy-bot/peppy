@@ -9,7 +9,7 @@ use super::super::composition::{
 use super::super::types::PeppyLauncher;
 use super::constraints::{constraint_names_axis, names_axis};
 use super::error::CompositionError;
-use super::select::{UnitSelection, resolve_copy};
+use super::select::{CopyOrigin, UnitSelection, resolve_copy};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component as PathComponent, Path, PathBuf};
 
@@ -396,9 +396,9 @@ fn check_targets(
 
 /// A unit's selection fills the launcher's stack axes and, for a copy, its
 /// own axis: a guard or constraint naming another copy axis can never
-/// hold, a launcher constraint naming two copy axes holds for neither, and
-/// a copy's fragment has no core node link to declare, its name being its
-/// placement. Each is refused where it is written.
+/// hold, a launcher constraint or adjustment naming two copy axes holds
+/// for neither, and a copy's fragment has no core node link to declare, its
+/// name being its placement. Each is refused where it is written.
 fn check_copy_axis_references(
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
@@ -455,6 +455,19 @@ fn check_copy_axis_references(
             });
         }
     }
+    for adjustment in &launcher.adjustments {
+        let named: Vec<&str> = launcher
+            .repeatable_axes()
+            .filter(|copy_axis| names_axis(adjustment.when.as_ref(), &copy_axis.name))
+            .map(|copy_axis| copy_axis.name.as_str())
+            .collect();
+        if named.len() > 1 {
+            return Err(CompositionError::AdjustmentSpansCopyAxes {
+                target: adjustment.target.to_string(),
+                axes: crate::error::format_quoted_list(named),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -481,14 +494,29 @@ fn check_file_copies(
                 arguments,
                 adjustments,
             } = entry.settings_for(copy);
-            let own = resolve_copy(loaded_option, axis, copy.instance_id.as_str(), &with)?;
-            let defined: BTreeSet<&str> = loaded_option
-                .fragments_for(&own)
-                .into_iter()
-                .flat_map(|fragment| &fragment.body.deployments)
-                .flat_map(|deployment| &deployment.instances)
-                .map(|instance| instance.instance_id.as_str())
-                .collect();
+            let own = match resolve_copy(
+                loaded_option,
+                axis,
+                copy.instance_id.as_str(),
+                &with,
+                CopyOrigin::File,
+            ) {
+                Ok(own) => Some(own),
+                // A `one` axis the file leaves for a launch word: which
+                // fragments the copy runs is known at launch.
+                Err(CompositionError::UnresolvedCopyAxis { .. }) => None,
+                Err(error) => return Err(error),
+            };
+            let defined: BTreeSet<&str> = match &own {
+                Some(own) => loaded_option
+                    .fragments_for(own)
+                    .into_iter()
+                    .flat_map(|fragment| &fragment.body.deployments)
+                    .flat_map(|deployment| &deployment.instances)
+                    .map(|instance| instance.instance_id.as_str())
+                    .collect(),
+                None => definable.iter().copied().collect(),
+            };
             for OriginatedAdjustment { adjustment, origin } in &adjustments {
                 if let Some(when) = &adjustment.when {
                     if let Some(copy_axis) = launcher

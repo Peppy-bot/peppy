@@ -15,11 +15,8 @@ use super::expand::{
 use super::load::LoadedOption;
 use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
-use super::select::{UnitSelection, resolve_copy};
-use config::{
-    AnyType,
-    runtime::{CoreNodeName, Name},
-};
+use super::select::{CopyOrigin, UnitSelection, resolve_copy};
+use config::runtime::{CoreNodeName, CoreNodeNameError, Name};
 use core_node_api::encoding::ArgumentOverride;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -34,41 +31,12 @@ pub struct CopyRecord {
     pub instance_ids: Vec<Name>,
 }
 
-/// One field a copy writes on a stack instance, and what it needs there.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum StackWrite {
-    Argument { key: String, value: AnyType },
-    SetLink { slot: String, value: LinkValue },
-    AddLink { slot: String, target: String },
-    UnsetLink { slot: String },
-}
-
-impl StackWrite {
-    fn field(&self) -> String {
-        match self {
-            StackWrite::Argument { key, .. } => format!("arguments.{key}"),
-            StackWrite::SetLink { slot, .. }
-            | StackWrite::AddLink { slot, .. }
-            | StackWrite::UnsetLink { slot } => format!("links.{slot}"),
-        }
-    }
-
-    /// The value the write leaves in its field, as a conflict names it.
-    fn render(&self) -> String {
-        match self {
-            StackWrite::Argument { value, .. } => render(value),
-            StackWrite::SetLink { value, .. } => render(value),
-            StackWrite::AddLink { target, .. } => format!("+ {target}"),
-            StackWrite::UnsetLink { .. } => String::from("(absent)"),
-        }
-    }
-}
-
-/// One write a copy makes to a stack instance.
+/// One write a copy makes to a stack instance: the field and the value the
+/// copy needs there.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct StackWriteEntry {
     pub instance: String,
-    pub write: StackWrite,
+    pub write: AppliedChange,
 }
 
 /// One copy composed: the instances it owns, minted under its name, and
@@ -114,6 +82,7 @@ pub(super) struct CopyRequest<'a> {
     /// The copy's own adjustments, run after the launcher's and before
     /// `arguments`.
     pub adjustments: &'a [OriginatedAdjustment<'a>],
+    pub origin: CopyOrigin,
 }
 
 /// A copy's name is its placement link, so it is held to a core node
@@ -123,9 +92,17 @@ fn check_copy_name(name: &Name) -> Result<(), CompositionError> {
         .map(|_| ())
         .map_err(|error| CompositionError::CopyNameNotPlaceable {
             copy: name.to_string(),
-            reason: error.to_string(),
+            reason: match error {
+                CoreNodeNameError::Reserved => SELF_COPY_NAME_REFUSAL.to_owned(),
+                CoreNodeNameError::Malformed => error.to_string(),
+            },
         })
 }
+
+/// Why `self` cannot name a copy, told to the file's author and to the
+/// `stack join` caller alike.
+pub const SELF_COPY_NAME_REFUSAL: &str =
+    "`self` names the daemon a launch or join targets; give the copy another name";
 
 /// One of a copy's ids, minted under its name. Both halves are names and
 /// `_` is a name character, so the join is a name.
@@ -150,6 +127,7 @@ pub(super) fn compose_copy(
         with,
         arguments,
         adjustments,
+        origin,
     } = request;
     check_copy_name(name)?;
     if taken.iter().any(|link| link == name.as_str()) {
@@ -157,7 +135,7 @@ pub(super) fn compose_copy(
             name: name.to_string(),
         });
     }
-    let own = resolve_copy(loaded, axis, name.as_str(), with)?;
+    let own = resolve_copy(loaded, axis, name.as_str(), with, origin)?;
     let selection = UnitSelection {
         entries: stack
             .launcher_entries(&prepared.launcher)
@@ -278,23 +256,7 @@ pub(super) fn compose_copy(
         .filter(|entry| !minted.values().any(|id| id.as_str() == entry.target))
         .map(|entry| StackWriteEntry {
             instance: entry.target.clone(),
-            write: match &entry.change {
-                AppliedChange::Argument { key, new, .. } => StackWrite::Argument {
-                    key: key.clone(),
-                    value: new.clone(),
-                },
-                AppliedChange::LinkSet { slot, new, .. } => StackWrite::SetLink {
-                    slot: slot.clone(),
-                    value: new.clone(),
-                },
-                AppliedChange::LinkAdded { slot, target } => StackWrite::AddLink {
-                    slot: slot.clone(),
-                    target: target.clone(),
-                },
-                AppliedChange::LinkRemoved { slot, .. } => {
-                    StackWrite::UnsetLink { slot: slot.clone() }
-                }
-            },
+            write: entry.change.clone(),
         })
         .collect();
     let skipped = expanded
@@ -471,7 +433,7 @@ pub(super) fn combine(
                 difference: format!(
                     "{first} writes {first_value}, {} writes {}",
                     copy.name,
-                    entry.write.render()
+                    entry.write.written()
                 ),
             };
             match (claims.get(&key), &entry.write) {
@@ -482,11 +444,11 @@ pub(super) fn combine(
                     }),
                     write,
                 ) => {
-                    if *rendered != write.render() {
+                    if *rendered != write.written() {
                         return Err(conflict(first, rendered.clone()));
                     }
                 }
-                (Some(Claim::Appended { .. }), StackWrite::AddLink { .. }) => {}
+                (Some(Claim::Appended { .. }), AppliedChange::LinkAdded { .. }) => {}
                 (Some(Claim::Appended { copy: first }), _) => {
                     return Err(conflict(first, String::from("appended producers")));
                 }
@@ -499,12 +461,12 @@ pub(super) fn combine(
             claims.insert(
                 key,
                 match &entry.write {
-                    StackWrite::AddLink { .. } => Claim::Appended {
+                    AppliedChange::LinkAdded { .. } => Claim::Appended {
                         copy: copy.name.clone(),
                     },
                     write => Claim::Value {
                         copy: copy.name.clone(),
-                        rendered: write.render(),
+                        rendered: write.written(),
                     },
                 },
             );
@@ -517,20 +479,20 @@ pub(super) fn combine(
 /// Writes one field of a stack instance the way a copy needs it.
 fn apply_write(
     instance: &mut DeploymentInstance,
-    write: &StackWrite,
+    write: &AppliedChange,
     origin: &str,
 ) -> Result<(), CompositionError> {
     match write {
-        StackWrite::Argument { key, value } => {
-            instance.arguments.insert(key.clone(), value.clone());
+        AppliedChange::Argument { key, new, .. } => {
+            instance.arguments.insert(key.clone(), new.clone());
         }
-        StackWrite::SetLink { slot, value } => {
-            instance.links.insert(slot.clone(), value.clone());
+        AppliedChange::LinkSet { slot, new, .. } => {
+            instance.links.insert(slot.clone(), new.clone());
         }
-        StackWrite::UnsetLink { slot } => {
+        AppliedChange::LinkRemoved { slot, .. } => {
             instance.links.remove(slot);
         }
-        StackWrite::AddLink { slot, target } => {
+        AppliedChange::LinkAdded { slot, target } => {
             let bound = append_links(
                 instance,
                 slot,
@@ -565,7 +527,9 @@ pub(super) fn attach(
         };
         let field = entry.write.field();
         match &entry.write {
-            StackWrite::Argument { key, value } => {
+            AppliedChange::Argument {
+                key, new: value, ..
+            } => {
                 let old = running.arguments.get(key);
                 if old != Some(value) {
                     return Err(refusal(format!(
@@ -575,7 +539,9 @@ pub(super) fn attach(
                     )));
                 }
             }
-            StackWrite::SetLink { slot, value } => {
+            AppliedChange::LinkSet {
+                slot, new: value, ..
+            } => {
                 let old = running.links.get(slot);
                 if old != Some(value) {
                     return Err(refusal(match old {
@@ -587,16 +553,23 @@ pub(super) fn attach(
                     }));
                 }
             }
-            StackWrite::UnsetLink { slot } => match running.links.get(slot) {
+            AppliedChange::LinkRemoved { slot, .. } => match running.links.get(slot) {
                 None => {}
                 Some(LinkValue::Vacant(_)) => {
+                    if !pairs_into(copy, &entry.instance, slot) {
+                        return Err(CompositionError::JoinReleasesUnpairedVacancy {
+                            name: copy.name.to_string(),
+                            instance: entry.instance.clone(),
+                            slot: slot.clone(),
+                        });
+                    }
                     running.links.remove(slot);
                 }
                 Some(bound) => {
                     return Err(refusal(format!("{field}: {} -> (absent)", render(bound))));
                 }
             },
-            StackWrite::AddLink { slot, target } => {
+            AppliedChange::LinkAdded { slot, target } => {
                 let bound = match running.links.get(slot) {
                     Some(LinkValue::Bound(Selection::Array(existing))) => {
                         existing.as_slice().contains(target)
@@ -611,6 +584,58 @@ pub(super) fn attach(
     }
     add_copy(&mut flat, copy)?;
     validate_flat(&flat)
+}
+
+/// The applied changes with each `old` read off the running stack, for a
+/// join's report: the copy composes over the bare stack and joins what
+/// runs. A release of a slot the running instance no longer has wrote
+/// nothing and is left out.
+pub(super) fn against_running(
+    existing: &PeppyLauncher,
+    applied: Vec<AppliedAdjustment>,
+) -> Vec<AppliedAdjustment> {
+    applied
+        .into_iter()
+        .filter_map(|mut entry| {
+            let running = existing
+                .deployments
+                .iter()
+                .flat_map(|deployment| &deployment.instances)
+                .find(|instance| instance.instance_id.as_str() == entry.target);
+            let Some(running) = running else {
+                return Some(entry);
+            };
+            match &mut entry.change {
+                AppliedChange::Argument { key, old, .. } => {
+                    *old = running.arguments.get(key).cloned();
+                }
+                AppliedChange::LinkSet { slot, old, .. } => {
+                    *old = running.links.get(slot).cloned();
+                }
+                AppliedChange::LinkRemoved { slot, old } => match running.links.get(slot) {
+                    Some(value) => *old = value.clone(),
+                    None => return None,
+                },
+                AppliedChange::LinkAdded { .. } => {}
+            }
+            Some(entry)
+        })
+        .collect()
+}
+
+/// Whether one of the copy's instances links into `slot` of `instance`,
+/// by `instance/slot` or by the instance alone.
+fn pairs_into(copy: &ComposedCopy, instance: &str, slot: &str) -> bool {
+    copy.deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+        .flat_map(|owned| owned.links.values())
+        .filter_map(LinkValue::selection)
+        .flat_map(Selection::targets)
+        .any(|target| {
+            let (target_instance, target_slot) = split_link_target(target);
+            target_instance == instance && target_slot.is_none_or(|named| named == slot)
+        })
 }
 
 /// The running stack without one copy: its instances and its placement

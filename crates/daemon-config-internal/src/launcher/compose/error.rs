@@ -51,13 +51,14 @@ pub enum CompositionError {
 
     #[error(
         "axis `{axis}` of `{option}` has cardinality `one` and copy `{copy}` selects nothing \
-         for it; add `with: {{ {axis}: \"<option>\" }}` to the copy, or `--with <option>` on \
-         `peppy stack join`. Its options: {options}"
+         for it; {fix}. Its options: {options}"
     )]
     UnresolvedCopyAxis {
         copy: String,
         option: String,
         axis: String,
+        /// What fills the axis, in the words of whoever names the copy.
+        fix: String,
         options: String,
     },
 

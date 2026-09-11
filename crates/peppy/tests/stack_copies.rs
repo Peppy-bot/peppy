@@ -130,6 +130,56 @@ fn stack_join_and_preview_reject_nonfinite_overrides() {
     }
 }
 
+/// A launch word scoped to a file copy, `NAME.axis=option`, fills that
+/// copy's own axis through the CLI's resolve path.
+#[test]
+fn stack_resolve_applies_a_launch_word_scoped_to_a_file_copy() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("simulation.json5");
+    std::fs::write(&launcher, r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
+            deployments: [
+                { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                { commander: "web" },
+            ],
+            components: [{ name: "commander", options: {
+                web: { deployments: [{ source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+                xr: { deployments: [{ source: { name: "headset", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+            } }],
+        } } }],
+        deployments: [{ robot: "real", instances: [{ instance_id: "alpha" }] }],
+    }"#).unwrap();
+    let no_join = JoinPreview {
+        option: None,
+        name: Name::new("unused").unwrap(),
+        words: Vec::new(),
+        arguments: Vec::new(),
+    };
+    let (document, report) = resolve_rendered(
+        &PeppyDirs::new(directory.path()),
+        launcher,
+        &["alpha.commander=xr".into()],
+        &no_join,
+    )
+    .unwrap();
+    assert!(
+        report
+            .iter()
+            .any(|line| line == "copy alpha: robot=real  commander=xr"),
+        "{report:?}"
+    );
+    let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
+    let sources: Vec<_> = flat["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|deployment| deployment["source"]["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(sources.contains(&"headset".to_owned()), "{sources:?}");
+    assert!(!sources.contains(&"panel".to_owned()), "{sources:?}");
+}
+
 #[test]
 fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
     let directory = tempfile::tempdir().unwrap();
@@ -199,7 +249,7 @@ fn resolve_previews_a_join_with_its_own_name_selection_and_overrides() {
     let cli = StackCli::try_parse_from([
         "stack",
         "resolve",
-        "openarm_fleet",
+        "fleet",
         "--with",
         "mujoco",
         "--join",
@@ -223,14 +273,8 @@ fn resolve_previews_a_join_with_its_own_name_selection_and_overrides() {
         join.arguments,
         ["commander_inst.port=8001".parse().unwrap()]
     );
-    let cli = StackCli::try_parse_from([
-        "stack",
-        "resolve",
-        "openarm_fleet",
-        "--join",
-        "openarm_v2_sim",
-    ])
-    .unwrap();
+    let cli = StackCli::try_parse_from(["stack", "resolve", "fleet", "--join", "openarm_v2_sim"])
+        .unwrap();
     let StackCommands::Resolve { join, .. } = cli.command else {
         unreachable!()
     };
