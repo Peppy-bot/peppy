@@ -262,8 +262,9 @@ impl SliceOwnership {
     ///
     /// Refuses, with the reason and its fix, a goal that arrives while a
     /// stack change holds the stack, while a `stack reset` is in progress,
-    /// while this daemon is reserved for another launch, or naming a launch
-    /// whose reservation has ended.
+    /// while this daemon is reserved for another launch, naming a launch
+    /// whose reservation has ended, or naming the reserved launch before
+    /// its slice-begin reached this daemon.
     pub fn admit_node_goal(
         &self,
         goal: &impl LaunchScoped,
@@ -290,7 +291,18 @@ impl SliceOwnership {
             return Ok(admission);
         };
         if launch_id == Some(held.launch_id.as_str()) {
-            return Ok(admission);
+            let holds_slice = state.slice.as_ref().is_some_and(|slice| {
+                slice.launch_id == held.launch_id
+                    && slice.coordinator_core_node == held.coordinator_core_node
+            });
+            if holds_slice {
+                return Ok(admission);
+            }
+            return Err(format!(
+                "this daemon is reserved for launch `{}` and holds no slice of it; `{}` begins \
+                 the slice on this daemon before it dispatches nodes",
+                held.launch_id, held.coordinator_core_node
+            ));
         }
         Err(format!(
             "this daemon is reserved for federated launch `{}`, driven by `{}`, \
@@ -627,11 +639,31 @@ mod tests {
              one the operator's CLI happens to target; got: {refusal}"
         );
 
+        let refusal = ownership
+            .admit_node_goal(&Goal(Some("launch-a")))
+            .expect_err("the reserving launch dispatches nodes only after its slice-begin");
+        assert!(refusal.contains("holds no slice"), "got: {refusal}");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
         assert!(
             ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok(),
-            "the reserving launch's own dispatch must pass"
+            "the reserving launch's own dispatch must pass once the slice is held"
         );
         assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+    }
+
+    /// A reservation admits a launch's node goals only beside that launch's
+    /// slice: a slice of another launch or another coordinator's is refused.
+    #[test]
+    fn a_launch_scoped_goal_needs_the_slice_as_well_as_the_reservation() {
+        let ownership = SliceOwnership::new("cn-held");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        ownership.try_reserve("launch-b", "cn-robot-7");
+        assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+
+        let ownership = SliceOwnership::new("cn-held");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"));
+        ownership.try_reserve("launch-a", "cn-robot-7");
+        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
     }
 
     #[test]
@@ -688,6 +720,7 @@ mod tests {
     fn reset_rejects_late_dispatch_from_the_cleared_launch() {
         let ownership = SliceOwnership::new("robot-host");
         ownership.try_reserve("launch-a", "coordinator");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "coordinator"));
         assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok());
         ownership.clear();
         assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
