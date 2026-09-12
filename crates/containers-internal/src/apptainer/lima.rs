@@ -517,7 +517,7 @@ pub(crate) fn ensure_guest_uidmap(limactl: &Path, lima_home: &Path, instance: &s
 ///
 /// Syncs the host-side installation to `/tmp/peppy/apptainer/` in the guest.
 /// This path lives on the guest's native writable filesystem, avoiding Lima's
-/// read-only home directory mount. A recipe-stamped marker file avoids
+/// read-only home directory mount. A version-stamped marker file avoids
 /// redundant copies on subsequent invocations.
 ///
 /// Returns the guest-side path to `bin/apptainer`.
@@ -530,14 +530,11 @@ pub(crate) fn ensure_guest_apptainer(
     let guest_dir = PathBuf::from(env!("GUEST_APPTAINER_DIR"));
     let guest_bin = guest_dir.join("bin/apptainer");
 
-    let marker_name = format!(
-        ".peppy-sync-{}-gc{}",
-        crate::APPTAINER_BUILD_ID,
-        crate::GOCRYPTFS_VERSION
-    );
+    let version = crate::APPTAINER_VERSION;
+    let marker_name = format!(".peppy-sync-{version}");
     let marker_path = guest_dir.join(&marker_name);
 
-    // Fast path: the marker proves this build's complete tree was synced.
+    // Fast path: check if the version marker exists (sub-second limactl call).
     let marker_exists = match lima_shell_cmd(limactl, lima_home, instance)
         .args(["test", "-f"])
         .arg(&marker_path)
@@ -635,7 +632,7 @@ pub(crate) fn ensure_guest_apptainer(
         ))
     })?;
 
-    // Write the recipe marker only after both tar processes succeed.
+    // Write the version marker so we skip the sync next time.
     match lima_shell_cmd(limactl, lima_home, instance)
         .arg("touch")
         .arg(&marker_path)

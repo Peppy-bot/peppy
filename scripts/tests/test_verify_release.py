@@ -12,7 +12,6 @@ import pytest
 from functions.cli import RELEASE_TRIPLES, ReleaseError
 from functions.verify_release import (
     ELF_MACHINE_BY_ARCH,
-    NVLIBLIST_PATH,
     verify_all_releases,
     verify_release_archive,
 )
@@ -44,8 +43,7 @@ def _create_archive(
 ) -> None:
     """Create a .tgz archive whose members carry the triple's binary shape
     and, by default, the zeroed ownership release packaging must produce."""
-    overrides = {NVLIBLIST_PATH: b"# NVIDIA libraries\nlibcuda.so\nlibnvidia-ngx.so\n"}
-    overrides.update(content_overrides or {})
+    overrides = content_overrides or {}
     with tarfile.open(path, "w:gz") as tar:
         for name in members:
             data = overrides.get(name, _binary_for(triple))
@@ -60,7 +58,7 @@ def _create_archive(
 
 def _all_required_members(triple: str) -> list[str]:
     """Return all required member paths for a given triple."""
-    members = ["bin/peppy", "bin/zenohd", "bin/apptainer/bin/apptainer", NVLIBLIST_PATH]
+    members = ["bin/peppy", "bin/zenohd", "bin/apptainer/bin/apptainer"]
     if "apple-darwin" in triple:
         members.append("bin/lima/bin/limactl")
     return members
@@ -73,32 +71,6 @@ def test_verify_archive_all_present(tmp_path: Path) -> None:
 
     missing = verify_release_archive(archive, triple)
     assert missing == []
-
-
-@pytest.mark.parametrize("triple", RELEASE_TRIPLES)
-@pytest.mark.parametrize(
-    "contents",
-    [b"", b"libcuda.so\n", b"# libnvidia-ngx.so\n", b"libnvidia-ngx.so\n" * 2],
-)
-def test_verify_archive_requires_one_active_ngx_entry(
-    tmp_path: Path, triple: str, contents: bytes
-) -> None:
-    archive = tmp_path / f"peppy-{triple}.tgz"
-    _create_archive(
-        archive, _all_required_members(triple), triple,
-        content_overrides={NVLIBLIST_PATH: contents},
-    )
-    assert verify_release_archive(archive, triple) == [
-        f"{NVLIBLIST_PATH} must contain one active libnvidia-ngx.so entry"
-    ]
-
-
-@pytest.mark.parametrize("triple", RELEASE_TRIPLES)
-def test_verify_archive_missing_gpu_library_list(tmp_path: Path, triple: str) -> None:
-    archive = tmp_path / f"peppy-{triple}.tgz"
-    members = [m for m in _all_required_members(triple) if m != NVLIBLIST_PATH]
-    _create_archive(archive, members, triple)
-    assert verify_release_archive(archive, triple) == [f"missing {NVLIBLIST_PATH}"]
 
 
 def test_verify_archive_missing_zenohd(tmp_path: Path) -> None:
