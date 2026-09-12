@@ -13,7 +13,9 @@ mod stack;
 
 use clock::{ClockSource, SimClockSource, WallClockSource};
 
-pub use node::{TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances};
+pub use node::{
+    HealthMonitorPolicy, TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances,
+};
 pub use presence::NAME_CLAIM_LINKED_SETTLE;
 pub use stack::{
     copy_removal_budget, idle_timeout_flag, slow_connection_hint, stack_reset_timeout,
@@ -81,8 +83,7 @@ pub(crate) fn current_host_name() -> String {
 pub struct CoreNodeArguments {
     pub node_startup_timeout: Duration,
     pub node_start_health_timeout: Duration,
-    pub health_monitor_interval: Duration,
-    pub health_monitor_timeout: Duration,
+    pub health_monitor: HealthMonitorPolicy,
     pub clock_publish_interval: Duration,
     /// Cadence of the daemon-liveness heartbeat (small and fixed; the
     /// configurable grace period is many multiples of it).
@@ -165,8 +166,7 @@ pub struct CoreNode {
     start_time: Instant,
     node_startup_timeout: Duration,
     node_start_health_timeout: Duration,
-    health_monitor_interval: Duration,
-    health_monitor_timeout: Duration,
+    health_monitor: HealthMonitorPolicy,
     clock_publish_interval: Duration,
     heartbeat_interval: Duration,
     daemon_use_sim_time: bool,
@@ -320,8 +320,7 @@ impl CoreNode {
 
         let node_startup_timeout = arguments.node_startup_timeout;
         let node_start_health_timeout = arguments.node_start_health_timeout;
-        let health_monitor_interval = arguments.health_monitor_interval;
-        let health_monitor_timeout = arguments.health_monitor_timeout;
+        let health_monitor = arguments.health_monitor;
         let clock_publish_interval = arguments.clock_publish_interval;
         let heartbeat_interval = arguments.heartbeat_interval;
         let daemon_use_sim_time = arguments.daemon_use_sim_time;
@@ -365,8 +364,7 @@ impl CoreNode {
             start_time: Instant::now(),
             node_startup_timeout,
             node_start_health_timeout,
-            health_monitor_interval,
-            health_monitor_timeout,
+            health_monitor,
             clock_publish_interval,
             heartbeat_interval,
             daemon_use_sim_time,
@@ -677,8 +675,7 @@ impl CoreNode {
                         timeouts: stack::StackChangeTimeouts {
                             node_startup: self.node_startup_timeout,
                             node_start_health: self.node_start_health_timeout,
-                            health_monitor_interval: self.health_monitor_interval,
-                            health_monitor_timeout: self.health_monitor_timeout,
+                            health_monitor: self.health_monitor,
                         },
                         daemon_defaults: node::DaemonDefaults::from_peppy_config(
                             &self.peppy_config,
@@ -733,8 +730,7 @@ impl CoreNode {
                     node_startup_timeout: self.node_startup_timeout,
                     node_start_health_timeout: self.node_start_health_timeout,
                     peppy_dirs: self.peppy_dirs.clone(),
-                    health_monitor_interval: self.health_monitor_interval,
-                    health_monitor_timeout: self.health_monitor_timeout,
+                    health_monitor: self.health_monitor,
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
                         self.namespace.clone(),

@@ -8,6 +8,7 @@ mod env;
 mod feedback;
 pub(crate) mod gate;
 mod git_utils;
+mod health_monitor;
 mod info;
 mod init;
 mod logging;
@@ -27,6 +28,7 @@ use std::sync::Arc;
 // submodules reference as `crate::services::node::X`).
 pub use add::listen_for_node_add;
 pub use builder::listen_for_node_build;
+pub use health_monitor::HealthMonitorPolicy;
 pub use info::listen_for_node_info;
 pub use init::listen_for_node_init;
 pub use observation::ObservationCoordinator;

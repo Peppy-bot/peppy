@@ -2,8 +2,8 @@ mod common;
 
 use common::{
     AbortOnDrop, NodeRunTestTimeouts, acquire_container_test_guard, create_test_node_with_name,
-    instance_state_in_any_state, poll_until, send_node_add_then_build, send_node_run_and_wait,
-    send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
+    fast_health_monitor, instance_state_in_any_state, poll_until, send_node_add_then_build,
+    send_node_run_and_wait, send_node_run_and_wait_with_env, start_core_node_with_health_monitor,
     start_core_node_with_health_timeout, start_core_node_with_mock_messenger,
     start_core_node_with_real_messenger, wait_until_action_completes, write_peppy_json5,
 };
@@ -1835,11 +1835,9 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "health_monitor_instance";
 
-    // Use fast health monitor settings so the test completes quickly:
-    // check every 200ms with a 100ms per-attempt timeout.
-    let started =
-        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
-            .await;
+    // Fast probes with the production tolerance: three consecutive misses
+    // must land before the instance turns unhealthy.
+    let started = start_core_node_with_health_monitor(fast_health_monitor(3)).await;
 
     // Create a node with a simple long-running run_cmd
     let peppy_json5 = r#"{
@@ -1948,9 +1946,9 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
     drop(health_task);
 
     // Wait for the health monitor to detect the failure and mark the instance
-    // unhealthy. With interval=200ms and timeout=100ms the first failed probe
-    // lands within ~300ms; give it 5 seconds for CI safety. The instance must
-    // stay in the stack the whole time, only its health flag flips.
+    // unhealthy. With interval=200ms, timeout=100ms and a threshold of three
+    // misses the flag flips within ~1s; give it 5 seconds for CI safety. The
+    // instance must stay in the stack the whole time, only its health flag flips.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         match started.node_stack.find_by_instance_id(&instance_id) {
@@ -1976,33 +1974,22 @@ async fn listen_for_node_run_marks_node_unhealthy_on_failed_health_checks() {
         "unhealthy instance should remain tracked in the stack"
     );
 
-    // Verify the stack log recorded the unhealthy transition.
+    // The monitor appends the transition after updating the health flag, so
+    // wait for this instance's log entry independently of the flag.
     let stack_log_path = started.peppy_dirs.stack_log_path();
-    assert!(
-        stack_log_path.exists(),
-        "stack log file should exist at {:?}",
-        stack_log_path
+    let unhealthy_entry = format!(
+        "Instance '{TARGET_INSTANCE_ID}' of node '{TARGET_NODE_NAME}:{TARGET_NODE_TAG}' became \
+         unhealthy: 3 consecutive health checks failed, last: "
     );
-    let log_content =
-        std::fs::read_to_string(&stack_log_path).expect("should be able to read stack log");
-    assert!(
-        log_content.contains(TARGET_INSTANCE_ID),
-        "stack log should mention the instance id, got:
-{}",
-        log_content
-    );
-    assert!(
-        log_content.contains("unhealthy"),
-        "stack log should record the unhealthy transition, got:
-{}",
-        log_content
-    );
-    assert!(
-        log_content.contains(TARGET_NODE_NAME),
-        "stack log should mention the node name, got:
-{}",
-        log_content
-    );
+    poll_until(
+        Duration::from_secs(5),
+        "stack log should record three consecutive failed health checks for the unhealthy instance",
+        || {
+            let content = std::fs::read_to_string(&stack_log_path).ok()?;
+            content.contains(&unhealthy_entry).then_some(())
+        },
+    )
+    .await;
 
     // Cleanup: the node was deliberately left alive so the monitor could flag
     // it unhealthy. Stop its process now that the assertions are done.
@@ -2025,9 +2012,9 @@ async fn listen_for_node_run_marks_node_failed_when_its_process_exits() {
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "exit_watcher_instance";
 
-    let started =
-        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
-            .await;
+    // A threshold of one: a monitor that kept probing this node would log
+    // "became unhealthy" on its first miss, which the assertions below forbid.
+    let started = start_core_node_with_health_monitor(fast_health_monitor(1)).await;
 
     let peppy_json5 = r#"{
             peppy_schema: "node/v1",
@@ -2194,9 +2181,9 @@ async fn listen_for_node_run_marks_node_finished_when_its_process_exits_cleanly(
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "clean_exit_instance";
 
-    let started =
-        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
-            .await;
+    // A threshold of one: a monitor that kept probing this node would log
+    // "became unhealthy" on its first miss, which the assertions below forbid.
+    let started = start_core_node_with_health_monitor(fast_health_monitor(1)).await;
 
     // Runs until asked to stop, then exits cleanly (status 0) via the SIGTERM
     // trap, standing in for a one-shot node finishing its work. The short inner
@@ -2374,9 +2361,9 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
     const TARGET_NODE_TAG: &str = "v1";
     const TARGET_INSTANCE_ID: &str = "shutdown_suppressed_instance";
 
-    let started =
-        start_core_node_with_health_monitor(Duration::from_millis(200), Duration::from_millis(100))
-            .await;
+    // A threshold of one: a monitor that kept probing this node would log
+    // "became unhealthy" on its first miss, which the assertions below forbid.
+    let started = start_core_node_with_health_monitor(fast_health_monitor(1)).await;
 
     let peppy_json5 = r#"{
             peppy_schema: "node/v1",

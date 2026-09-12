@@ -8,7 +8,7 @@ use crate::Result;
 use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate, finish_on_reset};
-use crate::services::node::{DaemonDefaults, RelationshipCoordinators};
+use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators};
 use chrono::Local;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
@@ -131,8 +131,7 @@ impl IdleTimeouts {
 pub(crate) struct StackChangeTimeouts {
     pub node_startup: Duration,
     pub node_start_health: Duration,
-    pub health_monitor_interval: Duration,
-    pub health_monitor_timeout: Duration,
+    pub health_monitor: HealthMonitorPolicy,
 }
 
 /// Daemon-wide defaults the stack launcher applies to every spawned

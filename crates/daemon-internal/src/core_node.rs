@@ -1,8 +1,9 @@
 use crate::error::Error;
 use crate::serve::{ServeAsyncCommand, ServeAsyncHandle};
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig};
+use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
 use daemon_config::consts::PeppyDirs;
 use pmi::Messenger;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,16 +11,22 @@ use tokio::sync::{Mutex, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-/// Cadence of the per-node health monitor (see
-/// `core_node::services::node::run::spawn_health_monitor`). The monitor probes
-/// each running instance every [`HEALTH_MONITOR_INTERVAL`], allowing
-/// [`HEALTH_MONITOR_TIMEOUT`] per probe, and flips the instance's health flag
-/// (surfaced by `stack list` and `node info`). A failing probe marks the
-/// instance unhealthy; a later passing one marks it healthy again. The monitor
-/// never removes an instance, so a transient router hang shows up as a brief
-/// unhealthy blip rather than tearing the stack down.
-pub(crate) const HEALTH_MONITOR_INTERVAL: Duration = Duration::from_secs(5);
-pub(crate) const HEALTH_MONITOR_TIMEOUT: Duration = Duration::from_secs(3);
+/// Cadence and tolerance of the per-node health monitor (see
+/// `core_node::services::node::health_monitor`). The monitor probes each
+/// running instance every `interval`, allowing `timeout` per probe, and flips
+/// the instance's health flag (surfaced by `stack list` and `node info`) only
+/// after `failure_threshold` consecutive missed probes; one passing probe flips
+/// it back. A lone missed probe is what a node, its container, or the host
+/// produces when it stalls for a few seconds (a swapped-out VM, a saturated
+/// CPU), and it leaves the flag untouched. A node that stays silent for the
+/// full run of misses, about twenty seconds, is what turns `unhealthy`. The
+/// monitor never removes an instance, so a router outage shows up as an
+/// unhealthy window rather than tearing the stack down.
+pub(crate) const HEALTH_MONITOR: HealthMonitorPolicy = HealthMonitorPolicy {
+    interval: Duration::from_secs(5),
+    timeout: Duration::from_secs(3),
+    failure_threshold: NonZeroU32::new(3).unwrap(),
+};
 
 /// Cadence of the daemon-liveness heartbeat each spawned node's watchdog
 /// listens for. Small and fixed; the configurable grace period
@@ -95,8 +102,7 @@ impl CoreNodeRunner {
         let node_arguments = CoreNodeArguments {
             node_startup_timeout,
             node_start_health_timeout,
-            health_monitor_interval: HEALTH_MONITOR_INTERVAL,
-            health_monitor_timeout: HEALTH_MONITOR_TIMEOUT,
+            health_monitor: HEALTH_MONITOR,
             // 10 Hz: high enough to correlate logs across nodes, low enough to
             // avoid flooding the bus.
             clock_publish_interval: Duration::from_millis(100),
