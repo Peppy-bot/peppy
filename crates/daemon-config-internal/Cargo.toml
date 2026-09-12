@@ -25,7 +25,7 @@ tracing = "0.1"
 # `NamedTempFile` siblings.
 tempfile = "3"
 # Home-directory resolution for the production `PeppyDirs` root.
-dirs = "6"
+dirs = "7"
 # Compile-time string concatenation so the bundled peppy_config template
 # splices in its numeric defaults instead of duplicating the literals.
 const_format = "0.2"

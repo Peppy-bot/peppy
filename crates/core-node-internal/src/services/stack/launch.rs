@@ -17,7 +17,8 @@ use crate::services::action_loop::{GoalHandler, accept_goal, reject_goal, run_ac
 use crate::services::node::common::panic_message;
 use crate::services::node::gate::{Admission, ConcurrencyGate};
 use crate::services::node::{
-    DaemonDefaults, RelationshipCoordinators, create_action_log_file, resolve_mount_path_parameters,
+    DaemonDefaults, HealthMonitorPolicy, RelationshipCoordinators, create_action_log_file,
+    resolve_mount_path_parameters,
 };
 use chrono::Local;
 use config::apply_parameter_defaults;
@@ -62,8 +63,7 @@ struct IdleTimeouts {
 pub struct StackLaunchTimeouts {
     pub node_startup: Duration,
     pub node_start_health: Duration,
-    pub health_monitor_interval: Duration,
-    pub health_monitor_timeout: Duration,
+    pub health_monitor: HealthMonitorPolicy,
 }
 
 /// Daemon-wide defaults the stack launcher applies to every spawned

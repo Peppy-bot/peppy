@@ -12,7 +12,7 @@ config = { workspace = true }
 daemon-config = { workspace = true }
 # Home lookup for `~` expansion in mount-spec sources. `dirs` falls back to
 # the passwd database when `$HOME` is unset (daemons under systemd/cron).
-dirs = "6"
+dirs = "7"
 serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"
