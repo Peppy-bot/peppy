@@ -1978,7 +1978,7 @@ mod tests {
             r#"{
                 peppy_schema: "launcher/v1",
                 components: [
-                    { name: "robot", default: "real",
+                    { name: "robot",
                       provides: ["arm_inst"],
                       options: {
                           real: { deployments: [
@@ -1987,7 +1987,7 @@ mod tests {
                           mujoco: "fragments/mujoco.json5",
                       } },
                 ],
-                deployments: [],
+                deployments: [{ robot: "real" }],
             }"#,
         )
         .unwrap();
@@ -2067,7 +2067,7 @@ mod tests {
             r#"{
                 peppy_schema: "launcher/v1",
                 components: [
-                    { name: "robot", default: "real",
+                    { name: "robot",
                       provides: ["arm_inst"],
                       options: {
                           real: { deployments: [
@@ -2079,6 +2079,7 @@ mod tests {
                 deployments: [
                     { source: { name: "web", tag: "v1" },
                       instances: [{ instance_id: "viewer_inst" }] },
+                    { robot: "real" },
                 ],
             }"#,
         )
@@ -2109,7 +2110,7 @@ mod tests {
                 r#"{{
                     peppy_schema: "launcher/v1",
                     components: [
-                        {{ name: "robot", default: "real",
+                        {{ name: "robot",
                           provides: ["arm_inst"],
                           options: {{
                               real: {{ deployments: [
@@ -2118,7 +2119,7 @@ mod tests {
                               sim: "{fragment}",
                           }} }},
                     ],
-                    deployments: [],
+                    deployments: [{{ robot: "real" }}],
                 }}"#
             ),
         )

@@ -86,13 +86,28 @@ async fn reset_async(ctx: &Arc<AppContext>, federated: bool) -> Result<()> {
         let messenger = conn.messenger;
         let caller = &conn.core_node_name;
         async move {
+            let stack = match poll(
+                &StackListRequest::new(),
+                messenger,
+                caller,
+                CALLER_INSTANCE_ID,
+                core_node,
+                REQUEST_TIMEOUT,
+            )
+            .await
+            {
+                Ok(stack) => stack,
+                Err(error) => return Some(format!("{core_node}: {error}")),
+            };
+            let timeout =
+                core_node::stack_reset_timeout(stack.shutdown_grace_secs) + REQUEST_TIMEOUT;
             match poll(
                 &StackResetRequest::new(),
                 messenger,
                 caller,
                 CALLER_INSTANCE_ID,
                 core_node,
-                REQUEST_TIMEOUT,
+                timeout,
             )
             .await
             {

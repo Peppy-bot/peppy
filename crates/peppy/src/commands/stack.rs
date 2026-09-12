@@ -1,11 +1,14 @@
 mod benchmark;
+mod goal;
+mod join;
 mod launch;
 mod list;
+mod remove;
 mod reset;
 mod resolve;
 
-pub use list::{StackListReport, list_nodes_collecting, list_nodes_json_collecting};
-pub use resolve::resolve_rendered;
+pub use list::{list_nodes_collecting, list_nodes_json_collecting};
+pub use resolve::{JoinPreview, resolve_rendered};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,26 +16,25 @@ use std::sync::Arc;
 use clap::Subcommand;
 use tracing::info;
 
+use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
+
 use super::Command;
-use super::node::{DEFAULT_BUILD_IDLE_TIMEOUT_SECS, DEFAULT_IDLE_TIMEOUT_SECS};
+use super::node::DEFAULT_BUILD_IDLE_TIMEOUT_SECS;
 use crate::{context::AppContext, error::Error as CommandError};
 
 #[derive(Subcommand)]
 pub enum StackCommands {
-    /// Launches a deployment, replacing the current node Stack
+    /// Launch a stack from a launcher, replacing the current node stack.
     Launch {
-        /// Path to the peppy launcher configuration file
+        /// The launcher to run: a repository launcher's name, or a path to a
+        /// `launcher/v1` file.
+        #[arg(value_name = "LAUNCHER")]
         launcher_config_path: PathBuf,
-        /// Wire one of the launcher's declared `core_nodes` placeholders to a
-        /// real federated core node: `<core-node-link>@<core-node>`. Repeatable,
-        /// once per declared link. `@self` targets the daemon this command is
-        /// sent to.
-        ///
-        /// Deliberately NOT spelled `--link`: `node run --link` wires a slot to
-        /// a producer, while this wires a placeholder to a machine. The launcher
-        /// file keeps them apart by position (`core_nodes` vs per-instance
-        /// `links`), which a flag cannot do.
-        #[arg(long = "place", value_name = "CORE_NODE_LINK@CORE_NODE", value_parser = parse_place_kv)]
+        /// Wire a placement link to a real federated core node:
+        /// `NAME@<core-node>`, with NAME a `core_nodes` placeholder the
+        /// launcher declares or the name of a copy it deploys. Repeatable,
+        /// once per link; `self` names the daemon this command is sent to.
+        #[arg(long = "place", value_name = "NAME@CORE_NODE", value_parser = parse_place)]
         place: Vec<(String, String)>,
         /// Wire every declared core node link to this daemon, so a
         /// multi-machine launcher runs unmodified on one box. How you develop
@@ -40,25 +42,46 @@ pub enum StackCommands {
         #[arg(long)]
         local: bool,
         #[command(flatten)]
-        with: WithSelection,
-        /// Idle timeout in seconds for the node add phase (resets on git/http progress or sub-process output)
-        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
-        node_add_idle_timeout_secs: u64,
-        /// Idle timeout in seconds for the node build phase (resets on build output or
-        /// image-download/write progress)
-        #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS)]
-        node_build_idle_timeout_secs: u64,
-        /// Idle timeout in seconds for the node run-startup phase (resets on subprocess output until the node signals ready)
-        #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS)]
-        node_run_idle_timeout_secs: u64,
-        /// Optional absolute max timeout in seconds for the entire launch. If unset, only idle timeouts apply.
-        #[arg(long)]
-        max_timeout_secs: Option<u64>,
+        with: WithWords,
+        #[command(flatten)]
+        timeouts: StackTimeouts,
         /// Build every node from its staged sources even when a cached
         /// artifact built from byte-identical sources exists. Applies to
         /// each node build of the launch, on this daemon and on every peer.
         #[arg(long)]
         rebuild: bool,
+    },
+    /// Add a copy of one of the launcher's options to the running stack.
+    ///
+    /// The copy's instances are minted as NAME_<instance-id>, the way
+    /// `node run` adds an instance of a node.
+    Join {
+        /// The option to copy: one of a `zero_or_more` axis of the running
+        /// launcher.
+        #[arg(value_name = "OPTION")]
+        option: String,
+        /// The copy's name: the prefix of every instance id it creates and
+        /// its placement link.
+        #[arg(short = 'i', long = "instance-id", value_name = "NAME", value_parser = parse_copy_name)]
+        name: config::runtime::Name,
+        #[command(flatten)]
+        with: WithWords,
+        /// Override an argument of one of the copy's instances with a JSON5
+        /// value; the instance id is the one written in the option's fragment.
+        #[arg(long = "set-arguments", value_name = "INSTANCE.ARGUMENT=JSON5")]
+        arguments: Vec<core_node_api::encoding::ArgumentOverride>,
+        /// Run the whole copy on a machine. Defaults to the coordinator,
+        /// which `self` also names.
+        #[arg(long = "place", value_name = "CORE_NODE", value_parser = join::parse_placement)]
+        place: Option<core_node_api::encoding::JoinPlacement>,
+        #[command(flatten)]
+        timeouts: StackTimeouts,
+    },
+    /// Stop and remove every instance of one copy.
+    Remove {
+        /// The copy's name, as listed by `stack list`.
+        #[arg(value_parser = parse_copy_name)]
+        name: config::runtime::Name,
     },
     /// List the nodes in the current node stack
     List {
@@ -74,10 +97,14 @@ pub enum StackCommands {
     /// hatch (flatten, hand-edit, launch the flat file), while the
     /// resolution report goes to stderr.
     Resolve {
-        /// Path to the peppy launcher configuration file
+        /// The launcher to resolve: a repository launcher's name, or a path
+        /// to a `launcher/v1` file.
+        #[arg(value_name = "LAUNCHER")]
         launcher_config_path: PathBuf,
         #[command(flatten)]
-        with: WithSelection,
+        with: WithWords,
+        #[command(flatten)]
+        join: JoinPreview,
     },
     /// Tear the node stack down to an empty state.
     ///
@@ -117,21 +144,70 @@ pub enum StackCommands {
     },
 }
 
-/// Parses `<core-node-link>@<core-node>`, sharing the `KEY@TARGET` grammar with
-/// `node run --link` so both flags split the same way and report the same shape
-/// of error. Only the grammar is shared; what each side means is not.
-fn parse_place_kv(raw: &str) -> Result<(String, String), String> {
-    crate::commands::node::parse_key_at_target(raw, "--place", "CORE_NODE_LINK@CORE_NODE")
+/// A copy's name is its placement link, so it is held to a core node name's
+/// grammar before it travels as the [`config::runtime::Name`] the goal
+/// carries.
+fn parse_copy_name(raw: &str) -> Result<config::runtime::Name, String> {
+    use config::runtime::{CoreNodeName, CoreNodeNameError};
+    let placement = CoreNodeName::new(raw).map_err(|error| match error {
+        CoreNodeNameError::Reserved => daemon_config::launcher::SELF_COPY_NAME_REFUSAL.to_owned(),
+        CoreNodeNameError::Malformed => {
+            format!("a copy's name is its placement link, so it {error}")
+        }
+    })?;
+    Ok(config::runtime::Name::new(placement.into_string()).expect("a core node name is a name"))
 }
 
-/// The `--with` selection, stated once for every subcommand that takes one:
-/// `stack launch` and `stack resolve` must accept exactly the same words,
-/// because resolve's output is the advertised preview of a launch.
+/// `--place NAME@CORE_NODE` on launch: NAME is a core node link the flat
+/// launcher carries, which every copy's name is one of.
+fn parse_place(raw: &str) -> Result<(String, String), String> {
+    crate::commands::node::parse_key_at_target(raw, "--place", "NAME@CORE_NODE")
+}
+
+/// The phase budgets a launch or a join runs under, each idle budget a
+/// positive number of seconds.
+#[derive(clap::Args, Debug)]
+pub struct StackTimeouts {
+    /// Idle timeout in seconds for the node add phase (resets on git/http
+    /// progress or sub-process output).
+    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+    pub node_add_idle_timeout_secs: u64,
+    /// Idle timeout in seconds for the node build phase (resets on build
+    /// output or image-download/write progress).
+    #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+    pub node_build_idle_timeout_secs: u64,
+    /// Idle timeout in seconds for the node run-startup phase (resets on
+    /// subprocess output until the node signals ready).
+    #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
+    pub node_run_idle_timeout_secs: u64,
+    /// Absolute maximum in seconds for the whole operation. Unset, only the
+    /// idle timeouts apply.
+    #[arg(long)]
+    pub max_timeout_secs: Option<u64>,
+}
+
+impl StackTimeouts {
+    /// The budgets a goal carries, before the caller's environment is added.
+    pub fn budgets(&self) -> core_node_api::encoding::StackBudgets {
+        core_node_api::encoding::StackBudgets::new(
+            self.node_add_idle_timeout_secs,
+            self.node_build_idle_timeout_secs,
+            self.node_run_idle_timeout_secs,
+            self.max_timeout_secs,
+        )
+    }
+}
+
+/// The `--with` words, shared by launch, join, and resolve.
 #[derive(clap::Args, Default)]
-pub struct WithSelection {
-    /// Select one option of the launcher's declared `components` axes:
-    /// `option` or `axis=option`. Repeatable and comma-separated; every
-    /// axis left unselected takes its default.
+pub struct WithWords {
+    /// Select one option of a `components` axis: `option` or `axis=option`.
+    /// Repeatable and comma-separated. At launch the words swap what the
+    /// launcher deploys on its `one` axes and turn `zero_or_one` axes on,
+    /// reaching the axes of the fragments those selections run, and
+    /// `NAME.option` or `NAME.axis=option` selects the own axis of the copy
+    /// NAME the file deploys; at join they select the copied option's own
+    /// axes.
     ///
     /// The words travel to the coordinator verbatim, like `--local`:
     /// only the daemon holds a repository launcher's document, so only
@@ -153,9 +229,8 @@ fn parse_with_word(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(format!(
-            "a --with entry is `option` or `axis=option`, never blank (check for a stray comma \
-             in \"{}\")",
-            raw
+            "a --with entry is `option`, `axis=option` or, at launch, `NAME.option` or \
+             `NAME.axis=option`, never blank (check for a stray comma in {raw:?})"
         ));
     }
     Ok(trimmed.to_owned())
@@ -168,21 +243,28 @@ pub struct StackCommand {
 impl Command for StackCommand {
     fn execute(self, ctx: &Arc<AppContext>) -> Result<(), CommandError> {
         match self.command {
+            StackCommands::Join {
+                option,
+                name,
+                with,
+                arguments,
+                place,
+                timeouts,
+            } => join::join(ctx, option, name, with.words, arguments, place, timeouts),
+            StackCommands::Remove { name } => remove::remove(ctx, name),
             StackCommands::List { json } => list::list_nodes(ctx, json),
             StackCommands::Reset { federated } => reset::reset_stack(ctx, federated),
             StackCommands::Resolve {
                 launcher_config_path,
                 with,
-            } => resolve::resolve(ctx, launcher_config_path, with.words),
+                join,
+            } => resolve::resolve(launcher_config_path, with.words, join),
             StackCommands::Launch {
                 launcher_config_path,
                 place,
                 local,
                 with,
-                node_add_idle_timeout_secs,
-                node_build_idle_timeout_secs,
-                node_run_idle_timeout_secs,
-                max_timeout_secs,
+                timeouts,
                 rebuild,
             } => {
                 info!("Launching stack...");
@@ -194,10 +276,7 @@ impl Command for StackCommand {
                         local,
                     },
                     with.words,
-                    node_add_idle_timeout_secs,
-                    node_build_idle_timeout_secs,
-                    node_run_idle_timeout_secs,
-                    max_timeout_secs,
+                    timeouts.budgets(),
                     rebuild,
                 )
             }

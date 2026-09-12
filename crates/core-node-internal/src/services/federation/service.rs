@@ -19,10 +19,10 @@ use crate::services::node::RelationshipCoordinators;
 use crate::services::response::into_service_response;
 use core_node_api::ServiceId;
 use core_node_api::encoding::{
-    FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantReleaseRequest,
-    ParticipantReserveRequest, ParticipantReserveResponse, ParticipantSliceBeginRequest,
-    ParticipantSliceBeginResponse, RelationshipEvent, RelationshipNotification,
-    RelationshipNotificationAck,
+    FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantInstancesRemoveRequest,
+    ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
+    ParticipantSliceBeginRequest, ParticipantSliceBeginResponse, RelationshipEvent,
+    RelationshipNotification, RelationshipNotificationAck,
 };
 use core_node_api::names;
 use daemon_config::repository::DeploymentPins;
@@ -61,11 +61,11 @@ pub(crate) struct FederationServiceContext {
 
 /// Declares the listener for one federation endpoint.
 ///
-/// The five endpoints differ only in which [`ServiceId`] they bind and which
+/// The six endpoints differ only in which [`ServiceId`] they bind and which
 /// handler they run; binding, spawning, and turning the handler's `Result` into
 /// a service response are identical for all of them. Stating that once is what
-/// stops a change to how these endpoints are served from landing on four of the
-/// five.
+/// stops a change to how these endpoints are served from landing on five of the
+/// six.
 macro_rules! federation_endpoint {
     ($listen:ident, $service:expr, $inner:ident) => {
         pub(crate) async fn $listen(
@@ -107,6 +107,11 @@ federation_endpoint!(
     slice_begin_inner
 );
 federation_endpoint!(
+    listen_for_participant_instances_remove,
+    ServiceId::ParticipantInstancesRemove,
+    instances_remove_inner
+);
+federation_endpoint!(
     listen_for_pair_commit,
     ServiceId::PairCommit,
     pair_commit_inner
@@ -122,11 +127,75 @@ federation_endpoint!(
     notify_inner
 );
 
+async fn instances_remove_inner(
+    request: &ServiceRequestContext,
+    context: &FederationServiceContext,
+) -> Result<Payload> {
+    let decoded =
+        ParticipantInstancesRemoveRequest::decode(request.message().payload_bytes().as_ref())?;
+    let _mutation = match context.ownership.stack.try_begin_change() {
+        Ok(mutation) => mutation,
+        Err(busy) => {
+            return FederationVerdict::refused(busy.to_string())
+                .encode()
+                .map_err(Into::into);
+        }
+    };
+    let reserved = context.ownership.held_reservation();
+    let slice = context.ownership.slice();
+    let authorized =
+        reserved
+            .as_ref()
+            .zip(slice.as_ref())
+            .is_some_and(|((launch, coordinator), slice)| {
+                launch == &decoded.launch_id
+                    && slice.launch_id == *launch
+                    && slice.coordinator_core_node == *coordinator
+            });
+    if !authorized {
+        return FederationVerdict::refused(format!(
+            "the reservation and current stack slice must both belong to this launch; no \
+             instances were removed. Clear this machine with `peppy stack reset --core-node {}`",
+            context.core_node_name
+        ))
+        .encode()
+        .map_err(Into::into);
+    }
+    if decoded
+        .instance_ids
+        .as_slice()
+        .iter()
+        .any(|id| id.as_str() == context.root_instance_id)
+    {
+        return FederationVerdict::refused("cannot remove the core node")
+            .encode()
+            .map_err(Into::into);
+    }
+    crate::services::node::stop_named_instances(
+        &context.messenger,
+        &context.core_node_name,
+        &context.root_instance_id,
+        &context.node_stack,
+        &context.relationships,
+        decoded.instance_ids.as_slice(),
+    )
+    .await;
+    FederationVerdict::ok().encode().map_err(Into::into)
+}
+
 async fn reserve_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
     let decoded = ParticipantReserveRequest::decode(request.message().payload_bytes().as_ref())?;
+    let _mutation = match context.ownership.stack.try_begin_change() {
+        Ok(mutation) => mutation,
+        Err(busy) => {
+            return ParticipantReserveResponse::rejected(busy.to_string(), &context.peppy_version)
+                .encode()
+                .map_err(Into::into);
+        }
+    };
 
     debug!(
         "Received `participant_reserve` for launch `{}` from coordinator `{}`",
@@ -313,21 +382,24 @@ fn watch_coordinator_presence(context: &FederationServiceContext, coordinator: &
     });
 }
 
-/// The commit point of a federated launch on this machine: the coordinator has
-/// every participant reserved, so this daemon's slice is now replaced and the
-/// host paths its containers will bind are prepared.
+/// The commit point of a federated stack change on this machine: the
+/// coordinator has every participant reserved, so this daemon's slice is
+/// replaced by a launch, or appended to by a join, and the host paths its
+/// containers will bind are prepared.
 ///
 /// Destructive, and gated on the reservation. A request naming a launch this
 /// daemon is not reserved for is refused, which is what stops a stale
 /// coordinator, or one whose lease already lapsed, from wiping a machine out
 /// from under the launch that legitimately owns it.
 ///
-/// The bind sources are prepared HERE, in the window between clearing the slice
-/// and running the first node of the new one, because that is the only moment
-/// this machine has no container running: registering a host path the container
-/// VM has not seen restarts it, and a restart takes every container in it. The
-/// coordinator resolved the paths, since a mount path can name an instance
-/// parameter and this daemon is handed one instance at a time.
+/// A launch prepares the bind sources HERE, in the window between clearing
+/// the slice and running the first node of the new one, because that is the
+/// only moment this machine has no container running: registering a host
+/// path the container VM has not seen restarts it, and a restart takes every
+/// container in it. A join registers only paths the running containers
+/// already bind, or refuses. The coordinator resolved the paths, since a
+/// mount path can name an instance parameter and this daemon is handed one
+/// instance at a time.
 async fn slice_begin_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
@@ -354,19 +426,37 @@ async fn slice_begin_inner(
         .map_err(Into::into);
     }
 
-    debug!(
-        "Replacing this daemon's stack slice for launch `{}` driven by `{coordinator}`",
-        decoded.launch_id
-    );
-
-    crate::services::stack::clear_stack_slice(
-        &context.messenger,
-        &context.core_node_name,
-        &context.root_instance_id,
-        &context.node_stack,
-        context.relationships.observation(),
-    )
-    .await;
+    let _mutation = match context.ownership.stack.try_begin_change() {
+        Ok(mutation) => mutation,
+        Err(busy) => {
+            return ParticipantSliceBeginResponse::refused(busy.to_string())
+                .encode()
+                .map_err(Into::into);
+        }
+    };
+    if decoded.append {
+        let slice = context.ownership.slice();
+        let same_launch = slice.as_ref().is_some_and(|slice| {
+            slice.launch_id == decoded.launch_id && slice.coordinator_core_node == coordinator
+        });
+        let coordinates_its_own = context.ownership.active.lock().is_some();
+        if !same_launch
+            && (coordinates_its_own || crate::services::stack::holds_nodes(&context.node_stack))
+        {
+            return ParticipantSliceBeginResponse::refused("this machine has a different stack; choose an empty machine or a participant of this launch")
+                .encode().map_err(Into::into);
+        }
+    } else {
+        crate::services::stack::clear_stack_slice(
+            &context.messenger,
+            &context.core_node_name,
+            &context.root_instance_id,
+            &context.node_stack,
+            context.relationships.observation(),
+        )
+        .await;
+        *context.ownership.active.lock() = None;
+    }
 
     // Record the slice BEFORE the coordinator dispatches a single node to it.
     // The slice is what makes this machine's participation discoverable, and a
@@ -380,8 +470,21 @@ async fn slice_begin_inner(
     // Recorded first, prepared second: the slice is already this launch's, so a
     // machine that cannot provide a bind source is a refusal the coordinator
     // acts on, not wreckage nobody can find.
-    match crate::services::stack::prepare_container_mounts(&decoded.mount_sources).await {
-        Ok(auto_created) => ParticipantSliceBeginResponse::ok(auto_created),
+    let prepared = if decoded.append && crate::services::stack::holds_nodes(&context.node_stack) {
+        crate::services::stack::prepare_additional_container_mounts(&decoded.mount_sources).await
+    } else {
+        crate::services::stack::prepare_container_mounts(&decoded.mount_sources).await
+    };
+    match prepared {
+        Ok(auto_created) => {
+            for (instance, hosts) in decoded.lifecycle_watchers {
+                context.relationships.notifier().set_watchers(
+                    instance.as_str(),
+                    &hosts.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                );
+            }
+            ParticipantSliceBeginResponse::ok(auto_created)
+        }
         Err(reason) => ParticipantSliceBeginResponse::refused(format!(
             "this daemon cannot prepare the container bind sources for launch `{}`: {reason}",
             decoded.launch_id

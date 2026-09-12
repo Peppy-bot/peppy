@@ -17,7 +17,9 @@ pub use node::{
     HealthMonitorPolicy, TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances,
 };
 pub use presence::NAME_CLAIM_LINKED_SETTLE;
-pub use stack::{idle_timeout_flag, slow_connection_hint};
+pub use stack::{
+    copy_removal_budget, idle_timeout_flag, slow_connection_hint, stack_reset_timeout,
+};
 
 use crate::Result;
 use config::{
@@ -549,6 +551,13 @@ impl CoreNode {
                 self.node_name(),
             )
             .boxed(),
+            ServiceId::ParticipantInstancesRemove => {
+                federation::listen_for_participant_instances_remove(
+                    self.federation_context(ctx),
+                    self.node_name(),
+                )
+                .boxed()
+            }
             ServiceId::PairCommit => {
                 federation::listen_for_pair_commit(self.federation_context(ctx), self.node_name())
                     .boxed()
@@ -578,6 +587,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 ctx.relationships.clone(),
+                Arc::clone(&self.slice_ownership),
             )
             .boxed(),
             ServiceId::NodeSync => node::listen_for_node_sync(
@@ -606,6 +616,7 @@ impl CoreNode {
                 self.node_name(),
                 Arc::clone(&self.node_stack),
                 ctx.relationships.clone(),
+                Arc::clone(&self.slice_ownership),
             )
             .boxed(),
             ServiceId::RepoAdd => repo::listen_for_repo_add(
@@ -640,7 +651,9 @@ impl CoreNode {
                 self.peppy_dirs.clone(),
             )
             .boxed(),
-            ServiceId::ClockOffset => return Err(NotHostedHere::SpawnedNode),
+            ServiceId::ClockOffset | ServiceId::SimTimeParticipants => {
+                return Err(NotHostedHere::SpawnedNode);
+            }
         })
     }
 
@@ -649,31 +662,34 @@ impl CoreNode {
     /// not-hosted-here escape. EXHAUSTIVE — no wildcard arm.
     fn action_task<'a>(&'a self, id: ActionId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
         match id {
-            ActionId::StackLaunch => stack::listen_for_stack_launch(
-                &self.messenger,
-                ctx.core_node_name,
-                self.instance_id(),
-                self.node_name(),
-                Arc::clone(&self.node_stack),
-                self.peppy_dirs.clone(),
-                stack::StackLaunchDefaults {
-                    timeouts: stack::StackLaunchTimeouts {
-                        node_startup: self.node_startup_timeout,
-                        node_start_health: self.node_start_health_timeout,
-                        health_monitor: self.health_monitor,
+            ActionId::StackLaunch | ActionId::StackJoin | ActionId::StackRemove => {
+                stack::listen_for_stack_action(
+                    id,
+                    &self.messenger,
+                    ctx.core_node_name,
+                    self.instance_id(),
+                    self.node_name(),
+                    Arc::clone(&self.node_stack),
+                    self.peppy_dirs.clone(),
+                    stack::StackChangeDefaults {
+                        timeouts: stack::StackChangeTimeouts {
+                            node_startup: self.node_startup_timeout,
+                            node_start_health: self.node_start_health_timeout,
+                            health_monitor: self.health_monitor,
+                        },
+                        daemon_defaults: node::DaemonDefaults::from_peppy_config(
+                            &self.peppy_config,
+                            self.namespace.clone(),
+                            self.daemon_use_sim_time,
+                        ),
+                        shutdown_token: self.shutdown_token.clone(),
+                        slice_ownership: Arc::clone(&self.slice_ownership),
+                        peppy_version: CORE_NODE_TAG.to_owned(),
                     },
-                    daemon_defaults: node::DaemonDefaults::from_peppy_config(
-                        &self.peppy_config,
-                        self.namespace.clone(),
-                        self.daemon_use_sim_time,
-                    ),
-                    shutdown_token: self.shutdown_token.clone(),
-                    slice_ownership: Arc::clone(&self.slice_ownership),
-                    peppy_version: CORE_NODE_TAG.to_owned(),
-                },
-                ctx.relationships.clone(),
-            )
-            .boxed(),
+                    ctx.relationships.clone(),
+                )
+                .boxed()
+            }
             ActionId::StackBenchmark => stack::listen_for_stack_benchmark(
                 &self.messenger,
                 ctx.core_node_name,

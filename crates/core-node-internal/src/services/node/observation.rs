@@ -196,9 +196,18 @@ impl ObservationCoordinator {
     pub fn register_planned(&self, planned: &[PlannedObservation]) {
         let mut registry = self.registry.lock().unwrap();
         *registry = Registry::default();
+        Self::insert_planned(&mut registry, planned);
+    }
+
+    /// Adds a join's observers while retaining existing registrations and source generations.
+    pub fn extend_planned(&self, planned: &[PlannedObservation]) {
+        Self::insert_planned(&mut self.registry.lock().unwrap(), planned);
+    }
+
+    fn insert_planned(registry: &mut Registry, planned: &[PlannedObservation]) {
         for obs in planned {
             Self::insert_record(
-                &mut registry,
+                registry,
                 &obs.observer_instance_id,
                 ObserverRecord {
                     observer_link_id: obs.observer_link_id.clone(),
@@ -729,6 +738,47 @@ mod tests {
             .into_iter()
             .collect(),
         )
+    }
+
+    #[tokio::test]
+    async fn joining_preserves_existing_observers_and_source_generations() {
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator = coordinator_observing_the_root(&directory);
+        coordinator.on_instance_running(SOURCE_INSTANCE).await;
+        let source = SourceKey::new("core_a", SOURCE_INSTANCE);
+        let joined = PlannedObservation {
+            observer_instance_id: "bravo_panel_inst".into(),
+            observer_link_id: "arm".into(),
+            pairing_name: "joint_link".into(),
+            pairing_tag: "v1".into(),
+            observed_role: "follower".into(),
+            source: ProducerRef::new("core_a", SOURCE_INSTANCE),
+            source_link_id: "controller".into(),
+        };
+        for additions in [vec![joined], Vec::new()] {
+            coordinator.extend_planned(&additions);
+            let registry = coordinator.registry.lock().unwrap();
+            assert_eq!(registry.by_observer.len(), 2);
+            assert_eq!(
+                ObservationCoordinator::slots_observing(&registry, &source).len(),
+                2
+            );
+        }
+        let seeds = coordinator.seed_for_spawn(&planned_observations());
+        assert_eq!(seeds["sole_arm"][0].source_generation, 1);
+
+        coordinator.on_instance_down("bravo_panel_inst").await;
+        let registry = coordinator.registry.lock().unwrap();
+        assert!(registry.by_observer.contains_key(OBSERVER_INSTANCE));
+        assert!(!registry.by_observer.contains_key("bravo_panel_inst"));
+    }
+
+    #[tokio::test]
+    async fn a_launch_replaces_the_observer_registry() {
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator = coordinator_observing_the_root(&directory);
+        coordinator.register_planned(&[]);
+        assert!(coordinator.registry.lock().unwrap().by_observer.is_empty());
     }
 
     /// The seed-stamping invariants under a concurrent source lifecycle: an

@@ -27,6 +27,7 @@ pub async fn listen_for_node_remove(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -51,6 +52,7 @@ pub async fn listen_for_node_remove(
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
                     relationships.clone(),
+                    ownership.clone(),
                 )
             })
             .await
@@ -67,16 +69,38 @@ async fn handle_node_remove_request(
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> PeppyResult<Payload> {
+    let request = NodeRemoveRequest::decode(context.message().payload_bytes().as_ref())?;
+    let _admission = match ownership.admit_node_goal(&request) {
+        Ok(admission) => admission,
+        Err(reason) => {
+            return into_service_response(
+                &context,
+                NodeRemoveResponse::failure(reason)
+                    .encode()
+                    .map_err(Into::into),
+            );
+        }
+    };
     into_service_response(
         &context,
-        handle_node_remove_request_inner(
-            &context,
-            &messenger,
-            &core_node_node,
-            &core_instance_id,
-            node_stack,
-            &relationships,
+        crate::services::node::gate::finish_on_reset(
+            handle_node_remove_request_inner(
+                &context,
+                &request,
+                &messenger,
+                &core_node_node,
+                &core_instance_id,
+                node_stack,
+                &relationships,
+            ),
+            &ownership.stack.cancellation(),
+            || {
+                NodeRemoveResponse::failure("node remove cancelled by stack reset")
+                    .encode()
+                    .map_err(Into::into)
+            },
         )
         .await,
     )
@@ -84,6 +108,7 @@ async fn handle_node_remove_request(
 
 async fn handle_node_remove_request_inner(
     context: &ServiceRequestContext,
+    request: &NodeRemoveRequest,
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
@@ -91,9 +116,6 @@ async fn handle_node_remove_request_inner(
     relationships: &RelationshipCoordinators,
 ) -> Result<Payload> {
     let sender_instance_id = context.message().instance_id();
-    let payload = context.message().payload_bytes();
-
-    let request = NodeRemoveRequest::decode(payload.as_ref())?;
 
     debug!(
         "Received `node_remove` request from {sender_instance_id}, node_name={}, tag={}, stop_instances={}",

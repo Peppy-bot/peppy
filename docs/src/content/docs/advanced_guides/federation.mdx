@@ -417,3 +417,20 @@ the whole launch.
   file.
 - **No re-placement of a running instance.** Moving an instance to another
   machine means launching again.
+
+## Adding copies
+
+A launcher whose `components` include a `zero_or_more` axis runs that axis as copies, added and removed while its other instances keep running. The coordinator snapshots the launcher at launch and composes every join against that snapshot:
+
+```sh
+peppy stack launch fleet
+peppy stack join openarm_v2 -i alpha --place jetson-1
+peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
+peppy stack list
+peppy stack remove bravo
+peppy stack reset --federated
+```
+
+A copy's name is its placement link and the prefix of every instance it creates. The whole copy runs on the machine `--place` names, or on the coordinator. Run join and remove on the coordinator, with `--core-node NAME` from another machine. A join reserves the machines it touches, the providers its instances link to, and the simulation clock source; a machine outside that set that is offline blocks neither a join nor a removal.
+
+Launch replaces every participating slice. Join adds the copy's instances to its host's slice; remove stops the copy alone and refuses while another instance links to it. Reset cancels the operation in flight, waits for its cleanup, and clears the targeted slices; with `--federated` it clears every machine of the launch, which is also how the machines a cancelled join reached are cleared. See [copies](/guides/launch_files/#copies) for argument overrides and the single simulated robot the simulations host today.

@@ -44,7 +44,15 @@ pub(crate) async fn clear_stack_slice(
     observation.clear();
 }
 
-pub async fn listen_for_stack_reset(
+/// Reset drains admitted work, then tears down every instance in one batch.
+pub fn stack_reset_timeout(shutdown_grace_secs: u64) -> std::time::Duration {
+    crate::services::node::gate::COOPERATIVE_TEARDOWN_BUDGET
+        + crate::services::node::teardown_timeout(std::time::Duration::from_secs(
+            shutdown_grace_secs,
+        ))
+}
+
+pub(crate) async fn listen_for_stack_reset(
     messenger: &MessengerHandle,
     core_node_node: &str,
     instance_id: &str,
@@ -129,6 +137,7 @@ async fn handle_stack_reset_request_inner(
     let _request = StackResetRequest::decode(payload.as_ref())?;
 
     debug!("Received `stack_reset` request from {sender_instance_id}");
+    let _mutation = ownership.stack.begin_reset().await;
     clear_stack_slice(
         messenger,
         core_node_node,

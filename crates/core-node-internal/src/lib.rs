@@ -29,7 +29,7 @@ pub use services::repo::{
 };
 pub use services::{
     CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, NAME_CLAIM_LINKED_SETTLE,
-    TEARDOWN_REAP_BUDGET, check_runtime_prerequisites, force_kill_deadline, idle_timeout_flag,
-    slow_connection_hint, teardown_all_instances,
+    TEARDOWN_REAP_BUDGET, check_runtime_prerequisites, copy_removal_budget, force_kill_deadline,
+    idle_timeout_flag, slow_connection_hint, stack_reset_timeout, teardown_all_instances,
 };
 pub use ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};

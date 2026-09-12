@@ -38,6 +38,7 @@ pub async fn listen_for_node_stop(
     node_name: &str,
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> Result<JoinHandle<Result<()>>> {
     let core_node_node = core_node_node.to_string();
     let core_instance_id = instance_id.to_string();
@@ -62,6 +63,7 @@ pub async fn listen_for_node_stop(
                     core_instance_id.clone(),
                     Arc::clone(&node_stack),
                     relationships.clone(),
+                    ownership.clone(),
                 )
             })
             .await
@@ -78,16 +80,36 @@ async fn handle_node_stop_request(
     core_instance_id: String,
     node_stack: Arc<NodeStack>,
     relationships: RelationshipCoordinators,
+    ownership: Arc<crate::services::federation::SliceOwnership>,
 ) -> PeppyResult<Payload> {
+    let _admission = match ownership.admit_node_change(None) {
+        Ok(admission) => admission,
+        Err(reason) => {
+            return into_service_response(
+                &context,
+                NodeStopResponse::failure(reason)
+                    .encode()
+                    .map_err(Into::into),
+            );
+        }
+    };
     into_service_response(
         &context,
-        handle_node_stop_request_inner(
-            &context,
-            &messenger,
-            &core_node_node,
-            &core_instance_id,
-            node_stack,
-            &relationships,
+        crate::services::node::gate::finish_on_reset(
+            handle_node_stop_request_inner(
+                &context,
+                &messenger,
+                &core_node_node,
+                &core_instance_id,
+                node_stack,
+                &relationships,
+            ),
+            &ownership.stack.cancellation(),
+            || {
+                NodeStopResponse::failure("node stop cancelled by stack reset")
+                    .encode()
+                    .map_err(Into::into)
+            },
         )
         .await,
     )
@@ -588,7 +610,7 @@ fn remove_instance_from_registry(
 /// share ONE grace budget, so an overwrite of an entity with several stuck
 /// instances costs one grace window, not one per instance. Returns only once
 /// every process is gone. Infallible.
-pub(super) async fn stop_instances(
+pub(crate) async fn stop_instances(
     messenger: &MessengerHandle,
     core_node_node: &str,
     core_instance_id: &str,
@@ -647,6 +669,40 @@ pub(super) async fn stop_instances(
     .await;
 }
 
+/// Stops in reverse dependency order, including terminal initializer
+/// instances. An id no node runs is torn down from the relationship
+/// registries alone, where a start that never came still registered it.
+pub(crate) async fn stop_named_instances(
+    messenger: &MessengerHandle,
+    core_node: &str,
+    root_id: &str,
+    node_stack: &Arc<NodeStack>,
+    relationships: &RelationshipCoordinators,
+    ids: &[Name],
+) {
+    let graph = node_stack.to_serialized_graph();
+    for id in ids.iter().rev() {
+        let running = graph.nodes.iter().find(|node| {
+            node.instances
+                .iter()
+                .any(|instance| instance.instance_id == id.as_str())
+        });
+        if let Some(node) = running {
+            stop_instances(
+                messenger,
+                core_node,
+                root_id,
+                node_stack,
+                &node.name,
+                &node.tag,
+                std::slice::from_ref(id),
+            )
+            .await;
+        }
+        relationships.tear_down_instance(id.as_str()).await;
+    }
+}
+
 /// Cooperative-then-force stop of `doomed` (see [`force_stop_instances`]),
 /// then removal of each from the stack. Once a process is gone the stack must
 /// not keep tracking its pid: the stack's drop signals every pid it still
@@ -698,6 +754,14 @@ pub fn force_kill_deadline(shutdown_grace: Duration) -> Duration {
             config::peppy_config::EVENT_LOOP_JOIN_BUDGET_SECS
                 + config::peppy_config::RUNTIME_FINALIZE_MARGIN_SECS,
         )
+}
+
+/// Upper bound for one batch of cooperative shutdown, force-kill, and reap.
+pub(crate) fn teardown_timeout(shutdown_grace: Duration) -> Duration {
+    force_kill_deadline(shutdown_grace)
+        + SHUTDOWN_TIMEOUT
+        + GUEST_FORCE_KILL_BUDGET
+        + TEARDOWN_REAP_BUDGET
 }
 
 /// A non-root node instance to terminate: the routing identity + process info
