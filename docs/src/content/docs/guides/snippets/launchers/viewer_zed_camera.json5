@@ -21,11 +21,4 @@
       ],
     },
   ],
-
-  adjustments: [
-    // A consequence of running this camera: the depth-aware viewer wants a
-    // denser mesh than the default. Lives here, with no guard, because it
-    // runs exactly when this fragment is selected.
-    { target: "viewer_inst", set_arguments: { mesh_density: "high" } },
-  ],
 }
