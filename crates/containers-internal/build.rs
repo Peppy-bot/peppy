@@ -29,26 +29,11 @@ mod apptainer_build {
     const GO_LINUX_ARM64_SHA256: &str =
         "ba611a53534135a81067240eff9508cd7e256c560edd5d8c2fef54f083c07129";
 
-    /// Bumped whenever the apptainer build recipe (not its version) changes in
-    /// a way that alters the produced tree — new link flags, newly bundled
-    /// libraries, a different install layout. It is part of the cache sentinel
-    /// filename, so a bump invalidates every previously built cache instead of
-    /// silently shipping a tree built by the old recipe.
-    ///
-    /// Bumping [`SQUASHFUSE_VERSION`] is not one of those occasions: it is keyed
-    /// into the sentinel filename in its own right.
-    ///
-    /// r2 added the bundled `squashfuse_ll` (see [`SQUASHFUSE_VERSION`]). It has
-    /// to be a revision bump rather than a retrofit of existing caches: unlike
-    /// gocryptfs (a prebuilt download that can be dropped into any cache
-    /// afterwards) squashfuse is compiled for the target ISA, so it can only be
-    /// produced inside the build environment that built apptainer itself.
-    ///
-    /// r3 and r4 scrub the building user's home directory out of the installed
-    /// man pages, which render flag defaults from `$HOME` at build time and
-    /// ship inside release archives otherwise. r4 extends the scrub to the
-    /// native Linux build path, which r3 covered only inside Lima guests.
-    const APPTAINER_RECIPE_REVISION: u32 = 4;
+    /// Identifies the build recipe: link flags, bundled libraries, install
+    /// layout, man-page sanitization, and GPU library configuration. Together
+    /// with [`SQUASHFUSE_VERSION`], it keys the cache sentinel, OUT_DIR copy,
+    /// and Lima guest synchronization so each consumes the same recipe.
+    const APPTAINER_RECIPE_REVISION: u32 = 5;
 
     /// Directory, relative to the apptainer install prefix, holding the shared
     /// libraries bundled with the binaries (see [`APPTAINER_CGO_LDFLAGS`]).
@@ -255,9 +240,14 @@ mod apptainer_build {
     /// without a compile-time path naming the build machine.
     fn apptainer_cache_sentinel_name(version: &str) -> String {
         format!(
-            ".peppy-version-{}-r{}-sq{}",
-            version, APPTAINER_RECIPE_REVISION, SQUASHFUSE_VERSION
+            ".peppy-version-{}",
+            apptainer_build_id(version, APPTAINER_RECIPE_REVISION)
         )
+    }
+
+    /// Recipe-aware identity exported even when provisioning is skipped.
+    fn apptainer_build_id(version: &str, recipe_revision: u32) -> String {
+        format!("{version}-r{recipe_revision}-sq{SQUASHFUSE_VERSION}")
     }
 
     fn apptainer_cache_sentinel_path(cache_dir: &Path, version: &str) -> PathBuf {
@@ -266,6 +256,18 @@ mod apptainer_build {
 
     fn write_cache_sentinel(cache_dir: &Path, version: &str) {
         let sentinel = apptainer_cache_sentinel_path(cache_dir, version);
+        // An imported tree carries its source sentinel. It must not mark this
+        // cache complete if local finalization fails.
+        match std::fs::remove_file(&sentinel) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!("Failed to remove cache sentinel {sentinel:?}: {e}"),
+        }
+        // Every native install and Lima import passes through this boundary,
+        // once per architecture, before the cache can be consumed or packaged.
+        finalize_apptainer_install(cache_dir).unwrap_or_else(|e| {
+            panic!("Failed to finalize apptainer GPU library list in {cache_dir:?}: {e}")
+        });
         std::fs::write(
             &sentinel,
             format!(
@@ -274,6 +276,42 @@ mod apptainer_build {
             ),
         )
         .unwrap_or_else(|e| panic!("Failed to write cache sentinel {:?}: {}", sentinel, e));
+    }
+
+    /// Ensure `--nv` can resolve NGX from the runtime host's ldconfig cache.
+    /// Apptainer filters library prefixes by ELF architecture and ignores
+    /// unmatched entries, so no GPU or driver library is needed on the build
+    /// host. Only the library name is shipped, never a driver binary or path.
+    fn finalize_apptainer_install(install_dir: &Path) -> std::io::Result<()> {
+        const NGX_LIBRARY: &str = "libnvidia-ngx.so";
+        let config_path = install_dir.join("etc/apptainer/nvliblist.conf");
+        let contents = std::fs::read_to_string(&config_path)?;
+        let mut updated = String::with_capacity(contents.len() + NGX_LIBRARY.len() + 2);
+        let mut found = false;
+        for line in contents.split_inclusive('\n') {
+            if line.trim() == NGX_LIBRARY {
+                if !found {
+                    updated.push_str(NGX_LIBRARY);
+                    if line.ends_with('\n') {
+                        updated.push('\n');
+                    }
+                    found = true;
+                }
+            } else {
+                updated.push_str(line);
+            }
+        }
+        if !found {
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(NGX_LIBRARY);
+            updated.push('\n');
+        }
+        if updated != contents {
+            std::fs::write(&config_path, updated)?;
+        }
+        Ok(())
     }
 
     /// The bare directory name, also exported to the crate (see
@@ -2101,6 +2139,10 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rustc-env=LIMA_INSTANCE={}", LIMA_INSTANCE);
         println!("cargo:rustc-env=LIMA_TEMPLATE={}", LIMA_TEMPLATE);
         println!("cargo:rustc-env=APPTAINER_VERSION={}", APPTAINER_VERSION);
+        println!(
+            "cargo:rustc-env=APPTAINER_BUILD_ID={}",
+            apptainer_build_id(APPTAINER_VERSION, APPTAINER_RECIPE_REVISION)
+        );
         println!("cargo:rustc-env=LIMA_VERSION={}", LIMA_VERSION);
         println!("cargo:rustc-env=GOCRYPTFS_VERSION={}", GOCRYPTFS_VERSION);
         println!("cargo:rustc-env=SQUASHFUSE_VERSION={}", SQUASHFUSE_VERSION);
@@ -2445,29 +2487,199 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rerun-if-changed={}", cache_sentinel.display());
 
         // Step 3: Copy apptainer installation to OUT_DIR for release packaging.
-        // Use a sentinel to skip the copy when the source hasn't changed,
-        // avoiding mtime bumps that trigger unnecessary recompilation. Like
-        // the Lima sentinel, it stores a digest of the source path so the
-        // building machine's directories never ship in release archives.
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
+        copy_apptainer_to_out_dir(
+            &cache_dir,
+            &out_install_dir,
+            &apptainer_build_id(APPTAINER_VERSION, APPTAINER_RECIPE_REVISION),
+        )
+        .unwrap_or_else(|e| panic!("Failed to copy apptainer installation to OUT_DIR: {e}"));
+    }
+
+    /// Skip unchanged copies without shipping the build machine's paths. The
+    /// source directory is stable across recipe rebuilds, so its digest alone
+    /// cannot identify the tree to package.
+    fn copy_apptainer_to_out_dir(
+        cache_dir: &Path,
+        out_install_dir: &Path,
+        build_id: &str,
+    ) -> std::io::Result<()> {
         let sentinel_path = out_install_dir.join(".copy-source");
         let sentinel_content = format!(
-            "{}\ngocryptfs={}\nsquashfuse={}",
-            cache_path_digest(&cache_dir),
+            "{}\nbuild={}\ngocryptfs={}",
+            cache_path_digest(cache_dir),
+            build_id,
             GOCRYPTFS_VERSION,
-            SQUASHFUSE_VERSION
         );
-        let needs_copy = !sentinel_path.exists()
-            || std::fs::read_to_string(&sentinel_path)
-                .map_or(true, |s| s.trim() != sentinel_content.trim());
+        let needs_copy = std::fs::read_to_string(&sentinel_path)
+            .map_or(true, |s| s.trim() != sentinel_content.trim());
         if needs_copy {
             if out_install_dir.exists() {
-                std::fs::remove_dir_all(&out_install_dir).ok();
+                std::fs::remove_dir_all(out_install_dir)?;
             }
-            copy_dir_recursive(&cache_dir, &out_install_dir).unwrap_or_else(|e| {
-                panic!("Failed to copy apptainer installation to OUT_DIR: {}", e)
-            });
-            std::fs::write(&sentinel_path, &sentinel_content).ok();
+            copy_dir_recursive(cache_dir, out_install_dir)?;
+            std::fs::write(&sentinel_path, &sentinel_content)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::fs;
+        use tempfile::TempDir;
+
+        fn nvliblist_fixture(install_dir: &Path, contents: &str) -> PathBuf {
+            let config = install_dir.join("etc/apptainer/nvliblist.conf");
+            fs::create_dir_all(config.parent().unwrap()).unwrap();
+            fs::write(&config, contents).unwrap();
+            config
+        }
+
+        #[test]
+        fn ngx_finalization_preserves_config_and_is_idempotent() {
+            for (input, expected) in [
+                ("", "libnvidia-ngx.so\n"),
+                (
+                    "# NVIDIA libraries\nlibcuda.so\n\nnvidia-smi\n",
+                    "# NVIDIA libraries\nlibcuda.so\n\nnvidia-smi\nlibnvidia-ngx.so\n",
+                ),
+                (
+                    "# libnvidia-ngx.so\nlibcuda.so",
+                    "# libnvidia-ngx.so\nlibcuda.so\nlibnvidia-ngx.so\n",
+                ),
+                (
+                    "libcuda.so\n# libnvidia-ngx.so",
+                    "libcuda.so\n# libnvidia-ngx.so\nlibnvidia-ngx.so\n",
+                ),
+                (
+                    "libnvidia-ngx.so\nlibcuda.so\n",
+                    "libnvidia-ngx.so\nlibcuda.so\n",
+                ),
+                ("libnvidia-ngx.so", "libnvidia-ngx.so"),
+                (
+                    " \tlibnvidia-ngx.so \n# keep this comment\nlibcuda.so\nlibnvidia-ngx.so",
+                    "libnvidia-ngx.so\n# keep this comment\nlibcuda.so\n",
+                ),
+                (
+                    "# NVIDIA\r\nlibcuda.so\r\n",
+                    "# NVIDIA\r\nlibcuda.so\r\nlibnvidia-ngx.so\n",
+                ),
+            ] {
+                let install = TempDir::new().unwrap();
+                let config = nvliblist_fixture(install.path(), input);
+                finalize_apptainer_install(install.path()).unwrap();
+                assert_eq!(fs::read_to_string(&config).unwrap(), expected, "{input:?}");
+                finalize_apptainer_install(install.path()).unwrap();
+                assert_eq!(fs::read_to_string(&config).unwrap(), expected, "{input:?}");
+            }
+        }
+
+        #[test]
+        fn ngx_finalization_precedes_each_arch_cache_sentinel_without_host_gpu() {
+            let root = TempDir::new().unwrap();
+            for arch in ["aarch64", "x86_64"] {
+                let install = root
+                    .path()
+                    .join(apptainer_cache_dir_name(APPTAINER_VERSION, arch));
+                let config = nvliblist_fixture(&install, "# optional host libraries\nlibcuda.so\n");
+                // No driver files or executables in the fixture: finalization
+                // operates only on the installed list, regardless of host ISA.
+                write_cache_sentinel(&install, APPTAINER_VERSION);
+                assert_eq!(
+                    fs::read_to_string(config).unwrap(),
+                    "# optional host libraries\nlibcuda.so\nlibnvidia-ngx.so\n"
+                );
+                assert!(apptainer_cache_sentinel_path(&install, APPTAINER_VERSION).is_file());
+                assert!(!install.join("lib").exists());
+                assert!(!install.join("bin").exists());
+            }
+            assert!(!root.path().join("etc/apptainer/nvliblist.conf").exists());
+        }
+
+        #[test]
+        fn ngx_config_read_errors_prevent_cache_completion() {
+            for contents in [None, Some(&b"\xff"[..])] {
+                let install = TempDir::new().unwrap();
+                if let Some(contents) = contents {
+                    let config = nvliblist_fixture(install.path(), "");
+                    fs::write(config, contents).unwrap();
+                }
+                assert!(finalize_apptainer_install(install.path()).is_err());
+                let sentinel = apptainer_cache_sentinel_path(install.path(), APPTAINER_VERSION);
+                fs::write(&sentinel, "imported cache sentinel").unwrap();
+                assert!(
+                    std::panic::catch_unwind(|| {
+                        write_cache_sentinel(install.path(), APPTAINER_VERSION);
+                    })
+                    .is_err()
+                );
+                assert!(!apptainer_cache_sentinel_path(install.path(), APPTAINER_VERSION).exists());
+            }
+        }
+
+        #[test]
+        fn ngx_config_write_errors_prevent_cache_completion() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let install = TempDir::new().unwrap();
+            let config = nvliblist_fixture(install.path(), "libcuda.so\n");
+            fs::set_permissions(&config, fs::Permissions::from_mode(0o444)).unwrap();
+            if fs::OpenOptions::new().write(true).open(&config).is_ok() {
+                eprintln!("SKIPPING: this user can write read-only files");
+                return;
+            }
+            assert_eq!(
+                finalize_apptainer_install(install.path())
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied,
+            );
+            assert!(
+                std::panic::catch_unwind(|| {
+                    write_cache_sentinel(install.path(), APPTAINER_VERSION);
+                })
+                .is_err()
+            );
+            assert!(!apptainer_cache_sentinel_path(install.path(), APPTAINER_VERSION).exists());
+            assert_eq!(fs::read_to_string(config).unwrap(), "libcuda.so\n");
+        }
+
+        #[test]
+        fn recipe_only_change_invalidates_out_dir_copy() {
+            let root = TempDir::new().unwrap();
+            let cache = root.path().join("cache");
+            let out = root.path().join("out/apptainer-install");
+            let config = nvliblist_fixture(&cache, "libcuda.so\n");
+            let build_id = apptainer_build_id(APPTAINER_VERSION, APPTAINER_RECIPE_REVISION);
+            copy_apptainer_to_out_dir(&cache, &out, &build_id).unwrap();
+            let out_config = out.join("etc/apptainer/nvliblist.conf");
+            assert_eq!(fs::read_to_string(&out_config).unwrap(), "libcuda.so\n");
+
+            finalize_apptainer_install(&cache).unwrap();
+            copy_apptainer_to_out_dir(&cache, &out, &build_id).unwrap();
+            assert_eq!(fs::read_to_string(&out_config).unwrap(), "libcuda.so\n");
+
+            let different_recipe =
+                apptainer_build_id(APPTAINER_VERSION, APPTAINER_RECIPE_REVISION + 1);
+            copy_apptainer_to_out_dir(&cache, &out, &different_recipe).unwrap();
+            assert_eq!(
+                fs::read_to_string(&out_config).unwrap(),
+                fs::read_to_string(config).unwrap()
+            );
+            let marker = fs::read_to_string(out.join(".copy-source")).unwrap();
+            assert!(marker.contains(&different_recipe));
+            assert!(!marker.contains(root.path().to_str().unwrap()));
+        }
+
+        #[test]
+        fn exported_build_identity_matches_cache_recipe() {
+            let build_id = apptainer_build_id(APPTAINER_VERSION, APPTAINER_RECIPE_REVISION);
+            assert_eq!(crate::APPTAINER_BUILD_ID, build_id);
+            assert_eq!(
+                crate::APPTAINER_CACHE_SENTINEL_NAME,
+                format!(".peppy-version-{build_id}")
+            );
         }
     }
 }

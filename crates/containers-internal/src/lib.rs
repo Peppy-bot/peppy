@@ -8,6 +8,12 @@ mod apptainer;
 mod error;
 mod mount_source;
 
+// Exercise build-script finalization with temporary trees, without provisioning.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../build.rs"]
+mod build_script;
+
 pub use apptainer::Apptainer;
 pub use apptainer::CacheUsageProbe;
 #[cfg(target_os = "linux")]
@@ -20,6 +26,8 @@ pub use mount_source::{
 
 /// Pinned Apptainer version bundled at build time.
 pub const APPTAINER_VERSION: &str = env!("APPTAINER_VERSION");
+/// Identity of the bundled Apptainer version, build recipe, and squashfuse.
+pub const APPTAINER_BUILD_ID: &str = env!("APPTAINER_BUILD_ID");
 /// Pinned Lima version bundled at build time.
 pub const LIMA_VERSION: &str = env!("LIMA_VERSION");
 /// Pinned gocryptfs version shipped alongside the apptainer install.

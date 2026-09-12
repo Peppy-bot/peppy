@@ -30,6 +30,8 @@ REQUIRED_MACOS = [
 
 MACOS_TRIPLES = frozenset(t for t in RELEASE_TRIPLES if "apple-darwin" in t)
 
+NVLIBLIST_PATH = "bin/apptainer/etc/apptainer/nvliblist.conf"
+
 
 def _elf_machine(header: bytes) -> int | None:
     """The ELF e_machine of a binary's leading bytes, None when not ELF."""
@@ -40,8 +42,8 @@ def _elf_machine(header: bytes) -> int | None:
 
 def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
     """Verify a single .tgz archive contains all required binaries, that each
-    Linux binary is built for the triple's architecture, and that no member
-    carries ownership of the machine that packed it.
+    Linux binary is built for the triple's architecture, the GPU library list
+    includes NGX, and no member carries ownership of the machine that packed it.
 
     Returns a list of problems (empty if the archive is sound). Presence alone
     is not enough: a binary for the wrong machine sits at the right path and
@@ -81,6 +83,18 @@ def verify_release_archive(archive_path: Path, triple: str) -> list[str]:
                     f"{item} is built for ELF machine {machine}, "
                     f"the {triple} archive needs {expected_machine}"
                 )
+
+        nvliblist = members.get(NVLIBLIST_PATH)
+        if nvliblist is None:
+            problems.append(f"missing {NVLIBLIST_PATH}")
+        elif not nvliblist.isfile():
+            problems.append(f"{NVLIBLIST_PATH} is not a regular file")
+        else:
+            with tar.extractfile(nvliblist) as config:
+                if config.read().splitlines().count(b"libnvidia-ngx.so") != 1:
+                    problems.append(
+                        f"{NVLIBLIST_PATH} must contain one active libnvidia-ngx.so entry"
+                    )
 
     for name, member in members.items():
         if member.uid != 0 or member.gid != 0 or member.uname or member.gname:

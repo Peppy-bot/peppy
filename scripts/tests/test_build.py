@@ -194,9 +194,9 @@ def test_package_release_creates_tarball_without_lima(tmp_path: Path) -> None:
         assert not any("lima" in n for n in member_names)
 
 
-def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
-    """Verify the tarball layout matches what install.sh expects."""
-    triple = "aarch64-apple-darwin"
+@pytest.mark.parametrize("triple", RELEASE_TRIPLES)
+def test_package_release_tarball_matches_install_sh(tmp_path: Path, triple: str) -> None:
+    """Verify the tarball layout and GPU list match what install.sh installs."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
 
@@ -209,6 +209,10 @@ def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
     apptainer_dir.mkdir()
     (apptainer_dir / "bin").mkdir(parents=True)
     (apptainer_dir / "bin" / "apptainer").write_bytes(b"apptainer")
+    nvliblist = Path("etc/apptainer/nvliblist.conf")
+    (apptainer_dir / nvliblist).parent.mkdir(parents=True)
+    gpu_libraries = "# NVIDIA libraries\nlibcuda.so\nlibnvidia-ngx.so\nnvidia-smi\n"
+    (apptainer_dir / nvliblist).write_text(gpu_libraries)
 
     lima_dir = tmp_path / "lima-install"
     lima_dir.mkdir()
@@ -218,7 +222,8 @@ def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
     dist_dir = tmp_path / "dist"
     with patch.dict(os.environ, {"PEPPY_DIST_DIR": str(dist_dir)}):
         artifact = package_release(
-            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir, lima_dir
+            triple, repo_root, peppy_bin, zenohd_bin, apptainer_dir,
+            lima_dir if "apple-darwin" in triple else None,
         )
 
     extract_dir = tmp_path / "extracted"
@@ -229,7 +234,10 @@ def test_package_release_tarball_matches_install_sh(tmp_path: Path) -> None:
     assert (extract_dir / "bin" / "peppy").is_file()
     assert (extract_dir / "bin" / "zenohd").is_file()
     assert (extract_dir / "bin" / "apptainer" / "bin" / "apptainer").is_file()
-    assert (extract_dir / "bin" / "lima" / "bin" / "limactl").is_file()
+    assert (extract_dir / "bin" / "lima" / "bin" / "limactl").is_file() == (
+        "apple-darwin" in triple
+    )
+    assert (extract_dir / "bin" / "apptainer" / nvliblist).read_text() == gpu_libraries
 
 
 def test_package_release_respects_peppy_dist_dir(tmp_path: Path) -> None:

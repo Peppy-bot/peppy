@@ -993,6 +993,83 @@ fn shell_escape_single_quoted_survives_embedded_quotes() {
     assert_eq!(shell_escape_single_quoted("/plain/path"), "/plain/path");
 }
 
+#[cfg(unix)]
+#[test]
+fn guest_apptainer_recipe_only_change_forces_sync() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = TempDir::new().unwrap();
+    let host = root.path().join("host");
+    let guest = root.path().join("guest");
+    let config_rel = "etc/apptainer/nvliblist.conf";
+    for install in [&host, &guest] {
+        fs::create_dir_all(install.join("etc/apptainer")).unwrap();
+        fs::write(install.join(config_rel), "libcuda.so\n").unwrap();
+    }
+    let host_config = "libcuda.so\nlibnvidia-ngx.so\n";
+    fs::write(host.join(config_rel), host_config).unwrap();
+
+    let (version, recipe_and_tools) = crate::APPTAINER_BUILD_ID.split_once("-r").unwrap();
+    let (recipe, tools) = recipe_and_tools.split_once('-').unwrap();
+    let different_recipe = format!("{version}-r{}-{tools}", recipe.parse::<u32>().unwrap() + 1);
+    let stale_marker = guest.join(format!(
+        ".peppy-sync-{different_recipe}-gc{}",
+        crate::GOCRYPTFS_VERSION
+    ));
+    fs::write(&stale_marker, "").unwrap();
+
+    // This limactl fixture maps every guest operation into the temporary tree.
+    // No VM or installed runtime is accessed, including on the full tar path.
+    let limactl = root.path().join("limactl");
+    fs::write(
+        &limactl,
+        r#"#!/bin/sh
+set -eu
+[ "$1" = shell ] && [ "$2" = fixture ] && [ "$3" = -- ]
+shift 3
+printf '%s\n' "$1" >> "$LIMA_HOME/calls"
+guest="$LIMA_HOME/guest"
+case "$1" in
+  test) test -f "$guest/${3##*/}" ;;
+  rm) rm -rf "$guest" ;;
+  mkdir) mkdir -p "$guest" ;;
+  tar) tar -xf - -C "$guest" ;;
+  touch) touch "$guest/${2##*/}" ;;
+  *) exit 99 ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&limactl, fs::Permissions::from_mode(0o755)).unwrap();
+
+    super::lima::ensure_guest_apptainer(&host, &limactl, root.path(), "fixture").unwrap();
+    assert_eq!(
+        fs::read_to_string(guest.join(config_rel)).unwrap(),
+        host_config
+    );
+    assert!(!stale_marker.exists());
+    assert!(
+        guest
+            .join(format!(
+                ".peppy-sync-{}-gc{}",
+                crate::APPTAINER_BUILD_ID,
+                crate::GOCRYPTFS_VERSION,
+            ))
+            .is_file()
+    );
+    let calls = root.path().join("calls");
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        "test\nrm\nmkdir\ntar\ntouch\n"
+    );
+
+    super::lima::ensure_guest_apptainer(&host, &limactl, root.path(), "fixture").unwrap();
+    assert_eq!(
+        fs::read_to_string(calls).unwrap(),
+        "test\nrm\nmkdir\ntar\ntouch\ntest\n"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Compile-time cache consistency test
 // ---------------------------------------------------------------------------
@@ -1030,6 +1107,23 @@ fn apptainer_cache_dir_exists_with_sentinel() {
         apptainer_bin.exists(),
         "bin/apptainer not found in the apptainer cache {:?}",
         install_dir
+    );
+}
+
+/// Inspect the tree consumed by release packaging, without executing Apptainer.
+#[test]
+fn out_dir_apptainer_gpu_list_contains_ngx() {
+    let config = Path::new(env!("OUT_DIR")).join("apptainer-install/etc/apptainer/nvliblist.conf");
+    let contents = fs::read_to_string(&config)
+        .expect("provision Apptainer without PEPPY_SKIP_APPTAINER_PROVISION to inspect OUT_DIR");
+    assert_eq!(
+        contents
+            .lines()
+            .filter(|line| *line == "libnvidia-ngx.so")
+            .count(),
+        1,
+        "{} must contain one active NGX library name",
+        config.display(),
     );
 }
 
