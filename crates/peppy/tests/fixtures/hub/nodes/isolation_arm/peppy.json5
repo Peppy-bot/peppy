@@ -1,0 +1,56 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "isolation_arm",
+    tag: "v1",
+    labels: ["arm"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "isolation_arm"],
+    parameters: {
+      publish_rate_hz: { $type: "u16", $default: 5 }
+    }
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        {
+          name: "heartbeat",
+          qos_profile: "sensor_data",
+          message_format: { seq: "u32", timestamp: "time" }
+        }
+      ]
+    },
+    services: {
+      exposes: [
+        {
+          // Answers with the token it was sent, so a caller can tell whose
+          // arm answered.
+          name: "echo",
+          request_message_format: { token: "string" },
+          response_message_format: { token: "string" }
+        }
+      ]
+    },
+    actions: {
+      exposes: [
+        {
+          // Holds for `hold_ms` unless cancelled first; the token rides
+          // through feedback and result.
+          name: "move",
+          goal_service: {
+            request_message_format: { token: "string", hold_ms: "u32" }
+          },
+          feedback_topic: {
+            message_format: { token: "string" }
+          },
+          result_service: {
+            response_message_format: { token: "string" }
+          }
+        }
+      ]
+    }
+  }
+}

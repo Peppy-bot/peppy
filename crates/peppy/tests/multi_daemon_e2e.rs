@@ -1033,6 +1033,7 @@ const NODE_PROBE_LAUNCHER: &str = r#"{
 
 const NAMED_FLEET_LAUNCHER_FILE: &str = "named_fleet.json5";
 const COPIES_ONLY_LAUNCHER_FILE: &str = "copies_only.json5";
+const ISOLATION_FLEET_LAUNCHER_FILE: &str = "isolation_fleet.json5";
 const SOURCELESS_CLOCK_LAUNCHER_FILE: &str = "sourceless_clock_fleet.json5";
 const NAMED_CLOCK_LAUNCHER_FILE: &str = "named_clock_fleet.json5";
 const NAMED_FLEET_TWO_NODES_LAUNCHER_FILE: &str = "named_fleet_two_nodes.json5";
@@ -1054,6 +1055,23 @@ const COPIES_ONLY_LAUNCHER: &str = r#"{
   components: [{ name: "robot", cardinality: "zero_or_more", options: {
     arm: { deployments: [{ source: { name: "my_python_robot_arm", tag: "v1" },
       instances: [{ instance_id: "arm_inst" }] }] }
+  } }]
+}"#;
+
+/// A launch that starts nothing and takes station copies: one arm serving a
+/// heartbeat topic, an echo service and a move action, and one commander
+/// wired to that arm alone. Each side logs the instance behind every
+/// message it handles, so traffic from another copy would show up by name.
+const ISOLATION_FLEET_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  deployments: [],
+  components: [{ name: "robot", cardinality: "zero_or_more", options: {
+    station: { deployments: [
+      { source: { name: "isolation_arm", tag: "v1" },
+        instances: [{ instance_id: "arm_inst" }] },
+      { source: { name: "isolation_commander", tag: "v1" },
+        instances: [{ instance_id: "commander_inst", links: { arm: "arm_inst" } }] }
+    ] }
   } }]
 }"#;
 
@@ -1431,6 +1449,10 @@ impl Substrate {
         for (file_name, launcher) in [
             (NAMED_FLEET_LAUNCHER_FILE, NAMED_FLEET_LAUNCHER.to_owned()),
             (COPIES_ONLY_LAUNCHER_FILE, COPIES_ONLY_LAUNCHER.to_owned()),
+            (
+                ISOLATION_FLEET_LAUNCHER_FILE,
+                ISOLATION_FLEET_LAUNCHER.to_owned(),
+            ),
             (SOURCELESS_CLOCK_LAUNCHER_FILE, sourceless_clock_launcher()),
             (
                 NAMED_FLEET_TWO_NODES_LAUNCHER_FILE,
@@ -3228,5 +3250,135 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
             .peppy(&["stack", "reset", "--federated"])
             .await,
         "reset fleet",
+    );
+}
+
+/// The station copies the isolation test runs, and where: alpha beside the
+/// coordinator, bravo and charlie on the peer.
+const STATIONS: [&str; 3] = ["alpha", "bravo", "charlie"];
+
+/// Joins one station copy, labelling its commander's payloads with the
+/// copy's name so the arm's log tells one copy's requests from another's.
+async fn join_station(federation: &Federation, name: &str, place: Option<&str>) {
+    let label = format!("commander_inst.label=\"{name}\"");
+    let mut args = vec![
+        "stack",
+        "join",
+        "station",
+        "-i",
+        name,
+        "--set-arguments",
+        &label,
+    ];
+    if let Some(core_node) = place {
+        args.extend(["--place", core_node]);
+    }
+    require_success(
+        federation.robot.peppy(&args).await,
+        &format!("join station {name}"),
+    );
+}
+
+/// Waits for `copy` to log a whole round on `daemon` (the cancelled goal is
+/// the last thing a round logs) and asserts that both of its logs name only
+/// the copy's own instances and carry only the copy's own payload label.
+async fn assert_copy_traffic_stays_inside(daemon: &Daemon, copy: &str) {
+    let arm = format!("{copy}_arm_inst");
+    let commander = format!("{copy}_commander_inst");
+    let commander_log = daemon
+        .wait_for_node_log(&commander, &format!("CANCELLED by {arm}"))
+        .await;
+    let arm_log = daemon.wait_for_node_log(&arm, "cancelled").await;
+    for expected in [
+        format!("heartbeat from {arm} "),
+        format!("echo answered by {arm} token={copy}-"),
+        format!("COMPLETED by {arm} token={copy}-"),
+        format!("CANCELLED by {arm} token={copy}-"),
+    ] {
+        assert!(
+            commander_log.contains(&expected),
+            "`{commander}` never logged `{expected}`:\n{commander_log}"
+        );
+    }
+    for expected in [
+        format!("echo from {commander} token={copy}-"),
+        format!("goal {copy}-1 from {commander}"),
+        format!("goal {copy}-1 completed"),
+        format!("goal {copy}-1c cancelled"),
+    ] {
+        assert!(
+            arm_log.contains(&expected),
+            "`{arm}` never logged `{expected}`:\n{arm_log}"
+        );
+    }
+    for other in STATIONS.iter().filter(|other| **other != copy) {
+        for foreign in [
+            format!("{other}_arm_inst"),
+            format!("{other}_commander_inst"),
+            format!("token={other}-"),
+            format!("goal {other}-"),
+        ] {
+            assert!(
+                !commander_log.contains(&foreign) && !arm_log.contains(&foreign),
+                "`{copy}` handled `{other}`'s traffic (`{foreign}`):\n{commander_log}\n{arm_log}"
+            );
+        }
+    }
+}
+
+/// Three copies of one station, one beside the coordinator and two on the
+/// peer, each exchanging topic samples, service requests and action goals
+/// (completed and cancelled) at the same time, with every payload labelled
+/// by its copy. Each copy hears only its own instances and its own labels,
+/// before and after one of the peer's copies is removed and joined again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
+    let federation = start_federation("peppy-isolation").await;
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(ISOLATION_FLEET_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch station fleet",
+    );
+    let placements: [(&str, Option<&str>, &Daemon); 3] = [
+        ("alpha", None, &federation.robot),
+        (
+            "bravo",
+            Some(&federation.cloud_core_node),
+            &federation.cloud,
+        ),
+        (
+            "charlie",
+            Some(&federation.cloud_core_node),
+            &federation.cloud,
+        ),
+    ];
+    for (name, place, _) in placements {
+        join_station(&federation, name, place).await;
+    }
+    for (name, _, daemon) in placements {
+        assert_copy_traffic_stays_inside(daemon, name).await;
+    }
+
+    require_success(
+        federation.robot.peppy(&["stack", "remove", "bravo"]).await,
+        "remove bravo",
+    );
+    join_station(&federation, "bravo", Some(&federation.cloud_core_node)).await;
+    for (name, _, daemon) in placements {
+        assert_copy_traffic_stays_inside(daemon, name).await;
+    }
+
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset station fleet",
     );
 }

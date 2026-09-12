@@ -11,6 +11,16 @@
         path: "nodes/episode_recorder/peppy.json5"
       }
     },
+    isolation_arm: {
+      v1: {
+        path: "nodes/isolation_arm/peppy.json5"
+      }
+    },
+    isolation_commander: {
+      v1: {
+        path: "nodes/isolation_commander/peppy.json5"
+      }
+    },
     my_python_robot_arm: {
       v1: {
         path: "nodes/my_python_robot_arm/peppy.json5"
