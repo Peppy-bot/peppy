@@ -23,16 +23,17 @@ pub(super) struct OriginatedDeployment<'a> {
 }
 
 /// What one unit expands: the deployments already in its scope, the
-/// fragments the selection pulled in, and the base adjustments that speak
-/// about it.
+/// fragments the selection pulled in, and the launcher's adjustments that
+/// speak about it.
 pub(super) struct Unit<'a> {
     /// Deployments in scope before any fragment: the launcher's own for the
     /// stack, the composed stack's for a copy.
     pub base: Vec<OriginatedDeployment<'a>>,
     pub fragments: Vec<&'a LoadedFragment>,
-    pub base_adjustments: Vec<&'a Adjustment>,
-    pub base_origin: String,
-    /// A copy's own adjustments; they run after the base's.
+    /// The launcher's adjustments reaching this unit, in the order the
+    /// launcher applies them.
+    pub launcher_adjustments: Vec<OriginatedAdjustment<'a>>,
+    /// A copy's own adjustments; they run after the launcher's.
     pub copy_adjustments: Vec<OriginatedAdjustment<'a>>,
     pub selection: UnitSelection,
 }
@@ -48,23 +49,24 @@ pub(super) struct Expanded {
 }
 
 /// One adjustment paired with where it came from and whether it speaks for
-/// a fragment (bound by the no-fighting rules) or for the base (which may
-/// override anything a fragment set).
+/// a fragment (bound by the no-fighting rules) or for the launcher (which
+/// may override anything a fragment set).
 struct PlannedAdjustment<'a> {
     adjustment: &'a Adjustment,
     origin: String,
     /// Identifies the fragment an adjustment belongs to for the conflict
     /// rules: two adjustments from one fragment are one author applying list
     /// order, two from different fragments are two authors fighting. `None`
-    /// marks the base, the author who owns the file, which joins no
+    /// marks the launcher, the author who owns the file, which joins no
     /// conflict at all.
     fragment_id: Option<usize>,
 }
 
 /// Collects the unit's deployments, base first, then each fragment's in
-/// order, and applies its adjustments: fragments in collection order, then
-/// the base in list order. An adjustment runs only if its guard holds and its
-/// target is in this unit; each skip is recorded.
+/// order, and applies the adjustments: each fragment's own in collection
+/// order, the launcher's in list order, then a copy's own. An adjustment
+/// runs only if its guard holds and its target is in this unit; each skip
+/// is recorded.
 pub(super) fn expand_unit(
     unit: &Unit<'_>,
     core_nodes: &[String],
@@ -213,10 +215,14 @@ fn union_core_nodes(unit: &Unit<'_>, core_nodes: &[String]) -> Vec<String> {
     links
 }
 
-/// The adjustments that run, in order (fragments in collection order, the
-/// base, then the copy's own), and the ones skipped with their reason.
+/// The adjustments that run, in order, and the ones skipped with their
+/// reason. The order is what decides a field two entries both write, the
+/// later one winning: each fragment's own entries in collection order, then
+/// the launcher's, its options' in the order `components` declares their
+/// axes and then its top-level list, then the copy's own. The fragments'
+/// own entries are held to the conflict rules below.
 fn plan_adjustments<'a>(
-    unit: &Unit<'a>,
+    unit: &'a Unit<'a>,
     defined: &HashMap<&str, &str>,
 ) -> (Vec<PlannedAdjustment<'a>>, Vec<SkippedAdjustment>) {
     let planned = unit
@@ -234,19 +240,15 @@ fn plan_adjustments<'a>(
                 })
         })
         .chain(
-            unit.base_adjustments
+            unit.launcher_adjustments
                 .iter()
-                .map(|adjustment| PlannedAdjustment {
-                    adjustment,
-                    origin: unit.base_origin.clone(),
+                .chain(&unit.copy_adjustments)
+                .map(|entry| PlannedAdjustment {
+                    adjustment: entry.adjustment,
+                    origin: entry.origin.clone(),
                     fragment_id: None,
                 }),
-        )
-        .chain(unit.copy_adjustments.iter().map(|entry| PlannedAdjustment {
-            adjustment: entry.adjustment,
-            origin: entry.origin.clone(),
-            fragment_id: None,
-        }));
+        );
     let mut running = Vec::new();
     let mut skipped = Vec::new();
     for step in planned {
@@ -425,8 +427,8 @@ impl KeySpace {
 }
 
 /// The conflict rules among the surviving fragment adjustments: a field
-/// is written by one fragment. The base owns the file, so its later entries
-/// win over its earlier ones and over any fragment's. Both maps are ordered
+/// is written by one fragment. The launcher owns the file, so its later
+/// entries win over its earlier ones and over any fragment's. Both maps are ordered
 /// so when several pairs fight, the one reported is the same on every run.
 fn check_conflicts(running: &[PlannedAdjustment<'_>]) -> Result<(), CompositionError> {
     let mut writers: BTreeMap<(&str, KeySpace, &str), (Option<usize>, String)> = BTreeMap::new();

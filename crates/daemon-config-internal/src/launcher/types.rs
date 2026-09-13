@@ -54,10 +54,11 @@ pub struct PeppyLauncher {
     /// link) are deferred to the flattened result, where the selected
     /// options' deployments are part of the document.
     pub components: Vec<ComponentAxis>,
-    /// The base's changes to instances defined elsewhere, applied after all
-    /// fragment adjustments. How a base specializes fragments shared between
-    /// launchers. Requires `components`: with nothing to specialize, an
-    /// adjustment is indirection around a file the author can edit directly.
+    /// The launcher's changes to instances it or its options define,
+    /// applied after the `adjustments` under the selected options. How a launcher
+    /// specializes fragments shared between launchers. Requires
+    /// `components`: with nothing to specialize, an adjustment is
+    /// indirection around a file the author can edit directly.
     pub adjustments: Vec<Adjustment>,
     /// The selections this family refuses to be: rules that a resolved
     /// selection must satisfy or the launch is refused before anything is

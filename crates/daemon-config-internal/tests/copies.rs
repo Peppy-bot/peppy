@@ -852,7 +852,7 @@ fn an_adjustment_guarded_on_a_copy_axis_is_skipped_for_the_stack() {
     assert!(
         lines.iter().any(|line| line
             == "  observer_inst: axis robot runs as copies; the adjustment runs in each copy  \
-                (fleet.json5 (base))"),
+                (fleet.json5, top-level `adjustments`)"),
         "{lines:?}"
     );
     assert!(
@@ -873,7 +873,8 @@ fn an_adjustment_guarded_on_a_copy_axis_is_skipped_for_the_stack() {
 }
 
 /// A launcher adjustment on an id only a copy option defines belongs to
-/// each copy of that axis, whether or not one runs.
+/// each copy of that axis, whether or not one runs: from the top-level
+/// list, and from an option of a stack axis when that option is selected.
 #[test]
 fn an_adjustment_on_an_id_only_copies_define_is_skipped_for_the_stack() {
     let document = |copies: &str| {
@@ -883,35 +884,637 @@ fn an_adjustment_on_an_id_only_copies_define_is_skipped_for_the_stack() {
         deployments: [
             {{ source: {{ name: "observer", tag: "v1" }},
               instances: [{{ instance_id: "observer_inst" }}] }},
+            {{ simulation: "engine" }},
             {copies}
         ],
-        components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
-            sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }},
-                instances: [{{ instance_id: "arm_inst" }}] }}] }}
-        }} }}],
+        components: [
+            {{ name: "simulation", options: {{ engine: {{
+                adjustments: [{{ target: "arm_inst", set_arguments: {{ engine_rate: 100 }} }}]
+            }} }} }},
+            {{ name: "robot", cardinality: "zero_or_more", options: {{
+                sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }},
+                    instances: [{{ instance_id: "arm_inst" }}] }}] }}
+            }} }}
+        ],
         adjustments: [{{ target: "arm_inst", set_arguments: {{ speed: 0.5 }} }}]
     }}"#
         )
     };
-    let skipped = "  arm_inst: axis robot runs as copies; the adjustment runs in each copy  \
-                   (fleet.json5 (base))";
+    let skipped = [
+        "  arm_inst: axis robot runs as copies; the adjustment runs in each copy  \
+         (fleet.json5, option `simulation.engine`)",
+        "  arm_inst: axis robot runs as copies; the adjustment runs in each copy  \
+         (fleet.json5, top-level `adjustments`)",
+    ];
 
     let bare = load(&document("")).launch(&[], &[]).unwrap();
     assert_eq!(ids(&bare.launcher), ["observer_inst"]);
     let lines = bare.report.render_lines();
-    assert!(lines.iter().any(|line| line == skipped), "{lines:?}");
+    for line in skipped {
+        assert!(lines.contains(&line.to_owned()), "{lines:?}");
+    }
 
     let with_copy = load(&document(
         r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] }"#,
     ))
     .launch(&[], &[])
     .unwrap();
-    assert_eq!(
-        instance(&with_copy.launcher, "alpha_arm_inst").arguments["speed"],
-        AnyType::Float(0.5)
-    );
+    let arm = instance(&with_copy.launcher, "alpha_arm_inst");
+    assert_eq!(arm.arguments["speed"], AnyType::Float(0.5));
+    assert_eq!(arm.arguments["engine_rate"], AnyType::Int(100));
     let lines = with_copy.report.render_lines();
+    for line in skipped {
+        assert!(lines.contains(&line.to_owned()), "{lines:?}");
+    }
+}
+
+/// An option's adjustments belong to the units that selected the option: a
+/// copy of a sibling option never runs them, and a guard naming an axis no
+/// unit holds is refused where the option is read.
+#[test]
+fn an_options_adjustments_reach_only_the_units_that_selected_it() {
+    let document = |guard: &str| {
+        format!(
+            r#"{{
+        peppy_schema: "launcher/v1",
+        components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
+            real: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }},
+                instances: [{{ instance_id: "arm_inst", arguments: {{ speed: 1 }} }}] }}] }},
+            sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }},
+                instances: [{{ instance_id: "arm_inst", arguments: {{ speed: 1 }} }}] }}],
+                   adjustments: [{{ target: "arm_inst"{guard}, set_arguments: {{ speed: 9 }} }}] }}
+        }} }}],
+        deployments: [
+            {{ robot: "real", instances: [{{ instance_id: "alpha" }}] }},
+            {{ robot: "sim", instances: [{{ instance_id: "bravo" }}] }}
+        ]
+    }}"#
+        )
+    };
+    let launch = load(&document("")).launch(&[], &[]).unwrap();
+    assert_eq!(
+        instance(&launch.launcher, "alpha_arm_inst").arguments["speed"],
+        AnyType::Int(1)
+    );
+    assert_eq!(
+        instance(&launch.launcher, "bravo_arm_inst").arguments["speed"],
+        AnyType::Int(9)
+    );
+    assert!(
+        launch
+            .report
+            .applied
+            .iter()
+            .all(|entry| entry.target.starts_with("bravo_")),
+        "{:?}",
+        launch.report.applied
+    );
+    let error = load_error(&document(r#", when: { nope: "x" }"#));
+    assert!(
+        matches!(&error, CompositionError::AdjustmentGuard { detail }
+            if detail.contains("fleet.json5, option `robot.sim`") && detail.contains("names axis `nope`")),
+        "{error}"
+    );
+}
+
+/// An adjustment under a stack option that runs in copies reads the
+/// launcher's axes: a guard on the option's own axis, which no copy's
+/// selection holds, is refused where it is written. Under the copied option
+/// itself, a guard on its own axis is what every copy resolves.
+#[test]
+fn an_adjustment_the_copies_run_cannot_read_a_stack_options_own_axis() {
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] },
+                              { relay: "usb" }],
+                components: [{ name: "relay", options: { usb: {}, net: {} } }],
+                adjustments: [{ target: "cam_inst", when: { relay: "net" }, set_arguments: { relay: true } }],
+            } } }
+        ],
+        deployments: [{ cameras: "wrist", instances: [{ instance_id: "left" }, { instance_id: "right", with: { relay: "net" } }] }]
+    }"#,
+    )
+    .launch(&[], &[])
+    .unwrap();
+    assert!(
+        !instance(&launch.launcher, "left_cam_inst")
+            .arguments
+            .contains_key("relay")
+    );
+    assert_eq!(
+        instance(&launch.launcher, "right_cam_inst").arguments["relay"],
+        AnyType::Bool(true)
+    );
+    // Under the copied option the guard stays legal when a second copy
+    // axis's option defines the same id: those copies never select it. Each
+    // copy of the option reads its own selection.
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] },
+                              { relay: "usb" }],
+                components: [{ name: "relay", options: { usb: {}, net: {} } }],
+                adjustments: [{ target: "cam_inst", when: { relay: "net" }, set_arguments: { relay: true } }],
+            } } },
+            { name: "robot", cardinality: "zero_or_more", options: { sim: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }]
+            } } }
+        ],
+        deployments: [
+            { cameras: "wrist", instances: [{ instance_id: "left", with: { relay: "net" } },
+                                            { instance_id: "right" }] },
+            { robot: "sim", instances: [{ instance_id: "alpha" }] },
+        ]
+    }"#,
+    )
+    .launch(&[], &[])
+    .unwrap();
+    assert_eq!(
+        instance(&launch.launcher, "left_cam_inst").arguments["relay"],
+        AnyType::Bool(true)
+    );
+    for id in ["right_cam_inst", "alpha_cam_inst"] {
+        assert!(
+            !instance(&launch.launcher, id)
+                .arguments
+                .contains_key("relay"),
+            "{id} selected no relay"
+        );
+    }
+
+    let error = load_error(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "robot", options: { openarm: {
+                deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                              { commander: "web" }],
+                components: [{ name: "commander", options: { web: {}, xr: {} } }],
+                adjustments: [{ target: "cam_inst", when: { commander: "xr" }, set_arguments: { relay: true } }],
+            } } },
+            { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }]
+            } } }
+        ],
+        deployments: [{ robot: "openarm" }]
+    }"#,
+    );
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentReadsOptionAxis { target, origin, copy_axis, axis }
+            if target == "cam_inst" && origin == "fleet.json5, option `robot.openarm`"
+                && copy_axis == "cameras" && axis == "commander"),
+        "{error}"
+    );
+}
+
+/// An entry that speaks about a copy axis writes an instance its copies or
+/// the stack define: a target only another axis's copies define is refused
+/// where it is written.
+#[test]
+fn an_adjustment_naming_a_copy_axis_targets_what_its_copies_define() {
+    let error = load_error(&two_copy_axes("", "").replace(
+        "constraints: [],",
+        r#"constraints: [], adjustments: [{ target: "cam_inst", when: { robot: "sim" }, set_arguments: { filmed: true } }],"#,
+    ));
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
+            if refused.target == "cam_inst" && refused.origin == "fleet.json5, top-level `adjustments`"
+                && refused.copy_axis == "robot" && refused.in_reach.starts_with("target one of `")),
+        "{error}"
+    );
+}
+
+/// An entry runs in the copies of the option it sits under, or of the
+/// options its guard names, so a target those options do not define is a
+/// dead reference, even where another option of the axis defines it.
+#[test]
+fn a_copy_entry_targeting_a_sibling_options_instance_is_refused() {
+    let launcher = |under_sim: &str, top_level: &str| {
+        format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            components: [
+                {{ name: "robot", cardinality: "zero_or_more", options: {{
+                    sim: {{ deployments: [{{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }}],
+                           {under_sim} }},
+                    real: {{ deployments: [
+                        {{ source: {{ name: "arm", tag: "v1" }}, instances: [{{ instance_id: "arm_inst" }}] }},
+                        {{ source: {{ name: "cam", tag: "v1" }}, instances: [{{ instance_id: "cam_inst" }}] }},
+                    ] }} }} }},
+            ],
+            deployments: [{{ robot: "sim", instances: [{{ instance_id: "alpha" }}] }}],
+            {top_level}
+        }}"#
+        )
+    };
+    // Under the option, a sibling's instance is out of reach outright; from
+    // the top level, the guard names the copies that never define it.
+    let error = load_error(&launcher(
+        r#"adjustments: [{ target: "cam_inst", set_arguments: { rendered: true } }]"#,
+        "",
+    ));
+    assert!(
+        matches!(&error, CompositionError::TargetDefinedNowhere { target, in_reach, .. }
+            if target == "cam_inst" && in_reach == "target one of `arm_inst`"),
+        "{error}"
+    );
+    let error = load_error(&launcher(
+        "",
+        r#"adjustments: [{ target: "cam_inst", when: { robot: "sim" }, set_arguments: { rendered: true } }],"#,
+    ));
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
+            if refused.target == "cam_inst" && refused.copy_axis == "robot" && refused.named == "`sim`"
+                && refused.in_reach == "target one of `arm_inst`"
+                && refused.defining == ", or guard it `when: { robot: \"real\" }`"),
+        "{error}"
+    );
+    // Naming the option that defines it, the same entry runs there.
+    load(&launcher(
+        "",
+        r#"adjustments: [{ target: "cam_inst", when: { robot: ["sim", "real"] }, set_arguments: { rendered: true } }],"#,
+    ));
+}
+
+/// With nothing in the entry's reach, the guard advice stands alone.
+#[test]
+fn a_copy_entrys_guard_advice_stands_alone_when_nothing_is_in_reach() {
+    let error = load_error(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "robot", cardinality: "zero_or_more", options: {
+                sim: {},
+                real: { deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }] } } },
+        ],
+        deployments: [{ robot: "sim", instances: [{ instance_id: "alpha" }] }],
+        adjustments: [{ target: "cam_inst", when: { robot: "sim" }, set_arguments: { rendered: true } }],
+    }"#,
+    );
+    assert!(
+        matches!(&error, CompositionError::CopyAdjustmentTargetUndefined(refused)
+            if refused.in_reach == "no instance runs beside it to target"
+                && refused.defining == "; guard it `when: { robot: \"real\" }`"),
+        "{error}"
+    );
+}
+
+/// An entry under a copy option is offered the ids in its reach: the
+/// stack's and its own option's, never a sibling option's or another copy
+/// axis's.
+#[test]
+fn a_copy_entrys_dead_reference_names_only_the_ids_in_reach() {
+    let error = load_error(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "robot", cardinality: "zero_or_more", options: { sim: {
+                deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+                adjustments: [{ target: "ghost_inst", set_arguments: { x: 1 } }] } } },
+            { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }] } } },
+        ],
+        deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }],
+    }"#,
+    );
+    assert!(
+        matches!(&error, CompositionError::TargetDefinedNowhere { in_reach, .. }
+            if in_reach == "target one of `arm_inst`, `engine_inst`"),
+        "{error}"
+    );
+}
+
+/// An entry under a stack option writing an id a copy option also defines
+/// is told to keep its own option's condition when it moves; one writing
+/// an instance its own option defines is that option's write, whichever
+/// other options define the id.
+#[test]
+fn an_ambiguous_entry_keeps_its_options_condition_and_an_own_write_is_not_ambiguous() {
+    let launcher = |recorder_deploys_cam: bool| {
+        let recorder = if recorder_deploys_cam {
+            r#"[{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }]"#
+        } else {
+            r#"[{ source: { name: "rec", tag: "v1" }, instances: [{ instance_id: "rec_inst" }] }]"#
+        };
+        format!(
+            r#"{{
+            peppy_schema: "launcher/v1",
+            components: [
+                {{ name: "simulation", cardinality: "zero_or_one", options: {{ isaac: {{
+                    deployments: [{{ source: {{ name: "cam", tag: "v1" }}, instances: [{{ instance_id: "cam_inst" }}] }}] }} }} }},
+                {{ name: "recorder", cardinality: "zero_or_one", options: {{ lerobot: {{
+                    deployments: {recorder},
+                    adjustments: [{{ target: "cam_inst", set_arguments: {{ rendered: true }} }}] }} }} }},
+                {{ name: "cameras", cardinality: "zero_or_more", options: {{ wrist: {{
+                    deployments: [{{ source: {{ name: "cam", tag: "v1" }}, instances: [{{ instance_id: "cam_inst" }}] }}] }} }} }},
+            ],
+            deployments: [],
+        }}"#
+        )
+    };
+    let message = load_error(&launcher(false)).to_string();
+    assert!(
+        message.contains("write it under option `simulation.isaac` for the stack's instance, guarded `when: { recorder: \"lerobot\" }` as option `recorder.lerobot` guards it now, or guard it `when: { cameras: \"wrist\" }` for each copy's"),
+        "{message}"
+    );
+    let launch = load(&launcher(true))
+        .launch(&words(&["lerobot"]), &[])
+        .unwrap();
+    let cam = instance(&launch.launcher, "cam_inst");
+    assert_eq!(cam.arguments.get("rendered"), Some(&AnyType::Bool(true)));
+}
+
+/// A skipped write to an instance the copy's option can define reads under
+/// the copy's name, running or not, and only a write to a stack instance
+/// is attributed to the copy.
+#[test]
+fn a_copys_skipped_writes_read_under_its_name() {
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
+            deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+            components: [{ name: "recorder", cardinality: "zero_or_one", provides: ["recorder_inst"],
+                options: { on: { deployments: [{ source: { name: "rec", tag: "v1" }, instances: [{ instance_id: "recorder_inst" }] }] } } }],
+            adjustments: [{ target: "recorder_inst", set_arguments: { fps: 15 } }],
+        } } }],
+        deployments: [{ robot: "sim", instances: [{ instance_id: "alpha" }] }]
+    }"#,
+    )
+    .launch(&[], &[])
+    .unwrap();
+    let lines = launch.report.render_lines();
+    // The copy's own id names the instance, and the copy names itself: the
+    // entry is the launcher's, and this copy is where it did not run.
+    let skipped = "  alpha_recorder_inst: target is not in this selection  \
+                   (fleet.json5, option `robot.sim`, copy `alpha`)";
     assert!(lines.iter().any(|line| line == skipped), "{lines:?}");
+    // One copy names itself once, however many times the line is folded.
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains("copy `alpha`, copy `alpha`")),
+        "{lines:?}"
+    );
+}
+
+/// A copy's own entry already names the copy, so a skip it reports names it
+/// once.
+#[test]
+fn a_copys_own_entry_names_the_copy_once() {
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
+            deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+            components: [{ name: "recorder", cardinality: "zero_or_one", provides: ["recorder_inst"],
+                options: { on: { deployments: [{ source: { name: "rec", tag: "v1" },
+                                                 instances: [{ instance_id: "recorder_inst" }] }] } } }],
+        } } }],
+        deployments: [{ robot: "sim", instances: [
+            { instance_id: "alpha",
+              adjustments: [{ target: "recorder_inst", when: { recorder: "on" }, set_arguments: { fps: 15 } }] },
+        ] }]
+    }"#,
+    )
+    .launch(&[], &[])
+    .unwrap();
+    let lines = launch.report.render_lines();
+    let skipped = "  alpha_recorder_inst: guard recorder=on is not met  \
+                   (adjustments of copy `alpha`)";
+    assert!(lines.iter().any(|line| line == skipped), "{lines:?}");
+}
+
+/// Inside a copy the option's entries run before the launcher's top-level
+/// list, so the top-level entry wins the key both write.
+#[test]
+fn in_a_copy_the_options_entries_run_before_the_launchers_own() {
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
+            deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+            adjustments: [{ target: "arm_inst", set_arguments: { speed: 1 } }],
+        } } }],
+        adjustments: [{ target: "arm_inst", set_arguments: { speed: 2 } }],
+        deployments: [{ robot: "sim", instances: [{ instance_id: "alpha" }] }]
+    }"#,
+    )
+    .launch(&[], &[])
+    .unwrap();
+    assert_eq!(
+        instance(&launch.launcher, "alpha_arm_inst").arguments["speed"],
+        AnyType::Int(2)
+    );
+    let lines = launch.report.render_lines();
+    let order: Vec<&str> = lines
+        .iter()
+        .filter(|line| line.contains("alpha_arm_inst.arguments.speed"))
+        .map(|line| {
+            if line.contains("option `robot.sim`") {
+                "option"
+            } else {
+                "top-level"
+            }
+        })
+        .collect();
+    assert_eq!(order, ["option", "top-level"], "{lines:?}");
+}
+
+/// A launcher's option adjustment reaches the copy a launch-time join
+/// starts, and the line it reports names that copy once.
+#[test]
+fn an_options_adjustment_reaches_a_launch_time_join() {
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { sim: {
+            deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+            adjustments: [
+                { target: "arm_inst", set_arguments: { speed: 2 } },
+                { target: "engine_inst", add_links: { robots: ["arm_inst"] } },
+            ],
+        } } }],
+        deployments: [
+            { source: { name: "engine", tag: "v1" },
+              instances: [{ instance_id: "engine_inst", links: { robots: [] } }] },
+        ]
+    }"#,
+    )
+    .launch(&[], &[launch_join("sim", "bravo")])
+    .unwrap();
+    assert_eq!(
+        instance(&launch.launcher, "bravo_arm_inst").arguments["speed"],
+        AnyType::Int(2)
+    );
+    let lines = launch.report.render_lines();
+    // The write onto the stack's engine names the copy behind it, once.
+    let written = "  engine_inst.links.robots: + bravo_arm_inst  \
+                   (fleet.json5, option `robot.sim`, copy `bravo`)";
+    assert!(lines.iter().any(|line| line == written), "{lines:?}");
+}
+
+/// An option's adjustment targets what runs beside it: its own option's
+/// instances and the other axes'; an id only a sibling option of the same
+/// axis defines is a dead reference.
+#[test]
+fn an_options_adjustment_cannot_target_a_sibling_options_instance() {
+    let error = load_error(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "simulation", options: {
+            mujoco: { deployments: [{ source: { name: "mujoco", tag: "v1" }, instances: [{ instance_id: "mujoco_inst" }] }] },
+            waldo: { deployments: [{ source: { name: "waldo", tag: "v1" }, instances: [{ instance_id: "waldo_inst" }] }],
+                     adjustments: [{ target: "mujoco_inst", set_arguments: { world: "openarm" } }] }
+        } }],
+        deployments: [{ simulation: "waldo" }]
+    }"#,
+    );
+    assert!(
+        matches!(&error, CompositionError::TargetDefinedNowhere { target, origin, in_reach }
+            if target == "mujoco_inst" && origin == "fleet.json5, option `simulation.waldo`"
+                && in_reach == "target one of `waldo_inst`"),
+        "{error}"
+    );
+}
+
+/// The stack judges an entry by what runs beside it: a target a sibling
+/// option and a copy option both define belongs to the copies, and the
+/// stack says so.
+#[test]
+fn a_target_a_sibling_option_shares_with_a_copy_option_runs_in_the_copies() {
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "simulation", options: {
+                mujoco: { deployments: [{ source: { name: "mujoco", tag: "v1" }, instances: [{ instance_id: "sim_inst" }] }],
+                          adjustments: [{ target: "cam_inst", set_arguments: { rendered: true } }] },
+                isaac: { deployments: [{ source: { name: "isaac", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }] }
+            } },
+            { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }]
+            } } }
+        ],
+        deployments: [{ simulation: "mujoco" }, { cameras: "wrist", instances: [{ instance_id: "left" }] }]
+    }"#,
+    )
+    .launch(&[], &[])
+    .unwrap();
+    assert_eq!(
+        instance(&launch.launcher, "left_cam_inst").arguments["rendered"],
+        AnyType::Bool(true)
+    );
+    let skipped = "  cam_inst: axis cameras runs as copies; the adjustment runs in each copy  \
+                   (fleet.json5, option `simulation.mujoco`)";
+    let lines = launch.report.render_lines();
+    assert!(lines.iter().any(|line| line == skipped), "{lines:?}");
+}
+
+/// A target two copy axes' options define runs in the copies of both, and
+/// the stack says so once per axis.
+#[test]
+fn a_target_two_copy_axes_define_runs_in_the_copies_of_both() {
+    let launch = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "cameras", cardinality: "zero_or_more", options: { wrist: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }]
+            } } },
+            { name: "robot", cardinality: "zero_or_more", options: { sim: {
+                deployments: [{ source: { name: "cam", tag: "v1" }, instances: [{ instance_id: "cam_inst" }] }]
+            } } }
+        ],
+        adjustments: [{ target: "cam_inst", set_arguments: { rendered: true } }],
+        deployments: [
+            { cameras: "wrist", instances: [{ instance_id: "left" }] },
+            { robot: "sim", instances: [{ instance_id: "alpha" }] }
+        ]
+    }"#,
+    )
+    .launch(&[], &[])
+    .unwrap();
+    for id in ["left_cam_inst", "alpha_cam_inst"] {
+        assert_eq!(
+            instance(&launch.launcher, id).arguments["rendered"],
+            AnyType::Bool(true)
+        );
+    }
+    let lines = launch.report.render_lines();
+    for axis in ["cameras", "robot"] {
+        let skipped = format!(
+            "  cam_inst: axis {axis} runs as copies; the adjustment runs in each copy  \
+             (fleet.json5, top-level `adjustments`)"
+        );
+        assert!(lines.contains(&skipped), "{lines:?}");
+    }
+}
+
+/// An unguarded write to an id a stack option and a copy option both
+/// define is refused naming both, and a stack option's own guarded write to
+/// its instance loads.
+#[test]
+fn a_target_a_stack_option_and_a_copy_option_both_define_is_refused() {
+    let document = |top_level: &str, isaac_adjustments: &str| {
+        format!(
+            r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{ name: "simulation", options: {{
+                mujoco: {{ deployments: [{{ source: {{ name: "mujoco", tag: "v1" }}, instances: [{{ instance_id: "sim_inst" }}] }}] }},
+                isaac: {{ deployments: [{{ source: {{ name: "isaac", tag: "v1" }}, instances: [{{ instance_id: "cam_inst" }}] }},
+                                       {{ viewer: "web" }}],
+                         components: [{{ name: "viewer", options: {{ web: {{}}, none: {{}} }} }}],
+                         {isaac_adjustments} }}
+            }} }},
+            {{ name: "cameras", cardinality: "zero_or_more", options: {{ wrist: {{
+                deployments: [{{ source: {{ name: "cam", tag: "v1" }}, instances: [{{ instance_id: "cam_inst" }}] }}]
+            }} }} }}
+        ],
+        {top_level}
+        deployments: [{{ simulation: "mujoco" }}, {{ cameras: "wrist", instances: [] }}]
+    }}"#
+        )
+    };
+    let parsed = PeppyLauncherParser::from_content(&document(
+        r#"adjustments: [{ target: "cam_inst", set_arguments: { rendered: true } }],"#,
+        "",
+    ))
+    .unwrap();
+    let error = PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::AdjustmentTargetAmbiguous(ambiguous)
+            if ambiguous.target == "cam_inst" && ambiguous.stack == "simulation.isaac"
+                && ambiguous.copy_axis == "cameras" && ambiguous.copy_option == "wrist"),
+        "{error}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("write it under option `simulation.isaac`")
+            && message.contains("when: { cameras: \"wrist\" }"),
+        "{message}"
+    );
+    let launch = load(&document(
+        "",
+        r#"adjustments: [{ target: "cam_inst", when: { viewer: "web" }, set_arguments: { streamed: true } }],"#,
+    ))
+    .launch(&words(&["isaac"]), &[])
+    .unwrap();
+    // The entry is the isaac option's own, guarded on that option's own axis,
+    // so it writes the instance isaac deploys and no copy's.
+    assert_eq!(
+        instance(&launch.launcher, "cam_inst").arguments["streamed"],
+        AnyType::Bool(true)
+    );
+    // The copy option defines the same id, and no copy of it runs, so the
+    // write is the stack's alone.
+    assert!(launch.report.copies.is_empty());
 }
 
 #[test]
@@ -1866,17 +2469,23 @@ fn a_copy_cannot_reuse_an_id_the_stack_defines() {
     );
 }
 
-/// A stack fragment's adjustment guarded on a copy axis can never run.
+/// A stack fragment file's own adjustment guarded on a copy axis can never
+/// run.
 #[test]
 fn a_stack_fragment_cannot_guard_on_a_copy_axis() {
+    let directory = tempfile::tempdir().unwrap();
+    write(
+        &directory.path().join("engine.json5"),
+        &fragment_file(
+            r#"deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }],
+               adjustments: [{ target: "engine_inst", when: { robot: "sim" }, set_arguments: { fast: true } }]"#,
+        ),
+    );
     let parsed = PeppyLauncherParser::from_content(
         r#"{
         peppy_schema: "launcher/v1",
         components: [
-            { name: "simulation", options: { engine: {
-                deployments: [{ source: { name: "engine", tag: "v1" }, instances: [{ instance_id: "engine_inst" }] }],
-                adjustments: [{ target: "engine_inst", when: { robot: "sim" }, set_arguments: { fast: true } }]
-            } } },
+            { name: "simulation", options: { engine: "engine.json5" } },
             { name: "robot", cardinality: "zero_or_more", options: {
                 sim: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] }
             } }
@@ -1885,7 +2494,7 @@ fn a_stack_fragment_cannot_guard_on_a_copy_axis() {
     }"#,
     )
     .unwrap();
-    let error = PreparedLauncher::load(&parsed, Path::new("fleet.json5")).unwrap_err();
+    let error = PreparedLauncher::load(&parsed, &directory.path().join("fleet.json5")).unwrap_err();
     assert!(
         matches!(&error, CompositionError::GuardOnCopyAxis { target, axis, .. }
             if target == "engine_inst" && axis == "robot"),
@@ -2021,7 +2630,7 @@ fn a_fragment_file_shared_by_two_options_is_one_document_to_the_check() {
 
 /// A constraint or guard is refused where it names an axis its unit never
 /// fills: a copy axis from a stack option's fragment, another copy axis
-/// from a copy's fragment, two copy axes from the launcher.
+/// from a copy's own option entry, two copy axes from the launcher.
 #[test]
 fn a_fragment_names_no_copy_axis_its_unit_cannot_fill() {
     let error = load_error(
@@ -2056,7 +2665,8 @@ fn a_fragment_names_no_copy_axis_its_unit_cannot_fill() {
         "",
     ));
     assert!(
-        matches!(&error, CompositionError::GuardOnCopyAxis { axis, .. } if axis == "cameras"),
+        matches!(&error, CompositionError::AdjustmentSpansCopyAxes { target, axes, .. }
+            if target == "arm_inst" && axes.contains("`cameras`") && axes.contains("`robot`")),
         "{error}"
     );
     let error = load_error(&two_copy_axes(
@@ -2073,7 +2683,7 @@ fn a_fragment_names_no_copy_axis_its_unit_cannot_fill() {
         r#"constraints: [], adjustments: [{ target: "arm_inst", when: { robot: "sim", cameras: "wrist" }, set_arguments: { filmed: true } }],"#,
     ));
     assert!(
-        matches!(&error, CompositionError::AdjustmentSpansCopyAxes { target, axes }
+        matches!(&error, CompositionError::AdjustmentSpansCopyAxes { target, axes, .. }
             if target == "arm_inst" && axes.contains("`cameras`") && axes.contains("`robot`")),
         "{error}"
     );
@@ -2162,7 +2772,8 @@ fn copy_selection_refusals_name_the_copied_option() {
 
 /// The stack unit runs only the launcher adjustments it can apply: one
 /// targeting an id only copies define is reported skipped, naming the axis
-/// whose copies run it. A write a copy makes to a stack instance is
+/// whose copies run it, while a copy option's own adjustments belong to its
+/// copies and are not skips. A write a copy makes to a stack instance is
 /// reported under the copy's name.
 #[test]
 fn the_report_files_copy_writes_and_copy_only_adjustments_under_the_copy() {
@@ -2190,8 +2801,8 @@ fn the_report_files_copy_writes_and_copy_only_adjustments_under_the_copy() {
     assert!(
         matches!(
             report.skipped.as_slice(),
-            [SkippedAdjustment { target, reason: SkipReason::RunsInCopies(axis), .. }]
-                if target == "arm_inst" && axis == "robot"
+            [SkippedAdjustment { target, reason: SkipReason::RunsInCopies(axis), origin }]
+                if target == "arm_inst" && axis == "robot" && origin == "fleet.json5, top-level `adjustments`"
         ),
         "{:?}",
         report.skipped
@@ -2721,7 +3332,7 @@ fn copy_adjustments_run_after_the_launchers_and_before_the_copys_arguments() {
     assert_eq!(
         origins("alpha_arm_inst"),
         [
-            "fleet.json5 (base)",
+            "fleet.json5, top-level `adjustments`",
             "adjustments of `robot: sim`",
             "arguments of copy `alpha`",
         ]
@@ -2729,7 +3340,7 @@ fn copy_adjustments_run_after_the_launchers_and_before_the_copys_arguments() {
     assert_eq!(
         origins("bravo_arm_inst"),
         [
-            "fleet.json5 (base)",
+            "fleet.json5, top-level `adjustments`",
             "adjustments of `robot: sim`",
             "adjustments of copy `bravo`",
             "arguments of copy `bravo`",
@@ -2934,8 +3545,8 @@ fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
             adjustments: [{ target: "arm_inst", when: { nope: "x" }, set_arguments: { speed: 1 } }] }] }"#,
     ));
     assert!(
-        matches!(&error, CompositionError::CopyAdjustmentGuard { origin, .. }
-            if origin == "adjustments of copy `alpha`"),
+        matches!(&error, CompositionError::AdjustmentGuard { detail }
+            if detail.contains("adjustments of copy `alpha`")),
         "{error}"
     );
 

@@ -1,7 +1,8 @@
 //! Everything composition can refuse: bad `--with` words, copies that
 //! select what their option does not declare, unreadable or unsafe fragment
 //! paths, options that do not provide what their axis promises, adjustments
-//! that fight, and joins that would change what already runs.
+//! whose guard or target is out of reach, and joins that would change what
+//! already runs.
 //!
 //! The selection refusals are launch refusals (the words and the copies are
 //! caller input); the rest surface wherever the launcher or its fragments
@@ -11,6 +12,49 @@
 use thiserror::Error;
 
 use super::super::types::EACH_TARGET_ONCE;
+
+/// Payload for [`CompositionError::AdjustmentTargetAmbiguous`], boxed past
+/// the `clippy::result_large_err` threshold as [`ClockDomainConflict`] and
+/// [`UnresolvedCopyAxis`] are.
+#[derive(Debug, Error)]
+#[error(
+    "adjustment on `{target}` in {origin} names an instance that option `{stack}` runs \
+     in the stack and option `{copy_axis}.{copy_option}` runs as copies; write it under \
+     option `{stack}` for the stack's instance{keeping}, or guard it `when: {{ {copy_axis}: \
+     \"{copy_option}\" }}` for each copy's"
+)]
+pub struct AdjustmentTargetAmbiguous {
+    pub target: String,
+    pub origin: String,
+    /// The option that fills once, as `axis.option`.
+    pub stack: String,
+    /// The guard that keeps the entry's own option's condition once it moves
+    /// under `stack`, as `, guarded ... now`; empty for a top-level entry.
+    pub keeping: String,
+    pub copy_axis: String,
+    pub copy_option: String,
+}
+
+/// Payload for [`CompositionError::CopyAdjustmentTargetUndefined`], boxed
+/// past the `clippy::result_large_err` threshold as
+/// [`AdjustmentTargetAmbiguous`] is.
+#[derive(Debug, Error)]
+#[error(
+    "adjustment on `{target}` in {origin} runs in copies of `{copy_axis}` under {named}, \
+     which define no `{target}`; {in_reach}{defining}"
+)]
+pub struct CopyAdjustmentTargetUndefined {
+    pub target: String,
+    pub origin: String,
+    pub copy_axis: String,
+    /// The options of `copy_axis` the entry runs under, quoted.
+    pub named: String,
+    pub in_reach: String,
+    /// The guard reaching an option of `copy_axis` that defines the target,
+    /// as `, or guard it ...`, or `; guard it ...` when nothing is in reach;
+    /// empty when none does.
+    pub defining: String,
+}
 
 #[derive(Debug, Error)]
 pub enum CompositionError {
@@ -225,10 +269,32 @@ pub enum CompositionError {
     ConstraintSpansCopyAxes { position: usize, axes: String },
 
     #[error(
-        "the launcher's adjustment of `{target}` names copy axes {axes}; a copy fills one \
-         axis, so a guard names one copy axis"
+        "adjustment on `{target}` in {origin} names copy axes {axes} through the option it \
+         sits under or its guard; a copy fills one axis, so name one"
     )]
-    AdjustmentSpansCopyAxes { target: String, axes: String },
+    AdjustmentSpansCopyAxes {
+        target: String,
+        origin: String,
+        axes: String,
+    },
+
+    #[error(transparent)]
+    AdjustmentTargetAmbiguous(Box<AdjustmentTargetAmbiguous>),
+
+    #[error(
+        "adjustment on `{target}` in {origin} runs in each copy of `{copy_axis}` and is \
+         guarded on `{axis}`, an axis a copy's selection does not hold; guard it on the \
+         launcher's axes, or write it under the option of `{copy_axis}` it is for"
+    )]
+    CopyAdjustmentReadsOptionAxis {
+        target: String,
+        origin: String,
+        copy_axis: String,
+        axis: String,
+    },
+
+    #[error(transparent)]
+    CopyAdjustmentTargetUndefined(Box<CopyAdjustmentTargetUndefined>),
 
     #[error(
         "copy `{name}` releases the vacant slot `{instance}.links.{slot}` and pairs nothing into \
@@ -309,17 +375,18 @@ pub enum CompositionError {
     ScopedWordNamesNoOption { word: String, copy: String },
 
     #[error(
-        "{origin} is guarded on axis `{axis}`, which runs as copies; a copy's adjustments are \
-         guarded on the launcher's other axes and the copy's own"
+        "a guard in {origin} names axis `{axis}`, which runs as copies; a copy's adjustments \
+         are guarded on the launcher's other axes and the copy's own"
     )]
     CopyAdjustmentOnCopyAxis { origin: String, axis: String },
 
-    #[error("{origin}: {detail}")]
-    CopyAdjustmentGuard { origin: String, detail: String },
+    #[error("{detail}")]
+    AdjustmentGuard { detail: String },
 
     #[error(
-        "{origin} targets `{target}`, which is not an instance of the copy ({available}); a \
-         write to a stack instance belongs in the option's fragment `adjustments`"
+        "a write in {origin} targets `{target}`, which is not an instance of the copy \
+         ({available}); a write to a stack instance belongs in the launcher's `adjustments`, \
+         at the top level or under the option"
     )]
     CopyAdjustmentTarget {
         origin: String,
@@ -464,15 +531,19 @@ pub enum CompositionError {
     },
 
     #[error(
-        "adjustment on `{target}` in {origin} names a target no option of this launcher defines \
-         anywhere; that is a dead reference or a typo"
+        "adjustment on `{target}` in {origin} names a target nothing in its reach defines; \
+         {in_reach}"
     )]
-    TargetDefinedNowhere { target: String, origin: String },
+    TargetDefinedNowhere {
+        target: String,
+        origin: String,
+        in_reach: String,
+    },
 
     #[error(
         "adjustment on `{target}` in {origin} is guarded on axis `{axis}`, which runs as \
-         copies; a stack fragment's guard names the stack's axes, and a copy's own \
-         adjustments belong in its fragment"
+         copies; a fragment's guard names the stack's axes, and the writes a copy needs \
+         belong in the launcher's `adjustments` under its option"
     )]
     GuardOnCopyAxis {
         target: String,
@@ -492,8 +563,8 @@ pub enum CompositionError {
 
     #[error(
         "two fragments adjust the same thing: {first} and {second} both write \
-         `{target}.{field}`. Fragments refuse to fight over one value; the base specializes \
-         fragments"
+         `{target}.{field}`. Fragments refuse to fight over one value; the launcher \
+         specializes fragments"
     )]
     AdjustmentsConflict {
         target: String,

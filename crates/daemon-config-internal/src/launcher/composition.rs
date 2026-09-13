@@ -1,7 +1,8 @@
 //! The composition grammar: the `components` axes a `launcher/v1` or
 //! `launcher_fragment/v1` document declares, the option entries a
-//! `deployments` list may carry beside its nodes, and the `adjustments` and
-//! `constraints` both document kinds may state.
+//! `deployments` list may carry beside its nodes, the `constraints` both
+//! document kinds may state, and the `adjustments` a launcher states at the
+//! top level or under an option and a fragment file states of its own.
 //!
 //! Components declare what may run; deployments say what runs. A launcher
 //! whose `components` fill once (`one`, `zero_or_one`) describes a FAMILY of
@@ -98,17 +99,18 @@ pub struct ComponentAxis {
     /// by `--with axis=option`, by `when` guards, and by the `deployments`
     /// entry that fills it.
     pub name: String,
-    /// The alternatives that fill this axis, at least one. A value is an
-    /// inline fragment object, a path relative to the declaring document's
-    /// directory, or a list mixing both (merged in list order).
-    pub options: BTreeMap<String, FragmentSpec>,
+    /// The alternatives that fill this axis, at least one. A value is a
+    /// fragment path relative to the declaring document's directory, a list
+    /// of such paths, or an object naming files under `fragments` and
+    /// carrying a body and, in a launcher, `adjustments` of its own.
+    pub options: BTreeMap<String, OptionSpec>,
     #[serde(default, skip_serializing_if = "ComponentCardinality::is_one")]
     pub cardinality: ComponentCardinality,
     /// The axis's interface: every option must define all of these instance
-    /// ids in its deployments, so a link or adjustment written against one is
-    /// valid regardless of which option the operator picks. On a repeatable
-    /// axis the ids are checked as written, before a copy's name prefixes
-    /// them.
+    /// ids in its deployments, so a link written against one is valid
+    /// regardless of which option the operator picks, and so is an adjustment
+    /// the launcher writes. On a repeatable axis the ids are checked as
+    /// written, before a copy's name prefixes them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides: Vec<Name>,
 }
@@ -128,12 +130,12 @@ impl<'de> Deserialize<'de> for ComponentAxis {
         struct Declaration {
             name: String,
             #[serde(default)]
-            options: Option<BTreeMap<String, FragmentSpec>>,
+            options: Option<BTreeMap<String, OptionSpec>>,
             #[serde(default)]
             cardinality: ComponentCardinality,
             #[serde(default)]
             provides: Vec<Name>,
-            #[serde(default, deserialize_with = "present")]
+            #[serde(default, deserialize_with = "written")]
             components: Option<de::IgnoredAny>,
         }
 
@@ -157,36 +159,39 @@ impl<'de> Deserialize<'de> for ComponentAxis {
     }
 }
 
-fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<de::IgnoredAny>, D::Error> {
-    de::IgnoredAny::deserialize(deserializer).map(Some)
-}
-
-/// One option's fragment set, in the order the option declared it: an inline
-/// fragment, a path, or a list mixing both all parse into the same shape.
+/// One option as its axis declares it: a path string names one
+/// `launcher_fragment/v1` file, a list of path strings names several, and
+/// an object names files under `fragments` and carries a body of its own
+/// beside them, either or both. The files are resolved and read when the
+/// composition is loaded ([`super::compose`]), never here; the body is part
+/// of the declaring document.
 ///
-/// The two origins parse identically but live differently: an inline fragment
-/// is part of the declaring document, while a path is resolved and read when
-/// the composition is loaded ( [`super::compose`] ), never here.
-#[derive(Debug, Clone, Default)]
-pub struct FragmentSpec(pub Vec<FragmentPart>);
-
-/// One piece of an option's body: a fragment written inline, or a path to a
-/// `launcher_fragment/v1` file.
+/// In a launcher the object also carries `adjustments`: the launcher's
+/// writes to instances, run when this option is selected.
 #[derive(Debug, Clone)]
-pub enum FragmentPart {
-    Inline(Fragment),
-    File(String),
+pub struct OptionSpec {
+    /// Fragment paths relative to the declaring document's directory, read
+    /// in this order before `body`.
+    pub files: Vec<String>,
+    /// The body written where the option is.
+    pub body: Option<Fragment>,
+    /// The launcher's writes when this option is selected, guarded on the
+    /// launcher's other axes and the option's own. Empty in a fragment,
+    /// which declares none.
+    pub adjustments: Vec<Adjustment>,
 }
 
 /// The body of one fragment: what selecting its option pulls in.
 ///
 /// `deployments` uses the same grammar as the launcher's own, node entries
-/// and option entries alike, `core_nodes` are unioned with the base's, and
-/// `adjustments` reach instances the fragment does not own. A fragment
-/// declares its own `components`, filled once per copy of it, and the
-/// `constraints` among them; it cannot declare `peppy_schema` when inline,
-/// since the file form wraps this body in [`LauncherFragment`].
-#[derive(Debug, Clone, Default)]
+/// and option entries alike, and `core_nodes` are unioned with the launcher's.
+/// A fragment declares its own `components`, filled once per copy of it,
+/// and the `constraints` among them. A fragment describes its own
+/// instances; the launcher that selects it writes the `adjustments` that
+/// connect them to the rest of the stack, under the option that names the
+/// fragment. It cannot declare `peppy_schema` when inline, since the file
+/// form wraps this body in [`LauncherFragment`].
+#[derive(Debug, Clone)]
 pub struct Fragment {
     /// The node entries of `deployments`.
     pub deployments: Vec<Deployment>,
@@ -195,6 +200,9 @@ pub struct Fragment {
     pub option_deployments: Vec<OptionDeployment>,
     pub components: Vec<ComponentAxis>,
     pub constraints: Vec<SelectionConstraint>,
+    /// The writes this fragment makes onto the instances it deploys, an
+    /// option written in place included. Naming anything else is refused
+    /// where the fragment is read.
     pub adjustments: Vec<Adjustment>,
     pub core_nodes: Vec<String>,
     /// The clock domains this fragment declares. A selected fragment
@@ -202,27 +210,20 @@ pub struct Fragment {
     pub framework: LauncherFramework,
 }
 
-/// The document shape a fragment body is read from and written to.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+/// The fields a fragment body is built from, as a fragment file or an
+/// option object read them.
 struct RawFragment {
-    #[serde(default)]
     deployments: DeploymentEntries,
-    #[serde(default)]
     components: Vec<ComponentAxis>,
-    #[serde(default)]
     constraints: Vec<SelectionConstraint>,
-    #[serde(default)]
     adjustments: Vec<Adjustment>,
-    #[serde(default)]
     core_nodes: Vec<String>,
-    #[serde(default)]
     framework: LauncherFramework,
 }
 
 impl Fragment {
-    fn from_raw<E: de::Error>(raw: RawFragment) -> Result<Self, E> {
-        validate_axes(&raw.components, AxisScope::Fragment).map_err(E::custom)?;
+    fn from_raw<E: de::Error>(raw: RawFragment, scope: AxisScope) -> Result<Self, E> {
+        validate_axes(&raw.components, scope).map_err(E::custom)?;
         validate_option_deployments(&raw.deployments.options, &raw.components)
             .map_err(E::custom)?;
         validate_constraint_shapes(&raw.constraints, "this fragment").map_err(E::custom)?;
@@ -239,17 +240,28 @@ impl Fragment {
             framework: raw.framework,
         })
     }
-}
 
-impl<'de> Deserialize<'de> for Fragment {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Fragment::from_raw(RawFragment::deserialize(deserializer)?)
+    /// Whether this body declares nothing at all.
+    fn is_empty(&self) -> bool {
+        self.deployments.is_empty()
+            && self.option_deployments.is_empty()
+            && self.components.is_empty()
+            && self.constraints.is_empty()
+            && self.adjustments.is_empty()
+            && self.core_nodes.is_empty()
+            && self.framework.is_empty()
     }
-}
 
-impl Serialize for Fragment {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(None)?;
+    /// Writes this body's entries into `map`: the keys a fragment file
+    /// carries beside its `peppy_schema`, and the object form of an option
+    /// beside its `fragments` and `adjustments`.
+    /// `adjustments` is passed in, so an option writes the one list it
+    /// carries and a fragment file writes its own.
+    fn serialize_entries<M: serde::ser::SerializeMap>(
+        &self,
+        map: &mut M,
+        adjustments: &[Adjustment],
+    ) -> Result<(), M::Error> {
         if !self.deployments.is_empty() || !self.option_deployments.is_empty() {
             map.serialize_entry(
                 "deployments",
@@ -265,8 +277,8 @@ impl Serialize for Fragment {
         if !self.constraints.is_empty() {
             map.serialize_entry("constraints", &self.constraints)?;
         }
-        if !self.adjustments.is_empty() {
-            map.serialize_entry("adjustments", &self.adjustments)?;
+        if !adjustments.is_empty() {
+            map.serialize_entry("adjustments", adjustments)?;
         }
         if !self.core_nodes.is_empty() {
             map.serialize_entry("core_nodes", &self.core_nodes)?;
@@ -274,6 +286,14 @@ impl Serialize for Fragment {
         if !self.framework.is_empty() {
             map.serialize_entry("framework", &self.framework)?;
         }
+        Ok(())
+    }
+}
+
+impl Serialize for Fragment {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        self.serialize_entries(&mut map, &self.adjustments)?;
         map.end()
     }
 }
@@ -315,16 +335,20 @@ impl<'de> Deserialize<'de> for LauncherFragment {
         }
 
         let raw = RawLauncherFragment::deserialize(deserializer)?;
+        let adjustments = raw.adjustments;
         Ok(LauncherFragment {
             peppy_schema: raw.peppy_schema,
-            body: Fragment::from_raw(RawFragment {
-                deployments: raw.deployments,
-                components: raw.components,
-                constraints: raw.constraints,
-                adjustments: raw.adjustments,
-                core_nodes: raw.core_nodes,
-                framework: raw.framework,
-            })?,
+            body: Fragment::from_raw(
+                RawFragment {
+                    deployments: raw.deployments,
+                    components: raw.components,
+                    constraints: raw.constraints,
+                    adjustments,
+                    core_nodes: raw.core_nodes,
+                    framework: raw.framework,
+                },
+                AxisScope::FragmentFile,
+            )?,
         })
     }
 }
@@ -491,8 +515,13 @@ pub struct CopyEntry {
 impl CopyEntry {
     /// The origin the report names this copy's adjustments by.
     fn adjustments_origin(&self) -> String {
-        format!("adjustments of copy `{}`", self.instance_id)
+        copy_adjustments_origin(&self.instance_id)
     }
+}
+
+/// The origin the report names a copy's own adjustments by.
+pub(crate) fn copy_adjustments_origin(copy: &impl std::fmt::Display) -> String {
+    format!("adjustments of copy `{copy}`")
 }
 
 impl<'de> Deserialize<'de> for CopyEntry {
@@ -507,9 +536,9 @@ impl<'de> Deserialize<'de> for CopyEntry {
             arguments: ArgumentOverrides,
             #[serde(default)]
             adjustments: Vec<Adjustment>,
-            #[serde(default, deserialize_with = "present")]
+            #[serde(default, deserialize_with = "written")]
             core_node: Option<de::IgnoredAny>,
-            #[serde(default, deserialize_with = "present")]
+            #[serde(default, deserialize_with = "written")]
             links: Option<de::IgnoredAny>,
         }
 
@@ -527,8 +556,9 @@ impl<'de> Deserialize<'de> for CopyEntry {
         }
         if raw.links.is_some() {
             return Err(de::Error::custom(format!(
-                "copy `{}` declares `links`; a copy's wiring is written in its option's \
-                 fragment, and `with` selects the fragment's own axes",
+                "copy `{}` declares `links`; a copy's instances take their `links` from the \
+                 option's fragments and the launcher's `adjustments` under the option, and \
+                 `with` selects the option's own axes",
                 raw.instance_id
             )));
         }
@@ -847,16 +877,17 @@ pub struct SelectionConstraint {
     pub reason: String,
 }
 
-/// One change to an instance defined elsewhere, in the base or in another
-/// selected fragment. Every change names its operation; nothing is inferred
+/// One change to an instance the launcher's `deployments` or an option's
+/// fragments define. Every change names its operation; nothing is inferred
 /// from a value's JSON type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Adjustment {
     /// The instance to change. Whether an instance exists is declared by the
-    /// base and the axes' options, so an adjustment whose target the resolved
-    /// selection does not define is skipped, not refused; a target no option
-    /// of the launcher defines anywhere is a dead reference and a parse error.
+    /// launcher's deployments and the axes' options, so an adjustment whose
+    /// target the resolved selection does not define is skipped, not
+    /// refused; a target nothing that runs beside the entry defines is a
+    /// dead reference, refused when the composition loads.
     pub target: Name,
     /// Guard: every named axis must hold one of its named options for this
     /// adjustment to run. Absent means unconditional.
@@ -887,128 +918,180 @@ pub struct Adjustment {
     pub unset_links: Option<Vec<String>>,
 }
 
-impl Serialize for FragmentSpec {
+/// Written back in the shortest shape that holds it: a lone file as its
+/// path, a lone body as that body, anything else as the object.
+impl Serialize for OptionSpec {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        match self.0.as_slice() {
-            [single] => single.serialize(serializer),
-            parts => {
-                let mut seq = serializer.serialize_seq(Some(parts.len()))?;
-                for part in parts {
-                    seq.serialize_element(part)?;
+        match (
+            self.files.as_slice(),
+            &self.body,
+            self.adjustments.is_empty(),
+        ) {
+            ([path], None, true) => serializer.serialize_str(path),
+            ([], Some(body), true) => body.serialize(serializer),
+            (files, body, _) => {
+                let mut map = serializer.serialize_map(None)?;
+                if !files.is_empty() {
+                    map.serialize_entry("fragments", files)?;
                 }
-                seq.end()
+                if let Some(body) = body {
+                    body.serialize_entries(&mut map, &self.adjustments)?;
+                } else if !self.adjustments.is_empty() {
+                    map.serialize_entry("adjustments", &self.adjustments)?;
+                }
+                map.end()
             }
         }
     }
 }
 
-/// One fragment part read from a path string: the fragment lives in its
-/// own `launcher_fragment/v1` file next to the declaring document.
-fn fragment_part_from_str<E: de::Error>(v: &str) -> Result<FragmentPart, E> {
-    if v.trim().is_empty() {
+/// A fragment path as an option names it: a `launcher_fragment/v1` file
+/// relative to the declaring document's directory.
+fn check_fragment_path<E: de::Error>(path: &str) -> Result<(), E> {
+    if path.trim().is_empty() {
         return Err(de::Error::custom(
             "a fragment path cannot be empty: name a `launcher_fragment/v1` file relative to \
              the declaring document's directory",
         ));
     }
-    Ok(FragmentPart::File(v.to_owned()))
+    Ok(())
 }
 
-/// One fragment part read from a map: an inline fragment body, written
-/// where the option is.
-fn fragment_part_from_map<'de, A: MapAccess<'de>>(map: A) -> Result<FragmentPart, A::Error> {
-    let fragment = Fragment::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-    Ok(FragmentPart::Inline(fragment))
+/// Reads a written key as a value of its type, so `null` is refused as the
+/// type's deserializer refuses it; an absent key takes the field's default.
+pub(crate) fn written<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
-impl<'de> Deserialize<'de> for FragmentSpec {
+/// The object form of an option: fragment files, a body of its own, and
+/// the launcher's adjustments for the option.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOption {
+    #[serde(default, deserialize_with = "written")]
+    fragments: Option<Vec<String>>,
+    #[serde(default)]
+    deployments: DeploymentEntries,
+    #[serde(default)]
+    components: Vec<ComponentAxis>,
+    #[serde(default)]
+    constraints: Vec<SelectionConstraint>,
+    #[serde(default)]
+    core_nodes: Vec<String>,
+    #[serde(default)]
+    framework: LauncherFramework,
+    #[serde(default, deserialize_with = "written")]
+    adjustments: Option<Vec<Adjustment>>,
+}
+
+impl<'de> Deserialize<'de> for OptionSpec {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct FragmentSpecVisitor;
+        struct OptionSpecVisitor;
 
-        impl<'de> Visitor<'de> for FragmentSpecVisitor {
-            type Value = FragmentSpec;
+        impl<'de> Visitor<'de> for OptionSpecVisitor {
+            type Value = OptionSpec;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str(
-                    "a fragment object, a path string, or a list mixing both, e.g. \
-                     [\"fragments/sim_relays.json5\", { deployments: [...] }]",
+                    "a fragment path string, or an object naming files under `fragments` \
+                     beside a body of its own and, in a launcher, `adjustments`, e.g. \
+                     { fragments: [\"fragments/relays.json5\"], deployments: [...], \
+                     adjustments: [...] }",
                 )
             }
 
-            /// A path string or an inline fragment: one part, read the same
-            /// way a lone [`FragmentPart`] is.
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(FragmentSpec(vec![fragment_part_from_str(v)?]))
+                check_fragment_path(v)?;
+                Ok(OptionSpec {
+                    files: vec![v.to_owned()],
+                    body: None,
+                    adjustments: Vec::new(),
+                })
             }
 
+            /// Files first, in order, then the body written in place; an
+            /// object with neither is an empty body.
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                Ok(FragmentSpec(vec![fragment_part_from_map(map)?]))
+                let raw =
+                    RawOption::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                let files = match raw.fragments {
+                    Some(files) if files.is_empty() => {
+                        return Err(de::Error::custom(
+                            "`fragments` names no file; list at least one \
+                             `launcher_fragment/v1` path, or leave `fragments` out",
+                        ));
+                    }
+                    Some(files) => files,
+                    None => Vec::new(),
+                };
+                let adjustments = match raw.adjustments {
+                    Some(adjustments) if adjustments.is_empty() => {
+                        return Err(de::Error::custom(
+                            "`adjustments` names no entry; leave the key out, or name the \
+                             entries that apply when this option is selected",
+                        ));
+                    }
+                    Some(adjustments) => adjustments,
+                    None => Vec::new(),
+                };
+                for path in &files {
+                    check_fragment_path(path)?;
+                }
+                let fragment = Fragment::from_raw(
+                    RawFragment {
+                        deployments: raw.deployments,
+                        components: raw.components,
+                        constraints: raw.constraints,
+                        adjustments: Vec::new(),
+                        core_nodes: raw.core_nodes,
+                        framework: raw.framework,
+                    },
+                    AxisScope::OptionBody,
+                )?;
+                let body = (files.is_empty() || !fragment.is_empty()).then_some(fragment);
+                Ok(OptionSpec {
+                    files,
+                    body,
+                    adjustments,
+                })
             }
 
-            /// The list form: parts merge in list order before the option's
-            /// contribution enters composition.
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut parts = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(part) = seq.next_element::<FragmentPart>()? {
-                    parts.push(part);
+                let mut files = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(part) = seq.next_element::<serde_json::Value>()? {
+                    let serde_json::Value::String(path) = part else {
+                        return Err(de::Error::custom(
+                            "an option's list holds fragment paths; a body is written beside \
+                             the files, as `{ fragments: [\"fragments/relays.json5\"], \
+                             deployments: [...] }`",
+                        ));
+                    };
+                    check_fragment_path(&path)?;
+                    files.push(path);
                 }
-                if parts.is_empty() {
+                if files.is_empty() {
                     return Err(de::Error::custom(
-                        "a fragment list cannot be empty: an option with no body has nothing to \
-                         contribute; an off-by-default feature is an axis with cardinality \
-                         `zero_or_one`",
+                        "an option lists no fragment; name at least one `launcher_fragment/v1` \
+                         path under `fragments`, or write the option's body in place",
                     ));
                 }
-                Ok(FragmentSpec(parts))
+                Ok(OptionSpec {
+                    files,
+                    body: None,
+                    adjustments: Vec::new(),
+                })
             }
         }
 
-        deserializer.deserialize_any(FragmentSpecVisitor)
-    }
-}
-
-impl<'de> Deserialize<'de> for FragmentPart {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct FragmentPartVisitor;
-
-        impl<'de> Visitor<'de> for FragmentPartVisitor {
-            type Value = FragmentPart;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a fragment object or a path string")
-            }
-
-            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                fragment_part_from_str(v)
-            }
-
-            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                fragment_part_from_map(map)
-            }
-        }
-
-        deserializer.deserialize_any(FragmentPartVisitor)
-    }
-}
-
-impl Serialize for FragmentPart {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            FragmentPart::Inline(fragment) => fragment.serialize(serializer),
-            FragmentPart::File(path) => serializer.serialize_str(path),
-        }
+        deserializer.deserialize_any(OptionSpecVisitor)
     }
 }
 
@@ -1052,11 +1135,15 @@ fn check_axis_or_option_name(kind: &str, name: &str) -> Result<(), String> {
 }
 
 /// Which document declares a `components` list: the rules differ in what a
-/// fragment's axes may be.
+/// body's axes may be, and a refusal names the place that body's writes
+/// belong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AxisScope {
     Launcher,
-    Fragment,
+    /// A `launcher_fragment/v1` file.
+    FragmentFile,
+    /// A body written in place of a file, under one option.
+    OptionBody,
 }
 
 /// The document-local checks on a `components` list: the ones needing no
@@ -1091,10 +1178,11 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
                 axis.name
             ));
         }
-        for option in axis.options.keys() {
+        for (option, spec) in &axis.options {
             check_axis_or_option_name(&format!("an option of axis `{}`", axis.name), option)?;
+            validate_option_adjustments(&axis.name, option, &spec.adjustments, scope)?;
         }
-        if scope == AxisScope::Fragment && axis.cardinality.is_repeatable() {
+        if scope != AxisScope::Launcher && axis.cardinality.is_repeatable() {
             return Err(format!(
                 "axis `{}` declares `{}` inside a fragment; copies are the launcher's to \
                  deploy, so declare this axis in the launcher, or give it `one` or \
@@ -1230,8 +1318,8 @@ pub(crate) fn validate_option_deployments(
 
 /// The shape checks on one adjustment: names that say something, operations
 /// that exist, targets that are well-formed. Selection-independent, so they
-/// run wherever the adjustment is read (document parse for the base and
-/// inline fragments, fragment load for files).
+/// run where the adjustment is read: at document parse, for the top-level
+/// list, an option's, an option entry's and a copy's alike.
 fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), String> {
     if let Some(when) = &adjustment.when
         && when.is_empty()
@@ -1468,6 +1556,21 @@ fn validate_constraint_shapes(
     Ok(())
 }
 
+/// That every axis and option a fragment's own `adjustments` and
+/// `constraints` name is in reach of the fragment.
+pub(crate) fn validate_fragment_references(
+    fragment: &Fragment,
+    in_reach: &[&ComponentAxis],
+    origin: &str,
+) -> Result<(), String> {
+    for adjustment in &fragment.adjustments {
+        if let Some(when) = &adjustment.when {
+            validate_guard(when, in_reach, origin)?;
+        }
+    }
+    validate_constraint_references(&fragment.constraints, in_reach, origin)
+}
+
 /// That every axis and option a `constraints` list names is in reach.
 fn validate_constraint_references(
     constraints: &[SelectionConstraint],
@@ -1505,120 +1608,310 @@ pub(crate) fn validate_launcher_constraints(
 }
 
 /// The launcher document's own `adjustments`, against the launcher's axes.
-/// Every fragment's adjustments and constraints, inline or file, are
-/// checked when the composition loads, against the launcher's axes and the
-/// fragment's own.
+/// An option's adjustments are shaped here too, where the option is read;
+/// the axes their guards may name are checked when the composition loads,
+/// against the launcher's axes and the option's own.
 pub(crate) fn validate_launcher_adjustments(
     adjustments: &[Adjustment],
     axes: &[ComponentAxis],
 ) -> Result<(), String> {
     let launcher_axes: Vec<&ComponentAxis> = axes.iter().collect();
     for adjustment in adjustments {
-        validate_adjustment(adjustment, "the launcher's `adjustments`")?;
+        validate_adjustment(adjustment, "top-level `adjustments`")?;
         if let Some(when) = &adjustment.when {
-            validate_guard(when, &launcher_axes, "the launcher's `adjustments`")?;
+            validate_guard(when, &launcher_axes, "top-level `adjustments`")?;
         }
     }
     Ok(())
 }
 
-/// The reference checks on one fragment body once the axes in its reach are
-/// known: its guards and constraints name those axes and their options.
-pub(crate) fn validate_fragment_references(
-    fragment: &Fragment,
-    in_reach: &[&ComponentAxis],
-    origin: &str,
+/// The document-local checks on one option's `adjustments`: an option
+/// declared inside a body carries none, and in a launcher each names an
+/// operation and guards on the axes other than the one the option fills,
+/// which selecting the option already decides.
+fn validate_option_adjustments(
+    axis: &str,
+    option: &str,
+    adjustments: &[Adjustment],
+    scope: AxisScope,
 ) -> Result<(), String> {
-    for adjustment in &fragment.adjustments {
-        if let Some(when) = &adjustment.when {
-            validate_guard(when, in_reach, origin)?;
+    let origin = option_origin(axis, option);
+    let elsewhere = match scope {
+        AxisScope::Launcher => None,
+        AxisScope::FragmentFile => Some(
+            "write them under this fragment's top-level `adjustments`, which name the \
+             instances it deploys, and in the launcher that selects this fragment for \
+             anything else",
+        ),
+        AxisScope::OptionBody => Some("write them under the option whose body declares this axis"),
+    };
+    if let Some(elsewhere) = elsewhere
+        && !adjustments.is_empty()
+    {
+        return Err(format!(
+            "{origin} declares `adjustments`, which an option inside a body does not \
+             carry: {elsewhere}, guarded `when: {{ {axis}: \"{option}\" }}`"
+        ));
+    }
+    for adjustment in adjustments {
+        validate_adjustment(adjustment, &origin)?;
+        if adjustment
+            .when
+            .as_ref()
+            .is_some_and(|when| when.contains_key(axis))
+        {
+            return Err(format!(
+                "adjustment on `{}` in {origin} guards on `{axis}`, the axis this option \
+                 fills; selecting the option is the guard, so name the other axes only",
+                adjustment.target
+            ));
         }
     }
-    validate_constraint_references(&fragment.constraints, in_reach, origin)
+    Ok(())
+}
+
+/// The origin error messages and reports name an option by.
+pub(crate) fn option_origin(axis: &str, option: &str) -> String {
+    format!("option `{axis}.{option}`")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_fragment_spec(content: &str) -> Result<FragmentSpec, String> {
+    fn parse_option(content: &str) -> Result<OptionSpec, String> {
         serde_json5::from_str(content).map_err(|e| e.to_string())
     }
 
+    /// `null` is neither entries nor absence: the key reads as written.
     #[test]
-    fn a_path_option_parses_as_one_file_part() {
-        let spec = parse_fragment_spec(r#""fragments/web_commander.json5""#).expect("path parses");
-        assert!(matches!(
-            spec.0.as_slice(),
-            [FragmentPart::File(p)] if p == "fragments/web_commander.json5"
-        ));
+    fn a_null_adjustments_or_fragments_key_is_refused() {
+        let error = parse_option(r#"{ fragments: ["fragments/a.json5"], adjustments: null }"#)
+            .expect_err("null names nothing");
+        assert!(error.contains("expected a sequence"), "got: {error}");
+        let error = parse_option(r#"{ fragments: null, deployments: [] }"#)
+            .expect_err("null names no file");
+        assert!(error.contains("expected a sequence"), "got: {error}");
     }
 
     #[test]
-    fn an_inline_option_parses_as_one_fragment_body() {
-        let spec = parse_fragment_spec(r#"{ deployments: [], core_nodes: ["cloud"] }"#)
-            .expect("inline fragment parses");
-        let [FragmentPart::Inline(fragment)] = spec.0.as_slice() else {
-            panic!("expected one inline part, got {spec:?}");
-        };
-        assert!(fragment.deployments.is_empty());
-        assert_eq!(fragment.core_nodes, ["cloud"]);
+    fn a_path_option_names_one_file() {
+        let spec = parse_option(r#""fragments/web_commander.json5""#).expect("path parses");
+        assert_eq!(spec.files, ["fragments/web_commander.json5"]);
+        assert!(spec.body.is_none());
+        assert!(spec.adjustments.is_empty());
     }
 
     #[test]
-    fn a_list_option_keeps_its_order() {
-        let spec = parse_fragment_spec(
-            r#"["fragments/sim_relays.json5", "fragments/mujoco_engine.json5"]"#,
+    fn an_object_option_is_its_own_body() {
+        let spec = parse_option(r#"{ deployments: [], core_nodes: ["cloud"] }"#)
+            .expect("inline body parses");
+        assert!(spec.files.is_empty());
+        let body = spec.body.expect("a body written in place");
+        assert!(body.deployments.is_empty());
+        assert_eq!(body.core_nodes, ["cloud"]);
+    }
+
+    #[test]
+    fn an_empty_object_is_an_empty_body() {
+        let spec = parse_option("{}").expect("an empty option parses");
+        assert!(spec.files.is_empty());
+        assert!(spec.body.is_some_and(|body| body.deployments.is_empty()));
+    }
+
+    #[test]
+    fn fragments_keep_their_order_and_come_before_the_body() {
+        let spec = parse_option(
+            r#"{ fragments: ["fragments/sim_relays.json5", "fragments/mujoco_engine.json5"] }"#,
         )
-        .expect("list parses");
-        assert_eq!(spec.0.len(), 2);
-        assert!(matches!(&spec.0[0], FragmentPart::File(p) if p == "fragments/sim_relays.json5"));
+        .expect("fragments parse");
+        assert_eq!(
+            spec.files,
+            [
+                "fragments/sim_relays.json5",
+                "fragments/mujoco_engine.json5"
+            ]
+        );
         assert!(
-            matches!(&spec.0[1], FragmentPart::File(p) if p == "fragments/mujoco_engine.json5")
+            spec.body.is_none(),
+            "files alone bring no body of their own"
+        );
+        let spec = parse_option(
+            r#"{ fragments: ["fragments/relays.json5"], deployments: [], core_nodes: ["edge"] }"#,
+        )
+        .expect("files beside a body parse");
+        assert_eq!(spec.files, ["fragments/relays.json5"]);
+        assert_eq!(
+            spec.body.expect("the body beside the files").core_nodes,
+            ["edge"]
         );
     }
 
     #[test]
-    fn a_mixed_list_parses_both_kinds() {
-        let spec = parse_fragment_spec(
-            r#"["fragments/relays.json5", { deployments: [], core_nodes: ["edge"] }]"#,
+    fn an_option_carries_the_launchers_adjustments() {
+        let spec = parse_option(
+            r#"{ fragments: ["fragments/waldo.json5"],
+                adjustments: [{ target: "recorder_inst", set_arguments: { robot_type: "waldo" } }] }"#,
         )
-        .expect("mixed list parses");
-        assert!(matches!(&spec.0[0], FragmentPart::File(_)));
-        assert!(matches!(&spec.0[1], FragmentPart::Inline(_)));
+        .expect("adjustments parse");
+        assert_eq!(spec.adjustments.len(), 1);
+        assert_eq!(spec.adjustments[0].target.as_str(), "recorder_inst");
     }
 
     #[test]
-    fn an_empty_fragment_list_is_refused() {
-        let error = parse_fragment_spec("[]").expect_err("empty list must be refused");
-        assert!(error.contains("cannot be empty"), "got: {error}");
+    fn a_list_of_paths_names_the_options_files() {
+        let spec = parse_option(r#"["fragments/a.json5", "fragments/b.json5"]"#)
+            .expect("a list of paths parses");
+        assert_eq!(spec.files, ["fragments/a.json5", "fragments/b.json5"]);
+        assert!(spec.body.is_none());
+        assert!(spec.adjustments.is_empty());
+        let error = parse_option("[]").expect_err("an empty list names nothing");
+        assert!(error.contains("lists no fragment"), "got: {error}");
+    }
+
+    #[test]
+    fn a_body_inside_a_list_is_refused_with_the_object_to_write() {
+        let error = parse_option(r#"["fragments/a.json5", { deployments: [] }]"#)
+            .expect_err("a body rides beside the files");
+        assert!(
+            error.contains("{ fragments: [\"fragments/relays.json5\"], deployments"),
+            "got: {error}"
+        );
+    }
+
+    /// A misspelled key is a dropped file or a dropped list of writes, so
+    /// the object names the keys it takes.
+    #[test]
+    fn an_unknown_key_in_the_object_is_refused() {
+        for written in [
+            r#"{ fragment: "fragments/a.json5" }"#,
+            r#"{ fragments: ["fragments/a.json5"], adjustment: [] }"#,
+        ] {
+            let error = parse_option(written).expect_err("an unknown key names nothing");
+            assert!(error.contains("unknown field"), "got: {error}");
+        }
+    }
+
+    #[test]
+    fn an_empty_fragments_list_is_refused() {
+        let error = parse_option(r#"{ fragments: [] }"#).expect_err("no file named");
+        assert!(error.contains("names no file"), "got: {error}");
     }
 
     #[test]
     fn an_empty_path_is_refused() {
-        let error = parse_fragment_spec(r#""   ""#).expect_err("empty path must be refused");
-        assert!(error.contains("cannot be empty"), "got: {error}");
+        for written in [r#""   ""#, r#"{ fragments: [" "] }"#] {
+            let error = parse_option(written).expect_err("empty path must be refused");
+            assert!(error.contains("cannot be empty"), "got: {error}");
+        }
     }
 
     #[test]
-    fn an_inline_fragment_cannot_declare_a_schema() {
-        let error = parse_fragment_spec(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#)
-            .expect_err("inline fragments take no peppy_schema");
+    fn an_inline_body_cannot_declare_a_schema() {
+        let error = parse_option(r#"{ peppy_schema: "launcher/v1", deployments: [] }"#)
+            .expect_err("inline bodies take no peppy_schema");
         assert!(error.contains("peppy_schema"), "got: {error}");
     }
 
     #[test]
-    fn a_fragment_spec_round_trips_through_its_written_shape() {
+    fn an_option_round_trips_through_its_written_shape() {
         for written in [
-            r#""fragments/a.json5""#.to_owned(),
-            r#"{ deployments: [] }"#.to_owned(),
-            r#"["fragments/a.json5", { deployments: [] }]"#.to_owned(),
+            r#""fragments/a.json5""#,
+            r#"{ deployments: [] }"#,
+            r#"{ fragments: ["fragments/a.json5", "fragments/b.json5"] }"#,
+            r#"{ fragments: ["fragments/a.json5"], core_nodes: ["edge"],
+                adjustments: [{ target: "x_inst", set_arguments: { fast: true } }] }"#,
         ] {
-            let spec = serde_json5::from_str::<FragmentSpec>(&written).expect("parses");
+            let spec = serde_json5::from_str::<OptionSpec>(written).expect("parses");
             let reserialized = serde_json5::to_string(&spec).expect("serializes");
-            let reparsed = serde_json5::from_str::<FragmentSpec>(&reserialized).expect("reparses");
-            assert_eq!(spec.0.len(), reparsed.0.len(), "round trip of {written}");
+            let reparsed = serde_json5::from_str::<OptionSpec>(&reserialized).expect("reparses");
+            // Written the same way twice is the whole value compared: every
+            // file, every body key and every adjustment field.
+            assert_eq!(
+                reserialized,
+                serde_json5::to_string(&reparsed).expect("serializes"),
+                "round trip of {written}"
+            );
+            assert_eq!(spec.files, reparsed.files, "round trip of {written}");
         }
+    }
+
+    #[test]
+    fn a_fragment_file_still_declares_adjustments() {
+        let fragment = parse_fragment(
+            r#"adjustments: [{ target: "commander_inst", add_links: { recorder: ["recorder_inst"] } }]"#,
+        )
+        .expect("a fragment file's own adjustments parse");
+        assert_eq!(fragment.body.adjustments.len(), 1);
+    }
+
+    #[test]
+    fn an_option_inside_a_fragment_declares_no_adjustments() {
+        let error = parse_fragment(
+            r#"components: [{ name: "recorder", options: { on: {
+                deployments: [],
+                adjustments: [{ target: "commander_inst", set_arguments: { record: true } }],
+            } } }]"#,
+        )
+        .expect_err("an option inside a fragment carries no adjustments either");
+        assert!(
+            error.contains("option `recorder.on` declares `adjustments`")
+                && error.contains("under this fragment's top-level `adjustments`")
+                && error.contains("`when: { recorder: \"on\" }`"),
+            "got: {error}"
+        );
+        let error = parse_fragment(
+            r#"components: [{ name: "recorder", options: { on: {
+                deployments: [], adjustments: [],
+            } } }]"#,
+        )
+        .expect_err("an empty list is still the key");
+        assert!(
+            error.contains("`adjustments` names no entry"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn an_empty_adjustments_list_is_refused() {
+        let error = parse_option(r#"{ fragments: ["fragments/a.json5"], adjustments: [] }"#)
+            .expect_err("no entry named");
+        assert!(error.contains("names no entry"), "got: {error}");
+    }
+
+    #[test]
+    fn a_body_beside_files_is_kept_whatever_it_declares() {
+        for body in [
+            r#"deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }]"#,
+            r#"components: [{ name: "recorder", options: { on: "fragments/recorder.json5" } }]"#,
+            r#"constraints: [{ forbids: [{ recorder: "on" }], reason: "no recorder here" }]"#,
+            r#"core_nodes: ["edge"]"#,
+            r#"framework: { clocks: { simulation: { publisher: "sim_inst" } } }"#,
+        ] {
+            let spec = parse_option(&format!(
+                r#"{{ fragments: ["fragments/a.json5"], {body} }}"#
+            ))
+            .expect("parses");
+            assert!(spec.body.is_some(), "the body declaring {body} is kept");
+        }
+    }
+
+    #[test]
+    fn an_options_adjustment_names_the_other_axes_only() {
+        let error = super::super::parse::PeppyLauncherParser::from_content(
+            r#"{ peppy_schema: "launcher/v1", deployments: [],
+                components: [{ name: "robot", options: { sim: {
+                    adjustments: [{ target: "arm_inst", when: { robot: "sim" }, set_arguments: { fast: true } }],
+                } } }] }"#,
+        )
+        .map(|_| ())
+        .expect_err("the option is its own guard");
+        assert!(
+            error
+                .to_string()
+                .contains("guards on `robot`, the axis this option fills"),
+            "got: {error}"
+        );
     }
 
     #[test]
@@ -1714,7 +2007,10 @@ mod tests {
         )
         .unwrap();
         let written = serde_json5::to_string(&fragment.body).unwrap();
-        let reparsed: Fragment = serde_json5::from_str(&written).unwrap();
+        let reparsed = serde_json5::from_str::<OptionSpec>(&written)
+            .unwrap()
+            .body
+            .expect("a body written in place");
         assert_eq!(reparsed.deployments.len(), 1);
         assert_eq!(
             reparsed.option_deployments,

@@ -3,12 +3,13 @@
 //! selection-independent checks.
 
 use super::super::composition::{
-    ComponentAxis, CopySettings, Fragment, FragmentPart, FragmentSpec, LauncherFragmentParser,
-    OptionDeployment, OriginatedAdjustment, validate_fragment_references, validate_guard,
+    ComponentAxis, CopySettings, Fragment, LauncherFragmentParser, OptionDeployment, OptionSpec,
+    OriginatedAdjustment, option_origin, validate_fragment_references, validate_guard,
 };
 use super::super::types::PeppyLauncher;
+use super::adjustments::{CopyAxis, LauncherAdjustment, Routed, ids_beside, route};
 use super::constraints::{constraint_names_axis, names_axis};
-use super::error::CompositionError;
+use super::error::{AdjustmentTargetAmbiguous, CompositionError, CopyAdjustmentTargetUndefined};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component as PathComponent, Path, PathBuf};
@@ -100,7 +101,7 @@ impl LoadedOption {
     }
 }
 
-fn node_ids<'a>(
+pub(super) fn node_ids<'a>(
     fragments: impl Iterator<Item = &'a LoadedFragment>,
 ) -> impl Iterator<Item = &'a str> {
     fragments
@@ -161,8 +162,8 @@ pub(super) fn launcher_file_label(launcher_file: &Path) -> String {
 /// Reads every fragment the launcher references and runs the
 /// selection-independent checks: path safety, fragment parse, nesting depth,
 /// axes declared once in reach, `provides` satisfaction, guard and
-/// constraint references, adjustment targets defined somewhere, and copies
-/// that select what their option declares.
+/// constraint references, adjustment targets defined beside their entry,
+/// and copies that select what their option declares.
 pub(super) fn load_composition(
     launcher: &PeppyLauncher,
     launcher_file: &Path,
@@ -178,7 +179,10 @@ pub(super) fn load_composition(
     for axis in &launcher.components {
         let mut loaded_axis = BTreeMap::new();
         for (option_name, spec) in &axis.options {
-            let origin = format!("{launcher_label}, option `{}.{}`", axis.name, option_name);
+            let origin = format!(
+                "{launcher_label}, {}",
+                option_origin(&axis.name, option_name)
+            );
             let fragments = reader.read_parts(spec, &origin, None, &axis.name, option_name)?;
             let loaded = load_option(&mut reader, launcher, option_name, fragments)?;
             loaded_axis.insert(option_name.clone(), loaded);
@@ -186,10 +190,12 @@ pub(super) fn load_composition(
         options.insert(axis.name.clone(), loaded_axis);
     }
     let loaded = LoadedComposition { options };
+    let (copy_axes, routed) = route(launcher, &loaded, &launcher_label);
+    let adjustments: Vec<&LauncherAdjustment<'_>> = routed.iter().map(|r| &r.entry).collect();
     check_provides(launcher, &loaded)?;
-    check_references(launcher, &loaded)?;
-    check_targets(launcher, &loaded, &launcher_label)?;
-    check_copy_axis_references(launcher, &loaded)?;
+    check_references(launcher, &loaded, &adjustments)?;
+    check_targets(launcher, &loaded, &adjustments)?;
+    check_copy_axis_references(launcher, &loaded, &copy_axes, &routed)?;
     check_file_copies(launcher, &loaded)?;
     Ok(loaded)
 }
@@ -247,8 +253,9 @@ fn load_option(
             let mut loaded_axis = BTreeMap::new();
             for (option_name, spec) in &axis.options {
                 let nested_origin = format!(
-                    "{}, option `{}.{}`",
-                    fragment.origin, axis.name, option_name
+                    "{}, {}",
+                    fragment.origin,
+                    option_origin(&axis.name, option_name)
                 );
                 let parts = reader.read_parts(
                     spec,
@@ -277,6 +284,49 @@ fn load_option(
         deployed,
         nested,
     })
+}
+
+/// The option of one of `axes`, other than an option of `excluded_axis`,
+/// whose instances `target` names, as `(axis, option)`.
+fn option_defining<'a>(
+    axes: impl Iterator<Item = &'a ComponentAxis>,
+    loaded: &'a LoadedComposition,
+    target: &str,
+    excluded_axis: Option<&str>,
+) -> Option<(&'a str, &'a str)> {
+    axes.filter(|axis| excluded_axis != Some(axis.name.as_str()))
+        .flat_map(|axis| {
+            loaded
+                .options_of(&axis.name)
+                .map(move |(option, loaded)| (axis.name.as_str(), option.as_str(), loaded))
+        })
+        .find(|(_, _, option)| option.definable_ids().contains(target))
+        .map(|(axis, option, _)| (axis, option))
+}
+
+/// A stack option, other than the entry's own or a sibling of it, whose
+/// instances the entry's target names: with the entry's own option the
+/// target is that option's instance, and a sibling never runs beside it.
+fn stack_option_defining<'a>(
+    launcher: &'a PeppyLauncher,
+    loaded: &'a LoadedComposition,
+    entry: &LauncherAdjustment<'_>,
+) -> Option<(&'a str, &'a str)> {
+    option_defining(
+        launcher.stack_axes(),
+        loaded,
+        entry.adjustment.target.as_str(),
+        entry.under.map(|(axis, _)| axis),
+    )
+}
+
+/// A copy option whose instances `target` names.
+fn copy_option_defining<'a>(
+    launcher: &'a PeppyLauncher,
+    loaded: &'a LoadedComposition,
+    target: &str,
+) -> Option<(&'a str, &'a str)> {
+    option_defining(launcher.repeatable_axes(), loaded, target, None)
 }
 
 /// Every option defines its axis's interface, whatever else it privately
@@ -323,31 +373,54 @@ fn check_provided(
     Ok(())
 }
 
-/// Every guard and constraint of every fragment names axes in its reach:
-/// the launcher's, and the axes of the option it belongs to.
+/// Every guard and constraint of every fragment, and every guard on an
+/// option's adjustments, names axes in its reach: the launcher's, and the
+/// axes of the option it belongs to.
 fn check_references(
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
+    adjustments: &[&LauncherAdjustment<'_>],
 ) -> Result<(), CompositionError> {
     for axis in &launcher.components {
-        for (_, option) in loaded.options_of(&axis.name) {
+        for (option_name, option) in loaded.options_of(&axis.name) {
             let in_reach: Vec<&ComponentAxis> = launcher
                 .components
                 .iter()
                 .chain(option.axes.iter())
                 .collect();
+            let origin = option_origin(&axis.name, option_name);
             for fragment in option.all_fragments() {
                 validate_fragment_references(&fragment.body, &in_reach, &fragment.origin).map_err(
                     |detail| CompositionError::FragmentReferencesUnknownAxis {
                         path: fragment.origin.clone(),
-                        origin: format!("option `{}.{}`", axis.name, option.name),
+                        origin: origin.clone(),
                         detail,
                     },
                 )?;
             }
+            let under_this_option = adjustments
+                .iter()
+                .filter(|entry| entry.under == Some((axis.name.as_str(), option_name.as_str())));
+            for entry in under_this_option {
+                if let Some(when) = &entry.adjustment.when {
+                    validate_guard(when, &in_reach, &entry.origin)
+                        .map_err(|detail| CompositionError::AdjustmentGuard { detail })?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// What a refusal over a target offers: the ids in reach, or that there are
+/// none.
+fn in_reach<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
+    let listed = crate::error::format_quoted_list(ids.into_iter().collect::<BTreeSet<_>>());
+    if listed.is_empty() {
+        String::from("no instance runs beside it to target")
+    } else {
+        format!("target one of {listed}")
+    }
 }
 
 /// An adjustment target the selection does not define is skipped; a target
@@ -356,37 +429,44 @@ fn check_references(
 fn check_targets(
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
-    launcher_label: &str,
+    adjustments: &[&LauncherAdjustment<'_>],
 ) -> Result<(), CompositionError> {
-    let all_options: Vec<&LoadedOption> = launcher
-        .components
-        .iter()
-        .flat_map(|axis| loaded.options_of(&axis.name))
-        .map(|(_, option)| option)
-        .collect();
-    let mut definable: HashSet<&str> = launcher
-        .deployments
-        .iter()
-        .flat_map(|d| d.instances.iter())
-        .map(|i| i.instance_id.as_str())
-        .collect();
-    for option in &all_options {
-        definable.extend(option.definable_ids());
-    }
-    for adjustment in &launcher.adjustments {
-        if !definable.contains(adjustment.target.as_str()) {
+    for LauncherAdjustment {
+        adjustment,
+        origin,
+        under,
+    } in adjustments
+    {
+        let own_copy_axis = under.map(|(axis, _)| axis).filter(|axis| {
+            launcher
+                .repeatable_axes()
+                .any(|copy_axis| copy_axis.name == *axis)
+        });
+        let axes = launcher.components.iter().filter(|axis| {
+            !axis.cardinality.is_repeatable() || own_copy_axis.is_none_or(|own| own == axis.name)
+        });
+        let beside = ids_beside(launcher, loaded, *under, axes);
+        if !beside.contains(adjustment.target.as_str()) {
             return Err(CompositionError::TargetDefinedNowhere {
                 target: adjustment.target.to_string(),
-                origin: format!("{launcher_label} (base)"),
+                origin: origin.clone(),
+                in_reach: in_reach(beside.iter().copied()),
             });
         }
     }
-    for fragment in all_options.iter().flat_map(|option| option.all_fragments()) {
+    let definable = ids_beside(launcher, loaded, None, launcher.components.iter());
+    for fragment in launcher
+        .components
+        .iter()
+        .flat_map(|axis| loaded.options_of(&axis.name))
+        .flat_map(|(_, option)| option.all_fragments())
+    {
         for adjustment in &fragment.body.adjustments {
             if !definable.contains(adjustment.target.as_str()) {
                 return Err(CompositionError::TargetDefinedNowhere {
                     target: adjustment.target.to_string(),
                     origin: fragment.origin.clone(),
+                    in_reach: in_reach(definable.iter().copied()),
                 });
             }
         }
@@ -395,13 +475,17 @@ fn check_targets(
 }
 
 /// A unit's selection fills the launcher's stack axes and, for a copy, its
-/// own axis: a guard or constraint naming another copy axis can never
-/// hold, a launcher constraint or adjustment naming two copy axes holds
-/// for neither, and a copy's fragment has no core node link to declare, its
-/// name being its placement. Each is refused where it is written.
+/// own axis: a fragment's guard or constraint naming another copy axis can
+/// never hold, a launcher constraint or adjustment naming two copy axes
+/// holds for neither, an adjustment that runs in copies writes an instance those
+/// copies or the stack define and cannot read a stack option's own axes,
+/// and a copy's fragment has no core node link to declare, its name being
+/// its placement. Each is refused where it is written.
 fn check_copy_axis_references(
     launcher: &PeppyLauncher,
     loaded: &LoadedComposition,
+    copy_axes: &[CopyAxis<'_>],
+    routed: &[Routed<'_>],
 ) -> Result<(), CompositionError> {
     for axis in &launcher.components {
         let foreign: Vec<&ComponentAxis> = launcher
@@ -455,17 +539,127 @@ fn check_copy_axis_references(
             });
         }
     }
-    for adjustment in &launcher.adjustments {
-        let named: Vec<&str> = launcher
-            .repeatable_axes()
-            .filter(|copy_axis| names_axis(adjustment.when.as_ref(), &copy_axis.name))
-            .map(|copy_axis| copy_axis.name.as_str())
+    for routed in routed {
+        let entry = &routed.entry;
+        let stack_ids = &routed.stack_ids;
+        let named: Vec<&str> = copy_axes
+            .iter()
+            .filter(|copy_axis| entry.names_axis(copy_axis.name))
+            .map(|copy_axis| copy_axis.name)
             .collect();
         if named.len() > 1 {
             return Err(CompositionError::AdjustmentSpansCopyAxes {
-                target: adjustment.target.to_string(),
+                target: entry.adjustment.target.to_string(),
+                origin: entry.origin.clone(),
                 axes: crate::error::format_quoted_list(named),
             });
+        }
+        let target = entry.adjustment.target.as_str();
+        // An entry writing an instance its own option defines is that option's
+        // write, whichever other options define the id.
+        let own_write = entry.under.is_some_and(|(axis, option)| {
+            loaded.option(axis, option).definable_ids().contains(target)
+        });
+        if !own_write
+            && named.is_empty()
+            && let Some((stack_axis, stack_option)) = stack_option_defining(launcher, loaded, entry)
+            && let Some((copy_axis, copy_option)) = copy_option_defining(launcher, loaded, target)
+        {
+            return Err(CompositionError::AdjustmentTargetAmbiguous(Box::new(
+                AdjustmentTargetAmbiguous {
+                    target: target.to_owned(),
+                    origin: entry.origin.clone(),
+                    stack: format!("{stack_axis}.{stack_option}"),
+                    keeping: entry.under.map_or_else(String::new, |(axis, option)| {
+                        format!(
+                            ", guarded `when: {{ {axis}: \"{option}\" }}` as option `{axis}.{option}` guards it now"
+                        )
+                    }),
+                    copy_axis: copy_axis.to_owned(),
+                    copy_option: copy_option.to_owned(),
+                },
+            )));
+        }
+        // An entry under an option that runs as copies is selected in that
+        // axis's copies alone; one from an option that fills once or the
+        // top level runs in every axis of copies it reaches.
+        let under_copy_axis = entry
+            .under
+            .is_some_and(|(under, _)| copy_axes.iter().any(|copy_axis| copy_axis.name == under));
+        for copy_axis in copy_axes
+            .iter()
+            .filter(|copy_axis| routed.copy_axes.contains(&copy_axis.name))
+        {
+            // An entry that speaks about the axis writes an instance of its
+            // copies or of the stack.
+            if entry.names_axis(copy_axis.name) && !stack_ids.contains(target) {
+                let defined: HashSet<&str> = entry
+                    .options_named_on(copy_axis.name)
+                    .into_iter()
+                    .flat_map(|option| loaded.option(copy_axis.name, option).definable_ids())
+                    .collect();
+                if !defined.contains(target) {
+                    let named = entry.options_named_on(copy_axis.name);
+                    let defining: Vec<&str> = loaded
+                        .options_of(copy_axis.name)
+                        .filter(|(option, loaded)| {
+                            !named.contains(&option.as_str())
+                                && loaded.definable_ids().contains(target)
+                        })
+                        .map(|(option, _)| option.as_str())
+                        .collect();
+                    let reach: Vec<&str> =
+                        defined.iter().chain(stack_ids.iter()).copied().collect();
+                    let joiner = if reach.is_empty() { "; " } else { ", or " };
+                    return Err(CompositionError::CopyAdjustmentTargetUndefined(Box::new(
+                        CopyAdjustmentTargetUndefined {
+                            target: target.to_owned(),
+                            origin: entry.origin.clone(),
+                            copy_axis: copy_axis.name.to_owned(),
+                            named: crate::error::format_quoted_list(named),
+                            in_reach: in_reach(reach.iter().copied()),
+                            defining: match defining.as_slice() {
+                                [] => String::new(),
+                                [option] => format!(
+                                    "{joiner}guard it `when: {{ {}: \"{option}\" }}`",
+                                    copy_axis.name
+                                ),
+                                options => format!(
+                                    "{joiner}guard it `when: {{ {}: [{}] }}`",
+                                    copy_axis.name,
+                                    options
+                                        .iter()
+                                        .map(|option| format!("\"{option}\""))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            },
+                        },
+                    )));
+                }
+            }
+            if under_copy_axis {
+                continue;
+            }
+            // A copy's selection holds the launcher's axes and the copied
+            // option's own, so an entry that reaches the copies from an
+            // option that fills once cannot be guarded on that option's axes.
+            let launcher_axis =
+                |name: &str| launcher.components.iter().any(|axis| axis.name == name);
+            let own_axis = entry
+                .adjustment
+                .when
+                .iter()
+                .flat_map(|when| when.keys())
+                .find(|axis| !launcher_axis(axis));
+            if let Some(axis) = own_axis {
+                return Err(CompositionError::CopyAdjustmentReadsOptionAxis {
+                    target: target.to_owned(),
+                    origin: entry.origin.clone(),
+                    copy_axis: copy_axis.name.to_owned(),
+                    axis: axis.clone(),
+                });
+            }
         }
     }
     Ok(())
@@ -508,13 +702,7 @@ fn check_file_copies(
                 Err(error) => return Err(error),
             };
             let defined: BTreeSet<&str> = match &own {
-                Some(own) => loaded_option
-                    .fragments_for(own)
-                    .into_iter()
-                    .flat_map(|fragment| &fragment.body.deployments)
-                    .flat_map(|deployment| &deployment.instances)
-                    .map(|instance| instance.instance_id.as_str())
-                    .collect(),
+                Some(own) => node_ids(loaded_option.fragments_for(own).into_iter()).collect(),
                 None => definable.iter().copied().collect(),
             };
             for OriginatedAdjustment { adjustment, origin } in &adjustments {
@@ -528,12 +716,8 @@ fn check_file_copies(
                             axis: copy_axis.name.clone(),
                         });
                     }
-                    validate_guard(when, &in_reach, origin).map_err(|detail| {
-                        CompositionError::CopyAdjustmentGuard {
-                            origin: origin.clone(),
-                            detail,
-                        }
-                    })?;
+                    validate_guard(when, &in_reach, origin)
+                        .map_err(|detail| CompositionError::AdjustmentGuard { detail })?;
                 }
                 // An unguarded adjustment writes what the copy runs; a
                 // guarded one may await an option another selection brings.
@@ -580,36 +764,33 @@ struct FragmentReader<'a> {
 }
 
 impl FragmentReader<'_> {
-    /// One option's parts, files read relative to `directory` (the
-    /// declaring fragment's own, or the launcher's when `None`).
+    /// One option's parts: its files, read relative to `directory` (the
+    /// declaring fragment's own, or the launcher's when `None`), then the
+    /// body written where the option is.
     fn read_parts(
         &mut self,
-        spec: &FragmentSpec,
+        spec: &OptionSpec,
         origin: &str,
         directory: Option<&Path>,
         axis: &str,
         option: &str,
     ) -> Result<Vec<LoadedFragment>, CompositionError> {
-        let mut loaded = Vec::with_capacity(spec.0.len());
-        for part in &spec.0 {
-            let (id, body, label, directory) = match part {
-                FragmentPart::Inline(fragment) => (
-                    self.fresh_id(),
-                    fragment.clone(),
-                    format!("inline option `{axis}.{option}`"),
-                    directory.map(Path::to_path_buf),
-                ),
-                FragmentPart::File(raw) => {
-                    let (id, body, path) = self.read_file(raw, origin, directory)?;
-                    let label = self.label_of(&path);
-                    (id, body, label, path.parent().map(Path::to_path_buf))
-                }
-            };
+        let mut loaded = Vec::new();
+        for raw in &spec.files {
+            let (id, body, path) = self.read_file(raw, origin, directory)?;
             loaded.push(LoadedFragment {
                 id,
                 body,
-                origin: label,
-                directory,
+                origin: self.label_of(&path),
+                directory: path.parent().map(Path::to_path_buf),
+            });
+        }
+        if let Some(body) = &spec.body {
+            loaded.push(LoadedFragment {
+                id: self.fresh_id(),
+                body: body.clone(),
+                origin: format!("inline option `{axis}.{option}`"),
+                directory: directory.map(Path::to_path_buf),
             });
         }
         Ok(loaded)

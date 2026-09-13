@@ -11,6 +11,7 @@
 //! A join is one more copy over the stack as it runs; a removal is the
 //! stack without one.
 
+mod adjustments;
 mod check;
 mod constraints;
 mod copy;

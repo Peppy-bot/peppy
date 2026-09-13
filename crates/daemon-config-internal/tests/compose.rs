@@ -1,8 +1,8 @@
 use config::AnyType;
 use daemon_config::launcher::{
-    AppliedChange, ComponentAxis, CompositionError, CompositionReport, DeploymentSource,
-    FragmentPart, FragmentSpec, LinkValue, PeppyLauncher, PeppyLauncherParser, PreparedLauncher,
-    Selection, SkipReason, check_composition,
+    AppliedChange, ComponentAxis, CompositionError, CompositionReport, DeploymentSource, LinkValue,
+    OptionSpec, PeppyLauncher, PeppyLauncherParser, PreparedLauncher, Selection, SkipReason,
+    check_composition,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -37,8 +37,8 @@ fn compose(
 
 /// The worked micro-example: one base, a robot axis with an inline real
 /// option and a file-backed sim option sharing a relay fragment, an
-/// optional recorder axis whose attach adjustment reaches whichever
-/// commander was selected.
+/// optional recorder axis whose attach the launcher writes under the
+/// option, reaching whichever commander was selected.
 fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
     write(
         &dir.join("fragments/sim_relays.json5"),
@@ -47,9 +47,6 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
             deployments: [
                 { source: { name: "arm_sim", tag: "v1" },
                   instances: [{ instance_id: "arm_inst", links: { engine: "sim_inst/arm" } }] },
-            ],
-            adjustments: [
-                { target: "backbone_inst", set_arguments: { max_ee_velocity_m_s: 0.5 } },
             ],
         "#,
         ),
@@ -62,10 +59,6 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
                 { source: { name: "sim_mujoco", tag: "v1" },
                   instances: [{ instance_id: "sim_inst", arguments: { state_rate_hz: 100 } }] },
             ],
-            adjustments: [
-                { target: "recorder_inst",
-                  set_arguments: { robot_type: "openarm_mujoco" } },
-            ],
         "#,
         ),
     );
@@ -77,9 +70,6 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
                 { source: { name: "recorder", tag: "v1" },
                   instances: [{ instance_id: "recorder_inst",
                                 links: { observed: ["arm_inst"] } }] },
-            ],
-            adjustments: [
-                { target: "commander_inst", add_links: { recorder: ["recorder_inst"] } },
             ],
         "#,
         ),
@@ -95,12 +85,24 @@ fn composed_fixture(dir: &Path) -> (PathBuf, PeppyLauncher) {
                       real: { deployments: [
                           { source: { name: "can_arm", tag: "v1" },
                             instances: [{ instance_id: "arm_inst" }] } ] },
-                      mujoco: ["fragments/sim_relays.json5", "fragments/mujoco_engine.json5"],
+                      mujoco: {
+                          fragments: ["fragments/sim_relays.json5", "fragments/mujoco_engine.json5"],
+                          adjustments: [
+                              { target: "backbone_inst", set_arguments: { max_ee_velocity_m_s: 0.5 } },
+                              { target: "recorder_inst",
+                                set_arguments: { robot_type: "openarm_mujoco" } },
+                          ],
+                      },
                   } },
                 { name: "recorder",
                   cardinality: "zero_or_one",
                   provides: ["recorder_inst"],
-                  options: { on: "fragments/recorder.json5" } },
+                  options: { on: {
+                      fragments: ["fragments/recorder.json5"],
+                      adjustments: [
+                          { target: "commander_inst", add_links: { recorder: ["recorder_inst"] } },
+                      ],
+                  } } },
             ],
             adjustments: [
                 { target: "sim_inst", set_arguments: { hardware_version: "v2" } },
@@ -136,7 +138,7 @@ fn the_file_deploys_the_flat_document() {
         report.selection.echo(),
         "robot=real (from file)  recorder=(off)"
     );
-    // The base's sim specialization sleeps when the robot is real.
+    // The launcher's top-level sim specialization sleeps when the robot is real.
     assert!(
         report
             .skipped
@@ -157,7 +159,7 @@ fn a_selection_swaps_the_deployed_option_and_pulls_in_fragments_in_order() {
         sources,
         ["backbone:v1", "commander:v1", "arm_sim:v1", "sim_mujoco:v1"]
     );
-    // The base adjustment reached the engine instance.
+    // The top-level adjustment reached the engine instance.
     let sim = flat
         .deployments
         .iter()
@@ -167,7 +169,7 @@ fn a_selection_swaps_the_deployed_option_and_pulls_in_fragments_in_order() {
         sim.instances[0].arguments.get("hardware_version"),
         Some(&AnyType::String("v2".to_owned()))
     );
-    // And the relay fragment's adjustment reached the base's backbone.
+    // And the mujoco option's adjustment reached the launcher's backbone.
     let backbone = flat
         .deployments
         .iter()
@@ -259,6 +261,541 @@ fn a_duplicate_instance_id_names_both_origins() {
 }
 
 #[test]
+fn add_links_appends_across_options_in_order() {
+    let dir = tempdir().unwrap();
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "a", cardinality: "zero_or_one", options: { on: {
+                    adjustments: [ { target: "panel", add_links: { observers: ["a_inst"] } } ] } } },
+                { name: "b", cardinality: "zero_or_one", options: { on: {
+                    adjustments: [ { target: "panel", add_links: { observers: ["b_inst"] } } ] } } },
+            ],
+            deployments: [
+                { source: { name: "panel", tag: "v1" },
+                  instances: [{ instance_id: "panel",
+                                links: { observers: ["seed_inst"] } }] },
+                { source: { name: "seed", tag: "v1" }, instances: [{ instance_id: "seed_inst" }] },
+                { source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] },
+                { source: { name: "b", tag: "v1" }, instances: [{ instance_id: "b_inst" }] },
+            ],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let (flat, report) = compose(
+        &parsed,
+        &launcher,
+        &["a=on".to_string(), "b=on".to_string()],
+    )
+    .expect("composes");
+    let panel = &flat.deployments[0].instances[0];
+    let LinkValue::Bound(Selection::Array(targets)) = &panel.links["observers"] else {
+        panic!("observers stays an array binding");
+    };
+    assert_eq!(targets.as_slice(), ["seed_inst", "a_inst", "b_inst"]);
+    let added: Vec<&str> = report
+        .applied
+        .iter()
+        .filter(|a| a.change.field() == "links.observers")
+        .map(|a| match &a.change {
+            AppliedChange::LinkAdded { target, .. } => target.as_str(),
+            _ => "",
+        })
+        .collect();
+    assert_eq!(added, ["a_inst", "b_inst"]);
+}
+
+#[test]
+fn add_links_refuses_a_scalar_and_a_vacancy() {
+    for (slot_value, holds) in [
+        ("\"x_inst\"", "a scalar binding"),
+        ("{ vacant: \"nothing here\" }", "a vacancy"),
+    ] {
+        let dir = tempdir().unwrap();
+        let launcher = write(
+            &dir.path().join("l.json5"),
+            &format!(
+                r#"{{
+                    peppy_schema: "launcher/v1",
+                    components: [
+                        {{ name: "a", cardinality: "zero_or_one", options: {{ on: {{
+                            adjustments: [ {{ target: "panel", add_links: {{ observers: ["a_inst"] }} }} ] }} }} }},
+                    ],
+                    deployments: [
+                        {{ source: {{ name: "panel", tag: "v1" }},
+                          instances: [{{ instance_id: "panel",
+                                        links: {{ observers: {slot_value} }} }}] }},
+                        {{ source: {{ name: "a", tag: "v1" }}, instances: [{{ instance_id: "a_inst" }}] }},
+                    ],
+                }}"#
+            ),
+        );
+        let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+        let err = compose(&parsed, &launcher, &words(&["on"]))
+            .expect_err("appending past a non-array must be refused");
+        let CompositionError::AddLinksOnNonArray { holds: actual, .. } = &err else {
+            panic!("expected AddLinksOnNonArray, got: {err}");
+        };
+        assert_eq!(actual, &holds);
+    }
+}
+
+#[test]
+fn add_links_refuses_a_target_already_bound() {
+    let dir = tempdir().unwrap();
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "a", cardinality: "zero_or_one", options: { on: {
+                    adjustments: [ { target: "panel", add_links: { observers: ["seed_inst"] } } ] } } },
+            ],
+            deployments: [
+                { source: { name: "panel", tag: "v1" },
+                  instances: [{ instance_id: "panel",
+                                links: { observers: ["seed_inst"] } }] },
+            ],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("duplicate add");
+    assert!(err.to_string().contains("seed_inst"), "got: {err}");
+}
+
+/// Two entries of one option write one slot in order: the second appends
+/// to what the first set.
+#[test]
+fn a_later_entry_appends_to_the_slot_an_earlier_one_set() {
+    let dir = tempdir().unwrap();
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "a", cardinality: "zero_or_one", options: { on: { adjustments: [
+                    { target: "panel", set_links: { observers: ["seed_inst"] } },
+                    { target: "panel", add_links: { observers: ["a_inst"] } },
+                ] } } },
+            ],
+            deployments: [
+                { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
+                { source: { name: "seed", tag: "v1" }, instances: [{ instance_id: "seed_inst" }] },
+                { source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] },
+            ],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let (flat, _) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
+    let LinkValue::Bound(Selection::Array(targets)) =
+        &flat.deployments[0].instances[0].links["observers"]
+    else {
+        panic!("observers is an array binding");
+    };
+    assert_eq!(targets.as_slice(), ["seed_inst", "a_inst"]);
+}
+
+/// Two options writing one key apply in axis order, the later winning, and
+/// the report names each option.
+#[test]
+fn two_options_writing_one_key_apply_in_axis_order() {
+    let dir = tempdir().unwrap();
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "zulu", cardinality: "zero_or_one", options: { on: {
+                    adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ] } } },
+                { name: "alpha", cardinality: "zero_or_one", options: { on: {
+                    adjustments: [ { target: "panel", set_arguments: { rate: 20 } } ] } } },
+            ],
+            deployments: [
+                { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
+            ],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let (flat, report) = compose(
+        &parsed,
+        &launcher,
+        &["zulu=on".to_string(), "alpha=on".to_string()],
+    )
+    .expect("composes");
+    assert_eq!(
+        flat.deployments[0].instances[0].arguments.get("rate"),
+        Some(&AnyType::Int(20))
+    );
+    let origins: Vec<&str> = report
+        .applied
+        .iter()
+        .map(|entry| entry.origin.as_str())
+        .collect();
+    assert_eq!(
+        origins,
+        ["l.json5, option `zulu.on`", "l.json5, option `alpha.on`"]
+    );
+}
+
+#[test]
+fn the_launchers_own_entries_apply_after_an_options_and_a_later_entry_wins() {
+    let dir = tempdir().unwrap();
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "a", cardinality: "zero_or_one", options: { on: {
+                    adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ] } } },
+            ],
+            adjustments: [
+                { target: "panel", set_arguments: { rate: 20 } },
+                { target: "panel", set_arguments: { rate: 30 } },
+            ],
+            deployments: [
+                { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
+            ],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let (flat, report) = compose(&parsed, &launcher, &["on".to_string()]).expect("composes");
+    assert_eq!(
+        flat.deployments[0].instances[0].arguments.get("rate"),
+        Some(&AnyType::Int(30))
+    );
+    // The option's entry and both of the launcher's own are visible, typed.
+    let rates: Vec<(Option<AnyType>, AnyType)> = report
+        .applied
+        .iter()
+        .filter(|a| a.change.field() == "arguments.rate")
+        .map(|a| match &a.change {
+            AppliedChange::Argument { old, new, .. } => (old.clone(), new.clone()),
+            other => panic!("expected a Set, got {other:?}"),
+        })
+        .collect();
+    let int = |value: i64| AnyType::Int(value);
+    assert_eq!(
+        rates,
+        [
+            (None, int(10)),
+            (Some(int(10)), int(20)),
+            (Some(int(20)), int(30)),
+        ]
+    );
+    let lines = report.render_lines();
+    assert!(
+        lines.iter().any(|line| line.contains("(absent) -> 10")),
+        "{lines:?}"
+    );
+}
+
+/// A fragment's own entry guarded on a launcher axis applies under the
+/// selection it names and is skipped, under the fragment's path, otherwise.
+#[test]
+fn a_fragments_own_guard_on_a_launcher_axis_applies_and_skips() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("fragments/relay.json5"),
+        &fragment_file(
+            r#"
+            deployments: [{ source: { name: "relay", tag: "v1" }, instances: [{ instance_id: "relay_inst" }] }],
+            adjustments: [{ target: "relay_inst", when: { simulation: "engine" }, set_arguments: { rate: 30 } }],
+        "#,
+        ),
+    );
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "simulation", cardinality: "zero_or_one",
+                  options: { engine: { deployments: [] }, other: { deployments: [] } } },
+                { name: "relay", cardinality: "zero_or_one", options: { on: "fragments/relay.json5" } },
+            ],
+            deployments: [],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let (flat, report) = compose(&parsed, &launcher, &words(&["on", "engine"])).expect("composes");
+    assert_eq!(
+        flat.deployments[0].instances[0].arguments.get("rate"),
+        Some(&AnyType::Int(30))
+    );
+    assert_eq!(report.applied.len(), 1);
+    assert_eq!(report.applied[0].origin, "fragments/relay.json5");
+    let (flat, report) = compose(&parsed, &launcher, &words(&["on", "other"])).expect("composes");
+    assert_eq!(flat.deployments[0].instances[0].arguments.get("rate"), None);
+    assert_eq!(report.applied.len(), 0);
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].origin, "fragments/relay.json5");
+}
+
+#[test]
+fn guards_skip_and_absent_targets_skip() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("fragments/xr.json5"),
+        &fragment_file(
+            r#"
+            deployments: [
+                { source: { name: "xr", tag: "v1" },
+                  instances: [{ instance_id: "leader_inst" }] },
+            ],
+        "#,
+        ),
+    );
+    write(
+        &dir.path().join("fragments/rec.json5"),
+        &fragment_file(
+            r#"
+            deployments: [
+                { source: { name: "rec", tag: "v1" },
+                  instances: [{ instance_id: "recorder_inst" }] },
+            ],
+        "#,
+        ),
+    );
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "commander",
+                  options: { web: { deployments: [] }, xr: {
+                      fragments: ["fragments/xr.json5"],
+                      adjustments: [
+                          { target: "backbone_inst", set_arguments: { upstream_mode: "pose" } },
+                      ],
+                  } } },
+                { name: "recorder", cardinality: "zero_or_one",
+                  options: { on: {
+                      fragments: ["fragments/rec.json5"],
+                      adjustments: [
+                          // A shape condition: only the XR leader pairs with the
+                          // backbone this way.
+                          { target: "backbone_inst", when: { commander: "xr" },
+                            set_arguments: { record_backbone: true } },
+                          // Reaches into whichever robot was selected; skipped when the
+                          // robot is real and no sim_inst exists.
+                          { target: "sim_inst", set_arguments: { state_rate_hz: 50 } },
+                      ],
+                  } } },
+                { name: "robot",
+                  options: {
+                      real: { deployments: [] },
+                      mujoco: { deployments: [
+                          { source: { name: "sim_mujoco", tag: "v1" },
+                            instances: [{ instance_id: "sim_inst" }] } ] },
+                  } },
+            ],
+            deployments: [
+                { source: { name: "backbone", tag: "v1" },
+                  instances: [{ instance_id: "backbone_inst" }] },
+                { commander: "web" },
+                { robot: "real" },
+            ],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+
+    // web + recorder: the xr option's entry is not in a unit that selected
+    // web, the recorder option's guard is not met and sim_inst is absent,
+    // so the recorder's two entries skip and nothing else is reported.
+    let (flat, report) = compose(&parsed, &launcher, &words(&["recorder=on"])).expect("composes");
+    assert_eq!(report.skipped.len(), 2, "{:?}", report.skipped);
+    assert!(report.skipped.iter().any(|s| matches!(
+        (&s.reason, s.origin.as_str()),
+        (SkipReason::GuardNotMet(g), "l.json5, option `recorder.on`") if g == "commander=xr"
+    )));
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|s| matches!(s.reason, SkipReason::TargetAbsent))
+    );
+    let backbone = flat
+        .deployments
+        .iter()
+        .find(|d| node_name(d) == "backbone")
+        .unwrap();
+    assert!(
+        !backbone.instances[0]
+            .arguments
+            .contains_key("record_backbone")
+    );
+
+    // xr + recorder: the guard holds and its target exists, so it
+    // applies; sim_inst is still absent and still skips.
+    let (flat, report) =
+        compose(&parsed, &launcher, &words(&["commander=xr", "recorder=on"])).expect("composes");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .all(|s| matches!(s.reason, SkipReason::TargetAbsent))
+    );
+    let backbone = flat
+        .deployments
+        .iter()
+        .find(|d| node_name(d) == "backbone")
+        .unwrap();
+    assert_eq!(
+        backbone.instances[0].arguments.get("record_backbone"),
+        Some(&AnyType::Bool(true))
+    );
+
+    // xr + recorder + mujoco: every target exists, nothing skips.
+    let (_, report) = compose(
+        &parsed,
+        &launcher,
+        &words(&["commander=xr", "recorder=on", "robot=mujoco"]),
+    )
+    .expect("composes");
+    assert!(report.skipped.is_empty());
+}
+
+#[test]
+fn an_option_missing_a_provides_id_is_refused() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("fragments/bad.json5"),
+        &fragment_file(
+            r#"
+            deployments: [
+                { source: { name: "other", tag: "v1" }, instances: [{ instance_id: "wrong_inst" }] },
+            ],
+        "#,
+        ),
+    );
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "robot", provides: ["arm_inst"],
+                  options: { sim: "fragments/bad.json5" } },
+            ],
+            deployments: [],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("provides unmet");
+    let CompositionError::ProvidesUnmet { axis, option, id } = &err else {
+        panic!("expected ProvidesUnmet, got: {err}");
+    };
+    assert_eq!(
+        (axis.as_str(), option.as_str(), id.as_str()),
+        ("robot", "sim", "arm_inst")
+    );
+}
+
+#[test]
+fn an_adjustment_target_defined_nowhere_is_refused() {
+    let dir = tempdir().unwrap();
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "a", cardinality: "zero_or_one", options: { on: {
+                    adjustments: [ { target: "ghost_inst", set_arguments: { x: 1 } } ] } } },
+            ],
+            deployments: [],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("dead target");
+    let CompositionError::TargetDefinedNowhere {
+        target,
+        origin,
+        in_reach,
+    } = &err
+    else {
+        panic!("expected TargetDefinedNowhere, got: {err}");
+    };
+    assert_eq!(target, "ghost_inst");
+    assert_eq!(origin, "l.json5, option `a.on`");
+    // The launcher deploys nothing else, so the refusal has nothing to offer.
+    assert_eq!(in_reach, "no instance runs beside it to target");
+}
+
+/// A fragment file's own adjustments run before the launcher's, and an
+/// option's entry writing the same field wins without a conflict: the
+/// launcher owns the file.
+#[test]
+fn a_fragment_files_adjustments_run_before_the_options_and_the_options_win() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("fragments/a.json5"),
+        &fragment_file(
+            r#"
+            deployments: [{ source: { name: "a", tag: "v1" }, instances: [{ instance_id: "a_inst" }] }],
+            adjustments: [ { target: "panel", set_arguments: { rate: 10 } } ],
+        "#,
+        ),
+    );
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "a", cardinality: "zero_or_one", options: { on: {
+                    fragments: ["fragments/a.json5"],
+                    adjustments: [ { target: "panel", set_arguments: { rate: 20 } } ],
+                } } },
+            ],
+            deployments: [
+                { source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "panel" }] },
+            ],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let (flat, report) = compose(&parsed, &launcher, &words(&["on"])).expect("composes");
+    assert_eq!(
+        flat.deployments[0].instances[0].arguments.get("rate"),
+        Some(&AnyType::Int(20))
+    );
+    let origins: Vec<&str> = report
+        .applied
+        .iter()
+        .filter(|entry| entry.change.field() == "arguments.rate")
+        .map(|entry| entry.origin.as_str())
+        .collect();
+    assert_eq!(origins, ["fragments/a.json5", "l.json5, option `a.on`"]);
+}
+
+#[test]
+fn a_fragments_adjustment_target_defined_nowhere_is_refused() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("fragments/a.json5"),
+        &fragment_file(
+            r#"
+            adjustments: [ { target: "ghost_inst", set_arguments: { x: 1 } } ],
+        "#,
+        ),
+    );
+    let launcher = write(
+        &dir.path().join("l.json5"),
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
+            ],
+            deployments: [],
+        }"#,
+    );
+    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
+    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("dead target");
+    let CompositionError::TargetDefinedNowhere { target, .. } = &err else {
+        panic!("expected TargetDefinedNowhere, got: {err}");
+    };
+    assert_eq!(target, "ghost_inst");
+}
+
+#[test]
 fn add_links_appends_across_fragments_in_order() {
     let dir = tempdir().unwrap();
     write(
@@ -323,76 +860,6 @@ fn add_links_appends_across_fragments_in_order() {
         })
         .collect();
     assert_eq!(added, ["a_inst", "b_inst"]);
-}
-
-#[test]
-fn add_links_refuses_a_scalar_and_a_vacancy() {
-    for (slot_value, holds) in [
-        ("\"x_inst\"", "a scalar binding"),
-        ("{ vacant: \"nothing here\" }", "a vacancy"),
-    ] {
-        let dir = tempdir().unwrap();
-        write(
-            &dir.path().join("fragments/a.json5"),
-            &fragment_file(
-                r#"adjustments: [ { target: "panel", add_links: { observers: ["a_inst"] } } ],"#,
-            ),
-        );
-        let launcher = write(
-            &dir.path().join("l.json5"),
-            &format!(
-                r#"{{
-                    peppy_schema: "launcher/v1",
-                    components: [
-                        {{ name: "a", cardinality: "zero_or_one", options: {{ on: "fragments/a.json5" }} }},
-                    ],
-                    deployments: [
-                        {{ source: {{ name: "panel", tag: "v1" }},
-                          instances: [{{ instance_id: "panel",
-                                        links: {{ observers: {slot_value} }} }}] }},
-                        {{ source: {{ name: "a", tag: "v1" }}, instances: [{{ instance_id: "a_inst" }}] }},
-                    ],
-                }}"#
-            ),
-        );
-        let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-        let err = compose(&parsed, &launcher, &words(&["on"]))
-            .expect_err("appending past a non-array must be refused");
-        let CompositionError::AddLinksOnNonArray { holds: actual, .. } = &err else {
-            panic!("expected AddLinksOnNonArray, got: {err}");
-        };
-        assert_eq!(actual, &holds);
-    }
-}
-
-#[test]
-fn add_links_refuses_a_target_already_bound() {
-    let dir = tempdir().unwrap();
-    write(
-        &dir.path().join("fragments/a.json5"),
-        &fragment_file(
-            r#"
-            adjustments: [ { target: "panel", add_links: { observers: ["seed_inst"] } } ],
-        "#,
-        ),
-    );
-    let launcher = write(
-        &dir.path().join("l.json5"),
-        r#"{
-            peppy_schema: "launcher/v1",
-            components: [
-                { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
-            ],
-            deployments: [
-                { source: { name: "panel", tag: "v1" },
-                  instances: [{ instance_id: "panel",
-                                links: { observers: ["seed_inst"] } }] },
-            ],
-        }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("duplicate add");
-    assert!(err.to_string().contains("seed_inst"), "got: {err}");
 }
 
 #[test]
@@ -547,195 +1014,14 @@ fn the_base_overrides_a_fragment_and_a_later_base_entry_wins() {
 }
 
 #[test]
-fn guards_skip_and_absent_targets_skip() {
-    let dir = tempdir().unwrap();
-    write(
-        &dir.path().join("fragments/xr.json5"),
-        &fragment_file(
-            r#"
-            deployments: [
-                { source: { name: "xr", tag: "v1" },
-                  instances: [{ instance_id: "leader_inst" }] },
-            ],
-            adjustments: [
-                { target: "backbone_inst",
-                  set_arguments: { upstream_mode: "pose" } },
-            ],
-        "#,
-        ),
-    );
-    write(
-        &dir.path().join("fragments/rec.json5"),
-        &fragment_file(
-            r#"
-            deployments: [
-                { source: { name: "rec", tag: "v1" },
-                  instances: [{ instance_id: "recorder_inst" }] },
-            ],
-            adjustments: [
-                // A shape condition: only the XR leader pairs with the
-                // backbone this way.
-                { target: "backbone_inst", when: { commander: "xr" },
-                  set_arguments: { record_backbone: true } },
-                // Reaches into whichever robot was selected; skipped when the
-                // robot is real and no sim_inst exists.
-                { target: "sim_inst",
-                  set_arguments: { state_rate_hz: 50 } },
-            ],
-        "#,
-        ),
-    );
-    let launcher = write(
-        &dir.path().join("l.json5"),
-        r#"{
-            peppy_schema: "launcher/v1",
-            components: [
-                { name: "commander",
-                  options: { web: { deployments: [] }, xr: "fragments/xr.json5" } },
-                { name: "recorder", cardinality: "zero_or_one",
-                  options: { on: "fragments/rec.json5" } },
-                { name: "robot",
-                  options: {
-                      real: { deployments: [] },
-                      mujoco: { deployments: [
-                          { source: { name: "sim_mujoco", tag: "v1" },
-                            instances: [{ instance_id: "sim_inst" }] } ] },
-                  } },
-            ],
-            deployments: [
-                { source: { name: "backbone", tag: "v1" },
-                  instances: [{ instance_id: "backbone_inst" }] },
-                { commander: "web" },
-                { robot: "real" },
-            ],
-        }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-
-    // web + recorder: the guard is not met and sim_inst is absent, so
-    // both of the recorder fragment's adjustments skip.
-    let (flat, report) = compose(&parsed, &launcher, &words(&["recorder=on"])).expect("composes");
-    assert_eq!(report.skipped.len(), 2);
-    assert!(report.skipped.iter().any(|s| matches!(
-        s.reason,
-        SkipReason::GuardNotMet(ref g) if g == "commander=xr"
-    )));
-    assert!(
-        report
-            .skipped
-            .iter()
-            .any(|s| matches!(s.reason, SkipReason::TargetAbsent))
-    );
-    let backbone = flat
-        .deployments
-        .iter()
-        .find(|d| node_name(d) == "backbone")
-        .unwrap();
-    assert!(
-        !backbone.instances[0]
-            .arguments
-            .contains_key("record_backbone")
-    );
-
-    // xr + recorder: the guard holds and its target exists, so it
-    // applies; sim_inst is still absent and still skips.
-    let (flat, report) =
-        compose(&parsed, &launcher, &words(&["commander=xr", "recorder=on"])).expect("composes");
-    assert!(
-        report
-            .skipped
-            .iter()
-            .all(|s| matches!(s.reason, SkipReason::TargetAbsent))
-    );
-    let backbone = flat
-        .deployments
-        .iter()
-        .find(|d| node_name(d) == "backbone")
-        .unwrap();
-    assert_eq!(
-        backbone.instances[0].arguments.get("record_backbone"),
-        Some(&AnyType::Bool(true))
-    );
-
-    // xr + recorder + mujoco: every target exists, nothing skips.
-    let (_, report) = compose(
-        &parsed,
-        &launcher,
-        &words(&["commander=xr", "recorder=on", "robot=mujoco"]),
-    )
-    .expect("composes");
-    assert!(report.skipped.is_empty());
-}
-
-#[test]
-fn an_option_missing_a_provides_id_is_refused() {
-    let dir = tempdir().unwrap();
-    write(
-        &dir.path().join("fragments/bad.json5"),
-        &fragment_file(
-            r#"
-            deployments: [
-                { source: { name: "other", tag: "v1" }, instances: [{ instance_id: "wrong_inst" }] },
-            ],
-        "#,
-        ),
-    );
-    let launcher = write(
-        &dir.path().join("l.json5"),
-        r#"{
-            peppy_schema: "launcher/v1",
-            components: [
-                { name: "robot", provides: ["arm_inst"],
-                  options: { sim: "fragments/bad.json5" } },
-            ],
-            deployments: [],
-        }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["sim".to_string()]).expect_err("provides unmet");
-    let CompositionError::ProvidesUnmet { axis, option, id } = &err else {
-        panic!("expected ProvidesUnmet, got: {err}");
-    };
-    assert_eq!(
-        (axis.as_str(), option.as_str(), id.as_str()),
-        ("robot", "sim", "arm_inst")
-    );
-}
-
-#[test]
-fn an_adjustment_target_defined_nowhere_is_refused() {
-    let dir = tempdir().unwrap();
-    write(
-        &dir.path().join("fragments/a.json5"),
-        &fragment_file(
-            r#"
-            adjustments: [ { target: "ghost_inst", set_arguments: { x: 1 } } ],
-        "#,
-        ),
-    );
-    let launcher = write(
-        &dir.path().join("l.json5"),
-        r#"{
-            peppy_schema: "launcher/v1",
-            components: [
-                { name: "a", cardinality: "zero_or_one", options: { on: "fragments/a.json5" } },
-            ],
-            deployments: [],
-        }"#,
-    );
-    let parsed = parse_launcher(&fs::read_to_string(&launcher).unwrap());
-    let err = compose(&parsed, &launcher, &["on".to_string()]).expect_err("dead target");
-    let CompositionError::TargetDefinedNowhere { target, .. } = &err else {
-        panic!("expected TargetDefinedNowhere, got: {err}");
-    };
-    assert_eq!(target, "ghost_inst");
-}
-
-#[test]
 fn unsafe_fragment_paths_are_refused() {
     for raw in ["/etc/passwd", "../outside.json5", "./here.json5", ""] {
         let dir = tempdir().unwrap();
-        let spec = FragmentSpec(vec![FragmentPart::File(raw.to_owned())]);
+        let spec = OptionSpec {
+            files: vec![raw.to_owned()],
+            body: None,
+            adjustments: Vec::new(),
+        };
         let axis = ComponentAxis {
             name: "robot".to_owned(),
             options: BTreeMap::from([("sim".to_owned(), spec)]),
@@ -977,9 +1263,7 @@ fn nested_fixture(dir: &Path, commander_deployment: &str) -> (PathBuf, PeppyLaun
         &dir.join("fragments/xr.json5"),
         &fragment_file(
             r#"deployments: [{ source: { name: "xr", tag: "v1" },
-                instances: [{ instance_id: "commander_inst", links: { arm: "arm_inst" } }] }],
-               adjustments: [{ target: "arm_inst", when: { simulation: "engine" },
-                               set_arguments: { pose_mode: true } }]"#,
+                instances: [{ instance_id: "commander_inst", links: { arm: "arm_inst" } }] }]"#,
         ),
     );
     write(
@@ -1010,7 +1294,11 @@ fn nested_fixture(dir: &Path, commander_deployment: &str) -> (PathBuf, PeppyLaun
                 { name: "simulation", cardinality: "zero_or_one", options: {
                     engine: { deployments: [{ source: { name: "engine", tag: "v1" },
                         instances: [{ instance_id: "engine_inst" }] }] } } },
-                { name: "robot", options: { openarm: "fragments/robot.json5" } },
+                { name: "robot", options: { openarm: {
+                    fragments: ["fragments/robot.json5"],
+                    adjustments: [{ target: "arm_inst", when: { commander: "xr", simulation: "engine" },
+                                    set_arguments: { pose_mode: true } }],
+                } } },
             ],
             deployments: [{ robot: "openarm" }],
         }"#,
@@ -1038,13 +1326,9 @@ fn a_fragments_axes_are_filled_by_its_deployments_and_reached_by_with() {
         report.selection.echo(),
         "simulation=(off)  robot=openarm (from file)  commander=xr  recorder=(off)"
     );
-    // The fragment's guard reads the launcher's axes.
-    assert!(
-        report
-            .skipped
-            .iter()
-            .any(|s| matches!(&s.reason, SkipReason::GuardNotMet(g) if g == "simulation=engine"))
-    );
+    // The option's guard reads the launcher's axes beside the option's own.
+    assert!(report.skipped.iter().any(|s| matches!(&s.reason,
+            SkipReason::GuardNotMet(g) if g == "commander=xr simulation=engine")));
     let (flat, _) =
         compose(&launcher, &file, &words(&["commander=xr", "engine"])).expect("composes");
     let arm = flat
