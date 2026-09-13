@@ -1,0 +1,97 @@
+// The waldo simulation engine's declarative surface, as a launch fixture:
+// four implemented contracts, seven optional pairing slots, two exposed
+// services, seven exposed actions, fourteen emitted and four consumed
+// topics, with the engine's parameters. This is the interface set whose
+// binding generation (production, mock and fixture surfaces alike) the
+// `waldo_generation_launch_child` test drives through a real launch.
+//
+// The execution block is the fixture's own: a host `build_cmd` that checks
+// what generation wrote into the staged copy, prints the checkpoint marker
+// only when every check passes, and then exits nonzero on purpose so the
+// launch stops at the build without starting anything. See PROVENANCE.md.
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "waldo",
+    tag: "v1",
+    implements: [
+      { name: "scene_control", tag: "v1", link_id: "scene" },
+      { name: "object_state", tag: "v1", link_id: "objects" },
+      { name: "contact_state", tag: "v1", link_id: "contacts" },
+      { name: "sensor_readout", tag: "v1", link_id: "sensors" },
+    ],
+    depends_on: {
+      pairings: [
+        { name: "joint_link", tag: "v1", role: "follower", link_id: "left_arm", optional: true },
+        { name: "joint_link", tag: "v1", role: "follower", link_id: "right_arm", optional: true },
+        { name: "gripper_link", tag: "v1", role: "follower", link_id: "left_gripper", optional: true },
+        { name: "gripper_link", tag: "v1", role: "follower", link_id: "right_gripper", optional: true },
+        { name: "sim_rgb_camera_link", tag: "v1", role: "camera", link_id: "wrist_left", optional: true },
+        { name: "sim_rgb_camera_link", tag: "v1", role: "camera", link_id: "wrist_right", optional: true },
+        { name: "sim_rgbd_camera_link", tag: "v1", role: "camera", link_id: "chest", optional: true },
+      ],
+    },
+  },
+  interfaces: {
+    services: {
+      exposes: [
+        { link_id: "scene", name: "get_assets_list" },
+        { link_id: "scene", name: "get_objects_list" },
+      ],
+    },
+    actions: {
+      exposes: [
+        { link_id: "scene", name: "load_scene" },
+        { link_id: "scene", name: "clear_scene" },
+        { link_id: "scene", name: "spawn_object" },
+        { link_id: "scene", name: "move_object" },
+        { link_id: "scene", name: "remove_object" },
+        { link_id: "scene", name: "apply_force" },
+        { link_id: "scene", name: "move_robot" },
+      ],
+    },
+    topics: {
+      emits: [
+        { link_id: "left_arm", name: "joint_states" },
+        { link_id: "right_arm", name: "joint_states" },
+        { link_id: "left_gripper", name: "gripper_states" },
+        { link_id: "right_gripper", name: "gripper_states" },
+        { link_id: "wrist_left", name: "video_stream" },
+        { link_id: "wrist_left", name: "stream_info" },
+        { link_id: "wrist_right", name: "video_stream" },
+        { link_id: "wrist_right", name: "stream_info" },
+        { link_id: "chest", name: "video_stream" },
+        { link_id: "chest", name: "depth_stream" },
+        { link_id: "chest", name: "stream_info" },
+        { link_id: "objects", name: "object_states" },
+        { link_id: "contacts", name: "contacts" },
+        { link_id: "sensors", name: "sensor_readings" },
+      ],
+      consumes: [
+        { link_id: "left_arm", name: "joint_setpoints" },
+        { link_id: "right_arm", name: "joint_setpoints" },
+        { link_id: "left_gripper", name: "gripper_setpoints" },
+        { link_id: "right_gripper", name: "gripper_setpoints" },
+      ],
+    },
+  },
+  execution: {
+    language: "rust",
+    // Each check names one generated file per surface: the production
+    // modules of every interface category, the mock and fixture surfaces,
+    // the Cap'n Proto schemas and the deployed peppylib crate. The staged
+    // tree carries no git.hash. The marker prints only once every check
+    // has passed, and the exit status fails the build on purpose.
+    build_cmd: ["sh", "-c", "for f in src/lib.rs src/parameters.rs peppy.json5.sha256 src/exposed_services/scene/get_assets_list.rs src/exposed_actions/scene/spawn_object.rs src/emitted_topics/objects/object_states.rs src/emitted_topics/contacts/contacts.rs src/emitted_topics/sensors/sensor_readings.rs src/paired_topics/left_arm/joint_setpoints.rs src/paired_topics/right_gripper/gripper_states.rs src/paired_topics/chest/depth_stream.rs src/paired_topics/wrist_right/stream_info.rs src/mock.rs src/mock/pairings/left_arm.rs src/mock/pairings/chest.rs src/fixtures.rs src/fixtures/harness.rs src/fixtures/exposed_actions/scene/move_robot.rs src/fixtures/exposed_services/scene/get_objects_list.rs src/fixtures/emitted_topics/objects/object_states.rs src/capnp.rs src/capnp/scene_control_v1_spawn_object_goal_message.capnp src/capnp/scene_control_v1_spawn_object_goal_message_capnp.rs src/capnp/peer_chest_stream_info_message_capnp.rs src/capnp/object_state_v1_object_states_message_capnp.rs; do test -f \".peppy/libs/peppygen/$f\" || { echo \"missing generated file $f\" >&2; exit 2; }; done; test -f .peppy/libs/peppylib/Cargo.toml || { echo \"peppylib is not deployed beside peppygen\" >&2; exit 2; }; test ! -e .peppy/git.hash || { echo \"a staged tree carries no git.hash\" >&2; exit 2; }; echo WALDO_CODEGEN_CHECKPOINT; exit 3"],
+    run_cmd: ["true"],
+    parameters: {
+      world: "string",
+      state_rate_hz: "u32",
+      physics_threads: { $type: "u32", $default: 0 },
+      viewer_host: { $type: "string", $default: "0.0.0.0" },
+      viewer_port: { $type: "u32", $default: 8080 },
+      cameras_enabled: "bool",
+      plugins: { $type: "string", $default: "" },
+    },
+  },
+}

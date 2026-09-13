@@ -396,6 +396,30 @@ async fn send_launch_origin_and_wait(
     result_timeout: Duration,
     env_vars: Vec<(String, String)>,
 ) -> Result<(LaunchGoalResponse, LaunchResult), String> {
+    send_launch_origin_and_wait_observing(
+        messenger,
+        core_node_name,
+        launcher_origin,
+        goal_timeout,
+        result_timeout,
+        env_vars,
+        &mut |_| {},
+    )
+    .await
+}
+
+/// [`send_launch_origin_and_wait`] with every decoded feedback line handed
+/// to `on_feedback` as it arrives, for tests that assert on what the launch
+/// reported and not only on its result.
+async fn send_launch_origin_and_wait_observing(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    launcher_origin: LauncherOrigin,
+    goal_timeout: Duration,
+    result_timeout: Duration,
+    env_vars: Vec<(String, String)>,
+    on_feedback: &mut (dyn FnMut(LaunchFeedback) + Send),
+) -> Result<(LaunchGoalResponse, LaunchResult), String> {
     let goal = LaunchGoal::new(
         launcher_origin,
         "launch-test-fixture",
@@ -447,7 +471,9 @@ async fn send_launch_origin_and_wait(
             Ok(Ok(msg)) => {
                 last_activity = tokio::time::Instant::now();
                 let payload = msg.payload();
-                let _ = LaunchFeedback::decode(&payload);
+                if let Ok(feedback) = LaunchFeedback::decode(&payload) {
+                    on_feedback(feedback);
+                }
             }
             Ok(Err(_)) => break,
             Err(_) => {}
@@ -2202,4 +2228,172 @@ async fn listen_for_launch_rejects_a_path_shaped_deployment_source() {
         !node_stack.contains("uvc_camera", "v1"),
         "the rejected deployment must not reach the stack"
     );
+}
+
+// =============================================================================
+// The waldo engine's binding generation, through a real launch, on the
+// runtime's default thread stacks.
+// =============================================================================
+
+/// Set in the environment of the child process that runs
+/// [`waldo_generation_launch_child`]. The parent never carries it, so a child
+/// cannot spawn a child of its own.
+const WALDO_CODEGEN_CHILD_ENV: &str = "PEPPY_TEST_WALDO_CODEGEN_CHILD";
+/// Printed by the fixture's `build_cmd` once every generated-output check has
+/// passed, and only then.
+const WALDO_CODEGEN_CHECKPOINT: &str = "WALDO_CODEGEN_CHECKPOINT";
+
+/// Drives the waldo generation workload through a launch in a child process,
+/// so a fatal stack overflow in the daemon's launch task fails this one test
+/// instead of killing the test binary. The child builds a multithreaded Tokio
+/// runtime with no stack-size override and without any inherited
+/// `RUST_MIN_STACK`, which is what the daemon runs on.
+#[test]
+fn waldo_generation_launch_survives_a_default_worker_stack() {
+    if std::env::var_os(WALDO_CODEGEN_CHILD_ENV).is_some() {
+        return;
+    }
+    let test_binary = std::env::current_exe().expect("the running test binary has a path");
+    let output = std::process::Command::new(test_binary)
+        .args([
+            "--exact",
+            "waldo_generation_launch_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(WALDO_CODEGEN_CHILD_ENV, "1")
+        .env_remove("RUST_MIN_STACK")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn the child test process");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "the child launch process exited with {:?}\n--- child stdout ---\n{stdout}\n--- child stderr ---\n{stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains("test waldo_generation_launch_child ... ok"),
+        "the child ran its launch test to completion\n--- child stdout ---\n{stdout}\n--- child stderr ---\n{stderr}"
+    );
+}
+
+/// The child half of [`waldo_generation_launch_survives_a_default_worker_stack`].
+/// Ignored so the harness never runs it in the parent process; the parent
+/// runs it by name in a process of its own.
+#[test]
+#[ignore = "child half of waldo_generation_launch_survives_a_default_worker_stack, run by that test in its own process"]
+fn waldo_generation_launch_child() {
+    assert!(
+        std::env::var_os(WALDO_CODEGEN_CHILD_ENV).is_some(),
+        "the child test runs through its parent test"
+    );
+    assert!(
+        std::env::var_os("RUST_MIN_STACK").is_none(),
+        "the child runs on the runtime's default thread stacks"
+    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("a default multithreaded runtime");
+    runtime.block_on(waldo_generation_launch());
+}
+
+/// Launches the `waldo_codegen` fixture (see its PROVENANCE.md): the waldo
+/// engine's full declarative surface, resolved from filesystem contract and
+/// pairing caches, added and generated through the pinned-add path, then
+/// built by a `build_cmd` that checks the generated bindings, prints the
+/// checkpoint, and fails on purpose. The launch must come back as an
+/// ordinary build failure, with the checkpoint on record, the stack cleared,
+/// the staging directory gone, and the core node still answering.
+async fn waldo_generation_launch() {
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let peppy_dirs = started_core_node.peppy_dirs.clone();
+    let node_stack = started_core_node.node_stack.clone();
+
+    let assets =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/launch_assets/waldo_codegen");
+    let mut cache = TestPackagesCache::new().fs_entry("waldo", "v1", assets.join("node"));
+    for contract in [
+        "scene_control",
+        "object_state",
+        "contact_state",
+        "sensor_readout",
+    ] {
+        let path = assets.join("contracts").join(format!("{contract}.json5"));
+        let body = fs::read_to_string(&path).expect("read the fixture's contract document");
+        cache = cache.contract_fs_entry(contract, "v1", &path, &body);
+    }
+    for pairing in [
+        "joint_link",
+        "gripper_link",
+        "sim_rgb_camera_link",
+        "sim_rgbd_camera_link",
+    ] {
+        let path = assets.join("pairings").join(format!("{pairing}.json5"));
+        let body = fs::read_to_string(&path).expect("read the fixture's pairing document");
+        cache = cache.pairing_fs_entry(pairing, "v1", &path, &body);
+    }
+    cache.write(&peppy_dirs);
+
+    let mut feedback_lines: Vec<String> = Vec::new();
+    let (_goal_response, result) = send_launch_origin_and_wait_observing(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        LauncherOrigin::Fs(assets.join("peppy_launcher.json5")),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        vec![],
+        &mut |feedback| feedback_lines.push(format!("[{:?}] {}", feedback.step, feedback.line)),
+    )
+    .await
+    .expect("the launch completes with a result of its own");
+
+    assert!(
+        !result.success,
+        "the fixture's build_cmd fails on purpose, so the launch fails"
+    );
+    let error_message = result
+        .error_message
+        .clone()
+        .expect("a failed launch names its reason");
+    assert!(
+        error_message.contains("failed to build node waldo:v1")
+            && error_message.contains("build_cmd"),
+        "the launch fails at the build, as an ordinary build failure: {error_message}"
+    );
+
+    let feedback = feedback_lines.join("\n");
+    assert!(
+        feedback.contains(WALDO_CODEGEN_CHECKPOINT),
+        "the build_cmd reached its checkpoint, so every generated-output check passed; \
+         feedback:\n{feedback}"
+    );
+    let launch_log = fs::read_to_string(&result.log_path).expect("read the launch log");
+    assert!(
+        launch_log.contains(WALDO_CODEGEN_CHECKPOINT),
+        "the checkpoint is on record in the launch log at {}:\n{launch_log}",
+        result.log_path.display()
+    );
+
+    assert_eq!(
+        node_stack.len(),
+        1,
+        "a failed launch leaves only the root in the stack"
+    );
+    assert!(
+        !node_stack.contains("waldo", "v1"),
+        "the failed node is cleared from the stack"
+    );
+    let staging_leftovers: Vec<PathBuf> = fs::read_dir(peppy_dirs.tmp_dir())
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    assert!(
+        staging_leftovers.is_empty(),
+        "a cleared node leaves no staging directory behind: {staging_leftovers:?}"
+    );
+
+    // The daemon is still answering after the failed launch.
+    common::assert_clock_round_trip(&started_core_node).await;
 }

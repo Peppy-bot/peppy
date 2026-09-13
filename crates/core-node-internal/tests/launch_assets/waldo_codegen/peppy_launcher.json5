@@ -1,0 +1,33 @@
+// One waldo engine instance with the arguments the openarm_v2 launcher's
+// waldo option gives it when the scene commander is selected. Every pairing
+// slot is optional on the engine and left vacant here: the relays and camera
+// viewers that fill them in a robot stack are not part of this fixture, and
+// the generated bindings do not depend on what a slot is bound to.
+{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      source: { name: "waldo", tag: "v1" },
+      instances: [
+        {
+          instance_id: "sim_inst",
+          arguments: {
+            world: "openarm_v2",
+            state_rate_hz: 100,
+            cameras_enabled: false,
+            plugins: "hand_teleop,sim_inspector",
+          },
+          links: {
+            left_arm: { vacant: "no relay in the generation fixture" },
+            right_arm: { vacant: "no relay in the generation fixture" },
+            left_gripper: { vacant: "no relay in the generation fixture" },
+            right_gripper: { vacant: "no relay in the generation fixture" },
+            wrist_left: { vacant: "no camera viewer in the generation fixture" },
+            wrist_right: { vacant: "no camera viewer in the generation fixture" },
+            chest: { vacant: "no camera viewer in the generation fixture" },
+          },
+        },
+      ],
+    },
+  ],
+}
