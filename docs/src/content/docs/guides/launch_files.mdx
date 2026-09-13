@@ -325,6 +325,26 @@ Reusing cached build of waldo:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/buil
 
 `peppy stack launch --rebuild` builds every node of the launch from its staged sources even when a matching artifact exists, on the coordinator and on every peer; use it when something the fingerprint does not cover changed, such as the image behind a floating base image tag.
 
+## Launch timeouts
+
+A launch adds, builds and starts its nodes one phase at a time, and each phase runs under an idle budget: the clock resets whenever the phase produces output (a git or http download's progress, a `build_cmd`'s lines, a starting node's lines), and the phase fails when it goes quiet for longer than its budget. The budgets are per phase and per node:
+
+| Flag | Phase | Default |
+| --- | --- | --- |
+| `--node-add-idle-timeout-secs` | fetching a node's source and generating its bindings | 600 |
+| `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk count as output too | 180 |
+| `--node-run-idle-timeout-secs` | starting an instance, until it signals ready | 600 |
+
+`--max-timeout-secs` adds a budget for the whole launch on top of the idle ones; without it, only the idle budgets apply.
+
+When a budget runs out the launch fails, names the phase and, for an idle budget, the flag that raises it, and clears the stack as any failed launch does. What the interrupted phase leaves behind depends on the phase:
+
+- An interrupted **add** never publishes its node. The daemon generates a node's bindings into the node's staged copy on a worker thread of its own, so a generation that is already running when the add's budget runs out finishes on that thread, and the staged copy is removed once it does; a queued generation whose add is gone is skipped. Either way the node never enters the stack and nothing of it is built.
+- An interrupted **build** has its `build_cmd` or image build killed.
+- An interrupted **run** has its half-started instance torn down before the failure is reported.
+
+Only the node's own output resets a phase's clock; the launcher's progress lines do not.
+
 ## Running one launcher across several machines
 
 A launcher can span machines. It declares named placeholders under `core_nodes`,

@@ -1,0 +1,171 @@
+// Editing the world of a simulation engine while it runs: listing the assets
+// the engine can place, loading a scene, spawning, moving, pushing and
+// removing objects, and relocating the robot. Any engine that keeps a scene
+// graph can implement it; a commander only needs the contract, not the
+// engine.
+//
+// Asset ids come from get_assets_list and carry their kind as a prefix
+// ("scene/<id>" or "object/<id>"). Object ids are minted by the implementer
+// on spawn and reported by get_objects_list. Positions are world-frame x, y,
+// z in meters, forces are world-frame newtons, masses are kilograms.
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "scene_control",
+    tag: "v1",
+  },
+  interfaces: {
+    services: [
+      {
+        // The catalogue of placeable assets, as a JSON array in assets_json.
+        // Every entry carries at least asset_id, display_name, kind ("scene" or
+        // "object") and category; implementers may add engine-specific
+        // fields.
+        name: "get_assets_list",
+        response_message_format: {
+          success: "bool",
+          message: "string",
+          assets_json: "string",
+        },
+      },
+      {
+        // The objects currently spawned, as a JSON array in objects_json.
+        // Every entry carries at least object_id, asset_id, position and
+        // physics.
+        name: "get_objects_list",
+        response_message_format: {
+          success: "bool",
+          message: "string",
+          objects_json: "string",
+        },
+      },
+    ],
+    actions: [
+      {
+        // Replace the current scene with the asset named by asset_id, which
+        // must be of kind "scene". Spawned objects are removed first.
+        name: "load_scene",
+        goal_service: {
+          request_message_format: {
+            asset_id: "string",
+            // Uniform scale applied to the scene; 1 = as authored.
+            scale: "f64",
+          },
+        },
+        result_service: {
+          response_message_format: {
+            // False when the scene was refused or failed to load; message
+            // says why.
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+      {
+        // Remove every spawned object and restore the default scene.
+        name: "clear_scene",
+        goal_service: {},
+        result_service: {
+          response_message_format: {
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+      {
+        // Place one instance of an "object" asset and report its new id.
+        name: "spawn_object",
+        goal_service: {
+          request_message_format: {
+            asset_id: "string",
+            position: { $type: "array", $items: "f64", $length: 3 },
+            // Uniform scale; 1 = as authored.
+            scale: "f64",
+            // "dynamic" (simulated, falls and collides), "static" (collides,
+            // never moves) or "none" (visual only).
+            physics: "string",
+            // Mass (kg) of a dynamic object; ignored otherwise.
+            mass: "f64",
+          },
+        },
+        result_service: {
+          response_message_format: {
+            // False when the asset is unknown, the arguments are invalid or
+            // the spawn failed; message says why.
+            success: "bool",
+            message: "string",
+            // The implementer-minted id of the new object; empty on failure.
+            object_id: "string",
+          },
+        },
+      },
+      {
+        // Teleport a spawned object to a new position, keeping its
+        // orientation and zeroing its velocity.
+        name: "move_object",
+        goal_service: {
+          request_message_format: {
+            object_id: "string",
+            position: { $type: "array", $items: "f64", $length: 3 },
+          },
+        },
+        result_service: {
+          response_message_format: {
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+      {
+        // Delete a spawned object.
+        name: "remove_object",
+        goal_service: {
+          request_message_format: {
+            object_id: "string",
+          },
+        },
+        result_service: {
+          response_message_format: {
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+      {
+        // Push a dynamic object with a constant world-frame force for
+        // duration_s seconds. The goal completes once the push is scheduled,
+        // not when it ends.
+        name: "apply_force",
+        goal_service: {
+          request_message_format: {
+            object_id: "string",
+            force: { $type: "array", $items: "f64", $length: 3 },
+            duration_s: "f64",
+          },
+        },
+        result_service: {
+          response_message_format: {
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+      {
+        // Relocate the robot's base to a new world-frame position, keeping
+        // its joint configuration.
+        name: "move_robot",
+        goal_service: {
+          request_message_format: {
+            position: { $type: "array", $items: "f64", $length: 3 },
+          },
+        },
+        result_service: {
+          response_message_format: {
+            success: "bool",
+            message: "string",
+          },
+        },
+      },
+    ],
+  },
+}

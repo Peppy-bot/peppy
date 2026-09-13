@@ -1,0 +1,47 @@
+// The reading of every sensor the simulated model declares, streamed on
+// the engine's state cadence: the touch pads, force/torque cells, frame
+// and joint probes a robot's model carries. The implementer publishes
+// what the model computes and interprets nothing: a consumer knows the
+// kind and reads the values in the engine's units and frames for it.
+//
+// Ground truth is a debugging surface and stays inside the peppy
+// framework (see object_state); no mcp_exposure/v1 document ever selects
+// a member of this contract. A real robot's sensors reach the stack on
+// their own contracts and pairings.
+//
+// One record per declared sensor, in the model's order, every step; a
+// model with no sensor sends an empty list.
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "sensor_readout",
+    tag: "v1",
+  },
+  interfaces: {
+    topics: [
+      {
+        name: "sensor_readings",
+        // High-frequency stream where only the latest snapshot matters;
+        // occasional drops are acceptable.
+        qos_profile: "sensor_data",
+        message_format: {
+          // Implementer-side capture time of this snapshot.
+          timestamp: "time",
+          sensors: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              // The sensor's name in the model.
+              name: "string",
+              // The sensor's kind as the model declares it (for MuJoCo,
+              // the MJCF element: touch, force, torque, framepos, ...).
+              kind: "string",
+              // The reading, as many numbers as the kind produces.
+              values: { $type: "array", $items: "f64" },
+            },
+          },
+        },
+      },
+    ],
+  },
+}

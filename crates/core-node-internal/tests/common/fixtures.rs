@@ -76,16 +76,18 @@ pub fn create_tar_zst_from_dir(source_dir: &Path, archive_path: &Path, archive_r
     encoder.finish().expect("failed to finalize zstd stream");
 }
 
-/// Builder for `nodes.json5`, `launchers.json5`, and `contracts.json5` cache
-/// fixtures. Tests call [`TestPackagesCache::fs_entry`] / `git_entry` /
-/// `launcher_fs_entry` / `contract_git_entry` to declare discovered items,
-/// then [`TestPackagesCache::write`] to serialize the files under
+/// Builder for `nodes.json5`, `launchers.json5`, `contracts.json5` and
+/// `pairings.json5` cache fixtures. Tests call [`TestPackagesCache::fs_entry`]
+/// / `git_entry` / `launcher_fs_entry` / `contract_git_entry` /
+/// `pairing_fs_entry` to declare discovered items, then
+/// [`TestPackagesCache::write`] to serialize the files under
 /// `peppy_dirs.cache_dir()`.
 #[derive(Default)]
 pub struct TestPackagesCache {
     entries: Vec<serde_json::Value>,
     launchers: Vec<serde_json::Value>,
     contracts: Vec<serde_json::Value>,
+    pairings: Vec<serde_json::Value>,
 }
 
 /// A distinct, valid fingerprint per `seed`, for entries whose bytes the
@@ -278,6 +280,26 @@ impl TestPackagesCache {
         self
     }
 
+    /// Adds a `pairings.json5` entry for a filesystem-sourced pairing.
+    /// `body` is the on-disk pairing JSON5 (assumed already written at
+    /// `absolute_path`); its sha256 is computed here so the cache
+    /// fingerprint matches what the pairing resolver reads back.
+    pub fn pairing_fs_entry(
+        mut self,
+        name: &str,
+        tag: &str,
+        absolute_path: impl AsRef<Path>,
+        body: &str,
+    ) -> Self {
+        self.pairings.push(serde_json::json!({
+            "pairing_name": name,
+            "tag": tag,
+            "sha256": config::fingerprint::fingerprint_for_bytes(body.as_bytes()),
+            "origin": fs_origin(absolute_path.as_ref()),
+        }));
+        self
+    }
+
     pub fn write(self, peppy_dirs: &daemon_config::consts::PeppyDirs) {
         let cache_dir = peppy_dirs.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("failed to create cache dir");
@@ -294,6 +316,11 @@ impl TestPackagesCache {
             &core_node::contracts_repo_cache_path(peppy_dirs),
             &self.contracts,
             "contracts.json5",
+        );
+        write_or_clear(
+            &core_node::pairings_repo_cache_path(peppy_dirs),
+            &self.pairings,
+            "pairings.json5",
         );
     }
 }
