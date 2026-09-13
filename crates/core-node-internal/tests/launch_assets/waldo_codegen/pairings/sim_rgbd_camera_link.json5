@@ -1,0 +1,85 @@
+// The color + depth conversation between a simulation engine's rendered
+// camera and one viewer, as a pairing: the camera streams synchronized color
+// and depth frames plus a low-rate description of both streams, all scoped
+// to the pair. Color
+// and depth share a frame_id (a capture-pair counter, not a coordinate frame)
+// so consumers can correlate paired frames without timestamp matching. Frame
+// messages match the rgbd_camera contract topics field for field, so frames
+// cross between the pairing and the contract surface unchanged. stream_info
+// merges both contract stream-info responses into one message; the single
+// frames_per_second covers both streams, since color and depth are captured
+// as pairs. A color-only source uses sim_rgb_camera_link.
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "sim_rgbd_camera_link",
+    tag: "v1",
+  },
+  roles: ["camera", "viewer"],
+  topics: [
+    {
+      emitted_by: "camera",
+      name: "video_stream",
+      // High-frequency stream where only the latest frame matters;
+      // occasional drops are acceptable.
+      qos_profile: "sensor_data",
+      message_format: {
+        header: {
+          $type: "object",
+          // Capture time of this frame.
+          timestamp: "time",
+          // Capture-pair counter shared with the matching depth frame.
+          frame_id: "u32",
+          align_mode: "string",   // e.g. "none" | "depth_to_color" | "color_to_depth"
+        },
+        encoding: "string",   // e.g. "rgb8" | "bgr8" | "yuyv" | "mjpeg"
+        width: "u32",
+        height: "u32",
+        frame: {
+          $type: "array",
+          $items: "u8",
+        },
+      },
+    },
+    {
+      emitted_by: "camera",
+      name: "depth_stream",
+      // High-frequency stream where only the latest frame matters;
+      // occasional drops are acceptable.
+      qos_profile: "sensor_data",
+      message_format: {
+        header: {
+          $type: "object",
+          // Capture time of this frame.
+          timestamp: "time",
+          // Capture-pair counter shared with the matching color frame.
+          frame_id: "u32",
+          align_mode: "string",   // e.g. "none" | "depth_to_color" | "color_to_depth"
+        },
+        encoding: "string",   // e.g. "z16" (u16 little-endian)
+        width: "u32",
+        height: "u32",
+        frame: {
+          $type: "array",
+          $items: "u8",
+        },
+      },
+    },
+    {
+      emitted_by: "camera",
+      name: "stream_info",
+      // Low-rate stream description; latest value describes both current streams.
+      qos_profile: "standard",
+      message_format: {
+        width: "u32",
+        height: "u32",
+        frames_per_second: "u8",
+        encoding: "string",
+        depth_width: "u32",
+        depth_height: "u32",
+        depth_encoding: "string",
+        depth_unit: "f32",   // meters per LSB, e.g. 0.001 = 1mm
+      },
+    },
+  ],
+}

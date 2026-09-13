@@ -1747,7 +1747,7 @@ mod tests {
         let cleanup_ran = Arc::new(AtomicBool::new(false));
 
         let outcome = run_phase_cancel_on_timeout(
-            cancellable_phase(token.clone(), Arc::clone(&cleanup_ran)),
+            Box::pin(cancellable_phase(token.clone(), Arc::clone(&cleanup_ran))),
             Arc::clone(&notify),
             Duration::from_millis(100),
             None,
@@ -1774,7 +1774,7 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_millis(50);
         let outcome = run_phase_cancel_on_timeout(
-            cancellable_phase(token.clone(), Arc::clone(&cleanup_ran)),
+            Box::pin(cancellable_phase(token.clone(), Arc::clone(&cleanup_ran))),
             Arc::clone(&notify),
             // Idle much larger than max so only the deadline branch can fire.
             Duration::from_secs(600),
@@ -1808,7 +1808,7 @@ mod tests {
         };
 
         let outcome = run_phase_cancel_on_timeout(
-            phase,
+            Box::pin(phase),
             Arc::clone(&notify),
             Duration::from_millis(100),
             Some(Instant::now() + Duration::from_millis(100)),

@@ -1,0 +1,52 @@
+// The color-stream conversation between a simulation engine's rendered camera
+// and one viewer, as a pairing: the camera streams frames plus a low-rate
+// description of the stream, both scoped to the pair. Message formats match
+// the rgb_camera contract topic and video_stream_info response field for
+// field, so a frame or descriptor can cross between the pairing and the
+// contract surface unchanged. Depth is not part of this conversation; a
+// color + depth source uses sim_rgbd_camera_link.
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "sim_rgb_camera_link",
+    tag: "v1",
+  },
+  roles: ["camera", "viewer"],
+  topics: [
+    {
+      emitted_by: "camera",
+      name: "video_stream",
+      // High-frequency stream where only the latest frame matters;
+      // occasional drops are acceptable.
+      qos_profile: "sensor_data",
+      message_format: {
+        header: {
+          $type: "object",
+          // Capture time of this frame.
+          timestamp: "time",
+          // Capture counter, not a coordinate frame.
+          frame_id: "u32",
+        },
+        encoding: "string",   // e.g. "rgb8" | "bgr8" | "yuyv" | "mjpeg"
+        width: "u32",
+        height: "u32",
+        frame: {
+          $type: "array",
+          $items: "u8",
+        },
+      },
+    },
+    {
+      emitted_by: "camera",
+      name: "stream_info",
+      // Low-rate stream description; latest value describes the current stream.
+      qos_profile: "standard",
+      message_format: {
+        width: "u32",
+        height: "u32",
+        frames_per_second: "u8",
+        encoding: "string",
+      },
+    },
+  ],
+}

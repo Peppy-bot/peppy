@@ -1,0 +1,57 @@
+// The exclusive control conversation between one leader instance and one
+// gripper, as a pairing: the leader streams the desired opening and the
+// gripper streams its measured opening and grip effort back, both directions
+// scoped to the pair.
+//
+// Opening is a fraction of full travel (0 = closed, 1 = fully open),
+// mechanism-independent: prismatic parallel jaws and revolute pinch fingers
+// report the same quantity.
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "gripper_link",
+    tag: "v1",
+  },
+  roles: ["leader", "follower"],
+  topics: [
+    {
+      emitted_by: "leader",
+      name: "gripper_setpoints",
+      // High-frequency stream where only the latest setpoint matters;
+      // occasional drops are acceptable.
+      qos_profile: "sensor_data",
+      message_format: {
+        // Leader-side capture time of this setpoint.
+        timestamp: "time",
+        // Desired opening fraction, 0 = closed, 1 = fully open.
+        opening: "f64",
+        // Maximum effort the follower may exert toward the commanded opening
+        // (magnitude, in the follower's effort unit: the unit of
+        // gripper_states effort). 0 = no preference; the follower applies
+        // its configured ceiling.
+        max_effort: "f64",
+      },
+    },
+    {
+      emitted_by: "follower",
+      name: "gripper_states",
+      // High-frequency stream where only the latest state matters;
+      // occasional drops are acceptable.
+      qos_profile: "sensor_data",
+      message_format: {
+        // Follower-side capture time of this measurement.
+        timestamp: "time",
+        // Measured opening fraction, 0 = closed, 1 = fully open.
+        opening: "f64",
+        // Measured grip effort in this follower's effort unit (e.g. N*m at
+        // the motor shaft, N at the jaws), in the opening frame: positive
+        // drives toward open, regardless of the mechanism's direction.
+        // 0.0 when the gripper does not sense effort.
+        effort: "f64",
+        // Active effort ceiling (magnitude, same unit as effort): the
+        // largest effort this follower will exert. 0 = no effort control.
+        max_effort: "f64",
+      },
+    },
+  ],
+}

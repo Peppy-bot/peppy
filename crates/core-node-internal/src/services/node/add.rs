@@ -1,3 +1,6 @@
+mod staged;
+
+use self::staged::{StagedJob, run_staged_job};
 use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
 use super::super::stack::STACK_LAUNCH_GIT_HASH;
 use super::gate::ConcurrencyGate;
@@ -1429,12 +1432,14 @@ async fn process_node_add_inner(
             .map_err(|e| format!("Codegen fingerprint verification failed: {}", e))?;
     }
 
-    // Copy the node folder to a temporary working directory.
+    // Copy the node folder to a temporary working directory. That copy is
+    // the node's staging directory, owned from here on by one guard shared
+    // between this add, the generation job that writes into it and, once
+    // the node is published, the stack entity; the last owner removes it.
     let (working_dir, excluded_dirs) =
         copy_node_to_temp_dir(&source_path, &ctx.action.peppy_dirs.tmp_dir())
             .map_err(|e| format!("Failed to copy node folder: {}", e))?;
-    // RAII guard: cleans up the temp working dir on any exit path.
-    let mut working_dir_cleanup = CleanupDir::new(Some(working_dir.clone()));
+    let staging = Arc::new(WorkingDirGuard::new(working_dir));
 
     if !excluded_dirs.is_empty() {
         let _ = ctx.feedback_tx.send(FeedbackLine {
@@ -1530,20 +1535,32 @@ async fn process_node_add_inner(
         doc_pins.as_ref(),
         &interface_feedback,
     )?;
-    // The working dir is a copy staged for this build: generated code must
-    // carry no path into it, or byte-identical sources would fingerprint
-    // differently on every add and never reuse a cached artifact.
-    generate_peppygen_for_node(
-        language,
-        &working_dir,
-        consumed_interfaces,
-        &goal.git_hash,
-        &ctx.action.peppy_dirs,
-        deploy_mode,
-        None,
-        generator::NodeTree::Staged,
-    )
-    .map_err(|e| format!("Failed to generate peppygen library: {}", e))?;
+    // Generation is synchronous and runs on the blocking pool, holding its
+    // own share of the staging directory (see `staged`). The working dir is
+    // a copy staged for this build: generated code must carry no path into
+    // it, or byte-identical sources would fingerprint differently on every
+    // add and never reuse a cached artifact.
+    let generation = StagedJob {
+        node_label: format!("{node_name}:{node_tag}"),
+        log_path: ctx.log_path.clone(),
+        staging: Arc::clone(&staging),
+    };
+    let git_hash = goal.git_hash.clone();
+    let peppy_dirs = ctx.action.peppy_dirs.clone();
+    run_staged_job(generation, move |staging_dir| {
+        generate_peppygen_for_node(
+            language,
+            staging_dir,
+            consumed_interfaces,
+            &git_hash,
+            &peppy_dirs,
+            deploy_mode,
+            None,
+            generator::NodeTree::Staged,
+        )
+        .map_err(|e| format!("Failed to generate peppygen library: {}", e))
+    })
+    .await?;
 
     // Stop any pre-existing instances of this node before pushing the new
     // config. `push_config` rejects replacements that still have live
@@ -1554,11 +1571,11 @@ async fn process_node_add_inner(
         .map_err(|e| format!("Failed to shutdown existing node instances: {}", e))?;
 
     // Push the node config into the stack as an `Added` entity. Use the
-    // working_dir copy of peppy.json5 rather than source_path because
+    // staged copy of peppy.json5 rather than source_path because
     // source_path may point at a transient Git/Http clone that is cleaned
-    // up after this function returns. The working_dir persists as long as
-    // the entity exists via WorkingDirGuard.
-    let config_path_for_stack = working_dir.join(NODE_CONFIG_FILE);
+    // up after this function returns. The staging directory persists as
+    // long as the entity holds its guard.
+    let config_path_for_stack = staging.path().join(NODE_CONFIG_FILE);
     ctx.action
         .node_stack
         .push_config(node_config.clone(), false, &config_path_for_stack)
@@ -1575,20 +1592,16 @@ async fn process_node_add_inner(
             )
         })?;
 
-    // Hand over the temporary working dir to the entity so a follow-up
-    // `node_build` can reuse it without re-cloning the source. The
-    // `WorkingDirGuard` cleans the directory up on entity removal.
-    let working_dir_guard = Arc::new(WorkingDirGuard::new(
-        working_dir_cleanup
-            .take()
-            .expect("working_dir_cleanup was just constructed Some"),
-    ));
+    // Hand the staging directory to the entity so a follow-up `node_build`
+    // can reuse it without re-cloning the source. The entity's guard is the
+    // one generation ran under; the directory is removed when the entity
+    // lets go of it.
     {
         let mut guard = entity_handle.write();
         ctx.action
             .node_stack
             .set_add_log_path(&node_name, &node_tag, ctx.log_path.clone());
-        guard.set_pending_working_dir(Arc::clone(&working_dir_guard));
+        guard.set_pending_working_dir(Arc::clone(&staging));
     }
 
     debug!("Added node {}:{} (pending build)", node_name, node_tag);

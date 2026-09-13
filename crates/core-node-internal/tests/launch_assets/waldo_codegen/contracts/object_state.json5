@@ -1,0 +1,63 @@
+// The ground truth of the objects a simulation engine spawned through
+// scene_control: where each one is right now and how fast it moves,
+// streamed on the engine's own state cadence. A consumer can judge a
+// task from this (the cube came to rest in the tray) without holding a
+// pairing or polling get_objects_list. Object ids are the ones
+// scene_control minted; a message carries one record per spawned object,
+// whatever its physics, and an empty list when nothing is spawned.
+//
+// Ground truth is a debugging surface and stays inside the peppy
+// framework: harness tests, recorders and the evaluation of a trained
+// behaviour (did the cube end up in the tray) read it. No
+// mcp_exposure/v1 document ever selects a member of this contract. An
+// MCP endpoint is the one surface a model drives on the real robot and
+// in simulation alike, and the real world has no ground truth to
+// publish, so a resource or tool built on this contract would exist
+// only in simulation and split the two. The mcp-hub's
+// test_no_simulation_ground_truth.py refuses such a target.
+//
+// Poses are world frame: position in metres, orientation a unit
+// quaternion [x, y, z, w]. Velocities are world axes, taken at the
+// object's origin: linear in m/s, angular in rad/s. Static and
+// visual-only objects report a fixed pose and zero velocities.
+//
+// What an object touches is not here: contact_state lists every contact
+// the engine resolves, from both sides, naming a spawned object by the
+// same object_id, so a consumer joins the two on that string.
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "object_state",
+    tag: "v1",
+  },
+  interfaces: {
+    topics: [
+      {
+        name: "object_states",
+        // High-frequency stream where only the latest snapshot matters;
+        // occasional drops are acceptable.
+        qos_profile: "sensor_data",
+        message_format: {
+          // Implementer-side capture time of this snapshot.
+          timestamp: "time",
+          // One record per spawned object, in the implementer's order.
+          objects: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              object_id: "string",
+              // The asset it was spawned from.
+              asset_id: "string",
+              // "dynamic", "static" or "none", as spawned.
+              physics: "string",
+              position: { $type: "array", $items: "f64", $length: 3 },
+              orientation: { $type: "array", $items: "f64", $length: 4 },
+              linear_velocity: { $type: "array", $items: "f64", $length: 3 },
+              angular_velocity: { $type: "array", $items: "f64", $length: 3 },
+            },
+          },
+        },
+      },
+    ],
+  },
+}

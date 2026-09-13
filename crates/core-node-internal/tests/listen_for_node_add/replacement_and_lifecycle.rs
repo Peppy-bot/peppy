@@ -1678,3 +1678,140 @@ async fn node_add_overwrite_with_two_stuck_instances_shares_one_grace_budget() {
         .await;
     }
 }
+
+/// The files under `dir`, relative to it, sorted, so two snapshots of a
+/// directory compare as sets.
+fn file_listing(dir: &Path) -> Vec<PathBuf> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read directory") {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                out.push(path.strip_prefix(root).expect("under root").to_path_buf());
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files);
+    files.sort();
+    files
+}
+
+/// An add stages a copy of the source and generates the bindings into that
+/// copy alone: the source directory is untouched, the entity keeps the
+/// staged copy for its build, and removing the node deletes the copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_add_stages_a_generated_copy_that_removal_deletes() {
+    const NODE_NAME: &str = "staged_copy_node";
+    const NODE_TAG: &str = "v1";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_stack = started_core_node.node_stack.clone();
+
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    let peppy_json5 = r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "{NODE_NAME}", tag: "{NODE_TAG}" },
+            interfaces: {
+                topics: {
+                    emits: [
+                        { name: "readings", message_format: { timestamp: "time", value: "f64" } }
+                    ]
+                }
+            },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "10"]
+            }
+        }"#
+    .replace("{NODE_NAME}", NODE_NAME)
+    .replace("{NODE_TAG}", NODE_TAG);
+    write_peppy_json5(source_dir.path(), &peppy_json5);
+    // A synced source: it carries the daemon's git hash, so the add has no
+    // auto-sync to run on it and every write of the add lands in the staged
+    // copy.
+    std::fs::write(
+        source_dir.path().join(PEPPY_OUTPUT_DIR).join("git.hash"),
+        TEST_GIT_HASH,
+    )
+    .expect("write the source's git hash");
+    let source_before = file_listing(source_dir.path());
+
+    let add_response = send_node_add_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        source_dir.path(),
+        GOAL_TIMEOUT,
+        RESULT_TIMEOUT,
+        None,
+    )
+    .await
+    .expect("node_add should complete");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    assert_eq!(
+        file_listing(source_dir.path()),
+        source_before,
+        "the add generates into its staged copy, never into the source directory"
+    );
+
+    let staged_dir = node_stack
+        .find(NODE_NAME, NODE_TAG)
+        .expect("entity should exist after add")
+        .read()
+        .pending_working_dir()
+        .expect("the entity keeps the staged copy for its build")
+        .path()
+        .to_path_buf();
+    assert!(
+        staged_dir.starts_with(started_core_node.peppy_dirs.tmp_dir()),
+        "the staged copy lives under the daemon's tmp root: {}",
+        staged_dir.display()
+    );
+    assert!(
+        staged_dir.join(NODE_CONFIG_FILE).is_file(),
+        "the staged copy carries the node config"
+    );
+    assert!(
+        staged_dir
+            .join(PEPPYGEN_OUTPUT_PATH)
+            .join("src/emitted_topics/readings.rs")
+            .is_file(),
+        "the bindings are generated into the staged copy"
+    );
+
+    let response = poll(
+        &NodeRemoveRequest::new(NODE_NAME, NODE_TAG),
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started_core_node.core_node_name,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_remove request should complete");
+    assert!(
+        response.success,
+        "node_remove should succeed, got error: {:?}",
+        response.error_message
+    );
+    assert!(
+        !node_stack.contains(NODE_NAME, NODE_TAG),
+        "the node is removed from the stack"
+    );
+    assert!(
+        !staged_dir.exists(),
+        "removing the node deletes its staged copy at {}",
+        staged_dir.display()
+    );
+    assert_eq!(
+        file_listing(source_dir.path()),
+        source_before,
+        "removal leaves the source directory as it was"
+    );
+}

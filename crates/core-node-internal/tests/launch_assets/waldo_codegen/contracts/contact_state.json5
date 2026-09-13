@@ -1,0 +1,63 @@
+// Every contact a simulation engine resolves this step, from both sides:
+// robot link on object, finger pad on object, link on link, link on the
+// world, object on object. A consumer decides a grasp from it (both pads
+// on the same object, opposing normals, force above a floor), checks a
+// collision governor against what the physics actually did, or bounds
+// the force a behaviour applies, without holding a pairing.
+//
+// Ground truth is a debugging surface and stays inside the peppy
+// framework: harness tests, recorders and the evaluation of a trained
+// behaviour read it. No mcp_exposure/v1 document ever selects a member
+// of this contract; an MCP endpoint serves the real robot and the
+// simulation alike and the real world has no contact list to publish.
+// The mcp-hub's test_no_simulation_ground_truth.py refuses such a target.
+//
+// One record per (body, contact point): a contact appears twice, once
+// from each side, so "everything touching X" is one filter on body.
+// A side is named as object_state names a spawned object, by its
+// object_id; any other body by the implementer's body name; a geom of
+// the world body by the geom's own name (a floor plane "floor", a
+// backdrop piece "backdrop/table/0"), "world" only when it has none.
+// World frame, metres, newtons. normal points out of body
+// toward other; force is the normal contact force; penetration is how
+// deep the two surfaces overlap, 0 when they only touch. A step with no
+// contact carries an empty list.
+{
+  peppy_schema: "contract/v1",
+  manifest: {
+    name: "contact_state",
+    tag: "v1",
+  },
+  interfaces: {
+    topics: [
+      {
+        name: "contacts",
+        // High-frequency stream where only the latest snapshot matters;
+        // occasional drops are acceptable.
+        qos_profile: "sensor_data",
+        message_format: {
+          // Implementer-side capture time of this snapshot.
+          timestamp: "time",
+          contacts: {
+            $type: "array",
+            $items: {
+              $type: "object",
+              // This side of the contact.
+              body: "string",
+              // The other side.
+              other: "string",
+              // The contact point, world frame, metres.
+              position: { $type: "array", $items: "f64", $length: 3 },
+              // Unit normal out of body toward other.
+              normal: { $type: "array", $items: "f64", $length: 3 },
+              // Normal contact force, newtons, >= 0.
+              force: "f64",
+              // Overlap of the two surfaces along the normal, metres, >= 0.
+              penetration: "f64",
+            },
+          },
+        },
+      },
+    ],
+  },
+}

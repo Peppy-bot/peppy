@@ -1,0 +1,60 @@
+// The exclusive control conversation between one leader instance and one
+// jointed device (an arm or any actuated kinematic chain), as a pairing: the
+// leader streams the desired joint setpoint and the follower streams its
+// measured joint state back, both directions scoped to the pair. A gripper
+// opening is not a joint vector and a pose is not a joint vector; they have
+// their own gripper_link and pose_link pairings.
+//
+// Joint conventions, identical in both directions:
+// - Vectors are index-aligned across positions/velocities/efforts and carry
+//   one entry per joint in the device's fixed joint order.
+// - positions are radians (revolute) or meters (prismatic).
+// - velocities are rad/s or m/s; empty when not commanded or not measured.
+// - efforts are N*m (revolute) or N (prismatic); empty when not commanded
+//   or not sensed.
+// - Joint names, order, and revolute/prismatic kinds are fixed properties of
+//   the device, not carried per message.
+{
+  peppy_schema: "pairing/v1",
+  manifest: {
+    name: "joint_link",
+    tag: "v1",
+  },
+  roles: ["leader", "follower"],
+  topics: [
+    {
+      emitted_by: "leader",
+      name: "joint_setpoints",
+      // High-frequency stream where only the latest setpoint matters;
+      // occasional drops are acceptable.
+      qos_profile: "sensor_data",
+      message_format: {
+        // Leader-side capture time of this setpoint.
+        timestamp: "time",
+        // Desired joint positions.
+        positions: { $type: "array", $items: "f64" },
+        // Desired joint velocities (feedforward).
+        velocities: { $type: "array", $items: "f64" },
+        // Desired joint efforts (feedforward).
+        efforts: { $type: "array", $items: "f64" },
+      },
+    },
+    {
+      emitted_by: "follower",
+      name: "joint_states",
+      // High-frequency stream where only the latest state matters;
+      // occasional drops are acceptable.
+      qos_profile: "sensor_data",
+      message_format: {
+        // Follower-side capture time of this measurement.
+        timestamp: "time",
+        // Measured joint positions.
+        positions: { $type: "array", $items: "f64" },
+        // Measured joint velocities.
+        velocities: { $type: "array", $items: "f64" },
+        // Measured joint efforts.
+        efforts: { $type: "array", $items: "f64" },
+      },
+    },
+  ],
+}

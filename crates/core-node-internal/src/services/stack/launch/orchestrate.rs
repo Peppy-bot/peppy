@@ -51,15 +51,19 @@ pub(super) async fn add_node_directly(
     let log_file_for_timeout = log_file.clone();
     let log_path_for_timeout = log_path.clone();
 
+    // Pinned here, at the one place the add's future is produced, so the
+    // whole add pipeline lives on the heap and the phase wrappers below (and
+    // this future) carry a pointer to it rather than its state. See
+    // `run_phase_with_timeouts`.
     let result = run_phase(
-        dispatch_node_add(
+        Box::pin(dispatch_node_add(
             node_add_goal,
             action_context,
             feedback_tx,
             log_file,
             log_path,
             timestamp,
-        ),
+        )),
         activity_notify,
         ctx.idle_timeouts.add,
         ctx.launch_deadline,
@@ -119,7 +123,7 @@ pub(super) async fn build_node_directly(
     let log_path_for_timeout = log_path.clone();
 
     let result = run_phase(
-        run_node_build_for_entity(
+        Box::pin(run_node_build_for_entity(
             node_name.clone(),
             node_tag.clone(),
             env_vars,
@@ -128,7 +132,7 @@ pub(super) async fn build_node_directly(
             feedback_tx,
             log_file,
             log_path,
-        ),
+        )),
         activity_notify,
         ctx.idle_timeouts.build,
         ctx.launch_deadline,
@@ -198,7 +202,7 @@ pub(super) async fn start_node_directly(
         };
 
     let result = run_phase(
-        run_node_run(
+        Box::pin(run_node_run(
             node_run_goal,
             runtime_config,
             action_context,
@@ -206,7 +210,7 @@ pub(super) async fn start_node_directly(
             log_file,
             ctx.core_instance_id.clone(),
             run_cancel_token.clone(),
-        ),
+        )),
         activity_notify,
         ctx.idle_timeouts.run,
         ctx.launch_deadline,
@@ -561,4 +565,42 @@ pub(super) async fn teardown_and_reset_stack(ctx: &ProcessLaunchContext) {
         ctx.relationships.observation(),
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The size of the future a function returns, from the function item
+    /// alone: nothing is constructed or run.
+    fn future_size<'a, F>(_: impl FnOnce(&'a ProcessLaunchContext, NodeAddGoal) -> F) -> usize
+    where
+        F: std::future::Future,
+    {
+        std::mem::size_of::<F>()
+    }
+
+    /// The most a launch's per-node add future may occupy. The add pipeline
+    /// it drives (`dispatch_node_add` and everything beneath) is boxed at
+    /// the call site, so this future holds the log handles, the feedback
+    /// forwarder and a pointer to that pipeline, and its size is a property
+    /// of `add_node_directly` alone. A future over the budget means the
+    /// pipeline, or another large future, is inlined into it again, which
+    /// is what the guard refuses: a launch task polls this future nested
+    /// inside the launch, the group and the phase wrappers, on one worker
+    /// thread's stack.
+    const ADD_NODE_DIRECTLY_FUTURE_BUDGET: usize = 32 * 1024;
+
+    #[test]
+    fn add_node_directly_future_stays_within_budget() {
+        let size = future_size(add_node_directly);
+        // Visible under `--nocapture`, so the budget can be calibrated against
+        // the number a given toolchain produces.
+        eprintln!("add_node_directly future: {size} bytes");
+        assert!(
+            size <= ADD_NODE_DIRECTLY_FUTURE_BUDGET,
+            "add_node_directly's future is {size} bytes, over the {ADD_NODE_DIRECTLY_FUTURE_BUDGET} byte budget: \
+             the add pipeline must be pinned on the heap before it enters the phase wrappers"
+        );
+    }
 }
