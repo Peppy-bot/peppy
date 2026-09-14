@@ -5,8 +5,8 @@ use super::super::composition::Adjustment;
 use super::super::types::PeppyLauncher;
 use super::constraints::{self, ConstraintScope};
 use super::copy::{
-    self, ComposedCopy, CopyRecord, CopyRequest, argument_overrides, combine, compose_copy,
-    flat_document, validate_flat,
+    self, ComposedCopy, CopyRecord, CopyRequest, RestoredVacancy, argument_overrides, combine,
+    compose_copy, flat_document, validate_flat,
 };
 use super::error::CompositionError;
 use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit};
@@ -231,12 +231,16 @@ impl PreparedLauncher {
         })
     }
 
-    /// The running stack without one of its copies.
+    /// The running stack without one of its copies, and the vacancies its
+    /// removal put back: a copy releases a vacancy to pair into the slot
+    /// itself, and the stack's reason for that slot standing empty goes back
+    /// when the copy does.
     pub fn remove(
         &self,
         existing: &PeppyLauncher,
         copy: &CopyRecord,
-    ) -> Result<PeppyLauncher, CompositionError> {
+        selection: &UnitSelection,
+    ) -> Result<(PeppyLauncher, Vec<RestoredVacancy>), CompositionError> {
         let known = self
             .launcher
             .repeatable_axes()
@@ -248,7 +252,8 @@ impl PreparedLauncher {
                 option: copy.option.clone(),
             });
         }
-        copy::detach(existing, copy)
+        let (bare, _) = self.flat_stack(selection)?;
+        copy::detach(existing, copy, &bare)
     }
 
     /// The stack alone under `selection`: the launcher's own deployments,

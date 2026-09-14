@@ -86,7 +86,7 @@ pub mod launcher {
         DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, FragmentPart, FragmentSpec,
         FrameworkOverrides, JoinRequest, LauncherFragmentParser, LinkTargets, LinkValue,
         PairingValidationItem, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
-        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, RunningStack,
+        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, RestoredVacancy, RunningStack,
         SELF_COPY_NAME_REFUSAL, Selection, SkipReason, SkippedAdjustment, UnitSelection,
         VacantReason, check_composition, participant_vacancies, split_link_target,
         validate_bindings, validate_link_plan, validate_link_slots, validate_pairings,

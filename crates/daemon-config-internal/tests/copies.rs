@@ -1143,6 +1143,92 @@ fn a_join_may_pair_into_a_slot_the_stack_declares_vacant() {
     );
 }
 
+/// The copy that released a vacancy hands it back when it goes: the stack
+/// the removal leaves is the stack the launch brought up, so the slot
+/// carries the reason it stands empty and pairing validation covers it.
+#[test]
+fn removing_a_copy_puts_back_the_vacancy_it_released() {
+    let prepared = simulation_with_arm_slot(r#"{ vacant: "a simulated robot pairs here" }"#);
+    let launch = prepared.launch(&[]).unwrap();
+    let bare = instance(&launch.launcher, "simulation_inst").links["arm"].clone();
+    let joined = prepared
+        .join(
+            JoinRequest {
+                option: "sim",
+                name: &name("alpha"),
+                words: &[],
+                arguments: &[],
+            },
+            RunningStack {
+                selection: &launch.selection,
+                launcher: &launch.launcher,
+            },
+        )
+        .unwrap();
+    assert!(
+        !instance(&joined.launcher, "simulation_inst")
+            .links
+            .contains_key("arm")
+    );
+
+    let (remaining, restored) = prepared
+        .remove(&joined.launcher, &joined.copy, &launch.selection)
+        .unwrap();
+    assert_eq!(
+        restored,
+        vec![daemon_config::launcher::RestoredVacancy {
+            instance: String::from("simulation_inst"),
+            slot: String::from("arm"),
+            value: bare.clone(),
+        }]
+    );
+    assert_eq!(instance(&remaining, "simulation_inst").links["arm"], bare);
+    assert_eq!(ids(&remaining), ids(&launch.launcher));
+}
+
+/// A slot another copy still pairs into keeps its pair: the vacancy goes
+/// back only where nothing is left to cover the slot.
+#[test]
+fn removing_a_copy_leaves_a_slot_another_copy_pairs_into() {
+    let prepared = load(&simulation_with_arm_slot_document(
+        r#"{ vacant: "a simulated robot pairs here" }"#,
+        r#", links: { engine: "simulation_inst/arm" }"#,
+    ));
+    let launch = prepared.launch(&[]).unwrap();
+    let alpha = join(
+        &prepared,
+        "sim",
+        "alpha",
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap();
+    let bravo = prepared
+        .join(
+            JoinRequest {
+                option: "sim",
+                name: &name("bravo"),
+                words: &[],
+                arguments: &[],
+            },
+            RunningStack {
+                selection: &launch.selection,
+                launcher: &alpha,
+            },
+        )
+        .unwrap();
+    let (remaining, restored) = prepared
+        .remove(&bravo.launcher, &bravo.copy, &launch.selection)
+        .unwrap();
+    assert_eq!(restored, Vec::new());
+    assert!(
+        !instance(&remaining, "simulation_inst")
+            .links
+            .contains_key("arm"),
+        "`alpha` still pairs into the slot"
+    );
+}
+
 #[test]
 fn a_join_cannot_drop_a_slot_the_stack_binds() {
     let prepared = simulation_with_arm_slot(r#""simulation_inst""#);
@@ -1471,7 +1557,9 @@ fn a_copy_the_stack_links_to_cannot_be_removed() {
         .iter()
         .find(|copy| copy.name == "eye")
         .unwrap();
-    let error = prepared.remove(&launch.launcher, eye).unwrap_err();
+    let error = prepared
+        .remove(&launch.launcher, eye, &launch.selection)
+        .unwrap_err();
     assert!(
         matches!(&error, CompositionError::CopyStillLinked { copy, links }
             if copy == "eye" && links == "observer_inst.robots -> eye_wrist"),
@@ -1482,9 +1570,12 @@ fn a_copy_the_stack_links_to_cannot_be_removed() {
         .iter()
         .find(|copy| copy.name == "alpha")
         .unwrap();
-    let remaining = prepared.remove(&launch.launcher, alpha).unwrap();
+    let (remaining, restored) = prepared
+        .remove(&launch.launcher, alpha, &launch.selection)
+        .unwrap();
     assert_eq!(ids(&remaining), ["observer_inst", "eye_wrist"]);
     assert!(!remaining.core_nodes.iter().any(|link| link == "alpha"));
+    assert_eq!(restored, Vec::new());
 }
 
 fn load_error(document: &str) -> CompositionError {

@@ -17,7 +17,7 @@ use config::runtime::Name;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackRemoveGoal,
 };
-use daemon_config::launcher::DeploymentInstance;
+use daemon_config::launcher::{DeploymentInstance, RestoredVacancy};
 use peppylib::core_node::transport::poll;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
@@ -44,6 +44,23 @@ pub(in crate::services::stack) async fn remove(
     .await
 }
 
+/// Writes the vacancies the removal put back into the deployments this
+/// change validates, plans and records, so a slot the copy had released
+/// carries the stack's reason for standing empty again.
+fn restore_vacancies(planned: &mut [PlannedDeployment], restored: &[RestoredVacancy]) {
+    for vacancy in restored {
+        for instance in planned
+            .iter_mut()
+            .flat_map(|item| &mut item.deployment.instances)
+            .filter(|instance| instance.instance_id.as_str() == vacancy.instance)
+        {
+            instance
+                .links
+                .insert(vacancy.slot.clone(), vacancy.value.clone());
+        }
+    }
+}
+
 async fn remove_inner(
     name: &Name,
     active: &mut ActiveLaunch,
@@ -52,14 +69,15 @@ async fn remove_inner(
     let copy = active.copies.get(name).cloned().ok_or_else(|| {
         format!("copy `{name}` is absent; peppy stack list shows the copies on the stack")
     })?;
-    let remaining = active
+    let (remaining, restored) = active
         .prepared
-        .remove(&active.flat, &copy.record)
+        .remove(&active.flat, &copy.record, &active.selection)
         .map_err(|e| e.to_string())?;
     let removed: HashSet<_> = copy.record.instance_ids.iter().map(Name::as_str).collect();
-    let remaining_planned = selected_instances(&active.planned, |instance| {
+    let mut remaining_planned = selected_instances(&active.planned, |instance| {
         !removed.contains(instance.instance_id.as_str())
     });
+    restore_vacancies(&mut remaining_planned, &restored);
     let removes_clock = active
         .time_source
         .as_ref()
