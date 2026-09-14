@@ -623,58 +623,51 @@ pub(super) fn against_running(
         .collect()
 }
 
-/// The vacancies the stack declares on slots that nothing pairs into any
-/// more, written back into `remaining`.
+/// Writes back the vacancies the stack declares on slots nothing pairs
+/// into any more.
 ///
 /// Releasing a vacancy is the one write that changes a stack instance
 /// ([`attach`] verifies every other write against what already runs), so a
-/// copy's removal is undone by putting back what the stack says about the
-/// slot it released: the same reason a bare stack boots with, which
+/// copy's instances leaving is undone by taking the slot's value from the
+/// stack the launch composed: the same reason a bare stack boots with, which
 /// [`super::super::pairings`] reads as the slot's cover.
-fn restore_vacancies(remaining: &mut PeppyLauncher, bare: &PeppyLauncher) -> Vec<RestoredVacancy> {
-    let paired: HashSet<(&str, Option<&str>)> = remaining
+fn restore_vacancies(remaining: &mut PeppyLauncher, bare: &PeppyLauncher) {
+    let paired: HashSet<(String, Option<String>)> = remaining
         .deployments
         .iter()
         .flat_map(|deployment| &deployment.instances)
         .flat_map(|instance| instance.links.values())
         .filter_map(LinkValue::selection)
         .flat_map(Selection::targets)
-        .map(|target| split_link_target(target))
+        .map(|target| {
+            let (instance, slot) = split_link_target(target);
+            (instance.to_owned(), slot.map(str::to_owned))
+        })
         .collect();
-    let vacancies: Vec<RestoredVacancy> = bare
+    let vacancies: Vec<(String, String, LinkValue)> = bare
         .deployments
         .iter()
         .flat_map(|deployment| &deployment.instances)
         .flat_map(|instance| {
             instance.links.iter().filter_map(|(slot, value)| {
-                value.vacancy().map(|_| RestoredVacancy {
-                    instance: instance.instance_id.to_string(),
-                    slot: slot.clone(),
-                    value: value.clone(),
-                })
+                value.vacancy()?;
+                Some((
+                    instance.instance_id.to_string(),
+                    slot.clone(),
+                    value.clone(),
+                ))
             })
         })
-        .filter(|vacancy| {
-            !paired.contains(&(vacancy.instance.as_str(), Some(vacancy.slot.as_str())))
-                && !paired.contains(&(vacancy.instance.as_str(), None))
+        .filter(|(instance, slot, _)| {
+            !paired.contains(&(instance.clone(), Some(slot.clone())))
+                && !paired.contains(&(instance.clone(), None))
         })
         .collect();
-    vacancies
-        .into_iter()
-        .filter(|vacancy| {
-            let Some(running) = instance_named_mut(&mut remaining.deployments, &vacancy.instance)
-            else {
-                return false;
-            };
-            if running.links.contains_key(&vacancy.slot) {
-                return false;
-            }
-            running
-                .links
-                .insert(vacancy.slot.clone(), vacancy.value.clone());
-            true
-        })
-        .collect()
+    for (instance, slot, value) in vacancies {
+        if let Some(running) = instance_named_mut(&mut remaining.deployments, &instance) {
+            running.links.entry(slot).or_insert(value);
+        }
+    }
 }
 
 /// Whether one of the copy's instances links into `slot` of `instance`,
@@ -692,15 +685,6 @@ fn pairs_into(copy: &ComposedCopy, instance: &str, slot: &str) -> bool {
         })
 }
 
-/// One slot a removed copy had released, with the reason the stack gives
-/// for it standing empty.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RestoredVacancy {
-    pub instance: String,
-    pub slot: String,
-    pub value: LinkValue,
-}
-
 /// The running stack without one copy: its instances and its placement link
 /// gone. A stack instance linking to one of the copy's instances keeps the
 /// copy.
@@ -708,7 +692,7 @@ pub(super) fn detach(
     existing: &PeppyLauncher,
     copy: &CopyRecord,
     bare: &PeppyLauncher,
-) -> Result<(PeppyLauncher, Vec<RestoredVacancy>), CompositionError> {
+) -> Result<PeppyLauncher, CompositionError> {
     let removed: HashSet<&str> = copy.instance_ids.iter().map(Name::as_str).collect();
     let mut remaining = existing.clone();
     for deployment in &mut remaining.deployments {
@@ -745,8 +729,8 @@ pub(super) fn detach(
             links: linked.join(", "),
         });
     }
-    let restored = restore_vacancies(&mut remaining, bare);
-    Ok((validate_flat(&remaining)?, restored))
+    restore_vacancies(&mut remaining, bare);
+    validate_flat(&remaining)
 }
 
 fn add_copy(flat: &mut PeppyLauncher, copy: &ComposedCopy) -> Result<(), CompositionError> {

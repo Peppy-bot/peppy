@@ -17,9 +17,9 @@ use config::runtime::Name;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackRemoveGoal,
 };
-use daemon_config::launcher::{DeploymentInstance, RestoredVacancy};
+use daemon_config::launcher::{DeploymentInstance, PeppyLauncher};
 use peppylib::core_node::transport::poll;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
 /// Removing a copy stops its instances one after another, each within its
@@ -44,19 +44,22 @@ pub(in crate::services::stack) async fn remove(
     .await
 }
 
-/// Writes the vacancies the removal put back into the deployments this
-/// change validates, plans and records, so a slot the copy had released
-/// carries the stack's reason for standing empty again.
-fn restore_vacancies(planned: &mut [PlannedDeployment], restored: &[RestoredVacancy]) {
-    for vacancy in restored {
-        for instance in planned
-            .iter_mut()
-            .flat_map(|item| &mut item.deployment.instances)
-            .filter(|instance| instance.instance_id.as_str() == vacancy.instance)
-        {
-            instance
-                .links
-                .insert(vacancy.slot.clone(), vacancy.value.clone());
+/// Points the deployments this change validates and plans against at the
+/// links the launcher now holds, so a slot the removed copy had released
+/// stands vacant here too.
+fn take_links_from(planned: &mut [PlannedDeployment], launcher: &PeppyLauncher) {
+    let links: BTreeMap<&str, _> = launcher
+        .deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+        .map(|instance| (instance.instance_id.as_str(), &instance.links))
+        .collect();
+    for instance in planned
+        .iter_mut()
+        .flat_map(|item| &mut item.deployment.instances)
+    {
+        if let Some(current) = links.get(instance.instance_id.as_str()) {
+            instance.links = (*current).clone();
         }
     }
 }
@@ -69,7 +72,7 @@ async fn remove_inner(
     let copy = active.copies.get(name).cloned().ok_or_else(|| {
         format!("copy `{name}` is absent; peppy stack list shows the copies on the stack")
     })?;
-    let (remaining, restored) = active
+    let remaining = active
         .prepared
         .remove(&active.flat, &copy.record, &active.selection)
         .map_err(|e| e.to_string())?;
@@ -77,7 +80,7 @@ async fn remove_inner(
     let mut remaining_planned = selected_instances(&active.planned, |instance| {
         !removed.contains(instance.instance_id.as_str())
     });
-    restore_vacancies(&mut remaining_planned, &restored);
+    take_links_from(&mut remaining_planned, &remaining);
     let removes_clock = active
         .time_source
         .as_ref()

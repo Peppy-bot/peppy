@@ -14,8 +14,8 @@ mod types;
 pub use bindings::{BindingValidationItem, validate_bindings};
 pub use compose::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyRecord,
-    JoinRequest, PreparedLauncher, RestoredVacancy, RunningStack, SELF_COPY_NAME_REFUSAL,
-    SkipReason, SkippedAdjustment, UnitSelection, check_composition,
+    JoinRequest, PreparedLauncher, RunningStack, SELF_COPY_NAME_REFUSAL, SkipReason,
+    SkippedAdjustment, UnitSelection, check_composition,
 };
 pub use composition::{ComponentAxis, FragmentPart, FragmentSpec, LauncherFragmentParser};
 pub use links::{validate_link_plan, validate_link_slots, validate_sim_time_source};

@@ -1171,17 +1171,9 @@ fn removing_a_copy_puts_back_the_vacancy_it_released() {
             .contains_key("arm")
     );
 
-    let (remaining, restored) = prepared
+    let remaining = prepared
         .remove(&joined.launcher, &joined.copy, &launch.selection)
         .unwrap();
-    assert_eq!(
-        restored,
-        vec![daemon_config::launcher::RestoredVacancy {
-            instance: String::from("simulation_inst"),
-            slot: String::from("arm"),
-            value: bare.clone(),
-        }]
-    );
     assert_eq!(instance(&remaining, "simulation_inst").links["arm"], bare);
     assert_eq!(ids(&remaining), ids(&launch.launcher));
 }
@@ -1217,10 +1209,9 @@ fn removing_a_copy_leaves_a_slot_another_copy_pairs_into() {
             },
         )
         .unwrap();
-    let (remaining, restored) = prepared
+    let remaining = prepared
         .remove(&bravo.launcher, &bravo.copy, &launch.selection)
         .unwrap();
-    assert_eq!(restored, Vec::new());
     assert!(
         !instance(&remaining, "simulation_inst")
             .links
@@ -1570,12 +1561,11 @@ fn a_copy_the_stack_links_to_cannot_be_removed() {
         .iter()
         .find(|copy| copy.name == "alpha")
         .unwrap();
-    let (remaining, restored) = prepared
+    let remaining = prepared
         .remove(&launch.launcher, alpha, &launch.selection)
         .unwrap();
     assert_eq!(ids(&remaining), ["observer_inst", "eye_wrist"]);
     assert!(!remaining.core_nodes.iter().any(|link| link == "alpha"));
-    assert_eq!(restored, Vec::new());
 }
 
 fn load_error(document: &str) -> CompositionError {
