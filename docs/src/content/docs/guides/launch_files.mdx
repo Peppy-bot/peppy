@@ -537,7 +537,7 @@ A fragment's axes are `one` or `zero_or_one`; how many robots run is the launche
 
 An axis with cardinality `zero_or_more` runs as **copies**: named instances of one of its options, exactly as a node runs as named instances. The launcher's `deployments` list the copies a launch starts, `peppy stack join` adds one to a running stack, and `peppy stack remove` takes one out. Every instance a copy's fragments define is minted as `NAME_<id>`, so any number of copies run side by side under one launcher.
 
-The `simulation` launcher holds the simulation as a `one` axis, and the robot as copies:
+The `openarm_simulation` launcher holds the simulation as a `one` axis, and the robot as copies:
 
 ```json5
 components: [
@@ -566,17 +566,17 @@ A copy entry has four fields: `instance_id`, the copy's name; `with`, the select
 An entry and a copy also take `adjustments`, the same verbs a fragment's adjustments use (`set_arguments`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch`, a `--with` word `NAME.axis=option` or `NAME.option` selects one file copy's own axis for that launch, over the file's `with`:
 
 ```sh
-peppy stack launch simulation --with mujoco,alpha.xr_commander
+peppy stack launch openarm_simulation --with mujoco,alpha.xr_commander
 ```
 
 One robot, two robots, many:
 
 ```sh
 # The simulation and the copies the file deploys.
-peppy stack launch simulation
+peppy stack launch openarm_simulation
 
 # The same copies in MuJoCo.
-peppy stack launch simulation --with mujoco
+peppy stack launch openarm_simulation --with mujoco
 
 # Another robot in place of the first, on another machine, then its removal.
 peppy stack remove alpha
@@ -602,14 +602,14 @@ peppy stack join openarm_v2 -i charlie --with xr_commander \
 
 A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. Constraints see the stack's selection and the copy's together, so `openarm_v1_sim` on a Waldo stack is refused at join with the v1 fragment's reason. A copy's adjustments may write to a stack instance, and each field they write is what the copy needs of it: two copies deployed together must agree on every field they both write, and a join may write to a stack instance only what already runs there, except that its own instances may pair into the slots the instance declares vacant: the pairing instance's `links` name the slot, and the copy's fragment releases the vacancy with `unset_links` on the instance. A join that would change a running instance is refused, naming the instance and each field that differs. That is why the OpenArm v1 simulation, which sets the simulation's hardware generation, and the rendered camera rig, which turns the simulation's rendering on, are selected in the file at launch.
 
-One simulation per stack, and the simulations available today pair with one simulated robot: the `simulation` launcher ships one copy, and a second simulated robot in one simulation is refused where its relays reach for limb slots the first one paired, so remove the first before joining the second. Physical robots join beside a simulated one.
+One simulation per stack, and the simulations available today pair with one simulated robot: the `openarm_simulation` launcher ships one copy, and a second simulated robot in one simulation is refused where its relays reach for limb slots the first one paired, so remove the first before joining the second. Physical robots join beside a simulated one.
 
 `stack remove NAME` stops the copy's instances in reverse dependency order and takes it out of the stack; a copy another copy links to is refused until that copy goes first, and a copy the stack's own instances link to stays until the next launch. Removal leaves the stack's own instances running: removing the simulated robot leaves the simulation up with its model loaded, and `stack reset` stops everything. A failed join stops what it started, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
 
 `stack list` names each copy, the option it copies, its host, its selection and its instances; `stack list --json` carries the same under `copies`. Preview a launch, or a join onto it, without starting anything:
 
 ```sh
-peppy stack resolve simulation --with mujoco
+peppy stack resolve openarm_simulation --with mujoco
 peppy stack resolve fleet --join openarm_v1 --join-name bravo --join-with xr_commander
 ```
 
