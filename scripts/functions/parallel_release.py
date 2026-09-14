@@ -70,6 +70,7 @@ from .cli import (
     is_linux,
     is_macos_arm64,
     need_cmd,
+    require_release_token,
     run_with_error_handling,
     validate_release_environment,
 )
@@ -88,6 +89,11 @@ from .verify_release import verify_all_releases
 # File names the provisioning stages write and the build stage reads.
 BINDINGS_ARCHIVE = "peppylib-bindings.tgz"
 BINDINGS_DIR_NAME = "so"
+
+# Env var the prepare and publish stages read the GitHub release token from.
+# The workflow passes a repository secret of the same name, and GitHub rejects
+# secret names that start with GITHUB_.
+RELEASE_TOKEN_ENV = "PEPPY_RELEASE_TOKEN"
 
 
 def apptainer_archive_name(arch: str) -> str:
@@ -425,6 +431,7 @@ def run_prepare(
     token = validate_release_environment(
         required_commands=("git", "claude"),
         skip_prod_router_check=skip_prod_cert_check,
+        token_env=RELEASE_TOKEN_ENV,
     )
     repo_root = get_repo_root()
     os.chdir(repo_root)
@@ -642,9 +649,7 @@ def run_publish(*, plan_path: Path, archives_dir: Path) -> None:
     build_release.sh offers to publish on its next run.
     """
     need_cmd("git")
-    token = os.environ.get("GITHUB_PEPPY_RELEASE_TOKEN", "").strip()
-    if not token:
-        raise ReleaseError("GITHUB_PEPPY_RELEASE_TOKEN env var is required")
+    token = require_release_token(RELEASE_TOKEN_ENV)
     plan = ReleasePlan.load(plan_path)
 
     repo_root = get_repo_root()

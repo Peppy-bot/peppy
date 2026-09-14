@@ -41,8 +41,8 @@ concurrency:
   cancel-in-progress: false
 
 # Every write (the release and its archives, the docs pull requests, and the
-# pushes to `dev` and `main`) goes through GITHUB_PEPPY_RELEASE_TOKEN, so the
-# jobs' own token only reads.
+# pushes to `dev` and `main`) goes through the PEPPY_RELEASE_TOKEN secret, so
+# the jobs' own token only reads.
 permissions:
   contents: read
 
@@ -70,7 +70,7 @@ jobs:
         with:
           ref: dev
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_PEPPY_RELEASE_TOKEN }}
+          token: ${{ secrets.PEPPY_RELEASE_TOKEN }}
 
       - uses: ./.github/actions/release-host-env
         with:
@@ -85,7 +85,7 @@ jobs:
       # stops unless --skip-prod-cert-check is among the extra arguments.
       - name: Check the release and draft its notes
         env:
-          GITHUB_PEPPY_RELEASE_TOKEN: ${{ secrets.GITHUB_PEPPY_RELEASE_TOKEN }}
+          PEPPY_RELEASE_TOKEN: ${{ secrets.PEPPY_RELEASE_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           PEPPY_PROD_ROUTER_ENDPOINT: ${{ vars.PEPPY_PROD_ROUTER_ENDPOINT }}
           TAG: ${{ inputs.tag }}
@@ -206,7 +206,7 @@ jobs:
         with:
           ref: dev
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_PEPPY_RELEASE_TOKEN }}
+          token: ${{ secrets.PEPPY_RELEASE_TOKEN }}
 
       - uses: ./.github/actions/release-host-env
         with:
@@ -226,7 +226,7 @@ jobs:
 
       - name: Publish the release
         env:
-          GITHUB_PEPPY_RELEASE_TOKEN: ${{ secrets.GITHUB_PEPPY_RELEASE_TOKEN }}
+          PEPPY_RELEASE_TOKEN: ${{ secrets.PEPPY_RELEASE_TOKEN }}
         run: |
           ./scripts/parallel_release.sh publish \
             --plan "$RUNNER_TEMP/release-plan/release-plan.json" \

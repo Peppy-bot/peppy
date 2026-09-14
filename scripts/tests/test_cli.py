@@ -20,6 +20,7 @@ from functions.cli import (
     need_cmd,
     prompt,
     prompt_yn,
+    require_release_token,
     run_with_error_handling,
     validate_release_environment,
     verify_prod_router_publicly_trusted,
@@ -290,3 +291,35 @@ def test_get_targets_for_platform_unsupported() -> None:
          patch("functions.cli.platform.machine", return_value="AMD64"):
         with pytest.raises(ReleaseError, match="unsupported platform"):
             get_targets_for_platform()
+
+
+# --- the release token ---
+
+
+def test_require_release_token_reads_the_env_var_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PEPPY_RELEASE_TOKEN", " ci-token ")
+    monkeypatch.delenv("GITHUB_PEPPY_RELEASE_TOKEN", raising=False)
+
+    assert require_release_token("PEPPY_RELEASE_TOKEN") == "ci-token"
+    # Without a name, the one build_release.sh reads.
+    with pytest.raises(
+        ReleaseError, match="^GITHUB_PEPPY_RELEASE_TOKEN env var is required"
+    ):
+        require_release_token()
+
+
+def test_validate_release_environment_reads_the_token_env_it_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PEPPY_RELEASE_TOKEN", "ci-token")
+    monkeypatch.delenv("GITHUB_PEPPY_RELEASE_TOKEN", raising=False)
+
+    token = validate_release_environment(
+        required_commands=("git",),
+        skip_prod_router_check=True,
+        token_env="PEPPY_RELEASE_TOKEN",
+    )
+
+    assert token == "ci-token"
