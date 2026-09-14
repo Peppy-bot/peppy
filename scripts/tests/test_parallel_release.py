@@ -506,6 +506,8 @@ def test_bindings_build_every_platform_and_pack_them(
 
     run_bindings(tmp_path / "out")
 
+    # Checked up front: peppylib-py's build script refuses to start without it.
+    mock_need_cmd.assert_any_call("uv")
     command = mock_run.call_args.args[0]
     assert command[:4] == ["cargo", "build", "-p", "generator"]
     assert "--release" in command and "--locked" in command
