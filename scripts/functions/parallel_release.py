@@ -492,7 +492,9 @@ def run_bindings(output_dir: Path) -> None:
             "the bindings of every platform build on macOS ARM64 only: the macOS "
             "binding cannot be cross-compiled from Linux"
         )
-    for cmd in ("cargo", "rustc", "pixi"):
+    # peppylib-py's build script needs uv too, and would only say so minutes
+    # into the generator build.
+    for cmd in ("cargo", "rustc", "pixi", "uv"):
         need_cmd(cmd)
     repo_root = get_repo_root()
     os.chdir(repo_root)
