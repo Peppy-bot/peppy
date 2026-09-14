@@ -623,6 +623,53 @@ pub(super) fn against_running(
         .collect()
 }
 
+/// Writes back the vacancies the stack declares, except on the slots the
+/// copies that remain have released.
+///
+/// Releasing a vacancy is the one write that changes a stack instance
+/// ([`attach`] verifies every other write against what already runs), so a
+/// copy's instances leaving is undone by taking the slot's value from the
+/// stack the launch composed: the same reason a bare stack boots with, which
+/// [`super::super::pairings`] reads as the slot's cover. A slot another copy
+/// released stays as that copy needs it.
+fn restore_vacancies(
+    remaining: &mut PeppyLauncher,
+    bare: &PeppyLauncher,
+    released: &HashSet<(String, String)>,
+) {
+    let vacancies: Vec<(String, String, LinkValue)> = bare
+        .deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+        .flat_map(|instance| {
+            instance.links.iter().filter_map(|(slot, value)| {
+                value.vacancy()?;
+                Some((
+                    instance.instance_id.to_string(),
+                    slot.clone(),
+                    value.clone(),
+                ))
+            })
+        })
+        .filter(|(instance, slot, _)| !released.contains(&(instance.clone(), slot.clone())))
+        .collect();
+    for (instance, slot, value) in vacancies {
+        if let Some(running) = instance_named_mut(&mut remaining.deployments, &instance) {
+            running.links.entry(slot).or_insert(value);
+        }
+    }
+}
+
+/// The stack slots a composed copy releases to pair into them itself.
+pub(super) fn released_vacancies(copy: &ComposedCopy) -> impl Iterator<Item = (String, String)> {
+    copy.stack_writes
+        .iter()
+        .filter_map(|entry| match &entry.write {
+            AppliedChange::LinkRemoved { slot, .. } => Some((entry.instance.clone(), slot.clone())),
+            _ => None,
+        })
+}
+
 /// Whether one of the copy's instances links into `slot` of `instance`,
 /// by `instance/slot` or by the instance alone.
 fn pairs_into(copy: &ComposedCopy, instance: &str, slot: &str) -> bool {
@@ -638,12 +685,14 @@ fn pairs_into(copy: &ComposedCopy, instance: &str, slot: &str) -> bool {
         })
 }
 
-/// The running stack without one copy: its instances and its placement
-/// link gone, everything it wrote to the stack left as it runs. A stack
-/// instance linking to one of the copy's instances keeps the copy.
+/// The running stack without one copy: its instances and its placement link
+/// gone. A stack instance linking to one of the copy's instances keeps the
+/// copy.
 pub(super) fn detach(
     existing: &PeppyLauncher,
     copy: &CopyRecord,
+    bare: &PeppyLauncher,
+    released: &HashSet<(String, String)>,
 ) -> Result<PeppyLauncher, CompositionError> {
     let removed: HashSet<&str> = copy.instance_ids.iter().map(Name::as_str).collect();
     let mut remaining = existing.clone();
@@ -681,6 +730,7 @@ pub(super) fn detach(
             links: linked.join(", "),
         });
     }
+    restore_vacancies(&mut remaining, bare, released);
     validate_flat(&remaining)
 }
 

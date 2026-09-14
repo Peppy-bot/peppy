@@ -1,7 +1,7 @@
 //! A launcher held ready to compose: its fragments read once, and the
 //! launch, join and removal it answers.
 
-use super::super::composition::Adjustment;
+use super::super::composition::{Adjustment, ArgumentOverrides};
 use super::super::types::PeppyLauncher;
 use super::constraints::{self, ConstraintScope};
 use super::copy::{
@@ -15,7 +15,7 @@ use super::report::{CompositionReport, SkipReason, SkippedAdjustment};
 use super::select::{self, CopyOrigin, LaunchWords, UnitSelection};
 use config::runtime::Name;
 use core_node_api::encoding::ArgumentOverride;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 /// A launcher's complete fragment contents, captured when it is launched.
@@ -231,11 +231,16 @@ impl PreparedLauncher {
         })
     }
 
-    /// The running stack without one of its copies.
+    /// The running stack without one of its copies: its instances gone, and
+    /// every slot it had released standing vacant again, as the stack this
+    /// launch composed declares it. `remaining` names the copies that stay,
+    /// whose own released slots are left as they need them.
     pub fn remove(
         &self,
         existing: &PeppyLauncher,
         copy: &CopyRecord,
+        selection: &UnitSelection,
+        remaining: &[CopyRecord],
     ) -> Result<PeppyLauncher, CompositionError> {
         let known = self
             .launcher
@@ -248,7 +253,40 @@ impl PreparedLauncher {
                 option: copy.option.clone(),
             });
         }
-        copy::detach(existing, copy)
+        let (flat, bare) = self.flat_stack(selection)?;
+        // What the copies that stay have released, recomposed from the
+        // records that describe them, so a slot one of them pairs into is
+        // not handed back as vacant.
+        let mut released = HashSet::new();
+        for record in remaining {
+            let with: BTreeMap<String, String> = record
+                .selection
+                .own_axes(&record.axis)
+                .filter_map(|entry| {
+                    entry
+                        .option
+                        .as_ref()
+                        .map(|option| (entry.axis.clone(), option.clone()))
+                })
+                .collect();
+            let composed = compose_copy(
+                self,
+                selection,
+                &bare,
+                CopyRequest {
+                    axis: &record.axis,
+                    loaded: self.loaded.option(&record.axis, &record.option),
+                    name: &record.name,
+                    with: &with,
+                    arguments: &ArgumentOverrides::default(),
+                    adjustments: &[],
+                    origin: CopyOrigin::Join,
+                },
+                &[],
+            )?;
+            released.extend(copy::released_vacancies(&composed));
+        }
+        copy::detach(existing, copy, &flat, &released)
     }
 
     /// The stack alone under `selection`: the launcher's own deployments,

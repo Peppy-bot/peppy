@@ -489,17 +489,20 @@ pub(super) async fn build_container_command(
         apptainer_cmd = apptainer_cmd.raw_flag(arg);
     }
     apptainer_cmd = apptainer_cmd.lima_shell_extra_args(lima_shell_extra_args);
+    // Each variable rides the apptainer process environment under the
+    // `APPTAINERENV_` prefix, which carries a value whole. See
+    // `ApptainerCommand::apptainer_env`.
     for (key, value) in env_vars {
-        // Apptainer manages HOME itself; passing it via --env triggers a warning.
+        // Apptainer manages HOME itself and refuses to have it overridden.
         if key.eq_ignore_ascii_case("HOME") {
             continue;
         }
-        apptainer_cmd = apptainer_cmd.env(key, value);
+        apptainer_cmd = apptainer_cmd.apptainer_env(key, value);
     }
     let runtime_config_str = runtime_config_path
         .to_str()
         .ok_or_else(|| std::io::Error::other("runtime config path is not valid UTF-8"))?;
-    apptainer_cmd = apptainer_cmd.env(RUNTIME_CONFIG_VAR_NAME, runtime_config_str);
+    apptainer_cmd = apptainer_cmd.apptainer_env(RUNTIME_CONFIG_VAR_NAME, runtime_config_str);
 
     // Add all bind mounts (runtime config + user-specified).
     // Device passthrough mounts (src under /dev/ with no dest or same dest)

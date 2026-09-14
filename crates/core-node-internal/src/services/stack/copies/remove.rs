@@ -17,7 +17,7 @@ use config::runtime::Name;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackRemoveGoal,
 };
-use daemon_config::launcher::DeploymentInstance;
+use daemon_config::launcher::{DeploymentInstance, PeppyLauncher};
 use peppylib::core_node::transport::poll;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
@@ -44,6 +44,28 @@ pub(in crate::services::stack) async fn remove(
     .await
 }
 
+/// The deployments the launcher now holds, each carrying the pins the launch
+/// resolved for its source, the way a join plans what it adds.
+fn planned_from(
+    launcher: &PeppyLauncher,
+    resolved: &[PlannedDeployment],
+) -> Vec<PlannedDeployment> {
+    launcher
+        .deployments
+        .iter()
+        .map(|deployment| {
+            let item = resolved
+                .iter()
+                .find(|item| item.deployment.source == deployment.source)
+                .expect("every deployment on the stack was resolved by the launch or by a join");
+            PlannedDeployment {
+                deployment: deployment.clone(),
+                ..item.clone()
+            }
+        })
+        .collect()
+}
+
 async fn remove_inner(
     name: &Name,
     active: &mut ActiveLaunch,
@@ -52,14 +74,18 @@ async fn remove_inner(
     let copy = active.copies.get(name).cloned().ok_or_else(|| {
         format!("copy `{name}` is absent; peppy stack list shows the copies on the stack")
     })?;
+    let staying: Vec<_> = active
+        .copies
+        .values()
+        .filter(|other| other.record.name != copy.record.name)
+        .map(|other| other.record.clone())
+        .collect();
     let remaining = active
         .prepared
-        .remove(&active.flat, &copy.record)
+        .remove(&active.flat, &copy.record, &active.selection, &staying)
         .map_err(|e| e.to_string())?;
     let removed: HashSet<_> = copy.record.instance_ids.iter().map(Name::as_str).collect();
-    let remaining_planned = selected_instances(&active.planned, |instance| {
-        !removed.contains(instance.instance_id.as_str())
-    });
+    let remaining_planned = planned_from(&remaining, &active.resolved);
     let removes_clock = active
         .time_source
         .as_ref()

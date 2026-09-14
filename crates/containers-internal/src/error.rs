@@ -60,6 +60,17 @@ pub enum Error {
     #[error("Failed to sync apptainer installation to Lima VM: {0}")]
     LimaSyncFailed(String),
 
+    #[error(
+        "{field} of the bind mount `{spec}` holds `{delimiter}`, which apptainer's \
+         `src:dest:opts` spec reads as a separator and offers no escape for; mount the node \
+         from a path without it"
+    )]
+    BindPathHoldsDelimiter {
+        field: &'static str,
+        spec: String,
+        delimiter: char,
+    },
+
     #[error("Failed to prepare the apptainer scratch directory {path}: {source}")]
     ScratchDirUnavailable {
         path: String,
