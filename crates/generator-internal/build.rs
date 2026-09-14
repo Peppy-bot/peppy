@@ -1,5 +1,5 @@
 /// Pinned ruff release tag used when building from source.
-const RUFF_VERSION: &str = "0.15.14";
+const RUFF_VERSION: &str = "0.16.7";
 
 /// Recursively collect all files under `dir`.
 fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
