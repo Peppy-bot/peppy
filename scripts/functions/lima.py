@@ -34,12 +34,12 @@ LIMA_VERSION = "2.2.0"
 # crates/containers-internal/build.rs; this duplication crosses the Rust/Python
 # boundary the same way RELEASE_PLATFORM_SO does.
 GUEST_GO_DIR = "/usr/local/go"
-GO_VERSION = "1.25.7"
+GO_VERSION = "1.27.1"
 GO_LINUX_AMD64_SHA256 = (
-    "12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005"
+    "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445"
 )
 GO_LINUX_ARM64_SHA256 = (
-    "ba611a53534135a81067240eff9508cd7e256c560edd5d8c2fef54f083c07129"
+    "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec"
 )
 
 # Every release platform's binding plus the build-state marker. The host build
