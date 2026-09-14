@@ -979,7 +979,6 @@ def _publish_pending_upload(
     notes_path = generate_release_notes_file(notes_input, releases_dir)
 
     release_url = release_details.get("html_url") or f"https://github.com/{slug.full}/releases/tag/{pending.tag}"
-    console.print(f"\n[green]Release created:[/green] {release_url}")
 
     # The release is live, so a git failure past this point leaves only the
     # docs side unfinished; say exactly how to finish it by hand.
@@ -988,8 +987,8 @@ def _publish_pending_upload(
     except ReleaseError as e:
         raise ReleaseError(
             f"{e}\n"
-            f"The GitHub release {pending.tag} is published; only the git side is "
-            f"unfinished. From '{RELEASE_BRANCH}', complete it with:\n"
+            f"The GitHub release {pending.tag} is published ({release_url}); only "
+            f"the git side is unfinished. From '{RELEASE_BRANCH}', complete it with:\n"
             f"  git add {notes_path}\n"
             f'  git commit -m "docs: add release notes for {pending.tag}"\n'
             f"  git push {GIT_REMOTE} {RELEASE_BRANCH}\n"
@@ -1001,6 +1000,13 @@ def _publish_pending_upload(
         f"'{ALIGNED_BRANCH}' fast-forwarded to it.[/green] They feed "
         "https://forum.peppy.bot/c/peppy-os/announcements/6 and "
         "https://docs.peppy.bot/reference/changelog/"
+    )
+    # Last, so the run's output ends on the outcome and where to read it.
+    # soft_wrap keeps the URL whole on a narrow CI console.
+    console.print(
+        f"\n[bold green]Released {pending.tag}.[/bold green] "
+        f"Release notes: {release_url}",
+        soft_wrap=True,
     )
 
 
