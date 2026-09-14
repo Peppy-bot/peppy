@@ -17,8 +17,7 @@
     parameters: {
       // Prefixes every token this commander sends, so the payloads of one
       // copy are told apart from another's in the arm's log.
-      label: { $type: "string", $default: "unlabeled" },
-      round_interval_ms: { $type: "u32", $default: 500 }
+      label: { $type: "string", $default: "unlabeled" }
     }
   },
   interfaces: {
@@ -29,7 +28,17 @@
     },
     services: {
       consumes: [
-        { link_id: "arm", name: "echo" }
+        { link_id: "arm", name: "echo" },
+        { link_id: "arm", name: "release" }
+      ],
+      exposes: [
+        {
+          // Moves the held goal on: `cancel` cancels it, `release` lets the
+          // arm complete it. Answers with the token of the goal it moved on.
+          name: "move_on",
+          request_message_format: { verb: "string" },
+          response_message_format: { token: "string" }
+        }
       ]
     },
     actions: {

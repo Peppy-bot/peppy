@@ -1,5 +1,6 @@
 #![cfg(feature = "multi_daemon_e2e")]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1058,22 +1059,42 @@ const COPIES_ONLY_LAUNCHER: &str = r#"{
   } }]
 }"#;
 
-/// A launch that starts nothing and takes station copies: one arm serving a
-/// heartbeat topic, an echo service and a move action, and one commander
-/// wired to that arm alone. Each side logs the instance behind every
-/// message it handles, so traffic from another copy would show up by name.
-const ISOLATION_FLEET_LAUNCHER: &str = r#"{
+/// A launch that starts one idle gate per daemon, deploys the copy the test
+/// launches, and takes the rest as joins:
+/// one arm serving a heartbeat topic, echo and release services and a move
+/// action, and one commander wired to that arm alone. Each side logs the
+/// instance behind every message it handles, so traffic from another copy
+/// would show up by name. Rendered from the same constants the test drives
+/// the gates with, so the gate a round moves on and the gate the launch
+/// starts cannot diverge.
+fn isolation_fleet_launcher() -> String {
+    let launched_label = Station::new(LAUNCHED_STATION, Placement::Coordinator).label();
+    let launched = LAUNCHED_STATION;
+    format!(
+        r#"{{
   peppy_schema: "launcher/v1",
-  deployments: [],
-  components: [{ name: "robot", cardinality: "zero_or_more", options: {
-    station: { deployments: [
-      { source: { name: "isolation_arm", tag: "v1" },
-        instances: [{ instance_id: "arm_inst" }] },
-      { source: { name: "isolation_commander", tag: "v1" },
-        instances: [{ instance_id: "commander_inst", links: { arm: "arm_inst" } }] }
-    ] }
-  } }]
-}"#;
+  core_nodes: ["{PEER_LABEL}"],
+  deployments: [
+    {{ source: {{ name: "{GATE_NODE}", tag: "{GATE_TAG}" }},
+      instances: [
+        {{ instance_id: "{COORDINATOR_GATE}", arguments: {{ verb: "release" }} }},
+        {{ instance_id: "{PEER_GATE}", core_node: "{PEER_LABEL}", arguments: {{ verb: "release" }} }}
+      ] }},
+    {{ robot: "station", instances: [
+      {{ instance_id: "{launched}", arguments: {{ commander_inst: {{ label: "{launched_label}" }} }} }}
+    ] }}
+  ],
+  components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
+    station: {{ deployments: [
+      {{ source: {{ name: "isolation_arm", tag: "v1" }},
+        instances: [{{ instance_id: "arm_inst" }}] }},
+      {{ source: {{ name: "isolation_commander", tag: "v1" }},
+        instances: [{{ instance_id: "commander_inst", links: {{ arm: "arm_inst" }} }}] }}
+    ] }}
+  }} }}]
+}}"#
+    )
+}
 
 /// The named fleet with a second robot option deploying a second node, so a
 /// copy can bring a node a peer does not hold yet.
@@ -1264,43 +1285,44 @@ const ROBOT_INSTANCES: [&str; 3] = ["wrist_cam_inst", "arm_inst", "reflex_inst"]
 const CLOUD_INSTANCES: [&str; 2] = ["planner_inst", "recorder_inst"];
 
 impl Daemon {
-    /// Waits for one of this daemon's node instances to log `marker`.
+    /// The current contents of `instance_id`'s run log on this daemon.
     ///
-    /// Reads the per-instance run log rather than the container's stdout: node
-    /// output goes to `$PEPPY_HOME/logs/run/<instance>.log`, and it is the only
-    /// evidence that a node is not merely Running but actually carrying
-    /// messages over its slots. Polls rather than sleeping a fixed time, so it
-    /// is bounded by the same `TIMEOUT` as every other wait here and does not
-    /// depend on how fast the host is.
-    async fn wait_for_node_log(&self, instance_id: &str, marker: &str) -> String {
+    /// Reads `$PEPPY_HOME/logs/run/<instance>.log`, the node's own output,
+    /// which is the evidence that a node is carrying messages over its slots
+    /// and not merely Running.
+    async fn node_log(&self, instance_id: &str) -> String {
         let path = format!("{CONTAINER_PEPPY_HOME}/logs/run/{instance_id}.log");
+        // `cat`'s own complaint rides along, so a log this daemon does not
+        // hold reads as the missing file it is.
+        self.exec(vec!["cat", path.as_str()]).await.text
+    }
+
+    /// Polls `instance_id`'s log until it holds `marker`, returning the log.
+    ///
+    /// Polling every 250 ms under the same `TIMEOUT` as every other wait here
+    /// keeps the wait independent of how fast the host is.
+    async fn find_node_log(&self, instance_id: &str, marker: &str) -> Option<String> {
         let started = Instant::now();
-        let mut last = String::new();
         while started.elapsed() < TIMEOUT {
-            let mut result = self
-                .container
-                .exec(
-                    ExecCommand::new(["cat", path.as_str()])
-                        .with_cmd_ready_condition(CmdWaitFor::exit()),
-                )
-                .await
-                .unwrap_or_else(|error| panic!("failed to read {path} in {}: {error}", self.name));
-            last = String::from_utf8_lossy(
-                &result
-                    .stdout_to_vec()
-                    .await
-                    .unwrap_or_else(|error| panic!("reading {path} in {}: {error}", self.name)),
-            )
-            .into_owned();
-            if last.contains(marker) {
-                return last;
+            let log = self.node_log(instance_id).await;
+            if log.contains(marker) {
+                return Some(log);
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        panic!(
-            "timed out waiting for `{marker}` in {}'s `{instance_id}` log; last contents:\n{last}",
-            self.name
-        );
+        None
+    }
+
+    /// [`Self::find_node_log`], with the log in the panic when it times out.
+    async fn wait_for_node_log(&self, instance_id: &str, marker: &str) -> String {
+        match self.find_node_log(instance_id, marker).await {
+            Some(log) => log,
+            None => panic!(
+                "timed out waiting for `{marker}` in {}'s `{instance_id}` log; last contents:\n{}",
+                self.name,
+                self.node_log(instance_id).await
+            ),
+        }
     }
 }
 
@@ -1449,10 +1471,7 @@ impl Substrate {
         for (file_name, launcher) in [
             (NAMED_FLEET_LAUNCHER_FILE, NAMED_FLEET_LAUNCHER.to_owned()),
             (COPIES_ONLY_LAUNCHER_FILE, COPIES_ONLY_LAUNCHER.to_owned()),
-            (
-                ISOLATION_FLEET_LAUNCHER_FILE,
-                ISOLATION_FLEET_LAUNCHER.to_owned(),
-            ),
+            (ISOLATION_FLEET_LAUNCHER_FILE, isolation_fleet_launcher()),
             (SOURCELESS_CLOCK_LAUNCHER_FILE, sourceless_clock_launcher()),
             (
                 NAMED_FLEET_TWO_NODES_LAUNCHER_FILE,
@@ -3253,84 +3272,645 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
     );
 }
 
-/// The station copies the isolation test runs, and where: alpha beside the
-/// coordinator, bravo and charlie on the peer.
-const STATIONS: [&str; 3] = ["alpha", "bravo", "charlie"];
+/// The gates the launch starts: one beside the coordinator, one placed on
+/// the peer through the `peer` core node label. A round re-runs the gate of
+/// the daemon whose copies it moves on. Neither name contains the other, so
+/// one gate's lines never read as the other's.
+const COORDINATOR_GATE: &str = "coordinator_gate_inst";
+const PEER_GATE: &str = "peer_gate_inst";
+const PEER_LABEL: &str = "peer";
+const GATE_NODE: &str = "isolation_gate";
+const GATE_TAG: &str = "v1";
+
+/// The three goals of a round, by the suffix their tokens carry: one the arm
+/// completes when its hold is up, one the commander cancels itself, and one
+/// the arm holds until the gate moves it on.
+const TIMED_SUFFIX: &str = "";
+const SELF_CANCELLED_SUFFIX: &str = "c";
+const HELD_SUFFIX: &str = "h";
+
+/// The copy the launch deploys, and the one the test removes and joins
+/// again; the rest join the running stack once.
+const LAUNCHED_STATION: &str = "alpha";
+const REJOINED_STATION: &str = "bravo";
+
+/// The instances one copy owns, under the name the copy carries.
+fn arm_of(copy: &str) -> String {
+    format!("{copy}_arm_inst")
+}
+
+fn commander_of(copy: &str) -> String {
+    format!("{copy}_commander_inst")
+}
+
+/// Where a station copy runs: which daemon holds its instances, which word
+/// its join places it with, and which gate reaches its commander.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    Coordinator,
+    Peer,
+}
+
+impl Placement {
+    fn daemon<'a>(&self, federation: &'a Federation) -> &'a Daemon {
+        match self {
+            Placement::Coordinator => &federation.robot,
+            Placement::Peer => &federation.cloud,
+        }
+    }
+
+    fn core_node<'a>(&self, federation: &'a Federation) -> Option<&'a str> {
+        match self {
+            Placement::Coordinator => None,
+            Placement::Peer => Some(&federation.cloud_core_node),
+        }
+    }
+
+    fn gate(&self) -> &'static str {
+        match self {
+            Placement::Coordinator => COORDINATOR_GATE,
+            Placement::Peer => PEER_GATE,
+        }
+    }
+}
+
+/// One station copy: its name on the stack, how many times it has joined,
+/// where it runs, and the round its commander is on.
+struct Station {
+    name: &'static str,
+    /// Every join takes the next generation, and the generation is what the
+    /// commander's label carries, so the tokens of a copy's second life
+    /// carry a prefix its first life never sent.
+    generation: usize,
+    placement: Placement,
+    /// The round a fresh commander is on is 1, as its own counter starts there.
+    round: usize,
+}
+
+impl Station {
+    fn new(name: &'static str, placement: Placement) -> Self {
+        Station {
+            name,
+            generation: 1,
+            placement,
+            round: 1,
+        }
+    }
+
+    fn arm(&self) -> String {
+        arm_of(self.name)
+    }
+
+    fn commander(&self) -> String {
+        commander_of(self.name)
+    }
+
+    /// The prefix this copy's commander puts on every token it sends.
+    fn label(&self) -> String {
+        format!("{}{}", self.name, self.generation)
+    }
+
+    fn token(&self, goal: &str) -> String {
+        format!("{}-{}{goal}", self.label(), self.round)
+    }
+
+    fn daemon<'a>(&self, federation: &'a Federation) -> &'a Daemon {
+        self.placement.daemon(federation)
+    }
+
+    fn gate(&self) -> &'static str {
+        self.placement.gate()
+    }
+
+    /// This copy's current round, as the audit reads it.
+    fn current_round(&self, held: HeldOutcome, heartbeat_floor: u32) -> Round {
+        Round {
+            copy: self.name.to_owned(),
+            label: self.label(),
+            gate: self.gate().to_owned(),
+            number: self.round,
+            held,
+            heartbeat_floor,
+        }
+    }
+
+    /// Takes the copy into its next life: a new label, and a commander whose
+    /// round counter starts over.
+    fn rejoined(&mut self) {
+        self.generation += 1;
+        self.round = 1;
+    }
+}
+
+/// What a round's held goal came to.
+#[derive(Clone, Copy, Debug)]
+enum HeldOutcome {
+    Cancelled,
+    Released,
+}
+
+/// One copy's round, as the audit reads it.
+struct Round {
+    copy: String,
+    label: String,
+    gate: String,
+    number: usize,
+    held: HeldOutcome,
+    /// The `seq` this copy's commander had heard when the gate phase opened;
+    /// the audit demands a later one, so a round proves its own heartbeat.
+    heartbeat_floor: u32,
+}
+
+impl Round {
+    fn arm(&self) -> String {
+        arm_of(&self.copy)
+    }
+
+    fn commander(&self) -> String {
+        commander_of(&self.copy)
+    }
+
+    fn token(&self, goal: &str) -> String {
+        format!("{}-{}{goal}", self.label, self.number)
+    }
+}
+
+/// The line a copy's commander logs when its held goal ends.
+fn held_result_line(round: &Round) -> String {
+    let held = round.token(HELD_SUFFIX);
+    let status = match round.held {
+        HeldOutcome::Cancelled => "CANCELLED",
+        HeldOutcome::Released => "COMPLETED",
+    };
+    format!("goal {held} {status} by {} token={held}\n", round.arm())
+}
+
+/// Every line `round` leaves in its commander's log, and every line it
+/// leaves in its arm's, in the order they are logged. Each line ends at its
+/// newline, so one goal's token never matches another's.
+fn round_lines(round: &Round) -> (Vec<String>, Vec<String>) {
+    let arm = round.arm();
+    let commander = round.commander();
+    let timed = round.token(TIMED_SUFFIX);
+    let self_cancelled = round.token(SELF_CANCELLED_SUFFIX);
+    let held = round.token(HELD_SUFFIX);
+    let mut commander_lines = vec![
+        format!("echo answered by {arm} token={timed}\n"),
+        format!("feedback token={timed} from {arm}\n"),
+        format!("goal {timed} COMPLETED by {arm} token={timed}\n"),
+        format!("feedback token={self_cancelled} from {arm}\n"),
+        format!("cancel {self_cancelled} SIGNALLED by {arm}\n"),
+        format!("goal {self_cancelled} CANCELLED by {arm} token={self_cancelled}\n"),
+        format!("feedback token={held} from {arm}\n"),
+        format!("holding {held}\n"),
+    ];
+    let mut arm_lines = vec![
+        format!("echo from {commander} token={timed} answered by {arm}\n"),
+        format!("goal {timed} from {commander} accepted by {arm}\n"),
+        format!("goal {timed} completed by {arm}\n"),
+        format!("goal {self_cancelled} from {commander} accepted by {arm}\n"),
+        format!("goal {self_cancelled} cancelled by {arm}\n"),
+        format!("goal {held} from {commander} accepted by {arm}\n"),
+    ];
+    match round.held {
+        HeldOutcome::Cancelled => {
+            commander_lines.push(format!("move_on cancel from {} for {held}\n", round.gate));
+            commander_lines.push(format!("cancel {held} SIGNALLED by {arm}\n"));
+            commander_lines.push(held_result_line(round));
+            arm_lines.push(format!("goal {held} cancelled by {arm}\n"));
+        }
+        HeldOutcome::Released => {
+            commander_lines.push(format!("move_on release from {} for {held}\n", round.gate));
+            commander_lines.push(format!("release {held} relayed to {arm}\n"));
+            commander_lines.push(held_result_line(round));
+            arm_lines.push(format!("release {held} from {commander} to {arm}\n"));
+            arm_lines.push(format!("goal {held} completed by {arm}\n"));
+        }
+    }
+    (commander_lines, arm_lines)
+}
+
+/// The highest `seq` this log carries from `arm`'s heartbeat, 0 when it
+/// carries none.
+fn highest_heartbeat_seq(log: &str, arm: &str) -> u32 {
+    let marker = format!("heartbeat from {arm} seq=");
+    log.match_indices(&marker)
+        .filter_map(|(at, _)| log[at + marker.len()..].lines().next())
+        .filter_map(|seq| seq.trim().parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The lines that would show another copy's traffic in `copy`'s logs: the
+/// instance ids of every other copy and of the gate that reaches them, and
+/// the token prefix of every label the stack has carried, the retired labels
+/// of `copy` itself included.
+fn foreign_markers(stations: &[Station], retired: &[String], copy: &str) -> Vec<String> {
+    let token_markers = |label: &str| {
+        [
+            format!("token={label}-"),
+            format!("goal {label}-"),
+            format!("holding {label}-"),
+            format!("release {label}-"),
+            format!("cancel {label}-"),
+            format!("for {label}-"),
+        ]
+    };
+    let own_gate = stations
+        .iter()
+        .find(|station| station.name == copy)
+        .map(|station| station.gate());
+    let mut markers: BTreeSet<String> = stations
+        .iter()
+        .filter(|station| station.name != copy)
+        .flat_map(|station| {
+            [arm_of(station.name), commander_of(station.name)]
+                .into_iter()
+                .chain(token_markers(&station.label()))
+        })
+        .collect();
+    markers.extend(
+        [COORDINATOR_GATE, PEER_GATE]
+            .into_iter()
+            .filter(|gate| Some(*gate) != own_gate)
+            .map(str::to_owned),
+    );
+    markers.extend(retired.iter().flat_map(|label| token_markers(label)));
+    markers.into_iter().collect()
+}
+
+/// What `round` left undone or let in: every line the round owes that its
+/// logs do not carry, a heartbeat no later than the round's floor, and every
+/// foreign marker either log carries. An empty list is the round proven to
+/// have run inside its copy.
+fn copy_traffic_violations(
+    round: &Round,
+    foreign: &[String],
+    commander_log: &str,
+    arm_log: &str,
+) -> Vec<String> {
+    let commander = round.commander();
+    let arm = round.arm();
+    let (commander_lines, arm_lines) = round_lines(round);
+    let mut violations: Vec<String> = commander_lines
+        .iter()
+        .filter(|line| !commander_log.contains(line.as_str()))
+        .map(|line| format!("`{commander}` never logged `{}`", line.trim_end()))
+        .chain(
+            arm_lines
+                .iter()
+                .filter(|line| !arm_log.contains(line.as_str()))
+                .map(|line| format!("`{arm}` never logged `{}`", line.trim_end())),
+        )
+        .collect();
+    let seq = highest_heartbeat_seq(commander_log, &arm);
+    if seq <= round.heartbeat_floor {
+        violations.push(format!(
+            "`{commander}` heard no heartbeat from `{arm}` after seq {} (highest is {seq})",
+            round.heartbeat_floor
+        ));
+    }
+    violations.extend(foreign_violations(
+        &round.copy,
+        foreign,
+        commander_log,
+        arm_log,
+    ));
+    violations
+}
+
+/// The foreign markers either of a copy's logs carries.
+fn foreign_violations(
+    copy: &str,
+    foreign: &[String],
+    commander_log: &str,
+    arm_log: &str,
+) -> Vec<String> {
+    foreign
+        .iter()
+        .filter(|marker| {
+            commander_log.contains(marker.as_str()) || arm_log.contains(marker.as_str())
+        })
+        .map(|marker| format!("`{copy}` handled foreign traffic (`{marker}`)"))
+        .collect()
+}
+
+/// Reads a copy's two logs until its round is complete and clean, or until
+/// `TIMEOUT` leaves it the violations the round still has. Re-reading is what
+/// keeps the audit independent of the order the commander's two coroutines
+/// reach their logs in.
+async fn audit_round(daemon: &Daemon, round: &Round, foreign: &[String]) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        let commander_log = daemon.node_log(&round.commander()).await;
+        let arm_log = daemon.node_log(&round.arm()).await;
+        let violations = copy_traffic_violations(round, foreign, &commander_log, &arm_log);
+        if violations.is_empty() {
+            return Ok(());
+        }
+        if started.elapsed() >= TIMEOUT {
+            return Err(format!(
+                "copy `{}`, round {}:\n{}\n\n{} log:\n{commander_log}\n{} log:\n{arm_log}",
+                round.copy,
+                round.number,
+                violations.join("\n"),
+                round.commander(),
+                round.arm()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// A peer's logs at the moment another copy's held goal is cancelled: its
+/// own goal still held, its commander with no outcome for it yet, and its
+/// arm with no trace of the cancelled copy's token.
+fn peer_hold_violations(
+    held_token: &str,
+    cancelled_token: &str,
+    commander_log: &str,
+    arm_log: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    if !commander_log.contains(&format!("holding {held_token}\n")) {
+        violations.push(format!("never held `{held_token}`"));
+    }
+    if commander_log.contains(&format!("goal {held_token} ")) {
+        violations.push(format!("stopped holding `{held_token}`"));
+    }
+    if arm_log.contains(cancelled_token) {
+        violations.push(format!("its arm saw `{cancelled_token}`"));
+    }
+    violations
+}
 
 /// Joins one station copy, labelling its commander's payloads with the
-/// copy's name so the arm's log tells one copy's requests from another's.
-async fn join_station(federation: &Federation, name: &str, place: Option<&str>) {
-    let label = format!("commander_inst.label=\"{name}\"");
+/// copy's label so the arm's log tells one copy's requests from another's,
+/// and one join's from the next's.
+async fn join_station(federation: &Federation, station: &Station) {
+    let label = format!("commander_inst.label=\"{}\"", station.label());
     let mut args = vec![
         "stack",
         "join",
         "station",
         "-i",
-        name,
+        station.name,
         "--set-arguments",
         &label,
     ];
-    if let Some(core_node) = place {
+    if let Some(core_node) = station.placement.core_node(federation) {
         args.extend(["--place", core_node]);
     }
     require_success(
         federation.robot.peppy(&args).await,
-        &format!("join station {name}"),
+        &format!("join station {}", station.name),
     );
 }
 
-/// Waits for `copy` to log a whole round on `daemon` (the cancelled goal is
-/// the last thing a round logs) and asserts that both of its logs name only
-/// the copy's own instances and carry only the copy's own payload label.
-async fn assert_copy_traffic_stays_inside(daemon: &Daemon, copy: &str) {
-    let arm = format!("{copy}_arm_inst");
-    let commander = format!("{copy}_commander_inst");
-    let commander_log = daemon
-        .wait_for_node_log(&commander, &format!("CANCELLED by {arm}"))
-        .await;
-    let arm_log = daemon.wait_for_node_log(&arm, "cancelled").await;
-    for expected in [
-        format!("heartbeat from {arm} "),
-        format!("echo answered by {arm} token={copy}-"),
-        format!("COMPLETED by {arm} token={copy}-"),
-        format!("CANCELLED by {arm} token={copy}-"),
-    ] {
-        assert!(
-            commander_log.contains(&expected),
-            "`{commander}` never logged `{expected}`:\n{commander_log}"
-        );
-    }
-    for expected in [
-        format!("echo from {commander} token={copy}-"),
-        format!("goal {copy}-1 from {commander}"),
-        format!("goal {copy}-1 completed"),
-        format!("goal {copy}-1c cancelled"),
-    ] {
-        assert!(
-            arm_log.contains(&expected),
-            "`{arm}` never logged `{expected}`:\n{arm_log}"
-        );
-    }
-    for other in STATIONS.iter().filter(|other| **other != copy) {
-        for foreign in [
-            format!("{other}_arm_inst"),
-            format!("{other}_commander_inst"),
-            format!("token={other}-"),
-            format!("goal {other}-"),
-        ] {
-            assert!(
-                !commander_log.contains(&foreign) && !arm_log.contains(&foreign),
-                "`{copy}` handled `{other}`'s traffic (`{foreign}`):\n{commander_log}\n{arm_log}"
-            );
+/// Every copy's two logs and both gates', for a failure that one log cannot
+/// explain.
+async fn station_logs(federation: &Federation, stations: &[Station]) -> String {
+    let mut dump = String::new();
+    for station in stations {
+        let daemon = station.daemon(federation);
+        for instance in [station.commander(), station.arm()] {
+            let log = daemon.node_log(&instance).await;
+            dump.push_str(&format!("--- {instance} ---\n{log}\n"));
         }
+    }
+    for placement in [Placement::Coordinator, Placement::Peer] {
+        let gate = placement.gate();
+        let log = placement.daemon(federation).node_log(gate).await;
+        dump.push_str(&format!("--- {gate} ---\n{log}\n"));
+    }
+    dump
+}
+
+/// Waits for `marker` in `instance`'s log on `daemon`, dumping every copy's
+/// logs when it never arrives.
+async fn wait_for_marker(
+    federation: &Federation,
+    stations: &[Station],
+    daemon: &Daemon,
+    instance: &str,
+    marker: &str,
+) -> String {
+    if let Some(log) = daemon.find_node_log(instance, marker).await {
+        return log;
+    }
+    let dump = station_logs(federation, stations).await;
+    panic!("timed out waiting for `{marker}` in `{instance}`:\n{dump}");
+}
+
+/// Re-runs one daemon's gate linked to the given copies' commanders with
+/// `verb`, `cancel` or `release`, and waits for the gate to log the number
+/// of commanders it bound and then each one's answer: the token of the goal
+/// it moved on. The count is what holds a gate to the copies it was linked
+/// to, since a copy beside it on the same daemon is not foreign to it.
+async fn move_held_goals_on(
+    federation: &Federation,
+    stations: &[Station],
+    placement: Placement,
+    verb: &str,
+    moving: &[&Station],
+) {
+    let daemon = placement.daemon(federation);
+    let gate = placement.gate();
+    require_success(
+        daemon.peppy(&["node", "stop", gate]).await,
+        &format!("stop {gate}"),
+    );
+    let links = moving
+        .iter()
+        .map(|station| format!("commander@{}", station.commander()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let node_reference = format!("{GATE_NODE}:{GATE_TAG}");
+    let verb_argument = format!("verb={verb}");
+    require_success(
+        daemon
+            .peppy(&[
+                "node",
+                "run",
+                &node_reference,
+                "-i",
+                gate,
+                "--link",
+                &links,
+                &verb_argument,
+            ])
+            .await,
+        &format!("run {gate} with {verb_argument}"),
+    );
+    let bound = format!("up, verb {verb}, {} commander(s)\n", moving.len());
+    wait_for_marker(federation, stations, daemon, gate, &bound).await;
+    for station in moving {
+        let answer = format!(
+            "{verb} {} token={}\n",
+            station.commander(),
+            station.token(HELD_SUFFIX)
+        );
+        wait_for_marker(federation, stations, daemon, gate, &answer).await;
+    }
+}
+
+/// The instances each copy owns, as a `stack list --json` section lists them.
+fn copy_instances(section: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
+    section["copies"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a section lists its copies: {section}"))
+        .iter()
+        .map(|copy| {
+            (
+                copy["name"].as_str().expect("a copy is named").to_owned(),
+                copy["instance_ids"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// One gated round across every copy: it opens by recording the heartbeat
+/// each commander has heard, waits for every copy to hold its own goal,
+/// which is the moment all three have traffic in flight at once, cancels
+/// `cancelled`'s through that copy's gate, checks at that point that every
+/// peer still holds its own and that no peer's arm saw the cancelled token,
+/// releases the peers, and audits each copy's logs for the round. Every
+/// copy's round then advances.
+async fn exercise_gated_round(
+    federation: &Federation,
+    stations: &mut [Station],
+    cancelled: &str,
+    retired: &[String],
+) {
+    let mut floors = Vec::with_capacity(stations.len());
+    for station in stations.iter() {
+        let log = station
+            .daemon(federation)
+            .node_log(&station.commander())
+            .await;
+        floors.push(highest_heartbeat_seq(&log, &station.arm()));
+    }
+    for station in stations.iter() {
+        let holding = format!("holding {}\n", station.token(HELD_SUFFIX));
+        wait_for_marker(
+            federation,
+            stations,
+            station.daemon(federation),
+            &station.commander(),
+            &holding,
+        )
+        .await;
+    }
+
+    let (named, peers): (Vec<&Station>, Vec<&Station>) = stations
+        .iter()
+        .partition(|station| station.name == cancelled);
+    let [cancelling] = named[..] else {
+        panic!("`{cancelled}` is not one of this stack's copies");
+    };
+    let cancelled_token = cancelling.token(HELD_SUFFIX);
+    move_held_goals_on(
+        federation,
+        stations,
+        cancelling.placement,
+        "cancel",
+        &[cancelling],
+    )
+    .await;
+    wait_for_marker(
+        federation,
+        stations,
+        cancelling.daemon(federation),
+        &cancelling.commander(),
+        &held_result_line(&cancelling.current_round(HeldOutcome::Cancelled, 0)),
+    )
+    .await;
+
+    for peer in &peers {
+        let daemon = peer.daemon(federation);
+        let commander_log = daemon.node_log(&peer.commander()).await;
+        let arm_log = daemon.node_log(&peer.arm()).await;
+        let violations = peer_hold_violations(
+            &peer.token(HELD_SUFFIX),
+            &cancelled_token,
+            &commander_log,
+            &arm_log,
+        );
+        assert!(
+            violations.is_empty(),
+            "copy `{}` through `{cancelled_token}`'s cancel: {}\n\n{} log:\n{commander_log}\n{} log:\n{arm_log}",
+            peer.name,
+            violations.join("; "),
+            peer.commander(),
+            peer.arm()
+        );
+    }
+
+    for placement in [Placement::Coordinator, Placement::Peer] {
+        let held: Vec<&Station> = peers
+            .iter()
+            .copied()
+            .filter(|peer| peer.placement == placement)
+            .collect();
+        if !held.is_empty() {
+            move_held_goals_on(federation, stations, placement, "release", &held).await;
+        }
+    }
+
+    for (station, floor) in stations.iter().zip(&floors) {
+        let outcome = if station.name == cancelled {
+            HeldOutcome::Cancelled
+        } else {
+            HeldOutcome::Released
+        };
+        let foreign = foreign_markers(stations, retired, station.name);
+        audit_round(
+            station.daemon(federation),
+            &station.current_round(outcome, *floor),
+            &foreign,
+        )
+        .await
+        .unwrap_or_else(|report| panic!("{report}"));
+    }
+    for station in stations.iter_mut() {
+        station.round += 1;
+    }
+}
+
+/// Reads every copy's logs one last time: nothing foreign reached any of
+/// them after the round each was last audited on.
+async fn assert_no_foreign_traffic(
+    federation: &Federation,
+    stations: &[Station],
+    retired: &[String],
+) {
+    for station in stations {
+        let daemon = station.daemon(federation);
+        let commander_log = daemon.node_log(&station.commander()).await;
+        let arm_log = daemon.node_log(&station.arm()).await;
+        let foreign = foreign_markers(stations, retired, station.name);
+        let violations = foreign_violations(station.name, &foreign, &commander_log, &arm_log);
+        assert!(
+            violations.is_empty(),
+            "{}\n\n{} log:\n{commander_log}\n{} log:\n{arm_log}",
+            violations.join("\n"),
+            station.commander(),
+            station.arm()
+        );
     }
 }
 
 /// Three copies of one station, one beside the coordinator and two on the
 /// peer, each exchanging topic samples, service requests and action goals
-/// (completed and cancelled) at the same time, with every payload labelled
-/// by its copy. Each copy hears only its own instances and its own labels,
-/// before and after one of the peer's copies is removed and joined again.
+/// (completed, cancelled and held for the gate) at the same time, with
+/// every payload labelled by its copy. One copy's held goal is cancelled
+/// while its peers hold theirs, the peers then complete normally, and each
+/// copy hears only its own instances and its own labels, before and after
+/// one of the peer's copies is removed and joined again. The rejoined copy
+/// sends a label its first life never sent and is the copy cancelled in the
+/// second pass; its peers keep the instances they came up with, and the
+/// round each of their tokens names is what proves their commanders never
+/// restarted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
     let federation = start_federation("peppy-isolation").await;
@@ -3340,39 +3920,74 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
             .peppy(&[
                 "stack",
                 "launch",
+                "--place",
+                &format!("{PEER_LABEL}@{}", federation.cloud_core_node),
                 &container_launcher(ISOLATION_FLEET_LAUNCHER_FILE),
             ])
             .await,
         "launch station fleet",
     );
-    let placements: [(&str, Option<&str>, &Daemon); 3] = [
-        ("alpha", None, &federation.robot),
-        (
-            "bravo",
-            Some(&federation.cloud_core_node),
-            &federation.cloud,
-        ),
-        (
-            "charlie",
-            Some(&federation.cloud_core_node),
-            &federation.cloud,
-        ),
+    let mut stations = [
+        Station::new(LAUNCHED_STATION, Placement::Coordinator),
+        Station::new(REJOINED_STATION, Placement::Peer),
+        Station::new("charlie", Placement::Peer),
     ];
-    for (name, place, _) in placements {
-        join_station(&federation, name, place).await;
+    for station in stations.iter().filter(|s| s.name != LAUNCHED_STATION) {
+        join_station(&federation, station).await;
     }
-    for (name, _, daemon) in placements {
-        assert_copy_traffic_stays_inside(daemon, name).await;
-    }
+    let mut retired: Vec<String> = Vec::new();
+    exercise_gated_round(&federation, &mut stations, LAUNCHED_STATION, &retired).await;
 
-    require_success(
-        federation.robot.peppy(&["stack", "remove", "bravo"]).await,
-        "remove bravo",
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "copy metadata before the removal",
     );
-    join_station(&federation, "bravo", Some(&federation.cloud_core_node)).await;
-    for (name, _, daemon) in placements {
-        assert_copy_traffic_stays_inside(daemon, name).await;
+    let before = copy_instances(&coordinator_section(&listed, &federation.robot_core_node));
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "remove", REJOINED_STATION])
+            .await,
+        "remove the copy the test rejoins",
+    );
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "copy metadata after the removal",
+    );
+    assert!(
+        !copy_names(&coordinator_section(&listed, &federation.robot_core_node))
+            .contains(&REJOINED_STATION.to_owned()),
+        "`{REJOINED_STATION}` is still on the stack after its removal:\n{listed}"
+    );
+
+    let rejoining = stations
+        .iter_mut()
+        .find(|station| station.name == REJOINED_STATION)
+        .expect("the copy the test rejoins is one of this stack's copies");
+    retired.push(rejoining.label());
+    rejoining.rejoined();
+    join_station(&federation, rejoining).await;
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "copy metadata after the rejoin",
+    );
+    let after = copy_instances(&coordinator_section(&listed, &federation.robot_core_node));
+    for station in stations.iter().filter(|s| s.name != REJOINED_STATION) {
+        let copy = station.name;
+        assert_eq!(
+            before[copy], after[copy],
+            "`{copy}` did not keep its instances through `{REJOINED_STATION}`'s removal and rejoin"
+        );
+        assert!(
+            before[copy]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == &station.commander())),
+            "`{copy}` never listed its commander: {}",
+            before[copy]
+        );
     }
+    exercise_gated_round(&federation, &mut stations, REJOINED_STATION, &retired).await;
+    assert_no_foreign_traffic(&federation, &stations, &retired).await;
 
     require_success(
         federation
@@ -3381,4 +3996,235 @@ async fn copies_exchange_topics_services_and_actions_only_within_themselves() {
             .await,
         "reset station fleet",
     );
+}
+
+/// The oracles behind the isolation test, against logs written by hand: a
+/// complete round passes, a foreign line in either log fails it even when
+/// the copy's own round is complete, a round is never proven by an earlier
+/// one, and a peer that stopped holding is caught at the cancel.
+mod copy_traffic_oracle {
+    use super::{
+        COORDINATOR_GATE, HeldOutcome, PEER_GATE, Placement, Round, Station,
+        copy_traffic_violations, foreign_markers, highest_heartbeat_seq, peer_hold_violations,
+        round_lines,
+    };
+
+    /// The copy a label belongs to: a label is the copy's name and the
+    /// generation of its join.
+    fn copy_of(label: &str) -> String {
+        label
+            .trim_end_matches(|character: char| character.is_ascii_digit())
+            .to_owned()
+    }
+
+    fn round(label: &str, number: usize, held: HeldOutcome, placement: Placement) -> Round {
+        Round {
+            copy: copy_of(label),
+            label: label.to_owned(),
+            gate: placement.gate().to_owned(),
+            number,
+            held,
+            heartbeat_floor: 0,
+        }
+    }
+
+    /// The three copies as the live test places them.
+    fn stations() -> [Station; 3] {
+        [
+            Station::new("alpha", Placement::Coordinator),
+            Station::new("bravo", Placement::Peer),
+            Station::new("charlie", Placement::Peer),
+        ]
+    }
+
+    /// The commander's and the arm's logs of one round that ran inside its copy.
+    fn logs(round: &Round) -> (String, String) {
+        let (commander_lines, arm_lines) = round_lines(round);
+        (
+            format!(
+                "heartbeat from {} seq={}\n{}",
+                round.arm(),
+                round.heartbeat_floor + 1,
+                commander_lines.concat()
+            ),
+            arm_lines.concat(),
+        )
+    }
+
+    /// The markers the live test hands the oracle for `copy`, from the same
+    /// builder, so a marker added there is exercised here.
+    fn foreign(copy: &str) -> Vec<String> {
+        foreign_markers(&stations(), &[], copy)
+    }
+
+    #[test]
+    fn a_round_inside_the_copy_has_no_violations() {
+        for held in [HeldOutcome::Cancelled, HeldOutcome::Released] {
+            let round = round("alpha1", 2, held, Placement::Coordinator);
+            let (commander_log, arm_log) = logs(&round);
+            assert_eq!(
+                copy_traffic_violations(&round, &foreign("alpha"), &commander_log, &arm_log),
+                Vec::<String>::new(),
+                "{held:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_foreign_answer_fails_a_complete_round() {
+        let round = round("alpha1", 1, HeldOutcome::Released, Placement::Coordinator);
+        let (mut commander_log, arm_log) = logs(&round);
+        commander_log.push_str("echo answered by bravo_arm_inst token=alpha1-1\n");
+        assert_eq!(
+            copy_traffic_violations(&round, &foreign("alpha"), &commander_log, &arm_log),
+            vec!["`alpha` handled foreign traffic (`bravo_arm_inst`)".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_foreign_request_handled_by_the_arm_fails_a_complete_round() {
+        let round = round("alpha1", 1, HeldOutcome::Cancelled, Placement::Coordinator);
+        let (commander_log, mut arm_log) = logs(&round);
+        arm_log.push_str("echo from charlie_commander_inst token=charlie1-1\n");
+        assert_eq!(
+            copy_traffic_violations(&round, &foreign("alpha"), &commander_log, &arm_log),
+            vec![
+                "`alpha` handled foreign traffic (`charlie_commander_inst`)".to_owned(),
+                "`alpha` handled foreign traffic (`token=charlie1-`)".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_retired_label_of_the_copy_itself_is_foreign() {
+        let round = round("bravo2", 1, HeldOutcome::Cancelled, Placement::Peer);
+        let (mut commander_log, arm_log) = logs(&round);
+        commander_log.push_str("goal bravo1-4h CANCELLED by bravo_arm_inst token=bravo1-4h\n");
+        let markers = foreign_markers(
+            &[Station::new("bravo", Placement::Peer)],
+            &["bravo1".to_owned()],
+            "bravo",
+        );
+        let violations = copy_traffic_violations(&round, &markers, &commander_log, &arm_log);
+        assert_eq!(
+            violations,
+            vec![
+                "`bravo` handled foreign traffic (`goal bravo1-`)".to_owned(),
+                "`bravo` handled foreign traffic (`token=bravo1-`)".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_held_goal_must_come_to_what_the_round_expects() {
+        let released = round("bravo1", 1, HeldOutcome::Released, Placement::Peer);
+        let (commander_log, arm_log) = logs(&released);
+        let cancelled = round("bravo1", 1, HeldOutcome::Cancelled, Placement::Peer);
+        assert_eq!(
+            copy_traffic_violations(&cancelled, &[], &commander_log, &arm_log),
+            vec![
+                format!(
+                    "`bravo_commander_inst` never logged `move_on cancel from {PEER_GATE} for bravo1-1h`"
+                ),
+                "`bravo_commander_inst` never logged `cancel bravo1-1h SIGNALLED by bravo_arm_inst`"
+                    .to_owned(),
+                "`bravo_commander_inst` never logged `goal bravo1-1h CANCELLED by bravo_arm_inst token=bravo1-1h`"
+                    .to_owned(),
+                "`bravo_arm_inst` never logged `goal bravo1-1h cancelled by bravo_arm_inst`"
+                    .to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_later_round_is_not_proven_by_an_earlier_one() {
+        let first = round("charlie1", 1, HeldOutcome::Released, Placement::Peer);
+        let (commander_log, arm_log) = logs(&first);
+        let second = round("charlie1", 2, HeldOutcome::Released, Placement::Peer);
+        let violations = copy_traffic_violations(&second, &[], &commander_log, &arm_log);
+        assert_eq!(
+            violations.len(),
+            round_lines(&second).0.len() + round_lines(&second).1.len()
+        );
+        assert!(
+            violations
+                .iter()
+                .all(|violation| violation.contains("charlie1-2")),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn a_round_needs_a_heartbeat_of_its_own() {
+        let mut round = round("alpha1", 3, HeldOutcome::Released, Placement::Coordinator);
+        let (commander_log, arm_log) = logs(&round);
+        round.heartbeat_floor = highest_heartbeat_seq(&commander_log, &round.arm());
+        assert_eq!(
+            copy_traffic_violations(&round, &[], &commander_log, &arm_log),
+            vec![
+                "`alpha_commander_inst` heard no heartbeat from `alpha_arm_inst` after seq 1 (highest is 1)"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn neither_gate_name_contains_the_other() {
+        assert!(
+            !COORDINATOR_GATE.contains(PEER_GATE) && !PEER_GATE.contains(COORDINATOR_GATE),
+            "`{COORDINATOR_GATE}` and `{PEER_GATE}` must not read as each other"
+        );
+    }
+
+    #[test]
+    fn every_foreign_marker_matches_a_line_of_the_copy_it_names() {
+        let lines: String = ["bravo1", "charlie1"]
+            .into_iter()
+            .map(|label| {
+                let (commander_lines, arm_lines) =
+                    round_lines(&round(label, 1, HeldOutcome::Released, Placement::Peer));
+                format!("{}{}", commander_lines.concat(), arm_lines.concat())
+            })
+            .collect();
+        for marker in foreign("alpha") {
+            assert!(
+                lines.contains(&marker),
+                "marker `{marker}` matches no line the copies it names log:\n{lines}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_peer_that_kept_holding_has_no_violations() {
+        assert_eq!(
+            peer_hold_violations(
+                "charlie1-1h",
+                "alpha1-1h",
+                "[isolation-commander] holding charlie1-1h\n",
+                "[isolation-arm] goal charlie1-1h from charlie_commander_inst accepted by charlie_arm_inst\n"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_peer_whose_goal_ended_or_whose_arm_saw_the_cancel_is_caught() {
+        assert_eq!(
+            peer_hold_violations(
+                "charlie1-1h",
+                "alpha1-1h",
+                "[isolation-commander] holding charlie1-1h\n\
+                 [isolation-commander] goal charlie1-1h CANCELLED by charlie_arm_inst token=charlie1-1h\n",
+                "[isolation-arm] goal alpha1-1h from alpha_commander_inst accepted by charlie_arm_inst\n"
+            ),
+            vec![
+                "stopped holding `charlie1-1h`".to_owned(),
+                "its arm saw `alpha1-1h`".to_owned(),
+            ]
+        );
+        assert_eq!(
+            peer_hold_violations("charlie1-1h", "alpha1-1h", "", ""),
+            vec!["never held `charlie1-1h`".to_owned()]
+        );
+    }
 }
