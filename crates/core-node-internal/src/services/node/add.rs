@@ -655,10 +655,12 @@ fn decode_sha256_hex(input: &str) -> std::result::Result<Vec<u8>, String> {
     }
     // Input is already validated as lowercase hex by config parsing (source.rs),
     // so we can convert directly without error handling per digit.
+    // The length check above leaves no remainder to drop.
+    let (digit_pairs, _) = bytes.as_chunks::<2>();
     let mut output = Vec::with_capacity(32);
-    for chunk in bytes.chunks_exact(2) {
-        let high = (chunk[0] as char).to_digit(16).unwrap() as u8;
-        let low = (chunk[1] as char).to_digit(16).unwrap() as u8;
+    for &[high_digit, low_digit] in digit_pairs {
+        let high = (high_digit as char).to_digit(16).unwrap() as u8;
+        let low = (low_digit as char).to_digit(16).unwrap() as u8;
         output.push((high << 4) | low);
     }
     Ok(output)

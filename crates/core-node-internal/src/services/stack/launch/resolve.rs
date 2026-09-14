@@ -3,9 +3,7 @@ use super::{NodeKey, PlannedDeployment, ProcessLaunchContext};
 use crate::services::node::pins;
 use crate::services::node::{FeedbackLine, stdout_line_sender};
 use crate::services::repo::cache as repo_cache;
-use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, PlacementSpec,
-};
+use core_node_api::encoding::{LaunchFeedbackStep, LaunchGoal, LauncherOrigin, PlacementSpec};
 use daemon_config::core_node_name::CoreNodeName;
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
@@ -32,7 +30,7 @@ fn deployment_label(deployment: &Deployment) -> String {
 pub(super) async fn parse_launcher_config(
     ctx: &ProcessLaunchContext,
     goal: &LaunchGoal,
-) -> std::result::Result<(Vec<Deployment>, Placements), LaunchResult> {
+) -> std::result::Result<(Vec<Deployment>, Placements), String> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -44,35 +42,28 @@ pub(super) async fn parse_launcher_config(
         Ok(path) => path,
         Err(msg) => {
             publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
+            return Err(msg);
         }
     };
 
     if !launch_file.exists() {
         let msg = format!("launch file does not exist: {}", launch_file.display());
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
 
     if !launch_file.is_file() {
         let msg = format!("launch file path must be a file: {}", launch_file.display());
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
 
     let parsed = match PeppyLauncherParser::from_path(&launch_file) {
         Ok(cfg) => cfg,
         Err(e) => {
-            publish_stderr(
-                ctx,
-                format!("Invalid launcher config: {e}"),
-                LaunchFeedbackStep::LauncherStep,
-            )
-            .await;
-            return Err(LaunchResult::failure(
-                &ctx.log_path,
-                format!("Invalid launcher config: {e}"),
-            ));
+            let msg = format!("Invalid launcher config: {e}");
+            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            return Err(msg);
         }
     };
 
@@ -98,7 +89,7 @@ pub(super) async fn parse_launcher_config(
                 // so the prefix only says which step refused.
                 let msg = format!("Cannot resolve the launcher's components: {e}");
                 publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-                return Err(LaunchResult::failure(&ctx.log_path, msg));
+                return Err(msg);
             }
         };
 
@@ -106,7 +97,7 @@ pub(super) async fn parse_launcher_config(
         Ok(placements) => placements,
         Err(msg) => {
             publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
+            return Err(msg);
         }
     };
 
@@ -308,7 +299,7 @@ pub(super) async fn resolve_deployments(
     ctx: &ProcessLaunchContext,
     deployments: Vec<Deployment>,
     placements: &Placements,
-) -> std::result::Result<Vec<PlannedDeployment>, LaunchResult> {
+) -> std::result::Result<Vec<PlannedDeployment>, String> {
     publish_stdout(
         ctx,
         format!("Resolving {} deployment(s)", deployments.len()),
@@ -329,7 +320,7 @@ pub(super) async fn resolve_deployments(
         Err(e) => {
             let msg = format!("failed to load nodes cache: {e}");
             publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
+            return Err(msg);
         }
     };
 
@@ -429,7 +420,7 @@ pub(super) async fn resolve_deployments(
     if !planning_errors.is_empty() {
         let msg = daemon_config::format_bulleted(&planning_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
 
     Ok(planned)
@@ -568,7 +559,7 @@ pub(super) async fn mint_doc_pins(
     ctx: &ProcessLaunchContext,
     planned: &mut [PlannedDeployment],
     placements: &Placements,
-) -> std::result::Result<(), LaunchResult> {
+) -> std::result::Result<(), String> {
     // Every deployment mints against ONE load of the contract and pairing
     // caches, on one blocking thread: both are read and parsed per load, and
     // a launch with N deployments otherwise paid N of each, sequentially, on
@@ -592,7 +583,7 @@ pub(super) async fn mint_doc_pins(
         Ok(minted) => minted,
         Err(reason) => {
             publish_stderr(ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, reason));
+            return Err(reason);
         }
     };
 
@@ -615,7 +606,7 @@ pub(super) async fn mint_doc_pins(
     if !problems.is_empty() {
         let msg = daemon_config::format_bulleted(&problems);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
     Ok(())
 }
