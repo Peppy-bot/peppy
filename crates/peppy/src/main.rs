@@ -37,7 +37,7 @@ struct Cli {
 /// "the daemon this command targets", which is what omitting the flag already
 /// says.
 fn parse_core_node_target(value: &str) -> Result<String, String> {
-    daemon_config::core_node_name::CoreNodeName::new(value)
+    config::runtime::CoreNodeName::new(value)
         .map(|name| name.into_string())
         .map_err(|reason| reason.to_string())
 }
@@ -350,7 +350,7 @@ mod tests {
     /// silently becoming an unreachable request target.
     #[test]
     fn core_node_flag_rejects_invalid_names() {
-        let long = "x".repeat(daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN + 1);
+        let long = "x".repeat(config::runtime::MAX_CORE_NODE_NAME_LEN + 1);
         for bad in ["", "   ", "has space", "robot/7", long.as_str()] {
             assert!(
                 Cli::try_parse_from(["peppy", "stack", "list", "--core-node", bad]).is_err(),

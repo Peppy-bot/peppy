@@ -96,7 +96,9 @@ where
     Ok(result)
 }
 
-const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
+/// How long one drain slice waits on feedback before the timeouts are
+/// re-checked.
+pub(crate) const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// Drives an accepted action goal to completion: drains feedback into the
 /// scrolling output until the server closes the feedback stream (which it does

@@ -371,7 +371,7 @@ mod tests {
     /// Every test instance on one daemon, the single-machine shape.
     fn all_local() -> Placements {
         Placements::all_on(
-            crate::core_node_name::CoreNodeName::new(TEST_CORE).expect("valid test core node name"),
+            config::runtime::CoreNodeName::new(TEST_CORE).expect("valid test core node name"),
         )
     }
 

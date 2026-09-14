@@ -14,7 +14,7 @@ use core_node_api::SerializedNodeGraph;
 use core_node_api::encoding::StackListRequest;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::commands::stack::{StackCommand, StackCommands, WithSelection};
+use peppy::commands::stack::{StackCommand, StackCommands, StackTimeouts, WithWords};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -270,10 +270,12 @@ async fn node_launch_command_succeed() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(3600),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(3600),
+            },
         },
     }
     .execute(&ctx)
@@ -473,10 +475,12 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(3600),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(3600),
+            },
         },
     }
     .execute(&ctx);
@@ -632,10 +636,12 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
             local: false,
             with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 1,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: None,
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 1,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: None,
+            },
         },
     }
     .execute(&harness.ctx);
@@ -674,10 +680,12 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
             local: false,
             with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 1,
-            max_timeout_secs: None,
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 1,
+                max_timeout_secs: None,
+            },
         },
     }
     .execute(&harness.ctx);
@@ -724,10 +732,12 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
             local: false,
             with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(2),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(2),
+            },
         },
     }
     .execute(&harness.ctx);
@@ -926,10 +936,12 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -1155,10 +1167,12 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -1298,10 +1312,12 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -1397,10 +1413,12 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(3600),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(3600),
+            },
         },
     }
     .execute(&ctx);
@@ -1697,10 +1715,12 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -1851,10 +1871,12 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx);
@@ -1996,10 +2018,12 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx);
@@ -2275,10 +2299,12 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -2536,10 +2562,12 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -2688,10 +2716,12 @@ async fn stack_launch_rejects_unbound_slot() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(3600),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(3600),
+            },
         },
     }
     .execute(&ctx);
@@ -2886,10 +2916,12 @@ async fn stack_launch_establishes_launcher_pairings() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -3069,10 +3101,12 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -3325,10 +3359,12 @@ async fn stack_launch_delivers_observer_member_sets() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -3493,10 +3529,12 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(60),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(60),
+            },
         },
     }
     .execute(&ctx)
@@ -3549,10 +3587,12 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(60),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(60),
+            },
         },
     }
     .execute(&ctx)
@@ -3814,10 +3854,12 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(180),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(180),
+            },
         },
     }
     .execute(&ctx)
@@ -4070,10 +4112,12 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -4228,10 +4272,12 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
             local: false,
             with: Default::default(),
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -4347,7 +4393,6 @@ async fn stack_launch_flattens_a_composed_launcher() {
             components: [
                 {{
                     name: "backend",
-                    default: "alpha",
                     options: {{
                         alpha: {{ deployments: [{}] }},
                         beta: {{ deployments: [{}] }},
@@ -4355,7 +4400,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
                 }},
                 {{
                     name: "extras",
-                    optional: true,
+                    cardinality: "zero_or_one",
                     options: {{
                         on: "fragments/extras.json5",
                     }},
@@ -4365,7 +4410,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
                 {{ when: {{ extras: "on" }}, requires: [{{ backend: "beta" }}],
                    reason: "the extras tune only the beta backend" }},
             ],
-            deployments: [],
+            deployments: [{{ backend: "alpha" }}],
         }}"#,
         deployment("alpha_inst"),
         deployment("beta_inst"),
@@ -4390,14 +4435,16 @@ async fn stack_launch_flattens_a_composed_launcher() {
             rebuild: false,
             place: Vec::new(),
             local: false,
-            with: WithSelection {
+            with: WithWords {
                 words: vec!["beta".to_owned(), "extras=on".to_owned()],
             },
             launcher_config_path: launcher_path,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(120),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(120),
+            },
         },
     }
     .execute(&ctx)
@@ -4467,14 +4514,16 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
             rebuild: false,
             place: Vec::new(),
             local: false,
-            with: WithSelection {
+            with: WithWords {
                 words: vec!["mujoco".to_owned()],
             },
             launcher_config_path: flat_launcher,
-            node_add_idle_timeout_secs: 60,
-            node_build_idle_timeout_secs: 60,
-            node_run_idle_timeout_secs: 60,
-            max_timeout_secs: Some(60),
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(60),
+            },
         },
     }
     .execute(&ctx)
@@ -4491,28 +4540,30 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         r#"{
             peppy_schema: "launcher/v1",
             components: [
-                { name: "robot", default: "real",
+                { name: "robot",
                   options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
-                { name: "recorder", optional: true,
+                { name: "recorder", cardinality: "zero_or_one",
                   options: { on: { deployments: [] } } },
             ],
-            deployments: [],
+            deployments: [{ robot: "real" }],
         }"#,
     )
     .expect("composed launcher should be writable");
 
-    let launch_with = |with: Vec<String>, path: PathBuf| {
+    let launch_with = |words: Vec<String>, path: PathBuf| {
         StackCommand {
             command: StackCommands::Launch {
                 rebuild: false,
                 place: Vec::new(),
                 local: false,
-                with: WithSelection { words: with },
+                with: WithWords { words },
                 launcher_config_path: path,
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(60),
+                timeouts: StackTimeouts {
+                    node_add_idle_timeout_secs: 60,
+                    node_build_idle_timeout_secs: 60,
+                    node_run_idle_timeout_secs: 60,
+                    max_timeout_secs: Some(60),
+                },
             },
         }
         .execute(&ctx)
@@ -4548,16 +4599,16 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         r#"{
             peppy_schema: "launcher/v1",
             components: [
-                { name: "robot", default: "real",
+                { name: "robot",
                   options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
-                { name: "recorder", optional: true,
+                { name: "recorder", cardinality: "zero_or_one",
                   options: { on: { deployments: [] } } },
             ],
             constraints: [
                 { when: { recorder: "on" }, requires: [{ robot: "mujoco" }],
                   reason: "this recorder observes only the simulated arm" },
             ],
-            deployments: [],
+            deployments: [{ robot: "real" }],
         }"#,
     )
     .expect("constrained launcher should be writable");
@@ -4569,7 +4620,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         "the refusal should name the guard and the requirement: {msg}"
     );
     assert!(
-        msg.contains("robot=real (default)"),
+        msg.contains("robot=real (from file)"),
         "the echo should mark the defaulted axis the operator never typed: {msg}"
     );
     assert!(
@@ -4584,16 +4635,16 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
         r#"{
             peppy_schema: "launcher/v1",
             components: [
-                { name: "robot", default: "real",
+                { name: "robot",
                   options: { real: { deployments: [] }, mujoco: { deployments: [] } } },
-                { name: "recorder", optional: true,
+                { name: "recorder", cardinality: "zero_or_one",
                   options: { on: { deployments: [] } } },
             ],
             constraints: [
                 { when: { robot: "mujoco" }, forbids: [{ recorder: "on" }],
                   reason: "the recorder films only the physical rig" },
             ],
-            deployments: [],
+            deployments: [{ robot: "real" }],
         }"#,
     )
     .expect("constrained launcher should be writable");
@@ -4637,14 +4688,14 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
         r#"{
             peppy_schema: "launcher/v1",
             components: [
-                { name: "robot", default: "real",
+                { name: "robot",
                   options: {
                       real: { deployments: [] },
                       mujoco: { deployments: [
                           { source: { name: "sim", tag: "v1" },
                             instances: [{ instance_id: "sim_inst" }] } ] },
                   } },
-                { name: "recorder", optional: true,
+                { name: "recorder", cardinality: "zero_or_one",
                   provides: ["recorder_inst"],
                   options: { on: "fragments/recorder.json5" } },
             ],
@@ -4655,6 +4706,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
                 { source: { name: "panel", tag: "v1" },
                   instances: [{ instance_id: "panel_inst",
                                 links: { recorder: [] } }] },
+                { robot: "real" },
             ],
         }"#,
     )
@@ -4664,6 +4716,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
         &empty_peppy_dirs(),
         launcher,
         &["recorder=on".to_owned()],
+        &Default::default(),
     )
     .expect("resolves");
 
@@ -4682,7 +4735,7 @@ fn stack_resolve_prints_the_flat_launcher_and_report() {
 
     let report_text = report.join("\n");
     assert!(
-        report_text.contains("components: robot=real (default)  recorder=on"),
+        report_text.contains("components: robot=real (from file)  recorder=on"),
         "the report leads with the resolution: {report_text}"
     );
     assert!(
@@ -4708,7 +4761,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         r#"{
             peppy_schema: "launcher/v1",
             components: [
-                { name: "robot", default: "real",
+                { name: "robot",
                   options: {
                       real: { deployments: [
                           { source: { name: "arm", tag: "v1" },
@@ -4717,7 +4770,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
                           { source: { name: "sim", tag: "v1" },
                             instances: [{ instance_id: "arm_inst" }] } ] },
                   } },
-                { name: "cameras", optional: true,
+                { name: "cameras", cardinality: "zero_or_one",
                   options: { cameras: { deployments: [
                       { source: { name: "cam", tag: "v1" },
                         instances: [{ instance_id: "cam_inst" }] } ] } } },
@@ -4726,7 +4779,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
                 { when: { cameras: "cameras" }, requires: [{ robot: "real" }],
                   reason: "the cameras film the physical rig" },
             ],
-            deployments: [],
+            deployments: [{ robot: "real" }],
         }"#,
     )
     .expect("launcher");
@@ -4735,6 +4788,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         &empty_peppy_dirs(),
         launcher.clone(),
         &["mujoco".to_owned(), "cameras".to_owned()],
+        &Default::default(),
     )
     .expect_err("the refused member must not resolve");
     let msg = err.to_string();
@@ -4749,6 +4803,7 @@ fn stack_resolve_refuses_a_selection_the_constraints_exclude() {
         &empty_peppy_dirs(),
         launcher,
         &["cameras".to_owned()],
+        &Default::default(),
     )
     .expect("the legal sibling resolves");
     assert!(
@@ -4836,7 +4891,7 @@ fn stack_resolve_fails_an_optional_pairing_slot_left_uncovered() {
     )
     .expect("launcher");
 
-    let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
+    let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &Default::default())
         .expect_err("an uncovered optional pairing slot must not resolve");
     let msg = err.to_string();
     assert!(
@@ -4868,8 +4923,9 @@ fn stack_resolve_accepts_a_vacant_pairing_slot_and_says_it_checked() {
     )
     .expect("launcher");
 
-    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
-        .expect("a vacant slot is covered");
+    let (_document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &Default::default())
+            .expect("a vacant slot is covered");
     let report_text = report.join(
         "
 ",
@@ -4902,8 +4958,9 @@ fn stack_resolve_reports_the_check_skipped_when_a_manifest_is_missing() {
     )
     .expect("launcher");
 
-    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
-        .expect("a cache miss skips the check rather than failing the resolve");
+    let (_document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &Default::default())
+            .expect("a cache miss skips the link check");
     let report_text = report.join(
         "
 ",
@@ -4951,8 +5008,9 @@ fn stack_resolve_reports_the_check_skipped_on_a_mislabeled_manifest() {
     )
     .expect("launcher");
 
-    let (_document, report) = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[])
-        .expect("a mislabeled manifest skips the check rather than judging the plan with it");
+    let (_document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &Default::default())
+            .expect("a mislabeled manifest skips the link check");
     let report_text = report.join(
         "
 ",
@@ -4986,9 +5044,13 @@ fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
     )
     .expect("launcher");
 
-    let (_document, report) =
-        peppy::commands::stack::resolve_rendered(&empty_peppy_dirs(), launcher, &[])
-            .expect("an empty cache skips the check rather than failing the resolve");
+    let (_document, report) = peppy::commands::stack::resolve_rendered(
+        &empty_peppy_dirs(),
+        launcher,
+        &[],
+        &Default::default(),
+    )
+    .expect("an empty cache skips the link check");
     let report_text = report.join(
         "
 ",
@@ -5163,10 +5225,12 @@ impl CountedLaunch {
                 local: false,
                 with: Default::default(),
                 launcher_config_path: self.launcher_path.clone(),
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(3600),
+                timeouts: StackTimeouts {
+                    node_add_idle_timeout_secs: 60,
+                    node_build_idle_timeout_secs: 60,
+                    node_run_idle_timeout_secs: 60,
+                    max_timeout_secs: Some(3600),
+                },
             },
         }
         .execute(&self.ctx)

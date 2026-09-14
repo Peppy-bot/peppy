@@ -17,7 +17,7 @@
 
 use peppy::commands::Command;
 use peppy::commands::mcp::mcp_catalog_rendered;
-use peppy::commands::stack::{StackCommand, StackCommands, list_nodes_collecting};
+use peppy::commands::stack::{StackCommand, StackCommands, StackTimeouts, list_nodes_collecting};
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 
@@ -787,10 +787,12 @@ impl Stack {
                 local: false,
                 with: Default::default(),
                 launcher_config_path: launcher_path,
-                node_add_idle_timeout_secs: 120,
-                node_build_idle_timeout_secs: 120,
-                node_run_idle_timeout_secs: 120,
-                max_timeout_secs: Some(900),
+                timeouts: StackTimeouts {
+                    node_add_idle_timeout_secs: 120,
+                    node_build_idle_timeout_secs: 120,
+                    node_run_idle_timeout_secs: 120,
+                    max_timeout_secs: Some(900),
+                },
             },
         }
         .execute(&self.ctx)
@@ -1605,8 +1607,13 @@ async fn stack_resolve_checks_the_links_of_an_exposure_deployment() {
             8900
         )
     ));
-    let (_, report) = peppy::commands::stack::resolve_rendered(&stack.peppy_dirs, complete, &[])
-        .expect("a complete deployment resolves");
+    let (_, report) = peppy::commands::stack::resolve_rendered(
+        &stack.peppy_dirs,
+        complete,
+        &[],
+        &Default::default(),
+    )
+    .expect("a complete deployment resolves");
     assert!(
         !report.iter().any(|line| line.contains("not checked")),
         "{report:?}"
@@ -1623,9 +1630,14 @@ async fn stack_resolve_checks_the_links_of_an_exposure_deployment() {
             ]
         }}"#
     ));
-    let error = peppy::commands::stack::resolve_rendered(&stack.peppy_dirs, unknown_slot, &[])
-        .expect_err("a link naming no slot of the synthesized manifest is refused")
-        .to_string();
+    let error = peppy::commands::stack::resolve_rendered(
+        &stack.peppy_dirs,
+        unknown_slot,
+        &[],
+        &Default::default(),
+    )
+    .expect_err("a link naming no slot of the synthesized manifest is refused")
+    .to_string();
     assert!(error.contains("recorder"), "{error}");
 }
 

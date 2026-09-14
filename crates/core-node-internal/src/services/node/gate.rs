@@ -1,5 +1,6 @@
 //! Goal-admission concurrency gate shared by the built-in single-goal actions
-//! (`node_add`, `node_build`, `node_run`, `stack_launch`, `repo_refresh`).
+//! (`node_add`, `node_build`, `node_run`, the stack actions, `repo_refresh`),
+//! and the read/write gate the whole stack is changed under.
 //!
 //! Each of those actions allows only one in-flight task at a time and rejects
 //! concurrent goals with `"action already in progress (times out in Xs)"`.
@@ -53,10 +54,12 @@ use tokio_util::sync::CancellationToken;
 ///   signals the displaced build's token, it awaits the superseded handle for
 ///   up to this long so the old build SIGKILLs + reaps its child and rolls the
 ///   entity back to `Added` before the new build starts.
-/// - `services/stack/launch.rs` on a run-phase idle/max timeout: after signaling
-///   the run-phase token it awaits the phase future for up to this long so it
-///   can SIGKILL the child, unregister the `Starting` instance, and clear temp
-///   files before the launch failure is returned.
+/// - `services/stack/launch/phases.rs` on a run-phase idle/max timeout: after
+///   signaling the run-phase token it awaits the phase future for up to this
+///   long so it can SIGKILL the child, unregister the `Starting` instance, and
+///   clear temp files before the failure is returned.
+/// - [`finish_on_reset`] on a `stack reset`: the reset cancels every admitted
+///   goal and gives each this long to finish its own cleanup.
 ///
 /// On expiry both callers fall back to dropping the future and surface a
 /// transient/timeout failure rather than wedging.
@@ -268,6 +271,88 @@ impl Drop for GoalSlotGuard {
     }
 }
 
+/// The refusal every stack change and every node goal meets while another
+/// holds the stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StackBusy;
+
+impl std::fmt::Display for StackBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a stack or node operation is in progress on this daemon; wait for it to finish",
+        )
+    }
+}
+
+/// Which work the stack admits at once: one change, or any number of node
+/// goals beside each other.
+#[derive(Debug, Default)]
+pub(crate) struct StackState {
+    /// Stack changes (launch, join, remove, reset, a peer's slice) hold the
+    /// write guard; node goals hold read guards to completion.
+    mutation: Arc<tokio::sync::RwLock<()>>,
+    cancellation: Mutex<CancellationToken>,
+}
+
+impl StackState {
+    pub(crate) fn cancellation(&self) -> CancellationToken {
+        self.cancellation.lock().child_token()
+    }
+
+    /// Takes the stack for one change, refusing while a change or a node
+    /// goal holds it.
+    pub(crate) fn try_begin_change(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, StackBusy> {
+        self.mutation
+            .clone()
+            .try_write_owned()
+            .map_err(|_| StackBusy)
+    }
+
+    /// Admits one node goal beside the others, refusing while a change
+    /// holds the stack.
+    pub(crate) fn try_admit_node_goal(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, StackBusy> {
+        self.mutation
+            .clone()
+            .try_read_owned()
+            .map_err(|_| StackBusy)
+    }
+
+    /// Cancels admitted work and drains its guards before the stack is cleared.
+    pub(crate) async fn begin_reset(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.cancellation.lock().cancel();
+        let guard = self.mutation.clone().write_owned().await;
+        *self.cancellation.lock() = CancellationToken::new();
+        guard
+    }
+}
+
+/// Runs `work` until a reset cancels it, then gives it
+/// [`COOPERATIVE_TEARDOWN_BUDGET`] to finish its own cleanup before its future
+/// is dropped and `failure` is reported. Whatever the work holds releases with
+/// the drop.
+pub(crate) async fn finish_on_reset<F, T>(
+    work: F,
+    cancellation: &CancellationToken,
+    failure: impl FnOnce() -> T,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::pin!(work);
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            let _ = tokio::time::timeout(COOPERATIVE_TEARDOWN_BUDGET, work.as_mut()).await;
+            failure()
+        }
+        result = work.as_mut() => result,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,5 +484,85 @@ mod tests {
             "the displaced task should finish cooperatively after its token was signaled, \
              not be aborted (a cancelled join would be `Err`)"
         );
+    }
+
+    #[tokio::test]
+    async fn reset_cancels_and_drains_both_node_and_stack_operations() {
+        for exclusive in [false, true] {
+            let state = Arc::new(StackState::default());
+            let cancellation = state.cancellation();
+            let (release, released) = tokio::sync::oneshot::channel();
+            let worker = if exclusive {
+                let guard = state.try_begin_change().unwrap();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    let _ = released.await;
+                })
+            } else {
+                let guard = state.try_admit_node_goal().unwrap();
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    let _ = released.await;
+                })
+            };
+            let reset_state = state.clone();
+            let reset = tokio::spawn(async move { reset_state.begin_reset().await });
+            cancellation.cancelled().await;
+            assert!(!reset.is_finished(), "reset must drain the admitted worker");
+            assert_eq!(
+                state.try_admit_node_goal().err(),
+                Some(StackBusy),
+                "new work waits for reset"
+            );
+            release.send(()).unwrap();
+            worker.await.unwrap();
+            let reset_guard = reset.await.unwrap();
+            assert!(!state.cancellation().is_cancelled());
+            assert_eq!(
+                state.try_admit_node_goal().err(),
+                Some(StackBusy),
+                "teardown remains exclusive"
+            );
+            drop(reset_guard);
+            assert!(
+                state.try_admit_node_goal().is_ok(),
+                "new work is admitted after reset"
+            );
+            assert!(
+                cancellation.is_cancelled(),
+                "old workers retain the cancelled generation"
+            );
+        }
+    }
+
+    /// A stack change refuses while a node goal runs, and a node goal
+    /// refuses while a change runs, both with the one message.
+    #[test]
+    fn a_change_and_a_node_goal_exclude_each_other() {
+        let state = StackState::default();
+        let node_goal = state.try_admit_node_goal().unwrap();
+        assert_eq!(state.try_begin_change().err(), Some(StackBusy));
+        drop(node_goal);
+        let change = state.try_begin_change().unwrap();
+        assert_eq!(state.try_admit_node_goal().err(), Some(StackBusy));
+        assert_eq!(state.try_begin_change().err(), Some(StackBusy));
+        drop(change);
+        assert!(state.try_begin_change().is_ok());
+    }
+
+    #[tokio::test]
+    async fn interrupted_work_finishes_cleanup_before_reporting_failure() {
+        let cancellation = CancellationToken::new();
+        let work_cancel = cancellation.clone();
+        let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cleaned = cleaned.clone();
+        let work = async move {
+            work_cancel.cancelled().await;
+            worker_cleaned.store(true, std::sync::atomic::Ordering::SeqCst);
+            true
+        };
+        cancellation.cancel();
+        assert!(!finish_on_reset(work, &cancellation, || false).await);
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

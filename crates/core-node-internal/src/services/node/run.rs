@@ -1,4 +1,6 @@
-use super::super::action_loop::{GoalHandler, accept_goal, reject_goal, run_action_loop};
+use super::super::action_loop::{
+    GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
+};
 use super::gate::ConcurrencyGate;
 use super::health_monitor::{HealthMonitorParams, HealthMonitorPolicy, spawn_health_monitor};
 use super::pairing::plan_requested_pairs;
@@ -554,10 +556,13 @@ async fn handle_goal_request(
     // Before the gate, because the gate is per-action and this exclusion is
     // per-machine: a coordinator halfway through replacing this stack must not
     // race a locally-typed `peppy node run`.
-    if let Err(reason) = slice_ownership.refuse_if_reserved_elsewhere(&goal) {
-        reject_goal(pending, encode_rejected_start_goal(reason)).await;
-        return;
-    }
+    let admission = match slice_ownership.admit_node_goal(&goal) {
+        Ok(admission) => admission,
+        Err(reason) => {
+            reject_goal(pending, encode_rejected_start_goal(reason)).await;
+            return;
+        }
+    };
 
     let generation = match gate.try_admit(goal.timeout_secs, false) {
         // `node_run` never forces, so nothing is ever superseded here.
@@ -630,6 +635,10 @@ async fn handle_goal_request(
         .feedback_publisher()
         .expect("node_run declares a feedback topic");
     let gate_for_task = gate.clone();
+    // A stack reset cancels the stack's token; the goal's caller cancels
+    // this goal's own, which descends from it.
+    let reset = slice_ownership.stack.cancellation();
+    let cancellation = reset.child_token();
     tokio::spawn(async move {
         // Frees the gate slot on every exit: explicitly before completion on the
         // normal path (via `release_then_complete` below), or on unwind for a
@@ -650,10 +659,12 @@ async fn handle_goal_request(
             feedback_tx,
             log_file,
             sender_instance_id,
-            // Action-server path has no outer cancellation source; the internal
-            // per-step timeouts inside `run_node_run` remain the only way out.
-            CancellationToken::new(),
+            cancellation.clone(),
         );
+        let work = under_goal_cancel(&goal_ctx, &cancellation, work);
+        let work = crate::services::node::gate::finish_on_reset(work, &reset, || {
+            NodeRunResult::failure("node run cancelled by stack reset")
+        });
         tokio::pin!(work);
 
         let mut feedback_open = true;
@@ -676,6 +687,7 @@ async fn handle_goal_request(
             publish_node_run_feedback(&feedback_publisher, line).await;
         }
 
+        drop(admission);
         if let Ok(payload) = result.encode() {
             slot.release_then_complete(&goal_ctx, payload).await;
         }

@@ -49,9 +49,9 @@
 mod service;
 
 pub(crate) use service::{
-    FederationServiceContext, listen_for_pair_commit, listen_for_participant_release,
-    listen_for_participant_reserve, listen_for_participant_slice_begin,
-    listen_for_relationship_notify,
+    FederationServiceContext, listen_for_pair_commit, listen_for_participant_instances_remove,
+    listen_for_participant_release, listen_for_participant_reserve,
+    listen_for_participant_slice_begin, listen_for_relationship_notify,
 };
 
 use core_node_api::LaunchScoped;
@@ -157,6 +157,11 @@ pub struct SliceOwnership {
     /// the one holding the reservation.
     core_node_name: String,
     state: Mutex<OwnershipState>,
+    pub(crate) stack: crate::services::node::gate::StackState,
+    /// The launch this daemon coordinates, held here beside the reservation
+    /// and the slice because all three answer "which launch is this machine
+    /// part of, and in what role".
+    pub(crate) active: Mutex<Option<crate::services::stack::ActiveLaunch>>,
 }
 
 impl SliceOwnership {
@@ -164,6 +169,8 @@ impl SliceOwnership {
         Arc::new(Self {
             core_node_name: core_node_name.to_owned(),
             state: Mutex::default(),
+            stack: Default::default(),
+            active: Mutex::default(),
         })
     }
 
@@ -249,43 +256,57 @@ impl SliceOwnership {
         Some(launch_id)
     }
 
-    /// The refusal a node action owes its caller when this machine is
-    /// committed to a federated launch other than the one asking.
+    /// Admits one node goal onto this machine's stack, as the read guard the
+    /// add/build/run action holds through completion. Stack changes and peer
+    /// reservations take the write guard instead.
     ///
-    /// Takes the goal itself, bounded on [`LaunchScoped`], rather than a bare
-    /// `Option<&str>`: which actions are launch-scoped is declared once in the
-    /// core-node registry (`scope: launch`), and that declaration is what emits
-    /// the impl. An action that carries no launch scope therefore cannot be
-    /// passed here at all, and no call site gets to decide for itself where a
-    /// goal's launch id comes from.
-    ///
-    /// Every node action shares it so the three cannot explain the same
-    /// situation three different ways.
-    ///
-    /// The reservation covers the WHOLE machine, so local `node add` / `node
-    /// run` consult this too. Without that, a federated launch would only
-    /// exclude other launches, and a local `peppy node run` could still race
-    /// it: the per-action gates are per-action, and a coordinator dispatching
-    /// to a peer goes through the node actions rather than the launch one.
-    ///
-    /// Decided under one lock: the launch that holds the daemon and the
-    /// coordinator driving it are two halves of one answer, and reading them
-    /// separately would let the reservation change between the two.
-    pub fn refuse_if_reserved_elsewhere(
+    /// Refuses, with the reason and its fix, a goal that arrives while a
+    /// stack change holds the stack, while a `stack reset` is in progress,
+    /// while this daemon is reserved for another launch, naming a launch
+    /// whose reservation has ended, or naming the reserved launch before
+    /// its slice-begin reached this daemon.
+    pub fn admit_node_goal(
         &self,
         goal: &impl LaunchScoped,
-    ) -> std::result::Result<(), String> {
-        let launch_id = goal.launch_id();
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+        self.admit_node_change(goal.launch_id())
+    }
+
+    pub(crate) fn admit_node_change(
+        &self,
+        launch_id: Option<&str>,
+    ) -> std::result::Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+        let admission = self
+            .stack
+            .try_admit_node_goal()
+            .map_err(|busy| busy.to_string())?;
+        if self.stack.cancellation().is_cancelled() {
+            return Err("stack reset is in progress; wait for it to finish".to_owned());
+        }
         let state = self.state.lock();
         let Some(held) = state.reservation.as_ref() else {
-            return Ok(());
+            if launch_id.is_some() {
+                return Err("this launch reservation has ended; launch the stack again".to_owned());
+            }
+            return Ok(admission);
         };
         if launch_id == Some(held.launch_id.as_str()) {
-            return Ok(());
+            let holds_slice = state.slice.as_ref().is_some_and(|slice| {
+                slice.launch_id == held.launch_id
+                    && slice.coordinator_core_node == held.coordinator_core_node
+            });
+            if holds_slice {
+                return Ok(admission);
+            }
+            return Err(format!(
+                "this daemon is reserved for launch `{}` and holds no slice of it; `{}` begins \
+                 the slice on this daemon before it dispatches nodes",
+                held.launch_id, held.coordinator_core_node
+            ));
         }
         Err(format!(
             "this daemon is reserved for federated launch `{}`, driven by `{}`, \
-             which is replacing its whole stack. Wait for that launch to finish, or clear the \
+             which is changing its stack. Wait for that operation to finish, or clear the \
              reservation with `peppy stack reset --core-node {}`.",
             held.launch_id, held.coordinator_core_node, self.core_node_name
         ))
@@ -319,6 +340,7 @@ impl SliceOwnership {
         let mut state = self.state.lock();
         end_held_reservation(&mut state);
         state.slice = None;
+        *self.active.lock() = None;
     }
 }
 
@@ -599,12 +621,12 @@ mod tests {
     #[test]
     fn local_work_is_excluded_while_another_launch_holds_the_daemon() {
         let ownership = SliceOwnership::new("cn-held");
-        assert!(ownership.refuse_if_reserved_elsewhere(&LOCAL).is_ok());
+        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
 
         ownership.try_reserve("launch-a", "cn-robot-7");
 
         let refusal = ownership
-            .refuse_if_reserved_elsewhere(&LOCAL)
+            .admit_node_goal(&LOCAL)
             .expect_err("a local action names no launch, so it is excluded");
         assert!(refusal.contains("launch-a"), "got: {refusal}");
         assert!(
@@ -617,17 +639,46 @@ mod tests {
              one the operator's CLI happens to target; got: {refusal}"
         );
 
+        let refusal = ownership
+            .admit_node_goal(&Goal(Some("launch-a")))
+            .expect_err("the reserving launch dispatches nodes only after its slice-begin");
+        assert!(refusal.contains("holds no slice"), "got: {refusal}");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
         assert!(
-            ownership
-                .refuse_if_reserved_elsewhere(&Goal(Some("launch-a")))
-                .is_ok(),
-            "the reserving launch's own dispatch must pass"
+            ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok(),
+            "the reserving launch's own dispatch must pass once the slice is held"
         );
-        assert!(
-            ownership
-                .refuse_if_reserved_elsewhere(&Goal(Some("launch-b")))
-                .is_err()
-        );
+        assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+    }
+
+    /// A reservation admits a launch's node goals only beside that launch's
+    /// slice: a slice of another launch or another coordinator's is refused.
+    #[test]
+    fn a_launch_scoped_goal_needs_the_slice_as_well_as_the_reservation() {
+        let ownership = SliceOwnership::new("cn-held");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-7"));
+        ownership.try_reserve("launch-b", "cn-robot-7");
+        assert!(ownership.admit_node_goal(&Goal(Some("launch-b"))).is_err());
+
+        let ownership = SliceOwnership::new("cn-held");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "cn-robot-8"));
+        ownership.try_reserve("launch-a", "cn-robot-7");
+        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
+    }
+
+    #[test]
+    fn node_admission_blocks_stack_changes_until_the_action_completes() {
+        let ownership = SliceOwnership::new("cn-held");
+        let first = ownership.admit_node_goal(&LOCAL).unwrap();
+        let second = ownership.admit_node_goal(&LOCAL).unwrap();
+        assert!(ownership.stack.try_begin_change().is_err());
+        drop(first);
+        assert!(ownership.stack.try_begin_change().is_err());
+        drop(second);
+        let mutation = ownership.stack.try_begin_change().unwrap();
+        assert!(ownership.admit_node_goal(&LOCAL).is_err());
+        drop(mutation);
+        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
     }
 
     /// The slice record outlives the reservation: the reservation guards the
@@ -663,5 +714,16 @@ mod tests {
 
         assert_eq!(ownership.held_reservation(), None);
         assert_eq!(ownership.slice(), None);
+    }
+
+    #[test]
+    fn reset_rejects_late_dispatch_from_the_cleared_launch() {
+        let ownership = SliceOwnership::new("robot-host");
+        ownership.try_reserve("launch-a", "coordinator");
+        ownership.record_slice(LaunchIdentity::new("launch-a", "coordinator"));
+        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_ok());
+        ownership.clear();
+        assert!(ownership.admit_node_goal(&Goal(Some("launch-a"))).is_err());
+        assert!(ownership.admit_node_goal(&LOCAL).is_ok());
     }
 }

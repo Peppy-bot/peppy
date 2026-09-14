@@ -31,6 +31,7 @@ use peppylib::core_node::transport::send_goal;
 use peppylib::messaging::ResultStatus;
 use tracing::info;
 
+use super::super::action_poll::FEEDBACK_DRAIN_TIMEOUT;
 use crate::commands::colors::{
     BINDING_COLOR, MEASURE_ACTION_COLOR, MEASURE_DELIVERY_COLOR, MEASURE_NODE_COLOR,
     MEASURE_SERVICE_COLOR, NODE_COLOR, paint,
@@ -48,7 +49,6 @@ const BASELINE_SUBDIR: &str = "stack-benchmark";
 const CLI_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Absolute ceiling so the command can never wedge forever.
 const CLI_MAX_TIMEOUT: Duration = Duration::from_secs(3600);
-const FEEDBACK_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 
 pub fn benchmark(
     ctx: &Arc<AppContext>,

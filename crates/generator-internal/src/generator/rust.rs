@@ -876,8 +876,6 @@ impl LanguageGenerator for RustGenerator {
         )?;
 
         let handler_params = wire_params.clone();
-        let instance_id_param =
-            FunctionParam::new(Ident::new("instance_id", Span::call_site()), quote!(String));
 
         let request_data_struct_ident = if let Some((ident, tokens)) =
             build_request_struct_with_name_and_impl("RequestData", &handler_params, false)
@@ -909,7 +907,6 @@ impl LanguageGenerator for RustGenerator {
             None
         };
 
-        let service_name_literal = Literal::string(service.name.as_str());
         let (method_token, helper_tokens) =
             build_exposed_service_method(&ExposedServiceMethodSpec {
                 fn_name: &fn_name,
@@ -918,16 +915,12 @@ impl LanguageGenerator for RustGenerator {
                 request_deserializer_name_override: Some(&generic_deserializer_ident),
                 wire_params: &wire_params,
                 handler_params: &handler_params,
-                instance_id_param: Some(&instance_id_param),
                 encoding: encoding.as_ref(),
                 request_format,
-                label: &fn_name_str,
                 struct_prefix: &struct_prefix,
-                service_name_literal: &service_name_literal,
                 request_struct: request_struct_ident.as_ref(),
                 request_data_struct: request_data_struct_ident.as_ref(),
                 response_spec: response_spec.as_ref(),
-                use_service_name_const: true,
                 origin,
             })?;
 

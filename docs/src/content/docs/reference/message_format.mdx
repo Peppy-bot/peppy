@@ -27,24 +27,22 @@ A declared `message_format` holds at least one field. An endpoint that carries n
 
 A bare type string is the simplest form. These map directly to language-native types.
 
-| Type       | Alias      | Rust type               | Python type |
-|------------|------------|-------------------------|-------------|
-| `"bool"`   |            | `bool`                  | `bool`      |
-| `"u8"`     |            | `u8`                    | `int`       |
-| `"u16"`    |            | `u16`                   | `int`       |
-| `"u32"`    |            | `u32`                   | `int`       |
-| `"u64"`    |            | `u64`                   | `int`       |
-| `"i8"`     |            | `i8`                    | `int`       |
-| `"i16"`    |            | `i16`                   | `int`       |
-| `"i32"`    |            | `i32`                   | `int`       |
-| `"i64"`    |            | `i64`                   | `int`       |
-| `"f32"`    | `"float"`  | `f32`                   | `float`     |
-| `"f64"`    | `"double"` | `f64`                   | `float`     |
-| `"string"` | `"str"`    | `String`                | `str`       |
-| `"bytes"`  |            | `Vec<u8>`               | `bytes`     |
-| `"time"`   |            | `std::time::SystemTime` | `float`     |
-
-Aliases can be used interchangeably with their canonical name (e.g. `"float"` is equivalent to `"f32"`).
+| Type         | Rust type                 | Python type   |
+|--------------|---------------------------|---------------|
+| `"bool"`     | `bool`                    | `bool`        |
+| `"u8"`       | `u8`                      | `int`         |
+| `"u16"`      | `u16`                     | `int`         |
+| `"u32"`      | `u32`                     | `int`         |
+| `"u64"`      | `u64`                     | `int`         |
+| `"i8"`       | `i8`                      | `int`         |
+| `"i16"`      | `i16`                     | `int`         |
+| `"i32"`      | `i32`                     | `int`         |
+| `"i64"`      | `i64`                     | `int`         |
+| `"f32"`      | `f32`                     | `float`       |
+| `"f64"`      | `f64`                     | `float`       |
+| `"string"`   | `String`                  | `str`         |
+| `"bytes"`    | `Vec<u8>`                 | `bytes`       |
+| `"time"`     | `std::time::SystemTime`   | `float`       |
 
 One field name is reserved: `instance_id` is rejected anywhere in a `message_format`, at the root or nested, because peppy's transport metadata claims it.
 

@@ -1,8 +1,15 @@
-use super::composition::{Adjustment, ComponentAxis, SelectionConstraint};
+use super::composition::{
+    Adjustment, AxisScope, ComponentAxis, DeploymentEntries, DeploymentEntriesRef,
+    OptionDeployment, SelectionConstraint,
+};
 use crate::error::StructuredError;
 use crate::internal::contract::validate_named_items;
-use crate::internal::core_node_name::{CoreNodeName, SELF_CORE_NODE};
-use config::{AnyType, consts::DEFAULT_LINK_ID_SENTINEL, runtime::Name, schema::PeppySchema};
+use config::{
+    AnyType,
+    consts::DEFAULT_LINK_ID_SENTINEL,
+    runtime::{CoreNodeName, Name, SELF_CORE_NODE},
+    schema::PeppySchema,
+};
 use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer, MapAccess, Visitor},
@@ -11,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use crate::internal::source::DeploymentSource;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct PeppyLauncher {
     pub peppy_schema: PeppySchema,
     /// Named placeholders for the machines this launcher spans, wired to
@@ -26,13 +33,15 @@ pub struct PeppyLauncher {
     ///
     /// Empty for a single-machine launcher, in which case no instance may name
     /// a `core_node`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub core_nodes: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// The node entries of `deployments`.
     pub deployments: Vec<Deployment>,
-    /// The component axes of a composed launcher: what `--with` selects
-    /// between. Empty for a flat stack, which is the ordinary way to write a
-    /// one-off.
+    /// The option entries of `deployments`: the options the launcher deploys
+    /// on its `one` axes, and the named copies it deploys on its
+    /// `zero_or_more` axes. Empty for a flat stack.
+    pub option_deployments: Vec<OptionDeployment>,
+    /// The component axes of a composed launcher: what may run. Empty for a
+    /// flat stack, which is the ordinary way to write a one-off.
     ///
     /// A launcher that declares axes is a FAMILY of stacks, not one: its base
     /// `deployments` may link instance ids only an option defines, so the
@@ -40,21 +49,76 @@ pub struct PeppyLauncher {
     /// target names a known instance, every `core_node` names a declared
     /// link) are deferred to the flattened result, where the selected
     /// options' deployments are part of the document.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub components: Vec<ComponentAxis>,
     /// The base's changes to instances defined elsewhere, applied after all
     /// fragment adjustments. How a base specializes fragments shared between
     /// launchers. Requires `components`: with nothing to specialize, an
     /// adjustment is indirection around a file the author can edit directly.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub adjustments: Vec<Adjustment>,
     /// The selections this family refuses to be: rules that a resolved
     /// selection must satisfy or the launch is refused before anything is
     /// pinned or started. How a family excludes members that would flatten
     /// cleanly into a stack nobody should run. Requires `components`: with
     /// nothing to select there is no selection to refuse.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<SelectionConstraint>,
+}
+
+impl PeppyLauncher {
+    /// The axes filled once, at launch: every axis whose cardinality is
+    /// `one` or `zero_or_one`.
+    pub fn stack_axes(&self) -> impl Iterator<Item = &ComponentAxis> {
+        self.components
+            .iter()
+            .filter(|axis| !axis.cardinality.is_repeatable())
+    }
+
+    /// The axes that run as named copies: every axis whose cardinality is
+    /// `zero_or_more`.
+    pub fn repeatable_axes(&self) -> impl Iterator<Item = &ComponentAxis> {
+        self.components
+            .iter()
+            .filter(|axis| axis.cardinality.is_repeatable())
+    }
+
+    /// The option the file deploys on a `one` axis, if it deploys one.
+    pub fn deployed_option(&self, axis: &str) -> Option<&str> {
+        self.option_deployments
+            .iter()
+            .find(|entry| entry.axis == axis && entry.instances.is_empty())
+            .map(|entry| entry.option.as_str())
+    }
+}
+
+/// Written back in the document's own shape, the node and option entries of
+/// `deployments` as one list.
+impl Serialize for PeppyLauncher {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("peppy_schema", &self.peppy_schema)?;
+        if !self.core_nodes.is_empty() {
+            map.serialize_entry("core_nodes", &self.core_nodes)?;
+        }
+        if !self.deployments.is_empty() || !self.option_deployments.is_empty() {
+            map.serialize_entry(
+                "deployments",
+                &DeploymentEntriesRef {
+                    nodes: &self.deployments,
+                    options: &self.option_deployments,
+                },
+            )?;
+        }
+        if !self.components.is_empty() {
+            map.serialize_entry("components", &self.components)?;
+        }
+        if !self.adjustments.is_empty() {
+            map.serialize_entry("adjustments", &self.adjustments)?;
+        }
+        if !self.constraints.is_empty() {
+            map.serialize_entry("constraints", &self.constraints)?;
+        }
+        map.end()
+    }
 }
 
 /// Custom deserialization for [`PeppyLauncher`] that, after the default
@@ -81,7 +145,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             #[serde(default)]
             core_nodes: Vec<String>,
             #[serde(default)]
-            deployments: Vec<Deployment>,
+            deployments: DeploymentEntries,
             #[serde(default)]
             components: Vec<ComponentAxis>,
             #[serde(default)]
@@ -93,7 +157,13 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
         let raw = RawPeppyLauncher::deserialize(deserializer)?;
 
         validate_core_node_links(&raw.core_nodes).map_err(de::Error::custom)?;
-        super::composition::validate_axes(&raw.components).map_err(de::Error::custom)?;
+        super::composition::validate_axes(&raw.components, AxisScope::Launcher)
+            .map_err(de::Error::custom)?;
+        let axes = raw.components.as_slice();
+        super::composition::validate_option_deployments(&raw.deployments.options, axes)
+            .map_err(de::Error::custom)?;
+        validate_copy_names(&raw.deployments.options, &raw.core_nodes)
+            .map_err(de::Error::custom)?;
         // Checked before the per-adjustment validation: a flat launcher with
         // adjustments should hear that adjustments do not belong here, not
         // that one of its guards names an axis the (empty) `components` list
@@ -106,7 +176,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                  the adjustments specialize",
             ));
         }
-        super::composition::validate_launcher_adjustments(&raw.adjustments, &raw.components)
+        super::composition::validate_launcher_adjustments(&raw.adjustments, axes)
             .map_err(de::Error::custom)?;
         // Same shape of refusal as the adjustments one above: a constraint
         // speaks in axis and option names, so without axes it refers to
@@ -118,18 +188,19 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
                  speak about, or drop them",
             ));
         }
-        super::composition::validate_constraints(&raw.constraints, &raw.components)
+        super::composition::validate_launcher_constraints(&raw.constraints, axes)
             .map_err(de::Error::custom)?;
 
         if raw.components.is_empty() {
-            cross_check_flat_document(&raw.deployments, &raw.core_nodes)
+            cross_check_flat_document(&raw.deployments.nodes, &raw.core_nodes)
                 .map_err(de::Error::custom)?;
         }
 
         Ok(PeppyLauncher {
             peppy_schema: raw.peppy_schema,
             core_nodes: raw.core_nodes,
-            deployments: raw.deployments,
+            deployments: raw.deployments.nodes,
+            option_deployments: raw.deployments.options,
             components: raw.components,
             adjustments: raw.adjustments,
             constraints: raw.constraints,
@@ -208,6 +279,24 @@ fn cross_check_flat_document(
     Ok(())
 }
 
+/// A copy's name is its placement link, so it cannot also be one the
+/// launcher declares under `core_nodes`.
+fn validate_copy_names(entries: &[OptionDeployment], core_nodes: &[String]) -> Result<(), String> {
+    for copy in entries.iter().flat_map(|entry| &entry.instances) {
+        if core_nodes
+            .iter()
+            .any(|link| link == copy.instance_id.as_str())
+        {
+            return Err(format!(
+                "copy `{}` shares its name with a `core_nodes` link; a copy is placed with \
+                 `--place {}@CORE_NODE`, so rename one of the two",
+                copy.instance_id, copy.instance_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Core node link ids are unique, never the reserved `self`, and spelled like
 /// the core node names they stand in for.
 ///
@@ -276,7 +365,7 @@ where
     PeppySchema::deserialize_expecting(deserializer, PeppySchema::LauncherV1)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployment {
     pub source: DeploymentSource,
@@ -701,7 +790,7 @@ impl<'de> Deserialize<'de> for LinkValue {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeploymentInstance {
     pub instance_id: Name,
@@ -875,7 +964,7 @@ impl<'de> Visitor<'de> for LinkEntriesVisitor {
 /// declared by the node author and validated against a per-node parameter
 /// schema; framework knobs are owned by peppylib, fixed-shape, and applied
 /// uniformly to every node.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameworkOverrides {
     /// Optional so the daemon falls through to its own `--clock-source`
@@ -905,6 +994,89 @@ where
         }
     }
     Ok(instances)
+}
+
+/// Where every instance of one launch runs.
+///
+/// Producer addresses are `(core_node, instance_id)` pairs on the wire, so the
+/// validators stamp each resolved binding with the core node its PRODUCER sits
+/// on, which lets a consumer on one machine bind to a producer on another. The
+/// stamp is per instance.
+///
+/// A `links:` target is a bare instance id: placement is declared once on the
+/// instance and looked up here.
+///
+/// Every name in here is a [`CoreNodeName`], which is what makes placement the
+/// point where core-node names are checked. A launch goal arrives over the wire
+/// carrying whatever its sender put in it; the CLI validates what a user types,
+/// but the daemon cannot assume its caller was the CLI. Taking parsed names
+/// means every name a `Placements` holds has been checked.
+#[derive(Debug, Clone)]
+pub struct Placements {
+    /// Where an instance that declared no `core_node` runs: the coordinator,
+    /// i.e. the daemon the launch was sent to.
+    coordinator: CoreNodeName,
+    by_instance: BTreeMap<String, CoreNodeName>,
+}
+
+impl Placements {
+    /// Every instance on one daemon. The single-machine case, and the shape
+    /// every non-federated path (`node run`, a launcher with no `core_nodes`)
+    /// uses.
+    pub fn all_on(core_node: CoreNodeName) -> Self {
+        Self {
+            coordinator: core_node,
+            by_instance: BTreeMap::new(),
+        }
+    }
+
+    /// Placements resolved from a launcher document and its `--place` wiring.
+    /// `by_instance` holds only the instances that named a `core_node`;
+    /// everything else falls back to the coordinator.
+    pub fn new(coordinator: CoreNodeName, by_instance: BTreeMap<String, CoreNodeName>) -> Self {
+        Self {
+            coordinator,
+            by_instance,
+        }
+    }
+
+    /// The core node `instance_id` runs on.
+    pub fn of(&self, instance_id: &str) -> &str {
+        self.core_node_of(instance_id).as_str()
+    }
+
+    /// The parsed machine identity assigned to this instance.
+    pub fn core_node_of(&self, instance_id: &str) -> &CoreNodeName {
+        self.by_instance
+            .get(instance_id)
+            .unwrap_or(&self.coordinator)
+    }
+
+    /// The daemon the launch was sent to, which is where an instance that
+    /// declared no `core_node` runs.
+    pub fn coordinator(&self) -> &str {
+        self.coordinator.as_str()
+    }
+
+    /// Whether any instance is placed off the coordinator, i.e. whether this
+    /// launch actually spans machines.
+    pub fn is_federated(&self) -> bool {
+        self.by_instance
+            .values()
+            .any(|core_node| core_node != &self.coordinator)
+    }
+
+    /// Every core node at least one of `instance_ids` runs on, deduplicated
+    /// and in a stable order: the machines a launch-wide fact (the clock's
+    /// fan-out) has to reach. Derived from the instances, since an instance
+    /// that named no `core_node` runs
+    /// on the coordinator and a coordinator hosting nothing is no participant.
+    pub fn participants<'a>(
+        &'a self,
+        instance_ids: impl IntoIterator<Item = &'a str>,
+    ) -> BTreeSet<&'a str> {
+        instance_ids.into_iter().map(|id| self.of(id)).collect()
+    }
 }
 
 #[cfg(test)]
@@ -1543,8 +1715,8 @@ mod tests {
         );
     }
 
-    fn core_node(name: &str) -> crate::core_node_name::CoreNodeName {
-        crate::core_node_name::CoreNodeName::new(name).expect("valid test core node name")
+    fn core_node(name: &str) -> config::runtime::CoreNodeName {
+        config::runtime::CoreNodeName::new(name).expect("valid test core node name")
     }
 
     /// The participants are the machines the given instances actually run
@@ -1576,87 +1748,18 @@ mod tests {
         );
         assert!(placements.participants([]).is_empty());
     }
-}
 
-/// Where every instance of one launch runs.
-///
-/// Producer addresses are `(core_node, instance_id)` pairs on the wire, so the
-/// validators need to stamp each resolved binding with the core node its
-/// PRODUCER sits on, not the one the launch was sent to. Before federation
-/// those were always the same daemon and a single `&str` sufficed; now a
-/// consumer on one machine can be bound to a producer on another, so the stamp
-/// is per instance.
-///
-/// Note what this does NOT change: a `links:` target is still a bare instance
-/// id. Placement is declared once on the instance and looked up here, so
-/// nothing at the point of use records which machine a producer sits on.
-///
-/// Every name in here is a [`CoreNodeName`], which is what makes placement the
-/// point where core-node names are checked. A launch goal arrives over the wire
-/// carrying whatever its sender put in it; the CLI validates what a user types,
-/// but the daemon cannot assume its caller was the CLI. Taking parsed names
-/// means an unchecked one cannot reach a `Placements` at all, rather than each
-/// consumer being trusted to re-check.
-#[derive(Debug, Clone)]
-pub struct Placements {
-    /// Where an instance that declared no `core_node` runs: the coordinator,
-    /// i.e. the daemon the launch was sent to.
-    coordinator: CoreNodeName,
-    by_instance: BTreeMap<String, CoreNodeName>,
-}
-
-impl Placements {
-    /// Every instance on one daemon. The single-machine case, and the shape
-    /// every non-federated path (`node run`, a launcher with no `core_nodes`)
-    /// uses.
-    pub fn all_on(core_node: CoreNodeName) -> Self {
-        Self {
-            coordinator: core_node,
-            by_instance: BTreeMap::new(),
-        }
-    }
-
-    /// Placements resolved from a launcher document and its `--place` wiring.
-    /// `by_instance` holds only the instances that named a `core_node`;
-    /// everything else falls back to the coordinator.
-    pub fn new(coordinator: CoreNodeName, by_instance: BTreeMap<String, CoreNodeName>) -> Self {
-        Self {
-            coordinator,
-            by_instance,
-        }
-    }
-
-    /// The core node `instance_id` runs on.
-    pub fn of(&self, instance_id: &str) -> &str {
-        self.by_instance
-            .get(instance_id)
-            .unwrap_or(&self.coordinator)
-            .as_str()
-    }
-
-    /// The daemon the launch was sent to, which is where an instance that
-    /// declared no `core_node` runs.
-    pub fn coordinator(&self) -> &str {
-        self.coordinator.as_str()
-    }
-
-    /// Whether any instance is placed off the coordinator, i.e. whether this
-    /// launch actually spans machines.
-    pub fn is_federated(&self) -> bool {
-        self.by_instance
-            .values()
-            .any(|core_node| core_node != &self.coordinator)
-    }
-
-    /// Every core node at least one of `instance_ids` runs on, deduplicated
-    /// and in a stable order: the machines a launch-wide fact (the clock's
-    /// fan-out) has to reach. Derived from the instances rather than from the
-    /// placement map alone, since an instance that named no `core_node` runs
-    /// on the coordinator and a coordinator hosting nothing is no participant.
-    pub fn participants<'a>(
-        &'a self,
-        instance_ids: impl IntoIterator<Item = &'a str>,
-    ) -> BTreeSet<&'a str> {
-        instance_ids.into_iter().map(|id| self.of(id)).collect()
+    /// A placed instance resolves to the machine it was placed on, every
+    /// other instance to the coordinator, and a launch holding both spans
+    /// machines.
+    #[test]
+    fn placements_resolve_placed_instances_and_fall_back_to_the_coordinator() {
+        let placements = Placements::new(
+            core_node("cn-robot-7"),
+            BTreeMap::from([("planner_inst".to_owned(), core_node("cn-atlas-h100"))]),
+        );
+        assert_eq!(placements.of("planner_inst"), "cn-atlas-h100");
+        assert_eq!(placements.of("anything_else"), "cn-robot-7");
+        assert!(placements.is_federated());
     }
 }

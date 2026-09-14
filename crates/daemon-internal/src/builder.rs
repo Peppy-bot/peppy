@@ -538,7 +538,7 @@ fn resolve_core_node_name(flag: Option<String>, config: Option<String>) -> Resul
         (None, Some(name)) => (name, "core_node_name in peppy_config.json5"),
         (None, None) => return Ok(None),
     };
-    if let Err(reason) = daemon_config::core_node_name::CoreNodeName::new(name.as_str()) {
+    if let Err(reason) = config::runtime::CoreNodeName::new(name.as_str()) {
         return Err(Error::ExecutionFailed(format!(
             "invalid core node name {name:?} (from {source}): {reason}"
         )));
@@ -597,7 +597,7 @@ mod tests {
     /// sources cannot diverge on what a valid name is.
     #[test]
     fn explicit_name_length_cap_matches_the_config_cap() {
-        let max = "n".repeat(daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN);
+        let max = "n".repeat(config::runtime::MAX_CORE_NODE_NAME_LEN);
         assert_eq!(
             resolve_core_node_name(some(&max), None)
                 .expect("boundary length accepted")
@@ -605,7 +605,7 @@ mod tests {
             Some(max.as_str())
         );
 
-        let over = "n".repeat(daemon_config::peppy_config::MAX_CORE_NODE_NAME_LEN + 1);
+        let over = "n".repeat(config::runtime::MAX_CORE_NODE_NAME_LEN + 1);
         let err = resolve_core_node_name(None, some(&over))
             .expect_err("an over-long name must be rejected");
         assert!(

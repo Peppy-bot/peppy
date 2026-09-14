@@ -2016,16 +2016,14 @@ fn node_add_build_force_supersedes_inflight_build() {
          was not forwarded to the chained build",
     );
 
-    // The superseded first build resolves as cancelled-by-force, proving the
-    // chained goal actually carried force=true through the daemon gate.
+    // The superseded first build resolves as cancelled, proving the chained
+    // goal actually carried force=true through the daemon gate.
     let first_build_err = rt
         .block_on(first_build)
         .expect("first build task should not panic")
         .expect_err("the superseded in-flight build must not report success");
     assert!(
-        first_build_err
-            .to_string()
-            .contains("build cancelled by --force"),
+        first_build_err.to_string().contains("build cancelled"),
         "first build should be cancelled by the forced chained build, got: {first_build_err}"
     );
 

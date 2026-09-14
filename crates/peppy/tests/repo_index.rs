@@ -82,7 +82,7 @@ fn write_constrained_family(repo: &Path, constraints: &str) {
             r#"{{
   peppy_schema: "launcher/v1",
   components: [
-    {{ name: "robot", default: "real",
+    {{ name: "robot",
        options: {{
            real: {{ deployments: [
                {{ source: {{ name: "arm", tag: "v1" }},
@@ -94,7 +94,7 @@ fn write_constrained_family(repo: &Path, constraints: &str) {
                   instances: [{{ instance_id: "arm_inst",
                                 links: {{ observed: "sim_inst" }} }}] }} ] }},
        }} }},
-    {{ name: "recorder", optional: true,
+    {{ name: "recorder", cardinality: "zero_or_one",
        options: {{ on: {{
            deployments: [
                {{ source: {{ name: "recorder", tag: "v1" }},
@@ -105,7 +105,7 @@ fn write_constrained_family(repo: &Path, constraints: &str) {
        }} }} }},
   ],
   {constraints}
-  deployments: [],
+  deployments: [{{ robot: "real" }}],
 }}"#
         ),
     )

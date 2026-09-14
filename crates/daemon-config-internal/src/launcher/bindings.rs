@@ -447,7 +447,7 @@ mod tests {
     /// binding by these tests.
     const TEST_CORE: &str = "core_a";
 
-    use crate::core_node_name::CoreNodeName;
+    use config::runtime::CoreNodeName;
 
     fn core_node(name: &str) -> CoreNodeName {
         CoreNodeName::new(name).expect("valid test core node name")

@@ -1,0 +1,41 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "isolation_commander",
+    tag: "v1",
+    depends_on: {
+      nodes: [
+        { name: "isolation_arm", tag: "v1", link_id: "arm" }
+      ]
+    },
+    labels: ["commander"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "isolation_commander"],
+    parameters: {
+      // Prefixes every token this commander sends, so the payloads of one
+      // copy are told apart from another's in the arm's log.
+      label: { $type: "string", $default: "unlabeled" },
+      round_interval_ms: { $type: "u32", $default: 500 }
+    }
+  },
+  interfaces: {
+    topics: {
+      consumes: [
+        { link_id: "arm", name: "heartbeat" }
+      ]
+    },
+    services: {
+      consumes: [
+        { link_id: "arm", name: "echo" }
+      ]
+    },
+    actions: {
+      consumes: [
+        { link_id: "arm", name: "move" }
+      ]
+    }
+  }
+}

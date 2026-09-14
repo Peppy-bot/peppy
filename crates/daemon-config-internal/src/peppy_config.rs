@@ -40,6 +40,7 @@ use config::peppy_config::{
     DEFAULT_DAEMON_GRACE_SECS, DEFAULT_HIGH_THROUGHPUT_BUFFER_SIZE, DEFAULT_SHUTDOWN_GRACE_SECS,
     DEFAULT_STANDARD_BUFFER_SIZE, SubscriberBufferConfig,
 };
+use config::runtime::MAX_CORE_NODE_NAME_LEN;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -92,13 +93,6 @@ pub const DEFAULT_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 30;
 /// hand-edited 0 cannot collapse the bound to "give up immediately" (a 0 would
 /// also mean "no timeout" to the HTTP client, the opposite of the intent).
 pub const MIN_FEDERATION_CONNECT_TIMEOUT_SECS: u64 = 1;
-
-/// Maximum accepted `core_node_name` length, in characters. The name is
-/// embedded in every zenoh key expression that addresses this daemon
-/// (`service/node/{name}/core/…`), so the familiar DNS-label cap keeps those
-/// keys bounded without constraining any realistic name (derived defaults stay
-/// well under it).
-pub const MAX_CORE_NODE_NAME_LEN: usize = 63;
 
 // The bundled default config, written verbatim on first create so its comments
 // survive. Kept inline (not `include_str!` from an asset file) so the template
@@ -843,7 +837,7 @@ impl PeppyConfig {
         // validator, so this refusal and the CLI's and the serve flag's all
         // state the same rules in the same words.
         if let Some(name) = &self.core_node_name
-            && let Err(reason) = crate::internal::core_node_name::CoreNodeName::new(name.as_str())
+            && let Err(reason) = config::runtime::CoreNodeName::new(name.as_str())
         {
             return Err(Error::Parsing(ParsingError::CannotParseConfig(format!(
                 "{PEPPY_CONFIG_FILE}: invalid core_node_name {name:?}: {reason}"

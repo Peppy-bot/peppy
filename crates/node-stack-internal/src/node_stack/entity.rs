@@ -39,7 +39,7 @@ pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> Ser
         core_node: core_node.to_string(),
         config_path: entity.config_path().display().to_string(),
         artifact_path: entity.artifact_path().map(|p| p.display().to_string()),
-        stage: Some(entity.stage().to_serialized()),
+        stage: entity.stage().to_serialized(),
         instances: all_instances
             .iter()
             .map(|i| SerializedInstance {
