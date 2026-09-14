@@ -1,0 +1,39 @@
+<entry>
+  <title>v0.28.0</title>
+  <id>https://docs.peppy.bot/releases/v0-28-0/</id>
+  <updated>2026-09-14T00:00:00Z</updated>
+
+  <summary>Add and remove named launcher copies on a running stack, with steadier instance health and safer concurrent stack changes.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.28.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Add and remove named launcher copies on a running stack, with steadier instance health and safer concurrent stack changes.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 14, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Component axes no longer accept &lt;code&gt;default&lt;/code&gt; or &lt;code&gt;optional&lt;/code&gt;; add a &lt;code&gt;deployments&lt;/code&gt; entry &lt;code&gt;{ &amp;lt;axis&amp;gt;: "&amp;lt;option&amp;gt;" }&lt;/code&gt; to pick which option runs, and use &lt;code&gt;cardinality: "zero_or_one"&lt;/code&gt; in place of &lt;code&gt;optional&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;message_format&lt;/code&gt; no longer accepts the type aliases &lt;code&gt;float&lt;/code&gt;, &lt;code&gt;double&lt;/code&gt;, and &lt;code&gt;str&lt;/code&gt;; use &lt;code&gt;f32&lt;/code&gt;, &lt;code&gt;f64&lt;/code&gt;, and &lt;code&gt;string&lt;/code&gt; instead.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Repeatable copies&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Declare a component axis with &lt;code&gt;cardinality: "zero_or_more"&lt;/code&gt; to run its options as named copies you start, add, and remove independently under one launcher.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack join OPTION -i NAME&lt;/code&gt; adds a copy to a running stack, selecting its axes with &lt;code&gt;--with&lt;/code&gt;, its machine with &lt;code&gt;--place&lt;/code&gt;, and per-instance overrides with &lt;code&gt;--set-arguments&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack remove NAME&lt;/code&gt; stops one copy and drops it from the stack, leaving every other copy and the stack's own nodes running.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack list&lt;/code&gt; and &lt;code&gt;peppy stack list --json&lt;/code&gt; report each copy's option, host, selection, and instances.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack resolve&lt;/code&gt; previews a copy joined onto a launch with &lt;code&gt;--join&lt;/code&gt;, &lt;code&gt;--join-name&lt;/code&gt;, &lt;code&gt;--join-with&lt;/code&gt;, and &lt;code&gt;--join-set-arguments&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack reset --federated&lt;/code&gt; clears the launch from every machine it reached.&lt;/li&gt;
+&lt;li&gt;Fragments can declare their own component axes and reference other fragments across directories within a repository.&lt;/li&gt;
+&lt;li&gt;Constraint and adjustment &lt;code&gt;when&lt;/code&gt;, &lt;code&gt;requires&lt;/code&gt;, and &lt;code&gt;forbids&lt;/code&gt; conditions accept a list of option names per axis, matching any of them.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Instance health and stack safety&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A running instance is flagged &lt;code&gt;unhealthy&lt;/code&gt; only after three consecutive missed health probes, and returns to &lt;code&gt;healthy&lt;/code&gt; on the first probe it answers.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy node&lt;/code&gt; add, build, run, stop, and remove serialize with stack operations: refused while one holds the stack, and cancelled when &lt;code&gt;stack reset&lt;/code&gt; runs after a cleanup window.&lt;/li&gt;
+&lt;li&gt;Cancelling a &lt;code&gt;peppy node&lt;/code&gt; add, build, run, stop, or remove now stops the work on the daemon instead of letting it finish unattended.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>

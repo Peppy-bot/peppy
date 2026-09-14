@@ -11,6 +11,7 @@ from functions.cli import ReleaseError
 from functions.repo import (
     commit_paths,
     fetch_remote_branches,
+    fetch_tag,
     get_commit,
     get_commit_subjects,
     has_changes_in_paths,
@@ -125,6 +126,24 @@ def test_fetch_remote_branches_raises_on_failure() -> None:
     with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
         with pytest.raises(ReleaseError, match="failed to fetch dev, main"):
             fetch_remote_branches("origin", ("dev", "main"))
+
+
+def test_fetch_tag_fetches_only_that_tag() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("")) as run:
+        fetch_tag("origin", "v0.2.0")
+    assert run.call_args.args[0] == [
+        "git",
+        "fetch",
+        "--no-tags",
+        "origin",
+        "refs/tags/v0.2.0:refs/tags/v0.2.0",
+    ]
+
+
+def test_fetch_tag_raises_on_failure() -> None:
+    with patch("functions.repo.subprocess.run", return_value=_mock_git("", 1)):
+        with pytest.raises(ReleaseError, match="failed to fetch tag 'v0.2.0'"):
+            fetch_tag("origin", "v0.2.0")
 
 
 def test_has_changes_in_paths_reports_dirty_and_clean() -> None:
