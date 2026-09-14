@@ -173,9 +173,10 @@ install_pixi() {
         return
     fi
     log "Installing pixi"
-    # Pinned to the version the pixi workspaces require (requires-pixi in
-    # scripts/pixi.toml and peppylib-py/pixi.toml); bump them together.
-    curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.72.0 sh
+    # Pinned to the version CI installs (.github/actions/rust-build-env), which
+    # satisfies requires-pixi in scripts/pixi.toml and peppylib-py/pixi.toml;
+    # bump them together.
+    curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.80.0 sh
 }
 
 install_uv() {

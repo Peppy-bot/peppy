@@ -32,7 +32,7 @@ jobs:
     #     PEPPY_LATENCY_MAX_MS_RUST_TOPIC: "10"
     #     PEPPY_LATENCY_MAX_MS_PYTHON_SERVICE: "20"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}

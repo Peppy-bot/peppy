@@ -33,7 +33,7 @@ const E2E_IMAGE_NAME: &str = "peppy-multi-daemon-e2e";
 
 /// Pinned `uv` release copied into the image. A moving `latest` would make a
 /// green run depend on what Astral published that morning.
-const UV_VERSION: &str = "0.11.33";
+const UV_VERSION: &str = "0.12.13";
 
 /// The interpreter the fixture repository's nodes ask for (`requires-python
 /// ">=3.13,<3.14"`). Baked into the image so no node build has to fetch one.

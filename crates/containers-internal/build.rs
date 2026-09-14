@@ -21,13 +21,13 @@ mod apptainer_build {
     /// apptainer `mconfig` requirement: bump it alongside `APPTAINER_VERSION`.
     /// Keep in sync with the same constants in `scripts/functions/lima.py`,
     /// which pins Go for the in-VM Linux target builds.
-    const GO_VERSION: &str = "1.25.7";
+    const GO_VERSION: &str = "1.27.1";
     /// SHA-256 of `go{GO_VERSION}.linux-amd64.tar.gz` from https://go.dev/dl.
     const GO_LINUX_AMD64_SHA256: &str =
-        "12e6d6a191091ae27dc31f6efc630e3a3b8ba409baf3573d955b196fdf086005";
+        "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445";
     /// SHA-256 of `go{GO_VERSION}.linux-arm64.tar.gz` from https://go.dev/dl.
     const GO_LINUX_ARM64_SHA256: &str =
-        "ba611a53534135a81067240eff9508cd7e256c560edd5d8c2fef54f083c07129";
+        "3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec";
 
     /// Bumped whenever the apptainer build recipe (not its version) changes in
     /// a way that alters the produced tree — new link flags, newly bundled
