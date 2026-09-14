@@ -13,7 +13,7 @@ check that used to run on that PR in CI runs here instead, before the tag is
 typed and the notes are drafted (see `_verify_docs_up_to_date`).
 
 Requires:
-  - GITHUB_PEPPY_RELEASE_TOKEN env var (repo-scoped token) -- not needed with --local
+  - PEPPY_RELEASE_TOKEN env var (repo-scoped token) -- not needed with --local
   - git, cargo, rustc on PATH
   - Lima VM (macOS only, auto-managed)
 

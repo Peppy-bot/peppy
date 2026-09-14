@@ -266,7 +266,6 @@ def test_prepare_writes_the_plan_without_asking_anything(
     prepare_mocks.validate.assert_called_once_with(
         required_commands=("git", "claude"),
         skip_prod_router_check=True,
-        token_env="PEPPY_RELEASE_TOKEN",
     )
     prepare_mocks.unused_tag.assert_called_once_with("v0.3.0")
     prepare_mocks.docs_gate.assert_called_once_with(
@@ -775,12 +774,9 @@ def test_publish_stops_when_an_archive_is_missing(
 def test_publish_requires_the_release_token(
     tmp_path: Path, publish_mocks: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The name build_release.sh reads does not count: a repository secret
-    # cannot carry it.
     monkeypatch.setenv("PEPPY_RELEASE_TOKEN", " ")
-    monkeypatch.setenv("GITHUB_PEPPY_RELEASE_TOKEN", "token")
 
-    with pytest.raises(ReleaseError, match="^PEPPY_RELEASE_TOKEN env var is required"):
+    with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN env var is required"):
         run_publish(plan_path=publish_mocks.plan_path, archives_dir=tmp_path)
 
     publish_mocks.publish.assert_not_called()

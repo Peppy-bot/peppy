@@ -20,7 +20,6 @@ from functions.cli import (
     need_cmd,
     prompt,
     prompt_yn,
-    require_release_token,
     run_with_error_handling,
     validate_release_environment,
     verify_prod_router_publicly_trusted,
@@ -70,12 +69,12 @@ def test_validate_release_environment_missing_token() -> None:
     with patch.dict(os.environ, {}, clear=True), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ):
-        with pytest.raises(ReleaseError, match="GITHUB_PEPPY_RELEASE_TOKEN"):
+        with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"):
             validate_release_environment(required_commands=())
 
 
 def test_validate_release_environment_valid_token() -> None:
-    with patch.dict(os.environ, {"GITHUB_PEPPY_RELEASE_TOKEN": "test-token"}), patch(
+    with patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ):
         token = validate_release_environment(required_commands=())
@@ -96,7 +95,7 @@ def test_validate_release_environment_no_token_required_skips_prod_gate() -> Non
 
 def test_validate_release_environment_runs_prod_gate_on_prod_path() -> None:
     # The prod path (require_token=True) invokes the gate before anything else.
-    with patch.dict(os.environ, {"GITHUB_PEPPY_RELEASE_TOKEN": "test-token"}), patch(
+    with patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ) as gate:
         validate_release_environment(required_commands=())
@@ -105,7 +104,7 @@ def test_validate_release_environment_runs_prod_gate_on_prod_path() -> None:
 
 def test_validate_release_environment_skip_prod_router_check_bypasses_gate() -> None:
     # --skip-prod-cert-check bypasses the prod-router gate but keeps the token check.
-    with patch.dict(os.environ, {"GITHUB_PEPPY_RELEASE_TOKEN": "test-token"}), patch(
+    with patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ) as gate:
         token = validate_release_environment(
@@ -120,7 +119,7 @@ def test_validate_release_environment_skip_prod_router_check_still_requires_toke
     with patch.dict(os.environ, {}, clear=True), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ) as gate:
-        with pytest.raises(ReleaseError, match="GITHUB_PEPPY_RELEASE_TOKEN"):
+        with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"):
             validate_release_environment(
                 required_commands=(), skip_prod_router_check=True
             )
@@ -128,7 +127,7 @@ def test_validate_release_environment_skip_prod_router_check_still_requires_toke
 
 
 def test_validate_release_environment_missing_command() -> None:
-    with patch.dict(os.environ, {"GITHUB_PEPPY_RELEASE_TOKEN": "test-token"}), patch(
+    with patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "test-token"}), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ):
         with pytest.raises(ReleaseError, match="missing required command"):
@@ -136,10 +135,10 @@ def test_validate_release_environment_missing_command() -> None:
 
 
 def test_validate_release_environment_whitespace_token_is_empty() -> None:
-    with patch.dict(os.environ, {"GITHUB_PEPPY_RELEASE_TOKEN": "  "}), patch(
+    with patch.dict(os.environ, {"PEPPY_RELEASE_TOKEN": "  "}), patch(
         "functions.cli.verify_prod_router_publicly_trusted"
     ):
-        with pytest.raises(ReleaseError, match="GITHUB_PEPPY_RELEASE_TOKEN"):
+        with pytest.raises(ReleaseError, match="PEPPY_RELEASE_TOKEN"):
             validate_release_environment(required_commands=())
 
 
@@ -292,34 +291,3 @@ def test_get_targets_for_platform_unsupported() -> None:
         with pytest.raises(ReleaseError, match="unsupported platform"):
             get_targets_for_platform()
 
-
-# --- the release token ---
-
-
-def test_require_release_token_reads_the_env_var_it_is_given(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PEPPY_RELEASE_TOKEN", " ci-token ")
-    monkeypatch.delenv("GITHUB_PEPPY_RELEASE_TOKEN", raising=False)
-
-    assert require_release_token("PEPPY_RELEASE_TOKEN") == "ci-token"
-    # Without a name, the one build_release.sh reads.
-    with pytest.raises(
-        ReleaseError, match="^GITHUB_PEPPY_RELEASE_TOKEN env var is required"
-    ):
-        require_release_token()
-
-
-def test_validate_release_environment_reads_the_token_env_it_is_given(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PEPPY_RELEASE_TOKEN", "ci-token")
-    monkeypatch.delenv("GITHUB_PEPPY_RELEASE_TOKEN", raising=False)
-
-    token = validate_release_environment(
-        required_commands=("git",),
-        skip_prod_router_check=True,
-        token_env="PEPPY_RELEASE_TOKEN",
-    )
-
-    assert token == "ci-token"
