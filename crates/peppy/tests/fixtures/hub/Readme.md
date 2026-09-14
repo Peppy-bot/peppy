@@ -29,8 +29,9 @@ it runnable unmodified.
 | node | `reactive_policy:v1` | the executor role of a pairing, plus two producer links |
 | node | `deliberative_planner:v1` | the planner role, and a producer link across machines |
 | node | `episode_recorder:v1` | observing one side of a pairing without joining it |
-| node | `isolation_arm:v1` | a heartbeat topic, an echo service and a move action, each logging who it heard from |
-| node | `isolation_commander:v1` | the consumer of all three, driving its own copy's arm and logging who answered |
+| node | `isolation_arm:v1` | a heartbeat topic, echo and release services and a move action, each logging who it heard from |
+| node | `isolation_commander:v1` | the consumer of all of them, driving its own copy's arm round by round, holding one goal per round for the gate, and logging who answered |
+| node | `isolation_gate:v1` | the test's hand on the held goals: run with `verb=cancel` or `verb=release` and linked to commanders, it moves each one's held goal on |
 | contract | `rgb_camera:v1` | the camera role two nodes consume by contract |
 | pairing | `deliberation:v1` | the bidirectional planner/executor relationship |
 

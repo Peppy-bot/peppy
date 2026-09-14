@@ -1,0 +1,30 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "isolation_gate",
+    tag: "v1",
+    depends_on: {
+      nodes: [
+        { name: "isolation_commander", tag: "v1", link_id: "commander", cardinality: "zero_or_more" }
+      ]
+    },
+    labels: ["gate"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "isolation_gate"],
+    parameters: {
+      // What every linked commander's held goal comes to: `cancel` or
+      // `release`.
+      verb: { $type: "string", $default: "release" }
+    }
+  },
+  interfaces: {
+    services: {
+      consumes: [
+        { link_id: "commander", name: "move_on" }
+      ]
+    }
+  }
+}

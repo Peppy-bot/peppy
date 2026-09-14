@@ -21,6 +21,11 @@
         path: "nodes/isolation_commander/peppy.json5"
       }
     },
+    isolation_gate: {
+      v1: {
+        path: "nodes/isolation_gate/peppy.json5"
+      }
+    },
     my_python_robot_arm: {
       v1: {
         path: "nodes/my_python_robot_arm/peppy.json5"
