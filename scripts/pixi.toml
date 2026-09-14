@@ -32,6 +32,7 @@ PYTHONPATH = "$PIXI_PROJECT_ROOT"
 
 [tasks]
 build-release = "build-release"
+parallel-release = "parallel-release"
 build-base-images = "build-base-images"
 is-doc-up-to-date = "is-doc-up-to-date"
 update-docs = "update-docs"
