@@ -1526,6 +1526,20 @@ impl<'a> ApptainerCommand<'a> {
         for bind in &self.bind_mounts {
             args.push("--bind".to_string());
             let translated_src = self.facade.translate_arg(&bind.src)?;
+            // The spec's own separators, which it gives no way to escape.
+            for (field, value) in [
+                ("the source", Some(&translated_src)),
+                ("the destination", bind.dest.as_ref()),
+            ] {
+                let Some(value) = value else { continue };
+                if let Some(delimiter) = value.chars().find(|c| matches!(c, ':' | ',')) {
+                    return Err(Error::BindPathHoldsDelimiter {
+                        field,
+                        spec: value.clone(),
+                        delimiter,
+                    });
+                }
+            }
             match (&bind.dest, &bind.opts) {
                 (Some(dest), Some(opts)) => args.push(format!("{translated_src}:{dest}:{opts}")),
                 (Some(dest), None) => args.push(format!("{translated_src}:{dest}")),

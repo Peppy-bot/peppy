@@ -19,7 +19,7 @@ use core_node_api::encoding::{
 };
 use daemon_config::launcher::{DeploymentInstance, PeppyLauncher};
 use peppylib::core_node::transport::poll;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
 
 /// Removing a copy stops its instances one after another, each within its
@@ -44,24 +44,26 @@ pub(in crate::services::stack) async fn remove(
     .await
 }
 
-/// Points the deployments this change validates and plans against at the
-/// links the launcher now holds, so a slot the removed copy had released
-/// stands vacant here too.
-fn take_links_from(planned: &mut [PlannedDeployment], launcher: &PeppyLauncher) {
-    let links: BTreeMap<&str, _> = launcher
+/// The deployments the launcher now holds, each carrying the pins the launch
+/// resolved for its source, the way a join plans what it adds.
+fn planned_from(
+    launcher: &PeppyLauncher,
+    resolved: &[PlannedDeployment],
+) -> Vec<PlannedDeployment> {
+    launcher
         .deployments
         .iter()
-        .flat_map(|deployment| &deployment.instances)
-        .map(|instance| (instance.instance_id.as_str(), &instance.links))
-        .collect();
-    for instance in planned
-        .iter_mut()
-        .flat_map(|item| &mut item.deployment.instances)
-    {
-        if let Some(current) = links.get(instance.instance_id.as_str()) {
-            instance.links = (*current).clone();
-        }
-    }
+        .map(|deployment| {
+            let item = resolved
+                .iter()
+                .find(|item| item.deployment.source == deployment.source)
+                .expect("every deployment on the stack was resolved by the launch or by a join");
+            PlannedDeployment {
+                deployment: deployment.clone(),
+                ..item.clone()
+            }
+        })
+        .collect()
 }
 
 async fn remove_inner(
@@ -83,10 +85,7 @@ async fn remove_inner(
         .remove(&active.flat, &copy.record, &active.selection, &staying)
         .map_err(|e| e.to_string())?;
     let removed: HashSet<_> = copy.record.instance_ids.iter().map(Name::as_str).collect();
-    let mut remaining_planned = selected_instances(&active.planned, |instance| {
-        !removed.contains(instance.instance_id.as_str())
-    });
-    take_links_from(&mut remaining_planned, &remaining);
+    let remaining_planned = planned_from(&remaining, &active.resolved);
     let removes_clock = active
         .time_source
         .as_ref()

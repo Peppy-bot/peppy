@@ -6,17 +6,15 @@
 //! two in step: what the CLI silently drops from the ambient environment is not
 //! something a launcher file can smuggle through.
 //!
-//! The rules follow the strictest consumer, a container node. Apptainer writes
-//! every `--env NAME=value` unquoted into a generated
-//! `/.inject-apptainer-env.sh` that the container sources at startup, so a name
-//! that is not a shell identifier, or a value carrying whitespace or shell
-//! metacharacters, aborts that script with "invalid var name". Every later
-//! variable is dropped with it, `PEPPY_RUNTIME_CONFIG` included, and the node
-//! then falls back to its standalone defaults instead of the parameters the
-//! daemon meant to hand it. A value holding shell metacharacters is also a
-//! command-injection vector inside the container. A process node is more
-//! forgiving, but a node gains or loses a `container` block over its life while
-//! the launcher file that deploys it stays the same, so one rule covers both.
+//! The rules follow the strictest consumer, a container node. A variable
+//! reaches one through the `APPTAINERENV_` prefix, and apptainer writes it into
+//! a script the container sources at startup, where the shell expands the
+//! value: `$HOME` becomes a path and `$(cmd)` runs `cmd` inside the container.
+//! A name is a shell identifier so the assignment parses; a value is built from
+//! characters the shell leaves alone so it arrives as written and executes
+//! nothing. A process node is more forgiving, but a node gains or loses a
+//! `container` block over its life while the launcher file that deploys it
+//! stays the same, so one rule covers both.
 
 use core_node_api::FORBIDDEN_ENV_KEYS;
 use thiserror::Error;
@@ -35,9 +33,11 @@ pub fn is_valid_env_name(name: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
-/// Whether `value` survives an unquoted shell assignment unchanged: letters,
-/// digits, and the punctuation that appears in the values nodes actually take
-/// (device paths, hosts, ports, search paths, log filters, tokens).
+/// Whether `value` reaches a node as written: letters, digits, and the
+/// punctuation that appears in the values nodes actually take (device paths,
+/// hosts, ports, search paths, log filters, tokens). The shell inside the
+/// container expands what it is given, so a value carrying `$`, a backtick or
+/// a quote would run there rather than arrive.
 pub fn is_safe_env_value(value: &str) -> bool {
     value.chars().all(|c| {
         c.is_ascii_alphanumeric()
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn env_values_must_survive_unquoted_assignment() {
+    fn env_values_must_reach_a_node_as_written() {
         // Real-world values: paths, endpoints, log filters, tokens, urls.
         for value in [
             "",
@@ -144,8 +144,8 @@ mod tests {
         ] {
             assert!(is_safe_env_value(value), "`{value}` should be accepted");
         }
-        // Whitespace splits an unquoted `export X=a b`, aborting the injection
-        // script; metacharacters would run inside the container.
+        // The shell that sources them expands `$` and backticks, and reads
+        // whitespace as the end of the value.
         for value in [
             "user:inference user:file_upload",
             "a\tb",

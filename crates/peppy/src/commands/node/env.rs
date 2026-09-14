@@ -12,8 +12,8 @@ use daemon_config::env::{is_forbidden_env_name, is_safe_env_value, is_valid_env_
 /// bind-mounted peppy root, so the node dies with `EROFS` the first time it
 /// wants a temp file. Dropping them lets resolution fall back to the
 /// container's own writable `/tmp`. Apptainer's `--cleanenv` does not cover
-/// this: these arrive as explicit `--env` flags, which it has no reason to
-/// strip. All three are listed because the Rust and Python lookups differ
+/// this: these arrive as `APPTAINERENV_` variables the daemon sets on purpose,
+/// which it has no reason to strip. All three are listed because the Rust and Python lookups differ
 /// (`TMPDIR` alone, versus `TMPDIR`, `TEMP`, `TMP` in order) and this stack
 /// runs both kinds of node.
 ///
@@ -93,8 +93,8 @@ mod tests {
     }
 
     /// The caller's Python vars describe the caller's interpreter, not the
-    /// node's. Forwarding them is not merely useless: apptainer's `--env`
-    /// outranks the image's `%environment`, so a forwarded `PYTHONPATH`
+    /// node's. Forwarding them is not merely useless: an `APPTAINERENV_`
+    /// variable outranks the image's `%environment`, so a forwarded `PYTHONPATH`
     /// replaces the vendored peppylib/peppygen path a Python container node
     /// imports from (this is how `openarm_sim_mujoco` died with
     /// `No module named 'peppylib'` on a machine whose shell exported a ROS
@@ -125,8 +125,8 @@ mod tests {
     fn should_forward_env_drops_junk_keeps_useful() {
         // Bash-exported function: dropped because the name is not an identifier.
         assert!(!should_forward_env("BASH_FUNC_demo%%", "() { :; }"));
-        // Space-valued var (e.g. OAuth scopes): dropped because it breaks the
-        // unquoted env injection and silently loses later vars.
+        // Space-valued var (e.g. OAuth scopes): dropped because the shell
+        // that sources it reads the space as the end of the value.
         assert!(!should_forward_env("OAUTH_SCOPES", "read write admin"));
         // Code-injection vector: dropped by the forbidden list.
         assert!(!should_forward_env("LD_PRELOAD", "/evil.so"));

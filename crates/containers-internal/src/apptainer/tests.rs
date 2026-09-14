@@ -306,6 +306,33 @@ fn test_a_run_carries_a_comma_valued_variable_whole() {
     );
 }
 
+/// A path holding one of the spec's separators is refused rather than
+/// spliced, since `src:dest:opts` offers no escape for them.
+#[test]
+fn test_a_bind_path_holding_a_separator_is_refused() {
+    let facade = native_facade();
+
+    for (src, dest) in [("/data:1", Some("/mnt")), ("/data", Some("/mnt,x"))] {
+        let error = facade
+            .run("image.sif")
+            .bind(src, dest, None)
+            .build_args()
+            .expect_err("a separator in a bind path is refused");
+        assert!(
+            matches!(&error, crate::Error::BindPathHoldsDelimiter { delimiter, .. }
+                if *delimiter == ':' || *delimiter == ','),
+            "got: {error}"
+        );
+    }
+
+    let args = facade
+        .run("image.sif")
+        .bind("/data", Some("/mnt"), Some("ro"))
+        .build_args()
+        .expect("an ordinary bind still builds");
+    assert!(args.iter().any(|a| a == "/data:/mnt:ro"), "got: {args:?}");
+}
+
 #[test]
 fn test_lima_shell_extra_args_does_not_affect_build_args() {
     let facade = lima_facade();
