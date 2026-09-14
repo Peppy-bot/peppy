@@ -10,5 +10,12 @@ include = ["peppygen*"]
 [tool.setuptools.package-data]
 peppygen = ["capnp/*.capnp"]
 
+# The generator runs the bundled ruff's `check --fix` over this package. The
+# rule set is pinned rather than left to ruff's defaults, which grew from 59 to
+# 413 rules in 0.16 and would rewrite the rendered code (import order, typing
+# style) whenever the bundled version moves.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
