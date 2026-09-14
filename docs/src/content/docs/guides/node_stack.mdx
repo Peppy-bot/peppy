@@ -16,6 +16,10 @@ When you add a node to the stack, Peppy validates that its dependencies are sati
 The stack always contains a **core node** and an instance of it at its root, which coordinates the lifecycle of all other nodes. You can query the stack to see which nodes depend on each other and manage node instances.
 The **node stack** is started as a daemon on your system and the `peppy` binary communicates with it to execute user actions.
 
+:::note
+The `peppy node` lifecycle commands (`add`, `build`, `run`, `stop`, and `remove`) serialize with stack operations on the same daemon. Each is refused while a `stack launch`, `stack join`, `stack remove`, or `stack reset` holds the stack, and any one already in flight when a `stack reset` starts is cancelled once the reset has given it its cleanup window.
+:::
+
 ## Adding `hello_world` to the stack
 
 Inside your node directory, add it to the Peppy stack by running:
