@@ -11,7 +11,7 @@ use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watc
 use super::super::launch::{PlannedDeployment, federated};
 use super::super::state::{ActiveLaunch, StackCopy};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
-use super::{change_active_launch, plan::selected_instances, reason, stack_list_on};
+use super::{change_active_launch, plan::selected_instances, stack_list_on};
 use crate::services::node::stop_named_instances;
 use config::runtime::Name;
 use core_node_api::encoding::{
@@ -83,9 +83,7 @@ async fn remove_inner(
     }
     let root = ctx.node_stack.root().read().config().clone();
     let (_, _, _, observations) =
-        validate_and_order_dependencies(ctx, &remaining_planned, &root, &active.placements)
-            .await
-            .map_err(reason)?;
+        validate_and_order_dependencies(ctx, &remaining_planned, &root, &active.placements).await?;
     let watchers = lifecycle_watchers(&observations, &active.placements)?;
     let repointed = watchers_replacing(&active.watchers, &watchers);
     let host_live = copy.core_node.as_str() == ctx.bound_core_node

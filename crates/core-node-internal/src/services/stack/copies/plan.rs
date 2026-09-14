@@ -8,7 +8,6 @@ use super::super::action::StackChangeContext;
 use super::super::launch::PlannedDeployment;
 use super::super::launch::resolve::{self, resolve_deployments};
 use super::super::state::ActiveLaunch;
-use super::reason;
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::StackJoinGoal;
 use daemon_config::launcher::{CopyRecord, JoinRequest, PeppyLauncher, Placements, RunningStack};
@@ -93,12 +92,8 @@ impl ResolvedJoin {
             })
             .cloned()
             .collect();
-        let mut resolved = resolve_deployments(ctx, missing, &placements)
-            .await
-            .map_err(reason)?;
-        resolve::mint_doc_pins(ctx, &mut resolved, &placements)
-            .await
-            .map_err(reason)?;
+        let mut resolved = resolve_deployments(ctx, missing, &placements).await?;
+        resolve::mint_doc_pins(ctx, &mut resolved, &placements).await?;
         let planned: Vec<_> = combined
             .deployments
             .iter()

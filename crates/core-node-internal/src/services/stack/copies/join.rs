@@ -22,7 +22,6 @@ use super::{
     change_active_launch,
     live::{LiveCheck, check_live_stack, node_info_on},
     plan::{ResolvedJoin, join_dependencies, selected_instances},
-    reason,
     remove::stop_copy,
 };
 use crate::services::node::common::panic_message;
@@ -120,9 +119,7 @@ async fn join_inner(
     } = ResolvedJoin::resolve(ctx, active, goal).await?;
     let root = ctx.node_stack.root().read().config().clone();
     let (ordered, bindings, pairings, observations) =
-        validate_and_order_dependencies(ctx, &planned, &root, &placements)
-            .await
-            .map_err(reason)?;
+        validate_and_order_dependencies(ctx, &planned, &root, &placements).await?;
     let watchers = lifecycle_watchers(&observations, &placements)?;
     let required_ids = join_dependencies(
         &planned,

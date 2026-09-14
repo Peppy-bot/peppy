@@ -15,12 +15,6 @@ use super::state::{ActiveLaunch, active_launch};
 use super::{ChangeResult, STACK_QUERY_TIMEOUT};
 use core_node_api::encoding::{LaunchResult, StackListRequest, StackListResponse};
 
-fn reason(result: LaunchResult) -> String {
-    result
-        .error_message
-        .unwrap_or_else(|| "stack operation failed; inspect its log file".into())
-}
-
 /// Runs one change over the active launch and writes the record back,
 /// whatever the outcome.
 async fn change_active_launch(

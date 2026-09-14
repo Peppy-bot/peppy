@@ -5,9 +5,7 @@ use crate::services::node::{FeedbackLine, stdout_line_sender};
 use crate::services::repo::cache as repo_cache;
 use crate::services::stack::action::StackChangeContext;
 use config::runtime::CoreNodeName;
-use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchGoal, LaunchResult, LauncherOrigin, PlacementSpec,
-};
+use core_node_api::encoding::{LaunchFeedbackStep, LaunchGoal, LauncherOrigin, PlacementSpec};
 use daemon_config::format_quoted_list;
 use daemon_config::launcher::{Deployment, DeploymentSource, PeppyLauncherParser, Placements};
 use daemon_config::repository::{DeploymentRoot, PinnedItem};
@@ -42,7 +40,7 @@ pub(in crate::services::stack) struct ParsedLaunch {
 pub(in crate::services::stack) async fn parse_launcher_config(
     ctx: &StackChangeContext,
     goal: &LaunchGoal,
-) -> std::result::Result<ParsedLaunch, LaunchResult> {
+) -> std::result::Result<ParsedLaunch, String> {
     publish_stdout(
         ctx,
         "Parsing launcher configuration",
@@ -54,40 +52,33 @@ pub(in crate::services::stack) async fn parse_launcher_config(
         Ok(path) => path,
         Err(msg) => {
             publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
+            return Err(msg);
         }
     };
 
     if !launch_file.exists() {
         let msg = format!("launch file does not exist: {}", launch_file.display());
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
 
     if !launch_file.is_file() {
         let msg = format!("launch file path must be a file: {}", launch_file.display());
         publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
 
     let parsed = match PeppyLauncherParser::from_path(&launch_file) {
         Ok(cfg) => cfg,
         Err(e) => {
-            publish_stderr(
-                ctx,
-                format!("Invalid launcher config: {e}"),
-                LaunchFeedbackStep::LauncherStep,
-            )
-            .await;
-            return Err(LaunchResult::failure(
-                &ctx.log_path,
-                format!("Invalid launcher config: {e}"),
-            ));
+            let msg = format!("Invalid launcher config: {e}");
+            publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
+            return Err(msg);
         }
     };
 
     let prepared = daemon_config::launcher::PreparedLauncher::load(&parsed, &launch_file)
-        .map_err(|e| LaunchResult::failure(&ctx.log_path, e.to_string()))?;
+        .map_err(|e| e.to_string())?;
     let composed = match prepared.launch(&goal.selections) {
         Ok(composed) => {
             if !parsed.components.is_empty() {
@@ -106,7 +97,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
             // so the prefix only says which step refused.
             let msg = format!("Cannot resolve the launcher's components: {e}");
             publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
+            return Err(msg);
         }
     };
 
@@ -124,7 +115,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
         Ok(placements) => placements,
         Err(msg) => {
             publish_stderr(ctx, &msg, LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
+            return Err(msg);
         }
     };
 
@@ -340,7 +331,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
     ctx: &StackChangeContext,
     deployments: Vec<Deployment>,
     placements: &Placements,
-) -> std::result::Result<Vec<PlannedDeployment>, LaunchResult> {
+) -> std::result::Result<Vec<PlannedDeployment>, String> {
     publish_stdout(
         ctx,
         format!("Resolving {} deployment(s)", deployments.len()),
@@ -361,7 +352,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
         Err(e) => {
             let msg = format!("failed to load nodes cache: {e}");
             publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, msg));
+            return Err(msg);
         }
     };
 
@@ -461,7 +452,7 @@ pub(in crate::services::stack) async fn resolve_deployments(
     if !planning_errors.is_empty() {
         let msg = daemon_config::format_bulleted(&planning_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
 
     Ok(planned)
@@ -600,7 +591,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     ctx: &StackChangeContext,
     planned: &mut [PlannedDeployment],
     placements: &Placements,
-) -> std::result::Result<(), LaunchResult> {
+) -> std::result::Result<(), String> {
     // Every deployment mints against ONE load of the contract and pairing
     // caches, on one blocking thread: both are read and parsed per load, and
     // a launch with N deployments otherwise paid N of each, sequentially, on
@@ -624,7 +615,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
         Ok(minted) => minted,
         Err(reason) => {
             publish_stderr(ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-            return Err(LaunchResult::failure(&ctx.log_path, reason));
+            return Err(reason);
         }
     };
 
@@ -647,7 +638,7 @@ pub(in crate::services::stack) async fn mint_doc_pins(
     if !problems.is_empty() {
         let msg = daemon_config::format_bulleted(&problems);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
     Ok(())
 }

@@ -305,7 +305,7 @@ mod tests {
     async fn wrappers_hold_a_pointer_to_a_large_borrowing_phase() {
         // Non-`'static` input the phase borrows: the pinned API must not
         // demand ownership or a `Send` bound of the phase.
-        let borrowed = vec![7u8; 16];
+        let borrowed = [7u8; 16];
         let phase = async {
             // Large enough that inlining the phase into a wrapper would show
             // in the wrapper's own size.

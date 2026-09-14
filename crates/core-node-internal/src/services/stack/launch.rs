@@ -175,7 +175,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         placements,
     } = match parse_launcher_config(&ctx, &goal).await {
         Ok(result) => result,
-        Err(launch_result) => return launch_result,
+        Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
     };
 
     let copies = composed.copies().to_vec();
@@ -191,7 +191,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // reservations below need the pins to carry.
     let mut planned = match resolve_deployments(&ctx, flat.deployments.clone(), &placements).await {
         Ok(result) => result,
-        Err(launch_result) => return launch_result,
+        Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
     };
 
     // A launch that starts nothing records the launcher and stops: its
@@ -226,14 +226,14 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
         match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements).await {
             Ok(result) => result,
-            Err(launch_result) => return launch_result,
+            Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
         };
 
     // Step 3b: Pin the contract and pairing documents every manifest in the
     // launch names. Still before any reservation, so a document this
     // machine cannot pin refuses the launch while it has cost nothing.
-    if let Err(launch_result) = resolve::mint_doc_pins(&ctx, &mut planned, &placements).await {
-        return launch_result;
+    if let Err(reason) = resolve::mint_doc_pins(&ctx, &mut planned, &placements).await {
+        return LaunchResult::failure(&ctx.log_path, reason);
     }
 
     // Step 4: The clock the launch runs on, and the federated preflight:
@@ -429,10 +429,12 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     .await;
 
     if let Err(reason) = outcome {
-        let mut launch_result = fail_and_clear_stack(&ctx, reason, &participants).await;
-        launch_result.node_add_logs = add_log_paths;
-        launch_result.node_build_logs = build_log_paths;
-        launch_result.node_run_logs = run_log_paths;
+        let reason = fail_and_clear_stack(&ctx, reason, &participants).await;
+        let launch_result = LaunchResult::failure(&ctx.log_path, reason).with_node_logs(
+            add_log_paths,
+            build_log_paths,
+            run_log_paths,
+        );
         return release_and_fail(change.reserved, launch_result).await;
     }
 

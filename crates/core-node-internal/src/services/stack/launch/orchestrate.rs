@@ -8,7 +8,7 @@ use crate::services::node::{
 use crate::services::stack::action::StackChangeContext;
 use chrono::Local;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchResult, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
+    LaunchFeedbackStep, NodeAddGoal, NodeAddResult, NodeRunGoal, NodeRunResult,
 };
 use parking_lot::Mutex as StdMutex;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -240,15 +240,15 @@ pub(in crate::services::stack) async fn start_node_directly(
 }
 
 /// Launch failure path: tear down whatever partial stack got started and clear
-/// it, then return the failure. A launch replaces the previous stack by tearing
-/// it down at the clear step, so on failure there is nothing to roll back to;
-/// the honest end state is an empty stack rather than orphaned half-started
-/// instances.
+/// it, then return the failure reason. A launch replaces the previous stack by
+/// tearing it down at the clear step, so on failure there is nothing to roll
+/// back to; the honest end state is an empty stack rather than orphaned
+/// half-started instances.
 pub(in crate::services::stack) async fn fail_and_clear_stack(
     ctx: &StackChangeContext,
     reason: String,
     participants: &[String],
-) -> LaunchResult {
+) -> String {
     publish_stderr(
         ctx,
         format!("Launch failed: {reason}"),
@@ -263,7 +263,7 @@ pub(in crate::services::stack) async fn fail_and_clear_stack(
     // never typed the name of.
     super::federated::clear_participant_slices(ctx, participants).await;
 
-    LaunchResult::failure(&ctx.log_path, reason)
+    reason
 }
 
 /// Output of [`validate_and_order_dependencies`]: a topological order
@@ -288,7 +288,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         Vec<daemon_config::launcher::PlannedPairing>,
         Vec<daemon_config::launcher::PlannedObservation>,
     ),
-    LaunchResult,
+    String,
 > {
     publish_stdout(
         ctx,
@@ -337,7 +337,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     if !dependency_errors.is_empty() {
         let msg = daemon_config::format_bulleted(&dependency_errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
 
     // The root entity stays in the stack across launches (teardown_and_reset_stack
@@ -424,7 +424,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
         let msg = daemon_config::format_bulleted(&errors);
         publish_stderr(ctx, msg.clone(), LaunchFeedbackStep::LauncherStep).await;
-        return Err(LaunchResult::failure(&ctx.log_path, msg));
+        return Err(msg);
     }
     let resolved_slot_bindings = validated.slot_bindings;
     let planned_pairings = validated.planned_pairings;
@@ -445,7 +445,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     }
 
     // Stable topological sort using original plan order as tie-breaker.
-    let ordered = topological_sort(planned, &deps_for, &ctx.log_path).map_err(|e| *e)?;
+    let ordered = topological_sort(planned, &deps_for)?;
 
     publish_stdout(
         ctx,
@@ -473,8 +473,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
 fn topological_sort(
     planned: &[PlannedDeployment],
     deps_for: &HashMap<NodeKey, HashSet<NodeKey>>,
-    log_path: &PathBuf,
-) -> std::result::Result<Vec<NodeKey>, Box<LaunchResult>> {
+) -> std::result::Result<Vec<NodeKey>, String> {
     let mut in_degree: HashMap<NodeKey, usize> = HashMap::new();
     let mut dependents: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
 
@@ -542,7 +541,7 @@ fn topological_sort(
             "unable to resolve dependency order (cycle suspected). Remaining nodes: {}",
             remaining.join(", ")
         );
-        return Err(Box::new(LaunchResult::failure(log_path, msg)));
+        return Err(msg);
     }
 
     Ok(ordered)
