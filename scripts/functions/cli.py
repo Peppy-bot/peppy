@@ -22,6 +22,11 @@ console = Console(stderr=True)
 # that actually serves the wildcard leaf (e.g. a stable health router).
 PROD_ROUTER_ENDPOINT_ENV = "PEPPY_PROD_ROUTER_ENDPOINT"
 
+# Env var the release scripts read the GitHub release token from. The release
+# workflow passes it from a repository secret of the same name, and GitHub
+# rejects secret names that start with GITHUB_.
+RELEASE_TOKEN_ENV = "PEPPY_RELEASE_TOKEN"
+
 RELEASE_TRIPLES: tuple[str, ...] = (
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
@@ -146,6 +151,17 @@ def verify_prod_router_publicly_trusted() -> None:
     _probe_publicly_trusted_tls(host, port)
 
 
+def require_release_token() -> str:
+    """Return the GitHub release token held in the RELEASE_TOKEN_ENV env var.
+
+    Raises ReleaseError if it is unset or blank.
+    """
+    token = os.environ.get(RELEASE_TOKEN_ENV, "").strip()
+    if not token:
+        raise ReleaseError(f"{RELEASE_TOKEN_ENV} env var is required")
+    return token
+
+
 def validate_release_environment(
     required_commands: Sequence[str] = ("git", "cargo", "rustc"),
     *,
@@ -185,9 +201,7 @@ def validate_release_environment(
             # Prove the prod routers are publicly trusted *before* building anything.
             verify_prod_router_publicly_trusted()
 
-        token = os.environ.get("GITHUB_PEPPY_RELEASE_TOKEN", "").strip()
-        if not token:
-            raise ReleaseError("GITHUB_PEPPY_RELEASE_TOKEN env var is required")
+        token = require_release_token()
 
     for cmd in required_commands:
         need_cmd(cmd)

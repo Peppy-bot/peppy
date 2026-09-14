@@ -1,0 +1,247 @@
+name: Parallel release
+
+# Manual only: cuts a full release of the `dev` tip with
+# scripts/parallel_release.sh, started from the "Run workflow" form in the
+# Actions tab. Each archive builds natively on a runner of its own platform,
+# all three at once, so no runner has to start a VM:
+#
+#   prepare ────────────┐
+#   provision (x3) ─────┴──> build (x3, in parallel) ──> publish
+#
+# The provision jobs build what every archive embeds but only one platform
+# builds natively: the peppylib bindings (macOS) and apptainer (one Linux
+# runner per architecture). The form collects every answer the release would
+# otherwise ask for, and the release notes Claude drafts are published as they
+# are, since nobody is there to review them; the prepare job prints them.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the release (example v0.0.1)
+        required: true
+        type: string
+      minor_docs_pr:
+        description: >-
+          When the docs check reports only minor suggestions, open a pull
+          request applying them (the release continues either way)
+        required: true
+        type: boolean
+        default: false
+      extra_args:
+        description: Extra arguments for the prepare stage (example --skip-prod-cert-check)
+        required: false
+        type: string
+        default: ""
+
+# One release at a time, and never cancelled for a newer one: a release stopped
+# part way can leave a published release whose notes are not yet committed on
+# `dev`.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Every write (the release and its archives, the docs pull requests, and the
+# pushes to `dev` and `main`) goes through the PEPPY_RELEASE_TOKEN secret, so
+# the jobs' own token only reads.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Checks that `dev` can be released at the commit this run builds, runs the
+  # docs gate and drafts the notes, all recorded in the release plan. The
+  # checkout keeps the release token for the docs pull request branches.
+  prepare:
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    steps:
+      - name: Require a run from dev
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "::error::Run this workflow from dev: a release is cut from the dev tip only."
+            exit 1
+          fi
+
+      # Full history brings the tags the notes are drafted from and the
+      # `main` the docs check diffs against.
+      - uses: actions/checkout@v6
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+
+      - uses: ./.github/actions/release-host-env
+        with:
+          rust: "false"
+          claude: "true"
+          git-author: "true"
+
+      # Every input reaches the script through the environment, never
+      # interpolated into the script body. Stdin is /dev/null, so a question
+      # the options do not answer fails the run at once. PEPPY_PROD_ROUTER_ENDPOINT
+      # is empty unless the repository variable is set, and the stage then
+      # stops unless --skip-prod-cert-check is among the extra arguments.
+      - name: Check the release and draft its notes
+        env:
+          PEPPY_RELEASE_TOKEN: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          PEPPY_PROD_ROUTER_ENDPOINT: ${{ vars.PEPPY_PROD_ROUTER_ENDPOINT }}
+          TAG: ${{ inputs.tag }}
+          MINOR_DOCS_PR: ${{ inputs.minor_docs_pr }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          if [ "$MINOR_DOCS_PR" = "true" ]; then
+            minor_docs_pr=--minor-docs-pr
+          else
+            minor_docs_pr=--no-minor-docs-pr
+          fi
+          read -r -a extra_args <<< "$EXTRA_ARGS"
+          ./scripts/parallel_release.sh prepare \
+            --tag "$TAG" \
+            --release-commit "$GITHUB_SHA" \
+            "$minor_docs_pr" \
+            --plan "$RUNNER_TEMP/release-plan/release-plan.json" \
+            "${extra_args[@]}" \
+            < /dev/null
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-plan/
+          retention-days: 1
+
+  # Runs alongside prepare: nothing here is published, and the builds wait for
+  # both. The same three runner types as the builds, each building what it
+  # builds natively.
+  provision:
+    if: github.ref == 'refs/heads/dev'
+    strategy:
+      matrix:
+        include:
+          - name: bindings
+            stage: bindings
+            runner: blacksmith-12vcpu-macos-latest
+          - name: apptainer-aarch64
+            stage: apptainer
+            runner: blacksmith-16vcpu-ubuntu-2404-arm
+          - name: apptainer-x86_64
+            stage: apptainer
+            runner: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/release-host-env
+
+      - name: Build the ${{ matrix.name }}
+        run: ./scripts/parallel_release.sh ${{ matrix.stage }} --output-dir "$RUNNER_TEMP/provisioned"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: provision-${{ matrix.name }}
+          path: ${{ runner.temp }}/provisioned/
+          retention-days: 1
+
+  # One archive per runner, all three in parallel, each from the commit the
+  # plan pins. A failed build cancels the others: a release needs all three.
+  build:
+    needs: [prepare, provision]
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: blacksmith-12vcpu-macos-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: blacksmith-16vcpu-ubuntu-2404-arm
+          - target: x86_64-unknown-linux-gnu
+            runner: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/release-host-env
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-plan
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: provision-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/provisioned
+
+      - name: Build the ${{ matrix.target }} archive
+        run: |
+          ./scripts/parallel_release.sh build \
+            --plan "$RUNNER_TEMP/release-plan/release-plan.json" \
+            --target "${{ matrix.target }}" \
+            --provisioned "$RUNNER_TEMP/provisioned"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/peppy-${{ matrix.target }}.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Collects the three archives and publishes the release, then commits the
+  # notes on `dev` and fast-forwards `main`. The checkout keeps the release
+  # token for those pushes: the branch rulesets on `dev` and `main` let only
+  # their bypass actors push directly, so the token has to belong to one.
+  publish:
+    needs: [prepare, build]
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: dev
+          fetch-depth: 0
+          token: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+
+      - uses: ./.github/actions/release-host-env
+        with:
+          rust: "false"
+          git-author: "true"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/release-plan
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/archives
+
+      - name: Publish the release
+        env:
+          PEPPY_RELEASE_TOKEN: ${{ secrets.PEPPY_RELEASE_TOKEN }}
+        run: |
+          ./scripts/parallel_release.sh publish \
+            --plan "$RUNNER_TEMP/release-plan/release-plan.json" \
+            --archives "$RUNNER_TEMP/archives" \
+            < /dev/null
+
+      # A pending-upload manifest outlives the run only when the archives were
+      # verified but never published. Copied into dist/ of a `dev` checkout at
+      # the same commit, the next ./scripts/build_release.sh run offers to
+      # publish them without rebuilding; they are only useful while `dev`
+      # stays at that commit, hence the short retention.
+      - name: Keep the verified but unpublished archives
+        if: failure() && hashFiles('dist/pending-upload.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dist
+          path: dist/
+          retention-days: 7
