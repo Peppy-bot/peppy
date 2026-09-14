@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -14,11 +15,17 @@ from functions.build import BuildArtifact
 from functions.cli import ReleaseError
 from functions.docs import CheckResult, RequiredChange, UpdateOutcome, UpdateResult
 from functions.github import RepoSlug
-from functions.lima import RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER
+from functions.lima import (
+    GO_LINUX_ARM64_SHA256,
+    GO_VERSION,
+    RELEASE_PLATFORM_SO,
+    SO_BUILD_STATE_MARKER,
+)
 from functions.parallel_release import (
     BINDINGS_ARCHIVE,
     ReleasePlan,
     _apptainer_arches_for,
+    _install_pinned_go,
     _parse_args,
     _require_unused_tag,
     _write_tarball,
@@ -243,6 +250,8 @@ def prepare_mocks(tmp_path: Path):
         "functions.parallel_release.get_latest_release",
         return_value={"tag_name": "v0.2.0"},
     ), patch(
+        "functions.parallel_release.fetch_tag"
+    ) as fetch_tag, patch(
         "functions.parallel_release.collect_release_changes"
     ) as collect, patch(
         "functions.parallel_release.generate_release_content", return_value=CONTENT
@@ -253,6 +262,7 @@ def prepare_mocks(tmp_path: Path):
             unused_tag=unused_tag,
             client=client,
             docs_gate=docs_gate,
+            fetch_tag=fetch_tag,
             collect=collect,
         )
 
@@ -275,7 +285,9 @@ def test_prepare_writes_the_plan_without_asking_anything(
         tmp_path,
         open_minor_docs_pr=True,
     )
-    # The notes cover the changes since the last published release.
+    # The notes cover the changes since the last published release, whose tag
+    # is fetched first: it can be newer than the checkout.
+    prepare_mocks.fetch_tag.assert_called_once_with("origin", "v0.2.0")
     prepare_mocks.collect.assert_called_once_with("v0.2.0", RELEASE_COMMIT, tmp_path)
     # Nobody reviews the draft, so the log shows it.
     output = _unwrapped(capfd.readouterr().err)
@@ -507,12 +519,63 @@ def test_bindings_build_every_platform_and_pack_them(
         )
 
 
+def _fake_go_download(tmp_path: Path, digest: str):
+    """Stand in for the Go download: a tarball with one top-level go/ directory,
+    reported with *digest* as its SHA-256."""
+
+    def download(url: str, destination: Path) -> str:
+        toolchain = tmp_path / "go-release" / "go"
+        (toolchain / "bin").mkdir(parents=True, exist_ok=True)
+        (toolchain / "bin" / "go").write_text("go toolchain")
+        _write_tarball(destination, [(toolchain, "go")])
+        return digest
+
+    return download
+
+
+def test_install_pinned_go_verifies_and_installs_the_toolchain(tmp_path: Path) -> None:
+    with patch(
+        "functions.parallel_release._download",
+        side_effect=_fake_go_download(tmp_path, GO_LINUX_ARM64_SHA256),
+    ) as download:
+        go_bin = _install_pinned_go("aarch64")
+
+    assert download.call_args.args[0] == (
+        f"https://go.dev/dl/go{GO_VERSION}.linux-arm64.tar.gz"
+    )
+    assert go_bin == _cache_root(tmp_path) / f"go-{GO_VERSION}-arm64" / "bin"
+    assert (go_bin / "go").read_text() == "go toolchain"
+
+
+def test_install_pinned_go_rejects_a_download_off_its_checksum(tmp_path: Path) -> None:
+    with patch(
+        "functions.parallel_release._download",
+        side_effect=_fake_go_download(tmp_path, "0" * 64),
+    ):
+        with pytest.raises(ReleaseError, match="pinned SHA-256"):
+            _install_pinned_go("x86_64")
+
+    assert not (_cache_root(tmp_path) / f"go-{GO_VERSION}-amd64").exists()
+
+
+def test_install_pinned_go_reuses_the_installed_toolchain(tmp_path: Path) -> None:
+    go_bin = _cache_root(tmp_path) / f"go-{GO_VERSION}-amd64" / "bin"
+    go_bin.mkdir(parents=True)
+    (go_bin / "go").write_text("installed")
+
+    with patch("functions.parallel_release._download") as download:
+        assert _install_pinned_go("x86_64") == go_bin
+
+    download.assert_not_called()
+
+
 @patch("functions.parallel_release.is_linux", return_value=False)
 def test_apptainer_refuses_to_build_off_linux(mock_linux: MagicMock, tmp_path: Path) -> None:
     with pytest.raises(ReleaseError, match="Linux only"):
         run_apptainer(tmp_path / "out")
 
 
+@patch("functions.parallel_release._install_pinned_go", return_value=Path("/pinned/go/bin"))
 @patch("functions.parallel_release.need_cmd")
 @patch("functions.parallel_release.subprocess.run")
 @patch("functions.parallel_release.get_repo_root")
@@ -524,6 +587,7 @@ def test_apptainer_packs_the_cache_the_build_left(
     mock_repo_root: MagicMock,
     mock_run: MagicMock,
     mock_need_cmd: MagicMock,
+    mock_go: MagicMock,
     tmp_path: Path,
 ) -> None:
     mock_repo_root.return_value = tmp_path
@@ -533,12 +597,18 @@ def test_apptainer_packs_the_cache_the_build_left(
     run_apptainer(tmp_path / "out")
 
     assert mock_run.call_args.args[0][:4] == ["cargo", "build", "-p", "containers"]
+    # apptainer compiles with the pinned Go, never one the build downloads.
+    mock_go.assert_called_once_with("x86_64")
+    env = mock_run.call_args.kwargs["env"]
+    assert env["PATH"].startswith(f"/pinned/go/bin{os.pathsep}")
+    assert env["GOTOOLCHAIN"] == "local"
     with tarfile.open(tmp_path / "out" / "apptainer-x86_64.tgz") as tar:
         binary = tar.getmember("apptainer-1.5.2-x86_64-nosuid/bin/apptainer")
     # The executable bit is why the cache travels as a tarball.
     assert binary.mode & 0o111
 
 
+@patch("functions.parallel_release._install_pinned_go", return_value=Path("/pinned/go/bin"))
 @patch("functions.parallel_release.need_cmd")
 @patch("functions.parallel_release.subprocess.run")
 @patch("functions.parallel_release.get_repo_root")
@@ -550,6 +620,7 @@ def test_apptainer_fails_when_the_build_left_no_cache(
     mock_repo_root: MagicMock,
     mock_run: MagicMock,
     mock_need_cmd: MagicMock,
+    mock_go: MagicMock,
     tmp_path: Path,
 ) -> None:
     mock_repo_root.return_value = tmp_path
