@@ -31,17 +31,24 @@
           name: "echo",
           request_message_format: { token: "string" },
           response_message_format: { token: "string" }
+        },
+        {
+          // Lets a gated `move` goal complete; the token names the goal.
+          name: "release",
+          request_message_format: { token: "string" },
+          response_message_format: { token: "string" }
         }
       ]
     },
     actions: {
       exposes: [
         {
-          // Holds for `hold_ms` unless cancelled first; the token rides
-          // through feedback and result.
+          // Holds for `hold_ms`, or when `gated` until `release` names its
+          // token, unless cancelled first; the token rides through feedback
+          // and result.
           name: "move",
           goal_service: {
-            request_message_format: { token: "string", hold_ms: "u32" }
+            request_message_format: { token: "string", hold_ms: "u32", gated: "bool" }
           },
           feedback_topic: {
             message_format: { token: "string" }
