@@ -26,8 +26,10 @@ runs:
     # reported. The list below mirrors that constant and must be kept in step
     # with it. fuse2fs is separate: apptainer needs it at run time to mount EXT3
     # images, so the container tests need it even though its absence is only a
-    # warning at build time. Go is absent because the build script downloads its
-    # own pinned toolchain.
+    # warning at build time. Go is absent: the build script compiles with the
+    # `go` on PATH, which the x64 runner image provides, and the release's
+    # apptainer stage (scripts/functions/parallel_release.py) installs the
+    # pinned toolchain itself.
     #
     # The install pulls newer libc, libcurl and ca-certificates into the runner
     # image, and needrestart's automatic mode then restarts every service linked
