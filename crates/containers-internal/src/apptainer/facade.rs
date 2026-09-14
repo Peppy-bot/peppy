@@ -848,7 +848,7 @@ impl Apptainer {
     /// # let facade = containers::Apptainer::new()?;
     /// let mut child = facade.run("image.sif")
     ///     .bind("/dev/ttyUSB0", None, None)
-    ///     .env("ROS_DOMAIN_ID", "42")
+    ///     .apptainer_env("ROS_DOMAIN_ID", "42")
     ///     .spawn()?;
     /// # Ok::<(), containers::Error>(())
     /// ```
@@ -1277,7 +1277,7 @@ enum CommandKind {
 /// let mut child = facade.run("image.sif")
 ///     .bind("/dev/ttyUSB0", None, None)
 ///     .bind("/dev/can0", None, None)
-///     .env("ROS_DOMAIN_ID", "42")
+///     .apptainer_env("ROS_DOMAIN_ID", "42")
 ///     .spawn()?;
 ///
 /// // Variable number of devices at runtime
@@ -1330,21 +1330,17 @@ impl<'a> ApptainerCommand<'a> {
         self
     }
 
-    /// Add a `--env VAR=VALUE` environment variable.
-    pub fn env(mut self, key: &str, value: &str) -> Self {
-        self.flags.push("--env".to_string());
-        self.flags.push(format!("{key}={value}"));
-        self
-    }
-
     /// Forward an environment variable into the container by setting
     /// `APPTAINERENV_{key}` in the apptainer process environment.
     ///
-    /// Unlike [`env`](Self::env), this reaches a build's `%post` scriptlet,
-    /// which `apptainer build` offers no `--env` flag for. The native backend
-    /// sets it on the spawned process; the Lima backend prefixes the guest
-    /// command with `env APPTAINERENV_{key}={value}`, since host process
-    /// environment does not cross `limactl shell`.
+    /// This is how every variable reaches a node: the prefixed form carries a
+    /// value whole, where apptainer's `--env` flag reads its argument as a
+    /// comma-separated list of pairs and splits a value at every comma, each
+    /// fragment becoming a variable of its own. It also reaches a build's
+    /// `%post` scriptlet, which `apptainer build` offers no `--env` flag for.
+    /// The native backend sets it on the spawned process; the Lima backend
+    /// prefixes the guest command with `env APPTAINERENV_{key}={value}`,
+    /// since host process environment does not cross `limactl shell`.
     pub fn apptainer_env(mut self, key: &str, value: &str) -> Self {
         self.apptainer_env
             .push((key.to_string(), value.to_string()));
@@ -1365,8 +1361,9 @@ impl<'a> ApptainerCommand<'a> {
     /// abort with "invalid var name", silently dropping every later var,
     /// including `PEPPY_RUNTIME_CONFIG`. The node then falls back to its
     /// standalone defaults instead of the daemon-provided parameters. Passing
-    /// the node's environment explicitly via `--env` (which still applies under
-    /// `--cleanenv`) keeps the curated set while removing both hazards.
+    /// the node's environment explicitly as `APPTAINERENV_` variables (which
+    /// still apply under `--cleanenv`) keeps the curated set while removing
+    /// both hazards.
     pub fn clean_env(mut self) -> Self {
         self.flags.push("--cleanenv".to_string());
         self

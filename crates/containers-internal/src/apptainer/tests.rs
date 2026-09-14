@@ -276,15 +276,34 @@ fn test_bind_with_opts() {
     );
 }
 
+/// A value with a comma in it reaches the node whole: it rides the process
+/// environment under the `APPTAINERENV_` prefix and never the `--env` flag,
+/// whose argument apptainer splits at every comma.
 #[test]
-fn test_env_flag_format() {
+fn test_a_run_carries_a_comma_valued_variable_whole() {
     let facade = native_facade();
 
-    let cmd = facade.run("image.sif").env("FOO", "bar");
+    let cmd = facade.run("image.sif").apptainer_env(
+        "WORDS",
+        "simulation=mujoco,alpha.robot_commander=mcp_commander",
+    );
     let args = cmd.build_args().expect("build_args should succeed");
+    assert!(
+        !args.iter().any(|a| a == "--env"),
+        "no variable rides the --env flag, got: {args:?}"
+    );
 
-    let env_idx = args.iter().position(|a| a == "--env").unwrap();
-    assert_eq!(args[env_idx + 1], "FOO=bar");
+    let std_cmd = cmd.into_std_command().expect("command should assemble");
+    let env: Vec<_> = std_cmd.get_envs().collect();
+    assert!(
+        env.contains(&(
+            std::ffi::OsStr::new("APPTAINERENV_WORDS"),
+            Some(std::ffi::OsStr::new(
+                "simulation=mujoco,alpha.robot_commander=mcp_commander"
+            ))
+        )),
+        "expected APPTAINERENV_WORDS with the whole value in the process env, got: {env:?}"
+    );
 }
 
 #[test]
