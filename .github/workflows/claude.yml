@@ -117,13 +117,13 @@ jobs:
       # Both actions below are pinned to a commit rather than a tag. Tags are
       # mutable, and this job holds contents: write plus the Claude credential,
       # so a retagged release would run with them. Bump deliberately.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so Claude can read blame and prior commits rather than
           # reasoning from a single shallow snapshot.
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
+      - uses: anthropics/claude-code-action@9cdae7f0d995e3ba7c33f226087fdf82a59cd520 # v1.0.223
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The job-level `actions: read` above scopes GITHUB_TOKEN, which this

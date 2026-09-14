@@ -462,6 +462,10 @@ def test_run_full_uploads_all_artifacts(
     captured = capfd.readouterr()
     assert "releases/tag/v0.1.0" in captured.err
     assert "untagged" not in captured.err
+    # The run ends on the outcome and the link to the release notes.
+    assert captured.err.strip().splitlines()[-1] == (
+        "Released v0.1.0. Release notes: https://github.com/test/releases/tag/v0.1.0"
+    )
 
 
 @patch("functions.build_release.need_cmd")
