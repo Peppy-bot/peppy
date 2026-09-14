@@ -337,8 +337,8 @@ is an *enhancement path*, not a dependency.
 reserves each machine in the launch, all or nothing: if any machine refuses,
 every reservation just taken is released and no stack anywhere is torn down. A
 reservation is machine-wide while it lasts. A reserved daemon refuses local
-`peppy node add` and `peppy node run` too, naming the launch and coordinator
-holding it, and `peppy stack list` shows a `Reserved for launch ...` line
+`peppy node add`, `peppy node run`, `peppy node remove`, and `peppy node stop`
+too, naming the launch and coordinator holding it, and `peppy stack list` shows a `Reserved for launch ...` line
 naming the exact reset command that clears it.
 
 A reservation is a lease on the coordinator's presence in the federation: a
