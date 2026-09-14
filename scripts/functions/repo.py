@@ -136,6 +136,26 @@ def fetch_remote_branches(remote: str, branches: Sequence[str]) -> None:
         )
 
 
+def fetch_tag(remote: str, tag: str) -> None:
+    """Fetch *tag* from *remote* into the local tags.
+
+    A clone holds only the tags that existed when it was made, so a tag created
+    on the remote since then has to be fetched before it can be read.
+
+    Raises ReleaseError if the fetch fails, the tag is missing on the remote, or
+    a local tag of the same name points elsewhere.
+    """
+    result = subprocess.run(
+        ["git", "fetch", "--no-tags", remote, f"refs/tags/{tag}:refs/tags/{tag}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"failed to fetch tag '{tag}' from '{remote}': {result.stderr.strip()}"
+        )
+
+
 def has_changes_in_paths(paths: Sequence[Path]) -> bool:
     """Return True if any of *paths* is modified, staged, or untracked.
 

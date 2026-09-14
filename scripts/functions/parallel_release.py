@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -76,14 +77,21 @@ from .cli import (
 )
 from .docs import RequiredChange, check_docs, print_minor_changes, update_docs
 from .github import RepoSlug, build_github_client, get_latest_release, github_repo_slug
-from .lima import RELEASE_PLATFORM_SO, SO_BUILD_STATE_MARKER, require_prebuilt_peppylib_so
+from .lima import (
+    GO_LINUX_AMD64_SHA256,
+    GO_LINUX_ARM64_SHA256,
+    GO_VERSION,
+    RELEASE_PLATFORM_SO,
+    SO_BUILD_STATE_MARKER,
+    require_prebuilt_peppylib_so,
+)
 from .pending_upload import pending_upload_path, record_pending_upload
 from .release_summary import (
     ReleaseContent,
     collect_release_changes,
     generate_release_content,
 )
-from .repo import get_commit, get_repo_root, has_changes_in_paths
+from .repo import fetch_tag, get_commit, get_repo_root, has_changes_in_paths
 from .verify_release import verify_all_releases
 
 # File names the provisioning stages write and the build stage reads.
@@ -399,6 +407,9 @@ def _draft_release_content(
     latest = get_latest_release(client, slug)
     previous_tag = latest.get("tag_name") if latest else None
     if previous_tag:
+        # The last release can be newer than this checkout, whose clone holds
+        # only the tags that existed when it was made.
+        fetch_tag(GIT_REMOTE, previous_tag)
         console.print(f"Listing changes since last release [bold]{previous_tag}[/bold]...")
     else:
         console.print(
@@ -520,12 +531,61 @@ def _single_apptainer_cache(arch: str) -> Path:
     return caches[0]
 
 
+# Go's name for each architecture and the SHA-256 of its pinned toolchain.
+_GO_TARBALLS = {
+    "aarch64": ("arm64", GO_LINUX_ARM64_SHA256),
+    "x86_64": ("amd64", GO_LINUX_AMD64_SHA256),
+}
+
+
+def _download(url: str, destination: Path) -> str:
+    """Download *url* to *destination* and return the file's SHA-256."""
+    digest = hashlib.sha256()
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
+            response.raise_for_status()
+            with destination.open("wb") as out:
+                for chunk in response.iter_bytes():
+                    digest.update(chunk)
+                    out.write(chunk)
+    except httpx.HTTPError as e:
+        raise ReleaseError(f"failed to download {url}: {e}") from e
+    return digest.hexdigest()
+
+
+def _install_pinned_go(arch: str) -> Path:
+    """Install the Go toolchain the Lima builds pin and return its bin directory.
+
+    containers-internal's native Linux build compiles apptainer with the `go`
+    on PATH, which a runner image may lack or ship older than apptainer's
+    `mconfig` accepts. The pinned, SHA-verified toolchain builds both Linux
+    apptainers with the same Go whatever the runner image carries.
+    """
+    go_arch, sha256 = _GO_TARBALLS[arch]
+    go_root = _build_cache_root() / f"go-{GO_VERSION}-{go_arch}"
+    go_bin = go_root / "bin"
+    if (go_bin / "go").is_file():
+        return go_bin
+
+    url = f"https://go.dev/dl/go{GO_VERSION}.linux-{go_arch}.tar.gz"
+    console.print(f"Installing pinned Go {GO_VERSION} for {arch}...")
+    go_root.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=go_root.parent) as scratch:
+        tarball = Path(scratch) / "go.tar.gz"
+        if _download(url, tarball) != sha256:
+            raise ReleaseError(f"{url} does not match its pinned SHA-256")
+        tree = _extract_tree(tarball, Path(scratch) / "tree")
+        shutil.rmtree(go_root, ignore_errors=True)
+        tree.rename(go_root)
+    return go_bin
+
+
 def run_apptainer(output_dir: Path) -> None:
     """Build apptainer for this Linux host's architecture and pack it.
 
     A release build of the containers crate runs its build script, which
-    builds apptainer from source into the build cache, or keeps a complete
-    cache already there.
+    builds apptainer from source into the build cache with the pinned Go, or
+    keeps a complete cache already there.
     """
     if not is_linux():
         raise ReleaseError(
@@ -538,7 +598,11 @@ def run_apptainer(output_dir: Path) -> None:
     os.chdir(repo_root)
 
     arch = _triple_arch(get_native_triple())
-    _run_cargo_build("containers", repo_root, dict(os.environ))
+    env = dict(os.environ)
+    env["PATH"] = f"{_install_pinned_go(arch)}{os.pathsep}{env.get('PATH', '')}"
+    # Never let the build swap the pinned toolchain for a downloaded one.
+    env["GOTOOLCHAIN"] = "local"
+    _run_cargo_build("containers", repo_root, env)
 
     cache = _single_apptainer_cache(arch)
     _write_tarball(output_dir / apptainer_archive_name(arch), [(cache, cache.name)])
