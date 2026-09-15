@@ -65,6 +65,18 @@ pub(super) const SUBSCRIBED_SERVICE_RESPONSE_EXAMPLE1: &str = r#"
 /// Only pointer-backed fields can be optional, so a `_has` presence probe is
 /// only ever emitted for these. `$optional` on a scalar is rejected when the
 /// config is parsed and never reaches code generation.
+// An optional struct carrying a fixed-length array: the shape a placement
+// takes, and the one that decoded a robot out of a scene.
+const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_STRUCT: &str = r#"
+{
+  placement: {
+    $optional: true,
+    position: { $type: "array", $items: "f64", $length: 3 },
+    yaw: "f64"
+  }
+}
+"#;
+
 const SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_POINTERS: &str = r#"
 {
   maybe_text: {
@@ -460,6 +472,42 @@ fn consumed_service() {
 }
 
 #[test]
+fn an_absent_optional_struct_is_never_read_for_its_fixed_length_arrays() {
+    // Cap'n Proto answers an unset struct with its zero value, whose
+    // fixed-length array reads as empty. Checking that array's length before
+    // the field's presence turns "no placement given" into a decode error.
+    let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
+    let request_format = empty_message_format();
+    let response_format: MessageFormat =
+        serde_json5::from_str(SUBSCRIBED_SERVICE_RESPONSE_OPTIONAL_STRUCT).unwrap();
+
+    let mut generator = PythonGenerator::new();
+    generator
+        .add_consumed_service(
+            &service,
+            &request_format,
+            &response_format,
+            &native_dep("uvc_camera", "v1", "uvc_camera"),
+        )
+        .unwrap();
+    let rendered = render_artifacts(generator.into_artifacts())
+        .into_iter()
+        .next()
+        .expect("artifact is present");
+
+    let guard = rendered
+        .find("if capnp_msg._has(\"placement\"):")
+        .expect("the presence check guards the read");
+    let length_check = rendered
+        .find("invalid fixed list length for field 'position'")
+        .expect("the fixed-length array is still checked when present");
+    assert!(
+        guard < length_check,
+        "the length check must sit inside the presence check, got:\n{rendered}"
+    );
+}
+
+#[test]
 fn consumed_service_optional_pointer_fields_use_has_checks() {
     let service: ConsumedService = serde_json5::from_str(SUBSCRIBED_SERVICE_EXAMPLE1).unwrap();
     let request_format = empty_message_format();
@@ -485,8 +533,12 @@ fn consumed_service_optional_pointer_fields_use_has_checks() {
         &[
             "maybe_text: Optional[str]",
             "maybe_payload: Optional[bytes]",
-            "if not capnp_msg._has(\"maybeText\"):",
-            "if not capnp_msg._has(\"maybePayload\"):",
+            // An absent field is not read: the presence check guards the read
+            // rather than overriding its result.
+            "if capnp_msg._has(\"maybeText\"):",
+            "maybe_text_0 = capnp_msg.maybeText",
+            "if capnp_msg._has(\"maybePayload\"):",
+            "maybe_payload_1 = capnp_msg.maybePayload",
             "maybe_text_0 = None",
             "maybe_payload_1 = None",
         ],

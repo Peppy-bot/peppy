@@ -25,6 +25,16 @@ pub fn generate_field_reader_statements(
     struct_prefix: &str,
     counter: &mut u32,
 ) -> String {
+    // An absent optional field is not read at all. Reading it first and
+    // overriding afterwards decodes what Cap'n Proto returns for a field that
+    // was never set, and a fixed-length array inside such a field is an empty
+    // list, which fails its length check before the presence check is reached.
+    let optional = schema.is_optional();
+    if optional {
+        let capnp_name = sanitize_capnp_field_name(field_name);
+        builder.line(&format!("if {reader_var}._has(\"{capnp_name}\"):"));
+        builder.indent();
+    }
     let var = match schema {
         SchemaType::Type(TypeToken::Time) => {
             generate_time_reader(builder, reader_var, field_name, counter)
@@ -73,11 +83,9 @@ pub fn generate_field_reader_statements(
         ),
     };
 
-    // For optional fields, override the value with None when the Cap'n Proto
-    // field was never set.
-    if schema.is_optional() {
-        let capnp_name = sanitize_capnp_field_name(field_name);
-        builder.line(&format!("if not {reader_var}._has(\"{capnp_name}\"):"));
+    if optional {
+        builder.dedent();
+        builder.line("else:");
         builder.indent();
         builder.line(&format!("{var} = None"));
         builder.dedent();

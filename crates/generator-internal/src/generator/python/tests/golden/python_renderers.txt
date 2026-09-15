@@ -1048,8 +1048,9 @@ class Response:
 def _deserialize_response(payload: bytes) -> ResponseData:
     with _poll_uvc_camera_enable_camera_response_message_capnp().PollUvcCameraEnableCameraResponseMessage.from_bytes(payload) as capnp_msg:
         enabled_0 = capnp_msg.enabled
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return ResponseData(enabled=enabled_0, error_msg=error_msg_1)
 
@@ -1220,8 +1221,9 @@ class Response:
 def _deserialize_response(payload: bytes) -> ResponseData:
     with _poll_uvc_camera_enable_camera_response_message_capnp().PollUvcCameraEnableCameraResponseMessage.from_bytes(payload) as capnp_msg:
         enabled_0 = capnp_msg.enabled
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return ResponseData(enabled=enabled_0, error_msg=error_msg_1)
 
@@ -1394,8 +1396,9 @@ class Response:
 def _deserialize_response(payload: bytes) -> ResponseData:
     with _poll_uvc_camera_enable_camera_response_message_capnp().PollUvcCameraEnableCameraResponseMessage.from_bytes(payload) as capnp_msg:
         enabled_0 = capnp_msg.enabled
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return ResponseData(enabled=enabled_0, error_msg=error_msg_1)
 
@@ -1567,8 +1570,9 @@ class Response:
 def _deserialize_response(payload: bytes) -> ResponseData:
     with _poll_uvc_camera_enable_camera_response_message_capnp().PollUvcCameraEnableCameraResponseMessage.from_bytes(payload) as capnp_msg:
         enabled_0 = capnp_msg.enabled
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return ResponseData(enabled=enabled_0, error_msg=error_msg_1)
 
@@ -1702,8 +1706,9 @@ def _deserialize_feedback_payload(payload: bytes) -> FeedbackMessage:
 def _deserialize_result_response(payload: bytes) -> ResultResponseData:
     with _arm_control_move_arm_get_result_response_message_capnp().ArmControlMoveArmGetResultResponseMessage.from_bytes(payload) as capnp_msg:
         success_0 = capnp_msg.success
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return ResultResponseData(success=success_0, error_msg=error_msg_1)
 
@@ -4140,8 +4145,9 @@ def _enable_camera_response_message_capnp() -> types.ModuleType:
 def _deserialize_response(payload: bytes) -> _production.Response:
     with _enable_camera_response_message_capnp().EnableCameraResponseMessage.from_bytes(payload) as capnp_msg:
         enabled_0 = capnp_msg.enabled
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return _production.Response(enabled=enabled_0, error_msg=error_msg_1)
 
@@ -4349,8 +4355,9 @@ def _camera_feed_v1_enable_camera_response_message_capnp() -> types.ModuleType:
 def _deserialize_response(payload: bytes) -> _production.Response:
     with _camera_feed_v1_enable_camera_response_message_capnp().CameraFeedV1EnableCameraResponseMessage.from_bytes(payload) as capnp_msg:
         enabled_0 = capnp_msg.enabled
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return _production.Response(enabled=enabled_0, error_msg=error_msg_1)
 
@@ -4456,8 +4463,9 @@ class ResultData:
 def _deserialize_result(payload: bytes) -> ResultData:
     with _move_arm_result_response_message_capnp().MoveArmResultResponseMessage.from_bytes(payload) as capnp_msg:
         success_0 = capnp_msg.success
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return ResultData(success=success_0, error_msg=error_msg_1)
 
@@ -4964,8 +4972,9 @@ class ResultData:
 def _deserialize_result(payload: bytes) -> ResultData:
     with _camera_feed_v1_move_arm_result_response_message_capnp().CameraFeedV1MoveArmResultResponseMessage.from_bytes(payload) as capnp_msg:
         success_0 = capnp_msg.success
-        error_msg_1 = capnp_msg.errorMsg
-        if not capnp_msg._has("errorMsg"):
+        if capnp_msg._has("errorMsg"):
+            error_msg_1 = capnp_msg.errorMsg
+        else:
             error_msg_1 = None
         return ResultData(success=success_0, error_msg=error_msg_1)
 
