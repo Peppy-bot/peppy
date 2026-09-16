@@ -37,13 +37,15 @@ pub(crate) use env::caller_env_overrides;
 pub(crate) use core_node_api::encoding::DEFAULT_IDLE_TIMEOUT_SECS;
 /// Default idle timeout for the container BUILD phase (`peppy node build`,
 /// `peppy stack launch --node-build-idle-timeout-secs`), tighter than
-/// [`DEFAULT_IDLE_TIMEOUT_SECS`] on purpose: the build's idle clock no longer
-/// depends on sporadic subprocess chatter — it also resets whenever bytes land
-/// on disk (image download, cache writes, SIF assembly), sampled every 5 s. So
-/// 180 s of silence is 36 consecutive zero-growth samples: not "maybe still
-/// downloading", but wedged. Add and run keep the 600 s default because their
-/// signal did not improve: add has quiet delta-resolution stretches, and run
-/// has no progress proxy at all (nodes legitimately initialize silently).
+/// [`DEFAULT_IDLE_TIMEOUT_SECS`] on purpose: the build's idle clock does not
+/// depend on sporadic subprocess chatter. It also resets whenever bytes land
+/// on disk (image download, cache writes, SIF assembly, compiler output) or
+/// the build's processes burn CPU (a compiler holding one crate for minutes),
+/// sampled every 5 s. So 180 s of silence is 36 consecutive samples with no
+/// growth and no CPU: not "maybe still working", but wedged. Add and run keep
+/// the 600 s default because they have no such signal: add has quiet
+/// delta-resolution stretches, and run has no progress proxy at all (nodes
+/// legitimately initialize silently).
 pub(crate) const DEFAULT_BUILD_IDLE_TIMEOUT_SECS: u64 = 180;
 /// Default absolute max timeout in seconds (safety net).
 pub(crate) const DEFAULT_MAX_TIMEOUT_SECS: u64 = 3600;
@@ -344,7 +346,7 @@ pub enum NodeCommands {
         /// Node reference in the format node_name:tag (e.g., my_node:v1)
         #[arg(value_parser = parse_node_ref)]
         node_ref: (String, String),
-        /// Idle timeout in seconds; resets on build output or image-download/write progress
+        /// Idle timeout in seconds; resets on build output, bytes written to disk, or CPU time the build burns
         #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout: u64,
         /// Absolute max timeout in seconds (safety net)
