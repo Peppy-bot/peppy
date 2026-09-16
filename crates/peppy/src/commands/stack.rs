@@ -173,7 +173,7 @@ pub struct StackTimeouts {
     #[arg(long, default_value_t = DEFAULT_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_add_idle_timeout_secs: u64,
     /// Idle timeout in seconds for the node build phase (resets on build
-    /// output, bytes written to disk, or CPU time the build burns).
+    /// output or image-download/write progress).
     #[arg(long, default_value_t = DEFAULT_BUILD_IDLE_TIMEOUT_SECS, value_parser = clap::value_parser!(u64).range(1..))]
     pub node_build_idle_timeout_secs: u64,
     /// Idle timeout in seconds for the node run-startup phase (resets on
