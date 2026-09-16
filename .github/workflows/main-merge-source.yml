@@ -1,0 +1,55 @@
+name: Main merge source
+
+# `main` moves through `dev` and through nothing else. A GitHub branch rule
+# constrains the branch a pull request writes to, never the branch it comes
+# from, so the ruleset on `main` requires this check and the restriction itself
+# lives here.
+on:
+  pull_request:
+    # `edited` fires when a pull request opened against another base is
+    # retargeted onto `main`; the default set of types would stay silent and
+    # leave the check unreported.
+    types: [opened, reopened, synchronize, edited]
+    branches: [main]
+
+concurrency:
+  group: main-merge-source-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Dropping this file from a branch buys nothing: the check then never reports
+  # at all, and a required check that never reports leaves the pull request
+  # blocked just the same.
+  main-from-dev:
+    # A GitHub-hosted runner, where the rest of the repository runs on the
+    # Blacksmith pool. This job is the gate on `main`, so it keeps its
+    # availability tied to GitHub alone, and it is free on a public repository.
+    runs-on: ubuntu-latest
+    # The head branch comes off the event payload. Nothing here reads the
+    # repository, so the job runs with no token.
+    permissions: {}
+    steps:
+      - name: Require dev as the source branch
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          # A fork carries its own `dev`, so the branch name settles this only
+          # together with the repository it lives in.
+          if [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ] && [ "$HEAD_REF" = "dev" ]; then
+            echo "Source branch is \`dev\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "## \`main\` accepts \`dev\` only"
+            echo
+            echo "This pull request comes from \`$HEAD_REPO:$HEAD_REF\`."
+            echo
+            echo "Retarget it onto \`dev\`, where it reaches \`main\` with the next release pull request."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error::main accepts dev only, and this pull request comes from $HEAD_REPO:$HEAD_REF. Retarget it onto dev."
+          exit 1
