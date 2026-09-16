@@ -4,37 +4,8 @@ mod ssh_agent;
 
 use super::Command;
 use crate::{context::AppContext, error::Error as CommandError};
-use clap::{Subcommand, ValueEnum};
+use clap::Subcommand;
 use std::sync::Arc;
-
-/// Daemon-wide default for the time source nodes read through `PeppyClock`.
-/// Per-instance launcher overrides win over this; this is the fallback for
-/// instances that omit the framework block.
-#[derive(Copy, Clone, Debug, ValueEnum, Default, PartialEq, Eq)]
-pub enum ClockSource {
-    /// Read OS wall time (`SystemTime::now()`-equivalent).
-    #[default]
-    Wall,
-    /// Read timestamps from the daemon's cache, fed by an external publisher
-    /// on the `clock` topic. Use this for simulators and bag replay.
-    Sim,
-}
-
-impl ClockSource {
-    /// Convenience: `true` when the daemon should treat sim as the default.
-    pub fn use_sim_time(self) -> bool {
-        matches!(self, ClockSource::Sim)
-    }
-}
-
-impl From<ClockSource> for daemon::ClockSource {
-    fn from(source: ClockSource) -> Self {
-        match source {
-            ClockSource::Wall => daemon::ClockSource::Wall,
-            ClockSource::Sim => daemon::ClockSource::Sim,
-        }
-    }
-}
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
@@ -49,10 +20,6 @@ pub enum ServiceCommands {
         /// machine-specific default is derived.
         #[arg(long)]
         core_node_name: Option<String>,
-        /// Daemon-wide clock source. Per-instance `framework.use_sim_time`
-        /// overrides this. Defaults to `wall`.
-        #[arg(long, value_enum, default_value_t = ClockSource::Wall)]
-        clock_source: ClockSource,
     },
     /// Install the peppy daemon as a background service (user-level by default; run with sudo for system-wide).
     Install {},
@@ -72,13 +39,11 @@ impl Command for ServiceCommand {
             ServiceCommands::Serve {
                 messaging_engine,
                 core_node_name,
-                clock_source,
             } => {
                 ssh_agent::bind_ssh_agent_from_config();
                 serve::ServeCommand {
                     messaging_engine,
                     core_node_name,
-                    clock_source,
                     shutdown_token: None,
                     peppy_dirs: daemon_config::consts::PeppyDirs::default(),
                 }

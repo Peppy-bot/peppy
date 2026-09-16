@@ -919,9 +919,9 @@ async fn poll_producer_offset(
     to_node: &str,
     to_tag: &str,
     timeout: Duration,
-) -> Option<(i64, u64)> {
+) -> Option<ProducerClock> {
     let target = SenderTarget::node(to_node, to_tag).ok()?;
-    let mut best: Option<(i64, u64)> = None;
+    let mut best: Option<ProducerClock> = None;
     for _ in 0..OFFSET_SAMPLES {
         let Ok(request) = ClockOffsetRequest::new().encode() else {
             continue;
@@ -941,16 +941,32 @@ async fn poll_producer_offset(
         let Ok(decoded) = ClockOffsetResponse::decode(reply.payload_bytes().as_ref()) else {
             continue;
         };
-        let sample = (decoded.offset_ns, decoded.round_trip_delay_ns);
-        if best.is_none_or(|(_, best_rtt)| sample.1 < best_rtt) {
+        let sample = ProducerClock {
+            offset_ns: decoded.offset_ns,
+            round_trip_delay_ns: decoded.round_trip_delay_ns,
+            domain: decoded.domain,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|best| sample.round_trip_delay_ns < best.round_trip_delay_ns)
+        {
             best = Some(sample);
         }
     }
     best
 }
 
+/// What one producer's clock exchange reported: its measured offset and
+/// round trip, and the simulated domain it reads when it reads one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProducerClock {
+    offset_ns: i64,
+    round_trip_delay_ns: u64,
+    domain: Option<String>,
+}
+
 fn classify_clock(
-    offset: Option<(i64, u64)>,
+    offset: Option<ProducerClock>,
     had_implausible: bool,
 ) -> (ClockConfidence, Option<String>) {
     if had_implausible {
@@ -963,12 +979,32 @@ fn classify_clock(
             ),
         );
     }
+    // A producer on a simulated domain stamps on that domain's timeline, which
+    // both endpoints of a clock-dependent connection read, so there is no host
+    // offset to correct and none was measured.
+    if let Some(ProducerClock {
+        domain: Some(domain),
+        ..
+    }) = &offset
+    {
+        return (
+            ClockConfidence::SharedClock,
+            Some(format!(
+                "both endpoints read clock {domain}, so the instants they stamp \
+                 are already on one timeline"
+            )),
+        );
+    }
     match offset {
         None => (
             ClockConfidence::SameHost,
             Some("producer clock offset unavailable; treated as same-host".to_string()),
         ),
-        Some((o, rtt)) => {
+        Some(ProducerClock {
+            offset_ns: o,
+            round_trip_delay_ns: rtt,
+            ..
+        }) => {
             // The offset estimate is only accurate to ±(asymmetry)/2, and the
             // asymmetry is bounded by the round trip, so an offset within half
             // the RTT is indistinguishable from zero and means same-host. The
@@ -1032,7 +1068,9 @@ async fn measure_topic_delivery(
         }
     };
 
-    let off = offset.map(|(o, _)| o).unwrap_or(0) as i128;
+    // Borrowed: `classify_clock` takes the exchange below. A producer on a
+    // simulated domain reports zero here, so the delta it corrects is its own.
+    let off = offset.as_ref().map(|c| c.offset_ns).unwrap_or(0) as i128;
     let mut seen: u32 = 0;
     let mut measured: u32 = 0;
     let mut out = Vec::new();
@@ -1204,12 +1242,53 @@ mod tests {
         assert_eq!(edges[0].interface, "move_arm");
     }
 
+    /// A producer reading wall time: an offset and a round trip, no domain.
+    fn wall_clock(offset_ns: i64, round_trip_delay_ns: u64) -> ProducerClock {
+        ProducerClock {
+            offset_ns,
+            round_trip_delay_ns,
+            domain: None,
+        }
+    }
+
+    /// A producer reading a simulated domain. The offset it reports is zero by
+    /// construction, and the round trip is still measured.
+    fn domain_clock(domain: &str) -> ProducerClock {
+        ProducerClock {
+            offset_ns: 0,
+            round_trip_delay_ns: 1_000_000,
+            domain: Some(domain.to_string()),
+        }
+    }
+
+    #[test]
+    fn a_producer_on_a_simulated_domain_is_not_reported_as_same_host() {
+        // The zero a sim-bound instance answers with falls inside every
+        // same-host bound, so without the domain this edge claims the two
+        // endpoints share a machine, which is a claim about topology.
+        let (confidence, note) = classify_clock(Some(domain_clock("robot@cn-sim")), false);
+        assert_eq!(confidence, ClockConfidence::SharedClock);
+        let note = note.expect("the row says why no offset applies");
+        assert!(
+            note.contains("robot@cn-sim"),
+            "the note names the timeline: {note}"
+        );
+    }
+
+    #[test]
+    fn an_implausible_delta_is_flagged_even_on_a_simulated_domain() {
+        assert_eq!(
+            classify_clock(Some(domain_clock("robot@cn-sim")), true).0,
+            ClockConfidence::CrossHostFlagged
+        );
+    }
+
     #[test]
     fn classify_clock_treats_offset_within_half_rtt_as_same_host() {
         // The regression: a busy same-host producer's single-sample offset
         // (200µs) sits well inside half the round trip (1ms RTT → 500µs bound),
         // so it must read same-host, not cross-host `corrected`.
-        let (confidence, note) = classify_clock(Some((200_000, 1_000_000)), false);
+        let (confidence, note) = classify_clock(Some(wall_clock(200_000, 1_000_000)), false);
         assert_eq!(confidence, ClockConfidence::SameHost);
         assert!(note.is_none());
     }
@@ -1218,7 +1297,7 @@ mod tests {
     fn classify_clock_flags_offset_beyond_half_rtt_as_cross_host() {
         // A 2ms offset on a 1ms round trip cannot come from asymmetry alone;
         // it's a genuine clock difference, so correct it.
-        let (confidence, _) = classify_clock(Some((2_000_000, 1_000_000)), false);
+        let (confidence, _) = classify_clock(Some(wall_clock(2_000_000, 1_000_000)), false);
         assert_eq!(confidence, ClockConfidence::CrossHostCorrected);
     }
 
@@ -1226,14 +1305,14 @@ mod tests {
     fn classify_clock_absolute_floor_covers_near_instant_round_trip() {
         // Tiny RTT (20µs → 10µs half) but a 50µs offset: the absolute floor
         // keeps it same-host rather than over-reacting to sub-100µs noise.
-        let (confidence, _) = classify_clock(Some((50_000, 20_000)), false);
+        let (confidence, _) = classify_clock(Some(wall_clock(50_000, 20_000)), false);
         assert_eq!(confidence, ClockConfidence::SameHost);
     }
 
     #[test]
     fn classify_clock_implausible_is_flagged_and_unavailable_is_same_host() {
         assert_eq!(
-            classify_clock(Some((123, 456)), true).0,
+            classify_clock(Some(wall_clock(123, 456)), true).0,
             ClockConfidence::CrossHostFlagged
         );
         assert_eq!(classify_clock(None, false).0, ClockConfidence::SameHost);

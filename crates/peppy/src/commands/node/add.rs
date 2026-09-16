@@ -32,6 +32,9 @@ use peppylib::core_node::transport::{poll, send_goal};
 pub struct RunAfterAddOptions {
     pub args: Vec<(String, String)>,
     pub instance_id: Option<String>,
+    /// The clock the chained instance reads, exactly as `peppy node run`
+    /// takes it.
+    pub clock: super::run::ClockChoice,
     /// The `--link KEY@TARGET` and `--vacant-link SLOT=<why>` flags merged
     /// into one slot map, unifying producer bindings, pairings, observer
     /// sources and deliberate vacancies under one container. Classified by
@@ -253,6 +256,13 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         return Ok(());
     };
 
+    let clock = super::run::resolve_clock_choice(
+        conn.messenger,
+        &conn.core_node_name,
+        &conn.target_core_node,
+        &run_options.clock,
+    )
+    .await?;
     validate_and_run_instance(
         conn.messenger,
         &conn.core_node_name,
@@ -261,6 +271,7 @@ async fn add_node_async(ctx: &Arc<AppContext>, params: AddNodeParams) -> Result<
         &run_options.args,
         run_options.instance_id,
         &run_options.links,
+        clock,
         &timeouts,
     )
     .await?;

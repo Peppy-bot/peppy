@@ -104,6 +104,8 @@ async fn service_reset_command_resets_node_stack() {
 
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,

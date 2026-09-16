@@ -159,6 +159,7 @@ async fn handle_node_info_request_inner(
                 instance_id: id.to_owned(),
                 state: instance.state(),
                 healthy: instance.healthy(),
+                clock: instance.clock().clone(),
                 slot_bindings: instance.slot_bindings().clone(),
                 pairing_slots: node_stack::pairing_slot_view(
                     &core_node,

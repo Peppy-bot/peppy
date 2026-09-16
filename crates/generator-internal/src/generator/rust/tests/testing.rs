@@ -88,7 +88,7 @@ fn multi_instance_dep_slot_gets_an_instance_id_override() {
 #[test]
 fn every_harness_carries_the_daemon_clock_stand_in() {
     // The clock is node-invariant, so even a registry with no slots at all
-    // gets the full surface: the sim knob on Config, both start modes, the
+    // gets the full surface: the knob on Config, the stand-in it starts, the
     // standalone seeding, and the readiness-barrier entry.
     let mut registry = TestGenRegistry::default();
     registry.record_node_identity("relay_node", "v1");
@@ -96,15 +96,12 @@ fn every_harness_carries_the_daemon_clock_stand_in() {
     assert_contains_all(
         &rendered,
         &[
-            "pub use_sim_time: bool",
-            "use_sim_time: false",
-            "pub sim_time_participants: Vec<String>",
-            "sim_time_participants: Vec::new()",
-            "MockClock::start_sim(",
-            "MockClock::start_wall(",
+            "pub clock: peppylib::testing::HarnessClock",
+            "clock: peppylib::testing::HarnessClock::Wall",
+            "MockClock::start(",
             "MOCK_CLOCK_INSTANCE_ID",
-            ".with_use_sim_time(config.use_sim_time)",
-            ".with_sim_time_participants(config.sim_time_participants.clone())",
+            "config.clock,",
+            ".with_clock(clock.binding()?)",
             "service_readiness.push(clock.readiness()?);",
             "pub clock: peppylib::testing::MockClock",
         ],

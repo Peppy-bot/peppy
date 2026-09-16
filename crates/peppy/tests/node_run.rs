@@ -81,6 +81,8 @@ async fn node_run_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -155,6 +157,8 @@ async fn node_run_command_succeeds() {
     // Now run the node using the run command
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),
@@ -310,6 +314,8 @@ async fn node_run_command_with_args_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -390,6 +396,8 @@ async fn node_run_command_with_args_succeeds() {
 
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),
@@ -514,6 +522,8 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -588,6 +598,8 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     // Now run the node with a custom instance_id
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),
@@ -704,6 +716,8 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     // stage so that `node run -b` has something to build.
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -773,6 +787,8 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     // Run with `-b` set: should build first, then start the instance.
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),
@@ -881,6 +897,8 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     // stage so that `node run -b` finds it already built.
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -949,6 +967,8 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     // build, and run.
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1082,6 +1102,8 @@ async fn add_built_producer(
     peppy::test_support::override_run_cmd_while(&producer_json5, &instances.sentinel());
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(producer_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1134,6 +1156,8 @@ async fn add_built_consumer_with_slots(
         write_consumer_with_slots(work_dir, consumer_name, producer_name, slots, instances);
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1229,6 +1253,8 @@ async fn node_run_rejects_unbound_slots() {
 
     let result = NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1305,6 +1331,8 @@ async fn node_run_bind_rejects_dead_key() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(producer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1322,6 +1350,8 @@ async fn node_run_bind_rejects_dead_key() {
 
     let result = NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1400,6 +1430,8 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     for instance_id in [producer_left_id, producer_right_id] {
         NodeCommand {
             command: NodeCommands::Run {
+                clock: None,
+                publish_clock: None,
                 node_ref: None,
                 node_name: Some(producer_name.to_string()),
                 tag: Some("v1".to_string()),
@@ -1437,6 +1469,8 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
 
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
@@ -1510,6 +1544,8 @@ async fn node_run_bind_rejects_target_mismatch() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(wrong_producer.to_string()),
             tag: Some("v1".to_string()),
@@ -1527,6 +1563,8 @@ async fn node_run_bind_rejects_target_mismatch() {
 
     let result = NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1619,6 +1657,8 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     for instance_id in [producer_left_id, producer_right_id] {
         NodeCommand {
             command: NodeCommands::Run {
+                clock: None,
+                publish_clock: None,
                 node_ref: None,
                 node_name: Some(producer_name.to_string()),
                 tag: Some("v1".to_string()),
@@ -1644,6 +1684,8 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
@@ -1675,6 +1717,8 @@ async fn node_run_does_not_false_flag_existing_consumer_pinned_slots() {
     .await;
     let result = NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(producer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1775,6 +1819,8 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     for instance_id in [producer_left_id, producer_right_id] {
         NodeCommand {
             command: NodeCommands::Run {
+                clock: None,
+                publish_clock: None,
                 node_ref: None,
                 node_name: Some(producer_name.to_string()),
                 tag: Some("v1".to_string()),
@@ -1800,6 +1846,8 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_a_name.to_string()),
@@ -1823,6 +1871,8 @@ async fn node_run_rejects_unbound_slot_naming_only_the_new_instance() {
     // that slot — cons_a's bound slots are inert items here.
     let result = NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(consumer_b_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1908,6 +1958,8 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     for instance_id in [producer_left_id, producer_right_id] {
         NodeCommand {
             command: NodeCommands::Run {
+                clock: None,
+                publish_clock: None,
                 node_ref: None,
                 node_name: Some(producer_name.to_string()),
                 tag: Some("v1".to_string()),
@@ -1934,6 +1986,8 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
@@ -1965,6 +2019,8 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     .await;
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             vacant_links: Vec::new(),
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
@@ -1990,6 +2046,8 @@ async fn node_run_target_already_in_stack_validates_only_new_instance() {
     // their own spawn time).
     let result = NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(consumer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -2070,6 +2128,8 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
         );
         NodeCommand {
             command: NodeCommands::Run {
+                clock: None,
+                publish_clock: None,
                 node_ref: None,
                 node_name: Some(producer_name.to_string()),
                 tag: Some("v1".to_string()),
@@ -2097,6 +2157,8 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
                         vacant_links: Vec<(String, VacantReason)>| {
         NodeCommand {
             command: NodeCommands::Run {
+                clock: None,
+                publish_clock: None,
                 node_ref: None,
                 node_name: Some(consumer_name.to_string()),
                 tag: Some("v1".to_string()),

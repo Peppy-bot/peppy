@@ -12,9 +12,9 @@
 //! clock to the initializing node: calling it again for the same node is a
 //! no-op, so it is safe to call from both top-level setup and helper
 //! functions that may be invoked first. Initializing a different node
-//! rebinds, which is how consecutive test-harness boots in one process
-//! (wall- and sim-time alike) each read their own clock; the harness
-//! serializes boots, so a rebind never races a live node.
+//! rebinds, which is how consecutive test-harness boots in one process each
+//! read their own clock; the harness serializes boots, so a rebind never
+//! races a live node.
 
 use std::sync::{PoisonError, RwLock};
 
@@ -35,11 +35,13 @@ fn runner_key(node_runner: &NodeRunner) -> String {
     )
 }
 
-/// Build the pre-bound clock for `node_runner`. Idempotent per node.
+/// Build the pre-bound clock for `node_runner`, reading whichever clock the
+/// instance is bound to. Idempotent per node.
 ///
-/// In wall mode this is a thin wrapper that does nothing observable; in
-/// sim mode it opens a subscription to the `clock` topic so the first
-/// `now_ns` call after a tick is delivered returns immediately.
+/// A wall instance reads its machine's clock. A consumer of a simulated
+/// domain opens a subscription to that domain's stream, so the first
+/// `now_ns` call after a tick is delivered returns immediately. The
+/// instance publishing a domain reads back the instant it last committed.
 pub async fn init(node_runner: &NodeRunner) -> PeppyResult<()> {
     let key = runner_key(node_runner);
     {
@@ -53,12 +55,18 @@ pub async fn init(node_runner: &NodeRunner) -> PeppyResult<()> {
     Ok(())
 }
 
-/// Read the current core-node-aligned time in nanoseconds since the Unix
-/// epoch. Returns `Err(PeppyError::ClockNotReady)` if `init` has not run
-/// or, in sim mode, if no `ClockTick` has been observed yet.
+/// Read the current time in nanoseconds since the Unix epoch, on the clock
+/// this instance is bound to.
+///
+/// An unbound module names `init` as the call to add. Once bound, a consumer
+/// that has seen no tick of its domain and a publisher that has committed no
+/// instant both return `Err(PeppyError::ClockNotReady)`, which points at the
+/// domain's publisher.
 pub fn now_ns() -> PeppyResult<u64> {
     match &*CLOCK.read().unwrap_or_else(PoisonError::into_inner) {
         Some((_, bound_clock)) => bound_clock.now_ns(),
-        None => Err(PeppyError::ClockNotReady),
+        None => Err(PeppyError::Node(
+            "peppygen::clock::init(&node_runner).await? must run before now_ns".into(),
+        )),
     }
 }

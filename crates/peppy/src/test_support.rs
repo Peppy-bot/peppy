@@ -360,7 +360,6 @@ impl ServeCommandEmulation {
                 },
                 clock_publish_interval: Duration::from_millis(100),
                 heartbeat_interval: Duration::from_secs(5),
-                daemon_use_sim_time: false,
                 // Zero: the emulation runs on an in-memory mock broker that
                 // is authoritative immediately, with no links to settle.
                 name_claim_settle: Duration::ZERO,

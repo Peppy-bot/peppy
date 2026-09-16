@@ -7,12 +7,11 @@
 //! emissions observed via fixtures (emitted topic + pairing slot), plus the
 //! deterministic producer-loss path (`Mock::stop` mid-goal → the node sees
 //! `ActionFeedbackProducerGone`, never a hang or clean close). A second test
-//! boots the same node in sim time (`Config::use_sim_time`) and drives the
-//! harness clock: every `harness.clock.tick(..)` instant is what the node's
-//! `peppygen::clock::now_ns` observes. A third declares the node the
-//! launch's source of simulated time (`Config::sim_time_participants`): the
-//! node holds the fleet's publisher and the ticks it publishes are read
-//! back on the `clock` topic, with the test never ticking.
+//! boots the same node as a consumer of the harness's clock domain
+//! (`Config::clock`) and plays the simulator: every `harness.clock.tick(..)`
+//! instant is what the node's `peppygen::clock::now_ns` observes. A third
+//! boots it as that domain's publisher: the node supplies the instants, the
+//! test reads them back off the domain's stream and never ticks.
 
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{
@@ -172,10 +171,10 @@ pub async fn setup(
     Ok(())
 }
 
-/// Sim-time entry point: reports every sim-clock value it observes on the
-/// status topic, so the test can assert the exact virtual instants it drove
-/// through `harness.clock.tick(..)`.
-pub async fn setup_sim_clock(
+/// Clock-consumer entry point: reports every instant it observes on the
+/// status topic, so the test can assert the exact values it drove through
+/// `harness.clock.tick(..)`.
+pub async fn setup_clock_consumer(
     _parameters: peppygen::Parameters,
     node_runner: Arc<peppygen::NodeRunner>,
 ) -> peppygen::Result<()> {
@@ -184,7 +183,7 @@ pub async fn setup_sim_clock(
         peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
     let mut last = 0u64;
     loop {
-        // Wait on observation: before the first tick now_ns errors
+        // Wait on observation: before the domain's first tick now_ns errors
         // (ClockNotReady), afterwards it returns the last driven instant.
         match peppygen::clock::now_ns() {
             Ok(ns) if ns != last => {
@@ -200,26 +199,25 @@ pub async fn setup_sim_clock(
     }
 }
 
-/// Time-source entry point: the launch (here the harness config) declared
-/// this node the source of simulated time, so it holds the fleet's
-/// publisher and drives the clock itself, reporting who it publishes to on
-/// the status topic and then ticking on until shutdown. A source stamps
-/// from its own clock, never from `now_ns`, so nothing here reads time.
-pub async fn setup_sim_source(
+/// Clock-publisher entry point: the deployment (here the harness config)
+/// names this node the publisher of a clock domain, so it supplies that
+/// domain's instants, reporting which domain on the status topic and then
+/// publishing on until shutdown. A publisher stamps from its own clock, so
+/// nothing here reads `now_ns`.
+pub async fn setup_clock_publisher(
     _parameters: peppygen::Parameters,
     node_runner: Arc<peppygen::NodeRunner>,
 ) -> peppygen::Result<()> {
     peppygen::clock::init(&node_runner).await?;
-    let publisher = peppylib::clock::SimTimePublisher::for_node(&node_runner)
+    let publisher = peppylib::clock::ClockPublisher::for_node(&node_runner)
         .await?
-        .expect("the harness declared this node the launch's time source");
+        .expect("the harness named this node a clock domain's publisher");
     let status =
         peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
-    let participants: Vec<String> = publisher.participants().collect();
     status
         .publish(peppygen::emitted_topics::status::build_message(format!(
-            "source of {}",
-            participants.join(",")
+            "publishes {}",
+            publisher.domain()
         ))?)
         .await?;
     let mut time_ns = 1_000u64;
@@ -451,28 +449,28 @@ async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
     harness.shutdown().await.expect("clean shutdown");
 }}
 
-// Sim time under the harness: the test is the simulator. `use_sim_time`
-// boots the node with the sim-clock source installed, and every virtual
-// instant the test drives through `harness.clock.tick(..)` is what the
-// node's `peppygen::clock::now_ns` observes.
+// A consumer of the harness's clock domain: the test is the simulator.
+// `Config::clock` boots the node bound to that domain, and every instant
+// the test drives through `harness.clock.tick(..)` is what the node's
+// `peppygen::clock::now_ns` observes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sim_time_is_test_driven_under_the_harness() {{
+async fn a_clock_consumer_reads_the_instants_the_test_drives() {{
     let (mut harness, _mocks) = Harness::start_with(
         peppygen::fixtures::harness::Config {{
-            use_sim_time: true,
+            clock: peppylib::testing::HarnessClock::Consumer,
             ..Default::default()
         }},
-        {crate_name}::setup_sim_clock,
+        {crate_name}::setup_clock_consumer,
     )
     .await
-    .expect("harness should start in sim time");
+    .expect("harness should start on the clock domain");
 
     // tick() itself waits for the node's clock subscription (opened by
     // peppygen::clock::init) before publishing, so nothing here sleeps.
     harness.clock.tick(1_000).await.expect("first tick");
     let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
         .await
-        .expect("the node should observe the first sim instant")
+        .expect("the node should observe the first instant of its domain")
         .expect("status should decode")
         .expect("status subscription should be open");
     assert_eq!(status.outcome, "t=1000");
@@ -480,54 +478,57 @@ async fn sim_time_is_test_driven_under_the_harness() {{
     harness.clock.tick(2_000).await.expect("second tick");
     let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
         .await
-        .expect("the node should observe the second sim instant")
+        .expect("the node should observe the second instant of its domain")
         .expect("status should decode")
         .expect("status subscription should be open");
     assert_eq!(status.outcome, "t=2000");
 
-    // Wall-clock knobs are refused in sim mode, loudly.
-    harness
-        .clock
-        .set_offset_ns(1)
-        .expect_err("sim time has no wall offset to skew");
-
     harness.shutdown().await.expect("clean shutdown");
 }}
 
-// The node as the launch's source of simulated time: `sim_time_participants`
-// names the harness's one machine, the node builds its publisher onto it,
-// and every tick it publishes is read back on that machine's `clock` topic
-// in order, without the test ever ticking the harness clock.
+// The node as its clock domain's publisher: `Config::clock` names it the
+// instance supplying the harness domain, and every instant it publishes is
+// read back off that domain's stream in order, with the test never ticking.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_declared_time_source_ticks_the_fleet_under_the_harness() {{
+async fn a_clock_publisher_supplies_the_instants_the_test_reads() {{
     let (mut harness, _mocks) = Harness::start_with(
         peppygen::fixtures::harness::Config {{
-            use_sim_time: true,
-            sim_time_participants: vec![peppylib::testing::STANDALONE_CORE_NODE.to_owned()],
+            clock: peppylib::testing::HarnessClock::Publisher,
             ..Default::default()
         }},
-        {crate_name}::setup_sim_source,
+        {crate_name}::setup_clock_publisher,
     )
     .await
-    .expect("harness should start with the node as the time source");
+    .expect("harness should start with the node publishing its domain");
 
     let status = tokio::time::timeout(Duration::from_secs(10), harness.emitted.status.next())
         .await
-        .expect("the node should report being the source")
+        .expect("the node should report the domain it publishes")
         .expect("status should decode")
         .expect("status subscription should be open");
     assert_eq!(
         status.outcome,
-        format!("source of {{}}", peppylib::testing::STANDALONE_CORE_NODE)
+        format!(
+            "publishes {{}}@{{}}",
+            peppylib::testing::HARNESS_CLOCK_DOMAIN,
+            peppylib::testing::STANDALONE_CORE_NODE
+        )
     );
+
+    // The node supplies this domain, so the harness has nothing to drive.
+    harness
+        .clock
+        .tick(1)
+        .await
+        .expect_err("the node publishes this domain");
 
     let mut ticks = peppylib::clock::subscribe(harness.node_runner())
         .await
-        .expect("clock subscription on the node's machine");
+        .expect("subscription to the node's domain");
     let mut next_tick = async || {{
         tokio::time::timeout(Duration::from_secs(10), ticks.on_next_tick())
             .await
-            .expect("the node should tick the fleet")
+            .expect("the node should publish its domain")
             .expect("tick should decode")
             .expect("clock subscription should be open")
             .time()

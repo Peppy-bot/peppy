@@ -70,123 +70,9 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 struct ParticipantSlice {
     core_node: String,
-    serves_sim_time: bool,
     /// This participant's root-entity instance id, folded into the
     /// coordinator's stack-wide instance-id uniqueness check.
     root_instance_id: String,
-}
-
-/// What a launch asks of every machine's clock.
-///
-/// Simulated time is the operator's choice, made per machine with
-/// `peppy service serve --clock-source`, so the launch reads it off the
-/// coordinator rather than inventing it: a launch typed at a sim-mode daemon
-/// is a simulated launch, and every machine it spans must serve simulated
-/// time too. An instance that names `use_sim_time: true` outright asks for it
-/// wherever it lands, so it commits the launch on its own.
-///
-/// A declared time source does NOT commit the launch. The same launcher
-/// describes a robot whether or not the operator started the daemon in sim
-/// mode; on a wall-mode machine the declaration resolves to no participants
-/// and the source publishes nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::services::stack) enum ClockDemand {
-    Wall,
-    Sim(SimDemandOrigin),
-    /// The coordinator hosts none of the launch and no instance forces a
-    /// clock, so the machines that do host it decide: they must agree among
-    /// themselves, checked when their reservations come back
-    /// ([`check_hosts_agree`]). The coordinator's own clock stays out of it;
-    /// a machine running none of the launch is not its business.
-    HostsDecide,
-}
-
-/// What committed a launch to simulated time, carried in [`ClockDemand::Sim`]
-/// and rendered into the clock refusals so the operator sees every fix, not
-/// only the restart.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::services::stack) enum SimDemandOrigin {
-    /// An existing launcher session has already established its clock mode.
-    ActiveLaunch,
-    /// The coordinating daemon serves simulated time, so every launch typed
-    /// at it is simulated.
-    CoordinatorClock,
-    /// The named instance sets `framework: { use_sim_time: true }`, which
-    /// commits the launch wherever it lands.
-    Instance(String),
-}
-
-impl SimDemandOrigin {
-    /// The refusal clause naming what committed the launch.
-    fn because(&self) -> String {
-        match self {
-            Self::ActiveLaunch => "because the active launcher serves simulation time".to_owned(),
-            Self::CoordinatorClock => "because the coordinating daemon serves it".to_owned(),
-            Self::Instance(instance_id) => {
-                format!("because instance `{instance_id}` sets `use_sim_time: true`")
-            }
-        }
-    }
-
-    /// The refusal's alternative remedy, where one exists.
-    fn alternative(&self) -> String {
-        match self {
-            Self::CoordinatorClock | Self::ActiveLaunch => String::new(),
-            Self::Instance(instance_id) => {
-                format!(", or drop `{instance_id}`'s `use_sim_time` override")
-            }
-        }
-    }
-}
-
-/// The coordinating daemon's part in a plan's clock: the kind of time it
-/// serves, and whether it runs any of the plan.
-#[derive(Debug, Clone, Copy)]
-pub(in crate::services::stack) struct Coordinator {
-    pub serves_sim_time: bool,
-    pub hosts: bool,
-}
-
-impl ClockDemand {
-    /// The demand of a plan, with the coordinator's part in it.
-    pub(in crate::services::stack) fn of_plan(
-        ctx: &StackChangeContext,
-        planned: &[super::PlannedDeployment],
-        fleet: Option<&config::runtime::SimTimeParticipants>,
-    ) -> (Self, Coordinator) {
-        let coordinator = Coordinator {
-            serves_sim_time: ctx.daemon_defaults.use_sim_time,
-            hosts: fleet.is_some_and(|fleet| {
-                fleet
-                    .iter()
-                    .any(|machine| machine.as_str() == ctx.bound_core_node)
-            }),
-        };
-        let demand = Self::of(
-            planned.iter().flat_map(|item| &item.deployment.instances),
-            coordinator,
-        );
-        (demand, coordinator)
-    }
-
-    pub(in crate::services::stack) fn of<'a>(
-        instances: impl IntoIterator<Item = &'a daemon_config::launcher::DeploymentInstance>,
-        coordinator: Coordinator,
-    ) -> Self {
-        if coordinator.hosts && coordinator.serves_sim_time {
-            return Self::Sim(SimDemandOrigin::CoordinatorClock);
-        }
-        if let Some(reader) = instances
-            .into_iter()
-            .find(|instance| instance.framework.use_sim_time == Some(true))
-        {
-            return Self::Sim(SimDemandOrigin::Instance(reader.instance_id.to_string()));
-        }
-        if coordinator.hosts {
-            return Self::Wall;
-        }
-        Self::HostsDecide
-    }
 }
 
 /// The pins each peer participant receives with its reservation, one
@@ -284,7 +170,6 @@ async fn reserve_participants(
     launch_id: &str,
     peers: BTreeMap<String, Vec<String>>,
     own_version: &str,
-    clock_demand: &ClockDemand,
 ) -> std::result::Result<Vec<ParticipantSlice>, String> {
     let acks = join_all(peers.into_iter().map(|(core_node, pins)| {
         let request =
@@ -309,21 +194,16 @@ async fn reserve_participants(
     let mut to_release: Vec<String> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
 
-    let mut host_clocks: Vec<(String, bool)> = Vec::new();
     for (core_node, outcome) in acks {
         match outcome {
             Ok(response) if response.accepted => {
                 to_release.push(core_node.clone());
-                // The reservation is already recorded above, so a version or
-                // clock refusal here still releases it.
-                match check_version(&core_node, &response, own_version)
-                    .and_then(|()| check_clock_source(&core_node, &response, clock_demand))
-                {
+                // The reservation is already recorded above, so a version
+                // refusal here still releases it.
+                match check_version(&core_node, &response, own_version) {
                     Ok(()) => {
-                        host_clocks.push((core_node.clone(), response.serves_sim_time));
                         slices.push(ParticipantSlice {
                             core_node,
-                            serves_sim_time: response.serves_sim_time,
                             root_instance_id: response.root_instance_id,
                         });
                     }
@@ -349,12 +229,6 @@ async fn reserve_participants(
         }
     }
 
-    if refusals.is_empty()
-        && matches!(clock_demand, ClockDemand::HostsDecide)
-        && let Err(reason) = check_hosts_agree(&host_clocks)
-    {
-        refusals.push(reason);
-    }
     if refusals.is_empty() {
         return Ok(slices);
     }
@@ -394,76 +268,6 @@ fn check_version(
          launch requires the same version on every participant; upgrade the older machine.",
         response.peppy_version
     ))
-}
-
-/// Every machine of a launch must serve the same kind of time, so this
-/// refuses a peer whose clock source disagrees with the launch, in either
-/// direction. Refused before any stack is touched, naming the machine and the
-/// flag that fixes it.
-fn check_clock_source(
-    core_node: &str,
-    response: &ParticipantReserveResponse,
-    clock_demand: &ClockDemand,
-) -> std::result::Result<(), String> {
-    check_clock_agreement(core_node, response.serves_sim_time, clock_demand)
-}
-
-/// The one clock-agreement refusal, applied to a peer from its reservation
-/// and to the coordinator from its own defaults.
-///
-/// Both disagreements are real failures, not tidiness. A wall-mode machine in
-/// a simulated launch publishes its own ticks onto the very key the sim-time
-/// instances there read, so their time alternates. A sim-mode machine in a
-/// wall launch is the mirror: every instance placed there resolves to
-/// simulated time that nothing in this launch publishes, so each one waits at
-/// "clock not ready" for as long as it runs.
-pub(in crate::services::stack) fn check_clock_agreement(
-    core_node: &str,
-    serves_sim_time: bool,
-    clock_demand: &ClockDemand,
-) -> std::result::Result<(), String> {
-    match (clock_demand, serves_sim_time) {
-        // The machines of a HostsDecide launch are held to each other, not to
-        // a demand, in [`check_hosts_agree`] once every reservation is in.
-        (ClockDemand::HostsDecide, _) => Ok(()),
-        (ClockDemand::Sim(_), true) | (ClockDemand::Wall, false) => Ok(()),
-        (ClockDemand::Sim(origin), false) => Err(format!(
-            "`{core_node}` serves wall time but this launch runs on simulated time, {because}. \
-             Every machine of a simulated launch must serve it, because a wall-mode daemon \
-             publishes its own ticks onto the key its sim-time instances read: restart \
-             `{core_node}` with `peppy service serve --clock-source=sim`{alternative}.",
-            because = origin.because(),
-            alternative = origin.alternative(),
-        )),
-        (ClockDemand::Wall, true) => Err(format!(
-            "`{core_node}` serves simulated time but this launch runs on wall time. Every \
-             instance placed there would resolve to simulated time that nothing in this launch \
-             publishes, and wait at `clock not ready`: restart `{core_node}` with `peppy \
-             service serve` to serve wall time, or launch from a daemon started with \
-             `--clock-source=sim`."
-        )),
-    }
-}
-
-/// A fully-placed launch takes its clock from the machines that host it,
-/// which must agree among themselves, in either mode. Unanimous simulated
-/// hosts run the launch on the declared source's ticks; unanimous wall hosts
-/// run it on their own; a split is refused naming one machine of each side,
-/// with every reservation released.
-pub(in crate::services::stack) fn check_hosts_agree(
-    hosts: &[(String, bool)],
-) -> std::result::Result<(), String> {
-    let sim_machine = hosts.iter().find(|(_, serves)| *serves);
-    let wall_machine = hosts.iter().find(|(_, serves)| !*serves);
-    match (sim_machine, wall_machine) {
-        (Some((sim_machine, _)), Some((wall_machine, _))) => Err(format!(
-            "the machines of this launch disagree about the clock: `{sim_machine}` serves \
-             simulated time while `{wall_machine}` serves wall time. Every machine of a launch \
-             serves the same kind of time; restart one side until they agree (`peppy service \
-             serve --clock-source=sim` for simulated, plain `peppy service serve` for wall)."
-        )),
-        _ => Ok(()),
-    }
 }
 
 /// The peers a stack change reserved, and what each of them reported while
@@ -592,7 +396,6 @@ pub(in crate::services::stack) async fn preflight(
     launch_id: &str,
     planned: &[super::PlannedDeployment],
     placements: &Placements,
-    clock_demand: &ClockDemand,
 ) -> std::result::Result<ReservedParticipants, String> {
     if !placements.is_federated() {
         return Ok(ReservedParticipants::new(ctx, launch_id, Vec::new()));
@@ -617,7 +420,6 @@ pub(in crate::services::stack) async fn preflight(
         launch_id,
         peers,
         &ctx.peppy_version,
-        clock_demand,
     )
     .await?;
 
@@ -629,17 +431,6 @@ impl ReservedParticipants {
     /// release fan-outs read the same way twice.
     pub(in crate::services::stack) fn core_nodes(&self) -> Vec<String> {
         self.participants.core_nodes()
-    }
-
-    pub(in crate::services::stack) fn established_clock(
-        &self,
-        demand: &ClockDemand,
-    ) -> std::result::Result<ClockDemand, String> {
-        self.participants.established_clock(demand)
-    }
-
-    pub(in crate::services::stack) fn serves_sim_time(&self, core_node: &str) -> Option<bool> {
-        self.participants.serves_sim_time(core_node)
     }
 
     pub(in crate::services::stack) fn root_instance_collisions(
@@ -659,34 +450,6 @@ struct ParticipantSlices {
 }
 
 impl ParticipantSlices {
-    /// The clock the stack keeps once its machines answered: a demand the
-    /// hosts decide takes the kind of time the first participant serves.
-    fn established_clock(&self, demand: &ClockDemand) -> std::result::Result<ClockDemand, String> {
-        match demand {
-            ClockDemand::HostsDecide => {
-                let participant = self.slices.first().ok_or_else(|| {
-                    String::from(
-                        "no machine hosts this change, so none decides its clock; place its \
-                         instances on a machine with --place",
-                    )
-                })?;
-                Ok(if participant.serves_sim_time {
-                    ClockDemand::Sim(SimDemandOrigin::ActiveLaunch)
-                } else {
-                    ClockDemand::Wall
-                })
-            }
-            fixed => Ok(fixed.clone()),
-        }
-    }
-
-    fn serves_sim_time(&self, core_node: &str) -> Option<bool> {
-        self.slices
-            .iter()
-            .find(|participant| participant.core_node == core_node)
-            .map(|participant| participant.serves_sim_time)
-    }
-
     fn core_nodes(&self) -> Vec<String> {
         self.slices
             .iter()
@@ -841,7 +604,7 @@ mod tests {
 
     #[test]
     fn a_version_mismatch_is_refused_and_names_both_versions() {
-        let response = ParticipantReserveResponse::accepted("v0.19.0", "gen_1", false);
+        let response = ParticipantReserveResponse::accepted("v0.19.0", "gen_1");
         let error =
             check_version("cn-atlas", &response, "v0.20.0").expect_err("skew must be refused");
         assert!(error.contains("v0.19.0"), "got: {error}");
@@ -851,154 +614,14 @@ mod tests {
 
     #[test]
     fn a_matching_version_passes() {
-        let response = ParticipantReserveResponse::accepted("v0.20.0", "gen_1", false);
+        let response = ParticipantReserveResponse::accepted("v0.20.0", "gen_1");
         assert!(check_version("cn-atlas", &response, "v0.20.0").is_ok());
-    }
-
-    /// A peer must serve the same kind of time the launch runs on, in either
-    /// direction, and each refusal names the machine and the way out. The
-    /// mirror case matters as much as the obvious one: a sim-mode peer in a
-    /// wall launch strands every instance placed there at "clock not ready".
-    #[test]
-    fn a_peer_whose_clock_disagrees_with_the_launch_is_refused() {
-        let wall_peer = ParticipantReserveResponse::accepted("v0.20.0", "gen_1", false);
-        let sim_peer = ParticipantReserveResponse::accepted("v0.20.0", "gen_1", true);
-
-        let coordinator_sim = ClockDemand::Sim(SimDemandOrigin::CoordinatorClock);
-        assert!(check_clock_source("cn-atlas", &wall_peer, &ClockDemand::Wall).is_ok());
-        assert!(check_clock_source("cn-atlas", &sim_peer, &coordinator_sim).is_ok());
-
-        let wall_in_sim = check_clock_source("cn-atlas", &wall_peer, &coordinator_sim)
-            .expect_err("a wall peer cannot host simulated time");
-        assert!(wall_in_sim.contains("`cn-atlas`"), "got: {wall_in_sim}");
-        assert!(
-            wall_in_sim.contains("--clock-source=sim"),
-            "got: {wall_in_sim}"
-        );
-        assert!(
-            wall_in_sim.contains("coordinating daemon serves it"),
-            "the refusal says what committed the launch: {wall_in_sim}"
-        );
-
-        // Committed by an instance instead: the refusal names it and offers
-        // dropping its override as the other way out.
-        let reader_sim = ClockDemand::Sim(SimDemandOrigin::Instance("relay".to_owned()));
-        let by_reader = check_clock_source("cn-atlas", &wall_peer, &reader_sim)
-            .expect_err("a wall peer cannot host simulated time");
-        assert!(
-            by_reader.contains("instance `relay` sets `use_sim_time: true`"),
-            "got: {by_reader}"
-        );
-        assert!(
-            by_reader.contains("drop `relay`'s `use_sim_time` override"),
-            "got: {by_reader}"
-        );
-
-        let sim_in_wall = check_clock_source("cn-atlas", &sim_peer, &ClockDemand::Wall)
-            .expect_err("a sim peer strands a wall launch's instances");
-        assert!(sim_in_wall.contains("`cn-atlas`"), "got: {sim_in_wall}");
-        assert!(
-            sim_in_wall.contains("clock not ready"),
-            "got: {sim_in_wall}"
-        );
-    }
-
-    /// A launch runs on simulated time because the operator started the
-    /// coordinator in sim mode, or because an instance asks for it outright.
-    /// Declaring a time source does not: that same launcher has to keep
-    /// working against a wall-mode daemon, where it publishes nothing.
-    #[test]
-    fn the_clock_demand_follows_the_coordinator_and_explicit_readers() {
-        let parse = |json5: &str| -> DeploymentInstance {
-            serde_json5::from_str(json5).expect("instance fixture should parse")
-        };
-        let wall = parse(r#"{ instance_id: "arm" }"#);
-        let forced_wall = parse(r#"{ instance_id: "cam", framework: { use_sim_time: false } }"#);
-        let reader = parse(r#"{ instance_id: "relay", framework: { use_sim_time: true } }"#);
-        let source = parse(r#"{ instance_id: "sim", framework: { publishes_sim_time: true } }"#);
-        let wall_host = Coordinator {
-            serves_sim_time: false,
-            hosts: true,
-        };
-        let sim_host = Coordinator {
-            serves_sim_time: true,
-            hosts: true,
-        };
-        let wall_bystander = Coordinator {
-            serves_sim_time: false,
-            hosts: false,
-        };
-        let sim_bystander = Coordinator {
-            serves_sim_time: true,
-            hosts: false,
-        };
-
-        assert_eq!(
-            ClockDemand::of([&wall, &forced_wall], wall_host),
-            ClockDemand::Wall
-        );
-        assert_eq!(
-            ClockDemand::of([&wall, &reader], wall_host),
-            ClockDemand::Sim(SimDemandOrigin::Instance("relay".to_owned())),
-            "the demand carries which instance committed the launch"
-        );
-        assert_eq!(
-            ClockDemand::of([&source], wall_host),
-            ClockDemand::Wall,
-            "a declared source alone leaves a wall-mode launch on wall time"
-        );
-        assert_eq!(
-            ClockDemand::of([&wall], sim_host),
-            ClockDemand::Sim(SimDemandOrigin::CoordinatorClock)
-        );
-        assert_eq!(ClockDemand::of([], wall_host), ClockDemand::Wall);
-
-        // A coordinator hosting none of the launch does not get a vote: the
-        // hosting machines decide, unless an instance forces the clock, which
-        // commits the launch wherever it lands.
-        assert_eq!(
-            ClockDemand::of([&wall], wall_bystander),
-            ClockDemand::HostsDecide
-        );
-        assert_eq!(
-            ClockDemand::of([&wall], sim_bystander),
-            ClockDemand::HostsDecide,
-            "a non-hosting sim workstation cannot commit a launch to its clock"
-        );
-        assert_eq!(
-            ClockDemand::of([&wall, &reader], wall_bystander),
-            ClockDemand::Sim(SimDemandOrigin::Instance("relay".to_owned()))
-        );
-    }
-
-    /// The machines of a fully-placed launch are held to each other: any
-    /// unanimous clock passes, a split is refused naming one machine of each
-    /// side.
-    #[test]
-    fn the_hosts_of_a_fully_placed_launch_must_agree_with_each_other() {
-        let unanimous_sim = [("cn-a".to_owned(), true), ("cn-b".to_owned(), true)];
-        let unanimous_wall = [("cn-a".to_owned(), false), ("cn-b".to_owned(), false)];
-        assert!(check_hosts_agree(&unanimous_sim).is_ok());
-        assert!(check_hosts_agree(&unanimous_wall).is_ok());
-        assert!(check_hosts_agree(&[]).is_ok());
-
-        let split = [("cn-sim".to_owned(), true), ("cn-wall".to_owned(), false)];
-        let refusal = check_hosts_agree(&split).expect_err("a split fleet is refused");
-        assert!(
-            refusal.contains("`cn-sim`") && refusal.contains("`cn-wall`"),
-            "one machine of each side is named: {refusal}"
-        );
-        assert!(
-            refusal.contains("--clock-source=sim"),
-            "the refusal says how to move either way: {refusal}"
-        );
     }
 
     fn slice(core_node: &str) -> ParticipantSlice {
         ParticipantSlice {
             core_node: core_node.to_owned(),
             root_instance_id: format!("{core_node}_root"),
-            serves_sim_time: false,
         }
     }
 

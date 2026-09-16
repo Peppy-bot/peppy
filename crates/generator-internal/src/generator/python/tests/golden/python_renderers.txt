@@ -5172,9 +5172,10 @@ class Harness:
         #: Observation subscriptions to the node's own emissions.
         self.emitted = emitted
         #: The daemon-clock stand-in serving `peppylib.clock.synchronize` and
-        #: the `clock` topic: wall mode by default (skewable via
-        #: `set_offset_ns`), sim mode under `use_sim_time=True` (advanced with
-        #: `await clock.tick(...)`).
+        #: the `clock` topic, in the shape the `clock` argument asked for. The
+        #: service answers wall time in every mode (skewable via
+        #: `set_offset_ns`); `await clock.tick(...)` drives the simulated domain
+        #: and is only accepted under `clock="consumer"`.
         self.clock = clock
         #: The fixture caller/observer session (not the node's).
         self.session = session
@@ -5238,7 +5239,7 @@ class _HarnessStart:
         if harness is not None:
             await harness.shutdown()
 
-def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_time=False, sim_time_participants=(), spare_camera_vacant=False, camera_bank_instances=1, camera_bank_instance_ids=None, camera_pool_instances=0, camera_pool_instance_ids=None, spare_controller_vacant=False, spare_watcher_vacant=False, watcher_bank_instances=1, watcher_bank_instance_ids=None, watcher_pool_instances=0, watcher_pool_instance_ids=None):
+def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wall", spare_camera_vacant=False, camera_bank_instances=1, camera_bank_instance_ids=None, camera_pool_instances=0, camera_pool_instance_ids=None, spare_controller_vacant=False, spare_watcher_vacant=False, watcher_bank_instances=1, watcher_bank_instance_ids=None, watcher_pool_instances=0, watcher_pool_instance_ids=None):
     """Boots the full fixture: ephemeral router + started mocks + seeded
     StandaloneConfig + the node running in-process behind the readiness
     barriers. `setup` is the node's real entry point (the exact
@@ -5254,15 +5255,15 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_ti
     (`None` uses the schema defaults); `instance_id` overrides the unique
     generated one; `node_dir` points at the directory holding the node's
     peppy.json5 when neither the working directory nor the sync-time path
-    resolves it; `use_sim_time=True` boots the node in sim time, as a
-    launcher's `framework: { use_sim_time: true }` would, with the harness
-    clock in sim mode so no time exists until the test advances it with
-    `await harness.clock.tick(...)`; `sim_time_participants` makes the node
-    the launch's source of simulated time, as a launcher's
-    `framework: { publishes_sim_time: true }` would: the core nodes it
-    publishes its clock to (under the harness the fleet is one machine,
-    `peppylib.testing.STANDALONE_CORE_NODE`), meaningful with
-    `use_sim_time=True`, and then the test never ticks `harness.clock`.
+    resolves it; `clock` is which clock the node boots on, the test-side
+    spelling of a deployment's `framework.clock`. `"wall"` (the default)
+    reads OS wall time, which the harness clock ticks like a daemon.
+    `"consumer"` binds the node to the harness's simulated domain, where
+    `peppygen.clock.now_ns` reads no time until the test advances it with
+    `await harness.clock.tick(...)`. `"publisher"` makes the node the
+    instance supplying that domain: it publishes its own instants and the
+    test reads them back with
+    `peppylib.clock.subscribe(harness.node_runner())`.
 
     spare_camera_vacant: leave the `spare_camera` dependency slot vacant (its cardinality admits an empty binding).
     camera_bank_instances: how many mock producer instances to start and bind for the `camera_bank` dependency slot.
@@ -5276,9 +5277,9 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_ti
     watcher_pool_instances: how many mock sources to start for the `watcher_pool` observer slot.
     watcher_pool_instance_ids: explicit instance ids for the `watcher_pool` mock sources, overriding `watcher_pool_instances` when given. For nodes that classify sources by instance name.
     """
-    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants, spare_camera_vacant, camera_bank_instances, camera_bank_instance_ids, camera_pool_instances, camera_pool_instance_ids, spare_controller_vacant, spare_watcher_vacant, watcher_bank_instances, watcher_bank_instance_ids, watcher_pool_instances, watcher_pool_instance_ids))
+    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock, spare_camera_vacant, camera_bank_instances, camera_bank_instance_ids, camera_pool_instances, camera_pool_instance_ids, spare_controller_vacant, spare_watcher_vacant, watcher_bank_instances, watcher_bank_instance_ids, watcher_pool_instances, watcher_pool_instance_ids))
 
-async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants, spare_camera_vacant, camera_bank_instances, camera_bank_instance_ids, camera_pool_instances, camera_pool_instance_ids, spare_controller_vacant, spare_watcher_vacant, watcher_bank_instances, watcher_bank_instance_ids, watcher_pool_instances, watcher_pool_instance_ids) -> Harness:
+async def _start(setup, parameters, instance_id, node_dir, harness_clock, spare_camera_vacant, camera_bank_instances, camera_bank_instance_ids, camera_pool_instances, camera_pool_instance_ids, spare_controller_vacant, spare_watcher_vacant, watcher_bank_instances, watcher_bank_instance_ids, watcher_pool_instances, watcher_pool_instance_ids) -> Harness:
     node_dir = peppylib.testing.resolve_node_dir(node_dir, _SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)
     if instance_id is None:
         instance_id = peppylib.testing.unique_test_instance_id()
@@ -5319,24 +5320,17 @@ async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_tim
         # The daemon-clock stand-in lives on the fixture session under the
         # standalone core-node identity, where the node's `synchronize` polls
         # and its clock subscription listens.
-        if use_sim_time:
-            clock = await peppylib.testing.MockClock.start_sim(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
-        else:
-            clock = await peppylib.testing.MockClock.start_wall(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
+        clock = await peppylib.testing.MockClock.start(
+            session,
+            peppylib.testing.STANDALONE_CORE_NODE,
+            peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+            harness_clock,
+        )
         standalone = (
             peppylib.StandaloneConfig()
             .with_messaging(router.host, router.port)
             .with_instance_id(instance_id)
-            .with_use_sim_time(use_sim_time)
-            .with_sim_time_participants(list(sim_time_participants))
+            .with_clock(clock.binding())
         )
         if parameters is not None:
             standalone = standalone.with_parameters(parameters)
@@ -5788,9 +5782,10 @@ class Harness:
         #: Observation subscriptions to the node's own emissions.
         self.emitted = emitted
         #: The daemon-clock stand-in serving `peppylib.clock.synchronize` and
-        #: the `clock` topic: wall mode by default (skewable via
-        #: `set_offset_ns`), sim mode under `use_sim_time=True` (advanced with
-        #: `await clock.tick(...)`).
+        #: the `clock` topic, in the shape the `clock` argument asked for. The
+        #: service answers wall time in every mode (skewable via
+        #: `set_offset_ns`); `await clock.tick(...)` drives the simulated domain
+        #: and is only accepted under `clock="consumer"`.
         self.clock = clock
         #: The fixture caller/observer session (not the node's).
         self.session = session
@@ -5854,7 +5849,7 @@ class _HarnessStart:
         if harness is not None:
             await harness.shutdown()
 
-def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_time=False, sim_time_participants=()):
+def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wall"):
     """Boots the full fixture: ephemeral router + started mocks + seeded
     StandaloneConfig + the node running in-process behind the readiness
     barriers. `setup` is the node's real entry point (the exact
@@ -5870,19 +5865,19 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_ti
     (`None` uses the schema defaults); `instance_id` overrides the unique
     generated one; `node_dir` points at the directory holding the node's
     peppy.json5 when neither the working directory nor the sync-time path
-    resolves it; `use_sim_time=True` boots the node in sim time, as a
-    launcher's `framework: { use_sim_time: true }` would, with the harness
-    clock in sim mode so no time exists until the test advances it with
-    `await harness.clock.tick(...)`; `sim_time_participants` makes the node
-    the launch's source of simulated time, as a launcher's
-    `framework: { publishes_sim_time: true }` would: the core nodes it
-    publishes its clock to (under the harness the fleet is one machine,
-    `peppylib.testing.STANDALONE_CORE_NODE`), meaningful with
-    `use_sim_time=True`, and then the test never ticks `harness.clock`.
+    resolves it; `clock` is which clock the node boots on, the test-side
+    spelling of a deployment's `framework.clock`. `"wall"` (the default)
+    reads OS wall time, which the harness clock ticks like a daemon.
+    `"consumer"` binds the node to the harness's simulated domain, where
+    `peppygen.clock.now_ns` reads no time until the test advances it with
+    `await harness.clock.tick(...)`. `"publisher"` makes the node the
+    instance supplying that domain: it publishes its own instants and the
+    test reads them back with
+    `peppylib.clock.subscribe(harness.node_runner())`.
     """
-    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants))
+    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 
-async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants) -> Harness:
+async def _start(setup, parameters, instance_id, node_dir, harness_clock) -> Harness:
     node_dir = peppylib.testing.resolve_node_dir(node_dir, _SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)
     if instance_id is None:
         instance_id = peppylib.testing.unique_test_instance_id()
@@ -5893,24 +5888,17 @@ async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_tim
         # The daemon-clock stand-in lives on the fixture session under the
         # standalone core-node identity, where the node's `synchronize` polls
         # and its clock subscription listens.
-        if use_sim_time:
-            clock = await peppylib.testing.MockClock.start_sim(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
-        else:
-            clock = await peppylib.testing.MockClock.start_wall(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
+        clock = await peppylib.testing.MockClock.start(
+            session,
+            peppylib.testing.STANDALONE_CORE_NODE,
+            peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+            harness_clock,
+        )
         standalone = (
             peppylib.StandaloneConfig()
             .with_messaging(router.host, router.port)
             .with_instance_id(instance_id)
-            .with_use_sim_time(use_sim_time)
-            .with_sim_time_participants(list(sim_time_participants))
+            .with_clock(clock.binding())
         )
         if parameters is not None:
             standalone = standalone.with_parameters(parameters)
@@ -6002,9 +5990,10 @@ class Harness:
         #: Observation subscriptions to the node's own emissions.
         self.emitted = emitted
         #: The daemon-clock stand-in serving `peppylib.clock.synchronize` and
-        #: the `clock` topic: wall mode by default (skewable via
-        #: `set_offset_ns`), sim mode under `use_sim_time=True` (advanced with
-        #: `await clock.tick(...)`).
+        #: the `clock` topic, in the shape the `clock` argument asked for. The
+        #: service answers wall time in every mode (skewable via
+        #: `set_offset_ns`); `await clock.tick(...)` drives the simulated domain
+        #: and is only accepted under `clock="consumer"`.
         self.clock = clock
         #: The fixture caller/observer session (not the node's).
         self.session = session
@@ -6068,7 +6057,7 @@ class _HarnessStart:
         if harness is not None:
             await harness.shutdown()
 
-def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_time=False, sim_time_participants=()):
+def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wall"):
     """Boots the full fixture: ephemeral router + started mocks + seeded
     StandaloneConfig + the node running in-process behind the readiness
     barriers. `setup` is the node's real entry point (the exact
@@ -6084,19 +6073,19 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_ti
     (`None` uses the schema defaults); `instance_id` overrides the unique
     generated one; `node_dir` points at the directory holding the node's
     peppy.json5 when neither the working directory nor the sync-time path
-    resolves it; `use_sim_time=True` boots the node in sim time, as a
-    launcher's `framework: { use_sim_time: true }` would, with the harness
-    clock in sim mode so no time exists until the test advances it with
-    `await harness.clock.tick(...)`; `sim_time_participants` makes the node
-    the launch's source of simulated time, as a launcher's
-    `framework: { publishes_sim_time: true }` would: the core nodes it
-    publishes its clock to (under the harness the fleet is one machine,
-    `peppylib.testing.STANDALONE_CORE_NODE`), meaningful with
-    `use_sim_time=True`, and then the test never ticks `harness.clock`.
+    resolves it; `clock` is which clock the node boots on, the test-side
+    spelling of a deployment's `framework.clock`. `"wall"` (the default)
+    reads OS wall time, which the harness clock ticks like a daemon.
+    `"consumer"` binds the node to the harness's simulated domain, where
+    `peppygen.clock.now_ns` reads no time until the test advances it with
+    `await harness.clock.tick(...)`. `"publisher"` makes the node the
+    instance supplying that domain: it publishes its own instants and the
+    test reads them back with
+    `peppylib.clock.subscribe(harness.node_runner())`.
     """
-    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants))
+    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 
-async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants) -> Harness:
+async def _start(setup, parameters, instance_id, node_dir, harness_clock) -> Harness:
     node_dir = peppylib.testing.resolve_node_dir(node_dir, _SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)
     if instance_id is None:
         instance_id = peppylib.testing.unique_test_instance_id()
@@ -6106,24 +6095,17 @@ async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_tim
         # The daemon-clock stand-in lives on the fixture session under the
         # standalone core-node identity, where the node's `synchronize` polls
         # and its clock subscription listens.
-        if use_sim_time:
-            clock = await peppylib.testing.MockClock.start_sim(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
-        else:
-            clock = await peppylib.testing.MockClock.start_wall(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
+        clock = await peppylib.testing.MockClock.start(
+            session,
+            peppylib.testing.STANDALONE_CORE_NODE,
+            peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+            harness_clock,
+        )
         standalone = (
             peppylib.StandaloneConfig()
             .with_messaging(router.host, router.port)
             .with_instance_id(instance_id)
-            .with_use_sim_time(use_sim_time)
-            .with_sim_time_participants(list(sim_time_participants))
+            .with_clock(clock.binding())
         )
         if parameters is not None:
             standalone = standalone.with_parameters(parameters)
@@ -6209,9 +6191,10 @@ class Harness:
         #: Observation subscriptions to the node's own emissions.
         self.emitted = emitted
         #: The daemon-clock stand-in serving `peppylib.clock.synchronize` and
-        #: the `clock` topic: wall mode by default (skewable via
-        #: `set_offset_ns`), sim mode under `use_sim_time=True` (advanced with
-        #: `await clock.tick(...)`).
+        #: the `clock` topic, in the shape the `clock` argument asked for. The
+        #: service answers wall time in every mode (skewable via
+        #: `set_offset_ns`); `await clock.tick(...)` drives the simulated domain
+        #: and is only accepted under `clock="consumer"`.
         self.clock = clock
         #: The fixture caller/observer session (not the node's).
         self.session = session
@@ -6275,7 +6258,7 @@ class _HarnessStart:
         if harness is not None:
             await harness.shutdown()
 
-def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_time=False, sim_time_participants=()):
+def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wall"):
     """Boots the full fixture: ephemeral router + started mocks + seeded
     StandaloneConfig + the node running in-process behind the readiness
     barriers. `setup` is the node's real entry point (the exact
@@ -6291,19 +6274,19 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, use_sim_ti
     (`None` uses the schema defaults); `instance_id` overrides the unique
     generated one; `node_dir` points at the directory holding the node's
     peppy.json5 when neither the working directory nor the sync-time path
-    resolves it; `use_sim_time=True` boots the node in sim time, as a
-    launcher's `framework: { use_sim_time: true }` would, with the harness
-    clock in sim mode so no time exists until the test advances it with
-    `await harness.clock.tick(...)`; `sim_time_participants` makes the node
-    the launch's source of simulated time, as a launcher's
-    `framework: { publishes_sim_time: true }` would: the core nodes it
-    publishes its clock to (under the harness the fleet is one machine,
-    `peppylib.testing.STANDALONE_CORE_NODE`), meaningful with
-    `use_sim_time=True`, and then the test never ticks `harness.clock`.
+    resolves it; `clock` is which clock the node boots on, the test-side
+    spelling of a deployment's `framework.clock`. `"wall"` (the default)
+    reads OS wall time, which the harness clock ticks like a daemon.
+    `"consumer"` binds the node to the harness's simulated domain, where
+    `peppygen.clock.now_ns` reads no time until the test advances it with
+    `await harness.clock.tick(...)`. `"publisher"` makes the node the
+    instance supplying that domain: it publishes its own instants and the
+    test reads them back with
+    `peppylib.clock.subscribe(harness.node_runner())`.
     """
-    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants))
+    return _HarnessStart(_start(setup, parameters, instance_id, node_dir, clock))
 
-async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_time_participants) -> Harness:
+async def _start(setup, parameters, instance_id, node_dir, harness_clock) -> Harness:
     node_dir = peppylib.testing.resolve_node_dir(node_dir, _SYNC_TIME_NODE_DIR, _NODE_CONFIG_FILE)
     if instance_id is None:
         instance_id = peppylib.testing.unique_test_instance_id()
@@ -6313,24 +6296,17 @@ async def _start(setup, parameters, instance_id, node_dir, use_sim_time, sim_tim
         # The daemon-clock stand-in lives on the fixture session under the
         # standalone core-node identity, where the node's `synchronize` polls
         # and its clock subscription listens.
-        if use_sim_time:
-            clock = await peppylib.testing.MockClock.start_sim(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
-        else:
-            clock = await peppylib.testing.MockClock.start_wall(
-                session,
-                peppylib.testing.STANDALONE_CORE_NODE,
-                peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
-            )
+        clock = await peppylib.testing.MockClock.start(
+            session,
+            peppylib.testing.STANDALONE_CORE_NODE,
+            peppylib.testing.MOCK_CLOCK_INSTANCE_ID,
+            harness_clock,
+        )
         standalone = (
             peppylib.StandaloneConfig()
             .with_messaging(router.host, router.port)
             .with_instance_id(instance_id)
-            .with_use_sim_time(use_sim_time)
-            .with_sim_time_participants(list(sim_time_participants))
+            .with_clock(clock.binding())
         )
         if parameters is not None:
             standalone = standalone.with_parameters(parameters)

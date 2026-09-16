@@ -1,4 +1,5 @@
 mod bindings;
+mod clocks;
 mod compose;
 mod composition;
 mod links;
@@ -12,13 +13,14 @@ mod types;
 // but the parser is filename-agnostic; repository discovery accepts any
 // `.json5` file whose body declares the launcher schema.
 pub use bindings::{BindingValidationItem, validate_bindings};
+pub use clocks::{ClockIncarnations, ResolvedClocks, resolve_clocks, validate_clock_connections};
 pub use compose::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyRecord,
     JoinRequest, PreparedLauncher, RunningStack, SELF_COPY_NAME_REFUSAL, SkipReason,
     SkippedAdjustment, UnitSelection, check_composition,
 };
 pub use composition::{ComponentAxis, FragmentPart, FragmentSpec, LauncherFragmentParser};
-pub use links::{validate_link_plan, validate_link_slots, validate_sim_time_source};
+pub use links::{validate_link_plan, validate_link_slots};
 pub use observations::PlannedObservation;
 pub use pairings::{
     AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairEndpoint,
@@ -27,5 +29,6 @@ pub use pairings::{
 pub use parse::PeppyLauncherParser;
 pub use types::{
     Deployment, DeploymentInstance, DeploymentSource, FrameworkOverrides, LinkTargets, LinkValue,
-    PeppyLauncher, Placements, Selection, VacantReason, participant_vacancies, split_link_target,
+    PeppyLauncher, Placements, Selection, VacantReason, WALL_CLOCK, participant_vacancies,
+    split_link_target,
 };

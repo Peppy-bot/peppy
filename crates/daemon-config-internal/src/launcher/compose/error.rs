@@ -28,6 +28,19 @@ pub enum CompositionError {
     AmbiguousSelection { word: String, axes: String },
 
     #[error(
+        "clock domain `{domain}` is declared twice and differently: {first} in {first_origin}, \
+         {second} in {second_origin}. One domain is one timeline, so the two documents must \
+         agree or name different domains"
+    )]
+    ClockDomainConflict {
+        domain: String,
+        first_origin: String,
+        first: String,
+        second_origin: String,
+        second: String,
+    },
+
+    #[error(
         "axis `{axis}` is selected twice with different options (`{first}`, `{second}`); an axis \
          takes one option, never two"
     )]
@@ -227,6 +240,18 @@ pub enum CompositionError {
          whole: `--place NAME@CORE_NODE` at launch, `--place CORE_NODE` at join"
     )]
     CopyFragmentCoreNodes { origin: String, axis: String },
+
+    #[error(
+        "{origin} declares clock domain `{domain}`, which copy `{copy}` cannot declare; a copy \
+         mints its instance ids under its own name, and a domain names one publisher for the \
+         whole launch. Declare `{domain}` in the launcher's `framework.clocks`, and bind the \
+         copy's instances to it with `framework: {{ clock: \"{domain}\" }}`"
+    )]
+    CopyFragmentDeclaresClock {
+        origin: String,
+        copy: String,
+        domain: String,
+    },
 
     #[error(
         "`--with {word}` names no option of axis `{axis}`, which runs as copies; add one with \

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use config::node::{ContainerConfig, NodeConfig, PeppygenLanguage};
 use config::runtime::Name;
+use core_node_api::encoding::LaunchIdentity;
 use core_node_api::{
     InstanceState, NodeStage as SerializedNodeStage, SerializedInstance, SerializedNode,
 };
@@ -46,6 +47,7 @@ pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> Ser
                 instance_id: i.instance_id().as_str().to_string(),
                 state: i.state(),
                 healthy: i.healthy(),
+                clock: i.clock().clone(),
                 slot_bindings: i.slot_bindings().clone(),
                 // Filled by the graph-level overlay in
                 // `NodeStackInner::to_serialized_graph` (manifest + pairing
@@ -310,6 +312,15 @@ pub struct StartContext<'a> {
     /// them via `node_info`. The launcher / CLI compute this from the
     /// validator's per-slot resolution before spawning.
     pub slot_bindings: config::runtime::SlotBindings,
+    /// The one clock this instance reads, recorded on the
+    /// [`TrackedNodeInstance`] so `stack list` and `node_info` report it and a
+    /// later `node run` can hold its connections to the same clock rule a
+    /// launch applies.
+    pub clock: config::runtime::ClockBinding,
+    /// The launch this instance belongs to, recorded on the
+    /// [`TrackedNodeInstance`] so a clock domain it publishes names the launch
+    /// that owns it. `None` for an instance `peppy node run` started.
+    pub launch: Option<LaunchIdentity>,
     /// User + injected env vars (already passed through
     /// `validate_goal_env_vars`, `inject_rust_build_env`, and
     /// `inject_node_runtime_env` in core-node).
@@ -956,7 +967,9 @@ impl NodeEntity {
                 ctx.instance_id.clone(),
                 InstanceState::Starting,
                 ctx.slot_bindings.clone(),
-            );
+            )
+            .with_clock(ctx.clock.clone())
+            .with_launch(ctx.launch.clone());
             if let Some(endpoints) = built_in_endpoints {
                 instance = instance.with_endpoints(endpoints);
             }
@@ -1456,6 +1469,16 @@ pub struct TrackedNodeInstance {
     /// consumers' existing claims. Empty when the node has no
     /// `depends_on` slots.
     slot_bindings: config::runtime::SlotBindings,
+    /// The one clock this instance reads for its lifetime, as the change that
+    /// started it resolved. Surfaced through `stack list` and `node_info`, so
+    /// a connection staged against a running instance is judged against the
+    /// clock it actually reads.
+    clock: config::runtime::ClockBinding,
+    /// The launch this instance belongs to, as the change that started it
+    /// named. `clock_list` reads it to say which launch owns a domain this
+    /// instance publishes. `None` for an instance `peppy node run` started,
+    /// and for a snapshot-restored or test-fixture instance.
+    launch: Option<LaunchIdentity>,
     /// Last `node_health` outcome recorded by the daemon's health monitor.
     /// Behind an `Arc<AtomicBool>` so the monitor can update it through the
     /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
@@ -1499,6 +1522,8 @@ impl TrackedNodeInstance {
             instance_dir: None,
             runtime_config_path: None,
             slot_bindings,
+            clock: config::runtime::ClockBinding::Wall,
+            launch: None,
             healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             endpoints: Vec::new(),
@@ -1511,6 +1536,32 @@ impl TrackedNodeInstance {
     /// instances built with an empty bindings map.
     pub fn slot_bindings(&self) -> &config::runtime::SlotBindings {
         &self.slot_bindings
+    }
+
+    /// The one clock this instance reads. Wall time for an instance whose
+    /// deployment named no domain, which is also what a snapshot-restored or
+    /// test-fixture instance carries.
+    pub fn clock(&self) -> &config::runtime::ClockBinding {
+        &self.clock
+    }
+
+    /// Records the clock the change that started this instance resolved.
+    pub fn with_clock(mut self, clock: config::runtime::ClockBinding) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The launch this instance belongs to. `None` for an instance
+    /// `peppy node run` started, which is also what a snapshot-restored or
+    /// test-fixture instance carries.
+    pub fn launch(&self) -> Option<&LaunchIdentity> {
+        self.launch.as_ref()
+    }
+
+    /// Records the launch the change that started this instance belongs to.
+    pub fn with_launch(mut self, launch: Option<LaunchIdentity>) -> Self {
+        self.launch = launch;
+        self
     }
 
     /// The endpoint URLs the instance serves, for `stack list`; empty for

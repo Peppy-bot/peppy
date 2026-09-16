@@ -10,6 +10,7 @@ mod stop;
 mod sync;
 mod types;
 
+use config::runtime::Name;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -291,6 +292,18 @@ pub enum NodeCommands {
         /// Only meaningful with `--run`; gated with `requires = "run"`.
         #[arg(long, hide = true, requires = "run")]
         instance_id: Option<String>,
+        /// The clock domain this instance reads: `wall` (the default), a
+        /// domain name, or `name@core_node` when one name runs on several
+        /// machines. `peppy clock list` shows what is running. Omitted, the
+        /// instance reads wall time whatever else is running.
+        #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_reference,
+              conflicts_with = "publish_clock", requires = "run")]
+        clock: Option<run::ClockReference>,
+        /// Declare a simulated clock domain and make this instance its
+        /// publisher. The declaration assigns the instance its domain, so it
+        /// takes no `--clock` of its own.
+        #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_domain_name, requires = "run")]
+        publish_clock: Option<Name>,
         /// Link a `link_id` from this node's `depends_on` to a target:
         /// `KEY@TARGET`. One flag for every link kind — a producer binding
         /// (TARGET is a producer `instance_id`), a pairing (TARGET is a peer
@@ -394,6 +407,18 @@ pub enum NodeCommands {
         /// Optional: specify a deterministic instance ID
         #[arg(short = 'i', long)]
         instance_id: Option<String>,
+        /// The clock domain this instance reads: `wall` (the default), a
+        /// domain name, or `name@core_node` when one name runs on several
+        /// machines. `peppy clock list` shows what is running. Omitted, the
+        /// instance reads wall time whatever else is running.
+        #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_reference,
+              conflicts_with = "publish_clock")]
+        clock: Option<run::ClockReference>,
+        /// Declare a simulated clock domain and make this instance its
+        /// publisher. The declaration assigns the instance its domain, so it
+        /// takes no `--clock` of its own.
+        #[arg(long, value_name = "DOMAIN", value_parser = run::parse_clock_domain_name)]
+        publish_clock: Option<Name>,
         /// Link a `link_id` from this node's `depends_on` to a target:
         /// `KEY@TARGET`. One flag for every link kind. For a producer binding,
         /// TARGET is the producer's `instance_id` (see `peppy node list`),
@@ -499,6 +524,8 @@ impl Command for NodeCommand {
                 run,
                 args,
                 instance_id,
+                clock,
+                publish_clock,
                 links,
                 vacant_links,
                 idle_timeout,
@@ -514,6 +541,10 @@ impl Command for NodeCommand {
                     Some(add::RunAfterAddOptions {
                         args,
                         instance_id,
+                        clock: run::ClockChoice {
+                            clock,
+                            publish_clock,
+                        },
                         links: merge_link_flags(&links, &vacant_links)
                             .map_err(CommandError::ExecutionFailed)?,
                     })
@@ -577,6 +608,8 @@ impl Command for NodeCommand {
                 tag,
                 args,
                 instance_id,
+                clock,
+                publish_clock,
                 links,
                 vacant_links,
                 idle_timeout,
@@ -597,6 +630,10 @@ impl Command for NodeCommand {
                     tag,
                     args,
                     instance_id,
+                    run::ClockChoice {
+                        clock,
+                        publish_clock,
+                    },
                     merge_link_flags(&links, &vacant_links)
                         .map_err(CommandError::ExecutionFailed)?,
                     timeouts,

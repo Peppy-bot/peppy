@@ -8,7 +8,7 @@ use config::node::{
     ConsumedTopic, DependsOn, EmittedTopic, NodeConfigParser, NodeDependency, Toolchain,
     TopicInterfaces,
 };
-use config::runtime::{BoundProducers, Name as ConfigName, ProducerRef};
+use config::runtime::{BoundProducers, ClockBinding, Name as ConfigName, ProducerRef};
 use peppy::commands::Command;
 use peppy::commands::node::{
     NodeCommand, NodeCommands, NodeName, TimeoutConfig, run_instance_async,
@@ -93,6 +93,8 @@ fn make_consumer_depend_on_provider(
 fn add_ready_node(ctx: &Arc<AppContext>, source: &Path) {
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(source.display().to_string()),
             git_ref: None,
             sync: false,
@@ -247,6 +249,8 @@ async fn node_list_command_succeeds() {
     // Add the provider
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(provider_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -267,6 +271,8 @@ async fn node_list_command_succeeds() {
     // Add the consumer, it depends on the provider
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(consumer_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -465,6 +471,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        ClockBinding::Wall,
         &timeouts,
     )
     .await
@@ -494,6 +501,7 @@ async fn stack_list_renders_every_live_daemon_local_first_and_honors_override() 
         BTreeMap::new(),
         BTreeMap::new(),
         BTreeMap::new(),
+        ClockBinding::Wall,
         &timeouts,
     )
     .await

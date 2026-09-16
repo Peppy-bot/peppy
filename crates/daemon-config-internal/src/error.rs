@@ -12,6 +12,10 @@
 use config::node::Cardinality;
 use thiserror::Error;
 
+/// The literal a wall domain is written as, as the clock refusals
+/// quote it back.
+const WALL_CLOCK_LITERAL: &str = crate::internal::launcher::WALL_CLOCK;
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// Formats `items` as a `\n  - `-prefixed bulleted list (no leading or
@@ -162,17 +166,25 @@ pub struct DuplicateInstanceIdAcrossStack {
     pub tag_b: String,
 }
 
-/// Payload for [`ParsingError::MultipleSimTimeSources`]. More than one
-/// instance in the stack declared `framework.publishes_sim_time`, so the
-/// fleet would have two clocks feeding every machine's `clock` topic.
+/// Payload for [`ParsingError::ClockMismatch`]. Two instances a
+/// clock-dependent connection joins read different clocks, so one side would
+/// be interpreting the other's timestamps against a clock that never produced
+/// them.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "instances {instance_ids} each declare `framework: {{ publishes_sim_time: true }}`; a launch \
-     has one source of simulated time, so keep the declaration on exactly one of them"
+    "`{a}` reads clock {a_clock} and `{b}` reads {b_clock}, so their {via} would carry \
+     timestamps neither side can read on its own clock. Bind both instances to one domain, \
+     or give each domain its own instance of the node"
 )]
-pub struct MultipleSimTimeSources {
-    /// The declaring instance ids, quoted and comma-separated.
-    pub instance_ids: String,
+pub struct ClockMismatch {
+    pub a: String,
+    /// `wall`, or the domain as `name@core_node`.
+    pub a_clock: String,
+    pub b: String,
+    pub b_clock: String,
+    /// The connection, as the deployment writes it: `binding \`cam\``,
+    /// `pairing \`left_arm\`` or `observation \`arms\``.
+    pub via: String,
 }
 
 /// Payload for [`ParsingError::LinkUnknownSlot`]. A `links:` key (or
@@ -585,11 +597,56 @@ pub enum ParsingError {
     /// variants.
     #[error(transparent)]
     DuplicateInstanceIdAcrossStack(Box<DuplicateInstanceIdAcrossStack>),
-    /// More than one instance declared itself the launch's simulated-time
-    /// source. Boxed for the same `result_large_err` reason as the other
-    /// binding variants.
+
+    // -- launcher/CLI: clocks
+    #[error(
+        "`{WALL_CLOCK_LITERAL}` is built in and names the time every machine already keeps, so \
+         it cannot be declared. Bind an instance to it with `framework: {{ clock: \
+         \"{WALL_CLOCK_LITERAL}\" }}`, or declare an alias such as `physical_robot: \
+         \"{WALL_CLOCK_LITERAL}\"`. This launcher declares {domains}"
+    )]
+    ClockDomainReserved { domains: String },
+    #[error(
+        "clock domain `{domain}` names `{publisher}` as its publisher, which this launch does \
+         not deploy. Name an instance it deploys: {instances}"
+    )]
+    ClockPublisherUnknown {
+        domain: String,
+        publisher: String,
+        instances: String,
+    },
+    #[error(
+        "clock domain `{domain}` names `{publisher}` as its publisher and this launch deploys no \
+         instances. Deploy `{publisher}` under `deployments`: a simulated domain is supplied by \
+         an instance the launch starts"
+    )]
+    ClockPublisherWithoutDeployments { domain: String, publisher: String },
+    #[error(
+        "instance `{instance}` is named the publisher of {domains}. An instance reads one \
+         clock, so it can supply only one: give each domain its own publisher"
+    )]
+    ClockPublisherOfSeveral { instance: String, domains: String },
+    #[error(
+        "instance `{instance}` is the publisher of clock domain `{domain}` and also binds \
+         `framework: {{ clock: \"{bound}\" }}`. The declaration already assigns its domain, \
+         so drop the binding"
+    )]
+    ClockPublisherBound {
+        instance: String,
+        domain: String,
+        bound: String,
+    },
+    #[error(
+        "instance `{instance}` binds clock `{clock}`, which no `framework.clocks` entry \
+         declares. Declare it, or name one of {declared}"
+    )]
+    ClockDomainUnknown {
+        instance: String,
+        clock: String,
+        declared: String,
+    },
     #[error(transparent)]
-    MultipleSimTimeSources(Box<MultipleSimTimeSources>),
+    ClockMismatch(Box<ClockMismatch>),
 
     // -- launcher/CLI: pairings
     #[error(transparent)]

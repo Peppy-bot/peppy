@@ -23,6 +23,7 @@ use config::node::{
     collect_contract_implementation_edges, collect_dependency_specs, validate_dependency_specs,
 };
 use config::runtime::Name;
+use core_node_api::encoding::LaunchIdentity;
 use core_node_api::{
     InstanceState, SerializedEdge, SerializedNode, SerializedNodeGraph, SerializedPairingSlot,
 };
@@ -1153,6 +1154,23 @@ impl NodeStack {
         guard.find_entity_label_for_instance_id_any_state(instance_id)
     }
 
+    /// The clock of every instance this stack still counts on, which is what
+    /// the one-publisher-per-name rule and `clock_list` both read.
+    pub fn instance_clocks(&self) -> Vec<InstanceClock> {
+        self.snapshot()
+            .iter()
+            .flat_map(|handle| instance_clocks_of(handle.read().instances()))
+            .collect()
+    }
+
+    /// The instance publishing clock domain `name` on this machine, if one is
+    /// running. A domain's name and the machine hosting its publisher identify
+    /// one timeline, so holding that to a single instance is what lets
+    /// `--clock <name>` address exactly one stream of ticks.
+    pub fn clock_domain_publisher(&self, name: &Name) -> Option<Name> {
+        clock_domain_publisher_of(&self.instance_clocks(), name)
+    }
+
     /// Adds a config to the stack or updates an existing one.
     ///
     /// New entities are inserted in [`NodeStage::Added`]; the caller is
@@ -1521,6 +1539,47 @@ impl NodeStack {
     }
 }
 
+/// One instance's clock, as the one-publisher-per-name rule and `clock_list`
+/// both read it.
+#[derive(Debug, Clone)]
+pub struct InstanceClock {
+    pub instance_id: Name,
+    pub binding: config::runtime::ClockBinding,
+    /// The launch that started the instance, or `None` for one
+    /// `peppy node run` started.
+    pub launch: Option<LaunchIdentity>,
+}
+
+/// The clocks of the `instances` this stack still counts on.
+///
+/// A terminal instance publishes no ticks and reads none, so its domain name
+/// is free for the next publisher and it counts towards no domain's readers.
+fn instance_clocks_of(instances: &[TrackedNodeInstance]) -> Vec<InstanceClock> {
+    instances
+        .iter()
+        .filter(|instance| !instance.state().is_terminal())
+        .map(|instance| InstanceClock {
+            instance_id: instance.instance_id().clone(),
+            binding: instance.clock().clone(),
+            launch: instance.launch().cloned(),
+        })
+        .collect()
+}
+
+/// The instance supplying clock domain `name` among `clocks`.
+fn clock_domain_publisher_of(clocks: &[InstanceClock], name: &Name) -> Option<Name> {
+    clocks
+        .iter()
+        .find(|clock| {
+            clock.binding.is_publisher()
+                && clock
+                    .binding
+                    .domain()
+                    .is_some_and(|domain| &domain.name == name)
+        })
+        .map(|clock| clock.instance_id.clone())
+}
+
 /// One entity's contribution to [`NodeStack::live_container_instance_ids`].
 ///
 /// A process node contributes nothing however many instances it has: its
@@ -1661,6 +1720,102 @@ mod live_container_instances_tests {
         let process = config_of(r#"{ language: "rust", run_cmd: ["recon"] }"#);
         let instances = [instance("running_inst", InstanceState::Running)];
         assert!(live_container_instances_of(&process, &instances).is_empty());
+    }
+}
+
+/// Which instances carry a clock, and which one supplies a domain. Both rules
+/// are stated here, on hand-built instances.
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use config::runtime::{
+        ClockBinding, ClockDomainId, ClockIncarnation, CoreNodeName, ProducerRef,
+    };
+
+    fn domain(name: &str) -> ClockDomainId {
+        ClockDomainId::new(
+            Name::new(name).expect("valid domain name"),
+            CoreNodeName::new("cn-sim").expect("valid core node name"),
+            ClockIncarnation::try_from(1).expect("non-zero"),
+        )
+    }
+
+    fn instance(id: &str, state: InstanceState, binding: ClockBinding) -> TrackedNodeInstance {
+        TrackedNodeInstance::new(
+            Name::new(id).expect("valid instance id"),
+            state,
+            std::collections::BTreeMap::new(),
+        )
+        .with_clock(binding)
+    }
+
+    fn publisher(id: &str, state: InstanceState, name: &str) -> TrackedNodeInstance {
+        instance(id, state, ClockBinding::publisher(domain(name)))
+    }
+
+    /// A crashed publisher supplies no ticks, so the name it held is free for
+    /// its replacement and the stack reports no publisher of it.
+    #[test]
+    fn a_terminal_publisher_holds_no_domain_name() {
+        for state in [InstanceState::Failed, InstanceState::Finished] {
+            let gone = [publisher("sim_inst", state, "robot")];
+            let clocks = instance_clocks_of(&gone);
+            assert!(clocks.is_empty(), "{state:?} supplies nothing");
+            assert_eq!(
+                clock_domain_publisher_of(&clocks, &Name::new("robot").unwrap()),
+                None
+            );
+        }
+    }
+
+    /// The replacement of a crashed publisher owns the name on its own: the
+    /// rule answers with the instance that is running, so a second publisher
+    /// of a live name is refused while a dead one's name is available.
+    #[test]
+    fn the_running_publisher_owns_the_name_beside_a_crashed_one() {
+        let instances = [
+            publisher("crashed_inst", InstanceState::Failed, "robot"),
+            publisher("sim_inst", InstanceState::Running, "robot"),
+        ];
+        assert_eq!(
+            clock_domain_publisher_of(
+                &instance_clocks_of(&instances),
+                &Name::new("robot").unwrap()
+            ),
+            Some(Name::new("sim_inst").unwrap()),
+            "the live publisher is the one the name resolves to"
+        );
+    }
+
+    /// A publisher still starting already holds its name: its ticks can reach
+    /// the wire before the start handshake lands.
+    #[test]
+    fn a_starting_publisher_already_holds_its_name() {
+        let starting = [publisher("sim_inst", InstanceState::Starting, "robot")];
+        assert_eq!(
+            clock_domain_publisher_of(&instance_clocks_of(&starting), &Name::new("robot").unwrap()),
+            Some(Name::new("sim_inst").unwrap())
+        );
+    }
+
+    /// Reading a domain is not supplying it, and a running instance on wall
+    /// time carries no domain at all.
+    #[test]
+    fn a_consumer_never_answers_as_the_publisher() {
+        let instances = [
+            instance(
+                "arm_inst",
+                InstanceState::Running,
+                ClockBinding::consumer(domain("robot"), ProducerRef::new("cn-sim", "sim_inst")),
+            ),
+            instance("viewer_inst", InstanceState::Running, ClockBinding::Wall),
+        ];
+        let clocks = instance_clocks_of(&instances);
+        assert_eq!(clocks.len(), 2, "both instances are running");
+        assert_eq!(
+            clock_domain_publisher_of(&clocks, &Name::new("robot").unwrap()),
+            None
+        );
     }
 }
 

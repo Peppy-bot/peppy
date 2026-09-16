@@ -189,6 +189,8 @@ pub async fn spawn_running_instance(
             instance_id: &instance_id,
             runtime_config_json5: "{}",
             slot_bindings: std::collections::BTreeMap::new(),
+            clock: Default::default(),
+            launch: None,
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,

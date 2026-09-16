@@ -32,4 +32,4 @@ mod serve;
 mod shutdown_signal;
 
 pub use error::{Error as DaemonError, Result};
-pub use serve::{ClockSource, ServeOptions, serve};
+pub use serve::{ServeOptions, serve};

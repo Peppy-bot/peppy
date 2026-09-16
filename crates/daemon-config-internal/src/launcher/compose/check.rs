@@ -213,7 +213,7 @@ fn check_file_copies_over(
     // Each copy the file deploys, and whether some legal stack admits it.
     let mut admitted: BTreeMap<String, bool> = BTreeMap::new();
     for stack in stacks {
-        let Ok((_, bare)) = prepared.flat_stack(stack) else {
+        let Ok((flat, bare)) = prepared.flat_stack(stack) else {
             // Reported once, by the stack pass.
             continue;
         };
@@ -307,13 +307,13 @@ fn check_file_copies_over(
                 taken.extend(links.into_iter().flatten());
             }
         }
-        if let Err(e) = combine(launcher, &bare, &copies) {
+        if let Err(e) = combine(launcher, &bare, &flat.framework, &copies) {
             problems.push(format!("{label} ({}): {e}", stack.echo()));
         }
         for (echo, variant) in variants {
             let mut together = copies.clone();
             together.push(variant);
-            if let Err(e) = combine(launcher, &bare, &together) {
+            if let Err(e) = combine(launcher, &bare, &flat.framework, &together) {
                 problems.push(format!("{label} ({echo}): {e}"));
             }
         }
@@ -396,7 +396,12 @@ fn check_copies_over(
                         continue;
                     }
                 };
-                if let Err(e) = combine(launcher, &bare, std::slice::from_ref(&copy)) {
+                if let Err(e) = combine(
+                    launcher,
+                    &bare,
+                    &existing.framework,
+                    std::slice::from_ref(&copy),
+                ) {
                     problems.push(format!("{label} ({echo}): {e}"));
                     continue;
                 }

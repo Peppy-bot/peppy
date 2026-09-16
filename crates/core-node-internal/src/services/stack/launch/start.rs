@@ -59,9 +59,9 @@ pub(in crate::services::stack) async fn start_node_instances(
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
     planned_observations: &[daemon_config::launcher::PlannedObservation],
     placements: &daemon_config::launcher::Placements,
-    // Every machine of the launch, handed to the declared time source. A plan
-    // that runs no instance spans none, and starts none.
-    fleet: Option<&config::runtime::SimTimeParticipants>,
+    // The clock every instance of the change reads, as it was resolved: the
+    // plan each one starts with carries its own.
+    clocks: &daemon_config::launcher::ResolvedClocks,
 ) -> std::result::Result<(), String> {
     // Register the planned observations whose OBSERVER runs on this daemon,
     // keyed by observer instance. As each instance reaches Running its
@@ -242,10 +242,7 @@ pub(in crate::services::stack) async fn start_node_instances(
             // is what lets a peer start a node this daemon planned.
             let instance_plan = config::runtime::NodeInstancePlan {
                 arguments: instance.arguments.clone(),
-                use_sim_time: instance.framework.use_sim_time,
-                sim_time_source: fleet
-                    .filter(|_| instance.framework.publishes_sim_time)
-                    .cloned(),
+                clock: clocks.binding_for(instance_id),
                 slot_bindings,
                 ..config::runtime::NodeInstancePlan::new(instance.instance_id.clone())
             };
@@ -271,6 +268,10 @@ pub(in crate::services::stack) async fn start_node_instances(
                     ctx.idle_timeouts.run.as_secs(),
                 )
             }
+            // Every instance of a launch carries its launch id wherever it
+            // runs: the daemon spawning it admits it as part of that launch,
+            // and records that launch as the owner of a domain it publishes.
+            .with_launch_id(&phase.launch_id)
             .with_env_vars(instance_environment(forwarded_env, &instance.env_vars))
             .with_requested_pairs(
                 requested_by_instance
@@ -291,7 +292,6 @@ pub(in crate::services::stack) async fn start_node_instances(
             } else {
                 start_remotely(
                     ctx,
-                    phase,
                     &core_node,
                     key,
                     instance_id,
@@ -361,7 +361,6 @@ async fn start_locally(
 #[allow(clippy::too_many_arguments)] // Distinct inputs; bundling them would only move the list.
 async fn start_remotely(
     ctx: &StackChangeContext,
-    phase: &PhaseGoal,
     core_node: &str,
     key: &NodeKey,
     instance_id: &str,
@@ -369,9 +368,7 @@ async fn start_remotely(
     config_sha256: &str,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
 ) -> std::result::Result<(), String> {
-    let node_run_goal = node_run_goal
-        .with_launch_id(&phase.launch_id)
-        .with_manifest_sha256(config_sha256);
+    let node_run_goal = node_run_goal.with_manifest_sha256(config_sha256);
     match federated::run_remote_goal(ctx, core_node, &node_run_goal, ctx.idle_timeouts.run).await {
         Ok(run) => {
             run_log_paths.push(NodeRunLogEntry {

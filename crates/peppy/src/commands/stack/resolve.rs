@@ -5,9 +5,9 @@ use core_node_api::encoding::ArgumentOverride;
 use core_node_api::encoding::LauncherOrigin;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, BindingValidationItem, DeploymentSource, ExternallyCoveredSlots,
-    PairingValidationItem, PeppyLauncher, PreparedLauncher, validate_link_slots, validate_pairings,
-    validate_sim_time_source,
+    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, DeploymentSource,
+    ExternallyCoveredSlots, PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher,
+    resolve_clocks, validate_link_plan,
 };
 use daemon_config::repository::EntryOrigin;
 use tracing::info;
@@ -17,6 +17,16 @@ use crate::error::{Error, Result};
 
 /// The name a previewed copy runs under when none is given.
 const PREVIEW_COPY_NAME: &str = "preview";
+
+/// The machine a preview places every instance on.
+///
+/// A domain's identity names the machine its publisher runs on, and this
+/// command talks to no daemon, so it has none to name. Every comparison it
+/// makes is between instances of the one plan, where a single machine makes
+/// them read exactly as they will at launch. The report lines name a domain by
+/// name alone; a clock refusal names the whole identity, so this name reaches
+/// an operator there.
+const PREVIEW_CORE_NODE: &str = "cn-preview";
 
 /// Preview one more copy joined onto the resolved launch.
 #[derive(clap::Args, Debug)]
@@ -238,6 +248,38 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
             }
         }
     }
+    // The clock rules read no manifest, so they hold whether or not the
+    // nodes are in this machine's cache.
+    let placements = Placements::all_on(
+        config::runtime::CoreNodeName::new(PREVIEW_CORE_NODE)
+            .expect("the preview machine name is a valid core node name"),
+    );
+    let clocks = match resolve_clocks(&flat, &placements, &ClockIncarnations::new()) {
+        Ok(clocks) => clocks,
+        Err(errors) => {
+            let rendered: Vec<String> = errors.iter().map(ToString::to_string).collect();
+            return Err(Error::ExecutionFailed(format!(
+                "the flat launcher breaks clock rules a launch would reject:{}",
+                daemon_config::format_bulleted(&rendered)
+            )));
+        }
+    };
+    for instance in flat
+        .deployments
+        .iter()
+        .flat_map(|deployment| &deployment.instances)
+    {
+        let id = instance.instance_id.as_str();
+        let binding = clocks.of(id);
+        report.push(match binding.domain() {
+            None => format!("{id}: clock `wall`"),
+            Some(domain) if binding.is_publisher() => {
+                format!("{id}: publishes clock `{}`", domain.name)
+            }
+            Some(domain) => format!("{id}: clock `{}`", domain.name),
+        });
+    }
+
     if !unavailable.is_empty() {
         report.push(format!(
             "link rules not checked, {} manifest(s) unavailable: {}",
@@ -257,45 +299,46 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
             implements: &config.manifest.implements,
         })
         .collect();
-    let mut errors = validate_link_slots(&binding_items);
-    errors.extend(validate_sim_time_source(&binding_items));
-    if errors.is_empty() {
-        let pairing_items: Vec<PairingValidationItem<'_>> = manifests
-            .iter()
-            .map(|(name, tag, index, config)| PairingValidationItem {
-                node_name: name,
-                node_tag: tag,
-                instances: &flat.deployments[*index].instances,
-                pairing_deps: config
-                    .manifest
-                    .depends_on
-                    .as_ref()
-                    .map(|d| d.pairings.as_slice())
-                    .unwrap_or_default(),
-                observer_deps: config
-                    .manifest
-                    .depends_on
-                    .as_ref()
-                    .map(|d| d.pairing_observers.as_slice())
-                    .unwrap_or_default(),
-                preexisting: false,
-            })
-            .collect();
-        errors = validate_pairings(
-            &pairing_items,
-            &AlreadyPairedSlots::new(),
-            &ExternallyCoveredSlots::new(),
-        )
-        .errors;
-    }
-    if errors.is_empty() {
+    let pairing_items: Vec<PairingValidationItem<'_>> = manifests
+        .iter()
+        .map(|(name, tag, index, config)| PairingValidationItem {
+            node_name: name,
+            node_tag: tag,
+            instances: &flat.deployments[*index].instances,
+            pairing_deps: config
+                .manifest
+                .depends_on
+                .as_ref()
+                .map(|d| d.pairings.as_slice())
+                .unwrap_or_default(),
+            observer_deps: config
+                .manifest
+                .depends_on
+                .as_ref()
+                .map(|d| d.pairing_observers.as_slice())
+                .unwrap_or_default(),
+            preexisting: false,
+        })
+        .collect();
+    // A preview starts nothing, so no slot is already claimed and none is
+    // covered outside the plan this reads.
+    let validated = validate_link_plan(
+        &binding_items,
+        &pairing_items,
+        &AlreadyPairedSlots::new(),
+        &ExternallyCoveredSlots::new(),
+        &placements,
+        &clocks,
+    );
+    if validated.errors.is_empty() {
         report.push(format!(
-            "link rules hold: slot keys, vacancies and pairing coverage checked over {} node manifest(s)",
+            "link rules hold: slot keys, vacancies, pairing coverage, observation sources and \
+             clock agreement checked over {} node manifest(s)",
             manifests.len()
         ));
         return Ok(());
     }
-    let rendered: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    let rendered: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
     Err(Error::ExecutionFailed(format!(
         "the flat launcher breaks link rules a launch would reject:{}",
         daemon_config::format_bulleted(&rendered)

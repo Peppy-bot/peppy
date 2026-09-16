@@ -86,15 +86,23 @@ async fn remove_inner(
         .map_err(|e| e.to_string())?;
     let removed: HashSet<_> = copy.record.instance_ids.iter().map(Name::as_str).collect();
     let remaining_planned = planned_from(&remaining, &active.resolved);
-    let removes_clock = active
-        .time_source
-        .as_ref()
-        .is_some_and(|source| removed.contains(source.instance_id.as_str()));
-    if removes_clock {
-        let consumers = TimeConsumers::of(
+    // The copy supplies a clock when one of its instances publishes a domain
+    // this stack reads.
+    let removed_domains: Vec<Name> = active
+        .resolved_clocks
+        .simulated()
+        .filter(|(instance, _)| {
+            active.resolved_clocks.of(instance).is_publisher() && removed.contains(instance)
+        })
+        .map(|(_, domain)| domain.name.clone())
+        .collect();
+    if !removed_domains.is_empty() {
+        let consumers = ClockConsumers::of(
             remaining_planned
                 .iter()
                 .flat_map(|item| &item.deployment.instances),
+            &active.resolved_clocks,
+            &removed_domains,
             |instance| {
                 active
                     .copies
@@ -104,28 +112,26 @@ async fn remove_inner(
             },
         );
         if !consumers.is_empty() {
-            return Err(consumers.refusal(name));
+            return Err(consumers.refusal(name, &removed_domains));
         }
     }
     let root = ctx.node_stack.root().read().config().clone();
-    let (_, _, _, observations) =
-        validate_and_order_dependencies(ctx, &remaining_planned, &root, &active.placements).await?;
+    let (_, _, _, observations) = validate_and_order_dependencies(
+        ctx,
+        &remaining_planned,
+        &root,
+        &active.placements,
+        &active.resolved_clocks,
+    )
+    .await?;
     let watchers = lifecycle_watchers(&observations, &active.placements)?;
     let repointed = watchers_replacing(&active.watchers, &watchers);
     let host_live = copy.core_node.as_str() == ctx.bound_core_node
         || federated::live_core_nodes(&ctx.messenger)
             .await?
             .contains(copy.core_node.as_str());
-    let touched = removal_deployments(active, &copy, host_live, removes_clock, &repointed);
-    let change = preflight_change(
-        ctx,
-        &active.launch_id,
-        &remaining_planned,
-        &touched,
-        &active.placements,
-        active.clock.as_ref(),
-    )
-    .await?;
+    let touched = removal_deployments(active, &copy, host_live, &repointed);
+    let change = preflight_change(ctx, &active.launch_id, &touched, &active.placements).await?;
     let outcome = async {
         if host_live {
             stop_copy(ctx, &active.launch_id, &copy).await?;
@@ -154,32 +160,16 @@ async fn remove_inner(
             &active.placements,
         )
         .await;
-        if let Some(federated::ClockDemand::Sim(federated::SimDemandOrigin::Instance(instance))) =
-            &active.clock
-            && removed.contains(instance.as_str())
-        {
-            active.clock = Some(federated::ClockDemand::Sim(
-                federated::SimDemandOrigin::ActiveLaunch,
-            ));
+        // A domain leaves with the instance that supplied it. Its lifetime
+        // goes too, so a copy rejoining under the same name mints a new one
+        // rather than inheriting a timeline nothing publishes.
+        for domain in &removed_domains {
+            active.clocks.remove(domain);
         }
-        match (removes_clock, &active.time_source, &change.fleet) {
-            (true, _, _) => {
-                active.time_source = None;
-                Ok(())
-            }
-            (false, Some(source), Some(fleet)) => source
-                .set_participants(ctx, fleet.clone())
-                .await
-                .map_err(|error| {
-                    format!(
-                        "copy `{name}` removed and its instances stopped, but the simulation \
-                         time source keeps `{}` as a participant: {error}. The next join or \
-                         removal hands it the participants again",
-                        copy.core_node
-                    )
-                }),
-            (false, _, _) => Ok(()),
+        for instance in &removed {
+            active.resolved_clocks.remove(instance);
         }
+        Ok::<_, String>(())
     }
     .await;
     change.reserved.release().await;
@@ -193,27 +183,31 @@ async fn remove_inner(
     Ok(())
 }
 
-/// What still reads simulation time once a copy leaves.
+/// What still reads a clock domain leaving with a copy.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct TimeConsumers {
+struct ClockConsumers {
     /// Copies, which `stack remove` takes out one at a time.
     copies: BTreeSet<Name>,
     /// The stack's own instances, which only a reset stops.
     stack: Vec<Name>,
 }
 
-impl TimeConsumers {
-    /// The simulation-time readers among `instances`, each filed under its
-    /// copy where `copy_of` names one.
+impl ClockConsumers {
+    /// The readers of `domains` among `instances`, each filed under its copy
+    /// where `copy_of` names one.
     fn of<'a>(
         instances: impl IntoIterator<Item = &'a DeploymentInstance>,
+        clocks: &daemon_config::launcher::ResolvedClocks,
+        domains: &[Name],
         copy_of: impl Fn(&Name) -> Option<&'a Name>,
     ) -> Self {
         let mut consumers = Self::default();
-        for instance in instances
-            .into_iter()
-            .filter(|instance| instance.framework.use_sim_time != Some(false))
-        {
+        for instance in instances.into_iter().filter(|instance| {
+            clocks
+                .of(instance.instance_id.as_str())
+                .domain()
+                .is_some_and(|domain| domains.contains(&domain.name))
+        }) {
             match copy_of(&instance.instance_id) {
                 Some(copy) => {
                     consumers.copies.insert(copy.clone());
@@ -228,14 +222,13 @@ impl TimeConsumers {
         self.copies.is_empty() && self.stack.is_empty()
     }
 
-    /// The refusal for removing `source`, the copy supplying their time,
-    /// with the fix each kind of consumer admits.
-    fn refusal(&self, source: &Name) -> String {
+    /// The refusal for removing `source`, the copy supplying `domains`, with
+    /// the fix each kind of consumer admits.
+    fn refusal(&self, source: &Name, domains: &[Name]) -> String {
+        let clock = clock_label(domains);
         let copies = daemon_config::format_quoted_list(self.copies.iter().map(Name::as_str));
         if self.stack.is_empty() {
-            return format!(
-                "`{source}` supplies simulation time to copies {copies}; remove them first"
-            );
+            return format!("`{source}` supplies {clock} to copies {copies}; remove them first");
         }
         let stack = daemon_config::format_quoted_list(self.stack.iter().map(Name::as_str));
         let and_copies = if self.copies.is_empty() {
@@ -244,34 +237,35 @@ impl TimeConsumers {
             format!(" and to copies {copies}")
         };
         format!(
-            "`{source}` supplies simulation time to {stack}{and_copies}; run peppy stack reset, \
+            "`{source}` supplies {clock} to {stack}{and_copies}; run peppy stack reset, \
              then launch without `{source}`: drop its deployments entry from the launcher, or \
              leave it out of the copies you join"
         )
     }
 }
 
-/// Removal reserves the copy's host while it is live, its clock source's
-/// host while the source stays and is handed the remaining fleet, and the
-/// host of every source whose watchers change.
+/// How a refusal names the domains leaving with a copy.
+fn clock_label(domains: &[Name]) -> String {
+    let names = daemon_config::format_quoted_list(domains.iter().map(Name::as_str));
+    match domains {
+        [_] => format!("clock {names}"),
+        _ => format!("clocks {names}"),
+    }
+}
+
+/// Removal reserves the copy's host while it is live, and the host of every
+/// source whose watchers change.
 fn removal_deployments(
     active: &ActiveLaunch,
     copy: &StackCopy,
     host_live: bool,
-    removes_clock: bool,
     repointed: &LifecycleWatchers,
 ) -> Vec<PlannedDeployment> {
     selected_instances(&active.planned, |instance| {
         let host = active
             .placements
             .core_node_of(instance.instance_id.as_str());
-        (host_live && host == &copy.core_node)
-            || (!removes_clock
-                && active
-                    .time_source
-                    .as_ref()
-                    .is_some_and(|source| host == &source.core_node))
-            || repointed.contains_key(&instance.instance_id)
+        (host_live && host == &copy.core_node) || repointed.contains_key(&instance.instance_id)
     })
 }
 
@@ -333,30 +327,48 @@ pub(super) async fn stop_copy(
 mod tests {
     use super::*;
 
-    fn instance(id: &str, use_sim_time: Option<bool>) -> DeploymentInstance {
-        let mut instance = DeploymentInstance::empty(Name::new(id).unwrap());
-        instance.framework.use_sim_time = use_sim_time;
-        instance
+    fn instance(id: &str) -> DeploymentInstance {
+        DeploymentInstance::empty(Name::new(id).unwrap())
     }
 
-    /// The readers of simulation time are filed under their copy or the
-    /// stack, wall-time readers left out, and the refusal names the fix
-    /// each kind admits.
+    /// The instances reading the departing domain, filed under their copy or
+    /// the stack, with everything on another clock left out and the refusal
+    /// naming the domain and the fix each kind admits.
     #[test]
     fn time_consumers_name_the_copies_to_remove_and_the_stack_to_reset() {
         let alpha = Name::new("alpha").unwrap();
         let instances = [
-            instance("alpha_arm_inst", None),
-            instance("alpha_cam_inst", Some(true)),
-            instance("shared_inst", None),
-            instance("wall_inst", Some(false)),
+            instance("alpha_arm_inst"),
+            instance("alpha_cam_inst"),
+            instance("shared_inst"),
+            instance("wall_inst"),
         ];
+        let robot = config::runtime::ClockDomainId::new(
+            Name::new("robot").unwrap(),
+            config::runtime::CoreNodeName::new("cn-sim").unwrap(),
+            config::runtime::ClockIncarnation::try_from(1).unwrap(),
+        );
+        let reads_robot = config::runtime::ClockBinding::consumer(
+            robot.clone(),
+            config::runtime::ProducerRef::new("cn-sim", "sim_inst"),
+        );
+        let clocks = daemon_config::launcher::ResolvedClocks::of_running([
+            ("alpha_arm_inst".to_owned(), reads_robot.clone()),
+            ("alpha_cam_inst".to_owned(), reads_robot.clone()),
+            ("shared_inst".to_owned(), reads_robot),
+            ("wall_inst".to_owned(), config::runtime::ClockBinding::Wall),
+        ]);
+        let domains = [Name::new("robot").unwrap()];
         let copy_of = |id: &Name| id.as_str().starts_with("alpha_").then_some(&alpha);
-        let consumers = TimeConsumers::of(&instances, copy_of);
+        let consumers = ClockConsumers::of(&instances, &clocks, &domains, copy_of);
         assert_eq!(consumers.copies, BTreeSet::from([alpha.clone()]));
         assert_eq!(consumers.stack, [Name::new("shared_inst").unwrap()]);
         let source = Name::new("sim").unwrap();
-        let refusal = consumers.refusal(&source);
+        let refusal = consumers.refusal(&source, &domains);
+        assert!(
+            refusal.contains("supplies clock `robot`"),
+            "the refusal names the clock leaving with the copy: {refusal}"
+        );
         assert!(
             refusal.contains("`shared_inst` and to copies `alpha`"),
             "{refusal}"
@@ -370,14 +382,14 @@ mod tests {
             "the refusal says what to change in the launcher: {refusal}"
         );
 
-        let copies_only = TimeConsumers::of(&instances[..2], copy_of);
+        let copies_only = ClockConsumers::of(&instances[..2], &clocks, &domains, copy_of);
         assert!(!copies_only.is_empty());
-        let refusal = copies_only.refusal(&source);
+        let refusal = copies_only.refusal(&source, &domains);
         assert!(
             refusal.ends_with("copies `alpha`; remove them first"),
             "{refusal}"
         );
 
-        assert!(TimeConsumers::of(&instances[3..], copy_of).is_empty());
+        assert!(ClockConsumers::of(&instances[3..], &clocks, &domains, copy_of).is_empty());
     }
 }

@@ -118,25 +118,16 @@ pub struct DaemonDefaults {
     /// from the cached credentials, not from `peppy_config`, so it is threaded in
     /// rather than derived in `from_peppy_config`.
     pub namespace: config::namespace::Namespace,
-    /// This daemon's `use_sim_time` default, applied to any instance plan that
-    /// declines to override it. Lives here because it is a daemon-global fact
-    /// about spawned nodes, exactly like the buffer sizes above, and because
-    /// resolution must happen on the daemon that spawns: a plan shipped from
-    /// another machine cannot know this value.
-    pub use_sim_time: bool,
 }
 
 impl DaemonDefaults {
     /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
     /// (the single place that knows which of its fields are shipped to
-    /// spawned nodes) plus the daemon's resolved `namespace`
-    /// (which comes from the credentials, not `peppy_config`) and its
-    /// `use_sim_time` mode (a daemon-generation argument, likewise not from
-    /// `peppy_config`).
+    /// spawned nodes) plus the daemon's resolved `namespace`, which comes
+    /// from the credentials rather than from `peppy_config`.
     pub fn from_peppy_config(
         config: &PeppyConfig,
         namespace: config::namespace::Namespace,
-        use_sim_time: bool,
     ) -> Self {
         Self {
             gossip: config.zenoh.gossip(),
@@ -144,7 +135,6 @@ impl DaemonDefaults {
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
             namespace,
-            use_sim_time,
         }
     }
 }
@@ -179,6 +169,9 @@ pub(crate) struct NodeRunActionContext {
     pub(crate) daemon_defaults: DaemonDefaults,
     pub(crate) shutdown_token: CancellationToken,
     pub(crate) relationships: RelationshipCoordinators,
+    /// Which federated launch holds this machine, read to record the launch an
+    /// instance belongs to.
+    pub(crate) slice_ownership: Arc<crate::services::federation::SliceOwnership>,
 }
 
 /// Applies the [`DaemonDefaults`] to a node's session config before it is
@@ -242,6 +235,7 @@ pub async fn listen_for_node_run(
             daemon_defaults: config.daemon_defaults,
             shutdown_token: config.shutdown_token,
             relationships: config.relationships,
+            slice_ownership: Arc::clone(&config.slice_ownership),
         },
         gate: ConcurrencyGate::new(),
         slice_ownership: config.slice_ownership,
@@ -441,8 +435,8 @@ impl node_stack::OutputReaderHooks for FeedbackSync {
 ///
 /// The ONLY place a `RuntimeConfig` is built from a request. Everything the
 /// requester is not allowed to choose is supplied here from this daemon's own
-/// state: the messaging endpoint of its router, its own core node name, and
-/// its `use_sim_time` default. A requester therefore cannot name an endpoint
+/// state: the messaging endpoint of its router and its own core node name. A
+/// requester therefore cannot name an endpoint
 /// or a daemon at all, which is what makes "a daemon owns the runtime identity
 /// of every node it spawns" checkable in one function rather than trusted
 /// across three call sites.
@@ -460,15 +454,10 @@ pub(crate) async fn assemble_runtime_config(
         .await
         .unwrap_or((DEFAULT_MESSAGING_HOST.to_string(), DEFAULT_MESSAGING_PORT));
 
-    // The one clock rule is enforced here, where the plan becomes a config
-    // on the daemon that spawns: simulated time, read or published, needs a
-    // daemon that serves it. Every spawn path (launches, `node run`, a peer's
-    // dispatched goal) passes through this call.
-    let node_instance = goal
-        .instance_plan
-        .clone()
-        .resolve(action_context.daemon_defaults.use_sim_time)
-        .map_err(|e| e.to_string())?;
+    // The clock travels whole: a domain's identity names the machine hosting
+    // its publisher, so a binding means the same thing here as where it was
+    // resolved. `process_node_run` holds it to this machine's rules.
+    let node_instance = goal.instance_plan.clone().resolve();
     RuntimeConfig::new(
         messaging_host.as_str(),
         messaging_port,
@@ -804,6 +793,21 @@ fn restart_refusal(instance_id: &str, running: &[String]) -> Option<String> {
     ))
 }
 
+/// The instance supplying `domain`, for a domain this machine hosts.
+fn local_publisher_of(
+    node_stack: &NodeStack,
+    domain: &config::runtime::ClockDomainId,
+) -> Option<Name> {
+    node_stack.instance_clocks().into_iter().find_map(|clock| {
+        (clock.binding.is_publisher()
+            && clock
+                .binding
+                .domain()
+                .is_some_and(|hosted| hosted == domain))
+        .then_some(clock.instance_id)
+    })
+}
+
 async fn process_node_run(
     goal: NodeRunGoal,
     mut runtime_config: RuntimeConfig,
@@ -821,6 +825,7 @@ async fn process_node_run(
         planned_observations,
         manifest_sha256,
         lifecycle_watchers,
+        launch_id,
         ..
     } = goal;
     let mut env_vars = match super::validate_goal_env_vars(&env_vars) {
@@ -881,6 +886,82 @@ async fn process_node_run(
         );
         write_error_to_log(&ctx.log_file, &msg);
         return NodeRunResult::failure(msg);
+    }
+
+    // A simulated domain is identified by its name and the machine hosting its
+    // publisher, so this daemon admits one publisher per name and only for a
+    // domain hosted here. Both keep `--clock <name>` addressing one stream.
+    let clock_binding = runtime_config.node_instance.framework.clock.clone();
+    if let Some(domain) = clock_binding.domain()
+        && clock_binding.is_publisher()
+    {
+        if domain.core_node.as_str() != ctx.action.core_node_name {
+            let msg = format!(
+                "clock domain `{}` is hosted on `{}`, and this machine is `{}`; \
+                 start its publisher on `{}`",
+                domain.name, domain.core_node, ctx.action.core_node_name, domain.core_node,
+            );
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+        if let Some(owner) = ctx.action.node_stack.clock_domain_publisher(&domain.name)
+            && owner != instance_id
+        {
+            let msg = format!(
+                "clock domain `{}` is already published by `{}` on `{}`; \
+                 choose another name, or stop that instance with `peppy node stop {}`",
+                domain.name,
+                owner.as_str(),
+                ctx.action.core_node_name,
+                owner.as_str(),
+            );
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+    }
+
+    // A consumer names the whole identity of the domain it reads and the
+    // instance supplying it. This daemon settles a domain hosted here against
+    // its own stack; one hosted elsewhere is settled by the machine the
+    // identity names, which is the machine its publisher runs on.
+    if let Some(domain) = clock_binding.domain()
+        && let Some(publisher) = clock_binding.publisher_ref()
+    {
+        if publisher.core_node != domain.core_node.as_str() {
+            let msg = format!(
+                "clock domain `{domain}` is hosted on `{}`, and this goal names a publisher \
+                 on `{}`; `peppy clock list` shows each domain and the machine hosting it",
+                domain.core_node, publisher.core_node,
+            );
+            write_error_to_log(&ctx.log_file, &msg);
+            return NodeRunResult::failure(msg);
+        }
+        if domain.core_node.as_str() == ctx.action.core_node_name {
+            match local_publisher_of(&ctx.action.node_stack, domain) {
+                None => {
+                    let msg = format!(
+                        "clock domain `{domain}` is not running on `{}`; `peppy clock list` \
+                         shows the domains this federation hosts, or declare one with \
+                         `peppy node run --publish-clock {}`",
+                        ctx.action.core_node_name, domain.name,
+                    );
+                    write_error_to_log(&ctx.log_file, &msg);
+                    return NodeRunResult::failure(msg);
+                }
+                Some(owner) if owner.as_str() != publisher.instance_id => {
+                    let msg = format!(
+                        "clock domain `{domain}` is supplied by `{}`, and this goal names \
+                         `{}`; `peppy clock list` shows each domain and the instance \
+                         supplying it",
+                        owner.as_str(),
+                        publisher.instance_id,
+                    );
+                    write_error_to_log(&ctx.log_file, &msg);
+                    return NodeRunResult::failure(msg);
+                }
+                Some(_) => {}
+            }
+        }
     }
 
     let node_config = {
@@ -946,6 +1027,20 @@ async fn process_node_run(
     } else {
         let snapshot = ctx.action.node_stack.pairing_node_snapshots();
         let live_pairs = ctx.action.node_stack.live_pairs();
+        // The clock rule a launch applies to its plan, applied here to the
+        // stack this instance joins: this daemon holds the clock every
+        // instance on it reads, and the goal that named this one is untrusted.
+        let clocks = daemon_config::launcher::ResolvedClocks::of_running(
+            ctx.action
+                .node_stack
+                .instance_clocks()
+                .into_iter()
+                .map(|clock| (clock.instance_id.as_str().to_owned(), clock.binding))
+                .chain(std::iter::once((
+                    instance_id_str.to_owned(),
+                    clock_binding.clone(),
+                ))),
+        );
         let request = super::pairing::PairingRequest {
             node_name: &node_name,
             node_tag: &tag,
@@ -955,7 +1050,13 @@ async fn process_node_run(
             vacant: &vacant_reasons,
             covered: &covered_pairs,
         };
-        match plan_requested_pairs(&snapshot, &live_pairs, &request, &ctx.action.core_node_name) {
+        match plan_requested_pairs(
+            &snapshot,
+            &live_pairs,
+            &request,
+            &ctx.action.core_node_name,
+            &clocks,
+        ) {
             Ok(p) => p,
             Err(msg) => {
                 write_error_to_log(&ctx.log_file, &msg);
@@ -1159,10 +1260,19 @@ async fn process_node_run(
         }
     });
 
+    // The launch this instance belongs to, and so the launch owning a clock
+    // domain it publishes. A goal names its launch only when a launch
+    // dispatched it, and this daemon attributes it only while it holds that
+    // launch's slice.
+    let launch = launch_id
+        .as_deref()
+        .and_then(|launch_id| ctx.action.slice_ownership.slice_of(launch_id));
     let start_ctx = node_stack::StartContext {
         instance_id: &instance_id,
         runtime_config_json5: &runtime_config_json5,
         slot_bindings: runtime_config.node_instance.slot_bindings.clone(),
+        clock: runtime_config.node_instance.framework.clock.clone(),
+        launch,
         env_vars: &env_vars,
         mount_paths_resolved: &resolved_mount_paths,
         peppy_dirs: &ctx.action.peppy_dirs,
@@ -1386,9 +1496,8 @@ async fn process_node_run(
                     // lifecycle notify below, so the `on_instance_running`
                     // observer branch finds them and delivers each slot's whole
                     // member set. Empty for a non-observer.
-                    // This is the `node run` analogue of the launcher's
-                    // `register_planned`, but additive: it merges one instance
-                    // into the live registry instead of replacing the stack.
+                    // Additive: one instance is merged into the live
+                    // registry, leaving every other instance's entry standing.
                     if !planned_observations.is_empty() {
                         ctx.action
                             .relationships
@@ -2078,7 +2187,6 @@ mod tests {
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
             namespace: config::namespace::Namespace::local(),
-            use_sim_time: false,
         }
     }
 
@@ -2167,11 +2275,8 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let defaults = DaemonDefaults::from_peppy_config(
-            &config,
-            config::namespace::Namespace::local(),
-            false,
-        );
+        let defaults =
+            DaemonDefaults::from_peppy_config(&config, config::namespace::Namespace::local());
 
         assert!(!defaults.gossip);
         assert_eq!(

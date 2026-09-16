@@ -21,7 +21,6 @@ const GIT_HASH: &str = env!("PEPPY_GIT_HASH");
 pub struct ServeCommand {
     pub messaging_engine: String,
     pub core_node_name: Option<String>,
-    pub clock_source: super::ClockSource,
     pub shutdown_token: Option<CancellationToken>,
     /// The peppy data root the daemon runs under (config, state, singleton
     /// lock). The CLI passes [`PeppyDirs::default`]; the serve integration
@@ -36,7 +35,6 @@ impl Command for ServeCommand {
             root_dir: ctx.root_dir.clone(),
             messaging_engine: self.messaging_engine,
             core_node_name: self.core_node_name,
-            clock_source: self.clock_source.into(),
             git_hash: GIT_HASH.to_string(),
             peppy_dirs: self.peppy_dirs,
             shutdown_token: self.shutdown_token,

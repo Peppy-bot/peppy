@@ -15,20 +15,20 @@
 //!     at all, and one that already has a spelling for "empty" (`[]`, or an
 //!     omitted key on a `zero_or_more` slot) keeps using it, because one
 //!     spelling per fact is the point;
-//!   - two instances both declaring `framework.publishes_sim_time` is
-//!     [`ParsingError::MultipleSimTimeSources`]. This one reads no slots at
-//!     all, only the instance list, but it needs the same whole-plan view: a
-//!     launch has one source of simulated time, and the pair that breaks that
-//!     can sit in different deployments.
+//!
+//!   - a clock-dependent connection whose endpoints read different clocks is
+//!     [`ParsingError::ClockMismatch`], checked once every binding, pairing
+//!     and observation of the plan has resolved.
 //!
 //! It reuses [`BindingValidationItem`] because that item already carries the
 //! full `depends_on` (all three families) and every instance, so callers build
 //! no extra item type.
 
+use super::clocks::{ResolvedClocks, validate_clock_connections};
 use super::types::Placements;
 use crate::error::{
-    BINDING_EMPTIABLE_KEY, LinkUnknownSlot, MultipleSimTimeSources, OBSERVER_EMPTIABLE_KEY,
-    PARTICIPANT_EMPTIABLE_KEY, ParsingError, VacancyRefusal,
+    BINDING_EMPTIABLE_KEY, LinkUnknownSlot, OBSERVER_EMPTIABLE_KEY, PARTICIPANT_EMPTIABLE_KEY,
+    ParsingError, VacancyRefusal,
 };
 use config::node::{Cardinality, DependsOn};
 use std::collections::BTreeMap;
@@ -59,12 +59,12 @@ pub fn validate_link_plan(
     already_paired: &AlreadyPairedSlots,
     externally_covered: &ExternallyCoveredSlots,
     placements: &Placements,
+    clocks: &ResolvedClocks,
 ) -> ValidatedLinkPlan {
     let mut out = ValidatedLinkPlan {
         errors: validate_link_slots(binding_items),
         ..ValidatedLinkPlan::default()
     };
-    out.errors.extend(validate_sim_time_source(binding_items));
     if !out.errors.is_empty() {
         return out;
     }
@@ -80,6 +80,17 @@ pub fn validate_link_plan(
     let observations = validate_observations(pairing_items, placements);
     out.errors.extend(pairings.errors);
     out.errors.extend(observations.errors);
+    if !out.errors.is_empty() {
+        return out;
+    }
+    // Last, over the resolved connections: a clock mismatch is a fact about
+    // two endpoints, so it needs both of them resolved first.
+    out.errors.extend(validate_clock_connections(
+        clocks,
+        &out.slot_bindings,
+        &pairings.planned,
+        &observations.planned,
+    ));
     if out.errors.is_empty() {
         out.planned_pairings = pairings.planned;
         out.planned_observations = observations.planned;
@@ -128,28 +139,6 @@ pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingEr
     }
 
     errors
-}
-
-/// At most one instance in the plan may declare itself the launch's source of
-/// simulated time. Two sources would feed every machine's `clock` topic two
-/// timelines, so the second is refused here, on the flattened plan, which is
-/// what makes the rule hold however the document was expanded: by hand, by
-/// composition, or by anything that copies a bundle containing the source.
-pub fn validate_sim_time_source(items: &[BindingValidationItem<'_>]) -> Vec<ParsingError> {
-    let sources: Vec<&str> = items
-        .iter()
-        .flat_map(|item| item.instances)
-        .filter(|instance| instance.framework.publishes_sim_time)
-        .map(|instance| instance.instance_id.as_str())
-        .collect();
-    if sources.len() <= 1 {
-        return Vec::new();
-    }
-    vec![ParsingError::MultipleSimTimeSources(Box::new(
-        MultipleSimTimeSources {
-            instance_ids: crate::format_quoted_list(&sources),
-        },
-    ))]
 }
 
 #[derive(Clone, Copy)]
@@ -509,41 +498,6 @@ mod tests {
         assert!(
             !message.contains("empty array"),
             "a required slot has no empty spelling to be pointed at: {message}"
-        );
-    }
-
-    /// One declared time source is the fleet shape; two are refused naming
-    /// both, whichever deployments they sit in; none is every launch that runs
-    /// on wall time.
-    #[test]
-    fn at_most_one_instance_publishes_sim_time() {
-        let engine = parse_instances(
-            r#"[{ instance_id: "sim_inst", framework: { publishes_sim_time: true } }]"#,
-        );
-        let robots = parse_instances(
-            r#"[{ instance_id: "arm_a" }, { instance_id: "arm_b", framework: { use_sim_time: true } }]"#,
-        );
-        let second_engine = parse_instances(
-            r#"[{ instance_id: "sim_inst_2", framework: { publishes_sim_time: true } }]"#,
-        );
-
-        assert!(validate_sim_time_source(&[item(&robots, None)]).is_empty());
-        assert!(validate_sim_time_source(&[item(&engine, None), item(&robots, None)]).is_empty());
-
-        let errors = validate_sim_time_source(&[
-            item(&engine, None),
-            item(&robots, None),
-            item(&second_engine, None),
-        ]);
-        assert_eq!(errors.len(), 1);
-        let message = errors[0].to_string();
-        assert!(
-            message.contains("`sim_inst`") && message.contains("`sim_inst_2`"),
-            "both sources are named: {message}"
-        );
-        assert!(
-            !message.contains("arm_b"),
-            "a reader is not a source: {message}"
         );
     }
 }

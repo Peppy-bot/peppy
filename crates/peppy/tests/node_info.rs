@@ -81,6 +81,8 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
         write_peppy_json5(dep_dir.path(), dep_peppy_json5);
         NodeCommand {
             command: NodeCommands::Add {
+                clock: None,
+                publish_clock: None,
                 source: Some(dep_dir.path().display().to_string()),
                 git_ref: None,
                 sync: false,
@@ -105,6 +107,8 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
 
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_dir.path().display().to_string()),
             git_ref: None,
             sync: false,

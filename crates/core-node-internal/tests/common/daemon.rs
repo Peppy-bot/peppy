@@ -66,7 +66,6 @@ fn default_node_arguments() -> CoreNodeArguments {
         // Faster than production (5 s) so the heartbeat test observes beats
         // quickly without flaking.
         heartbeat_interval: Duration::from_millis(200),
-        daemon_use_sim_time: false,
         // These daemons run standalone routers (no federation links), where
         // production also settles for zero.
         name_claim_settle: Duration::ZERO,
@@ -122,25 +121,6 @@ pub async fn start_core_node_with_mock_messenger_outside_home() -> StartedCoreNo
         shared_messenger,
         default_node_arguments(),
         None,
-        peppy_dirs,
-        daemon_config::peppy_config::PeppyConfig::default(),
-    )
-    .await
-}
-
-/// Boots the core node with `daemon_use_sim_time: true`. The daemon stops
-/// publishing wall ticks and instead subscribes to the `clock` topic to fill
-/// its internal cache, mirroring the production flow where an external
-/// simulator drives the clock.
-pub async fn start_core_node_with_sim_clock() -> StartedCoreNode {
-    let (data_dir, peppy_dirs) = init_test_data_dir();
-    let shared_messenger = create_mock_messenger().await;
-    let mut args = default_node_arguments();
-    args.daemon_use_sim_time = true;
-    start_core_node_with_messenger(
-        shared_messenger,
-        args,
-        data_dir,
         peppy_dirs,
         daemon_config::peppy_config::PeppyConfig::default(),
     )
@@ -455,6 +435,8 @@ async fn spawn_real_running_instance_inner(
             instance_id,
             runtime_config_json5: "{}",
             slot_bindings: std::collections::BTreeMap::new(),
+            clock: Default::default(),
+            launch: None,
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &started.peppy_dirs,
@@ -596,6 +578,8 @@ pub async fn spawn_real_starting_instance(
             instance_id,
             runtime_config_json5: "{}",
             slot_bindings: std::collections::BTreeMap::new(),
+            clock: Default::default(),
+            launch: None,
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &started.peppy_dirs,

@@ -14,7 +14,7 @@ use serde::{
     Deserialize, Serialize,
     de::{self, Deserializer, MapAccess, Visitor},
 };
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 pub use crate::internal::source::DeploymentSource;
 
@@ -61,6 +61,131 @@ pub struct PeppyLauncher {
     /// cleanly into a stack nobody should run. Requires `components`: with
     /// nothing to select there is no selection to refuse.
     pub constraints: Vec<SelectionConstraint>,
+    /// Framework configuration for the launch as a whole, separate from the
+    /// deployment structure around it. Today that is the clock domains this
+    /// launcher declares.
+    pub framework: LauncherFramework,
+}
+
+/// Framework configuration a launcher or a fragment contributes, as opposed
+/// to the per-instance knobs in [`FrameworkOverrides`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LauncherFramework {
+    /// The clock domains this document declares, by name. A launch's domains
+    /// are its own and its selected fragments', merged; two documents
+    /// declaring one name must agree.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub clocks: BTreeMap<Name, ClockDeclaration>,
+}
+
+impl LauncherFramework {
+    pub fn is_empty(&self) -> bool {
+        self.clocks.is_empty()
+    }
+}
+
+/// What one declared clock domain is.
+///
+/// Wall time needs no publisher: a wall domain is a name for the time every
+/// machine already keeps, so several of them are aliases of one timeline. A
+/// simulated domain is supplied by exactly one instance, and naming that
+/// instance is what assigns it the domain and the role together.
+///
+/// The two forms are the only ones representable, which is why neither
+/// carries a `source` field: a domain with a publisher is simulated and one
+/// without is wall, so a separate discriminator could only ever repeat or
+/// contradict the publisher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockDeclaration {
+    /// Spelled `"wall"`.
+    Wall,
+    /// Spelled `{ publisher: "<instance_id>" }`.
+    Sim { publisher: Name },
+}
+
+/// The literal a wall domain is written as.
+pub const WALL_CLOCK: &str = "wall";
+
+impl ClockDeclaration {
+    /// The instance that supplies this domain, for a simulated one.
+    pub fn publisher(&self) -> Option<&Name> {
+        match self {
+            Self::Wall => None,
+            Self::Sim { publisher } => Some(publisher),
+        }
+    }
+}
+
+/// Written back in the form it was read: a wall domain as the word, a
+/// simulated one as the map naming its publisher. Deriving it would spell the
+/// wall variant `null`, which is not a form the parser accepts.
+impl Serialize for ClockDeclaration {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Wall => serializer.serialize_str(WALL_CLOCK),
+            Self::Sim { publisher } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("publisher", publisher)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ClockDeclaration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ClockDeclarationVisitor;
+
+        /// Said by every refusal here, because every one of them is a reader
+        /// who wrote a third form.
+        const FORMS: &str = "a clock domain is `\"wall\"` or `{ publisher: \"<instance_id>\" }`";
+
+        impl<'de> Visitor<'de> for ClockDeclarationVisitor {
+            type Value = ClockDeclaration;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(FORMS)
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<ClockDeclaration, E> {
+                if value == WALL_CLOCK {
+                    return Ok(ClockDeclaration::Wall);
+                }
+                Err(E::custom(format!(
+                    "`{value}` names no clock source; {FORMS}"
+                )))
+            }
+
+            fn visit_map<M: MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<ClockDeclaration, M::Error> {
+                let mut publisher: Option<Name> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key != "publisher" {
+                        return Err(de::Error::custom(format!(
+                            "a clock domain carries no `{key}`; {FORMS}"
+                        )));
+                    }
+                    if publisher.is_some() {
+                        return Err(de::Error::duplicate_field("publisher"));
+                    }
+                    publisher = Some(map.next_value()?);
+                }
+                let publisher = publisher.ok_or_else(|| {
+                    de::Error::custom(format!("a clock domain map names its `publisher`; {FORMS}"))
+                })?;
+                Ok(ClockDeclaration::Sim { publisher })
+            }
+        }
+
+        deserializer.deserialize_any(ClockDeclarationVisitor)
+    }
 }
 
 impl PeppyLauncher {
@@ -117,6 +242,9 @@ impl Serialize for PeppyLauncher {
         if !self.constraints.is_empty() {
             map.serialize_entry("constraints", &self.constraints)?;
         }
+        if !self.framework.is_empty() {
+            map.serialize_entry("framework", &self.framework)?;
+        }
         map.end()
     }
 }
@@ -152,6 +280,8 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             adjustments: Vec<Adjustment>,
             #[serde(default)]
             constraints: Vec<SelectionConstraint>,
+            #[serde(default)]
+            framework: LauncherFramework,
         }
 
         let raw = RawPeppyLauncher::deserialize(deserializer)?;
@@ -204,6 +334,7 @@ impl<'de> Deserialize<'de> for PeppyLauncher {
             components: raw.components,
             adjustments: raw.adjustments,
             constraints: raw.constraints,
+            framework: raw.framework,
         })
     }
 }
@@ -967,17 +1098,14 @@ impl<'de> Visitor<'de> for LinkEntriesVisitor {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameworkOverrides {
-    /// Optional so the daemon falls through to its own `--clock-source`
-    /// default when the instance omits the override.
+    /// The clock domain this instance reads, naming `wall` or a domain the
+    /// launch declares. Omitted selects wall time.
+    ///
+    /// An instance a domain declaration names as its publisher carries none:
+    /// that declaration already assigns it the domain, and a binding beside
+    /// it would be a second place to say the same thing, or a different one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub use_sim_time: Option<bool>,
-    /// This instance is the launch's one source of simulated time: the daemon
-    /// hands it every machine of the launch, and its `SimTimePublisher` feeds
-    /// each machine's `clock` topic. At most one instance per launch may say
-    /// so; a second is refused when the flattened document is checked, which
-    /// is what keeps a fleet on one timeline whatever expanded the document.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub publishes_sim_time: bool,
+    pub clock: Option<Name>,
 }
 
 fn deserialize_instances<'de, D>(deserializer: D) -> Result<Vec<DeploymentInstance>, D::Error>
@@ -1065,18 +1193,6 @@ impl Placements {
             .values()
             .any(|core_node| core_node != &self.coordinator)
     }
-
-    /// Every core node at least one of `instance_ids` runs on, deduplicated
-    /// and in a stable order: the machines a launch-wide fact (the clock's
-    /// fan-out) has to reach. Derived from the instances, since an instance
-    /// that named no `core_node` runs
-    /// on the coordinator and a coordinator hosting nothing is no participant.
-    pub fn participants<'a>(
-        &'a self,
-        instance_ids: impl IntoIterator<Item = &'a str>,
-    ) -> BTreeSet<&'a str> {
-        instance_ids.into_iter().map(|id| self.of(id)).collect()
-    }
 }
 
 #[cfg(test)]
@@ -1152,7 +1268,7 @@ mod tests {
         assert_eq!(instance.instance_id, "camera_front");
         assert!(instance.arguments.is_empty());
         assert!(instance.env_vars.is_empty());
-        assert_eq!(instance.framework.use_sim_time, None);
+        assert_eq!(instance.framework.clock, None);
 
         let with_env: DeploymentInstance = serde_json5::from_str(
             "{ instance_id: \"esp32_1\", env_vars: { ESP32_DEVICE: \"/dev/ttyUSB0\" } }",
@@ -1194,38 +1310,93 @@ mod tests {
         }
     }
 
-    /// Per-instance framework overrides parse cleanly and round-trip back
-    /// to JSON5. Both the explicit-true and explicit-false cases must be
-    /// distinguishable from "absent" so the daemon's precedence (per-instance
-    /// > daemon CLI flag > default) has a value to gate on.
+    /// An instance's clock binding parses and round-trips, and an omitted
+    /// one stays absent: wall time is what absence means, so it carries no
+    /// field to write back.
     #[test]
-    fn deployment_instance_framework_overrides_round_trip() {
-        let with_sim: DeploymentInstance = serde_json5::from_str(
-            "{ instance_id: \"camera_front\", framework: { use_sim_time: true } }",
+    fn deployment_instance_clock_binding_round_trips() {
+        let bound: DeploymentInstance = serde_json5::from_str(
+            "{ instance_id: \"arm_inst\", framework: { clock: \"simulated_robot\" } }",
         )
         .unwrap();
-        assert_eq!(with_sim.framework.use_sim_time, Some(true));
-        assert!(!with_sim.framework.publishes_sim_time);
+        assert_eq!(
+            bound.framework.clock.as_ref().map(Name::as_str),
+            Some("simulated_robot")
+        );
 
-        let source: DeploymentInstance = serde_json5::from_str(
-            "{ instance_id: \"sim_inst\", framework: { publishes_sim_time: true } }",
-        )
-        .unwrap();
-        assert!(source.framework.publishes_sim_time);
-        assert_eq!(source.framework.use_sim_time, None);
-        let source_reparsed: DeploymentInstance =
-            serde_json5::from_str(&serde_json5::to_string(&source).unwrap()).unwrap();
-        assert!(source_reparsed.framework.publishes_sim_time);
-
-        let with_wall: DeploymentInstance = serde_json5::from_str(
-            "{ instance_id: \"camera_front\", framework: { use_sim_time: false } }",
-        )
-        .unwrap();
-        assert_eq!(with_wall.framework.use_sim_time, Some(false));
-
-        let serialized = serde_json5::to_string(&with_sim).unwrap();
+        let serialized = serde_json5::to_string(&bound).unwrap();
         let reparsed: DeploymentInstance = serde_json5::from_str(&serialized).unwrap();
-        assert_eq!(reparsed.framework.use_sim_time, Some(true));
+        assert_eq!(reparsed.framework.clock, bound.framework.clock);
+
+        let unbound: DeploymentInstance =
+            serde_json5::from_str("{ instance_id: \"cam_inst\" }").unwrap();
+        assert_eq!(unbound.framework.clock, None);
+        let unbound_serialized = serde_json5::to_string(&unbound).unwrap();
+        assert!(
+            !unbound_serialized.contains("clock"),
+            "wall time carries no field: {unbound_serialized}"
+        );
+    }
+
+    /// The two forms a domain is written in, and the refusal every other
+    /// shape gets. A reader who wrote a third form is told both legal ones.
+    #[test]
+    fn clock_declarations_take_wall_or_a_publisher() {
+        let launcher: PeppyLauncher = serde_json5::from_str(
+            r#"{
+                peppy_schema: "launcher/v1",
+                framework: { clocks: {
+                    physical_robot: "wall",
+                    simulated_robot: { publisher: "sim_inst" },
+                } },
+                deployments: [],
+            }"#,
+        )
+        .unwrap();
+        let clocks = &launcher.framework.clocks;
+        assert_eq!(
+            clocks.get(&Name::new("physical_robot").unwrap()),
+            Some(&ClockDeclaration::Wall)
+        );
+        assert_eq!(
+            clocks
+                .get(&Name::new("simulated_robot").unwrap())
+                .and_then(ClockDeclaration::publisher)
+                .map(Name::as_str),
+            Some("sim_inst")
+        );
+
+        let serialized = serde_json5::to_string(&launcher).unwrap();
+        let reparsed: PeppyLauncher = serde_json5::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.framework, launcher.framework);
+    }
+
+    #[test]
+    fn a_clock_declaration_refuses_every_other_shape() {
+        let cases = [
+            (
+                r#"{ robot: { source: "sim", publisher: "sim_inst" } }"#,
+                "carries no `source`",
+            ),
+            (r#"{ robot: "sim" }"#, "`sim` names no clock source"),
+            (r#"{ robot: {} }"#, "names its `publisher`"),
+            (
+                r#"{ robot: { publisher: "a", extra: "b" } }"#,
+                "carries no `extra`",
+            ),
+        ];
+        for (clocks, expected) in cases {
+            let document = format!(
+                r#"{{ peppy_schema: "launcher/v1", framework: {{ clocks: {clocks} }}, deployments: [] }}"#
+            );
+            let error = serde_json5::from_str::<PeppyLauncher>(&document)
+                .expect_err(&format!("`{clocks}` must be refused"));
+            let message = error.to_string();
+            assert!(
+                message.contains(expected),
+                "expected `{expected}`, got: {message}"
+            );
+        }
     }
 
     /// A binding's value pointing at an `instance_id` defined in a sibling
@@ -1717,36 +1888,6 @@ mod tests {
 
     fn core_node(name: &str) -> config::runtime::CoreNodeName {
         config::runtime::CoreNodeName::new(name).expect("valid test core node name")
-    }
-
-    /// The participants are the machines the given instances actually run
-    /// on: the coordinator only when something defaulted to it, every placed
-    /// machine once however many instances it holds, in a stable order.
-    #[test]
-    fn placements_participants_are_the_machines_the_instances_run_on() {
-        let placements = Placements::new(
-            core_node("cn-coord"),
-            BTreeMap::from([
-                ("robot_a".to_owned(), core_node("cn-b")),
-                ("robot_b".to_owned(), core_node("cn-b")),
-                ("robot_c".to_owned(), core_node("cn-a")),
-            ]),
-        );
-
-        assert_eq!(
-            placements.participants(["sim", "robot_a", "robot_b", "robot_c"]),
-            BTreeSet::from(["cn-a", "cn-b", "cn-coord"])
-        );
-        assert_eq!(
-            placements.participants(["robot_a", "robot_b"]),
-            BTreeSet::from(["cn-b"]),
-            "a coordinator hosting nothing is no participant"
-        );
-        assert_eq!(
-            Placements::all_on(core_node("cn-solo")).participants(["sim", "robot"]),
-            BTreeSet::from(["cn-solo"])
-        );
-        assert!(placements.participants([]).is_empty());
     }
 
     /// A placed instance resolves to the machine it was placed on, every

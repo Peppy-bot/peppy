@@ -3,12 +3,16 @@
 //! order, and the report of what they did.
 
 use super::super::composition::{Adjustment, OriginatedAdjustment};
-use super::super::types::{Deployment, DeploymentInstance, LinkTargets, LinkValue, Selection};
+use super::super::types::{
+    ClockDeclaration, Deployment, DeploymentInstance, LauncherFramework, LinkTargets, LinkValue,
+    Selection, WALL_CLOCK,
+};
 use super::constraints::{guard_holds, render_guard};
 use super::error::CompositionError;
 use super::load::LoadedFragment;
 use super::report::{AppliedAdjustment, AppliedChange, SkipReason, SkippedAdjustment};
 use super::select::UnitSelection;
+use config::runtime::Name;
 use std::collections::{BTreeMap, HashMap, btree_map::Entry};
 
 /// One deployment with the label of the document it came from.
@@ -82,6 +86,60 @@ pub(super) fn expand_unit(
         applied,
         skipped,
     })
+}
+
+/// The domains `base` and every selected fragment declare, merged. Each
+/// domain is held with the document it came from, so a refusal names the
+/// document that declared what it quotes.
+///
+/// Two documents may declare one domain, and identical declarations agree:
+/// a robot fragment and the simulation it runs in can both name the same
+/// timeline. Declarations that differ are refused naming both documents,
+/// because nothing about composition order makes one of them right.
+pub(super) fn merge_clocks(
+    base_origin: &str,
+    base: &LauncherFramework,
+    fragments: &[&LoadedFragment],
+) -> Result<LauncherFramework, CompositionError> {
+    let mut declared: BTreeMap<Name, (String, ClockDeclaration)> = BTreeMap::new();
+    let contributions = std::iter::once((base_origin, base)).chain(
+        fragments
+            .iter()
+            .map(|fragment| (fragment.origin.as_str(), &fragment.body.framework)),
+    );
+    for (origin, framework) in contributions {
+        for (domain, declaration) in &framework.clocks {
+            match declared.get(domain) {
+                Some((_, existing)) if existing == declaration => {}
+                Some((first_origin, existing)) => {
+                    return Err(CompositionError::ClockDomainConflict {
+                        domain: domain.to_string(),
+                        first_origin: first_origin.clone(),
+                        first: render_clock(existing),
+                        second_origin: origin.to_owned(),
+                        second: render_clock(declaration),
+                    });
+                }
+                None => {
+                    declared.insert(domain.clone(), (origin.to_owned(), declaration.clone()));
+                }
+            }
+        }
+    }
+    Ok(LauncherFramework {
+        clocks: declared
+            .into_iter()
+            .map(|(domain, (_, declaration))| (domain, declaration))
+            .collect(),
+    })
+}
+
+/// One declaration as a refusal quotes it back.
+fn render_clock(declaration: &ClockDeclaration) -> String {
+    match declaration {
+        ClockDeclaration::Wall => format!("\"{WALL_CLOCK}\""),
+        ClockDeclaration::Sim { publisher } => format!("{{ publisher: \"{publisher}\" }}"),
+    }
 }
 
 /// The unit's deployments in collection order, each with the label of the
@@ -254,6 +312,15 @@ fn apply_adjustment(
             instance.arguments.insert(key.clone(), value.clone());
         }
     }
+    if let Some(framework) = &step.adjustment.set_framework
+        && let Some(clock) = &framework.clock
+    {
+        record(AppliedChange::Clock {
+            old: instance.framework.clock.clone(),
+            new: clock.clone(),
+        });
+        instance.framework.clock = Some(clock.clone());
+    }
     if let Some(links) = &step.adjustment.set_links {
         for (slot, value) in links {
             record(AppliedChange::LinkSet {
@@ -334,12 +401,14 @@ pub(super) fn append_links(
     })
 }
 
-/// The two key spaces an adjustment can write in. `add_links` shares the
-/// links space with `set_links` and `unset_links`: appending to a slot and
-/// replacing it are two claims on the same entry.
+/// The key spaces an adjustment can write in. `add_links` shares the links
+/// space with `set_links` and `unset_links`: appending to a slot and
+/// replacing it are two claims on the same entry. An instance reads one
+/// clock, so `framework` holds the single key `clock`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum KeySpace {
     Arguments,
+    Framework,
     Links,
 }
 
@@ -347,6 +416,7 @@ impl KeySpace {
     fn label(self) -> &'static str {
         match self {
             KeySpace::Arguments => "arguments",
+            KeySpace::Framework => "framework",
             KeySpace::Links => "links",
         }
     }
@@ -370,6 +440,13 @@ fn check_conflicts(running: &[PlannedAdjustment<'_>]) -> Result<(), CompositionE
             .iter()
             .flat_map(|arguments| arguments.keys())
             .map(|key| (KeySpace::Arguments, key.as_str()))
+            .chain(
+                step.adjustment
+                    .set_framework
+                    .iter()
+                    .filter(|framework| framework.clock.is_some())
+                    .map(|_| (KeySpace::Framework, "clock")),
+            )
             .chain(
                 step.adjustment
                     .set_links
