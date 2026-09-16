@@ -36,6 +36,17 @@ const PREVIEW_INCARNATION: u64 = 1;
 /// resolved for preview passes an empty map.
 pub type ClockIncarnations = BTreeMap<Name, ClockIncarnation>;
 
+/// A fresh lifetime for one domain.
+///
+/// Reusing a domain name mints a new one, so the ticks of an earlier lifetime
+/// address a stream no consumer of the new one reads, and a delayed tick can
+/// never reach a replacement. Drawn from the range `ClockIncarnation` admits,
+/// which is what a runtime config carries to a node intact.
+pub fn mint_incarnation() -> ClockIncarnation {
+    let value = rand::random_range(1..=ClockIncarnation::MAX);
+    ClockIncarnation::try_from(value).expect("the range is the one the type admits")
+}
+
 /// The clock every instance of a plan reads.
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedClocks {

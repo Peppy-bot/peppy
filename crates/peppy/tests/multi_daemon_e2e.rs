@@ -1205,7 +1205,16 @@ fn named_clock_launcher() -> String {
 /// domain supplied by an instance no deployment carries.
 fn missing_publisher_clock_launcher() -> String {
     let mut launcher: serde_json::Value = serde_json5::from_str(&named_clock_launcher()).unwrap();
-    launcher["deployments"] = serde_json::json!([]);
+    // Swap the publisher's deployment for a probe's. The launch still starts
+    // an instance, so the declaration naming an absent publisher is the only
+    // thing left to refuse.
+    launcher["deployments"] = serde_json::json!([{
+        "source": { "name": "sim_clock_probe", "tag": "v1" },
+        "instances": [{
+            "instance_id": FLEET_PROBE_COORD_INSTANCE,
+            "arguments": { "poll_interval_ms": 50 }
+        }]
+    }]);
     serde_json::to_string(&launcher).unwrap()
 }
 

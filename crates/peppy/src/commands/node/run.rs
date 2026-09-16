@@ -1,7 +1,7 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
 use config::runtime::{
-    ClockBinding, ClockDomainId, ClockIncarnation, CoreNodeName, Name, PairingSlotBinding,
+    ClockBinding, ClockDomainId, CoreNodeName, Name, PairingSlotBinding,
     ProducerRef,
 };
 use core_node_api::encoding::{
@@ -329,17 +329,6 @@ impl ClockSearch {
     }
 }
 
-/// A fresh lifetime for a domain this command declares. Reusing a name after
-/// its previous publisher stopped is a new timeline, so the consumers of the
-/// old one are never silently rebound to this.
-fn mint_incarnation() -> ClockIncarnation {
-    loop {
-        if let Ok(incarnation) = ClockIncarnation::try_from(rand::random::<u64>()) {
-            return incarnation;
-        }
-    }
-}
-
 /// The binding `--publish-clock` declares: a fresh lifetime of `name`, hosted
 /// by the daemon this command targets.
 fn publisher_binding(name: &Name, target_core_node: &str) -> Result<ClockBinding> {
@@ -358,7 +347,7 @@ fn publisher_binding(name: &Name, target_core_node: &str) -> Result<ClockBinding
     Ok(ClockBinding::publisher(ClockDomainId::new(
         name.clone(),
         core_node,
-        mint_incarnation(),
+        daemon_config::launcher::mint_incarnation(),
     )))
 }
 
@@ -1159,6 +1148,9 @@ async fn run_node_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the fixtures below build a lifetime by hand; the command mints
+    // through `daemon_config`.
+    use config::runtime::ClockIncarnation;
 
     #[test]
     fn parse_bool_values() {

@@ -964,15 +964,15 @@ mod tests {
         };
 
         let both = listing(vec![
-            reading("frozen_1", 0x1111_2222_3333_4444),
-            reading("fresh_1", 0xaaaa_bbbb_cccc_dddd),
+            reading("frozen_1", 0x0011_2222_3333_4444),
+            reading("fresh_1", 0x001a_aabb_bccc_cddd),
         ]);
         assert!(
-            both.contains("robot@core-a#11112222") && both.contains("robot@core-a#aaaabbbb"),
+            both.contains("robot@core-a#00112222") && both.contains("robot@core-a#001aaabb"),
             "each lifetime carries its own incarnation:\n{both}"
         );
 
-        let one = listing(vec![reading("only_1", 0x1111_2222_3333_4444)]);
+        let one = listing(vec![reading("only_1", 0x0011_2222_3333_4444)]);
         assert!(
             one.contains("robot@core-a") && !one.contains("robot@core-a#"),
             "a single lifetime reads as name@core_node:\n{one}"

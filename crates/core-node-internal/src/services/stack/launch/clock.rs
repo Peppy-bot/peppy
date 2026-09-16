@@ -2,14 +2,14 @@
 //! lifetime each one is minted for, and what the change tells the operator
 //! about them.
 //!
-//! Resolution itself lives in `daemon_config`, which holds the launcher
-//! document's rules. What belongs here is the part only a running daemon can
-//! do: mint a lifetime for each domain a change introduces, and say what it
-//! resolved.
+//! Resolution and minting both live in `daemon_config`, which holds the
+//! launcher document's rules and the type a lifetime has to satisfy. What
+//! belongs here is the part only a running daemon can do: decide which domains
+//! a change introduces, carry forward the lifetimes already running, and say
+//! what it resolved.
 
 use super::feedback::publish_stdout;
 use crate::services::stack::action::StackChangeContext;
-use config::runtime::ClockIncarnation;
 use core_node_api::encoding::LaunchFeedbackStep;
 use daemon_config::launcher::{
     ClockIncarnations, PeppyLauncher, Placements, ResolvedClocks, resolve_clocks,
@@ -30,27 +30,13 @@ pub(in crate::services::stack) fn plan_clocks(
     let mut incarnations = known.clone();
     for (domain, declaration) in &flat.framework.clocks {
         if declaration.publisher().is_some() && !incarnations.contains_key(domain) {
-            incarnations.insert(domain.clone(), mint());
+            incarnations.insert(domain.clone(), daemon_config::launcher::mint_incarnation());
         }
     }
     let resolved = resolve_clocks(flat, placements, &incarnations).map_err(|errors| {
         daemon_config::format_bulleted(&errors.iter().map(ToString::to_string).collect::<Vec<_>>())
     })?;
     Ok((resolved, incarnations))
-}
-
-/// A fresh lifetime for one domain.
-///
-/// Every domain a change introduces gets one, so the ticks of a domain that
-/// ran under the same name before address a stream nothing in the new one
-/// reads: a delayed tick cannot reach the replacement, and a consumer left on
-/// the old lifetime is not silently rebound to the new.
-fn mint() -> ClockIncarnation {
-    loop {
-        if let Ok(incarnation) = ClockIncarnation::try_from(rand::random::<u64>()) {
-            return incarnation;
-        }
-    }
 }
 
 /// One feedback line per simulated domain, naming the instance that supplies

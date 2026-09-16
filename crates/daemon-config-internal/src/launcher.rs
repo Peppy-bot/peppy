@@ -13,7 +13,10 @@ mod types;
 // but the parser is filename-agnostic; repository discovery accepts any
 // `.json5` file whose body declares the launcher schema.
 pub use bindings::{BindingValidationItem, validate_bindings};
-pub use clocks::{ClockIncarnations, ResolvedClocks, resolve_clocks, validate_clock_connections};
+pub use clocks::{
+    ClockIncarnations, ResolvedClocks, mint_incarnation, resolve_clocks,
+    validate_clock_connections,
+};
 pub use compose::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyRecord,
     JoinRequest, PreparedLauncher, RunningStack, SELF_COPY_NAME_REFUSAL, SkipReason,

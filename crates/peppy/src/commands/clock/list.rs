@@ -259,8 +259,8 @@ mod tests {
 
     /// Two lifetimes of one name on one machine, which is what a publisher
     /// that stopped and a replacement under its name leave behind.
-    const FROZEN: u64 = 0x1111_2222_3333_4444;
-    const FRESH: u64 = 0xaaaa_bbbb_cccc_dddd;
+    const FROZEN: u64 = 0x0011_2222_3333_4444;
+    const FRESH: u64 = 0x001a_aabb_bccc_cddd;
 
     fn domain(name: &str, core_node: &str, incarnation: u64) -> config::runtime::ClockDomainId {
         config::runtime::ClockDomainId::new(
@@ -426,7 +426,7 @@ mod tests {
             None,
         );
         assert!(
-            both.contains("robot@cn-a#11112222") && both.contains("robot@cn-a#aaaabbbb"),
+            both.contains("robot@cn-a#00112222") && both.contains("robot@cn-a#001aaabb"),
             "each lifetime carries its own incarnation:\n{both}"
         );
 
