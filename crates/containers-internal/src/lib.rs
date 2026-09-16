@@ -38,6 +38,11 @@ pub const GOCRYPTFS_VERSION: &str = env!("GOCRYPTFS_VERSION");
 /// which is both slow and fatal on hosts whose `/tmp` is a quota-limited
 /// tmpfs.
 pub const SQUASHFUSE_VERSION: &str = env!("SQUASHFUSE_VERSION");
+/// Libraries the build script adds to the apptainer install's
+/// `etc/apptainer/nvliblist.conf`, comma-separated: the NVIDIA Tegra
+/// (Jetson) driver libraries `--nv` must bind beyond apptainer's stock list
+/// for the host's EGL, GLX and NVML libraries to load inside a container.
+pub const NVLIBLIST_TEGRA_LIBS: &str = env!("NVLIBLIST_TEGRA_LIBS");
 
 /// Name of the apptainer cache directory under `~/.peppy/tmp`, as provisioned
 /// by the build script for this binary's architecture. A name, not a path, so

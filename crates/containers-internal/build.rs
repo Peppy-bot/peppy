@@ -1155,6 +1155,87 @@ mod apptainer_build {
     }
 
     // -----------------------------------------------------------------------
+    // --nv on NVIDIA Tegra hosts
+    // -----------------------------------------------------------------------
+
+    /// Libraries `--nv` binds into a container beyond the ones apptainer's
+    /// stock `etc/apptainer/nvliblist.conf` names: the L4T driver's
+    /// resource-manager library, which every EGL, GLX, GL core and NVML
+    /// library of the stock list links against on NVIDIA Tegra hosts
+    /// (Jetson). Without it the bound `libEGL_nvidia.so.0` cannot load, glvnd
+    /// falls through to Mesa, and a node rendering headlessly through EGL
+    /// fails to initialise a display. `--nv` resolves every name through
+    /// `ldconfig -p` and skips the ones a host lacks, so the entries cost a
+    /// desktop driver nothing.
+    const NVLIBLIST_TEGRA_LIBS: &[&str] = &["libnvidia-rmapi-tegra.so"];
+
+    /// Path of the `--nv` library list inside an apptainer install tree.
+    fn nvliblist_path(install_dir: &Path) -> PathBuf {
+        install_dir.join("etc/apptainer/nvliblist.conf")
+    }
+
+    /// Ensure `<install_dir>/etc/apptainer/nvliblist.conf` names every entry
+    /// of [`NVLIBLIST_TEGRA_LIBS`]. Idempotent: an entry already listed is
+    /// left alone, and a tree whose list carries them all is untouched, so an
+    /// existing cache is retrofitted in place rather than rebuilt. Returns
+    /// false on an I/O error, failing the build rather than shipping a tree
+    /// whose `--nv` is blind to Tegra drivers.
+    fn ensure_tegra_libs_in_nvliblist(install_dir: &Path) -> bool {
+        let path = nvliblist_path(install_dir);
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(e) => {
+                println!("cargo:warning=Failed to read {:?}: {}", path, e);
+                return false;
+            }
+        };
+        let missing: Vec<&str> = NVLIBLIST_TEGRA_LIBS
+            .iter()
+            .copied()
+            .filter(|lib| !contents.lines().any(|line| line.trim() == *lib))
+            .collect();
+        if missing.is_empty() {
+            return true;
+        }
+        let mut patched = contents;
+        if !patched.ends_with('\n') {
+            patched.push('\n');
+        }
+        patched.push_str("\n# NVIDIA Tegra (Jetson) driver libraries, added by peppy\n");
+        for lib in missing {
+            patched.push_str(lib);
+            patched.push('\n');
+        }
+        if let Err(e) = std::fs::write(&path, patched) {
+            println!("cargo:warning=Failed to write {:?}: {}", path, e);
+            return false;
+        }
+        true
+    }
+
+    /// Everything a provisioned apptainer tree carries on top of apptainer's
+    /// own `make install`, applied to a tree however it was obtained (built
+    /// here, copied from the macOS-side cache, or reused from an earlier
+    /// build): the bundled gocryptfs, the Tegra entries of the `--nv`
+    /// library list, and the compiled-in squashfuse, which only a build can
+    /// produce and is therefore asserted rather than added.
+    fn complete_apptainer_cache(cache_dir: &Path, arch: &str) {
+        assert!(
+            ensure_gocryptfs_installed(cache_dir, arch),
+            "Failed to install gocryptfs {} into apptainer cache for {} at {:?}",
+            GOCRYPTFS_VERSION,
+            arch,
+            cache_dir
+        );
+        assert!(
+            ensure_tegra_libs_in_nvliblist(cache_dir),
+            "Failed to add the Tegra driver libraries to {:?}",
+            nvliblist_path(cache_dir)
+        );
+        assert_squashfuse_bundled(cache_dir);
+    }
+
+    // -----------------------------------------------------------------------
     // squashfuse: compiled from source, installed next to `starter`
     //
     // Same auto-discovery mechanism as gocryptfs above, but it cannot be a
@@ -2105,6 +2186,10 @@ echo "=== Apptainer build complete ==="
         println!("cargo:rustc-env=GOCRYPTFS_VERSION={}", GOCRYPTFS_VERSION);
         println!("cargo:rustc-env=SQUASHFUSE_VERSION={}", SQUASHFUSE_VERSION);
         println!(
+            "cargo:rustc-env=NVLIBLIST_TEGRA_LIBS={}",
+            NVLIBLIST_TEGRA_LIBS.join(",")
+        );
+        println!(
             "cargo:rustc-env=GUEST_APPTAINER_DIR={}",
             GUEST_APPTAINER_DIR
         );
@@ -2309,15 +2394,10 @@ echo "=== Apptainer build complete ==="
                 "cargo:warning=Using cached apptainer installation from {:?}",
                 cache_dir
             );
-            // The apptainer cache may pre-date gocryptfs bundling; ensure the
-            // binary is present even when we short-circuit the rest of the build.
-            assert!(
-                ensure_gocryptfs_installed(&cache_dir, arch),
-                "Failed to install gocryptfs {} into cached apptainer dir at {:?}",
-                GOCRYPTFS_VERSION,
-                cache_dir
-            );
-            assert_squashfuse_bundled(&cache_dir);
+            // The cache may pre-date the gocryptfs bundle or the Tegra
+            // entries of the --nv list; both are retrofitted in place even
+            // when the rest of the build is skipped.
+            complete_apptainer_cache(&cache_dir, arch);
             return cache_dir;
         }
 
@@ -2326,13 +2406,7 @@ echo "=== Apptainer build complete ==="
             force_remove_dir(&cache_dir);
             copy_dir_recursive(&macos_cache, &cache_dir)
                 .expect("Failed to copy macOS apptainer cache");
-            assert!(
-                ensure_gocryptfs_installed(&cache_dir, arch),
-                "Failed to install gocryptfs {} into apptainer cache for {}",
-                GOCRYPTFS_VERSION,
-                arch
-            );
-            assert_squashfuse_bundled(&cache_dir);
+            complete_apptainer_cache(&cache_dir, arch);
             write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
             return cache_dir;
         }
@@ -2356,13 +2430,7 @@ echo "=== Apptainer build complete ==="
             "Apptainer source build completed but bin/apptainer not found in {:?}",
             cache_dir
         );
-        assert!(
-            ensure_gocryptfs_installed(&cache_dir, arch),
-            "Failed to install gocryptfs {} for {}",
-            GOCRYPTFS_VERSION,
-            arch
-        );
-        assert_squashfuse_bundled(&cache_dir);
+        complete_apptainer_cache(&cache_dir, arch);
         write_cache_sentinel(&cache_dir, APPTAINER_VERSION);
 
         cache_dir
@@ -2452,10 +2520,11 @@ echo "=== Apptainer build complete ==="
         let out_install_dir = PathBuf::from(&out_dir).join("apptainer-install");
         let sentinel_path = out_install_dir.join(".copy-source");
         let sentinel_content = format!(
-            "{}\ngocryptfs={}\nsquashfuse={}",
+            "{}\ngocryptfs={}\nsquashfuse={}\nnvliblist-tegra={}",
             cache_path_digest(&cache_dir),
             GOCRYPTFS_VERSION,
-            SQUASHFUSE_VERSION
+            SQUASHFUSE_VERSION,
+            NVLIBLIST_TEGRA_LIBS.join(",")
         );
         let needs_copy = !sentinel_path.exists()
             || std::fs::read_to_string(&sentinel_path)

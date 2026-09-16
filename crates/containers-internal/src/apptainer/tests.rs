@@ -1190,6 +1190,26 @@ fn gocryptfs_bundled_in_apptainer_install_dir() {
     );
 }
 
+/// Verifies the `--nv` library list of the apptainer install names the Tegra
+/// driver libraries, so a container on a Jetson gets the host's NVIDIA EGL
+/// and GL stack rather than falling through to Mesa.
+#[cfg(target_os = "linux")]
+#[test]
+fn nvliblist_names_the_tegra_driver_libraries() {
+    let install_dir =
+        linux_apptainer_cache_dir().expect("HOME is not set; cannot locate the apptainer cache");
+    let nvliblist = install_dir.join("etc/apptainer/nvliblist.conf");
+    let contents = std::fs::read_to_string(&nvliblist)
+        .unwrap_or_else(|e| panic!("cannot read {:?}: {e}", nvliblist));
+    for lib in crate::NVLIBLIST_TEGRA_LIBS.split(',') {
+        assert!(
+            contents.lines().any(|line| line.trim() == lib),
+            "{lib} is missing from {:?}; --nv cannot bind the Tegra driver",
+            nvliblist
+        );
+    }
+}
+
 /// Runs the bundled `gocryptfs --version` and confirms it reports the pinned
 /// release. This catches a corrupted/truncated extract that the existence
 /// check above would miss.
