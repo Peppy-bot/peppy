@@ -1342,7 +1342,7 @@ fn check_composition_holds_only_legal_selections_to_flattening() {
 /// problem of its own.
 #[test]
 fn check_composition_holds_a_file_copy_only_to_the_stacks_that_admit_it() {
-    let family = |with: &str, constraints: &str| {
+    let family = |constraints: &str| {
         parse_launcher(&format!(
             r#"{{
                 peppy_schema: "launcher/v1",
@@ -1381,7 +1381,7 @@ fn check_composition_holds_a_file_copy_only_to_the_stacks_that_admit_it() {
                 ],
                 deployments: [
                     {{ simulation: "lit" }},
-                    {{ robot: "arm", instances: [{{ instance_id: "alpha"{with} }}] }},
+                    {{ robot: "arm", instances: [{{ instance_id: "alpha", with: {{ commander: "lamps" }} }}] }},
                 ],
             }}"#
         ))
@@ -1391,7 +1391,7 @@ fn check_composition_holds_a_file_copy_only_to_the_stacks_that_admit_it() {
 
     // The copy the file pins to the lamp panel composes under the lit
     // engine and is refused, by design, under the plain one.
-    let launcher = family(r#", with: { commander: "lamps" }"#, lit_only);
+    let launcher = family(lit_only);
     let problems = check_composition(&launcher, Path::new("family.json5"));
     assert!(problems.is_empty(), "got: {problems:?}");
 
@@ -1402,7 +1402,7 @@ fn check_composition_holds_a_file_copy_only_to_the_stacks_that_admit_it() {
            {{ when: {{ commander: "lamps" }}, requires: [{{ simulation: "plain" }}],
               reason: "and the plain one" }}"#
     );
-    let launcher = family(r#", with: { commander: "lamps" }"#, &impossible);
+    let launcher = family(&impossible);
     let problems = check_composition(&launcher, Path::new("family.json5"));
     assert!(
         problems

@@ -8,7 +8,7 @@ use super::constraints::{
     ConstraintInPlay, ConstraintScope, LAUNCHER, constraint_satisfied, constraints_in_play,
     render_constraint,
 };
-use super::copy::{ComposedCopy, CopyRequest, attach, combine, compose_copy};
+use super::copy::{ComposedCopy, CopyRequest, attach, combine, compose_copy, copy_over_stack};
 use super::error::CompositionError;
 use super::expand::Expanded;
 use super::load::{LoadedComposition, LoadedOption, launcher_file_label};
@@ -263,31 +263,17 @@ fn check_file_copies_over(
                     // The copy's constraints, judged over the stack as the
                     // join path judges them: a refused selection is refused
                     // by design and composes nothing.
-                    let refused = match resolve_copy(
+                    let refused = resolve_copy(
                         loaded,
                         &entry.axis,
                         instance.instance_id.as_str(),
                         with,
                         CopyOrigin::File,
-                    ) {
-                        Ok(own) => {
-                            let full = UnitSelection {
-                                entries: stack
-                                    .launcher_entries(launcher)
-                                    .into_iter()
-                                    .chain(own.entries.iter().cloned())
-                                    .collect(),
-                            };
-                            let fragments = loaded.fragments_for(&own);
-                            let in_play = constraints_in_play(
-                                launcher,
-                                &fragments,
-                                ConstraintScope::Copy { axis: &entry.axis },
-                            );
-                            ledger.judge(&in_play, &full)
-                        }
-                        Err(_) => false,
-                    };
+                    )
+                    .is_ok_and(|own| {
+                        let over = copy_over_stack(launcher, stack, loaded, &entry.axis, &own);
+                        ledger.judge(&over.in_play, &over.selection)
+                    });
                     if refused {
                         continue;
                     }
@@ -362,22 +348,14 @@ fn check_copies_over(
         for copy_selection in enumerate_copy(item.loaded, &item.axis.name) {
             let mut legal_somewhere = false;
             for stack in stacks {
-                let full = UnitSelection {
-                    entries: stack
-                        .launcher_entries(launcher)
-                        .into_iter()
-                        .chain(copy_selection.entries.iter().cloned())
-                        .collect(),
-                };
-                let fragments = item.loaded.fragments_for(&copy_selection);
-                let in_play = constraints_in_play(
+                let over = copy_over_stack(
                     launcher,
-                    &fragments,
-                    ConstraintScope::Copy {
-                        axis: &item.axis.name,
-                    },
+                    stack,
+                    item.loaded,
+                    &item.axis.name,
+                    &copy_selection,
                 );
-                if ledger.judge(&in_play, &full) {
+                if ledger.judge(&over.in_play, &over.selection) {
                     continue;
                 }
                 legal_somewhere = true;

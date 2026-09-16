@@ -7,12 +7,12 @@ use super::super::types::{
     Deployment, DeploymentInstance, LinkTargets, LinkValue, PeppyLauncher, Selection,
     split_link_target,
 };
-use super::constraints::{self, ConstraintScope, names_axis};
+use super::constraints::{self, ConstraintInPlay, ConstraintScope, names_axis};
 use super::error::CompositionError;
 use super::expand::{
     Expanded, OriginatedDeployment, Unit, append_links, expand_unit, instance_named_mut,
 };
-use super::load::LoadedOption;
+use super::load::{LoadedFragment, LoadedOption};
 use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
@@ -110,6 +110,40 @@ fn prefixed_id(copy: &Name, id: &str) -> Name {
     Name::try_from(format!("{copy}_{id}")).expect("two names joined by `_` are a name")
 }
 
+/// One copy's selection `own` laid over the stack `stack`: the whole
+/// selection, the fragments the copy pulls in and the constraints that
+/// judge it. A launch, a join and `repo index --check` all derive the
+/// three the same way, so the verdict is the same whichever path asks.
+pub(super) struct CopyOverStack<'a> {
+    pub(super) selection: UnitSelection,
+    pub(super) fragments: Vec<&'a LoadedFragment>,
+    pub(super) in_play: Vec<ConstraintInPlay<'a>>,
+}
+
+pub(super) fn copy_over_stack<'a>(
+    launcher: &'a PeppyLauncher,
+    stack: &UnitSelection,
+    loaded: &'a LoadedOption,
+    axis: &str,
+    own: &UnitSelection,
+) -> CopyOverStack<'a> {
+    let selection = UnitSelection {
+        entries: stack
+            .launcher_entries(launcher)
+            .into_iter()
+            .chain(own.entries.iter().cloned())
+            .collect(),
+    };
+    let fragments = loaded.fragments_for(own);
+    let in_play =
+        constraints::constraints_in_play(launcher, &fragments, ConstraintScope::Copy { axis });
+    CopyOverStack {
+        selection,
+        fragments,
+        in_play,
+    }
+}
+
 /// Composes one copy over the stack `bare`, whose selection is `stack`.
 /// `taken` holds the core node links already in use, which the name must
 /// not be.
@@ -136,14 +170,12 @@ pub(super) fn compose_copy(
         });
     }
     let own = resolve_copy(loaded, axis, name.as_str(), with, origin)?;
-    let selection = UnitSelection {
-        entries: stack
-            .launcher_entries(&prepared.launcher)
-            .into_iter()
-            .chain(own.entries.iter().cloned())
-            .collect(),
-    };
-    let fragments = loaded.fragments_for(&own);
+    let launcher = &prepared.launcher;
+    let CopyOverStack {
+        selection,
+        fragments,
+        in_play,
+    } = copy_over_stack(launcher, stack, loaded, axis, &own);
     let owned: HashSet<String> = fragments
         .iter()
         .flat_map(|fragment| &fragment.body.deployments)
@@ -169,9 +201,6 @@ pub(super) fn compose_copy(
         });
     }
 
-    let launcher = &prepared.launcher;
-    let in_play =
-        constraints::constraints_in_play(launcher, &fragments, ConstraintScope::Copy { axis });
     constraints::check(&in_play, &selection)?;
 
     let base_adjustments = launcher
