@@ -264,6 +264,8 @@ pub fn built_artifacts_for(
 pub fn node_add_command(source: &std::path::Path) -> peppy::commands::node::NodeCommand {
     peppy::commands::node::NodeCommand {
         command: peppy::commands::node::NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(source.display().to_string()),
             git_ref: None,
             sync: false,
@@ -286,6 +288,8 @@ pub fn add_built_node(ctx: &Arc<AppContext>, dir: &std::path::Path, config: &str
     std::fs::write(dir.join("peppy.json5"), config).expect("write node config");
     peppy::commands::node::NodeCommand {
         command: peppy::commands::node::NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -321,6 +325,8 @@ pub fn node_run_command(
         .collect();
     peppy::commands::node::NodeCommand {
         command: peppy::commands::node::NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(node.to_string()),
             tag: Some(TEST_NODE_TAG.to_string()),

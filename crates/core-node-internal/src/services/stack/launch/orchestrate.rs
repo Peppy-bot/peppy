@@ -185,6 +185,7 @@ pub(in crate::services::stack) async fn start_node_directly(
         daemon_defaults: ctx.daemon_defaults.clone(),
         shutdown_token: ctx.shutdown_token.clone(),
         relationships: ctx.relationships.clone(),
+        slice_ownership: Arc::clone(&ctx.slice_ownership),
     };
 
     let log_file_for_timeout = log_file.clone();
@@ -281,6 +282,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
     placements: &daemon_config::launcher::Placements,
+    clocks: &daemon_config::launcher::ResolvedClocks,
 ) -> std::result::Result<
     (
         Vec<NodeKey>,
@@ -419,6 +421,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         // outside the validator's view.
         &daemon_config::launcher::ExternallyCoveredSlots::new(),
         placements,
+        clocks,
     );
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();

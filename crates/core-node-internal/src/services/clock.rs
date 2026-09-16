@@ -1,3 +1,5 @@
+pub(crate) mod list;
+pub(crate) mod watch;
 use crate::Result;
 use config::node::QoSProfile;
 use core_node_api::encoding::ClockTick;
@@ -7,11 +9,10 @@ use core_node_api::{ServiceId, TopicId};
 // `peppylib::clock`, shared with the test harness's clock stand-in
 // (`peppylib::testing::MockClock`) so both serve identical semantics.
 use peppylib::clock::handle_clock_request;
-pub use peppylib::clock::{ClockSource, SimClockSource, WallClockSource};
-use peppylib::messaging::{SenderTarget, Subscription, TopicPublisher};
+pub use peppylib::clock::{ClockSource, WallClockSource};
+use peppylib::messaging::{SenderTarget, TopicPublisher};
 use peppylib::{MessengerHandle, ServiceMessenger, TopicMessenger};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -52,10 +53,6 @@ pub async fn listen_for_clock(
 ///
 /// Pre-binds a [`TopicPublisher`] outside the loop: the wire key is formatted
 /// once at startup, and per-tick `publish` skips the central messenger mutex.
-///
-/// Wall mode only. In sim mode the daemon does not publish; an external
-/// simulator does, and the daemon merely subscribes (see
-/// [`subscribe_external_clock`]).
 ///
 /// `cancel` stops the loop on daemon shutdown so it does not spin against a
 /// closed session, logging a failed publish on every tick.
@@ -145,8 +142,9 @@ async fn run_clock_publisher(
 }
 
 /// Spawns a task that emits a liveness beat on the `daemon_heartbeat` topic at
-/// every `interval`, in BOTH wall and sim mode (liveness must not depend on the
-/// clock topology; in sim mode the daemon does not publish the clock at all).
+/// every `interval`, on this machine's wall clock whatever its instances read.
+/// Liveness is a fact about the daemon's own process, so it is independent of
+/// every simulated domain the machine happens to host.
 ///
 /// Each spawned node runs a watchdog subscribed to this topic; if the beats go
 /// silent past the configured grace period the node shuts itself down, so an
@@ -201,58 +199,6 @@ async fn run_heartbeat_publisher(
         }
     }
     Ok(())
-}
-
-/// Subscribes to the `clock` topic and feeds the latest observed timestamp
-/// into `cache`. Spawned in sim mode in lieu of [`publish_clock`]: the daemon
-/// is one of many subscribers to the external simulator's tick stream, and
-/// uses the cached value to answer `synchronize` requests via
-/// [`SimClockSource`].
-///
-/// `cache` is shared with the `SimClockSource` instance handed to
-/// [`listen_for_clock`]. The two halves are decoupled: this task can fall
-/// behind without blocking the service handler, which simply observes a
-/// stale (or missing) value.
-pub async fn subscribe_external_clock(
-    messenger: MessengerHandle,
-    core_node_name: &str,
-    instance_id: &str,
-    node_name: &str,
-    cache: Arc<AtomicU64>,
-    cancel: CancellationToken,
-) -> Result<JoinHandle<Result<()>>> {
-    let mut subscription: Subscription = TopicMessenger::subscribe_target_scoped(
-        &messenger,
-        core_node_name,
-        instance_id,
-        SenderTarget::node(node_name, names::CORE_NODE_TAG)?,
-        TopicId::Clock.name(),
-        QoSProfile::SensorData,
-    )
-    .await?;
-
-    Ok(tokio::spawn(async move {
-        loop {
-            // The subscription also ends on session close, but selecting on the
-            // shutdown token makes the exit deterministic and matches the
-            // publisher loops.
-            let message = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => break,
-                message = subscription.on_next_message() => match message {
-                    Some(message) => message,
-                    None => break,
-                },
-            };
-            // A decoded tick is never `0` (`ClockTick` clamps on decode), so
-            // storing it can never write the cache's not-ready sentinel.
-            match ClockTick::decode(message.payload_bytes().as_ref()) {
-                Ok(tick) => cache.store(tick.time(), Ordering::Relaxed),
-                Err(e) => warn!("dropped malformed clock tick: {e}"),
-            }
-        }
-        Ok(())
-    }))
 }
 
 #[cfg(test)]

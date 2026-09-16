@@ -324,6 +324,19 @@ impl SliceOwnership {
         self.state.lock().slice.clone()
     }
 
+    /// This daemon's slice, when it belongs to `launch_id`.
+    ///
+    /// What attributes one instance to the launch that started it: a goal
+    /// names its launch, and this daemon owns a slice of that launch, which is
+    /// what every dispatched goal already required of it.
+    pub fn slice_of(&self, launch_id: &str) -> Option<LaunchIdentity> {
+        self.state
+            .lock()
+            .slice
+            .clone()
+            .filter(|slice| slice.launch_id == launch_id)
+    }
+
     /// The reservation currently held, as `(launch_id, coordinator)`.
     pub fn held_reservation(&self) -> Option<(String, String)> {
         let state = self.state.lock();

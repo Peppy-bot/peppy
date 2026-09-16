@@ -6,7 +6,7 @@ use super::super::action::StackChangeContext;
 use super::super::container_mounts::{
     LocalMounts, hosts_container_nodes, prepare_local_container_mounts,
 };
-use super::super::launch::clock::{TimeSource, plan_fleet, warn_when_no_time_source};
+use super::super::launch::clock::plan_clocks;
 use super::super::launch::feedback::publish_stdout;
 use super::super::launch::nodes::add_nodes_to_stack;
 use super::super::launch::orchestrate::validate_and_order_dependencies;
@@ -70,7 +70,8 @@ enum JoinStage {
     /// The participants were asked to hold this launch's slice and every
     /// source points at its new watchers.
     SlicesBegun,
-    /// The record names the copy and the time source holds the new fleet.
+    /// The record names the copy. Every later stage is past it, which is the
+    /// boundary `restores_participants` is defined against.
     RecordChanged,
     /// Node entities were being added; the add logs say which landed.
     NodesAdding,
@@ -118,29 +119,25 @@ async fn join_inner(
         resolved,
     } = ResolvedJoin::resolve(ctx, active, goal).await?;
     let root = ctx.node_stack.root().read().config().clone();
+    // A join follows the domains the stack already publishes: its known
+    // lifetimes go in, so a copy binding to a running simulation reads the
+    // clock that simulation is already supplying.
+    let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
     let (ordered, bindings, pairings, observations) =
-        validate_and_order_dependencies(ctx, &planned, &root, &placements).await?;
+        validate_and_order_dependencies(ctx, &planned, &root, &placements, &clocks).await?;
     let watchers = lifecycle_watchers(&observations, &placements)?;
-    let required_ids = join_dependencies(
-        &planned,
-        &new_ids,
-        active
-            .time_source
-            .as_ref()
-            .map(|source| &source.instance_id),
-    );
+    // The instances supplying the clocks this join reads take part in it: a
+    // copy cannot bind to a domain whose publisher is not there to supply it.
+    let clock_publishers: Vec<config::runtime::Name> = clocks
+        .simulated()
+        .filter(|(instance, _)| clocks.of(instance).is_publisher())
+        .filter_map(|(instance, _)| config::runtime::Name::new(instance).ok())
+        .collect();
+    let required_ids = join_dependencies(&planned, &new_ids, &clock_publishers);
     let touched = selected_instances(&planned, |instance| {
         required_ids.contains(instance.instance_id.as_str())
     });
-    let change = preflight_change(
-        ctx,
-        &active.launch_id,
-        &planned,
-        &touched,
-        &placements,
-        active.clock.as_ref(),
-    )
-    .await?;
+    let change = preflight_change(ctx, &active.launch_id, &touched, &placements).await?;
     let participants = change.reserved.core_nodes();
     let delta: HashMap<_, _> = selected_instances(&planned, |instance| {
         new_ids.contains(instance.instance_id.as_str())
@@ -165,17 +162,11 @@ async fn join_inner(
         rebuild: false,
     };
     let previous = active.clone();
-    let time_source = active
-        .time_source
-        .clone()
-        .or_else(|| TimeSource::of(ctx, &planned, &placements, &change.reserved));
     // Set once the machines start changing: from then on a failure has
     // something to roll back.
     let mut scope: Option<JoinScope> = None;
     let mut stage = JoinStage::Planned;
     let operation = async {
-        let clock = change.reserved.established_clock(&change.clock)?;
-        warn_when_no_time_source(ctx, &planned, &clock).await;
         let live = check_live_stack(
             ctx,
             LiveCheck {
@@ -243,18 +234,14 @@ async fn join_inner(
             scope.participants = refusal.holders_among(&scope.participants);
             refusal.reason
         })?;
-        stage = JoinStage::RecordChanged;
         active.flat = combined;
         active.planned = planned;
         active.resolved.extend(resolved);
         active.placements = placements.clone();
-        active.time_source = time_source;
-        active.clock = Some(clock);
+        active.clocks = incarnations;
+        active.resolved_clocks = clocks.clone();
         active.watchers = watchers;
         active.copies.insert(goal.name.clone(), record);
-        if let (Some(source), Some(fleet)) = (&previous.time_source, &change.fleet) {
-            source.set_participants(ctx, fleet.clone()).await?;
-        }
         stage = JoinStage::NodesAdding;
         add_nodes_to_stack(
             ctx,
@@ -290,7 +277,7 @@ async fn join_inner(
             &pairings,
             &observations,
             &placements,
-            change.fleet.as_ref(),
+            &clocks,
         )
         .await?;
         Ok(())
@@ -372,12 +359,6 @@ async fn rollback_join(
             )
             .await;
             federated::clear_participant_slices(ctx, &scope.fresh_hosts).await;
-        }
-        if plan.restores_participants
-            && let Some(source) = &previous.time_source
-            && let Some(fleet) = plan_fleet(&previous.planned, &previous.placements)?
-        {
-            source.set_participants(ctx, fleet).await?;
         }
         Ok::<_, String>(())
     }

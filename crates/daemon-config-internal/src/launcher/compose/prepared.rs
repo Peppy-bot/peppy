@@ -2,14 +2,14 @@
 //! launch, join and removal it answers.
 
 use super::super::composition::{Adjustment, ArgumentOverrides};
-use super::super::types::PeppyLauncher;
+use super::super::types::{LauncherFramework, PeppyLauncher};
 use super::constraints::{self, ConstraintScope};
 use super::copy::{
     self, ComposedCopy, CopyRecord, CopyRequest, argument_overrides, combine, compose_copy,
     flat_document, validate_flat,
 };
 use super::error::CompositionError;
-use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit};
+use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit, merge_clocks};
 use super::load::{LoadedComposition, launcher_file_label, load_composition};
 use super::report::{CompositionReport, SkipReason, SkippedAdjustment};
 use super::select::{self, CopyOrigin, LaunchWords, UnitSelection};
@@ -94,6 +94,7 @@ impl PreparedLauncher {
         let LaunchWords { scoped, stack } = select::split_scoped_words(&self.launcher, words)?;
         let selection = select::resolve_stack(&self.launcher, &self.loaded, &stack)?;
         let bare = self.compose_stack(&selection)?;
+        let framework = self.stack_framework(&selection)?;
         let mut taken = bare.core_nodes.clone();
         let mut copies: Vec<ComposedCopy> = Vec::new();
         for entry in &self.launcher.option_deployments {
@@ -142,7 +143,7 @@ impl PreparedLauncher {
                 copies.push(copy);
             }
         }
-        let launcher = combine(&self.launcher, &bare, &copies)?;
+        let launcher = combine(&self.launcher, &bare, &framework, &copies)?;
         let mut report = CompositionReport {
             selection: selection.clone(),
             copies: Vec::new(),
@@ -329,7 +330,7 @@ impl PreparedLauncher {
             .iter()
             .filter(|adjustment| copy_axis_of(adjustment, &stack_ids, &copy_axes).is_none())
             .collect();
-        let base_origin = format!("{} (base)", self.label);
+        let base_origin = self.base_origin();
         let unit = Unit {
             base: self
                 .launcher
@@ -359,6 +360,25 @@ impl PreparedLauncher {
         Ok(expanded)
     }
 
+    /// How the report and the refusals name the launcher's own entries.
+    pub(super) fn base_origin(&self) -> String {
+        format!("{} (base)", self.label)
+    }
+
+    /// The clock domains the stack declares: the launcher's own and every
+    /// selected fragment's, merged. A copy declares none, so this is the
+    /// whole launch's set.
+    pub(super) fn stack_framework(
+        &self,
+        selection: &UnitSelection,
+    ) -> Result<LauncherFramework, CompositionError> {
+        merge_clocks(
+            &self.base_origin(),
+            &self.launcher.framework,
+            &self.loaded.stack_fragments(selection),
+        )
+    }
+
     /// The stack alone as a validated flat document.
     pub(super) fn flat_stack(
         &self,
@@ -369,6 +389,7 @@ impl PreparedLauncher {
             &self.launcher,
             bare.deployments.clone(),
             bare.core_nodes.clone(),
+            self.stack_framework(selection)?,
         ))?;
         Ok((flat, bare))
     }

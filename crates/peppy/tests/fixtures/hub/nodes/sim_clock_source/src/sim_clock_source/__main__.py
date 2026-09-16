@@ -1,28 +1,24 @@
-"""The launch's scripted source of simulated time.
+"""The scripted publisher of a clock domain.
 
-Publishes a fixed ramp of ticks to every machine of the launch, then
-republishes the final instant at the same cadence for the life of the node:
-time tops out rather than going silent, so a machine whose subscription came
-up after the ramp still converges on the same final instant. The values are
-scripted rather than read from any clock, so a test can assert exact instants
-and a capped tail with no tolerance for host speed.
+Publishes a fixed ramp of ticks on its domain, then republishes the final
+instant at the same cadence for the life of the node, so time tops out and a
+consumer whose subscription came up after the ramp still converges on the same
+final instant. The values are scripted, so a test can assert exact instants and
+a capped tail with no tolerance for host speed.
 """
 
 import asyncio
 
 from peppygen import NodeBuilder, NodeRunner
 from peppygen.parameters import Parameters
-from peppylib.clock import SimTimePublisher
+from peppylib.clock import ClockPublisher
 
 
 async def publish_scripted_ticks(node_runner: NodeRunner, params: Parameters) -> None:
-    publisher = await SimTimePublisher.for_node(node_runner)
+    publisher = await ClockPublisher.for_node(node_runner)
     if publisher is None:
-        raise RuntimeError("the launch did not declare this instance its time source")
-    print(
-        f"[clock-source] publishing to {', '.join(publisher.participants)}",
-        flush=True,
-    )
+        raise RuntimeError("the launch did not name this instance a clock domain's publisher")
+    print(f"[clock-source] publishing clock {publisher.domain}", flush=True)
     interval = params.tick_interval_ms / 1000.0
     for tick in range(1, params.tick_count + 1):
         await publisher.publish(params.tick_step_ns * tick)

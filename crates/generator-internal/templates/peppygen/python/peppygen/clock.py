@@ -10,13 +10,14 @@ daemon-resolved time with a single call::
 clock to the initializing node: calling it again for the same node is a
 no-op, so it is safe to call from both top-level setup and helper functions
 that may be invoked first. Initializing a different node rebinds, which is
-how consecutive test-harness boots in one process (wall- and sim-time
-alike) each read their own clock; the harness serializes boots, so a
-rebind never races a live node.
+how consecutive test-harness boots in one process each read their own
+clock; the harness serializes boots, so a rebind never races a live node.
 
-In wall mode ``init`` is a no-op wrapper. In sim mode it opens a
-subscription to the ``clock`` topic so the first ``now_ns`` after a tick
-is delivered returns immediately.
+``init`` reads whichever clock the instance is bound to. A wall instance
+reads its machine's clock. A consumer of a simulated domain opens a
+subscription to that domain's stream, so the first ``now_ns`` after a tick
+is delivered returns immediately. The instance publishing a domain reads
+back the instant it last committed.
 """
 
 from typing import Optional, Tuple
@@ -33,9 +34,8 @@ async def init(node_runner: "peppylib.NodeRunner") -> None:
     """Build the pre-bound clock for ``node_runner``. Idempotent per node.
 
     Two helpers of one node racing their first ``init`` both resolve the
-    same clock and the later assignment wins, so the race is benign; no
-    lock is held across the await (an ``asyncio`` lock would pin the loop
-    of whichever test booted first).
+    same clock and the later assignment wins, so the race is benign and no
+    lock is held across the await.
     """
     global _clock, _clock_key
     key = (node_runner.bound_core_node(), node_runner.bound_instance_id())
@@ -46,11 +46,12 @@ async def init(node_runner: "peppylib.NodeRunner") -> None:
 
 
 def now_ns() -> int:
-    """Read the current core-node-aligned time in nanoseconds since the
-    Unix epoch.
+    """Read the current time in nanoseconds since the Unix epoch, on the
+    clock this instance is bound to.
 
-    Raises ``RuntimeError`` if ``init`` has not run, or in sim mode if no
-    ``ClockTick`` has been observed yet.
+    Raises ``RuntimeError`` when ``init`` has not run, when a consumer has
+    seen no tick of its domain, and when a publisher has committed no
+    instant.
     """
     if _clock is None:
         raise RuntimeError(

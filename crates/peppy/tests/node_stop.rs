@@ -84,6 +84,8 @@ async fn node_stop_command_succeeds() {
     // Add the node to the node stack (without running)
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -167,6 +169,8 @@ async fn node_stop_command_succeeds() {
     // Now run the node using the run command with a deterministic instance id
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(node_name.to_string()),
             tag: Some("v1".to_string()),

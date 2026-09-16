@@ -4,8 +4,8 @@
 
 use super::super::composition::{ArgumentOverrides, OriginatedAdjustment};
 use super::super::types::{
-    Deployment, DeploymentInstance, LinkTargets, LinkValue, PeppyLauncher, Selection,
-    split_link_target,
+    Deployment, DeploymentInstance, LauncherFramework, LinkTargets, LinkValue, PeppyLauncher,
+    Selection, split_link_target,
 };
 use super::constraints::{self, ConstraintInPlay, ConstraintScope, names_axis};
 use super::error::CompositionError;
@@ -144,6 +144,16 @@ pub(super) fn copy_over_stack<'a>(
     }
 }
 
+/// The first clock domain a copy's fragments declare, with the document it
+/// is written in. A launch's domains are the launcher's own and its stack
+/// fragments'; a copy binds them and declares none.
+fn declared_clock<'a>(fragments: &[&'a LoadedFragment]) -> Option<(&'a str, &'a Name)> {
+    fragments.iter().copied().find_map(|fragment| {
+        let (domain, _) = fragment.body.framework.clocks.first_key_value()?;
+        Some((fragment.origin.as_str(), domain))
+    })
+}
+
 /// Composes one copy over the stack `bare`, whose selection is `stack`.
 /// `taken` holds the core node links already in use, which the name must
 /// not be.
@@ -176,6 +186,13 @@ pub(super) fn compose_copy(
         fragments,
         in_play,
     } = copy_over_stack(launcher, stack, loaded, axis, &own);
+    if let Some((origin, domain)) = declared_clock(&fragments) {
+        return Err(CompositionError::CopyFragmentDeclaresClock {
+            origin: origin.to_owned(),
+            copy: name.to_string(),
+            domain: domain.to_string(),
+        });
+    }
     let owned: HashSet<String> = fragments
         .iter()
         .flat_map(|fragment| &fragment.body.deployments)
@@ -221,7 +238,7 @@ pub(super) fn compose_copy(
             .collect(),
         fragments,
         base_adjustments,
-        base_origin: format!("{} (base)", prepared.label),
+        base_origin: prepared.base_origin(),
         copy_adjustments: adjustments.to_vec(),
         selection,
     };
@@ -419,7 +436,7 @@ fn rewrite_report(
                 reason,
             };
             match &mut entry.change {
-                AppliedChange::Argument { .. } => {}
+                AppliedChange::Argument { .. } | AppliedChange::Clock { .. } => {}
                 AppliedChange::LinkSet { old, new, .. } => {
                     if let Some(old) = old {
                         rewrite_link(old, rewrite).map_err(collide)?;
@@ -448,9 +465,15 @@ enum Claim {
 pub(super) fn combine(
     launcher: &PeppyLauncher,
     bare: &Expanded,
+    framework: &LauncherFramework,
     copies: &[ComposedCopy],
 ) -> Result<PeppyLauncher, CompositionError> {
-    let mut flat = flat_document(launcher, bare.deployments.clone(), bare.core_nodes.clone());
+    let mut flat = flat_document(
+        launcher,
+        bare.deployments.clone(),
+        bare.core_nodes.clone(),
+        framework.clone(),
+    );
     let mut claims: HashMap<(String, String), Claim> = HashMap::new();
     for copy in copies {
         for entry in &copy.stack_writes {
@@ -533,6 +556,9 @@ fn apply_write(
                 .links
                 .insert(slot.clone(), LinkValue::Bound(Selection::Array(bound)));
         }
+        AppliedChange::Clock { new, .. } => {
+            instance.framework.clock = Some(new.clone());
+        }
     }
     Ok(())
 }
@@ -609,6 +635,15 @@ pub(super) fn attach(
                     return Err(refusal(format!("{field}: + {target}")));
                 }
             }
+            AppliedChange::Clock { new, .. } => {
+                let old = running.framework.clock.as_ref();
+                if old != Some(new) {
+                    return Err(refusal(format!(
+                        "{field}: {} -> {new}",
+                        old.map_or_else(|| String::from("(absent)"), Name::to_string)
+                    )));
+                }
+            }
         }
     }
     add_copy(&mut flat, copy)?;
@@ -645,6 +680,9 @@ pub(super) fn against_running(
                     Some(value) => *old = value.clone(),
                     None => return None,
                 },
+                AppliedChange::Clock { old, .. } => {
+                    *old = running.framework.clock.clone();
+                }
                 AppliedChange::LinkAdded { .. } => {}
             }
             Some(entry)
@@ -802,6 +840,7 @@ pub(super) fn flat_document(
     launcher: &PeppyLauncher,
     deployments: Vec<Deployment>,
     core_nodes: Vec<String>,
+    framework: LauncherFramework,
 ) -> PeppyLauncher {
     PeppyLauncher {
         peppy_schema: launcher.peppy_schema,
@@ -811,6 +850,7 @@ pub(super) fn flat_document(
         components: Vec::new(),
         adjustments: Vec::new(),
         constraints: Vec::new(),
+        framework,
     }
 }
 

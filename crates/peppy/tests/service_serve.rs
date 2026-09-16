@@ -5,7 +5,6 @@ use std::time::Duration;
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use peppy::commands::Command;
-use peppy::commands::service::ClockSource;
 use peppy::commands::service::serve::CancellationToken;
 use peppy::commands::service::serve::ServeCommand;
 use peppy::context::AppContext;
@@ -52,7 +51,6 @@ fn serve_command() {
     ServeCommand {
         messaging_engine: "mock".to_string(),
         core_node_name: Some("core-node".to_string()),
-        clock_source: ClockSource::Wall,
         shutdown_token: Some(shutdown_token),
         peppy_dirs: peppy_dirs.clone(),
     }

@@ -29,7 +29,6 @@ pub struct ServeCommandBuilder {
     messaging_ready: Option<watch::Receiver<bool>>,
     core_node_requested: bool,
     core_node_name: Option<String>,
-    clock_source: crate::ClockSource,
     shutdown_token: Option<CancellationToken>,
     /// Sender the core node runner uses to tell the messaging router that
     /// teardown is done. Created alongside the messaging router so the router
@@ -95,7 +94,6 @@ impl ServeCommandBuilder {
             messaging_ready: None,
             core_node_requested: false,
             core_node_name: None,
-            clock_source: crate::ClockSource::default(),
             shutdown_token: None,
             core_node_done_tx: None,
             root_dir: root_dir.into(),
@@ -263,14 +261,9 @@ impl ServeCommandBuilder {
         Ok(self)
     }
 
-    pub fn with_core_node(
-        mut self,
-        core_node_name: Option<String>,
-        clock_source: crate::ClockSource,
-    ) -> Result<Self> {
+    pub fn with_core_node(mut self, core_node_name: Option<String>) -> Result<Self> {
         self.core_node_requested = true;
         self.core_node_name = core_node_name;
-        self.clock_source = clock_source;
         Ok(self)
     }
 
@@ -341,7 +334,6 @@ impl ServeCommandBuilder {
                     self.peppy_dirs.clone(),
                     self.messaging_ready.clone(),
                     federation_settled_rx,
-                    self.clock_source,
                     self.peppy_config,
                     self.namespace.clone(),
                     name_claim_settle,

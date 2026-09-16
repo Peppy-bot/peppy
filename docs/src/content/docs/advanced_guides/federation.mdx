@@ -290,6 +290,16 @@ same way: the pinned exposure documents and the contracts they reference, from
 which the machine hosting the instance derives the same MCP server the
 coordinator planned.
 
+**A clock domain.** A [clock domain](/advanced_guides/system_clock/#clock-domains)
+is supplied by one instance and read by any number, and those may sit on
+different machines. The domain's ticks ride the `clock` topic of the machine
+hosting its publisher, under a key carrying the domain's name and incarnation,
+and a consumer addresses that whole identity wherever it runs. A daemon hosts
+wall time and any number of simulated domains at once, so a launch spreads a
+domain across its machines the way it spreads anything else. What placement
+decides is the domain's identity, which names the machine its publisher runs
+on.
+
 **Container bind sources.** A [container node](/advanced_guides/containers/)
 declares the host paths it mounts, and a mount path may name an instance
 parameter, so what a given instance binds is known only to the coordinator that
@@ -395,11 +405,6 @@ the whole launch.
 
 - **Same Peppy version on every participant.** A mixed-version federation is
   refused during preflight, before any stack is touched.
-- **Same clock source on every participant.** Every machine of a launch serves
-  the same simulated or wall time; a participant whose `peppy service serve
-  --clock-source` disagrees with the launch is refused during preflight, before
-  any stack is touched. See [One clock across a
-  fleet](/advanced_guides/system_clock/#one-clock-across-a-fleet).
 - **A filesystem repository cannot back a deployment placed on another
   machine.** A deployment is pinned to wherever the coordinator's cache
   resolved it, and a filesystem repository entry (a directory registered with
@@ -431,6 +436,6 @@ peppy stack remove bravo
 peppy stack reset --federated
 ```
 
-A copy's name is its placement link and the prefix of every instance it creates. The whole copy runs on the machine `--place` names, or on the coordinator. Run join and remove on the coordinator, with `--core-node NAME` from another machine. A join reserves the machines it touches, the providers its instances link to, and the simulation clock source; a machine outside that set that is offline blocks neither a join nor a removal.
+A copy's name is its placement link and the prefix of every instance it creates. The whole copy runs on the machine `--place` names, or on the coordinator. Run join and remove on the coordinator, with `--core-node NAME` from another machine. A join reserves the machines it touches, the providers its instances link to, and the machines supplying the clocks its instances read; a machine outside that set that is offline blocks neither a join nor a removal.
 
 Launch replaces every participating slice. Join adds the copy's instances to its host's slice; remove stops the copy alone and refuses while another instance links to it. Reset cancels the operation in flight, waits for its cleanup, and clears the targeted slices; with `--federated` it clears every machine of the launch, which is also how the machines a cancelled join reached are cleared. See [copies](/guides/launch_files/#copies) for argument overrides and the single simulated robot the simulations host today.

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::commands::CALLER_INSTANCE_ID;
+use crate::commands::{CALLER_INSTANCE_ID, DomainLabels};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
 use config::runtime::PairingSlotBinding;
@@ -554,7 +554,7 @@ fn render_nodes_table(
 /// label appears only on the first row of its group, an instance id (with its
 /// status and health) only on the first of its binding rows, and a horizontal
 /// rule separates node groups.
-const BINDING_HEADERS: [&str; 5] = ["NODE", "INSTANCE", "STATUS", "HEALTH", "BINDINGS"];
+const BINDING_HEADERS: [&str; 6] = ["NODE", "INSTANCE", "STATUS", "HEALTH", "CLOCK", "BINDINGS"];
 
 /// Renders the per-instance bindings table. `nodes` must already be filtered
 /// to entries with at least one instance; the caller prints `(none)` when
@@ -571,6 +571,15 @@ fn render_bindings_table(
     // NODE cell is populated only on the first row and each instance's INSTANCE,
     // STATUS, and HEALTH cells only on the first of its binding rows; the rest
     // are blank continuation cells.
+    //
+    // The domains of every instance in the table at once, so a frozen lifetime
+    // and the one that replaced it are told apart in the column naming them.
+    let labels = DomainLabels::of(
+        nodes
+            .iter()
+            .flat_map(|node| &node.instances)
+            .filter_map(|instance| instance.clock.domain()),
+    );
     let blocks: Vec<Vec<Vec<String>>> = nodes
         .iter()
         .map(|node| {
@@ -580,12 +589,14 @@ fn render_bindings_table(
                 let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
                 let mut status_cell = format_instance_status(instance, colorize);
                 let mut health_cell = format_instance_health(instance, colorize);
+                let mut clock_cell = format_instance_clock(instance, &labels, colorize);
                 for binding in format_instance_bindings(instance, colorize) {
                     rows.push(vec![
                         std::mem::take(&mut node_cell),
                         std::mem::take(&mut instance_cell),
                         std::mem::take(&mut status_cell),
                         std::mem::take(&mut health_cell),
+                        std::mem::take(&mut clock_cell),
                         binding,
                     ]);
                 }
@@ -595,6 +606,23 @@ fn render_bindings_table(
         .collect();
 
     render_table(out, &BINDING_HEADERS, &blocks, max_width);
+}
+
+/// The clock an instance reads, as `stack list` shows it: `wall`, or a
+/// simulated domain as `name@core_node`, carrying the incarnation that tells
+/// it apart where the table holds a second lifetime of that name on that
+/// machine. An instance reads one clock for its lifetime, so this is a
+/// property of the instance, not of any one binding.
+fn format_instance_clock(
+    instance: &SerializedInstance,
+    labels: &DomainLabels,
+    colorize: bool,
+) -> String {
+    let label = instance
+        .clock
+        .domain()
+        .map_or_else(|| instance.clock.label(), |domain| labels.label(domain));
+    paint(colorize, BINDING_COLOR, &label)
 }
 
 /// Headers for the per-instance endpoints table; grouped like the bindings
@@ -869,7 +897,7 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 mod tests {
     use super::*;
     use crate::commands::table::skip_csi;
-    use config::runtime::ProducerRef;
+    use config::runtime::{ClockBinding, ProducerRef};
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
 
@@ -889,6 +917,7 @@ mod tests {
             instances: instances
                 .into_iter()
                 .map(|(id, state)| SerializedInstance {
+                    clock: Default::default(),
                     instance_id: id.to_string(),
                     state,
                     healthy: true,
@@ -898,6 +927,56 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// A publisher that stopped leaves its consumers reading the instant it
+    /// froze on, so a replacement under the same name puts two lifetimes in
+    /// one table. The CLOCK column carries the incarnation that tells them
+    /// apart, and a single lifetime keeps reading as `name@core_node`.
+    #[test]
+    fn the_clock_column_tells_two_lifetimes_of_one_name_apart() {
+        let reading = |instance_id: &str, incarnation: u64| SerializedInstance {
+            clock: ClockBinding::consumer(
+                config::runtime::ClockDomainId::new(
+                    config::runtime::Name::new("robot").expect("a domain name"),
+                    config::runtime::CoreNodeName::new("core-a").expect("a machine name"),
+                    config::runtime::ClockIncarnation::try_from(incarnation).expect("non-zero"),
+                ),
+                ProducerRef::new("core-a", "sim_1"),
+            ),
+            instance_id: instance_id.to_string(),
+            state: InstanceState::Running,
+            healthy: true,
+            slot_bindings: std::collections::BTreeMap::new(),
+            pairing_slots: std::collections::BTreeMap::new(),
+            endpoints: Vec::new(),
+        };
+        let listing = |instances: Vec<SerializedInstance>| {
+            format_stack_body(
+                &[SerializedNode {
+                    instances,
+                    ..node("arm", "v1", NodeStage::Ready, Vec::new())
+                }],
+                &[],
+                false,
+                None,
+            )
+        };
+
+        let both = listing(vec![
+            reading("frozen_1", 0x0011_2222_3333_4444),
+            reading("fresh_1", 0x001a_aabb_bccc_cddd),
+        ]);
+        assert!(
+            both.contains("robot@core-a#00112222") && both.contains("robot@core-a#001aaabb"),
+            "each lifetime carries its own incarnation:\n{both}"
+        );
+
+        let one = listing(vec![reading("only_1", 0x0011_2222_3333_4444)]);
+        assert!(
+            one.contains("robot@core-a") && !one.contains("robot@core-a#"),
+            "a single lifetime reads as name@core_node:\n{one}"
+        );
     }
 
     /// The endpoints table appears only when an instance serves one, with
@@ -965,6 +1044,7 @@ mod tests {
             instances: instances
                 .into_iter()
                 .map(|(id, state, binds)| SerializedInstance {
+                    clock: Default::default(),
                     instance_id: id.to_string(),
                     state,
                     healthy: true,
@@ -1577,6 +1657,7 @@ mod tests {
             stage: NodeStage::Ready,
             instances: vec![
                 SerializedInstance {
+                    clock: Default::default(),
                     instance_id: "healthy-1".to_string(),
                     state: InstanceState::Running,
                     healthy: true,
@@ -1585,6 +1666,7 @@ mod tests {
                     endpoints: Vec::new(),
                 },
                 SerializedInstance {
+                    clock: Default::default(),
                     instance_id: "down-1".to_string(),
                     state: InstanceState::Running,
                     healthy: false,

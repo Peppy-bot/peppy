@@ -193,7 +193,7 @@ Every entry in an `instances` array configures one running copy of the deploymen
       instance_id: "camera_front",
       arguments: { device: { path: "/dev/video0" }, frame_rate: 30 },
       env_vars: { GST_DEBUG: "2" },
-      framework: { use_sim_time: false },
+      framework: { clock: "simulation" },
     },
     {
       instance_id: "camera_rear",
@@ -247,12 +247,11 @@ The name and value rules exist because a container node receives its environment
 
 ### `framework` (optional)
 
-Framework knobs owned by peppylib rather than by the node author, so they mean the same thing for every node. The block holds two knobs:
+Framework knobs owned by peppylib rather than by the node author, so they mean the same thing for every node. The block holds one knob:
 
-- `use_sim_time`: read the clock from a simulator or bag replay instead of the daemon's wall clock. Omitting it falls through to the daemon's `--clock-source` flag (which defaults to `wall`). The two directions are not symmetric: `false` forces wall time on a daemon serving simulated time, while `true` needs a daemon started with `--clock-source=sim` and is refused on one serving wall time, because that daemon's own ticks land on the key the instance would read. See [System clock](/advanced_guides/system_clock/#sim-and-replay-clocks).
-- `publishes_sim_time`: this instance is the launch's source of simulated time. On a simulated launch it is handed every machine the launch runs on, and its `SimTimePublisher` feeds each machine's `clock` topic so a fleet shares one instant; on a wall-time launch it publishes nothing, so the same launcher works either way. At most one instance per launch may declare it, refused otherwise, and a simulated launch names its declared source in the launch feedback. See [One clock across a fleet](/advanced_guides/system_clock/#one-clock-across-a-fleet).
+- `clock`: the timeline this instance reads, naming `wall` or a domain the launcher declares under [`framework.clocks`](#clock-domains). An instance that omits it reads wall time. An instance a declaration names as a domain's publisher carries no `clock` of its own, since that declaration already assigns it one. See [System clock](/advanced_guides/system_clock/#clock-domains).
 
-An unknown key inside `framework` is an error rather than a no-op, so a typo like `use_simulation_time` fails the launch instead of silently leaving the instance on wall time.
+An unknown key inside `framework` fails the launch, so a typo surfaces where it is written.
 
 ### `core_node` (optional)
 
@@ -314,6 +313,41 @@ instances: [
   },
 ]
 ```
+
+## Clock domains
+
+A launcher declares the timelines its instances read in a root-level `framework` block, beside `deployments`:
+
+```json5 title="peppy_launcher.json5"
+{
+  peppy_schema: "launcher/v1",
+  framework: {
+    clocks: {
+      // One instance supplies this timeline, and naming it here is what
+      // makes `simulation_inst` the domain's publisher.
+      simulation: { publisher: "simulation_inst" },
+      // A name for the time every machine already keeps.
+      physical_robot: "wall",
+    },
+  },
+  deployments: [
+    {
+      source: { name: "waldo", tag: "v1" },
+      instances: [{ instance_id: "simulation_inst" }],
+    },
+    {
+      source: { name: "openarm_sim_arm", tag: "v1" },
+      instances: [{ instance_id: "arm_inst", framework: { clock: "simulation" } }],
+    },
+  ],
+}
+```
+
+A declaration is `{ publisher: "<instance_id>" }` for a timeline one instance supplies, or `"wall"` for a name the time every machine already keeps answers to. `wall` itself is built in and cannot be declared. Every other instance names the domain it reads with [`framework.clock`](#framework-optional).
+
+The launcher's declarations and those of every [fragment](#fragments-splitting-a-launcher-across-files) the selection pulls in are merged: identical declarations agree, two different declarations of one name are refused naming both documents, and an unselected fragment contributes nothing. A [copy](#copies) binds the domains the stack declares, naming them as the stack does.
+
+Every producer binding, pairing and observation joins two instances that read one clock, so a launcher wiring an instance on one domain to an instance on another is refused before anything starts. See [System clock](/advanced_guides/system_clock/#clock-domains).
 
 ## Reusing built nodes across launches
 
@@ -412,6 +446,7 @@ adjustments: [
     when: { robot_commander: "xr_commander" },  // optional guard, see below
 
     set_arguments: { upstream_mode: "pose" },
+    set_framework: { clock: "simulation" },
     set_links: { collision_ctrl: { vacant: "the headset never produces governor_control" } },
     add_links: { recorder: ["recorder_inst"] },
     unset_links: ["leader_left_arm_pose"],
@@ -422,11 +457,12 @@ adjustments: [
 | Operation | Effect |
 |---|---|
 | `set_arguments` | Replaces the target's value for each named argument key, creating it when absent. Nested objects replace wholesale. |
+| `set_framework` | Replaces the target's [framework knobs](#framework-optional), today its `clock`. How the fragment that selects a shared control or recorder fragment binds those instances to the [clock domain](#clock-domains) this selection runs on. |
 | `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
 | `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent fragments each contribute bindings to one multi-cardinality slot. |
 | `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
 
-Fragments refuse to fight: two selected fragments writing the same argument key or the same slot on one target are refused, naming both. The launcher's own top-level `adjustments` apply after all fragment adjustments and may override anything a fragment set, which is how one launcher specializes fragments it shares with another. Within the launcher's own list, a later entry wins over an earlier one: both lines live in one file one author edits. A launcher adjustment guarded on a `zero_or_more` axis applies to every [copy](#copies) of the matching option, its target resolved inside each copy.
+Fragments refuse to fight: two selected fragments writing the same argument key, the same framework knob or the same slot on one target are refused, naming both. The launcher's own top-level `adjustments` apply after all fragment adjustments and may override anything a fragment set, which is how one launcher specializes fragments it shares with another. Within the launcher's own list, a later entry wins over an earlier one: both lines live in one file one author edits. A launcher adjustment guarded on a `zero_or_more` axis applies to every [copy](#copies) of the matching option, its target resolved inside each copy.
 
 An adjustment whose target the current selection does not define is **skipped**, not refused: the recorder's attach simply does not run when no recorder was selected. A target no option of the launcher defines anywhere is a dead reference and fails when the launcher is read. `when` guards are for conditions existence cannot express, mostly shape: two leaders may both provide `commander_inst`, but only one of them has camera slots. A launcher's guards name the launcher's axes; a fragment's name [its own axes](#a-fragments-own-axes) and the launcher's. Each axis accepts an option name or a nonempty list of option names. Lists match **any** listed option (OR); **every** named axis must match (AND).
 

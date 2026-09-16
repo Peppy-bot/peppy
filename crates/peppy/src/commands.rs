@@ -1,4 +1,5 @@
 mod action_poll;
+pub mod clock;
 mod colors;
 mod confirm;
 pub mod container;
@@ -11,10 +12,12 @@ pub mod service;
 pub mod stack;
 mod table;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::runtime::{ClockDomainId, ClockIncarnation};
 use core_node_api::{InstanceState, SerializedNodeGraph};
 
 use crate::{
@@ -30,6 +33,10 @@ pub(crate) const GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Number of lines to display in the scrolling output region.
 pub(crate) const SCROLLING_OUTPUT_LINES: usize = 10;
+
+/// How many leading hex digits of an incarnation tell two lifetimes of one
+/// domain apart in a listing.
+pub(crate) const INCARNATION_LABEL_DIGITS: usize = 8;
 
 /// Single source of truth for the word `stack list` and `node info` print for
 /// an instance's health, so the two commands can never drift apart on it.
@@ -47,6 +54,53 @@ pub(crate) fn instance_health_label(state: InstanceState, healthy: bool) -> &'st
         "-"
     } else {
         health_label(healthy)
+    }
+}
+
+/// How one listing names the clock domains in it, so that every row is
+/// distinguishable.
+///
+/// A domain reads as `name@core_node`, which two lifetimes of one name on one
+/// machine share: a publisher that stopped leaves its consumers reading the
+/// instant it froze on, and a replacement under that name is a second timeline
+/// beside it. An incarnation is minted and never typed, so it earns a place in
+/// output only where it is what tells two rows apart. Shared by `clock list`
+/// and `stack list` so the two name a domain the same way.
+pub(crate) struct DomainLabels {
+    /// The `name@core_node` renderings this listing holds more than one
+    /// lifetime of.
+    ambiguous: BTreeSet<String>,
+}
+
+impl DomainLabels {
+    /// Reads the whole listing up front, which is what lets [`Self::label`]
+    /// know what else is in it.
+    pub(crate) fn of<'a>(domains: impl IntoIterator<Item = &'a ClockDomainId>) -> Self {
+        let mut lifetimes: BTreeMap<String, BTreeSet<ClockIncarnation>> = BTreeMap::new();
+        for domain in domains {
+            lifetimes
+                .entry(domain.to_string())
+                .or_default()
+                .insert(domain.incarnation);
+        }
+        Self {
+            ambiguous: lifetimes
+                .into_iter()
+                .filter(|(_, incarnations)| incarnations.len() > 1)
+                .map(|(rendered, _)| rendered)
+                .collect(),
+        }
+    }
+
+    /// `name@core_node`, carrying the incarnation's leading digits after a `#`
+    /// where the listing holds another lifetime of that name on that machine.
+    pub(crate) fn label(&self, domain: &ClockDomainId) -> String {
+        let rendered = domain.to_string();
+        if !self.ambiguous.contains(rendered.as_str()) {
+            return rendered;
+        }
+        let digits = format!("{:016x}", domain.incarnation.get());
+        format!("{rendered}#{}", &digits[..INCARNATION_LABEL_DIGITS])
     }
 }
 

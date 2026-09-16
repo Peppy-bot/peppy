@@ -92,7 +92,6 @@ impl CoreNodeRunner {
         peppy_dirs: PeppyDirs,
         messaging_ready: Option<watch::Receiver<bool>>,
         federation_settled: Option<watch::Receiver<bool>>,
-        clock_source: crate::ClockSource,
         peppy_config: daemon_config::peppy_config::PeppyConfig,
         namespace: config::namespace::Namespace,
         name_claim_settle: Duration,
@@ -107,7 +106,6 @@ impl CoreNodeRunner {
             // avoid flooding the bus.
             clock_publish_interval: Duration::from_millis(100),
             heartbeat_interval: DAEMON_HEARTBEAT_INTERVAL,
-            daemon_use_sim_time: clock_source.use_sim_time(),
             name_claim_settle,
         };
         // Fail fast with a clean operator-facing message (no backtrace) when a

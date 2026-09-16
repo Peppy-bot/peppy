@@ -129,6 +129,8 @@ The generated modules carry the pinned length (`[f64; 7]` in Rust, a length-chec
 
 Pairs are established **when an instance starts**; there is no runtime "pair" command. The instance being started names the peer it pairs with; the peer must already be running (or starting) with a complementary unpaired slot.
 
+The peer must also read the same clock. A pair whose two endpoints resolve to different [clock domains](/advanced_guides/system_clock/#clock-domains) is refused as the pair is established, at launch and at `peppy node run` alike.
+
 ```sh
 peppy repo refresh
 peppy node add -s ./robot_arm        # sync interfaces, then add to the stack
@@ -294,6 +296,8 @@ The generated code addresses each arm through its slot module (`paired_topics.le
 ## Observers: watching a pairing without joining it
 
 A pair is exclusive between two instances, but sometimes a third node just wants to *watch* one side's stream: a recorder logging every `joint_states` an arm emits, a dashboard tailing a controller's setpoints. Joining the pair is wrong (it is 1:1, and the watcher has nothing to send back), and a separate contract would duplicate the topic shape. An **observer slot** solves this: it passively taps the topics a chosen role emits, following that source instance's own lifecycle rather than any pairing.
+
+An observer reads the source's clock too: an observation whose watcher and source resolve to different [clock domains](/advanced_guides/system_clock/#clock-domains) is refused, on the same rule that governs pairs and producer bindings.
 
 Declare an observer slot in `depends_on.pairing_observers`, where `role` names the role being observed rather than one this node plays, and list the topics it taps in `interfaces.topics.consumes` under its `link_id`. An observer plays no role, claims no endpoint, and emits nothing, so it never needs coverage on an emit side:
 

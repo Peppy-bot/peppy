@@ -750,6 +750,7 @@ fn unsafe_fragment_paths_are_refused() {
             components: vec![axis],
             adjustments: Vec::new(),
             constraints: Vec::new(),
+            framework: Default::default(),
         };
         let err = compose(&launcher, &dir.path().join("l.json5"), &["sim".to_string()])
             .expect_err("unsafe path must be refused");

@@ -14,7 +14,7 @@
 //! ordinary flat document the rest of the pipeline consumes; this module is
 //! the grammar and the checks that need no I/O and no selection.
 
-use super::types::{Deployment, LinkValue};
+use super::types::{Deployment, FrameworkOverrides, LauncherFramework, LinkValue};
 use config::{AnyType, runtime::Name, schema::PeppySchema};
 use serde::{
     Deserialize, Serialize,
@@ -182,6 +182,9 @@ pub struct Fragment {
     pub constraints: Vec<SelectionConstraint>,
     pub adjustments: Vec<Adjustment>,
     pub core_nodes: Vec<String>,
+    /// The clock domains this fragment declares. A selected fragment
+    /// contributes them to the launch; an unselected one contributes nothing.
+    pub framework: LauncherFramework,
 }
 
 /// The document shape a fragment body is read from and written to.
@@ -198,6 +201,8 @@ struct RawFragment {
     adjustments: Vec<Adjustment>,
     #[serde(default)]
     core_nodes: Vec<String>,
+    #[serde(default)]
+    framework: LauncherFramework,
 }
 
 impl Fragment {
@@ -216,6 +221,7 @@ impl Fragment {
             constraints: raw.constraints,
             adjustments: raw.adjustments,
             core_nodes: raw.core_nodes,
+            framework: raw.framework,
         })
     }
 }
@@ -249,6 +255,9 @@ impl Serialize for Fragment {
         }
         if !self.core_nodes.is_empty() {
             map.serialize_entry("core_nodes", &self.core_nodes)?;
+        }
+        if !self.framework.is_empty() {
+            map.serialize_entry("framework", &self.framework)?;
         }
         map.end()
     }
@@ -286,6 +295,8 @@ impl<'de> Deserialize<'de> for LauncherFragment {
             adjustments: Vec<Adjustment>,
             #[serde(default)]
             core_nodes: Vec<String>,
+            #[serde(default)]
+            framework: LauncherFramework,
         }
 
         let raw = RawLauncherFragment::deserialize(deserializer)?;
@@ -297,6 +308,7 @@ impl<'de> Deserialize<'de> for LauncherFragment {
                 constraints: raw.constraints,
                 adjustments: raw.adjustments,
                 core_nodes: raw.core_nodes,
+                framework: raw.framework,
             })?,
         })
     }
@@ -813,6 +825,12 @@ pub struct Adjustment {
     /// parameter schema validates the final value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_arguments: Option<BTreeMap<String, AnyType>>,
+    /// Replaces the target's framework knobs. How a fragment binds an
+    /// instance another fragment deploys to the clock this selection runs on:
+    /// the shared control, recorder and commander fragments are written once
+    /// and bound by whichever robot selects them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_framework: Option<FrameworkOverrides>,
     /// Replaces the target's whole entry for each named slot, creating it
     /// when absent, using the ordinary launcher link grammar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1179,6 +1197,10 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
         .set_arguments
         .as_ref()
         .is_some_and(|m| !m.is_empty())
+        || adjustment
+            .set_framework
+            .as_ref()
+            .is_some_and(|framework| framework.clock.is_some())
         || adjustment.set_links.as_ref().is_some_and(|m| !m.is_empty())
         || adjustment.add_links.as_ref().is_some_and(|m| !m.is_empty())
         || adjustment
@@ -1188,7 +1210,7 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
     if !has_operation {
         return Err(format!(
             "adjustment on `{}` in {origin} names no operation: state at least one of \
-             `set_arguments`, `set_links`, `add_links`, `unset_links`",
+             `set_arguments`, `set_framework`, `set_links`, `add_links`, `unset_links`",
             adjustment.target
         ));
     }

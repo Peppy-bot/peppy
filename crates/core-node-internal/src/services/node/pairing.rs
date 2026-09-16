@@ -21,7 +21,8 @@ use core_node_api::encoding::PairCommitRequest;
 use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
     AlreadyPairedSlots, DeploymentInstance, ExternallyCoveredSlots, LinkValue,
-    PairingValidationItem, Selection, VacantReason, validate_pairings,
+    PairingValidationItem, ResolvedClocks, Selection, VacantReason, validate_clock_connections,
+    validate_pairings,
 };
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
 use peppylib::MessengerHandle;
@@ -578,11 +579,18 @@ pub struct PairingRequest<'a> {
 /// the snapshot. [`NodeStack::pair_slots`] remains the authoritative
 /// re-validation at the reserve commit point; this plan-phase check exists
 /// to fail before anything is spawned.
+///
+/// `clocks` carries the clock every instance on this stack reads plus the one
+/// the new instance starts on, so the plan is held to the same clock rule a
+/// launch applies to its own. It judges the local pairs: a pair whose peer
+/// lives on another machine was judged by the coordinator that planned it,
+/// which is the only party holding both sides' clocks.
 pub fn plan_requested_pairs(
     snapshot: &[PairingNodeSnapshot],
     live_pairs: &[Pairing],
     request: &PairingRequest<'_>,
     local_core_node: &str,
+    clocks: &ResolvedClocks,
 ) -> std::result::Result<Vec<PlannedPair>, String> {
     let &PairingRequest {
         node_name,
@@ -767,6 +775,20 @@ pub fn plan_requested_pairs(
     let validated = validate_pairings(&items, &already_paired, &externally_covered);
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(|e| e.to_string()).collect();
+        return Err(daemon_config::format_bulleted(&errors));
+    }
+
+    // A pair joins two instances reading one timeline, each interpreting
+    // timestamps the other stamped. The CLI checks it before writing a goal;
+    // a goal arriving over the wire need not have come from the CLI.
+    let clock_errors = validate_clock_connections(
+        clocks,
+        &std::collections::BTreeMap::new(),
+        &validated.planned,
+        &[],
+    );
+    if !clock_errors.is_empty() {
+        let errors: Vec<String> = clock_errors.iter().map(|e| e.to_string()).collect();
         return Err(daemon_config::format_bulleted(&errors));
     }
 
@@ -1089,6 +1111,7 @@ mod tests {
                 covered: &BTreeMap::new(),
             },
             TEST_CORE,
+            &ResolvedClocks::default(),
         )
     }
 
@@ -1347,6 +1370,7 @@ mod tests {
                 covered,
             },
             TEST_CORE,
+            &ResolvedClocks::default(),
         )
     }
 
@@ -1399,6 +1423,51 @@ mod tests {
         assert!(err.contains("requested") && err.contains("vacant"), "{err}");
     }
 
+    /// A pair joins two instances that read one timeline. The CLI checks that
+    /// before it writes a goal, so this is the boundary that says no to a goal
+    /// that did not come from it.
+    #[test]
+    fn a_pair_across_two_timelines_is_refused() {
+        let deps = [dep("controller", "arm")];
+        let robot = config::runtime::ClockDomainId::new(
+            Name::new("robot").unwrap(),
+            config::runtime::CoreNodeName::new("cn-sim").unwrap(),
+            config::runtime::ClockIncarnation::try_from(1).unwrap(),
+        );
+        let clocks = ResolvedClocks::of_running([
+            (
+                "arm_1".to_owned(),
+                config::runtime::ClockBinding::publisher(robot),
+            ),
+            ("ctrl_1".to_owned(), config::runtime::ClockBinding::Wall),
+        ]);
+
+        let err = plan_requested_pairs(
+            &arm_snapshot(),
+            &[],
+            &PairingRequest {
+                node_name: "new_node",
+                node_tag: "v1",
+                instance_id: "ctrl_1",
+                pairing_deps: &deps,
+                requested: &requested(&[("arm", PairTarget::new("arm_1", TEST_CORE))]),
+                vacant: &BTreeMap::new(),
+                covered: &BTreeMap::new(),
+            },
+            TEST_CORE,
+            &clocks,
+        )
+        .expect_err("a pair across two timelines carries timestamps neither side can read");
+        assert!(
+            err.contains("ctrl_1") && err.contains("arm_1"),
+            "the refusal names both instances: {err}"
+        );
+        assert!(
+            err.contains("robot@cn-sim"),
+            "the refusal names the domain one of them reads: {err}"
+        );
+    }
+
     /// The three maps answer one question, so a goal that puts one slot in two
     /// of them is refused rather than resolved by whichever entry is read
     /// last. A launcher and the CLI cannot write this state; a goal arriving
@@ -1421,6 +1490,7 @@ mod tests {
                 covered: &requested(&[("arm", arm_1())]),
             },
             TEST_CORE,
+            &ResolvedClocks::default(),
         )
         .expect_err("requested + covered on one slot is contradictory");
         assert!(
@@ -1441,6 +1511,7 @@ mod tests {
                 covered: &requested(&[("arm", arm_1())]),
             },
             TEST_CORE,
+            &ResolvedClocks::default(),
         )
         .expect_err("covered + vacant on one slot is contradictory");
         assert!(
@@ -1540,6 +1611,7 @@ mod tests {
                 covered: &BTreeMap::new(),
             },
             TEST_CORE,
+            &ResolvedClocks::default(),
         )
         .expect_err("a live-paired slot is exclusive");
         assert!(

@@ -163,3 +163,29 @@ Each slot's seeded set has to satisfy the slot's declared [cardinality](/advance
 
 Naming a `link_id` the manifest does not declare is a typo rather than a shape error, so it warns and is ignored instead of failing the run.
 
+## Choosing the clock
+
+A launch also decides which [clock](/advanced_guides/system_clock/#clock-domains) an instance reads. `with_clock` is the standalone spelling of a launcher's `framework: { clock: "<domain>" }` and of the publisher a domain declaration names. It takes a `ClockBinding`, one of three:
+
+| Binding | Stands in for |
+|---|---|
+| `wall` | an instance whose deployment names no domain, which is also the default |
+| `consumer` | an instance bound to a simulated domain, naming the domain and the instance supplying it |
+| `publisher` | the instance a domain declaration names, which supplies the domain itself |
+
+A domain is named by three values, the same three that identify it anywhere: its name, the machine hosting it, and the incarnation standing for one lifetime of that name. A consumer follows them with the `(core_node, instance_id)` address of the instance publishing the domain, so it reads that one stream:
+
+```python
+from peppylib.clock import ClockBinding
+
+standalone_config = (
+    StandaloneConfig()
+    .with_parameters(params)
+    .with_clock(
+        ClockBinding.consumer("simulation", "core_x", 1, "core_x", "simulation_inst")
+    )
+)
+```
+
+`ClockBinding.publisher("simulation", "core_x", 1)` starts the node as that domain's source instead, which is what `peppylib.clock.ClockPublisher.for_node` then hands it a publisher for.
+

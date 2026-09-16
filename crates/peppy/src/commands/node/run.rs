@@ -1,19 +1,22 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
-use config::runtime::CoreNodeName;
-use config::runtime::Name;
-use config::runtime::PairingSlotBinding;
+use config::runtime::{
+    ClockBinding, ClockDomainId, CoreNodeName, Name, PairingSlotBinding,
+    ProducerRef,
+};
 use core_node_api::encoding::{
-    NodeInfoRequest, NodeInfoResponse, NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse,
-    NodeRunResult, ObservationTarget, ObservationTargets, PairTarget, StackListRequest,
+    ClockDomainInfo, ClockListRequest, NodeInfoRequest, NodeInfoResponse, NodeRunFeedback,
+    NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ObservationTarget, ObservationTargets,
+    PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
     BindingValidationItem, DeploymentInstance, LinkValue, PairingValidationItem, Placements,
-    split_link_target, validate_link_plan,
+    WALL_CLOCK, split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
-use peppylib::MessengerHandle;
+use peppylib::core_node::transport::{poll, send_goal};
+use peppylib::{CoreNodePresenceMessenger, MessengerHandle};
 use rand::rng;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -28,7 +31,6 @@ use crate::error::{Error, Result};
 use super::TimeoutConfig;
 use super::env::caller_env_overrides;
 
-use peppylib::core_node::transport::{poll, send_goal};
 /// Timeout for the quick `NodeInfoRequest` preflight in the `run -b` flow.
 /// Matches `node info`'s request timeout; this is a metadata lookup,
 /// not a long-running action, so it must fail fast if the daemon is down
@@ -267,6 +269,223 @@ fn parse_value(value: &str) -> AnyType {
     AnyType::String(value.to_string())
 }
 
+/// A clock an instance is told to read: `wall`, a domain name, or a name
+/// qualified by the machine hosting it when one name runs on several.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClockReference {
+    pub name: Name,
+    pub core_node: Option<CoreNodeName>,
+}
+
+/// Parses `--clock`: `wall`, `robot`, or `robot@cn-sim`. The shape is checked
+/// here; whether the domain exists is answered by the daemons that host them.
+pub(super) fn parse_clock_reference(value: &str) -> std::result::Result<ClockReference, String> {
+    let (name, core_node) = match value.split_once('@') {
+        None => (value, None),
+        Some((name, machine)) => (
+            name,
+            Some(
+                CoreNodeName::new(machine)
+                    .map_err(|reason| format!("`{machine}` is not a core node name: {reason}"))?,
+            ),
+        ),
+    };
+    Ok(ClockReference {
+        name: Name::new(name)
+            .map_err(|reason| format!("`{name}` is not a clock domain name: {reason}"))?,
+        core_node,
+    })
+}
+
+/// Parses `--publish-clock`: the name of the domain this instance supplies.
+pub(super) fn parse_clock_domain_name(value: &str) -> std::result::Result<Name, String> {
+    Name::new(value).map_err(|reason| format!("`{value}` is not a clock domain name: {reason}"))
+}
+
+/// What the clock flags asked for. Both absent is wall time, which is what an
+/// instance whose deployment names no domain reads.
+#[derive(Clone, Debug, Default)]
+pub struct ClockChoice {
+    pub clock: Option<ClockReference>,
+    pub publish_clock: Option<Name>,
+}
+
+/// What the fan-out over the federation found for a `--clock` reference: the
+/// domains matching it, and the daemons that did not answer.
+#[derive(Debug, Default)]
+struct ClockSearch {
+    matches: Vec<ClockDomainInfo>,
+    unreachable: Vec<String>,
+}
+
+impl ClockSearch {
+    /// The peers that did not answer, as a refusal names them.
+    fn unreachable_clause(&self) -> String {
+        format!(
+            "{} daemon(s) did not answer ({})",
+            self.unreachable.len(),
+            self.unreachable.join(", ")
+        )
+    }
+}
+
+/// The binding `--publish-clock` declares: a fresh lifetime of `name`, hosted
+/// by the daemon this command targets.
+fn publisher_binding(name: &Name, target_core_node: &str) -> Result<ClockBinding> {
+    if name.as_str() == WALL_CLOCK {
+        return Err(Error::ExecutionFailed(format!(
+            "`{WALL_CLOCK}` is built in and names the time every machine already keeps, so it \
+             cannot be declared. An instance reads it wherever `--clock` names nothing else; \
+             supply a domain of your own under another name, such as `--publish-clock robot_sim`"
+        )));
+    }
+    let core_node = CoreNodeName::new(target_core_node).map_err(|reason| {
+        Error::ExecutionFailed(format!(
+            "the target daemon reports an invalid core node name `{target_core_node}`: {reason}"
+        ))
+    })?;
+    Ok(ClockBinding::publisher(ClockDomainId::new(
+        name.clone(),
+        core_node,
+        daemon_config::launcher::mint_incarnation(),
+    )))
+}
+
+/// Whether a `--clock` reference names wall time, which every machine keeps
+/// and no daemon hosts.
+fn refers_to_wall(reference: &ClockReference) -> Result<bool> {
+    if reference.name.as_str() != WALL_CLOCK {
+        return Ok(false);
+    }
+    let Some(machine) = &reference.core_node else {
+        return Ok(true);
+    };
+    Err(Error::ExecutionFailed(format!(
+        "`{WALL_CLOCK}` is built in and names the time every machine already keeps, so \
+         `{WALL_CLOCK}@{machine}` names nothing one machine supplies to another. Name it as \
+         `--clock {WALL_CLOCK}`"
+    )))
+}
+
+/// The binding a `--clock` reference resolves to, given what the federation
+/// answered.
+///
+/// A daemon that did not answer may host the very name being resolved, so a
+/// short name is settled only by a complete answer: resolving one against a
+/// partial answer binds whichever machine happened to reply. A reference that
+/// names its machine is unambiguous on its own, and resolves on what came
+/// back.
+fn consumer_binding(reference: &ClockReference, found: &ClockSearch) -> Result<ClockBinding> {
+    match found.matches.as_slice() {
+        [] if found.unreachable.is_empty() => Err(Error::ExecutionFailed(format!(
+            "no clock domain `{name}` is running; `peppy clock list` shows the domains this \
+             federation hosts, or declare one with `--publish-clock {name}`",
+            name = reference.name
+        ))),
+        [] => Err(Error::ExecutionFailed(format!(
+            "no clock domain `{name}` was found, and {clause}, so whether one is running is \
+             unknown. `peppy clock list` reports the same gap; retry once every daemon answers",
+            name = reference.name,
+            clause = found.unreachable_clause()
+        ))),
+        [one] if reference.core_node.is_some() || found.unreachable.is_empty() => {
+            Ok(ClockBinding::consumer(
+                one.domain.clone(),
+                ProducerRef::new(one.domain.core_node.as_str(), &one.publisher_instance_id),
+            ))
+        }
+        [one] => Err(Error::ExecutionFailed(format!(
+            "`{name}` matched `{domain}`, and {clause}, so another machine may host the same \
+             name. Name the one you mean as `--clock {domain}`, or retry once every daemon \
+             answers",
+            name = reference.name,
+            domain = one.domain,
+            clause = found.unreachable_clause()
+        ))),
+        several => Err(Error::ExecutionFailed(format!(
+            "`{}` names more than one clock domain ({}); name the one you mean, machine \
+             included",
+            reference.name,
+            several
+                .iter()
+                .map(|info| info.domain.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// Asks every live daemon what it hosts, keeping the domains that match
+/// `reference` and the peers that did not answer.
+async fn search_federation(
+    messenger: &MessengerHandle,
+    caller_core_node: &str,
+    reference: &ClockReference,
+) -> Result<ClockSearch> {
+    let live = CoreNodePresenceMessenger::list_live(
+        messenger,
+        None,
+        CoreNodePresenceMessenger::LIST_TIMEOUT,
+    )
+    .await
+    .map_err(|error| {
+        Error::ExecutionFailed(format!("could not enumerate the federation: {error}"))
+    })?;
+
+    let mut found = ClockSearch::default();
+    for claim in live {
+        let answer = poll::<ClockListRequest>(
+            &ClockListRequest::new(),
+            messenger,
+            caller_core_node,
+            CALLER_INSTANCE_ID,
+            &claim.core_node,
+            NODE_INFO_PREFLIGHT_TIMEOUT,
+        )
+        .await;
+        let Ok(response) = answer else {
+            found.unreachable.push(claim.core_node);
+            continue;
+        };
+        found
+            .matches
+            .extend(response.domains.into_iter().filter(|info| {
+                info.domain.name == reference.name
+                    && reference
+                        .core_node
+                        .as_ref()
+                        .is_none_or(|machine| &info.domain.core_node == machine)
+            }));
+    }
+    Ok(found)
+}
+
+/// Turns the clock flags into the binding this instance starts with.
+///
+/// `--publish-clock` declares the domain on the daemon this command targets
+/// and mints its lifetime. `--clock` names one that already runs: every live
+/// daemon is asked what it hosts, and the reference binds only on an answer
+/// that settles it. An unknown name, a name more than one machine runs, and a
+/// name an incomplete answer leaves in doubt are each refused.
+pub(super) async fn resolve_clock_choice(
+    messenger: &MessengerHandle,
+    caller_core_node: &str,
+    target_core_node: &str,
+    choice: &ClockChoice,
+) -> Result<ClockBinding> {
+    if let Some(name) = &choice.publish_clock {
+        return publisher_binding(name, target_core_node);
+    }
+    let Some(reference) = &choice.clock else {
+        return Ok(ClockBinding::Wall);
+    };
+    if refers_to_wall(reference)? {
+        return Ok(ClockBinding::Wall);
+    }
+    let found = search_federation(messenger, caller_core_node, reference).await?;
+    consumer_binding(reference, &found)
+}
+
 /// The resolved preflight plan for one instance's `--link` flags: the
 /// producer-binding slots resolved to concrete producer sets, the
 /// participant-pairing links extracted into the `PairTarget` map the daemon's
@@ -307,7 +526,6 @@ struct PreflightPlan {
 /// Returns `Ok(None)` on transient transport failures so the call site
 /// can swallow them and continue; an unreachable daemon should fail
 /// the actual `node_run` invocation, not the pre-flight.
-#[allow(clippy::too_many_arguments)]
 async fn validate_links_against_stack(
     messenger: &MessengerHandle,
     core_node_name: &str,
@@ -315,6 +533,7 @@ async fn validate_links_against_stack(
     target_tag: &str,
     target_instance_id: &str,
     links: &BTreeMap<String, LinkValue>,
+    clock: &ClockBinding,
 ) -> Result<Option<PreflightPlan>> {
     let stack_response = poll(
         &StackListRequest::new(),
@@ -382,6 +601,11 @@ async fn validate_links_against_stack(
     // in the preflight with the existing peer named.
     let mut already_paired = daemon_config::launcher::AlreadyPairedSlots::new();
 
+    // The clock each running instance reads, so this instance's connections
+    // are held to the same rule a launch applies: both ends of a
+    // clock-dependent connection read one clock.
+    let mut running_clocks: Vec<(String, ClockBinding)> = Vec::new();
+
     let mut snapshot: Vec<StackNode> = Vec::with_capacity(stack_nodes.len());
     for (node, info_response) in stack_nodes.iter().zip(infos) {
         let info = match info_response {
@@ -389,6 +613,7 @@ async fn validate_links_against_stack(
             NodeInfoResponse::NotInStack => continue,
         };
         for inst in &info.instances {
+            running_clocks.push((inst.instance_id.clone(), inst.clock.clone()));
             for (link_id, slot) in &inst.pairing_slots {
                 if let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding {
                     already_paired.insert(
@@ -407,11 +632,10 @@ async fn validate_links_against_stack(
         }
         // The validator reads `instance_id` and `bindings` for inert items
         // (`bindings` is unused under `depends_on: None`, but kept empty to
-        // satisfy the type), plus `framework` for the one-simulated-time-source
-        // rule. A default-empty `framework` is the right answer there: whether
-        // an already-running instance is a time source was settled by the
-        // launch that started it, not by this one. `arguments` and `env_vars`
-        // are not consulted.
+        // satisfy the type). `arguments`, `env_vars` and `framework` are not
+        // consulted: what clock a running instance reads is reported by the
+        // daemon, above, rather than re-derived from a deployment entry this
+        // command never saw.
         let instances: Vec<DeploymentInstance> = node
             .instances
             .iter()
@@ -527,6 +751,8 @@ async fn validate_links_against_stack(
         observer_deps: &target_observer_deps,
         preexisting: false,
     });
+    let mut clocks = daemon_config::launcher::ResolvedClocks::of_running(running_clocks);
+    clocks.insert(target_instance_id, clock.clone());
     let mut validated = validate_link_plan(
         &items,
         &pairing_items,
@@ -540,6 +766,7 @@ async fn validate_links_against_stack(
                 "the target daemon reports an invalid core node name `{core_node_name}`: {reason}"
             ))
         })?),
+        &clocks,
     );
     if !validated.errors.is_empty() {
         let errors: Vec<String> = validated.errors.iter().map(ToString::to_string).collect();
@@ -636,6 +863,7 @@ pub async fn validate_and_run_instance(
     args: &[(String, String)],
     instance_id: Option<String>,
     links: &BTreeMap<String, LinkValue>,
+    clock: ClockBinding,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     let prelaunch_instance_id = instance_id.unwrap_or_else(|| get_random(rng()));
@@ -652,6 +880,7 @@ pub async fn validate_and_run_instance(
         tag,
         &prelaunch_instance_id,
         links,
+        &clock,
     )
     .await
     {
@@ -675,6 +904,7 @@ pub async fn validate_and_run_instance(
         plan.requested_pairs,
         plan.vacant_pairs,
         plan.requested_observations,
+        clock,
         timeouts,
     )
     .await
@@ -701,6 +931,7 @@ pub async fn run_instance_async(
     requested_pairs: BTreeMap<String, PairTarget>,
     vacant_pairs: BTreeMap<String, String>,
     requested_observations: BTreeMap<String, ObservationTargets>,
+    clock: ClockBinding,
     timeouts: &TimeoutConfig,
 ) -> Result<String> {
     // Generate or use provided instance_id
@@ -727,6 +958,7 @@ pub async fn run_instance_async(
     // nothing left to get wrong.
     let instance_plan = config::runtime::NodeInstancePlan {
         arguments,
+        clock,
         slot_bindings,
         ..config::runtime::NodeInstancePlan::new(
             Name::new(instance_id.clone()).map_err(|e| Error::PeppyConfig(e.into()))?,
@@ -786,6 +1018,7 @@ pub fn run_node(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    clock: ClockChoice,
     links: BTreeMap<String, LinkValue>,
     timeouts: TimeoutConfig,
     build: bool,
@@ -796,6 +1029,7 @@ pub fn run_node(
         tag,
         args,
         instance_id,
+        clock,
         links,
         timeouts,
         build,
@@ -809,6 +1043,7 @@ async fn run_node_async(
     tag: String,
     args: Vec<(String, String)>,
     instance_id: Option<String>,
+    clock: ClockChoice,
     links: BTreeMap<String, LinkValue>,
     timeouts: TimeoutConfig,
     build: bool,
@@ -885,6 +1120,15 @@ async fn run_node_async(
         }
     }
 
+    // Resolved before the instance starts: an unknown domain is a refusal
+    // here, where nothing has been spawned yet.
+    let clock = resolve_clock_choice(
+        conn.messenger,
+        &conn.core_node_name,
+        &conn.target_core_node,
+        &clock,
+    )
+    .await?;
     validate_and_run_instance(
         conn.messenger,
         &conn.core_node_name,
@@ -893,6 +1137,7 @@ async fn run_node_async(
         &args,
         instance_id,
         &links,
+        clock,
         &remaining_timeouts(&timeouts, start, "run")?,
     )
     .await?;
@@ -903,6 +1148,9 @@ async fn run_node_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the fixtures below build a lifetime by hand; the command mints
+    // through `daemon_config`.
+    use config::runtime::ClockIncarnation;
 
     #[test]
     fn parse_bool_values() {
@@ -1081,5 +1329,223 @@ mod tests {
 
         // Past budget: same error path.
         assert!(remaining_max_secs(30, 45, "run").is_err());
+    }
+
+    fn clock_domain(name: &str, core_node: &str, incarnation: u64) -> ClockDomainId {
+        ClockDomainId::new(
+            Name::new(name).expect("a domain name"),
+            CoreNodeName::new(core_node).expect("a machine name"),
+            ClockIncarnation::try_from(incarnation).expect("non-zero"),
+        )
+    }
+
+    fn hosted(name: &str, core_node: &str, incarnation: u64, publisher: &str) -> ClockDomainInfo {
+        ClockDomainInfo {
+            domain: clock_domain(name, core_node, incarnation),
+            publisher_instance_id: publisher.to_owned(),
+            launch: None,
+            ready: true,
+            last_tick_ns: Some(42),
+        }
+    }
+
+    fn reference(value: &str) -> ClockReference {
+        parse_clock_reference(value).expect("the fixture reference should parse")
+    }
+
+    /// The `@` splits a machine off the name; a bare name leaves the machine
+    /// for the fan-out to settle.
+    #[test]
+    fn a_clock_reference_splits_its_machine_off_the_name() {
+        let bare = reference("robot");
+        assert_eq!(bare.name.as_str(), "robot");
+        assert_eq!(bare.core_node, None);
+
+        let qualified = reference("robot@cn-sim");
+        assert_eq!(qualified.name.as_str(), "robot");
+        assert_eq!(
+            qualified.core_node.as_ref().map(CoreNodeName::as_str),
+            Some("cn-sim")
+        );
+    }
+
+    #[test]
+    fn a_clock_reference_names_which_half_is_malformed() {
+        for value in ["", "@cn-sim"] {
+            let refusal = parse_clock_reference(value).expect_err("a domain name is never empty");
+            assert!(
+                refusal.contains("clock domain name"),
+                "the refusal should name the domain half: {refusal}"
+            );
+        }
+        let refusal = parse_clock_reference("robot@not a machine")
+            .expect_err("a machine name holds no spaces");
+        assert!(
+            refusal.contains("core node name"),
+            "the refusal should name the machine half: {refusal}"
+        );
+    }
+
+    #[test]
+    fn a_published_domain_name_is_checked_where_it_is_typed() {
+        assert_eq!(
+            parse_clock_domain_name("robot_sim")
+                .expect("a plain identifier")
+                .as_str(),
+            "robot_sim"
+        );
+        assert!(parse_clock_domain_name("").is_err());
+    }
+
+    /// `wall` binds without asking any daemon, and qualifying it by a machine
+    /// names nothing one machine supplies to another.
+    #[test]
+    fn wall_is_settled_without_a_daemon() {
+        assert!(refers_to_wall(&reference("wall")).expect("wall is nameable"));
+        assert!(!refers_to_wall(&reference("robot")).expect("a domain name is not wall"));
+
+        let refusal = refers_to_wall(&reference("wall@cn-a")).expect_err("wall has no machine");
+        let message = refusal.to_string();
+        assert!(
+            message.contains("--clock wall"),
+            "the refusal must say what to type: {message}"
+        );
+    }
+
+    /// `wall` names the time every machine already keeps, so no command mints
+    /// a domain under it: a second row labelled `wall` is one no consumer
+    /// could ever bind.
+    #[test]
+    fn publishing_the_reserved_name_is_refused() {
+        let refusal = publisher_binding(&Name::new("wall").expect("a name"), "cn-a")
+            .expect_err("`wall` cannot be declared");
+        let message = refusal.to_string();
+        assert!(
+            message.contains("built in") && message.contains("--publish-clock robot_sim"),
+            "the refusal must name the reserved word and what to type instead: {message}"
+        );
+    }
+
+    /// A declaration mints a lifetime of its own, so two runs under one name
+    /// are two timelines.
+    #[test]
+    fn publishing_mints_a_fresh_lifetime_on_the_target_machine() {
+        let name = Name::new("robot_sim").expect("a name");
+        let first = publisher_binding(&name, "cn-a").expect("a declarable name");
+        let second = publisher_binding(&name, "cn-a").expect("a declarable name");
+
+        assert!(first.is_publisher());
+        let domain = first.domain().expect("a publisher carries its domain");
+        assert_eq!(domain.name.as_str(), "robot_sim");
+        assert_eq!(domain.core_node.as_str(), "cn-a");
+        assert_ne!(
+            domain.incarnation,
+            second
+                .domain()
+                .expect("a publisher carries its domain")
+                .incarnation,
+            "each declaration mints its own lifetime"
+        );
+    }
+
+    #[test]
+    fn a_short_name_resolves_when_every_daemon_answered() {
+        let found = ClockSearch {
+            matches: vec![hosted("robot", "cn-a", 7, "sim_1")],
+            unreachable: Vec::new(),
+        };
+        let binding = consumer_binding(&reference("robot"), &found).expect("one match resolves");
+        assert_eq!(
+            binding.domain().map(ToString::to_string).as_deref(),
+            Some("robot@cn-a")
+        );
+        assert_eq!(
+            binding.publisher_ref(),
+            Some(&ProducerRef::new("cn-a", "sim_1")),
+            "a consumer subscribes to the publisher's own stream"
+        );
+    }
+
+    #[test]
+    fn an_unknown_name_is_refused_with_both_ways_forward() {
+        let refusal = consumer_binding(&reference("robot"), &ClockSearch::default())
+            .expect_err("an unknown domain is refused");
+        let message = refusal.to_string();
+        assert!(message.contains("peppy clock list"), "{message}");
+        assert!(message.contains("--publish-clock robot"), "{message}");
+    }
+
+    /// A daemon that did not answer may be the one hosting the name, so the
+    /// refusal reports the gap and never advises minting a second timeline
+    /// under a name already in use on another machine.
+    #[test]
+    fn an_incomplete_answer_is_refused_without_advising_a_declaration() {
+        let found = ClockSearch {
+            matches: Vec::new(),
+            unreachable: vec!["cn-b".to_owned()],
+        };
+        let refusal = consumer_binding(&reference("robot"), &found)
+            .expect_err("an incomplete answer settles nothing");
+        let message = refusal.to_string();
+        assert!(
+            message.contains("cn-b"),
+            "the silent peer is named: {message}"
+        );
+        assert!(
+            !message.contains("--publish-clock"),
+            "an incomplete answer must not advise declaring the name: {message}"
+        );
+    }
+
+    /// A short name resolved from a partial answer binds whichever machine
+    /// happened to reply, so it is refused with the qualified form to type.
+    #[test]
+    fn a_short_name_is_refused_while_a_daemon_is_silent() {
+        let found = ClockSearch {
+            matches: vec![hosted("robot", "cn-a", 7, "sim_1")],
+            unreachable: vec!["cn-b".to_owned()],
+        };
+        let refusal = consumer_binding(&reference("robot"), &found)
+            .expect_err("a partial answer leaves a short name in doubt");
+        let message = refusal.to_string();
+        assert!(message.contains("cn-b"), "{message}");
+        assert!(
+            message.contains("--clock robot@cn-a"),
+            "the refusal must say what to type: {message}"
+        );
+    }
+
+    /// A reference naming its machine is unambiguous whatever else is
+    /// unreachable.
+    #[test]
+    fn a_qualified_name_resolves_although_a_daemon_is_silent() {
+        let found = ClockSearch {
+            matches: vec![hosted("robot", "cn-a", 7, "sim_1")],
+            unreachable: vec!["cn-b".to_owned()],
+        };
+        let binding = consumer_binding(&reference("robot@cn-a"), &found)
+            .expect("a qualified reference needs no other machine");
+        assert_eq!(
+            binding.domain().map(ToString::to_string).as_deref(),
+            Some("robot@cn-a")
+        );
+    }
+
+    #[test]
+    fn one_name_on_two_machines_is_refused_until_qualified() {
+        let found = ClockSearch {
+            matches: vec![
+                hosted("robot", "cn-a", 7, "sim_1"),
+                hosted("robot", "cn-b", 9, "sim_2"),
+            ],
+            unreachable: Vec::new(),
+        };
+        let refusal = consumer_binding(&reference("robot"), &found)
+            .expect_err("an ambiguous name is refused");
+        let message = refusal.to_string();
+        assert!(
+            message.contains("robot@cn-a") && message.contains("robot@cn-b"),
+            "the refusal lists the qualified names to pick from: {message}"
+        );
     }
 }

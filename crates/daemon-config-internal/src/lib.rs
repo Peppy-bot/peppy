@@ -81,16 +81,17 @@ pub mod peppy_config {
 // -- launcher --
 pub mod launcher {
     pub use crate::internal::launcher::{
-        AlreadyPairedSlots, AppliedChange, BindingValidationItem, ComponentAxis, ComposedJoin,
-        ComposedLaunch, CompositionError, CompositionReport, CopyRecord, Deployment,
+        AlreadyPairedSlots, AppliedChange, BindingValidationItem, ClockIncarnations, ComponentAxis,
+        ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyRecord, Deployment,
         DeploymentInstance, DeploymentSource, ExternallyCoveredSlots, FragmentPart, FragmentSpec,
         FrameworkOverrides, JoinRequest, LauncherFragmentParser, LinkTargets, LinkValue,
         PairingValidationItem, PeppyLauncher, PeppyLauncherParser, Placements, PlannedObservation,
-        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, RunningStack,
+        PlannedPairEndpoint, PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack,
         SELF_COPY_NAME_REFUSAL, Selection, SkipReason, SkippedAdjustment, UnitSelection,
-        VacantReason, check_composition, participant_vacancies, split_link_target,
-        validate_bindings, validate_link_plan, validate_link_slots, validate_pairings,
-        validate_sim_time_source,
+        VacantReason, WALL_CLOCK, check_composition, mint_incarnation, participant_vacancies,
+        resolve_clocks,
+        split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
+        validate_link_slots, validate_pairings,
     };
 }
 

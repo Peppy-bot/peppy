@@ -5,12 +5,12 @@
 
 use super::ChangeResult;
 use super::action::StackChangeContext;
-use super::launch::clock::TimeSource;
 use super::launch::watchers::LifecycleWatchers;
 use super::launch::{NodeKey, PlannedDeployment};
 use config::runtime::{CoreNodeName, Name};
 use daemon_config::launcher::{
-    CopyRecord, PeppyLauncher, Placements, PreparedLauncher, UnitSelection,
+    ClockIncarnations, CopyRecord, PeppyLauncher, Placements, PreparedLauncher, ResolvedClocks,
+    UnitSelection,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -33,8 +33,14 @@ pub(crate) struct ActiveLaunch {
     /// its pins.
     pub(super) resolved: Vec<PlannedDeployment>,
     pub(super) copies: BTreeMap<Name, StackCopy>,
-    pub(super) time_source: Option<TimeSource>,
-    pub(super) clock: Option<super::launch::federated::ClockDemand>,
+    /// The lifetime minted for each simulated domain this launch declares.
+    /// A join reads them so it follows the domains already running instead of
+    /// replacing the timelines under their consumers.
+    pub(super) clocks: ClockIncarnations,
+    /// The clock every instance of the plan reads, as this launch resolved
+    /// it: what each instance was started with, and what a join holds its new
+    /// connections against.
+    pub(super) resolved_clocks: ResolvedClocks,
     /// The machines watching each source of this plan, as every machine of
     /// the launch was told them. A failed join puts these back.
     pub(super) watchers: LifecycleWatchers,
@@ -89,19 +95,21 @@ impl ActiveLaunch {
             resolved: planned.clone(),
             planned,
             copies: BTreeMap::new(),
-            time_source: None,
-            clock: None,
+            clocks: ClockIncarnations::new(),
+            resolved_clocks: ResolvedClocks::default(),
             watchers: LifecycleWatchers::new(),
         }
     }
 
-    pub(super) fn with_time_source(mut self, source: Option<TimeSource>) -> Self {
-        self.time_source = source;
-        self
-    }
-
-    pub(super) fn with_clock(mut self, clock: super::launch::federated::ClockDemand) -> Self {
-        self.clock = Some(clock);
+    /// Records what the change resolved: the clock each instance reads, and
+    /// the lifetime each simulated domain was minted for.
+    pub(super) fn with_clocks(
+        mut self,
+        resolved: ResolvedClocks,
+        incarnations: ClockIncarnations,
+    ) -> Self {
+        self.resolved_clocks = resolved;
+        self.clocks = incarnations;
         self
     }
 

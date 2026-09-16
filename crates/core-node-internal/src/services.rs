@@ -11,7 +11,7 @@ pub(crate) mod repo;
 mod response;
 mod stack;
 
-use clock::{ClockSource, SimClockSource, WallClockSource};
+use clock::{ClockSource, WallClockSource};
 
 pub use node::{
     HealthMonitorPolicy, TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances,
@@ -42,7 +42,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
@@ -88,10 +88,6 @@ pub struct CoreNodeArguments {
     /// Cadence of the daemon-liveness heartbeat (small and fixed; the
     /// configurable grace period is many multiples of it).
     pub heartbeat_interval: Duration,
-    /// Daemon-wide default for the framework `use_sim_time` flag. Per-instance
-    /// launcher overrides win over this; when an instance omits the override,
-    /// the spawned node's `framework.use_sim_time` is set to this value.
-    pub daemon_use_sim_time: bool,
     /// Settle window the boot presence claim holds its candidacy open before
     /// committing, so a claim racing token propagation across
     /// freshly-established router links still observes the incumbent and
@@ -169,7 +165,6 @@ pub struct CoreNode {
     health_monitor: HealthMonitorPolicy,
     clock_publish_interval: Duration,
     heartbeat_interval: Duration,
-    daemon_use_sim_time: bool,
     /// Settle window the boot presence claim holds its candidacy open before
     /// committing; see [`CoreNodeArguments::name_claim_settle`].
     name_claim_settle: Duration,
@@ -191,6 +186,9 @@ pub struct CoreNode {
     /// Which federated launch this daemon is committed to, and which launch its
     /// current slice came from. See `services::federation`.
     slice_ownership: Arc<federation::SliceOwnership>,
+    /// The clock domains whose publisher runs on this daemon, watched so
+    /// `clock_list` can say whether each has supplied an instant.
+    clock_watches: Arc<clock::watch::ClockWatches>,
     /// Flipped by [`CoreNode::start_with_ready`] so a second start on the same
     /// instance is rejected rather than silently re-registering listeners.
     started: AtomicBool,
@@ -277,10 +275,6 @@ struct ListenerCtx<'a> {
     /// The core node binds to itself: this is `CoreNode::node_name`, passed
     /// as the bound core-node identity of every listener.
     core_node_name: &'a str,
-    /// Latest externally-observed clock tick; shared between the sim clock
-    /// source serving the `clock` service and the `clock`-topic subscriber
-    /// feeding it (sim mode only, but allocated unconditionally).
-    clock_cache: Arc<AtomicU64>,
     /// Single time authority behind both the `clock` service handler and the
     /// `clock` topic publisher.
     clock_source: Arc<dyn ClockSource>,
@@ -323,7 +317,6 @@ impl CoreNode {
         let health_monitor = arguments.health_monitor;
         let clock_publish_interval = arguments.clock_publish_interval;
         let heartbeat_interval = arguments.heartbeat_interval;
-        let daemon_use_sim_time = arguments.daemon_use_sim_time;
         let name_claim_settle = arguments.name_claim_settle;
 
         let node_config = NodeConfig {
@@ -354,6 +347,7 @@ impl CoreNode {
             Duration::from_secs(peppy_config.lifecycle.shutdown_grace_secs),
         );
         let slice_ownership = federation::SliceOwnership::new(node_config.manifest.name.as_str());
+        let clock_watches = Arc::new(clock::watch::ClockWatches::new());
 
         Self {
             node_stack: Arc::new(node_stack),
@@ -367,13 +361,13 @@ impl CoreNode {
             health_monitor,
             clock_publish_interval,
             heartbeat_interval,
-            daemon_use_sim_time,
             name_claim_settle,
             peppy_config,
             namespace,
             shutdown_token,
             presence_token: std::sync::Mutex::new(None),
             slice_ownership,
+            clock_watches,
             started: AtomicBool::new(false),
         }
     }
@@ -440,7 +434,6 @@ impl CoreNode {
             // versions never has two answers to choose between.
             peppy_version: CORE_NODE_TAG.to_owned(),
             root_instance_id: self.instance_id().to_owned(),
-            serves_sim_time: self.daemon_use_sim_time,
             shutdown_token: self.shutdown_token.clone(),
         }
     }
@@ -471,6 +464,15 @@ impl CoreNode {
                 self.instance_id(),
                 self.node_name(),
                 Arc::clone(&ctx.clock_source),
+            )
+            .boxed(),
+            ServiceId::ClockList => clock::list::listen_for_clock_list(
+                &self.messenger,
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                Arc::clone(&self.node_stack),
+                Arc::clone(&self.clock_watches),
             )
             .boxed(),
             ServiceId::Info => info::listen_for_info(
@@ -651,7 +653,7 @@ impl CoreNode {
                 self.peppy_dirs.clone(),
             )
             .boxed(),
-            ServiceId::ClockOffset | ServiceId::SimTimeParticipants => {
+            ServiceId::ClockOffset => {
                 return Err(NotHostedHere::SpawnedNode);
             }
         })
@@ -680,7 +682,6 @@ impl CoreNode {
                         daemon_defaults: node::DaemonDefaults::from_peppy_config(
                             &self.peppy_config,
                             self.namespace.clone(),
-                            self.daemon_use_sim_time,
                         ),
                         shutdown_token: self.shutdown_token.clone(),
                         slice_ownership: Arc::clone(&self.slice_ownership),
@@ -734,7 +735,6 @@ impl CoreNode {
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
                         self.namespace.clone(),
-                        self.daemon_use_sim_time,
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     relationships: ctx.relationships.clone(),
@@ -757,38 +757,22 @@ impl CoreNode {
     /// daemon-hosted. EXHAUSTIVE — no wildcard arm.
     fn topic_task<'a>(&'a self, id: TopicId, ctx: &ListenerCtx<'a>) -> ListenerSetup<'a> {
         match id {
-            // How the daemon fulfils the `clock` topic is a mode decision:
-            // in wall mode it publishes the tick stream itself; in sim mode
-            // an external simulator publishes, and the daemon instead
-            // subscribes, mirroring the latest tick into the shared cache
-            // the `clock` service answers from.
-            TopicId::Clock => {
-                if self.daemon_use_sim_time {
-                    clock::subscribe_external_clock(
-                        self.messenger.clone(),
-                        ctx.core_node_name,
-                        self.instance_id(),
-                        self.node_name(),
-                        Arc::clone(&ctx.clock_cache),
-                        self.shutdown_token.clone(),
-                    )
-                    .boxed()
-                } else {
-                    clock::publish_clock(
-                        self.messenger.clone(),
-                        ctx.core_node_name,
-                        self.instance_id(),
-                        self.node_name(),
-                        self.clock_publish_interval,
-                        Arc::clone(&ctx.clock_source),
-                        self.shutdown_token.clone(),
-                    )
-                    .boxed()
-                }
-            }
-            // Liveness beacon for spawned nodes' watchdogs. Unconditional
-            // (both wall and sim mode), unlike the clock above which is
-            // published in wall mode only.
+            // The daemon publishes its own machine's wall ticks whatever its
+            // instances read. A simulated domain rides the same topic under
+            // its own link_id, published by the instance that supplies it, so
+            // the two never collide and framework liveness never waits on a
+            // simulator.
+            TopicId::Clock => clock::publish_clock(
+                self.messenger.clone(),
+                ctx.core_node_name,
+                self.instance_id(),
+                self.node_name(),
+                self.clock_publish_interval,
+                Arc::clone(&ctx.clock_source),
+                self.shutdown_token.clone(),
+            )
+            .boxed(),
+            // Liveness beacon for spawned nodes' watchdogs.
             TopicId::DaemonHeartbeat => clock::publish_daemon_heartbeat(
                 self.messenger.clone(),
                 ctx.core_node_name,
@@ -852,16 +836,10 @@ impl CoreNode {
             self.node_name(),
             self.instance_id(),
         );
-        // Build the clock source up front so the service handler and the
-        // tick feeder share a single cache in sim mode. The cache is unused
-        // (and the WallClockSource ignores it) in wall mode, but allocating
-        // it unconditionally keeps topic_task's clock arm readable.
-        let clock_cache = Arc::new(AtomicU64::new(0));
-        let clock_source: Arc<dyn ClockSource> = if self.daemon_use_sim_time {
-            Arc::new(SimClockSource::new(Arc::clone(&clock_cache)))
-        } else {
-            Arc::new(WallClockSource)
-        };
+        // The `clock` service answers from this machine's own clock, which is
+        // what a round-trip against a daemon measures whatever its instances
+        // read.
+        let clock_source: Arc<dyn ClockSource> = Arc::new(WallClockSource);
         let pairing = Arc::new(node::PairingCoordinator::new(
             Arc::clone(&self.node_stack),
             self.messenger.clone(),
@@ -885,7 +863,6 @@ impl CoreNode {
         );
         let ctx = ListenerCtx {
             core_node_name,
-            clock_cache,
             clock_source,
             datastore: Arc::new(datastore::Datastore::new()),
             relationships,

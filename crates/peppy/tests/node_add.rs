@@ -80,6 +80,8 @@ fn node_add_command_succeeds() {
     // Now add the node to the node stack
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -238,6 +240,8 @@ fn node_add_command_with_run_arg_succeeds() {
     // Add the node to the node stack with run=true to also start an instance
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -372,6 +376,8 @@ fn node_add_after_failed_sync_succeeds() {
     // 3. Run `node add .` on that node, it'll fail due to git hash mismatch
     let add_result = NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -418,6 +424,8 @@ fn node_add_after_failed_sync_succeeds() {
     // 5. Run `node add .` again. This time it should succeed
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -580,6 +588,8 @@ fn node_add_same_node_shutdown_existing_instances() {
     // Step 1: Add the node with start=true to create an instance
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -636,6 +646,8 @@ fn node_add_same_node_shutdown_existing_instances() {
     // This should shut down the existing instance and overwrite the node
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -779,6 +791,8 @@ fn node_add_same_node_different_sources_show_overwrite_prompt() {
     // Step 1: Add the node from local filesystem with start=true
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -965,6 +979,8 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     // 3. `node add` without `--sync` should fail with a git hash mismatch
     let add_result = NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -995,6 +1011,8 @@ fn node_add_with_sync_flag_refreshes_stale_git_hash() {
     // 4. `node add` *with* `--sync` should refresh git.hash and succeed in one step
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: true,
@@ -1088,6 +1106,8 @@ fn node_add_with_sync_flag_rejects_remote_source() {
 
     let result = NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some("https://github.com/fake-org/fake-repo.git/node".to_string()),
             git_ref: None,
             sync: true,
@@ -1228,6 +1248,8 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
     );
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(producer_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1257,6 +1279,8 @@ fn node_add_with_run_rejects_unknown_binding_slot() {
 
     let result = NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             vacant_links: Vec::new(),
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
@@ -1355,6 +1379,8 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     );
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(producer_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1393,6 +1419,8 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
         .expect("producer health service should start");
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(producer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1437,6 +1465,8 @@ fn node_add_with_run_and_bind_succeeds_for_pinned_dependency() {
     // reproducer at the top of this file wanted to work.
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1524,6 +1554,8 @@ fn node_add_with_run_rejects_dead_binding_key() {
     );
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(producer_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1560,6 +1592,8 @@ fn node_add_with_run_rejects_dead_binding_key() {
         .expect("producer health service should start");
     NodeCommand {
         command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
             node_ref: None,
             node_name: Some(producer_name.to_string()),
             tag: Some("v1".to_string()),
@@ -1585,6 +1619,8 @@ fn node_add_with_run_rejects_dead_binding_key() {
 
     let result = NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1680,6 +1716,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     );
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(producer_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1733,6 +1771,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
     for instance_id in [producer_left_id, producer_right_id] {
         NodeCommand {
             command: NodeCommands::Run {
+                clock: None,
+                publish_clock: None,
                 node_ref: None,
                 node_name: Some(producer_name.to_string()),
                 tag: Some("v1".to_string()),
@@ -1775,6 +1815,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
         .expect("bystander health service should start");
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             vacant_links: Vec::new(),
             source: Some(bystander_dir.display().to_string()),
             git_ref: None,
@@ -1824,6 +1866,8 @@ fn node_add_with_run_does_not_false_flag_existing_consumer_pinned_slots() {
 
     let result = NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(new_consumer_dir.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1931,6 +1975,8 @@ fn node_add_build_force_supersedes_inflight_build() {
     // the blocking build_cmd.
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -1995,6 +2041,8 @@ fn node_add_build_force_supersedes_inflight_build() {
     // The user's repro: `node add --build --force` while a build is in flight.
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_path.display().to_string()),
             git_ref: None,
             sync: false,

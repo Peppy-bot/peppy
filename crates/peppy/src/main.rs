@@ -7,7 +7,7 @@ use tracing::error;
 
 use daemon_config::consts::{AppEnv, PEPPY_VERSION};
 use peppy::{
-    commands::{Command, container, info, mcp, node, platform, repo, service, stack},
+    commands::{Command, clock, container, info, mcp, node, platform, repo, service, stack},
     context::AppContext,
 };
 
@@ -58,6 +58,11 @@ enum Commands {
     Stack {
         #[command(subcommand)]
         command: stack::StackCommands,
+    },
+    /// Clock domains: what simulated time this federation is running
+    Clock {
+        #[command(subcommand)]
+        command: clock::ClockCommands,
     },
     /// Container runtime setup and status
     Container {
@@ -121,6 +126,7 @@ fn main() {
         Commands::Service { command } => service::ServiceCommand { command }.execute(&app_ctx),
         Commands::Node { command } => node::NodeCommand { command }.execute(&app_ctx),
         Commands::Stack { command } => stack::StackCommand { command }.execute(&app_ctx),
+        Commands::Clock { command } => clock::ClockCommand { command }.execute(&app_ctx),
         Commands::Container { command } => {
             container::ContainerCommand { command }.execute(&app_ctx)
         }
@@ -161,6 +167,77 @@ mod tests {
             .expect("--core-node should parse at the root position too");
         assert_eq!(cli.core_node.as_deref(), Some("robot-7"));
         assert!(matches!(cli.command, Commands::Info {}));
+    }
+
+    /// The daemon serves wall time and hosts whatever domains its launches
+    /// declare, so a clock is chosen per instance: `node run` takes `--clock`
+    /// and `service serve` leaves it to the instances it hosts.
+    ///
+    /// Clap refuses every unknown flag, so a refusal on its own is a fact
+    /// about clap. Asserting the same flag parses on `node run` in the same
+    /// test is what makes the refusal a fact about where `--clock` is wired.
+    #[test]
+    fn the_clock_flag_belongs_to_the_command_that_starts_an_instance() {
+        // A let-else keeps the error value for the kind assertion below without
+        // asking `Cli` for a `Debug` it does not derive.
+        let Err(refusal) = Cli::try_parse_from(["peppy", "service", "serve", "--clock", "wall"])
+        else {
+            panic!("service serve should reject a clock argument");
+        };
+        assert_eq!(
+            refusal.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "the refusal must be about the flag itself: {refusal}"
+        );
+        Cli::try_parse_from(["peppy", "service", "serve"])
+            .expect("service serve parses on its own");
+        Cli::try_parse_from(["peppy", "node", "run", "probe:v1", "--clock", "wall"])
+            .expect("`--clock` is live on the command that starts an instance");
+    }
+
+    /// An instance reads one clock, and a domain declaration assigns its
+    /// publisher that domain, so naming both in one command is refused where
+    /// the operator typed it.
+    #[test]
+    fn the_two_node_run_clock_flags_conflict() {
+        assert!(
+            Cli::try_parse_from([
+                "peppy",
+                "node",
+                "run",
+                "probe:v1",
+                "-i",
+                "probe_inst",
+                "--clock",
+                "wall",
+                "--publish-clock",
+                "robot_sim",
+            ])
+            .is_err(),
+            "--clock and --publish-clock should conflict"
+        );
+    }
+
+    /// A clock is a property of a running instance, so both flags need the
+    /// run that `node add` chains.
+    #[test]
+    fn node_add_clock_flags_need_a_chained_run() {
+        assert!(
+            Cli::try_parse_from(["peppy", "node", "add", "probe:v1", "--clock", "wall"]).is_err(),
+            "--clock should require --run"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "peppy",
+                "node",
+                "add",
+                "probe:v1",
+                "--publish-clock",
+                "robot_sim"
+            ])
+            .is_err(),
+            "--publish-clock should require --run"
+        );
     }
 
     #[test]

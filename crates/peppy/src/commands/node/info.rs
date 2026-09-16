@@ -477,6 +477,7 @@ mod tests {
             stage: NodeStage::Ready,
             instances: vec![
                 NodeInstanceInfo {
+                    clock: Default::default(),
                     instance_id: "inst-abc".to_string(),
                     state: InstanceState::Running,
                     healthy: true,
@@ -484,6 +485,7 @@ mod tests {
                     pairing_slots: std::collections::BTreeMap::new(),
                 },
                 NodeInstanceInfo {
+                    clock: Default::default(),
                     instance_id: "inst-def".to_string(),
                     state: InstanceState::Starting,
                     healthy: false,

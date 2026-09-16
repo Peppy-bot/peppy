@@ -749,6 +749,7 @@ mod tests {
         // stack and would be wiped by a restart, so it must keep the warning.
         let mut recorder = node_with_stage("recorder", NodeStage::Ready);
         recorder.instances = vec![SerializedInstance {
+            clock: Default::default(),
             instance_id: "rec-1".to_string(),
             state: InstanceState::Finished,
             healthy: true,

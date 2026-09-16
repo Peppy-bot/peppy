@@ -669,28 +669,6 @@ impl Daemon {
     }
 }
 
-/// Which time a daemon serves, the `peppy service serve --clock-source`
-/// choice. A federated launch requires every machine to make the same one, so
-/// the fixture has to be able to start a daemon either way.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ClockSource {
-    Wall,
-    Sim,
-}
-
-impl ClockSource {
-    /// The arguments this choice adds to `service serve`. Wall is the default
-    /// and passes no flag, which is also what every pre-existing daemon in
-    /// this suite starts with.
-    fn serve_args(self) -> Vec<&'static str> {
-        match self {
-            Self::Wall => Vec::new(),
-            Self::Sim => vec!["--clock-source=sim"],
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)] // One fixture, one call site per knob.
 async fn start_daemon(
     launch: &DaemonLaunch<'_>,
     name: &str,
@@ -700,7 +678,6 @@ async fn start_daemon(
     // Extra read-only mount, used by the federated tests to make the
     // documented launcher openable inside the coordinator.
     extra_mount: Option<(&Path, &str)>,
-    clock_source: ClockSource,
 ) -> Daemon {
     let repositories_config = launch.fixture.repositories_config();
     let mut request = GenericImage::new(launch.image_name, launch.image_tag)
@@ -734,12 +711,7 @@ async fn start_daemon(
         .with_env_var(PEPPY_HOME_ENV, CONTAINER_PEPPY_HOME)
         .with_env_var("PEPPY_APPTAINER_DIR", "/opt/peppy-apptainer")
         .with_env_var(PEPPY_CONFIG_ENV, config)
-        .with_cmd(
-            [CONTAINER_PEPPY_BINARY, "service", "serve"]
-                .into_iter()
-                .chain(clock_source.serve_args())
-                .collect::<Vec<_>>(),
-        );
+        .with_cmd([CONTAINER_PEPPY_BINARY, "service", "serve"]);
     if let Some((host_path, container_path)) = extra_mount {
         request = request.with_mount(read_only_bind(host_path, container_path));
     }
@@ -769,10 +741,10 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     let substrate = Substrate::create().await;
 
     let daemon_a = substrate
-        .start_daemon("peppy-md", "a", "robo-a", "daemon-a", ClockSource::Wall)
+        .start_daemon("peppy-md", "a", "robo-a", "daemon-a")
         .await;
     let daemon_b = substrate
-        .start_daemon("peppy-md", "b", "robo-b", "daemon-b", ClockSource::Wall)
+        .start_daemon("peppy-md", "b", "robo-b", "daemon-b")
         .await;
 
     let both = daemon_a
@@ -809,7 +781,7 @@ async fn two_container_daemons_are_enumerated_and_collisions_are_refused() {
     );
 
     let collision = substrate
-        .start_daemon("peppy-md", "c", "robo-c", "daemon-a", ClockSource::Wall)
+        .start_daemon("peppy-md", "c", "robo-c", "daemon-a")
         .await;
     let collision_status = collision.wait_for_exit().await;
     assert_ne!(collision_status, 0, "colliding daemon must fail startup");
@@ -884,7 +856,6 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
             config: &router_a_pin,
         }),
         None,
-        ClockSource::Wall,
     )
     .await;
     let daemon_a_ip = daemon_a.bridge_ip().await;
@@ -904,7 +875,6 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
             config: &router_b_pin,
         }),
         None,
-        ClockSource::Wall,
     )
     .await;
     let daemon_b_ip = daemon_b.bridge_ip().await;
@@ -962,7 +932,6 @@ async fn federated_router_peer_topology_daemons_are_enumerated_and_collisions_ar
             config: &collision_pin,
         }),
         None,
-        ClockSource::Wall,
     )
     .await;
     let collision_status = collision.wait_for_exit().await;
@@ -1007,6 +976,7 @@ const CALLER_ENV_PROBE_LAUNCHER_FILE: &str = "caller_env_probe.json5";
 const PEER_RUN_FAILURE_LAUNCHER_FILE: &str = "peer_run_failure.json5";
 const FLEET_CLOCK_LAUNCHER_FILE: &str = "fleet_clock.json5";
 const FULLY_PLACED_CLOCK_LAUNCHER_FILE: &str = "fully_placed_clock.json5";
+const UNKNOWN_CLOCK_LAUNCHER_FILE: &str = "unknown_clock_fleet.json5";
 
 fn container_launcher(file_name: &str) -> String {
     format!("{CONTAINER_LAUNCHER_DIR}/{file_name}")
@@ -1035,7 +1005,7 @@ const NODE_PROBE_LAUNCHER: &str = r#"{
 const NAMED_FLEET_LAUNCHER_FILE: &str = "named_fleet.json5";
 const COPIES_ONLY_LAUNCHER_FILE: &str = "copies_only.json5";
 const ISOLATION_FLEET_LAUNCHER_FILE: &str = "isolation_fleet.json5";
-const SOURCELESS_CLOCK_LAUNCHER_FILE: &str = "sourceless_clock_fleet.json5";
+const MISSING_PUBLISHER_CLOCK_LAUNCHER_FILE: &str = "missing_publisher_clock_fleet.json5";
 const NAMED_CLOCK_LAUNCHER_FILE: &str = "named_clock_fleet.json5";
 const NAMED_FLEET_TWO_NODES_LAUNCHER_FILE: &str = "named_fleet_two_nodes.json5";
 const NAMED_FLEET_LAUNCHER: &str = r#"{
@@ -1162,16 +1132,21 @@ const PEER_RUN_FAILURE_LAUNCHER: &str = r#"{
 "#;
 
 /// The ticket-shaped fleet: a launch spanning the simulator machine and two
-/// more. The scripted time source runs on the coordinator and declares itself
-/// the launch's source of simulated time; every machine, the coordinator
-/// included, runs a probe reporting what its resolved clock serves. Rendered
-/// from the same constants the test asserts with, so the asserted ramp and
-/// the launched ramp cannot diverge.
+/// more. The launcher declares one clock domain and names the scripted source
+/// its publisher, which is what assigns that instance the domain; every
+/// machine, the coordinator included, runs a probe bound to it. One more probe
+/// binds nothing and reads its machine's own clock, so the launch puts a
+/// simulated domain and wall time on one daemon. Rendered from the same
+/// constants the test asserts with, so the asserted ramp and the launched ramp
+/// cannot diverge.
 fn fleet_clock_launcher() -> String {
     format!(
         r#"{{
   peppy_schema: "launcher/v1",
   core_nodes: ["station_a", "station_b"],
+  framework: {{
+    clocks: {{ {FLEET_CLOCK_DOMAIN}: {{ publisher: "{FLEET_CLOCK_SOURCE_INSTANCE}" }} }},
+  }},
   deployments: [
     {{
       source: {{ name: "sim_clock_source", tag: "v1" }},
@@ -1183,7 +1158,6 @@ fn fleet_clock_launcher() -> String {
             tick_count: {SCRIPTED_TICK_COUNT},
             tick_interval_ms: 50,
           }},
-          framework: {{ publishes_sim_time: true }},
         }},
       ],
     }},
@@ -1191,10 +1165,15 @@ fn fleet_clock_launcher() -> String {
       source: {{ name: "sim_clock_probe", tag: "v1" }},
       instances: [
         {{ instance_id: "{FLEET_PROBE_COORD_INSTANCE}",
+          framework: {{ clock: "{FLEET_CLOCK_DOMAIN}" }},
           arguments: {{ poll_interval_ms: 50 }} }},
         {{ instance_id: "{FLEET_PROBE_STATION_A_INSTANCE}", core_node: "station_a",
+          framework: {{ clock: "{FLEET_CLOCK_DOMAIN}" }},
           arguments: {{ poll_interval_ms: 50 }} }},
         {{ instance_id: "{FLEET_PROBE_STATION_B_INSTANCE}", core_node: "station_b",
+          framework: {{ clock: "{FLEET_CLOCK_DOMAIN}" }},
+          arguments: {{ poll_interval_ms: 50 }} }},
+        {{ instance_id: "{FLEET_PROBE_WALL_INSTANCE}", core_node: "station_b",
           arguments: {{ poll_interval_ms: 50 }} }},
       ],
     }},
@@ -1204,6 +1183,8 @@ fn fleet_clock_launcher() -> String {
     )
 }
 
+/// The fleet's domain and its publisher alone, with the probes taken as
+/// copies: what a stack that is joined rather than launched into looks like.
 fn named_clock_launcher() -> String {
     let mut launcher: serde_json::Value = serde_json5::from_str(&fleet_clock_launcher()).unwrap();
     launcher.as_object_mut().unwrap().remove("core_nodes");
@@ -1211,29 +1192,53 @@ fn named_clock_launcher() -> String {
     launcher["components"] = serde_json::json!([{
         "name": "robot", "cardinality": "zero_or_more", "options": {
             "probe": { "deployments": [{ "source": { "name": "sim_clock_probe", "tag": "v1" },
-                "instances": [{ "instance_id": "probe_inst", "arguments": { "poll_interval_ms": 50 } }]
+                "instances": [{ "instance_id": "probe_inst",
+                    "framework": { "clock": FLEET_CLOCK_DOMAIN },
+                    "arguments": { "poll_interval_ms": 50 } }]
             }] }
         }
     }]);
     serde_json::to_string(&launcher).unwrap()
 }
 
-/// The named clock fleet without its source: a simulated-time stack that
-/// declares no time source and takes probe copies.
-fn sourceless_clock_launcher() -> String {
+/// The named clock fleet with its publisher taken away: a launcher declaring a
+/// domain supplied by an instance no deployment carries.
+fn missing_publisher_clock_launcher() -> String {
     let mut launcher: serde_json::Value = serde_json5::from_str(&named_clock_launcher()).unwrap();
-    launcher["deployments"] = serde_json::json!([]);
+    // Swap the publisher's deployment for a probe's. The launch still starts
+    // an instance, so the declaration naming an absent publisher is the only
+    // thing left to refuse.
+    launcher["deployments"] = serde_json::json!([{
+        "source": { "name": "sim_clock_probe", "tag": "v1" },
+        "instances": [{
+            "instance_id": FLEET_PROBE_COORD_INSTANCE,
+            "arguments": { "poll_interval_ms": 50 }
+        }]
+    }]);
     serde_json::to_string(&launcher).unwrap()
 }
 
-/// The fully-placed sibling of [`fleet_clock_launcher`]: the same scripted
-/// source and probes, but everything lives on the stations and nothing on
-/// the coordinator, so the machine the launch is typed from is a bystander.
+/// The fleet launcher with its coordinator probe bound to a domain the
+/// document never declares. Coherent in every other respect, so the binding is
+/// the only thing left to refuse.
+fn unknown_clock_launcher() -> String {
+    let mut launcher: serde_json::Value = serde_json5::from_str(&fleet_clock_launcher()).unwrap();
+    launcher["deployments"][1]["instances"][0]["framework"]["clock"] =
+        serde_json::json!(UNDECLARED_CLOCK_DOMAIN);
+    serde_json::to_string(&launcher).unwrap()
+}
+
+/// The fully-placed sibling of [`fleet_clock_launcher`]: the same domain and
+/// probes, but everything lives on the stations and nothing on the
+/// coordinator, so the machine the launch is typed from is a bystander.
 fn fully_placed_clock_launcher() -> String {
     format!(
         r#"{{
   peppy_schema: "launcher/v1",
   core_nodes: ["station_a", "station_b"],
+  framework: {{
+    clocks: {{ {FLEET_CLOCK_DOMAIN}: {{ publisher: "{FLEET_CLOCK_SOURCE_INSTANCE}" }} }},
+  }},
   deployments: [
     {{
       source: {{ name: "sim_clock_source", tag: "v1" }},
@@ -1246,7 +1251,6 @@ fn fully_placed_clock_launcher() -> String {
             tick_count: {SCRIPTED_TICK_COUNT},
             tick_interval_ms: 50,
           }},
-          framework: {{ publishes_sim_time: true }},
         }},
       ],
     }},
@@ -1254,8 +1258,10 @@ fn fully_placed_clock_launcher() -> String {
       source: {{ name: "sim_clock_probe", tag: "v1" }},
       instances: [
         {{ instance_id: "{FLEET_PROBE_STATION_A_INSTANCE}", core_node: "station_a",
+          framework: {{ clock: "{FLEET_CLOCK_DOMAIN}" }},
           arguments: {{ poll_interval_ms: 50 }} }},
         {{ instance_id: "{FLEET_PROBE_STATION_B_INSTANCE}", core_node: "station_b",
+          framework: {{ clock: "{FLEET_CLOCK_DOMAIN}" }},
           arguments: {{ poll_interval_ms: 50 }} }},
       ],
     }},
@@ -1265,10 +1271,34 @@ fn fully_placed_clock_launcher() -> String {
     )
 }
 
+/// The domain the clock launchers declare, and the one every bound probe
+/// reads.
+const FLEET_CLOCK_DOMAIN: &str = "fleet";
+
+/// A domain no launcher here declares, bound by one probe of an otherwise
+/// coherent fleet.
+const UNDECLARED_CLOCK_DOMAIN: &str = "nonexistent";
+
 const FLEET_CLOCK_SOURCE_INSTANCE: &str = "clock_source_inst";
 const FLEET_PROBE_COORD_INSTANCE: &str = "probe_coord_inst";
 const FLEET_PROBE_STATION_A_INSTANCE: &str = "probe_station_a_inst";
 const FLEET_PROBE_STATION_B_INSTANCE: &str = "probe_station_b_inst";
+
+/// The probe that binds no domain, beside a bound one on the same machine.
+const FLEET_PROBE_WALL_INSTANCE: &str = "probe_wall_inst";
+
+/// Every instance the clock launchers deploy, for the refusals that must leave
+/// each machine holding none of them.
+const FLEET_INSTANCES: [&str; 5] = [
+    FLEET_CLOCK_SOURCE_INSTANCE,
+    FLEET_PROBE_COORD_INSTANCE,
+    FLEET_PROBE_STATION_A_INSTANCE,
+    FLEET_PROBE_STATION_B_INSTANCE,
+    FLEET_PROBE_WALL_INSTANCE,
+];
+
+/// What the scripted source logs once it holds its domain's publisher.
+const CLOCK_SOURCE_PUBLISHING_MARKER: &str = "[clock-source] publishing clock";
 
 /// The ramp [`fleet_clock_launcher`] scripts: ticks `STEP`, `2 * STEP`, ...,
 /// `COUNT * STEP`, then the final tick republished at the same cadence, so a
@@ -1472,7 +1502,10 @@ impl Substrate {
             (NAMED_FLEET_LAUNCHER_FILE, NAMED_FLEET_LAUNCHER.to_owned()),
             (COPIES_ONLY_LAUNCHER_FILE, COPIES_ONLY_LAUNCHER.to_owned()),
             (ISOLATION_FLEET_LAUNCHER_FILE, isolation_fleet_launcher()),
-            (SOURCELESS_CLOCK_LAUNCHER_FILE, sourceless_clock_launcher()),
+            (
+                MISSING_PUBLISHER_CLOCK_LAUNCHER_FILE,
+                missing_publisher_clock_launcher(),
+            ),
             (
                 NAMED_FLEET_TWO_NODES_LAUNCHER_FILE,
                 NAMED_FLEET_TWO_NODES_LAUNCHER.to_owned(),
@@ -1492,6 +1525,7 @@ impl Substrate {
                 FULLY_PLACED_CLOCK_LAUNCHER_FILE,
                 fully_placed_clock_launcher(),
             ),
+            (UNKNOWN_CLOCK_LAUNCHER_FILE, unknown_clock_launcher()),
         ] {
             std::fs::write(launcher_dir.path().join(file_name), launcher).unwrap_or_else(|error| {
                 panic!("writing {file_name} into the launcher mount: {error}")
@@ -1518,7 +1552,6 @@ impl Substrate {
         role: &str,
         hostname: &str,
         core_node: &str,
-        clock: ClockSource,
     ) -> Daemon {
         let launch = DaemonLaunch {
             image_name: &self.image_name,
@@ -1535,7 +1568,6 @@ impl Substrate {
             &external_daemon_config(core_node, self.router.port),
             None,
             Some((self.launcher_dir.path(), CONTAINER_LAUNCHER_DIR)),
-            clock,
         )
         .await
     }
@@ -1552,7 +1584,7 @@ impl Substrate {
         let mut daemons = Vec::with_capacity(specs.len());
         for spec in specs {
             daemons.push(
-                self.start_daemon(prefix, spec.role, spec.hostname, spec.core_node, spec.clock)
+                self.start_daemon(prefix, spec.role, spec.hostname, spec.core_node)
                     .await,
             );
         }
@@ -1566,13 +1598,12 @@ impl Substrate {
     }
 }
 
-/// One daemon of a coordinated set: its container-name role, hostname, wired
-/// core-node name, and the clock it serves.
+/// One daemon of a coordinated set: its container-name role, hostname, and
+/// wired core-node name.
 struct DaemonSpec<'a> {
     role: &'a str,
     hostname: &'a str,
     core_node: &'a str,
-    clock: ClockSource,
 }
 
 /// Two daemons on a shared router in one namespace, plus the launcher mounted
@@ -1586,17 +1617,6 @@ struct Federation {
 }
 
 async fn start_federation(prefix: &str) -> Federation {
-    start_federation_with_clocks(prefix, ClockSource::Wall, ClockSource::Wall).await
-}
-
-/// A federation whose two daemons serve the given clocks. Every launch in this
-/// suite but the clock tests wants both on wall time, which is what
-/// [`start_federation`] gives.
-async fn start_federation_with_clocks(
-    prefix: &str,
-    robot_clock: ClockSource,
-    cloud_clock: ClockSource,
-) -> Federation {
     let substrate = Substrate::create().await;
     let mut daemons = substrate
         .start_coordinated(
@@ -1606,13 +1626,11 @@ async fn start_federation_with_clocks(
                     role: "robot",
                     hostname: "robo-robot",
                     core_node: "cn-robot",
-                    clock: robot_clock,
                 },
                 DaemonSpec {
                     role: "cloud",
                     hostname: "robo-cloud",
                     core_node: "cn-cloud",
-                    clock: cloud_clock,
                 },
             ],
         )
@@ -1629,8 +1647,8 @@ async fn start_federation_with_clocks(
     }
 }
 
-/// The three machines of the fleet clock test: the coordinator (the simulator
-/// machine) and two stations, every daemon serving simulated time.
+/// The three machines of the fleet clock tests: the coordinator (the simulator
+/// machine) and two stations.
 struct Fleet {
     coordinator: Daemon,
     station_a: Daemon,
@@ -1642,14 +1660,8 @@ const FLEET_COORDINATOR_CORE_NODE: &str = "cn-fleet-coord";
 const FLEET_STATION_A_CORE_NODE: &str = "cn-station-a";
 const FLEET_STATION_B_CORE_NODE: &str = "cn-station-b";
 
-async fn start_sim_fleet(prefix: &str) -> Fleet {
-    start_fleet(prefix, ClockSource::Sim).await
-}
-
-/// A fleet whose stations serve simulated time while the coordinator serves
-/// `coordinator_clock`: [`start_sim_fleet`] for the all-sim shape, or a wall
-/// bystander coordinator for the fully-placed tests.
-async fn start_fleet(prefix: &str, coordinator_clock: ClockSource) -> Fleet {
+/// The three machines every clock test runs on, coordinated from the first.
+async fn start_fleet(prefix: &str) -> Fleet {
     let substrate = Substrate::create().await;
     let mut daemons = substrate
         .start_coordinated(
@@ -1659,19 +1671,16 @@ async fn start_fleet(prefix: &str, coordinator_clock: ClockSource) -> Fleet {
                     role: "coord",
                     hostname: "robo-fleet-coord",
                     core_node: FLEET_COORDINATOR_CORE_NODE,
-                    clock: coordinator_clock,
                 },
                 DaemonSpec {
                     role: "station-a",
                     hostname: "robo-station-a",
                     core_node: FLEET_STATION_A_CORE_NODE,
-                    clock: ClockSource::Sim,
                 },
                 DaemonSpec {
                     role: "station-b",
                     hostname: "robo-station-b",
                     core_node: FLEET_STATION_B_CORE_NODE,
-                    clock: ClockSource::Sim,
                 },
             ],
         )
@@ -2132,97 +2141,68 @@ async fn an_unreachable_peer_fails_the_launch_and_is_named() {
     );
 }
 
-// ── Clock agreement across a federation ───────────────────────────────────
+// ── Clock domains across a federation ─────────────────────────────────────
 //
-// Simulated time is served per machine (`peppy service serve
-// --clock-source=sim`), and a launch spanning machines needs every one of them
-// to make the same choice. Both mismatches are real failures, and neither is
-// visible to a single-daemon test:
-//
-//   * a wall-mode machine in a simulated launch publishes its own ticks onto
-//     the very `clock` key its sim-time instances read, so their time
-//     alternates between the simulator's and the wall;
-//   * a sim-mode machine in a wall launch is the mirror. Every instance placed
-//     there resolves to simulated time that nothing in the launch publishes,
-//     and waits at "clock not ready" for as long as it runs.
-//
-// Both are refused in preflight, which is what makes them assertable without
-// building or starting anything: the refusal has to arrive before the launch
-// turns destructive, so the coordinator's stack is still untouched afterwards.
+// A launcher declares the domains its launch runs on and each instance names
+// the one it reads, so every rule about a domain is a rule about the
+// document: a binding names a domain the document declares, and a declaration
+// names a publisher the launch deploys. Both are settled while the plan is
+// still on the coordinator, which is what makes them assertable without
+// building or starting anything: the refusal arrives before the launch turns
+// destructive, so every machine's stack is untouched afterwards.
 
-/// Asserts a launch was refused for a clock mismatch, named the machine, and
-/// cost the coordinator nothing.
-async fn assert_clock_mismatch_refused(
-    federation: &Federation,
-    launch: ExecOutput,
-    offending_core_node: &str,
-    expected_detail: &str,
-) {
+/// Asserts no machine of the fleet holds any instance the clock launchers
+/// deploy.
+///
+/// Each daemon's OWN slice, because an untargeted listing renders every
+/// machine's section and a reference to a remote instance reads as a local one
+/// there.
+async fn assert_fleet_started_nothing(fleet: &Fleet) {
+    for (daemon, core_node) in [
+        (&fleet.coordinator, FLEET_COORDINATOR_CORE_NODE),
+        (&fleet.station_a, FLEET_STATION_A_CORE_NODE),
+        (&fleet.station_b, FLEET_STATION_B_CORE_NODE),
+    ] {
+        let stack = daemon.stack_list(Some(core_node)).await;
+        assert_holds_exactly(&stack.text, core_node, &[], &FLEET_INSTANCES);
+    }
+}
+
+/// A probe naming a domain the document never declares is refused, and the
+/// refusal names the instance and the domain it asked for. An undeclared name
+/// is an error, so the launch stops while the plan is still on the
+/// coordinator and no machine holds any of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_binding_an_unknown_domain_is_refused_before_any_machine_is_touched() {
+    let fleet = start_fleet("peppy-clock-unknown").await;
+
+    let launch = fleet
+        .coordinator
+        .peppy(&[
+            "stack",
+            "launch",
+            "--place",
+            &format!("station_a@{FLEET_STATION_A_CORE_NODE}"),
+            "--place",
+            &format!("station_b@{FLEET_STATION_B_CORE_NODE}"),
+            &container_launcher(UNKNOWN_CLOCK_LAUNCHER_FILE),
+        ])
+        .await;
     assert!(
         !launch.success(),
-        "a launch whose machines disagree about the clock must fail:\n{}",
+        "a launch binding a domain nothing declares must fail:\n{}",
         launch.text
     );
     assert!(
-        launch.text.contains(offending_core_node),
-        "the refusal must name `{offending_core_node}`:\n{}",
+        launch.text.contains(&format!(
+            "instance `{FLEET_PROBE_COORD_INSTANCE}` binds clock \
+             `{UNDECLARED_CLOCK_DOMAIN}`"
+        )),
+        "the refusal must name the instance and the domain it asked for:\n{}",
         launch.text
     );
-    assert!(
-        launch.text.contains(expected_detail),
-        "the refusal must carry `{expected_detail}`:\n{}",
-        launch.text
-    );
 
-    let robot_stack = federation.robot.stack_list(None).await;
-    assert!(
-        ROBOT_INSTANCES
-            .iter()
-            .all(|id| !holds_instance(&robot_stack.text, id)),
-        "a refused preflight must not have started anything:\n{}",
-        robot_stack.text
-    );
-}
-
-/// The coordinator serves simulated time and the peer serves wall time. The
-/// peer would flood its own `clock` key while the launch's source fed it, so
-/// the launch is refused before either machine is touched.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_simulated_launch_is_refused_when_a_peer_serves_wall_time() {
-    let federation =
-        start_federation_with_clocks("peppy-clock-wall-peer", ClockSource::Sim, ClockSource::Wall)
-            .await;
-
-    let launch = federation.launch_split().await;
-
-    assert_clock_mismatch_refused(
-        &federation,
-        launch,
-        &federation.cloud_core_node,
-        "--clock-source=sim",
-    )
-    .await;
-}
-
-/// The mirror, and the one a coordinator cannot see on its own: the
-/// coordinator serves wall time and the peer serves simulated time. Every
-/// instance placed on that peer would wait forever on a tick this launch never
-/// publishes, so the launch is refused rather than started into a hang.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_wall_launch_is_refused_when_a_peer_serves_simulated_time() {
-    let federation =
-        start_federation_with_clocks("peppy-clock-sim-peer", ClockSource::Wall, ClockSource::Sim)
-            .await;
-
-    let launch = federation.launch_split().await;
-
-    assert_clock_mismatch_refused(
-        &federation,
-        launch,
-        &federation.cloud_core_node,
-        "clock not ready",
-    )
-    .await;
+    assert_fleet_started_nothing(&fleet).await;
 }
 
 /// The samples a probe's run log reports, in order: each ordinal with the
@@ -2368,20 +2348,111 @@ async fn assert_probe_holds_past(daemon: &Daemon, probe_instance: &str, after: u
         .expect("a satisfied wait returns a non-empty history")
 }
 
-/// The ticket's testable shape, positive path: a launch spanning the simulator
-/// machine and two more, every daemon serving simulated time. One scripted
-/// source on the coordinator feeds the whole launch; a probe on each machine
-/// reports what its resolved clock serves. Every machine serves nothing but
-/// scripted instants, never regressing, reaches the same final instant, and
-/// holds there once the ramp tops out; then the source is stopped outright
-/// and, with no tick arriving at all, every machine still holds the same
-/// instant rather than drifting anywhere. Exact values, not cross-container
-/// timestamp comparison, which the header of this file rules out for good
-/// reason.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap() {
-    let fleet = start_sim_fleet("peppy-fleet-clock").await;
+/// Asserts a probe binding no domain reads its own machine's clock: every
+/// sample served, none unready, and every instant past anything the scripted
+/// ramp reaches. A wall instant is nineteen digits where the whole ramp is
+/// ten, so the two are told apart by size alone.
+async fn assert_probe_reads_wall(daemon: &Daemon, probe_instance: &str) {
+    let settle_marker = format!("sample={SETTLE_SAMPLES} ");
+    let samples = wait_for_parsed_samples(daemon, probe_instance, &settle_marker, |samples| {
+        samples.iter().any(|(sample, _)| *sample >= SETTLE_SAMPLES)
+    })
+    .await;
+    for (sample, value) in &samples {
+        let Some(value) = value else {
+            panic!(
+                "{}'s `{probe_instance}` reads its own machine's clock, which is ready from \
+                 its first sample (sample {sample})",
+                daemon.name
+            );
+        };
+        assert!(
+            *value > SCRIPTED_FINAL_NS,
+            "{}'s `{probe_instance}` served {value} (sample {sample}), which is no later than \
+             the scripted ramp's last instant; it is reading the simulated domain",
+            daemon.name
+        );
+    }
+}
 
+/// How a domain published on `core_node` is named once it is running.
+fn domain_id(core_node: &str) -> String {
+    format!("{FLEET_CLOCK_DOMAIN}@{core_node}")
+}
+
+/// The line a launch prints for each domain it starts: the instance supplying
+/// it, and the identity its consumers address.
+fn publishes_clock_line(instance: &str, core_node: &str) -> String {
+    format!(
+        "instance `{instance}` publishes clock `{FLEET_CLOCK_DOMAIN}` ({})",
+        domain_id(core_node)
+    )
+}
+
+/// The `peppy clock list --json` report, read from `daemon`. One daemon
+/// answers for itself alone, so this asks the coordinator, which gathers the
+/// whole federation's answer.
+async fn clock_list(daemon: &Daemon) -> serde_json::Value {
+    let listed = require_success(
+        daemon.peppy(&["clock", "list", "--json"]).await,
+        &format!("listing clock domains from {}", daemon.name),
+    );
+    let document = listed
+        .lines()
+        .find(|line| line.starts_with('{'))
+        .unwrap_or_else(|| panic!("missing clock JSON: {listed}"));
+    serde_json::from_str(document).expect("`clock list --json` prints one JSON document")
+}
+
+/// The report's entry for `clock`, if the federation is running one.
+fn listed_domain<'a>(report: &'a serde_json::Value, clock: &str) -> Option<&'a serde_json::Value> {
+    report["domains"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a clock report lists its domains: {report}"))
+        .iter()
+        .find(|domain| domain["clock"] == clock)
+}
+
+/// The report's entry for the domain published on `core_node`.
+fn domain_of<'a>(report: &'a serde_json::Value, core_node: &str) -> &'a serde_json::Value {
+    let clock = domain_id(core_node);
+    listed_domain(report, &clock)
+        .unwrap_or_else(|| panic!("no `{clock}` among the listed domains: {report}"))
+}
+
+/// The lifetime the report carries for the domain published on `core_node`.
+fn domain_incarnation(report: &serde_json::Value, core_node: &str) -> u64 {
+    let domain = domain_of(report, core_node);
+    domain["incarnation"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("a domain's lifetime is a number: {domain}"))
+}
+
+/// Polls `peppy clock list --json` until the domain published on `core_node`
+/// is ticking, and returns the whole report.
+///
+/// The listing is what opens a daemon's subscription to a domain it hosts, so
+/// the first one after a launch can report a ticking domain as waiting; the
+/// next, a subscription later, reports it.
+async fn wait_for_ticking_domain(fleet: &Fleet, core_node: &str) -> serde_json::Value {
+    let clock = domain_id(core_node);
+    let started = Instant::now();
+    loop {
+        let report = clock_list(&fleet.coordinator).await;
+        if listed_domain(&report, &clock).is_some_and(|domain| domain["ready"] == true) {
+            return report;
+        }
+        assert!(
+            started.elapsed() < TIMEOUT,
+            "`{clock}` never reported ready:\n{report}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Launches the fleet clock launcher, placing each station on its machine, and
+/// returns the launch's feedback.
+async fn launch_fleet_clock(fleet: &Fleet) -> String {
     let launch = fleet
         .coordinator
         .peppy(&[
@@ -2396,33 +2467,39 @@ async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap()
         .await;
     assert!(
         launch.success(),
-        "a fully simulated fleet launch must succeed:\n{}",
+        "the fleet clock launch must succeed:\n{}",
         launch.text
     );
+    launch.text
+}
+
+/// The ticket's testable shape, positive path: a launch spanning the simulator
+/// machine and two more. One scripted source on the coordinator supplies the
+/// domain a probe on each machine binds, and a fourth probe beside them binds
+/// none, so one daemon carries the domain and wall time at once. Every bound
+/// machine serves nothing but scripted instants, never regressing, reaches the
+/// same final instant, and holds there once the ramp tops out; then the source
+/// is stopped outright and, with no tick arriving at all, every bound machine
+/// still holds the same instant rather than drifting anywhere. Exact values,
+/// not cross-container timestamp comparison, which the header of this file
+/// rules out for good reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap() {
+    let fleet = start_fleet("peppy-fleet-clock").await;
+
+    let launch = launch_fleet_clock(&fleet).await;
     assert!(
-        launch
-            .text
-            .contains("`clock_source_inst` is this launch's source of simulated time"),
-        "the launch names its time source:\n{}",
-        launch.text
+        launch.contains(&publishes_clock_line(
+            FLEET_CLOCK_SOURCE_INSTANCE,
+            FLEET_COORDINATOR_CORE_NODE
+        )),
+        "the launch names the domain and the machine supplying it:\n{launch}"
     );
 
-    // The launch, not the launcher, named the machines: the source's own log
-    // says which machines the daemon handed it, and it must be all three.
-    let source_log = fleet
+    fleet
         .coordinator
-        .wait_for_node_log(FLEET_CLOCK_SOURCE_INSTANCE, "publishing to")
+        .wait_for_node_log(FLEET_CLOCK_SOURCE_INSTANCE, CLOCK_SOURCE_PUBLISHING_MARKER)
         .await;
-    for core_node in [
-        FLEET_COORDINATOR_CORE_NODE,
-        FLEET_STATION_A_CORE_NODE,
-        FLEET_STATION_B_CORE_NODE,
-    ] {
-        assert!(
-            source_log.contains(core_node),
-            "the source must be handed `{core_node}` as a participant:\n{source_log}"
-        );
-    }
     fleet
         .coordinator
         .wait_for_node_log(
@@ -2441,9 +2518,53 @@ async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap()
         held_through.push(assert_probe_capped_at_final(daemon, probe_instance).await);
     }
 
+    // The probe that binds nothing reads its machine's own clock, on the very
+    // daemon hosting a bound one.
+    assert_probe_reads_wall(&fleet.station_b, FLEET_PROBE_WALL_INSTANCE).await;
+
+    // The federation's own account of the domain: one entry, named for the
+    // machine its publisher runs on, ticking, and read by exactly the probes
+    // bound to it, with wall listed beside it as the built-in it is.
+    let report = wait_for_ticking_domain(&fleet, FLEET_COORDINATOR_CORE_NODE).await;
+    assert_eq!(
+        report["wall"]["clock"], "wall",
+        "wall is listed beside every simulated domain:\n{report}"
+    );
+    let domain = domain_of(&report, FLEET_COORDINATOR_CORE_NODE);
+    assert_eq!(
+        domain["publisher"], FLEET_CLOCK_SOURCE_INSTANCE,
+        "the domain names the instance supplying it:\n{domain}"
+    );
+    assert_eq!(
+        domain["last_tick_ns"].as_u64(),
+        Some(SCRIPTED_FINAL_NS),
+        "the domain holds the ramp's last instant:\n{domain}"
+    );
+    let mut consumers: Vec<String> = domain["consumers"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a domain lists its consumers: {domain}"))
+        .iter()
+        .map(|consumer| {
+            consumer
+                .as_str()
+                .unwrap_or_else(|| panic!("a consumer reads as text: {domain}"))
+                .to_owned()
+        })
+        .collect();
+    consumers.sort_unstable();
+    assert_eq!(
+        consumers,
+        [
+            format!("{FLEET_PROBE_COORD_INSTANCE}@{FLEET_COORDINATOR_CORE_NODE}"),
+            format!("{FLEET_PROBE_STATION_A_INSTANCE}@{FLEET_STATION_A_CORE_NODE}"),
+            format!("{FLEET_PROBE_STATION_B_INSTANCE}@{FLEET_STATION_B_CORE_NODE}"),
+        ],
+        "the domain is read by every probe bound to it and by nothing else"
+    );
+
     // The cap above held under a source still republishing its final instant.
     // Now make the loss real: stop the source, and with no tick arriving at
-    // all every machine must keep the very same instant. Frozen, never
+    // all every bound machine must keep the very same instant. Frozen, never
     // drifting back to wall time: today's single-robot staleness behavior,
     // fleet-wide.
     let stopped = fleet
@@ -2460,15 +2581,60 @@ async fn a_fleet_of_three_machines_shares_one_scripted_clock_and_holds_its_cap()
     }
 }
 
-/// A launch typed from a machine that hosts none of it takes its clock from
-/// the machines that do. The coordinator serves wall time and hosts nothing;
-/// both stations serve simulated time and host everything. The launch
-/// succeeds, the source is handed exactly the two stations (never the
-/// bystander coordinator), and both stations read the scripted instants to
-/// their cap.
+/// A domain's identity carries a lifetime minted for each launch of it, so the
+/// same launcher run twice runs two timelines. The probes of the second launch
+/// converge on its ramp, which they reach only by reading the lifetime it
+/// minted: the ticks of the first address a stream nothing in the second
+/// subscribes to, so a probe left on it would wait at "clock not ready" for as
+/// long as it ran.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_fully_placed_launch_takes_its_clock_from_the_machines_that_host_it() {
-    let fleet = start_fleet("peppy-fleet-hosts", ClockSource::Wall).await;
+async fn a_relaunch_mints_a_fresh_domain() {
+    let fleet = start_fleet("peppy-clock-relaunch").await;
+
+    launch_fleet_clock(&fleet).await;
+    let first = domain_incarnation(
+        &wait_for_ticking_domain(&fleet, FLEET_COORDINATOR_CORE_NODE).await,
+        FLEET_COORDINATOR_CORE_NODE,
+    );
+
+    require_success(
+        fleet
+            .coordinator
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "resetting the fleet before the relaunch",
+    );
+
+    launch_fleet_clock(&fleet).await;
+    let second = domain_incarnation(
+        &wait_for_ticking_domain(&fleet, FLEET_COORDINATOR_CORE_NODE).await,
+        FLEET_COORDINATOR_CORE_NODE,
+    );
+    assert_ne!(
+        first, second,
+        "a relaunch mints a lifetime of its own under the same domain name"
+    );
+
+    // Each probe of the second launch starts before its domain has ticked and
+    // converges on the new ramp: unready first, then scripted instants only,
+    // to the same cap.
+    for (daemon, probe_instance) in [
+        (&fleet.coordinator, FLEET_PROBE_COORD_INSTANCE),
+        (&fleet.station_a, FLEET_PROBE_STATION_A_INSTANCE),
+        (&fleet.station_b, FLEET_PROBE_STATION_B_INSTANCE),
+    ] {
+        assert_probe_capped_at_final(daemon, probe_instance).await;
+    }
+}
+
+/// A launch typed from a machine that hosts none of it: the publisher runs on
+/// a station, so the domain is named for that station, and both stations read
+/// its scripted instants to their cap. The coordinator is a bystander
+/// throughout, which is what makes the domain's identity a fact about the
+/// launch rather than about the machine the launch was typed from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fully_placed_launch_runs_its_publisher_on_a_station_and_both_follow() {
+    let fleet = start_fleet("peppy-fleet-hosts").await;
 
     let launch = fleet
         .coordinator
@@ -2484,31 +2650,22 @@ async fn a_fully_placed_launch_takes_its_clock_from_the_machines_that_host_it() 
         .await;
     assert!(
         launch.success(),
-        "a wall bystander coordinator must not refuse a coherent simulated launch:\n{}",
+        "a launch hosted wholly on its stations must succeed:\n{}",
         launch.text
     );
     assert!(
-        launch
-            .text
-            .contains("`clock_source_inst` is this launch's source of simulated time"),
-        "the launch names its time source:\n{}",
+        launch.text.contains(&publishes_clock_line(
+            FLEET_CLOCK_SOURCE_INSTANCE,
+            FLEET_STATION_A_CORE_NODE
+        )),
+        "the domain is named for the station its publisher runs on:\n{}",
         launch.text
     );
 
-    let source_log = fleet
+    fleet
         .station_a
-        .wait_for_node_log(FLEET_CLOCK_SOURCE_INSTANCE, "publishing to")
+        .wait_for_node_log(FLEET_CLOCK_SOURCE_INSTANCE, CLOCK_SOURCE_PUBLISHING_MARKER)
         .await;
-    for core_node in [FLEET_STATION_A_CORE_NODE, FLEET_STATION_B_CORE_NODE] {
-        assert!(
-            source_log.contains(core_node),
-            "the source must be handed `{core_node}` as a participant:\n{source_log}"
-        );
-    }
-    assert!(
-        !source_log.contains(FLEET_COORDINATOR_CORE_NODE),
-        "a machine hosting nothing gets no tick:\n{source_log}"
-    );
 
     for (daemon, probe_instance) in [
         (&fleet.station_a, FLEET_PROBE_STATION_A_INSTANCE),
@@ -2668,46 +2825,45 @@ async fn local_runs_the_whole_topology_on_one_daemon() {
     );
 }
 
-/// A join onto a simulated-time stack that declares no time source warns,
-/// as the launch does.
+/// A declaration names the instance that supplies its domain, so a launcher
+/// declaring one whose publisher it never deploys is refused: the refusal
+/// names the domain and the instance it is missing, and no machine is touched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_join_onto_a_sourceless_simulated_stack_warns() {
-    let fleet = start_sim_fleet("peppy-sourceless-join").await;
-    require_success(
-        fleet
-            .coordinator
-            .peppy(&[
-                "stack",
-                "launch",
-                &container_launcher(SOURCELESS_CLOCK_LAUNCHER_FILE),
-            ])
-            .await,
-        "launch the sourceless clock fleet",
-    );
-    let joined = fleet
+async fn a_launcher_whose_clock_names_a_missing_publisher_is_refused() {
+    let fleet = start_fleet("peppy-missing-publisher").await;
+
+    let launch = fleet
         .coordinator
         .peppy(&[
             "stack",
-            "join",
-            "probe",
-            "-i",
-            "alpha",
-            "--place",
-            FLEET_STATION_A_CORE_NODE,
-            "--node-run-idle-timeout-secs",
-            "15",
+            "launch",
+            &container_launcher(MISSING_PUBLISHER_CLOCK_LAUNCHER_FILE),
         ])
         .await;
     assert!(
-        joined.text.contains("declares no time source"),
-        "{}",
-        joined.text
+        !launch.success(),
+        "a declaration naming an instance the launch does not deploy must fail:\n{}",
+        launch.text
     );
+    assert!(
+        launch.text.contains(&format!(
+            "clock domain `{FLEET_CLOCK_DOMAIN}` names `{FLEET_CLOCK_SOURCE_INSTANCE}` as its \
+             publisher, which this launch does not deploy"
+        )),
+        "the refusal must name the domain and the publisher it is missing:\n{}",
+        launch.text
+    );
+
+    assert_fleet_started_nothing(&fleet).await;
 }
 
+/// A copy that joins after the stack is up binds the domain the stack is
+/// already publishing: the lifetime it finds running, not one of its own, and
+/// its probe converges on the instants every other reader sees. The publisher
+/// outlives every copy that read it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn copies_receive_shared_simulation_time_when_joining_late() {
-    let fleet = start_sim_fleet("peppy-named-clock").await;
+async fn copies_joining_late_bind_the_stacks_running_domain() {
+    let fleet = start_fleet("peppy-named-clock").await;
     require_success(
         fleet
             .coordinator
@@ -2718,6 +2874,10 @@ async fn copies_receive_shared_simulation_time_when_joining_late() {
             ])
             .await,
         "launch clock source",
+    );
+    let running = domain_incarnation(
+        &wait_for_ticking_domain(&fleet, FLEET_COORDINATOR_CORE_NODE).await,
+        FLEET_COORDINATOR_CORE_NODE,
     );
     let source_pid = require_success(
         fleet
@@ -2739,6 +2899,14 @@ async fn copies_receive_shared_simulation_time_when_joining_late() {
         );
         assert_probe_capped_at_final(daemon, &format!("{name}_probe_inst")).await;
     }
+    assert_eq!(
+        running,
+        domain_incarnation(
+            &wait_for_ticking_domain(&fleet, FLEET_COORDINATOR_CORE_NODE).await,
+            FLEET_COORDINATOR_CORE_NODE,
+        ),
+        "a join reads the lifetime the stack is already publishing"
+    );
     require_success(
         fleet.coordinator.peppy(&["stack", "remove", "alpha"]).await,
         "remove clock consumer",

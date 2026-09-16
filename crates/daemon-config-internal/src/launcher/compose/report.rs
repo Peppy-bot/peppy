@@ -6,6 +6,7 @@ use super::super::types::LinkValue;
 use super::copy::CopyRecord;
 use super::select::UnitSelection;
 use config::AnyType;
+use config::runtime::Name;
 
 /// One field an adjustment wrote, with the value it replaced.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,16 +29,22 @@ pub enum AppliedChange {
         slot: String,
         old: LinkValue,
     },
+    Clock {
+        old: Option<Name>,
+        new: Name,
+    },
 }
 
 impl AppliedChange {
-    /// The written field, `arguments.<key>` or `links.<slot>`.
+    /// The written field, `arguments.<key>`, `links.<slot>` or
+    /// `framework.clock`.
     pub fn field(&self) -> String {
         match self {
             AppliedChange::Argument { key, .. } => format!("arguments.{key}"),
             AppliedChange::LinkSet { slot, .. }
             | AppliedChange::LinkAdded { slot, .. }
             | AppliedChange::LinkRemoved { slot, .. } => format!("links.{slot}"),
+            AppliedChange::Clock { .. } => String::from("framework.clock"),
         }
     }
 
@@ -48,6 +55,7 @@ impl AppliedChange {
             AppliedChange::LinkSet { new, .. } => render(new),
             AppliedChange::LinkAdded { target, .. } => format!("+ {target}"),
             AppliedChange::LinkRemoved { .. } => String::from("(absent)"),
+            AppliedChange::Clock { new, .. } => new.to_string(),
         }
     }
 
@@ -61,6 +69,11 @@ impl AppliedChange {
             }
             AppliedChange::LinkAdded { target, .. } => format!("+ {target}"),
             AppliedChange::LinkRemoved { old, .. } => format!("removed (was {})", render(old)),
+            AppliedChange::Clock { old, new } => format!(
+                "{} -> {new}",
+                old.as_ref()
+                    .map_or_else(|| String::from("(absent)"), Name::to_string)
+            ),
         }
     }
 }

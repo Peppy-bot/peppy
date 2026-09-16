@@ -140,11 +140,10 @@ pub(crate) struct StackChangeTimeouts {
 /// "what the daemon would pick when the instance omits the override" half.
 pub(crate) struct StackChangeDefaults {
     pub timeouts: StackChangeTimeouts,
-    /// Daemon-resolved defaults (messaging mode, subscriber buffers, liveness
-    /// grace, and the `use_sim_time` default) injected into every launched
-    /// node. The launch never resolves `use_sim_time` itself: it can place a
-    /// node on a machine whose default differs, so the resolution belongs to
-    /// whichever daemon spawns the node.
+    /// Daemon-resolved defaults (messaging mode, subscriber buffers and
+    /// liveness grace) injected into every launched node. Whichever daemon
+    /// spawns the node resolves them, because a launch can place a node on a
+    /// machine whose defaults differ.
     pub daemon_defaults: DaemonDefaults,
     /// Daemon-shutdown signal, forwarded to each launched node's health monitor
     /// so it stops probing the instant a clean shutdown begins.

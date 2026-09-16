@@ -1021,25 +1021,18 @@ fn render_harness(
             pub parameters: Option<crate::Parameters>,
             /// Explicit node instance id; `None` generates a unique one.
             pub instance_id: Option<String>,
-            /// Boot the node in sim time, as a launcher's
-            /// `framework: { use_sim_time: true }` would: the harness clock
-            /// serves sim mode, so `peppygen::clock::now_ns` (and
-            /// `peppylib` `clock::synchronize`) read no time until the test
-            /// advances it with [`Harness::clock`]'s `tick`. `false` (the
-            /// default) is wall mode: the harness clock serves and ticks OS
-            /// wall time like a wall-mode daemon.
-            pub use_sim_time: bool,
-            /// Make the node the launch's source of simulated time, as a
-            /// launcher's `framework: { publishes_sim_time: true }` would:
-            /// the core nodes it publishes its clock to, one `clock` topic
-            /// each, which is what `SimTimePublisher::for_node` hands it a
-            /// publisher for. Under the harness the fleet is one machine,
-            /// `peppylib::testing::STANDALONE_CORE_NODE`, so a subscription
-            /// on the node runner (`peppylib::clock::subscribe`) sees every
-            /// tick the node publishes. Meaningful with `use_sim_time`, and
-            /// then the test never ticks [`Harness::clock`]: the node is the
-            /// simulator. Empty (the default) leaves the node a follower.
-            pub sim_time_participants: Vec<String>,
+            /// Which clock the node boots on, the test-side spelling of a
+            /// deployment's `framework.clock`.
+            ///
+            /// `Wall` (the default) reads OS wall time, which the harness
+            /// clock ticks like a daemon. `Consumer` binds the node to the
+            /// harness's simulated domain, where `peppygen::clock::now_ns`
+            /// reads no time until the test advances it with
+            /// [`Harness::clock`]'s `tick`. `Publisher` makes the node the
+            /// instance supplying that domain: it publishes its own instants
+            /// and the test reads them back with
+            /// `peppylib::clock::subscribe(harness.node_runner())`.
+            pub clock: peppylib::testing::HarnessClock,
             #( #config_fields ),*
         }
 
@@ -1051,8 +1044,7 @@ fn render_harness(
                 Self {
                     parameters: None,
                     instance_id: None,
-                    use_sim_time: false,
-                    sim_time_participants: Vec::new(),
+                    clock: peppylib::testing::HarnessClock::Wall,
                     #( #config_defaults ),*
                 }
             }
@@ -1090,9 +1082,11 @@ fn render_harness(
             /// Observation subscriptions to the node's own emissions.
             pub emitted: Emitted,
             /// The daemon-clock stand-in serving `peppylib`'s
-            /// `clock::synchronize` and the `clock` topic: wall mode by
-            /// default (skewable via `set_offset_ns`), sim mode under
-            /// `Config::use_sim_time` (advanced with `tick`).
+            /// `clock::synchronize` and the `clock` topic, in the shape
+            /// `Config::clock` asked for. The service answers wall time in
+            /// every mode (skewable via `set_offset_ns`); `tick` drives the
+            /// simulated domain and is only accepted under
+            /// `HarnessClock::Consumer`.
             pub clock: peppylib::testing::MockClock,
             session: peppylib::MessengerHandle,
             router: Option<peppylib::testing::EphemeralRouter>,
@@ -1139,28 +1133,19 @@ fn render_harness(
                 // The daemon-clock stand-in lives on the fixture session
                 // under the standalone core-node identity, where the node's
                 // `synchronize` polls and its clock subscription listens.
-                let clock = if config.use_sim_time {
-                    peppylib::testing::MockClock::start_sim(
-                        &session,
-                        peppylib::testing::STANDALONE_CORE_NODE,
-                        peppylib::testing::MOCK_CLOCK_INSTANCE_ID,
-                    )
-                    .await?
-                } else {
-                    peppylib::testing::MockClock::start_wall(
-                        &session,
-                        peppylib::testing::STANDALONE_CORE_NODE,
-                        peppylib::testing::MOCK_CLOCK_INSTANCE_ID,
-                    )
-                    .await?
-                };
+                let clock = peppylib::testing::MockClock::start(
+                    &session,
+                    peppylib::testing::STANDALONE_CORE_NODE,
+                    peppylib::testing::MOCK_CLOCK_INSTANCE_ID,
+                    config.clock,
+                )
+                .await?;
 
                 #[allow(unused_mut)]
                 let mut standalone = peppylib::runtime::StandaloneConfig::new()
                     .with_messaging(router.host(), router.port())
                     .with_instance_id(instance_id.clone())
-                    .with_use_sim_time(config.use_sim_time)
-                    .with_sim_time_participants(config.sim_time_participants.clone());
+                    .with_clock(clock.binding()?);
                 #parameters_seed
                 #( #seeding )*
 

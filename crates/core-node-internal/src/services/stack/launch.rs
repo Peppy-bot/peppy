@@ -9,7 +9,7 @@ pub(super) mod resolve;
 pub(super) mod start;
 pub(super) mod watchers;
 
-use self::clock::{TimeSource, advise_on_clock_shape};
+use self::clock::{announce_clock_domains, plan_clocks};
 use self::feedback::{publish_stderr, publish_stdout};
 use self::nodes::add_nodes_to_stack;
 use self::orchestrate::{
@@ -28,7 +28,7 @@ use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchGoal, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
     NodeRunLogEntry,
 };
-use daemon_config::launcher::{Deployment, Placements};
+use daemon_config::launcher::{ClockIncarnations, Deployment, Placements};
 use std::collections::{HashMap, HashSet};
 
 /// Which change the node phases are running for: a whole stack's launch, or
@@ -194,20 +194,35 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
     };
 
+    // Step 2b: The clock every instance reads, with a fresh lifetime minted
+    // for each simulated domain this launch declares. A replacement therefore
+    // starts a new timeline even under the old names, and the consumers of
+    // the one it replaces are never silently rebound to it.
+    let (clocks, incarnations) = match plan_clocks(&flat, &placements, &ClockIncarnations::new()) {
+        Ok(resolved) => resolved,
+        Err(reason) => {
+            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return LaunchResult::failure(&ctx.log_path, reason);
+        }
+    };
+
     // A launch that starts nothing records the launcher and stops: its
     // copies arrive by stack join.
     if planned.is_empty() {
         teardown_and_reset_stack(&ctx).await;
         ctx.slice_ownership
             .record_slice(LaunchIdentity::new(&goal.launch_id, &ctx.bound_core_node));
-        *ctx.slice_ownership.active.lock() = Some(ActiveLaunch::new(
-            &goal.launch_id,
-            prepared,
-            flat,
-            selection,
-            placements,
-            planned,
-        ));
+        *ctx.slice_ownership.active.lock() = Some(
+            ActiveLaunch::new(
+                &goal.launch_id,
+                prepared,
+                flat,
+                selection,
+                placements,
+                planned,
+            )
+            .with_clocks(clocks, incarnations),
+        );
         publish_stdout(
             &ctx,
             "Launcher active; add copies with peppy stack join OPTION -i NAME".to_owned(),
@@ -224,7 +239,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // machine's caches.
     let root_config = ctx.node_stack.root().read().config().clone();
     let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
-        match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements).await {
+        match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements, &clocks)
+            .await
+        {
             Ok(result) => result,
             Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
         };
@@ -241,43 +258,25 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // bind sources each machine's containers need, all BEFORE anything is
     // torn down. A refusal at this point has cost no machine, including
     // this one, its stack.
-    let change = match preflight_change(
-        &ctx,
-        &goal.launch_id,
-        &planned,
-        &planned,
-        &placements,
-        None,
-    )
-    .await
-    {
+    let change = match preflight_change(&ctx, &goal.launch_id, &planned, &placements).await {
         Ok(change) => change,
         Err(reason) => {
             publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
             return LaunchResult::failure(&ctx.log_path, reason);
         }
     };
-    advise_on_clock_shape(&ctx, &planned, &change.clock).await;
-    let (established, watchers) =
-        match change
-            .reserved
-            .established_clock(&change.clock)
-            .and_then(|clock| {
-                Ok((
-                    clock,
-                    lifecycle_watchers(&planned_observations, &placements)?,
-                ))
-            }) {
-            Ok(established) => established,
-            Err(reason) => {
-                publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
-                return release_and_fail(
-                    change.reserved,
-                    LaunchResult::failure(&ctx.log_path, reason),
-                )
-                .await;
-            }
-        };
+    announce_clock_domains(&ctx, &clocks).await;
+    let watchers = match lifecycle_watchers(&planned_observations, &placements) {
+        Ok(watchers) => watchers,
+        Err(reason) => {
+            publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
+            return release_and_fail(
+                change.reserved,
+                LaunchResult::failure(&ctx.log_path, reason),
+            )
+            .await;
+        }
+    };
 
     // Step 4b: A planned instance id must not collide with a participant's
     // own root entity, which occupies that machine's namespace before this
@@ -343,14 +342,8 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         placements.clone(),
         planned.clone(),
     )
-    .with_clock(established)
-    .with_watchers(watchers)
-    .with_time_source(TimeSource::of(
-        &ctx,
-        &planned,
-        &placements,
-        &change.reserved,
-    ));
+    .with_clocks(clocks.clone(), incarnations)
+    .with_watchers(watchers);
     active.record_copies(copies, &ordered);
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
@@ -422,7 +415,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &planned_pairings,
             &planned_observations,
             &placements,
-            change.fleet.as_ref(),
+            &clocks,
         )
         .await
     }

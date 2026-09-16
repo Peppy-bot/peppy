@@ -315,27 +315,6 @@ impl Serve {
     }
 }
 
-/// Daemon-wide default for the time source nodes read through `PeppyClock`.
-/// Per-instance launcher overrides win over this; this is the fallback for
-/// instances that omit the framework block. The CLI-facing clap `ValueEnum`
-/// wrapper lives in the `peppy` binary and converts into this plain enum.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub enum ClockSource {
-    /// Read OS wall time (`SystemTime::now()`-equivalent).
-    #[default]
-    Wall,
-    /// Read timestamps from the daemon's cache, fed by an external publisher
-    /// on the `clock` topic. Use this for simulators and bag replay.
-    Sim,
-}
-
-impl ClockSource {
-    /// Convenience: `true` when the daemon should treat sim as the default.
-    pub fn use_sim_time(self) -> bool {
-        matches!(self, ClockSource::Sim)
-    }
-}
-
 /// Everything a daemon run needs from its embedding binary.
 pub struct ServeOptions {
     /// The working root the core node resolves node sources against.
@@ -346,7 +325,6 @@ pub struct ServeOptions {
     /// Explicit core-node name; `None` falls back to `core_node_name` in
     /// `peppy_config.json5`, then to a machine-specific derivation.
     pub core_node_name: Option<String>,
-    pub clock_source: ClockSource,
     /// The binary's compile-time git hash, recorded in the daemon state file.
     /// Taken as data so this library reads no build-time env of its own.
     pub git_hash: String,
@@ -425,7 +403,7 @@ fn run_one_generation(options: &ServeOptions) -> Result<(ServeOutcome, bool)> {
     )?
     .with_peppy_config(peppy_config)
     .with_messaging_router(options.messaging_engine.clone())?
-    .with_core_node(options.core_node_name.clone(), options.clock_source)?;
+    .with_core_node(options.core_node_name.clone())?;
 
     if let Some(token) = &options.shutdown_token {
         builder = builder.with_shutdown_token(token.clone());

@@ -148,6 +148,8 @@ async fn node_launch_command_succeed() {
 
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_a_path.display().to_string()),
             git_ref: None,
             sync: false,
@@ -409,6 +411,8 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
 
     NodeCommand {
         command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
             source: Some(node_a_path.display().to_string()),
             git_ref: None,
             sync: false,

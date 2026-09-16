@@ -65,6 +65,8 @@ impl CountedNode {
     fn add_and_build(&self, ctx: &Arc<AppContext>, rebuild: bool) {
         NodeCommand {
             command: NodeCommands::Add {
+                clock: None,
+                publish_clock: None,
                 source: Some(self.path.display().to_string()),
                 git_ref: None,
                 sync: false,
