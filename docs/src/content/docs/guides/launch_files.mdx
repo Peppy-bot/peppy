@@ -332,7 +332,7 @@ A launch adds, builds and starts its nodes one phase at a time, and each phase r
 | Flag | Phase | Default |
 | --- | --- | --- |
 | `--node-add-idle-timeout-secs` | fetching a node's source and generating its bindings | 600 |
-| `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk count as output too | 180 |
+| `--node-build-idle-timeout-secs` | running its `build_cmd`, or downloading and assembling its image; bytes landing on disk and CPU time the build burns count as output too | 180 |
 | `--node-run-idle-timeout-secs` | starting an instance, until it signals ready | 600 |
 
 `--max-timeout-secs` adds a budget for the whole launch on top of the idle ones; without it, only the idle budgets apply.
