@@ -1,14 +1,16 @@
 ---
 title: System clock
-description: Synchronize a node's wall clock against the core node, or subscribe to periodic clock ticks for continuous correlation
+description: Read the clock an instance is bound to, declare simulated clock domains in a launcher, and measure a node's offset against the core node
 sidebar:
   order: 12
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
+import simulatedRobotLauncher from '../guides/snippets/launchers/simulated_robot.json5?raw';
 
-Every node in a Peppy stack runs against its own OS wall clock.
-That's fine on a single host. The trouble starts when two nodes need to compare timestamps. For example, matching a sensor reading to the controller command that triggered it, or merging logs from multiple machines into a single timeline. 
+Every instance reads one clock for its whole lifetime, and its deployment decides which. By default that is its own machine's OS wall clock; a launch can instead put it on a [clock domain](#clock-domains), a named timeline one instance supplies.
+
+Wall time is fine on a single host. The trouble starts when two nodes need to compare timestamps. For example, matching a sensor reading to the controller command that triggered it, or merging logs from multiple machines into a single timeline.
 Their clocks drift independently, so "1.7 s ago" on one node no longer points to the same instant as "1.7 s ago" on another.
 
 `peppylib::clock` exposes two helpers that let any node measure the offset between its local clock and the core node's clock:
@@ -27,7 +29,7 @@ Neither helper adjusts the local OS clock. They measure and report; aligning a t
 | | `synchronize` | `subscribe` |
 |---|---|---|
 | Pattern | Request/response | Topic subscription |
-| Result | Offset **and** observed RTT | Snapshot of the core node's clock |
+| Result | Offset **and** observed RTT | Snapshot of this instance's clock |
 | Staleness | Bounded by the RTT you just measured | ~one one-way network delay (uncorrected) |
 | Cost per use | One round trip | Passive (ticks arrive at 10 Hz) |
 | Use when | You need a precise offset before stamping a recorded artifact | You want continuous correlation, e.g. driving a status display |
@@ -41,6 +43,8 @@ If unsure, start with `synchronize`; it gives you both numbers and you can call 
 - `offset_ns` (`i64` in Rust, `int` in Python): signed nanoseconds. `local + offset_ns ≈ core_node`. Negative means the local clock leads the core node.
 - `round_trip_delay_ns` (`u64` in Rust, `int` in Python): the round-trip delay observed on this exchange.
 - `raw`: the wire response with `server_recv_time` (t1), `server_send_time` (t2), and the echoed `client_send_time` (t0), exposed for callers that want to do their own analysis.
+
+Both sides of the exchange read OS wall time: the caller stamps `t0`/`t3` from its own machine's clock, and a daemon serves the `clock` service from its machine's clock whatever its instances read. The measurement is therefore the same one in every domain, the offset between two machines' wall clocks.
 
 The second argument is a response timeout. Rust accepts `Option<Duration>`; Python accepts `float | None` in seconds. Pass `None` (or omit it in Python) to use the default of 10 seconds.
 
@@ -103,12 +107,12 @@ The second argument is a response timeout. Rust accepts `Option<Duration>`; Pyth
 
 ## `subscribe`
 
-`subscribe` opens a long-lived subscription to the core node's `clock` topic and returns a `ClockSubscription`.
-Call `on_next_tick` in a loop to receive each tick; it returns `None` when the subscription closes (typically because the core node went away).
+`subscribe` opens a long-lived subscription to the ticks of this instance's own clock and returns a `ClockSubscription`. On wall time that is the bound core node's `clock` topic; on a simulated domain it is that domain's stream, whichever machine its publisher runs on.
+Call `on_next_tick` in a loop to receive each tick; it returns `None` when the subscription closes (typically because the producing side went away).
 
-The core node publishes ticks at **10 Hz** (every 100 ms) by default: high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`.
+The core node publishes wall ticks at **10 Hz** (every 100 ms) by default: high enough to correlate logs across nodes, low enough not to flood the bus. The rate is set on the core node side via `CoreNodeArguments.clock_publish_interval`. A simulated domain ticks whenever its publisher publishes.
 
-Each `ClockTick` carries a single instant, read with `time()` in Rust and the `time` attribute in Python: nanoseconds on the core node's timeline, stamped at emission. In wall mode that is the Unix epoch; under a simulator it is whatever origin the simulator counts from. The value is never `0`, which every sim-time cache reserves for "no tick observed yet". Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
+Each `ClockTick` carries a single instant, read with `time()` in Rust and the `time` attribute in Python: nanoseconds on the clock it came from, stamped at emission. On wall time that is the Unix epoch; on a simulated domain it is whatever origin its publisher counts from. The value is never `0`, which is the wire's "no tick observed yet" sentinel. Because the tick is one-way, the value is stale by roughly one one-way network delay on receipt; there is no RTT correction. Use `synchronize` if you need bounded staleness.
 
 <Tabs>
   <TabItem label="Python">
@@ -125,9 +129,9 @@ Each `ClockTick` carries a single instant, read with `time()` in Rust and the `t
         while True:
             tick = await sub.on_next_tick()
             if tick is None:
-                # Core node closed the subscription.
+                # The producing side closed the subscription.
                 return
-            print(f"core node wall time: {tick.time} ns")
+            print(f"clock: {tick.time} ns")
 
 
     async def setup(_params: Parameters, node_runner: NodeRunner) -> list[asyncio.Task]:
@@ -159,9 +163,9 @@ Each `ClockTick` carries a single instant, read with `time()` in Rust and the `t
                     .await
                     .expect("on_next_tick should not error")
                 {
-                    println!("core node wall time: {} ns", tick.time());
+                    println!("clock: {} ns", tick.time());
                 }
-                // Subscription closed; core node went away.
+                // Subscription closed; the producing side went away.
             });
             Ok(())
         })
@@ -174,126 +178,63 @@ Each `ClockTick` carries a single instant, read with `time()` in Rust and the `t
 
 - **QoS profile is `SensorData`.** Stale ticks are dropped on slow subscribers rather than back-pressuring the publisher: a clock value the network couldn't deliver fresh is not worth delivering late.
 - **`synchronize` is hardened against a misbehaving server.** Offset and delay are computed in widened arithmetic and saturated when narrowed back to `i64` / `u64`, so a peer returning extreme `t1`/`t2` cannot wrap the result or flip its sign.
-- **`on_next_tick` returning `None` is terminal.** Treat it as "core node went away" and rebuild the subscription if you need to keep listening.
+- **`on_next_tick` returning `None` is terminal.** Treat it as "the producing side went away" and rebuild the subscription if you need to keep listening.
 - **Default timeout for `synchronize` is 10 seconds.** Pass an explicit timeout from latency-sensitive paths so a slow or unreachable core node does not stall your node.
 
-## Sim and replay clocks
+## Clock domains
 
-Most of the time the core node feeds these helpers from its own OS wall time. For simulators and bag replay you usually want the same node binaries to read a virtual clock instead, without rebuilding. Peppy makes this a deployment-time choice through two knobs:
+A **clock domain** is one timeline with a name. `wall` is built in and is the time every machine already keeps. A simulated domain is supplied by one instance, which publishes the instants every other instance bound to it reads, so a simulator or a bag replay drives the same node binaries a physical robot drives.
 
-- A typed `framework` block on each per-instance launcher entry, sibling to `arguments` and `env_vars`.
-- A daemon-wide flag, `peppy service serve --clock-source=wall|sim`, that decides the default for instances that omit the override.
+One daemon hosts wall time and any number of simulated domains at once, and the launch decides which: running a simulation beside a physical robot is a matter of launching it.
 
-Resolution order, applied once in the daemon before each spawned node receives its runtime config:
+### Declaring a domain
 
-1. The instance's `framework.use_sim_time` if it is set.
-2. The daemon's `--clock-source` flag (`wall` is the default).
+A launcher, or a fragment it selects, names its domains in a root-level `framework` block:
 
-A daemon serving wall time publishes its own ticks on the `clock` topic, which is the same key a sim-time node on that machine reads. So reading simulated time needs a daemon that serves it: an instance whose `use_sim_time` resolves to `true` on a wall-mode daemon is refused as it starts, naming the instance and the flag that fixes it. Forcing the other direction (`use_sim_time: false` on a sim-mode daemon) is legal, since that node reads its OS clock and touches no topic.
+<Code code={simulatedRobotLauncher} lang="json5" title="simulated_robot.json5" />
 
-Standalone (daemon-less) runs resolve the same field from `StandaloneConfig`: `.with_use_sim_time(true)` in Rust, `.with_use_sim_time(True)` in Python (`false`, wall mode, is the default). Under the generated test harness the knob is `use_sim_time` on the harness config, and the harness serves the clock in either mode, with the test playing the external simulator in sim mode; see [the testing guide](/advanced_guides/testing/#the-clock).
+A declaration takes one of two forms:
 
-The wire format does not change. `ClockTick` and `ClockResponse` carry only timestamps; the daemon decides internally which source feeds them. In wall mode the daemon stamps every `t1`/`t2` and every published tick from its own OS clock. In sim mode the daemon stops publishing, subscribes to the `clock` topic, and answers `synchronize` from a cache populated by an external publisher. 
-Subscribers see the same shape either way. Until that external publisher lands its first tick, sim mode has no time to serve: `synchronize` fails with an error and a `subscribe` stream yields nothing, so both helpers depend on the publisher being up.
+- `{ publisher: "<instance_id>" }` is a simulated domain. Naming the instance is what assigns it the domain and the publisher role together, so the declaration is the one place that instance's clock is written, and one instance supplies at most one domain. The publisher must be an instance the launch deploys.
+- `"wall"` is a name for the time every machine already keeps. Two such names are aliases of one timeline, which is how a launcher gives wall time a name that says what reads it.
 
-### Launcher syntax
+`wall` itself cannot be declared: it is built in, and every instance can name it directly.
 
-```json5 title="peppy_launcher.json5"
-{
-  peppy_schema: "launcher/v1",
-  deployments: [
-    {
-      source: { name: "uvc_camera:v1" },
-      instances: [
-        {
-          instance_id: "camera_front",
-          arguments: { device: "/dev/video0" },
-          framework: { use_sim_time: true },
-        },
-      ],
-    },
-  ],
-}
+### Binding an instance to a domain
+
+Any instance in a `deployments` entry names the domain it reads:
+
+```json5
+{ instance_id: "backbone_inst", framework: { clock: "simulation" } },
 ```
 
-Omit `framework` (or omit `use_sim_time` inside it) to fall through to the daemon default. Setting `use_sim_time: false` on an instance forces wall mode even when the daemon flag is `--clock-source=sim`.
+An instance that omits `framework.clock` reads wall time. Naming a domain the launch does not declare is refused, naming the instance, the clock and the domains that do exist:
 
-## One clock across a fleet
-
-The `clock` topic is keyed by the core node it belongs to, so a daemon and every sim-time node on its machine read that machine's key and nothing else. Reaching a second machine means publishing to a second key. A launch spanning several machines therefore names one instance its source of simulated time, and the daemon hands that instance every machine of the launch:
-
-```json5 title="peppy_launcher.json5"
-{
-  instance_id: "sim_inst",
-  framework: { publishes_sim_time: true },
-}
+```
+instance `backbone_inst` binds clock `sim`, which no `framework.clocks` entry declares. Declare it, or name one of `wall`, `operator_station`, `simulation`
 ```
 
-That instance builds a `SimTimePublisher`, and each `publish` lands one tick on every machine's `clock` topic, so the whole fleet reads one instant. Which machines those are comes from the launch's own placement, never from the launcher or the node: nothing in a simulator names a machine, and adding a robot changes no clock configuration.
+An [adjustment](/guides/launch_files/#adjustments) binds an instance another document deploys, which is how one control or recorder fragment serves a physical robot and a simulated one:
 
-How often the source publishes is how finely the fleet can read time: `now_ns` returns the last tick observed, so a source ticking at 100 Hz gives every machine a 10 ms grid. Publish on the cadence the fleet needs to compare against, not on the physics step, which is usually far finer than anything reads.
+```json5
+adjustments: [
+  { target: "recorder_inst", when: { recorder: "lerobot_recorder" },
+    set_framework: { clock: "simulation" } },
+],
+```
 
-A launch runs on simulated time when the coordinating daemon serves it (`--clock-source=sim`), or when any instance names `framework: { use_sim_time: true }` outright, which commits the launch wherever that instance lands. Declaring a source does neither: on a wall-time launch the declaration resolves to no source at all and the instance publishes nothing, with an advisory line in the launch feedback saying so. One launcher describes the robot either way.
+### Composing declarations
 
-At most one instance per launch may declare it. A second is refused when the launcher is checked (`peppy stack resolve` runs the same check), before anything starts, because two sources feeding the same keys are two timelines. `SimTimePublisher::for_node` returns `None` on a node the launch did not declare, so holding a publisher is the same fact as being the source, and an undeclared node cannot drive fleet time. Every simulated launch names its declared source in the launch feedback, so a source that never publishes leaves a named suspect rather than a silent hang. A simulated launch that declares no source at all gets its own advisory line saying so: it starts, but every sim-time instance waits at `clock not ready` until an external publisher feeds each machine's `clock` topic.
+A launch's domains are the root launcher's and every selected fragment's, merged. Two documents may declare one domain, and identical declarations agree: a robot fragment and the simulation it runs in can both name the same timeline. Two different declarations of one name are refused, naming both documents. A fragment the selection leaves out contributes nothing.
 
-Every machine of a simulated launch must serve simulated time, since a wall-mode daemon there would flood the key the fleet's ticks land on, and every machine of a wall launch must serve wall time, since instances on a sim-mode machine would wait forever on a tick the launch never publishes. Both directions are refused at preflight, before any stack is touched, naming the machine, what committed the launch to its clock, and the flag that fixes it. A launch typed from a machine that hosts none of it takes its clock from the machines that do: they must agree among themselves, in either mode, and a split is refused naming one machine of each side. The bystander coordinator's own clock never commits such a launch.
+[Copies](/guides/launch_files/#copies) bind the domains the stack declares, naming them exactly as the stack does, and a copy's adjustments write those bindings onto the instances it mints. A copy that also writes to a stack instance must write what already runs there, its clock included.
 
-<Tabs>
-  <TabItem label="Python">
-    ```python title="src/my_simulator/__main__.py"
-    import asyncio
+### Reading the clock in a node
 
-    from peppylib.clock import SimTimePublisher
+Hot-path code reads whichever clock the instance was bound to through the generated clock module: `peppygen::clock` in Rust, `peppygen.clock` in Python.
 
-
-    async def setup(_params, node_runner) -> None:
-        # None on a wall-time launch, which runs on the daemons' own ticks
-        # and needs no source. Build the publisher once and keep the handle.
-        engine.clock_publisher = await SimTimePublisher.for_node(node_runner)
-        if engine.clock_publisher is None:
-            return
-
-
-    # Called from the engine's step callback. `publish` is async, so an engine
-    # running its physics on its own thread schedules it onto the node loop
-    # rather than awaiting it there.
-    def on_step(engine) -> None:
-        if engine.clock_publisher is None:
-            return
-        loop.call_soon_threadsafe(
-            lambda: asyncio.ensure_future(
-                engine.clock_publisher.publish(engine.time_ns())
-            )
-        )
-    ```
-  </TabItem>
-  <TabItem label="Rust">
-    ```rust title="src/main.rs"
-    use peppylib::clock::SimTimePublisher;
-
-    // None on a wall-time launch, which runs on the daemons' own ticks and
-    // needs no source. Build the publisher once and keep the handle.
-    if let Some(publisher) = SimTimePublisher::for_node(&node_runner).await? {
-        // Then publish the engine's own clock from each step. Every machine
-        // of the launch reads this instant.
-        loop {
-            engine.step();
-            publisher.publish(engine.time_ns()).await?;
-        }
-    }
-    ```
-  </TabItem>
-</Tabs>
-
-A time source stamps its own data from its engine clock directly rather than from `now_ns()`: reading its own tick back off the wire would round-trip through its own subscription and report not-ready until the first tick it published came back. Every follower reads the published tick, which is the point.
-
-### `PeppyClock` and the generated `clock` module
-
-For hot-path code that just wants "what time is it now" without caring whether the node was launched in wall or sim mode, peppylib exposes `PeppyClock` (in `peppylib.clock` / `peppylib::clock`) and the generator emits a pre-bound clock module (`peppygen.clock` in Python, `peppygen::clock` in Rust):
-
-- `init(node_runner)`: async; opens a `clock` subscription in sim mode (a no-op in wall mode) so the first `now_ns` after a tick lands returns immediately. Idempotent per node: repeat calls for the same node are no-ops, and initializing a different node rebinds (how consecutive test-harness boots in one process each read their own clock). Call it once at the top of your setup function.
-- `now_ns()`: sync; reads the current core-node-aligned time. Returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) before `init`, and in sim mode before any `ClockTick` has been observed.
+- `init(node_runner)`: async; a consumer opens its domain's subscription here, so the first `now_ns` after a tick lands returns without setup latency. Idempotent per node: repeat calls for the same node are no-ops, and initializing a different node rebinds (how consecutive test-harness boots in one process each read their own clock). Call it once at the top of your setup function.
+- `now_ns()`: sync; reads the current time on this instance's clock. A wall instance reads its machine's OS clock. A consumer reads the last instant its domain published, and returns `Err(PeppyError::ClockNotReady)` (Rust) or raises `RuntimeError` (Python) until the first one lands. A publisher reads back the instant it last committed.
 
 <Tabs>
   <TabItem label="Python">
@@ -303,19 +244,18 @@ For hot-path code that just wants "what time is it now" without caring whether t
 
 
     async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
-        # Idempotent. No-op in wall mode; in sim mode this opens a
-        # `clock` subscription so the background feeder is already
-        # running before `now_ns()` is called below.
+        # Idempotent. On a simulated domain this opens the subscription so
+        # the background feeder is already running before `now_ns()` is
+        # called below.
         await clock.init(node_runner)
         try:
-            # Wall mode always returns the local OS time. Sim mode
-            # raises RuntimeError until the feeder has cached at least
-            # one ClockTick from the topic.
+            # A wall instance always returns its machine's OS time. A
+            # consumer raises RuntimeError until its domain's first tick.
             now = clock.now_ns()
-            print(f"core-node-aligned time: {now} ns")
+            print(f"now: {now} ns")
         except RuntimeError:
-            # Only reachable in sim mode, and only before the first
-            # tick lands. Real apps would retry or wait on a tick.
+            # Reachable on a simulated domain before its first tick. Real
+            # apps retry or wait on a tick.
             print("clock not ready yet")
 
 
@@ -333,17 +273,16 @@ For hot-path code that just wants "what time is it now" without caring whether t
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-            // Idempotent. No-op in wall mode; in sim mode this opens a
-            // `clock` subscription so the background feeder is already
-            // running before `now_ns()` is called below.
+            // Idempotent. On a simulated domain this opens the subscription
+            // so the background feeder is already running before `now_ns()`
+            // is called below.
             peppygen::clock::init(&node_runner).await?;
             match peppygen::clock::now_ns() {
-                // Wall mode always lands here. Sim mode reaches this
-                // arm once at least one ClockTick has been observed.
-                Ok(t) => println!("core-node-aligned time: {t} ns"),
-                // Only reachable in sim mode, and only before the
-                // first tick lands. Real apps would retry or wait on
-                // a tick.
+                // A wall instance always lands here. A consumer reaches this
+                // arm once its domain has published an instant.
+                Ok(t) => println!("now: {t} ns"),
+                // Reachable on a simulated domain before its first tick.
+                // Real apps retry or wait on a tick.
                 Err(e) => println!("clock not ready yet: {e}"),
             }
             Ok(())
@@ -353,4 +292,142 @@ For hot-path code that just wants "what time is it now" without caring whether t
   </TabItem>
 </Tabs>
 
-Prefer `synchronize` over `PeppyClock` when you need a bounded-staleness offset, since it observes a round trip and reports the RTT. `subscribe` is the right pick if you want every raw tick. For everything else, reach for the generated clock module's `now_ns` (`peppygen.clock.now_ns` in Python, `peppygen::clock::now_ns` in Rust).
+Prefer `synchronize` over the generated module when you need a bounded-staleness offset, since it observes a round trip and reports the RTT. `subscribe` is the right pick if you want every raw tick.
+
+### Publishing a domain
+
+The instance a declaration names as `publisher` supplies its domain's time. `ClockPublisher::for_node` returns `Some` (Rust) or the publisher (Python) exactly on that instance, and `None` everywhere else, so holding a publisher IS being one and a node that may or may not be a source branches on this one call. `domain` names the domain it supplies, and each `publish` commits the instant locally and sends one tick.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python title="src/my_simulator/__main__.py"
+    import asyncio
+
+    from peppylib.clock import ClockPublisher
+
+
+    async def setup(_params, node_runner) -> None:
+        # None unless this deployment named the instance a domain's
+        # publisher. Build it once and keep the handle.
+        engine.clock_publisher = await ClockPublisher.for_node(node_runner)
+        if engine.clock_publisher is None:
+            return
+        print(f"supplying clock {engine.clock_publisher.domain}")
+
+
+    # Called from the engine's step callback. `publish` is async, so an engine
+    # running its physics on its own thread schedules it onto the node loop
+    # rather than awaiting it there.
+    def on_step(engine) -> None:
+        if engine.clock_publisher is None:
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(
+                engine.clock_publisher.publish(engine.time_ns())
+            )
+        )
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust title="src/main.rs"
+    use peppylib::clock::ClockPublisher;
+
+    // None unless this deployment named the instance a domain's publisher.
+    // Build it once and keep the handle.
+    if let Some(publisher) = ClockPublisher::for_node(&node_runner).await? {
+        println!("supplying clock {}", publisher.domain());
+        // Then publish the engine's own clock from each step. Every instance
+        // bound to the domain reads this instant, wherever it runs.
+        loop {
+            engine.step();
+            publisher.publish(engine.time_ns()).await?;
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+`publish` commits the instant before it sends it, so the publisher's own `now_ns()` reports the instant it is publishing and can stamp the very data it emits for that step.
+
+How often a publisher publishes is how finely its domain can be read: `now_ns` returns the last tick, so a publisher ticking at 100 Hz gives every reader a 10 ms grid. Publish on the cadence the readers compare against, not on the physics step, which is usually far finer than anything reads.
+
+### What makes two clocks the same
+
+A domain is identified by three things: its name, the machine hosting its publisher, and an **incarnation** minted for each lifetime of that name. Written out, a domain reads `simulation@cn-sim`. Two domains are the same timeline only when all three agree, so a `simulation` on one machine and a `simulation` on another are two timelines, and relaunching under the same name is a third: anything still reading the previous lifetime keeps reading it, frozen at its last tick. You never type an incarnation; it is minted for you and shows up in `peppy clock list --json`.
+
+### Every connection reads one clock
+
+Producer bindings, pairings and observations all carry timestamps one side stamps and the other interprets, so each of them joins two instances that read the same clock. Two aliases of wall time are one timeline and connect freely. Two simulated domains never are, however closely their instants happen to run.
+
+A launch checks this before anything starts, and names both endpoints and both clocks:
+
+```
+`viewer_inst` reads clock wall and `arm_inst` reads simulation@cn-sim, so their binding `camera` would carry timestamps neither side can read on its own clock. Bind both instances to one domain, or give each domain its own instance of the node
+```
+
+`peppy stack resolve` runs the same check with no daemon, and a `peppy node run` that links a new instance to running ones is held to it too.
+
+### On the command line
+
+`peppy node run` puts one instance on a clock, which is how a domain is driven outside a launcher:
+
+```sh
+# Start the simulation as a new domain's publisher.
+peppy node run waldo:v1 -i simulation_inst --publish-clock simulation
+
+# Start a consumer on it. `peppy clock list` shows what is running.
+peppy node run openarm_sim_arm:v1 -i arm_inst --clock simulation
+
+# Qualify the name when one name runs on several machines.
+peppy node run openarm_sim_arm:v1 -i arm_inst --clock simulation@cn-sim
+```
+
+`--clock` takes `wall`, a short name, or a qualified `name@core_node`, and names a domain that is already running: an unknown name is refused, pointing at `peppy clock list` and at `--publish-clock`, and a short name that is ambiguous across machines is refused listing the qualified names to pick from. `--publish-clock` declares a domain and mints its lifetime on the daemon the command targets. The two flags conflict, and both are also accepted by `peppy node add --run`.
+
+`peppy clock list` prints every domain the federation is running, gathered from the daemons that host them:
+
+```
+$ peppy clock list
+┌───────────────────┬───────────┬─────────────────┬────────────────────────────────────┬───────┬───────────┐
+│ CLOCK             │ SOURCE    │ PUBLISHER       │ OWNER                              │ READY │ CONSUMERS │
+├───────────────────┼───────────┼─────────────────┼────────────────────────────────────┼───────┼───────────┤
+│ wall              │ built-in  │ -               │ -                                  │ ready │ -         │
+│ simulation@cn-sim │ simulated │ simulation_inst │ launch launch-brave-otter (cn-sim) │ ready │ 3         │
+└───────────────────┴───────────┴─────────────────┴────────────────────────────────────┴───────┴───────────┘
+```
+
+`OWNER` is the launch that started the publisher, or `peppy node run` for a domain a command declared. `READY` reads `waiting` until the domain's first tick reaches its host and `ready` afterwards, so a publisher that has yet to publish is visible beside the instance supplying it. `CONSUMERS` counts the instances reading the domain anywhere in the federation. `--json` prints the same listing with each domain's `name`, `core_node`, `incarnation`, `last_tick_ns` and the `instance@core_node` of every consumer.
+
+Two more commands report what each instance reads: `peppy stack list` carries a `CLOCK` column per instance, showing `wall` or the domain as `name@core_node`, and `peppy stack resolve` reports the clock of every instance of a plan before anything runs:
+
+```
+simulation_inst: publishes clock `simulation`
+arm_inst: clock `simulation`
+viewer_inst: clock `wall`
+```
+
+A launch names each domain and its publisher in its feedback as it starts:
+
+```
+instance `simulation_inst` publishes clock `simulation` (simulation@cn-sim)
+```
+
+### Lifetime, replacement and removal
+
+`peppy stack launch` mints a fresh lifetime for every domain it declares, so relaunching a stack under the same names produces new timelines, exactly as it produces new instances. `peppy stack join` follows the domains the stack is already publishing, and the machines supplying the clocks a copy reads take part in the join.
+
+`peppy stack remove` takes a domain's lifetime out with the instance that supplied it, and refuses while anything still reads it:
+
+```
+`alpha` supplies clock `simulation` to copies `bravo`; remove them first
+```
+
+```
+`alpha` supplies clock `simulation` to `backbone_inst` and to copies `bravo`; run peppy stack reset, then launch without `alpha`: drop its deployments entry from the launcher, or leave it out of the copies you join
+```
+
+Stopping a publisher freezes its domain: the instances bound to it keep reading the last instant it committed. A domain is listed for as long as the instance supplying it is live, so a publisher that stops or crashes takes its domain out of `peppy clock list` while the instances bound to it hold that instant. Freeing the name is what lets a replacement publisher declare it again.
+
+### Domains across machines
+
+A publisher and the instances reading it may sit on different machines. The domain's ticks ride the `clock` topic of the machine hosting the publisher, under a key carrying the domain's name and incarnation, and a consumer addresses that whole identity, so it reads the same timeline wherever the launch places it. Placement decides one thing about a domain: the machine in its identity, which is where its publisher landed. See [Federation](/advanced_guides/federation/).

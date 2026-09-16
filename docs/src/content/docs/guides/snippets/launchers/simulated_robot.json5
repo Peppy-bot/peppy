@@ -1,0 +1,55 @@
+// Two timelines in one launch: the simulation the robot runs in, and the
+// wall clock the operator's panel reads. `peppy clock list` shows both once
+// the launch is up.
+{
+  peppy_schema: "launcher/v1",
+
+  // The clock domains this launch declares. `simulation` is supplied by one
+  // instance, and naming that instance here is what makes it the publisher.
+  // `operator_station` is a name for the time every machine already keeps.
+  framework: {
+    clocks: {
+      simulation: { publisher: "simulation_inst" },
+      operator_station: "wall",
+    },
+  },
+
+  deployments: [
+    {
+      // The publisher carries no `framework.clock` of its own: the
+      // declaration above already assigns it `simulation`.
+      source: { name: "waldo", tag: "v1" },
+      instances: [{ instance_id: "simulation_inst" }],
+    },
+    {
+      source: { name: "openarm_sim_arm", tag: "v1" },
+      instances: [
+        {
+          instance_id: "arm_inst",
+          framework: { clock: "simulation" },
+          links: { simulation: "simulation_inst" },
+        },
+      ],
+    },
+    {
+      // Both ends of a binding read one clock, so the recorder that stamps
+      // the arm's episodes runs on the simulation too.
+      source: { name: "session_recorder", tag: "v1" },
+      instances: [
+        {
+          instance_id: "recorder_inst",
+          framework: { clock: "simulation" },
+          links: { arm: "arm_inst" },
+        },
+      ],
+    },
+    {
+      // The operator's panel reads wall time. It holds no clock-dependent
+      // connection to the simulated instances.
+      source: { name: "web_viewer", tag: "v1" },
+      instances: [
+        { instance_id: "viewer_inst", framework: { clock: "operator_station" } },
+      ],
+    },
+  ],
+}

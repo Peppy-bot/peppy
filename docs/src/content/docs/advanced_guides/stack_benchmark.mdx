@@ -242,6 +242,11 @@ One-way **topic delivery** is the only measurement that depends on clocks:
     `clock` column reads `flagged`. Rely on the round-trip probe rows for that
     edge, and deploy PTP or NTP.
 
+An instance reading a simulated [clock domain](/advanced_guides/system_clock/#clock-domains)
+answers that exchange with its domain and an offset of zero. Both endpoints of
+every connection the benchmark measures read one clock, so their timestamps
+already sit on one timeline and are compared as they arrive.
+
 The round-trip probe rows never depend on clocks, so they are always reported.
 
 ## Safety: benchmarking never triggers your handlers

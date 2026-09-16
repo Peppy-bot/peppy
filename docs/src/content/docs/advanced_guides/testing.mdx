@@ -594,9 +594,7 @@ async with harness.start(
     setup,
     parameters=Parameters(gain=2.5),  # typed override; None uses schema defaults
     instance_id="my_test_node",       # explicit instead of generated
-    use_sim_time=True,                # boot in sim time; see "The clock"
-    # ...and be the launch's source of it; see "The clock"
-    sim_time_participants=[peppylib.testing.STANDALONE_CORE_NODE],
+    clock="consumer",                 # the test supplies time; see "The clock"
     fleet_arms_instances=2,           # per multi-cardinality slot: mock count
     # per zero_or_one dependency or observer slot: boot the slot
     # empty, no mock started
@@ -614,9 +612,8 @@ let (mut harness, mut mocks) = Harness::start_with(
     Config {
         parameters: Some(peppygen::Parameters { gain: 2.5 }),
         instance_id: Some("my_test_node".to_string()),
-        use_sim_time: true, // boot in sim time; see "The clock"
-        // ...and be the launch's source of it; see "The clock"
-        sim_time_participants: vec![peppylib::testing::STANDALONE_CORE_NODE.to_owned()],
+        // The test supplies time; see "The clock"
+        clock: peppylib::testing::HarnessClock::Consumer,
         fleet_arms_instances: 2,
         // per zero_or_one dependency or observer slot: boot the
         // slot empty, no mock started
@@ -632,8 +629,7 @@ let (mut harness, mut mocks) = Harness::start_with(
 
 - **`parameters`** is the node's typed `Parameters`; leaving it unset hydrates the schema defaults exactly as a launch would (a required parameter without a default is then an error at boot, as in production).
 - **`instance_id`** replaces the generated unique id (`test-<pid>-<counter>`). The node's wire identity under the harness is `("standalone-core", <instance_id>)`, returned by `harness.node_producer_ref()`.
-- **`use_sim_time`** boots the node in sim time, exactly as a launcher's `framework: { use_sim_time: true }` would, with the harness clock in sim mode: the test is the simulator, and no time exists until it calls `harness.clock.tick(...)`. See [The clock](#the-clock).
-- **`sim_time_participants`** makes the node the launch's source of simulated time, exactly as a launcher's `framework: { publishes_sim_time: true }` would: the core nodes it publishes its clock to. Under the harness the fleet is one machine, `peppylib::testing::STANDALONE_CORE_NODE`. Meaningful with `use_sim_time`, and then the node is the simulator, not the test. See [The clock](#the-clock).
+- **`clock`** is the clock the node boots on, the test-side spelling of a deployment's `framework.clock` and of the publisher a domain declaration names: `wall` (the default), `consumer` for a node reading a simulated domain the test supplies, or `publisher` for one that supplies the domain itself. See [The clock](#the-clock).
 - **`<link_id>_vacant`** (per `zero_or_one` dependency or observer slot) boots the slot [written vacant](/advanced_guides/topics/#dependency-cardinality): no mock is started (the mock field is `None`), and the node's `bound_producer()` / `source()` accessor answers `None`, the branch this cardinality exists for.
 - **`<link_id>_instances`** (per multi-cardinality dependency or observer slot) sets how many mock instances to start, each under its own instance identity, delivered as a list. The default is 1 for `one_or_more` and 0 for `zero_or_more`.
 - **`<link_id>_instance_ids`** (same slots) names those instances explicitly, overriding the count when set. Reach for it when the node classifies producers by instance name (a health monitor keying reports on `left_arm`/`right_gripper` identities, a recorder naming limbs after its sources), so the mocks wear identities the node's classifier accepts.
@@ -642,9 +638,9 @@ let (mut harness, mut mocks) = Harness::start_with(
 
 ## The clock
 
-The harness serves the daemon's clock surface on the `standalone-core` identity, through the same request handler the daemon runs, so everything in [System clock](/advanced_guides/system_clock/) works under it: `peppylib::clock::synchronize` / `peppylib.clock.synchronize` completes its NTP-style exchange (gated by the pre-`setup` readiness barrier, so a synchronize inside `setup` cannot race discovery), `subscribe` receives ticks, and `peppygen::clock::init` + `now_ns` read whichever source the boot resolved. The serving side is `harness.clock`, in one of two modes:
+The harness serves the daemon's clock surface on the `standalone-core` identity, through the same request handler the daemon runs, so everything in [System clock](/advanced_guides/system_clock/) works under it: `peppylib::clock::synchronize` / `peppylib.clock.synchronize` completes its NTP-style exchange (gated by the pre-`setup` readiness barrier, so a synchronize inside `setup` cannot race discovery), `subscribe` receives ticks, and `peppygen::clock::init` + `now_ns` read whichever clock the boot resolved. The serving side is `harness.clock`, and the `clock` config knob picks which of three the node boots on. The `clock` service answers from the OS clock in all three, as a daemon does whatever its instances read, so `synchronize` completes in every mode.
 
-**Wall mode (the default)** mirrors a wall-mode daemon: service stamps and the 10 Hz tick stream come from the OS clock. `set_offset_ns` skews everything it serves by a signed offset, which is how a test scripts "the daemon's clock disagrees with mine" and asserts the node's offset handling without touching a host clock:
+**`wall` (the default)** mirrors an instance reading its own machine's clock: service stamps and the 10 Hz tick stream come from the OS clock. `set_offset_ns` skews every timestamp the clock serves by a signed offset, which is how a test scripts "the daemon's clock disagrees with mine" and asserts the node's offset handling without touching a host clock:
 
 <Tabs>
   <TabItem label="Python">
@@ -656,19 +652,19 @@ assert sync.offset_ns > 1_800_000_000_000
   </TabItem>
   <TabItem label="Rust">
 ```rust
-harness.clock.set_offset_ns(3_600_000_000_000)?; // daemon runs 1h ahead
+harness.clock.set_offset_ns(3_600_000_000_000); // daemon runs 1h ahead
 let sync = peppylib::clock::synchronize(harness.node_runner(), None).await?;
 assert!(sync.offset_ns > 1_800_000_000_000);
 ```
   </TabItem>
 </Tabs>
 
-**Sim mode** (`use_sim_time` in the harness config) mirrors a sim-mode stack with the test playing the external simulator: the node boots with `framework.use_sim_time` resolved to `true`, and no time exists until the test drives it. Each `tick` lands atomically in the service's answers (a `synchronize` issued right after `tick` returns can never observe the older instant) and is published on the `clock` topic for the node's `peppygen::clock` subscription. Before the first tick, `synchronize` fails with "clock not ready" and `now_ns` reports not-ready, exactly as against a real sim-mode daemon whose simulator has not started publishing:
+**`consumer`** mirrors an instance bound to a simulated [clock domain](/advanced_guides/system_clock/#clock-domains), with the test playing its publisher: the node reads the harness's domain, and no time exists on it until the test drives it. Each `tick` is published on the domain's stream for the node's `peppygen::clock` subscription. Before the first tick the node's `now_ns` reports not-ready, exactly as against a real domain whose publisher has not started publishing:
 
 <Tabs>
   <TabItem label="Python">
 ```python
-async with harness.start(setup, use_sim_time=True) as h:
+async with harness.start(setup, clock="consumer") as h:
     await h.clock.tick(1_000_000_000)  # the node's now_ns() reads 1s
     ...
     await h.clock.tick(2_500_000_000)  # time advances only when the test says so
@@ -677,7 +673,7 @@ async with harness.start(setup, use_sim_time=True) as h:
   <TabItem label="Rust">
 ```rust
 let (harness, mocks) = Harness::start_with(
-    Config { use_sim_time: true, ..Config::default() },
+    Config { clock: peppylib::testing::HarnessClock::Consumer, ..Config::default() },
     my_node::setup,
 )
 .await?;
@@ -688,18 +684,14 @@ harness.clock.tick(2_500_000_000).await?; // time advances only when the test sa
   </TabItem>
 </Tabs>
 
-The first `tick` waits until the node's clock subscription is visible (the subscription `peppygen::clock::init` opens in sim mode), so it cannot be dropped by discovery; ticking a node that never reads sim time is surfaced as a loud error, not a silent drop. Mode and knob agree or fail fast: `tick` on a wall-mode clock and `set_offset_ns` on a sim-mode clock are errors.
+The first `tick` waits until the node's clock subscription is visible (the subscription `peppygen::clock::init` opens on a simulated domain), so it cannot be dropped by discovery; ticking a node that reads no domain raises a loud error. `tick` belongs to this mode alone: on a `wall` clock, which ticks itself, and on a `publisher` node, which supplies its own domain, it is an error naming the mode the harness booted.
 
-**Source mode** (`sim_time_participants` alongside `use_sim_time`) mirrors the launch that declared the node its [source of simulated time](/advanced_guides/system_clock/#one-clock-across-a-fleet): `SimTimePublisher::for_node` hands the node a publisher onto each listed core node's `clock` topic, and the test never calls `tick`, since the node is the simulator. The harness's own sim clock stays silent, so a clock subscription on the node runner sees exactly what the node published, in the order it published it, and the node's stamps can be checked against those ticks. What the harness's clock *service* answers stays "clock not ready" in this mode: a source stamps from its own clock and never synchronizes against the wire.
+**`publisher`** mirrors the instance a [domain declaration](/advanced_guides/system_clock/#declaring-a-domain) names: `ClockPublisher::for_node` hands the node a publisher for the harness's domain, and the test never calls `tick`, since the node supplies the time. The harness publishes nothing itself, so a clock subscription on the node runner sees exactly what the node published, in the order it published it, and the node's stamps can be checked against those ticks.
 
 <Tabs>
   <TabItem label="Python">
 ```python
-async with harness.start(
-    setup,
-    use_sim_time=True,
-    sim_time_participants=[peppylib.testing.STANDALONE_CORE_NODE],
-) as h:
+async with harness.start(setup, clock="publisher") as h:
     ticks = await peppylib.clock.subscribe(h.node_runner)
     first = await ticks.on_next_tick()   # published by the node, not the test
     assert first.time >= 1               # 0 is the wire's "no tick yet"
@@ -709,8 +701,7 @@ async with harness.start(
 ```rust
 let (harness, mocks) = Harness::start_with(
     Config {
-        use_sim_time: true,
-        sim_time_participants: vec![peppylib::testing::STANDALONE_CORE_NODE.to_owned()],
+        clock: peppylib::testing::HarnessClock::Publisher,
         ..Config::default()
     },
     my_simulator::setup,

@@ -289,6 +289,8 @@ A consumed entry whose `link_id` names a `depends_on.nodes` slot resolves exclus
 
 The matching predicate at binding time is: *a producer satisfies a contract slot if its `manifest.implements` includes the slot's `(name, tag)`*. The producer's own node name is irrelevant. A `zed_2i:v1` node that implements `depth_camera:v1` is just as valid for a `depth_camera:v1` slot as a `realsense_d405:v1` node that implements it.
 
+The two instances must also read the same clock. A binding whose producer and consumer resolve to different [clock domains](/advanced_guides/system_clock/#clock-domains) is refused before anything starts, because the timestamps it would carry mean nothing on the other side.
+
 ### Binding a contract slot
 
 A contract slot is bound with `--link link_id@producer_instance_id` (or a launcher `links:` entry) whose value points at an instance whose node implements the requested contract:
