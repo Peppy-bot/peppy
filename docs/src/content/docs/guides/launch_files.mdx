@@ -469,7 +469,7 @@ Matching treats an unfilled axis as matching no entry, on either side: a guard o
 
 The refusal happens at selection time and names the document that declared the constraint, the full resolution (with its `(from file)` markers showing the axes the operator never named), what was required or forbidden, and the author's `reason`. When several constraints overlap, the first declared one refuses, so the author controls which reason the operator reads.
 
-A launcher's constraints speak in the launcher's axis and option names; a fragment's speak in [its own axes](#a-fragments-own-axes) and the launcher's, which is where a rule about an option's own axes belongs. `peppy repo index --check` holds them to leaving a usable family behind: a constraint that refuses no selection, an option no legal selection can pick, and a bare launch that violates a constraint are each reported when the launcher is indexed.
+A launcher's constraints speak in the launcher's axis and option names; a fragment's speak in [its own axes](#a-fragments-own-axes) and the launcher's, which is where a rule about an option's own axes belongs. `peppy repo index --check` holds them to leaving a usable family behind: a constraint that refuses no selection, an option no legal selection can pick, a bare launch that violates a constraint, and a file's copy whose own `constraints` refuse it under every admitted selection (so what the file deploys can never start: loosen a constraint or change the copy's `with`) are each reported when the launcher is indexed. A file copy is held only to the stacks its constraints admit: a selection those `constraints` refuse by design, as a join of it would be, is no longer flagged.
 
 ## Fragments: splitting a launcher across files
 
