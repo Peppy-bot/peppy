@@ -9,7 +9,6 @@ authors.workspace = true
 edition.workspace = true
 
 [dependencies]
-rand = "0.10"
 config = { workspace = true }
 # `FORBIDDEN_ENV_KEYS`, the protocol policy both sides of the core-node wire
 # enforce on environment variables. `env::check_env_var` applies it where a

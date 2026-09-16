@@ -13,6 +13,8 @@
 //! runs on.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use config::runtime::{
     ClockBinding, ClockDomainId, ClockIncarnation, Name, ProducerRef, SlotBindings,
@@ -36,15 +38,28 @@ const PREVIEW_INCARNATION: u64 = 1;
 /// resolved for preview passes an empty map.
 pub type ClockIncarnations = BTreeMap<Name, ClockIncarnation>;
 
+/// The lifetimes this process has minted, seeded on first use from unix-millis
+/// so a restart resumes above every value the previous one reached.
+static MINTED: AtomicU64 = AtomicU64::new(0);
+
 /// A fresh lifetime for one domain.
 ///
 /// Reusing a domain name mints a new one, so the ticks of an earlier lifetime
 /// address a stream no consumer of the new one reads, and a delayed tick can
-/// never reach a replacement. Drawn from the range `ClockIncarnation` admits,
-/// which is what a runtime config carries to a node intact.
+/// never reach a replacement.
+///
+/// Strictly increasing, which is what makes repeating a lifetime impossible
+/// rather than unlikely: within a process the counter advances, and across a
+/// restart the unix-millis seed already exceeds it, because minting a lifetime
+/// every millisecond is far beyond what starting a publisher costs.
 pub fn mint_incarnation() -> ClockIncarnation {
-    let value = rand::random_range(1..=ClockIncarnation::MAX);
-    ClockIncarnation::try_from(value).expect("the range is the one the type admits")
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since_epoch| since_epoch.as_millis() as u64)
+        .unwrap_or_default();
+    MINTED.fetch_max(seed, Ordering::Relaxed);
+    let value = MINTED.fetch_add(1, Ordering::Relaxed) + 1;
+    ClockIncarnation::try_from(value).expect("a counter seeded from unix-millis is in range")
 }
 
 /// The clock every instance of a plan reads.
@@ -294,4 +309,55 @@ pub fn validate_clock_connections(
         );
     }
     errors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_minted_lifetime_is_distinct_and_rising() {
+        let minted: Vec<u64> = (0..1_000).map(|_| mint_incarnation().get()).collect();
+        let mut sorted = minted.clone();
+        sorted.dedup();
+        assert_eq!(sorted.len(), minted.len(), "a lifetime is never reused");
+        assert!(
+            minted.windows(2).all(|pair| pair[0] < pair[1]),
+            "each lifetime exceeds the one before it"
+        );
+    }
+
+    #[test]
+    fn concurrent_minting_never_hands_out_one_lifetime_twice() {
+        let minted: BTreeSet<u64> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..500)
+                            .map(|_| mint_incarnation().get())
+                            .collect::<Vec<u64>>()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().expect("a minting thread never panics"))
+                .collect::<Vec<u64>>()
+        })
+        .into_iter()
+        .collect();
+        assert_eq!(minted.len(), 8 * 500, "every thread got its own lifetimes");
+    }
+
+    #[test]
+    fn a_lifetime_starts_past_the_wall_clock_so_a_restart_never_repeats_one() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("the test host is past the epoch")
+            .as_millis() as u64;
+        assert!(
+            mint_incarnation().get() > before,
+            "a fresh process resumes above every value the last one reached"
+        );
+    }
 }
