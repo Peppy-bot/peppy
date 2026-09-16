@@ -496,6 +496,8 @@ You can pass additional command-line arguments directly to Apptainer or Lima usi
 
 All fields are optional and default to an empty list when omitted.
 
+A node that renders or computes on the host's NVIDIA GPU passes `apptainer_run_extra_args: ["--nv"]`: Apptainer then binds the host's driver libraries (CUDA, EGL, GLX, NVML) into the container at start. The bundled Apptainer's library list covers the desktop driver and the Tegra driver of Jetson boards alike, so the same node configuration renders through the GPU on both.
+
 :::note
 These arguments are passed verbatim; no validation is performed beyond basic string checks. Incorrect flags will cause Apptainer or Lima to fail at build or start time.
 :::
