@@ -1,4 +1,7 @@
-use super::activity::{BuildActivity, BuildActivityProbe, parse_guest_activity};
+use super::activity::{
+    BuildActivity, BuildActivityProbe, parse_guest_activity, parse_ps_cputime,
+    sum_ps_process_group_cpu_time,
+};
 use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
 use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
@@ -2231,7 +2234,7 @@ fn parse_process_stat_reads_the_kernels_own_rendering() {
 
 /// A shell spinning in a process group of its own, the way every build is
 /// spawned. Killed and reaped by the caller.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn spawn_busy_process_group() -> std::process::Child {
     use std::os::unix::process::CommandExt;
 
@@ -2249,7 +2252,7 @@ fn spawn_busy_process_group() -> std::process::Child {
 /// first instant and the kernel accounts it in 10 ms ticks, so a reading is
 /// nonzero after a tick or two; the bound only keeps a broken probe from
 /// hanging the test.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn wait_for_cpu_time(mut sample: impl FnMut() -> Duration) -> Duration {
     let mut observed = Duration::ZERO;
     for _ in 0..1_000 {
@@ -2278,6 +2281,64 @@ fn build_activity_probe_sees_the_cpu_a_busy_process_group_burns() {
     // A group no process belongs to reads as no CPU time at all.
     let absent = BuildActivityProbe::host(Vec::new(), Some(u32::MAX));
     assert_eq!(absent.sample().cpu_time, Duration::ZERO);
+}
+
+#[test]
+fn parse_ps_cputime_reads_bsd_and_procps_clocks() {
+    // BSD `ps` (macOS): unbounded minutes, hundredths of a second.
+    assert_eq!(parse_ps_cputime("0:00.05"), Some(Duration::from_millis(50)));
+    assert_eq!(
+        parse_ps_cputime("  123:45.67 "),
+        Some(Duration::from_secs(123 * 60 + 45) + Duration::from_millis(670))
+    );
+    assert_eq!(
+        parse_ps_cputime("0:01.5"),
+        Some(Duration::from_millis(1500))
+    );
+    // procps (Linux): hours, and days before them.
+    assert_eq!(parse_ps_cputime("00:00:05"), Some(Duration::from_secs(5)));
+    assert_eq!(parse_ps_cputime("1:02:03"), Some(Duration::from_secs(3723)));
+    assert_eq!(
+        parse_ps_cputime("2-03:04:05"),
+        Some(Duration::from_secs(2 * 86_400 + 3 * 3_600 + 4 * 60 + 5))
+    );
+    // A zombie's `-`, an empty field, too many fields, and a stray word.
+    assert_eq!(parse_ps_cputime("-"), None);
+    assert_eq!(parse_ps_cputime(""), None);
+    assert_eq!(parse_ps_cputime("1:2:3:4"), None);
+    assert_eq!(parse_ps_cputime("0:01.5s"), None);
+}
+
+#[test]
+fn sum_ps_process_group_cpu_time_sums_the_groups_lines() {
+    let listing = "  100   0:01.50\n  200   0:00.10\n  100   -\n  100   0:02.00\nheader junk\n";
+    assert_eq!(
+        sum_ps_process_group_cpu_time(listing, 100),
+        Duration::from_millis(3_500)
+    );
+    assert_eq!(
+        sum_ps_process_group_cpu_time(listing, 200),
+        Duration::from_millis(100)
+    );
+    assert_eq!(sum_ps_process_group_cpu_time(listing, 300), Duration::ZERO);
+}
+
+/// The `ps` listing is read on macOS in production and on Linux here, where
+/// procps renders the same columns in its own clock format.
+#[cfg(unix)]
+#[test]
+fn ps_process_group_cpu_time_sees_the_cpu_a_busy_process_group_burns() {
+    use super::activity::ps_process_group_cpu_time;
+
+    let mut busy = spawn_busy_process_group();
+    let observed = wait_for_cpu_time(|| ps_process_group_cpu_time(busy.id()));
+    let _ = busy.kill();
+    let _ = busy.wait();
+    assert!(
+        observed > Duration::ZERO,
+        "the busy group never showed CPU time"
+    );
+    assert_eq!(ps_process_group_cpu_time(u32::MAX), Duration::ZERO);
 }
 
 #[test]

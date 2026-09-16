@@ -29,8 +29,8 @@ use tokio::task::JoinHandle;
 use crate::build_io::{FeedbackLine, FeedbackStream, format_bytes};
 
 /// Cadence of activity samples. Each tick is one blocking probe (filesystem
-/// walks and a `/proc` scan; a `limactl shell` subprocess under Lima), so the
-/// interval also bounds the probe overhead.
+/// walks and a `/proc` scan or a `ps` listing; a `limactl shell` subprocess
+/// under Lima), so the interval also bounds the probe overhead.
 pub(crate) const BUILD_PROGRESS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The CPU time the build's processes must accrue, since the last line that

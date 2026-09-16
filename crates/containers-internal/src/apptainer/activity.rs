@@ -78,7 +78,8 @@ pub struct BuildActivityProbe {
     /// Host-side roots, each summed recursively without following symlinks.
     pub(super) host_roots: Vec<PathBuf>,
     /// The host process group the build runs in, named by its leader's pid,
-    /// whose CPU time is summed off `/proc`. `None` samples no host CPU.
+    /// whose CPU time is summed off `/proc` on Linux and off a `ps` listing on
+    /// other unix hosts. `None` samples no host CPU.
     pub(super) host_process_group: Option<u32>,
     /// Guest-side sampling for the Lima backend (macOS), where the apptainer
     /// cache and the build's processes live inside the VM.
@@ -154,8 +155,9 @@ impl BuildActivityProbe {
 
     /// The work done so far across every sampled root and process group.
     ///
-    /// Blocking (filesystem walks, a `/proc` scan, a `limactl shell`
-    /// subprocess under Lima), so call it from a blocking context. Missing
+    /// Blocking (filesystem walks, a `/proc` scan or a `ps` subprocess, a
+    /// `limactl shell` subprocess under Lima), so call it from a blocking
+    /// context. Missing
     /// roots count 0, per-root errors are skipped and an unreadable process
     /// table reads as no CPU time, so a partial reading still detects growth
     /// while a persistently failing probe reads flat and defers nothing: the
@@ -244,11 +246,94 @@ fn host_process_group_cpu_time(process_group: u32) -> Duration {
     clock_ticks_to_duration(ticks)
 }
 
-/// Off Linux there is no `/proc` to read: the native backend runs only on
-/// Linux, and a host build elsewhere is watched through its output alone.
-#[cfg(not(target_os = "linux"))]
+/// Unix hosts without `/proc` (macOS, where a `build_cmd` runs on the host
+/// while container builds run in the Lima guest) read the group off `ps`.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn host_process_group_cpu_time(process_group: u32) -> Duration {
+    ps_process_group_cpu_time(process_group)
+}
+
+/// A host with neither `/proc` nor `ps` watches a build through its output
+/// and its disk writes alone.
+#[cfg(not(unix))]
 fn host_process_group_cpu_time(_process_group: u32) -> Duration {
     Duration::ZERO
+}
+
+/// CPU time consumed so far by the live processes of the process group led by
+/// `process_group`, as `ps` reports it: `ps -A -o pgid= -o cputime=` lists
+/// every process's group and its accumulated user plus system time, and the
+/// group's members are summed. A process that exits takes its time with it,
+/// so the total dips when a compiler finishes a crate; the monitor rebases on
+/// a dip and measures the next crate's growth from the new floor. Any failure
+/// reads as no CPU time. Compiled into Linux tests as well, so the procps
+/// `ps` there exercises the listing end to end.
+#[cfg(any(test, all(unix, not(target_os = "linux"))))]
+pub(super) fn ps_process_group_cpu_time(process_group: u32) -> Duration {
+    let output = std::process::Command::new("ps")
+        .args(["-A", "-o", "pgid=", "-o", "cputime="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            sum_ps_process_group_cpu_time(&String::from_utf8_lossy(&out.stdout), process_group)
+        }
+        _ => Duration::ZERO,
+    }
+}
+
+/// Sums the `cputime` of every line of a `ps -o pgid= -o cputime=` listing
+/// whose group is `process_group`. A line that does not parse, such as the
+/// `-` BSD `ps` prints for a zombie, counts nothing.
+#[cfg(any(test, all(unix, not(target_os = "linux"))))]
+pub(super) fn sum_ps_process_group_cpu_time(listing: &str, process_group: u32) -> Duration {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pgid: u32 = fields.next()?.parse().ok()?;
+            if pgid != process_group {
+                return None;
+            }
+            parse_ps_cputime(fields.next()?)
+        })
+        .fold(Duration::ZERO, |sum, time| sum.saturating_add(time))
+}
+
+/// Reads the `cputime` column of `ps`. BSD `ps` (macOS) prints
+/// `minutes:seconds.hundredths` with the minutes unbounded; procps (Linux)
+/// prints `[[days-]hours:]minutes:seconds`. Both are read: an optional
+/// `days-` prefix, two or three colon-separated clock fields, an optional
+/// fraction of a second. `None` for anything else.
+#[cfg(any(test, all(unix, not(target_os = "linux"))))]
+pub(super) fn parse_ps_cputime(field: &str) -> Option<Duration> {
+    let field = field.trim();
+    let (days, clock) = match field.split_once('-') {
+        Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
+        None => (0, field),
+    };
+    let (whole, fraction) = clock.split_once('.').unwrap_or((clock, ""));
+    let fields = whole
+        .split(':')
+        .map(|part| part.parse::<u64>().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    let (hours, minutes, seconds) = match fields[..] {
+        [minutes, seconds] => (0, minutes, seconds),
+        [hours, minutes, seconds] => (hours, minutes, seconds),
+        _ => return None,
+    };
+    let millis = match fraction {
+        "" => 0,
+        digits if digits.bytes().all(|byte| byte.is_ascii_digit()) => {
+            // The first three digits, right-padded: ".5" is 500 ms, ".05" 50.
+            let leading: String = digits.chars().take(3).collect();
+            format!("{leading:0<3}").parse::<u64>().ok()?
+        }
+        _ => return None,
+    };
+    let secs = ((days * 24 + hours) * 60 + minutes) * 60 + seconds;
+    Some(Duration::from_secs(secs) + Duration::from_millis(millis))
 }
 
 /// Whether a `/proc` entry names a process (all digits) rather than one of the
