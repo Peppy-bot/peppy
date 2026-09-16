@@ -302,6 +302,10 @@ A source under `/dev` with no remap (no destination, or a destination equal to t
 A missing mount source is created on the host as a directory before the container starts, and a warning names each auto-created path, so a typo in a file bind shows up as an unexpectedly created empty directory. Sources under the host runtime trees (`/dev`, `/proc`, `/run`, `/sys`) are used as-is and never created.
 
 :::note
+A bind path that holds a `:` or a `,`, on the host side or the container side, is refused: Apptainer's `src:dest:opts` spec reads both characters as separators and offers no way to escape them, so such a path cannot be expressed. A path produced by `${parameters:...}` substitution is checked the same way, once the parameter resolves.
+:::
+
+:::note
 Top-level system directories such as `/`, `/tmp`, `/var`, `/etc`, `/dev`, `/usr`, `/home`, `/opt`, `/bin`, and `/sbin` cannot be used as mount sources, and on macOS neither can their `/private/*` equivalents (`/private/tmp`, `/private/var`, `/private/etc`). Subdirectories of these paths are fine; for example, `/tmp/my_app_data` is allowed but `/tmp` is not.
 :::
 
