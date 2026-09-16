@@ -16,7 +16,6 @@ use zstd::stream::write::Encoder as ZstdEncoder;
 use crate::build_io::{
     FeedbackLine, FeedbackStream, announce, spawn_in_process_group, stream_child_output,
 };
-use crate::build_progress::BuildProgressMonitor;
 use crate::node_stack::container_build_cache;
 use config::node::PeppygenLanguage;
 use containers::BuildActivityProbe;
@@ -277,12 +276,10 @@ pub(super) async fn build_container_image(
         // silent while it holds the CPU. The probe samples every surface this
         // build writes to (apptainer's cache and scratch, the build cache bind,
         // where a `%post` that compiles writes mostly, and the output SIF) and
-        // the CPU time of the build's process group, and the monitor emits a
-        // line only when bytes landed or CPU was burned, so genuine progress
-        // resets the idle clocks while a wedged build still times out. The
-        // guard lives on this future's stack: the phase runner dropping the
-        // future on timeout, cancellation, and normal completion all abort the
-        // monitor.
+        // the CPU time of the build's processes, and the monitor
+        // `stream_child_output` runs emits a line only when bytes landed or
+        // CPU was burned, so genuine progress resets the idle clocks while a
+        // wedged build still times out.
         let activity_probe = {
             let mut extra_roots = vec![output_path.clone()];
             if let Some(cache) = &build_cache {
@@ -290,20 +287,16 @@ pub(super) async fn build_container_image(
             }
             apptainer.build_activity_probe(extra_roots, child.id(), build_key.as_deref())
         };
-        let progress_monitor = BuildProgressMonitor::spawn(
-            move || activity_probe.sample(),
-            inputs.feedback_tx.clone(),
-        );
 
         let stream_result = stream_child_output(
             child,
+            move || activity_probe.sample(),
             inputs.feedback_tx,
             Arc::clone(&inputs.log_file),
             true,
             inputs.cancel_token,
         )
         .await;
-        drop(progress_monitor);
 
         let (status, stderr_tail) = match stream_result {
             Ok(result) => result,
@@ -479,14 +472,18 @@ pub(super) async fn run_build_cmd(
     // A `build_cmd` compiling one large crate is as silent as a container
     // build's `%post` doing the same, so the same monitor watches it: the
     // working dir is the surface it writes to (`target/` and the like), and
-    // the process group it leads holds every process it spawned.
+    // the process group it leads, with every descendant of its leader, holds
+    // every process it spawned.
     let activity_probe = BuildActivityProbe::host(vec![working_dir.to_path_buf()], child.id());
-    let progress_monitor =
-        BuildProgressMonitor::spawn(move || activity_probe.sample(), feedback_tx.clone());
-    let stream_result =
-        stream_child_output(child, feedback_tx, log_file, false, cancel_token).await;
-    drop(progress_monitor);
-    let (status, _) = stream_result?;
+    let (status, _) = stream_child_output(
+        child,
+        move || activity_probe.sample(),
+        feedback_tx,
+        log_file,
+        false,
+        cancel_token,
+    )
+    .await?;
 
     if !status.success() {
         return Err(format!(

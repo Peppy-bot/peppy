@@ -22,6 +22,7 @@
 //!   node is running so its stdout/stderr keeps streaming.
 
 use chrono::Local;
+use containers::BuildActivity;
 use parking_lot::Mutex as StdMutex;
 use std::collections::VecDeque;
 use std::fs::File;
@@ -36,6 +37,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+use crate::build_progress::{BuildProgressMonitor, LastOutputLine};
 
 /// Maximum number of stderr lines to retain for error diagnostics.
 /// Used by both the build (apptainer/archive) path and the start (node run) path.
@@ -141,12 +144,19 @@ pub fn format_bytes(bytes: u64) -> String {
 /// implements `OutputReaderHooks` for its `FeedbackSync` and threads it through
 /// `StartContext`.
 ///
-/// All methods default to no-ops so tests and the build path can use
-/// `NoOpHooks` directly.
+/// All methods default to no-ops, so an implementation overrides only the
+/// moments it tracks: the build path's `build_progress::LastOutputLine`
+/// records lines and nothing else.
 pub trait OutputReaderHooks: Send + Sync {
     /// Called once when the first stdout line of the run arrives. Idempotent:
     /// the implementation is responsible for swallowing repeat calls.
     fn on_first_stdout_line(&self) {}
+    /// Called with the text of each line the reader forwards, from either
+    /// stream, right after the line is written to the log file and before the
+    /// publish gate decides whether it reaches the feedback channel. A build
+    /// records it here as the last line it printed (see
+    /// `build_progress::LastOutputLine`).
+    fn on_line(&self, _line: &str) {}
     /// Called after each line is successfully forwarded to the internal
     /// feedback channel (the one the reader writes to). The daemon's
     /// `FeedbackSync` counts these so its drain primitive knows how many lines
@@ -170,12 +180,6 @@ pub trait OutputReaderHooks: Send + Sync {
     /// live and idle reader counts consistent.
     fn on_reader_exit(&self, _was_idle: bool) {}
 }
-
-/// No-op implementation of [`OutputReaderHooks`] used by tests and any caller
-/// that doesn't need quiescence tracking.
-pub struct NoOpHooks;
-
-impl OutputReaderHooks for NoOpHooks {}
 
 /// Pushes a line into a bounded ring buffer of stderr output.
 /// When the buffer is full, the oldest line is dropped.
@@ -206,9 +210,13 @@ pub fn spawn_in_process_group(
     wrap.spawn()
 }
 
-/// Streams stdout/stderr from a spawned child process to both the feedback
-/// publisher and the log file. Optionally collects the last [`STDERR_TAIL_LINES`]
-/// lines of stderr for error diagnostics.
+/// Streams stdout/stderr from a spawned build child process to both the
+/// feedback publisher and the log file. Optionally collects the last
+/// [`STDERR_TAIL_LINES`] lines of stderr for error diagnostics.
+///
+/// A [`BuildProgressMonitor`] polls `activity_sampler` for as long as this
+/// future lives, so the build's silent work still reaches the feedback
+/// channel, and names the last line the build printed once it has gone quiet.
 ///
 /// Returns the process exit status and (if `collect_stderr_tail` is true) the
 /// collected stderr tail lines.
@@ -222,6 +230,7 @@ pub fn spawn_in_process_group(
 /// `KillGuard` still SIGKILLs the group as a fallback (without reaping).
 pub async fn stream_child_output(
     mut child: Box<dyn ChildWrapper>,
+    activity_sampler: impl Fn() -> BuildActivity + Send + Sync + 'static,
     feedback_tx: &mpsc::UnboundedSender<FeedbackLine>,
     log_file: Arc<StdMutex<File>>,
     collect_stderr_tail: bool,
@@ -237,12 +246,20 @@ pub async fn stream_child_output(
 
     let mut reader_handles = Vec::new();
 
+    // The guard lives on this future's stack: returning, and the caller
+    // dropping the future (idle timeout, cancellation), both abort the
+    // monitor.
+    let last_output = LastOutputLine::default();
+    let _progress_monitor =
+        BuildProgressMonitor::spawn(activity_sampler, last_output.clone(), feedback_tx.clone());
+
     // Drain stdout/stderr using tokio's async line reader so the wait
     // below can run concurrently and the future stays cancellation-safe.
-    // `publish_enabled` is held permanently true and hooks are a no-op: the
-    // build path has no quiescence tracking and no publish gate.
+    // `publish_enabled` is held permanently true: the build path has no
+    // publish gate. The only hook records each line for the monitor; the
+    // build path has no quiescence tracking.
     let publish_enabled = Arc::new(AtomicBool::new(true));
-    let hooks: Arc<dyn OutputReaderHooks> = Arc::new(NoOpHooks);
+    let hooks: Arc<dyn OutputReaderHooks> = Arc::new(last_output);
     if let Some(stdout) = child.stdout().take() {
         reader_handles.push(spawn_output_reader_async(
             stdout,
@@ -514,6 +531,7 @@ where
         // publish gate, feedback channel. Suppressed repaints never reach it.
         let forward_line = |line: String| {
             write_feedback_log_line(&log_file, stream, &line);
+            hooks.on_line(&line);
 
             // Signal when the first stdout line arrives so container drains can
             // wait for the runscript to actually produce output.
@@ -751,19 +769,35 @@ mod tests {
 
     // -- spawn_output_reader_async end-to-end --
 
-    async fn read_all_lines(input: Vec<u8>) -> Vec<String> {
+    /// Hooks that keep every line [`OutputReaderHooks::on_line`] receives.
+    #[derive(Default)]
+    struct LineRecordingHooks {
+        lines: StdMutex<Vec<String>>,
+    }
+
+    impl OutputReaderHooks for LineRecordingHooks {
+        fn on_line(&self, line: &str) {
+            self.lines.lock().push(line.to_owned());
+        }
+    }
+
+    /// Reads `input` to EOF through [`spawn_output_reader_async`] with the
+    /// publish gate held at `publish`, and returns the lines that reached the
+    /// feedback channel and the lines the `on_line` hook received.
+    async fn read_lines(input: Vec<u8>, publish: bool) -> (Vec<String>, Vec<String>) {
         let log_file = Arc::new(StdMutex::new(
             NamedTempFile::new()
                 .expect("temp log")
                 .reopen()
                 .expect("reopen"),
         ));
+        let hooks = Arc::new(LineRecordingHooks::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
         let handle = spawn_output_reader_async(
             std::io::Cursor::new(input),
             tx,
-            Arc::new(AtomicBool::new(true)),
-            Arc::new(NoOpHooks) as Arc<dyn OutputReaderHooks>,
+            Arc::new(AtomicBool::new(publish)),
+            Arc::clone(&hooks) as Arc<dyn OutputReaderHooks>,
             FeedbackStream::Stdout,
             None,
             log_file,
@@ -772,11 +806,16 @@ mod tests {
             .await
             .expect("join should succeed")
             .expect("read should succeed");
-        let mut lines = Vec::new();
+        let mut forwarded = Vec::new();
         while let Ok(line) = rx.try_recv() {
-            lines.push(line.line);
+            forwarded.push(line.line);
         }
-        lines
+        let seen = std::mem::take(&mut *hooks.lines.lock());
+        (forwarded, seen)
+    }
+
+    async fn read_all_lines(input: Vec<u8>) -> Vec<String> {
+        read_lines(input, true).await.0
     }
 
     #[tokio::test]
@@ -799,6 +838,20 @@ mod tests {
                 "".to_string(),
                 "line3".to_string(),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn async_reader_hands_every_line_to_on_line_whether_published_or_not() {
+        let input = b"   Compiling viewer v0.1.0\nline2\r\n\nline3".to_vec();
+        let (forwarded, seen) = read_lines(input.clone(), true).await;
+        assert_eq!(seen, forwarded, "every published line reaches the hook");
+
+        let (forwarded, seen_unpublished) = read_lines(input, false).await;
+        assert!(forwarded.is_empty(), "the gate holds the lines back");
+        assert_eq!(
+            seen_unpublished, seen,
+            "the hook sees the lines before the publish gate"
         );
     }
 }
