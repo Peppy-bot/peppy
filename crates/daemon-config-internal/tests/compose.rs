@@ -1335,6 +1335,83 @@ fn check_composition_holds_only_legal_selections_to_flattening() {
     assert!(problems.is_empty(), "got: {problems:?}");
 }
 
+/// A copy the file deploys with a `with` that one stack admits and another
+/// refuses: under the refusing stack it is refused by design, exactly as a
+/// join of it is, so the check holds it to composing only where the
+/// constraints admit it. A file copy no admitted stack can start is a
+/// problem of its own.
+#[test]
+fn check_composition_holds_a_file_copy_only_to_the_stacks_that_admit_it() {
+    let family = |with: &str, constraints: &str| {
+        parse_launcher(&format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                components: [
+                    {{ name: "simulation", cardinality: "one", provides: ["sim_inst"],
+                       options: {{
+                           lit: {{ deployments: [
+                               {{ source: {{ name: "lit_engine", tag: "v1" }},
+                                  instances: [{{ instance_id: "sim_inst" }}] }} ] }},
+                           plain: {{ deployments: [
+                               {{ source: {{ name: "plain_engine", tag: "v1" }},
+                                  instances: [{{ instance_id: "sim_inst" }}] }} ] }},
+                       }} }},
+                    {{ name: "robot", cardinality: "zero_or_more", options: {{ arm: {{
+                        deployments: [
+                            {{ source: {{ name: "arm", tag: "v1" }},
+                               instances: [{{ instance_id: "arm_inst",
+                                             links: {{ engine: "sim_inst" }} }}] }},
+                            {{ commander: "web" }},
+                        ],
+                        components: [
+                            {{ name: "commander", provides: ["commander_inst"], options: {{
+                                web: {{ deployments: [
+                                    {{ source: {{ name: "panel", tag: "v1" }},
+                                       instances: [{{ instance_id: "commander_inst",
+                                                     links: {{ arm: "arm_inst" }} }}] }} ] }},
+                                lamps: {{ deployments: [
+                                    {{ source: {{ name: "lamp_panel", tag: "v1" }},
+                                       instances: [{{ instance_id: "commander_inst",
+                                                     links: {{ arm: "arm_inst",
+                                                              lights: "sim_inst" }} }}] }} ] }},
+                            }} }},
+                        ],
+                        constraints: [{constraints}],
+                    }} }} }},
+                ],
+                deployments: [
+                    {{ simulation: "lit" }},
+                    {{ robot: "arm", instances: [{{ instance_id: "alpha"{with} }}] }},
+                ],
+            }}"#
+        ))
+    };
+    let lit_only = r#"{ when: { commander: "lamps" }, requires: [{ simulation: "lit" }],
+                        reason: "the lamp panel edits lights only the lit engine has" }"#;
+
+    // The copy the file pins to the lamp panel composes under the lit
+    // engine and is refused, by design, under the plain one.
+    let launcher = family(r#", with: { commander: "lamps" }"#, lit_only);
+    let problems = check_composition(&launcher, Path::new("family.json5"));
+    assert!(problems.is_empty(), "got: {problems:?}");
+
+    // Pinned to an option no admitted stack can run, the file's copy is
+    // named as never able to start.
+    let impossible = format!(
+        r#"{lit_only},
+           {{ when: {{ commander: "lamps" }}, requires: [{{ simulation: "plain" }}],
+              reason: "and the plain one" }}"#
+    );
+    let launcher = family(r#", with: { commander: "lamps" }"#, &impossible);
+    let problems = check_composition(&launcher, Path::new("family.json5"));
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("the file's copy `alpha` is refused under every selection")),
+        "got: {problems:?}"
+    );
+}
+
 #[test]
 fn check_composition_flags_an_option_nothing_may_select() {
     let launcher = constrained_launcher(

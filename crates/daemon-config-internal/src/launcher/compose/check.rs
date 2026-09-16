@@ -103,7 +103,12 @@ pub fn check_composition(launcher: &PeppyLauncher, launcher_file: &Path) -> Vec<
     }
     let mut ledger = Ledger::new(&prepared);
     let stacks = legal_stacks(&prepared, &mut ledger, &label, &mut problems);
-    problems.extend(check_file_copies_over(&prepared, &stacks, &label));
+    problems.extend(check_file_copies_over(
+        &prepared,
+        &stacks,
+        &mut ledger,
+        &label,
+    ));
     let legal_copies = check_copies_over(
         &prepared,
         &repeatable,
@@ -192,14 +197,21 @@ fn legal_stacks(
 }
 
 /// The copies the file deploys, with their settings, over every legal
-/// stack: what `stack launch --with ...` composes for each selection.
+/// stack: what `stack launch --with ...` composes for each selection. A
+/// copy whose own constraints refuse it under a stack is refused by design
+/// there, as a join of it would be, and is not required to compose; a copy
+/// no admitted stack can start is a problem of its own, since what the
+/// file deploys must have a way to launch.
 fn check_file_copies_over(
     prepared: &PreparedLauncher,
     stacks: &[UnitSelection],
+    ledger: &mut Ledger<'_>,
     label: &str,
 ) -> Vec<String> {
     let launcher = &prepared.launcher;
     let mut problems = Vec::new();
+    // Each copy the file deploys, and whether some legal stack admits it.
+    let mut admitted: BTreeMap<String, bool> = BTreeMap::new();
     for stack in stacks {
         let Ok((_, bare)) = prepared.flat_stack(stack) else {
             // Reported once, by the stack pass.
@@ -244,7 +256,42 @@ fn check_file_copies_over(
                 let filled = attempts.len() == 1;
                 let taken_before = taken.clone();
                 let mut links: Option<Vec<String>> = None;
+                let admitted_here = admitted
+                    .entry(instance.instance_id.to_string())
+                    .or_insert(false);
                 for (echo, with) in &attempts {
+                    // The copy's constraints, judged over the stack as the
+                    // join path judges them: a refused selection is refused
+                    // by design and composes nothing.
+                    let refused = match resolve_copy(
+                        loaded,
+                        &entry.axis,
+                        instance.instance_id.as_str(),
+                        with,
+                        CopyOrigin::File,
+                    ) {
+                        Ok(own) => {
+                            let full = UnitSelection {
+                                entries: stack
+                                    .launcher_entries(launcher)
+                                    .into_iter()
+                                    .chain(own.entries.iter().cloned())
+                                    .collect(),
+                            };
+                            let fragments = loaded.fragments_for(&own);
+                            let in_play = constraints_in_play(
+                                launcher,
+                                &fragments,
+                                ConstraintScope::Copy { axis: &entry.axis },
+                            );
+                            ledger.judge(&in_play, &full)
+                        }
+                        Err(_) => false,
+                    };
+                    if refused {
+                        continue;
+                    }
+                    *admitted_here = true;
                     match compose_copy(
                         prepared,
                         stack,
@@ -283,6 +330,15 @@ fn check_file_copies_over(
             if let Err(e) = combine(launcher, &bare, &together) {
                 problems.push(format!("{label} ({echo}): {e}"));
             }
+        }
+    }
+    for (copy, legal) in admitted {
+        if !legal {
+            problems.push(format!(
+                "{label}: the file's copy `{copy}` is refused under every selection the \
+                 `constraints` admit, so what the file deploys can never start. Loosen a \
+                 constraint or change the copy's `with`"
+            ));
         }
     }
     problems
