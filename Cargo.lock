@@ -1122,7 +1122,6 @@ dependencies = [
  "dirs 7.0.0",
  "peppy-config-model",
  "peppy-mcp-catalog",
- "rand 0.10.2",
  "serde",
  "serde_json",
  "serde_json5",
