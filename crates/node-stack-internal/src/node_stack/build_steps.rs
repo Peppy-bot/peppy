@@ -19,6 +19,7 @@ use crate::build_io::{
 use crate::build_progress::BuildProgressMonitor;
 use crate::node_stack::container_build_cache;
 use config::node::PeppygenLanguage;
+use containers::BuildActivityProbe;
 
 /// Validates that `node_tag` is safe to splice into a filename joined under
 /// the storage directory. Re-validates the raw `Manifest::tag` string before
@@ -269,25 +270,28 @@ pub(super) async fn build_container_image(
         let child = spawn_in_process_group(cmd)
             .map_err(|e| format!("Failed to spawn apptainer build: {}", e))?;
 
-        // Disk-growth progress: apptainer suppresses per-blob download progress
+        // Activity progress: apptainer suppresses per-blob download progress
         // off-TTY, so a slow base-image pull (and the silent "Creating SIF file..."
         // stretch) would otherwise produce no feedback for minutes and trip the
-        // idle timeout. The probe samples every surface this build writes to —
-        // apptainer's cache and scratch, the build cache bind (a `%post` that
-        // compiles writes mostly there), and the output SIF — and the monitor
-        // emits a line only when the total grew, so genuine progress resets the
-        // idle clocks while a wedged build still times out. The guard lives on
-        // this future's stack: the phase runner dropping the future on timeout,
-        // cancellation, and normal completion all abort the monitor.
-        let usage_probe = {
+        // idle timeout, and a `%post` compiling one large crate is just as
+        // silent while it holds the CPU. The probe samples every surface this
+        // build writes to (apptainer's cache and scratch, the build cache bind,
+        // where a `%post` that compiles writes mostly, and the output SIF) and
+        // the CPU time of the build's process group, and the monitor emits a
+        // line only when bytes landed or CPU was burned, so genuine progress
+        // resets the idle clocks while a wedged build still times out. The
+        // guard lives on this future's stack: the phase runner dropping the
+        // future on timeout, cancellation, and normal completion all abort the
+        // monitor.
+        let activity_probe = {
             let mut extra_roots = vec![output_path.clone()];
             if let Some(cache) = &build_cache {
                 extra_roots.push(cache.host_dir.clone());
             }
-            apptainer.cache_usage_probe(extra_roots)
+            apptainer.build_activity_probe(extra_roots, child.id(), build_key.as_deref())
         };
         let progress_monitor = BuildProgressMonitor::spawn(
-            move || usage_probe.usage_bytes(),
+            move || activity_probe.sample(),
             inputs.feedback_tx.clone(),
         );
 
@@ -472,8 +476,17 @@ pub(super) async fn run_build_cmd(
     let child = spawn_in_process_group(command)
         .map_err(|e| spawn_failure_message(&full_cmd_display, &program, working_dir, &e))?;
 
-    let (status, _) =
-        stream_child_output(child, feedback_tx, log_file, false, cancel_token).await?;
+    // A `build_cmd` compiling one large crate is as silent as a container
+    // build's `%post` doing the same, so the same monitor watches it: the
+    // working dir is the surface it writes to (`target/` and the like), and
+    // the process group it leads holds every process it spawned.
+    let activity_probe = BuildActivityProbe::host(vec![working_dir.to_path_buf()], child.id());
+    let progress_monitor =
+        BuildProgressMonitor::spawn(move || activity_probe.sample(), feedback_tx.clone());
+    let stream_result =
+        stream_child_output(child, feedback_tx, log_file, false, cancel_token).await;
+    drop(progress_monitor);
+    let (status, _) = stream_result?;
 
     if !status.success() {
         return Err(format!(
