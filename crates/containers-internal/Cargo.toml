@@ -17,12 +17,6 @@ serde_yaml = "0.9"
 thiserror = "2.0"
 tracing = "0.1"
 
-# `sysconf(_SC_CLK_TCK)`, which converts the clock ticks `/proc/<pid>/stat`
-# accounts a build's CPU time in. nix's safe wrapper keeps the crate free of
-# `unsafe`; `/proc` itself exists only on Linux.
-[target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["feature"] }
-
 [dev-dependencies]
 # Only `test_tmp_root` is needed (no git fixtures), so no `git_fixtures` feature.
 config-test-support = { workspace = true }

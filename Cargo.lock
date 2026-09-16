@@ -845,7 +845,6 @@ dependencies = [
  "config-test-support",
  "daemon-config",
  "dirs 7.0.0",
- "nix 0.31.3",
  "peppy-config-model",
  "serde_yaml",
  "tempfile",
