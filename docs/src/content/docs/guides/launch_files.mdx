@@ -671,7 +671,10 @@ adjustments applied:
   alpha_backbone_inst.arguments.upstream_mode: "joints" -> "pose"  (so101/fragments/so101.json5)
   alpha_recorder_inst.arguments.robot_type: (absent) -> "so101"  (so101/fragments/so101.json5)
   alpha_commander_inst.links.recorder: + alpha_recorder_inst  (recording/fragments/lerobot_recorder.json5)
-link rules hold: slot keys, vacancies and pairing coverage checked over 4 node manifest(s)
+alpha_backbone_inst: clock `wall`
+alpha_commander_inst: clock `wall`
+alpha_recorder_inst: clock `wall`
+link rules hold: slot keys, vacancies, pairing coverage, observation sources and clock agreement checked over 4 node manifest(s)
 ```
 
 Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION` previews one more joined onto it, with `--join-name`, `--join-with` and `--join-set-arguments` standing in for the join's own flags. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
