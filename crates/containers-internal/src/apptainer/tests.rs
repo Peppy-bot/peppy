@@ -1,3 +1,7 @@
+use super::activity::{
+    BuildActivity, BuildActivityProbe, parse_guest_activity, parse_ps_cputime,
+    sum_ps_process_group_cpu_time,
+};
 use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
 use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
@@ -5,6 +9,7 @@ use crate::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -2113,7 +2118,7 @@ fn wait_for_child_bounded_returns_none_and_reaps_on_timeout() {
 
 #[test]
 fn effective_host_cache_dir_prefers_the_env_override() {
-    use super::usage::effective_host_cache_dir_from;
+    use super::activity::effective_host_cache_dir_from;
     use std::ffi::OsString;
 
     // The env override wins over $HOME, and an empty override is ignored the
@@ -2132,36 +2137,30 @@ fn effective_host_cache_dir_prefers_the_env_override() {
 }
 
 #[test]
-fn cache_usage_probe_sums_a_tree_and_ignores_missing_roots() {
-    use super::usage::CacheUsageProbe;
-
+fn build_activity_probe_sums_a_tree_and_ignores_missing_roots() {
     let root = TempDir::new().expect("tempdir");
     fs::create_dir_all(root.path().join("blobs/sha256")).expect("mkdir");
     fs::write(root.path().join("blobs/sha256/aa"), vec![0u8; 1024]).expect("write");
     fs::write(root.path().join("blobs/sha256/bb"), vec![0u8; 512]).expect("write");
     fs::write(root.path().join("top"), vec![0u8; 64]).expect("write");
 
-    let probe = CacheUsageProbe {
-        host_roots: vec![
+    let probe = BuildActivityProbe::host(
+        vec![
             root.path().to_path_buf(),
             PathBuf::from("/nonexistent-peppy-usage-root"),
         ],
-        guest: None,
-    };
-    assert_eq!(probe.usage_bytes(), 1024 + 512 + 64);
+        None,
+    );
+    assert_eq!(probe.sample().bytes_on_disk, 1024 + 512 + 64);
 
-    let missing_only = CacheUsageProbe {
-        host_roots: vec![PathBuf::from("/nonexistent-peppy-usage-root")],
-        guest: None,
-    };
-    assert_eq!(missing_only.usage_bytes(), 0);
+    let missing_only =
+        BuildActivityProbe::host(vec![PathBuf::from("/nonexistent-peppy-usage-root")], None);
+    assert_eq!(missing_only.sample(), BuildActivity::default());
 }
 
 #[cfg(unix)]
 #[test]
-fn cache_usage_probe_counts_a_symlink_itself_not_its_target() {
-    use super::usage::CacheUsageProbe;
-
+fn build_activity_probe_counts_a_symlink_itself_not_its_target() {
     // A symlink pointing outside the root must not pull the target's size (or
     // an unbounded tree) into the sample; only the link's own metadata counts.
     let target = TempDir::new().expect("tempdir");
@@ -2170,13 +2169,279 @@ fn cache_usage_probe_counts_a_symlink_itself_not_its_target() {
     fs::write(root.path().join("real"), vec![0u8; 128]).expect("write");
     std::os::unix::fs::symlink(target.path(), root.path().join("link")).expect("symlink");
 
-    let probe = CacheUsageProbe {
-        host_roots: vec![root.path().to_path_buf()],
-        guest: None,
-    };
-    let total = probe.usage_bytes();
+    let probe = BuildActivityProbe::host(vec![root.path().to_path_buf()], None);
+    let total = probe.sample().bytes_on_disk;
     assert!(
         (128..4096).contains(&total),
         "the symlink target's 4096-byte file must not be counted, got {total}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parse_process_stat_counts_the_fields_from_the_last_parenthesis() {
+    use super::activity::{ProcessStat, parse_process_stat};
+
+    // A command name holding spaces and parentheses of its own, as `/proc`
+    // renders a process named "my (odd) worker".
+    let line = "4242 (my (odd) worker) S 1 4200 4200 0 -1 4194304 110 0 0 0 7 3 2 1 \
+                20 0 1 0 12345 6789 100 18446744073709551615";
+    assert_eq!(
+        parse_process_stat(line),
+        Some(ProcessStat {
+            process_group: 4200,
+            cpu_ticks: 7 + 3 + 2 + 1,
+        })
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parse_process_stat_rejects_a_line_missing_a_counter() {
+    use super::activity::parse_process_stat;
+
+    assert_eq!(
+        parse_process_stat("4242 (short) S 1 4200 4200 0 -1 4194304 110 0 0 0 7 3 2"),
+        None
+    );
+    assert_eq!(parse_process_stat("no parenthesis at all"), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parse_process_stat_counts_a_negative_reaped_counter_as_zero() {
+    use super::activity::{ProcessStat, parse_process_stat};
+
+    let line = "1 (init) S 0 1 1 0 -1 4194560 0 0 0 0 5 5 -1 -1";
+    assert_eq!(
+        parse_process_stat(line),
+        Some(ProcessStat {
+            process_group: 1,
+            cpu_ticks: 10,
+        })
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parse_process_stat_reads_the_kernels_own_rendering() {
+    use super::activity::parse_process_stat;
+
+    let own = fs::read_to_string("/proc/self/stat").expect("read this process's stat");
+    let stat = parse_process_stat(&own).expect("the kernel's format parses");
+    assert!(stat.process_group > 0, "got {stat:?}");
+}
+
+/// A shell spinning in a process group of its own, the way every build is
+/// spawned. Killed and reaped by the caller.
+#[cfg(unix)]
+fn spawn_busy_process_group() -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+
+    Command::new("sh")
+        .args(["-c", "while :; do :; done"])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a busy shell")
+}
+
+/// Re-reads `sample` until it shows CPU time. The loop burns CPU from its
+/// first instant and the kernel accounts it in 10 ms ticks, so a reading is
+/// nonzero after a tick or two; the bound only keeps a broken probe from
+/// hanging the test.
+#[cfg(unix)]
+fn wait_for_cpu_time(mut sample: impl FnMut() -> Duration) -> Duration {
+    let mut observed = Duration::ZERO;
+    for _ in 0..1_000 {
+        observed = sample();
+        if observed > Duration::ZERO {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    observed
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_activity_probe_sees_the_cpu_a_busy_process_group_burns() {
+    let mut busy = spawn_busy_process_group();
+    let probe = BuildActivityProbe::host(Vec::new(), Some(busy.id()));
+    let observed = wait_for_cpu_time(|| probe.sample().cpu_time);
+    let _ = busy.kill();
+    let _ = busy.wait();
+    assert!(
+        observed > Duration::ZERO,
+        "the busy group never showed CPU time"
+    );
+
+    // A group no process belongs to reads as no CPU time at all.
+    let absent = BuildActivityProbe::host(Vec::new(), Some(u32::MAX));
+    assert_eq!(absent.sample().cpu_time, Duration::ZERO);
+}
+
+#[test]
+fn parse_ps_cputime_reads_bsd_and_procps_clocks() {
+    // BSD `ps` (macOS): unbounded minutes, hundredths of a second.
+    assert_eq!(parse_ps_cputime("0:00.05"), Some(Duration::from_millis(50)));
+    assert_eq!(
+        parse_ps_cputime("  123:45.67 "),
+        Some(Duration::from_secs(123 * 60 + 45) + Duration::from_millis(670))
+    );
+    assert_eq!(
+        parse_ps_cputime("0:01.5"),
+        Some(Duration::from_millis(1500))
+    );
+    // procps (Linux): hours, and days before them.
+    assert_eq!(parse_ps_cputime("00:00:05"), Some(Duration::from_secs(5)));
+    assert_eq!(parse_ps_cputime("1:02:03"), Some(Duration::from_secs(3723)));
+    assert_eq!(
+        parse_ps_cputime("2-03:04:05"),
+        Some(Duration::from_secs(2 * 86_400 + 3 * 3_600 + 4 * 60 + 5))
+    );
+    // A zombie's `-`, an empty field, too many fields, and a stray word.
+    assert_eq!(parse_ps_cputime("-"), None);
+    assert_eq!(parse_ps_cputime(""), None);
+    assert_eq!(parse_ps_cputime("1:2:3:4"), None);
+    assert_eq!(parse_ps_cputime("0:01.5s"), None);
+}
+
+#[test]
+fn sum_ps_process_group_cpu_time_sums_the_groups_lines() {
+    let listing = "  100   0:01.50\n  200   0:00.10\n  100   -\n  100   0:02.00\nheader junk\n";
+    assert_eq!(
+        sum_ps_process_group_cpu_time(listing, 100),
+        Duration::from_millis(3_500)
+    );
+    assert_eq!(
+        sum_ps_process_group_cpu_time(listing, 200),
+        Duration::from_millis(100)
+    );
+    assert_eq!(sum_ps_process_group_cpu_time(listing, 300), Duration::ZERO);
+}
+
+/// The `ps` listing is read on macOS in production and on Linux here, where
+/// procps renders the same columns in its own clock format.
+#[cfg(unix)]
+#[test]
+fn ps_process_group_cpu_time_sees_the_cpu_a_busy_process_group_burns() {
+    use super::activity::ps_process_group_cpu_time;
+
+    let mut busy = spawn_busy_process_group();
+    let observed = wait_for_cpu_time(|| ps_process_group_cpu_time(busy.id()));
+    let _ = busy.kill();
+    let _ = busy.wait();
+    assert!(
+        observed > Duration::ZERO,
+        "the busy group never showed CPU time"
+    );
+    assert_eq!(ps_process_group_cpu_time(u32::MAX), Duration::ZERO);
+}
+
+#[test]
+fn parse_guest_activity_reads_bytes_then_cpu_millis() {
+    assert_eq!(
+        parse_guest_activity("2048\n1500\n"),
+        BuildActivity {
+            bytes_on_disk: 2048,
+            cpu_time: Duration::from_millis(1500),
+        }
+    );
+    // A missing cache dir prints an empty first line; the CPU line still counts.
+    assert_eq!(
+        parse_guest_activity("\n1500\n"),
+        BuildActivity {
+            bytes_on_disk: 0,
+            cpu_time: Duration::from_millis(1500),
+        }
+    );
+    // Garbage and nothing at all both read as zero.
+    assert_eq!(
+        parse_guest_activity("du: cannot read\n"),
+        BuildActivity::default()
+    );
+    assert_eq!(parse_guest_activity(""), BuildActivity::default());
+}
+
+#[test]
+fn lima_guest_activity_argv_passes_the_pgid_file_as_the_script_parameter() {
+    use super::lima::{GUEST_ACTIVITY_SCRIPT, lima_guest_activity_argv};
+
+    let argv = lima_guest_activity_argv(Some(Path::new("/tmp/peppy/pgids/build-1.pgid")));
+    assert_eq!(
+        argv,
+        [
+            "sh",
+            "-c",
+            GUEST_ACTIVITY_SCRIPT,
+            "sh",
+            "/tmp/peppy/pgids/build-1.pgid"
+        ]
+    );
+
+    let argv = lima_guest_activity_argv(None);
+    assert_eq!(
+        argv[4], "",
+        "with no pgid file the parameter is empty, so `cat` finds nothing"
+    );
+}
+
+/// The guest activity script is plain POSIX shell over `/proc`, `du` and
+/// `awk`, so a Linux host runs it exactly as the Lima guest does.
+#[cfg(target_os = "linux")]
+#[test]
+fn guest_activity_script_reports_the_cache_size_and_the_groups_cpu_time() {
+    use super::lima::lima_guest_activity_argv;
+
+    let cache = TempDir::new().expect("tempdir");
+    fs::write(cache.path().join("blob"), vec![0u8; 4096]).expect("write");
+    let pgids = TempDir::new().expect("tempdir");
+    let pgid_file = pgids.path().join("build.pgid");
+    let mut busy = spawn_busy_process_group();
+    fs::write(&pgid_file, busy.id().to_string()).expect("write the pgid file");
+
+    let run_script = |pgid_file: Option<&Path>| {
+        let argv = lima_guest_activity_argv(pgid_file);
+        let out = Command::new(&argv[0])
+            .args(&argv[1..])
+            .env("APPTAINER_CACHEDIR", cache.path())
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the guest activity script");
+        assert!(
+            out.status.success(),
+            "the script failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        parse_guest_activity(&String::from_utf8_lossy(&out.stdout))
+    };
+
+    let mut reading = BuildActivity::default();
+    let observed = wait_for_cpu_time(|| {
+        reading = run_script(Some(&pgid_file));
+        reading.cpu_time
+    });
+    let _ = busy.kill();
+    let _ = busy.wait();
+    assert!(
+        reading.bytes_on_disk >= 4096,
+        "`du -sb` must count the blob, got {}",
+        reading.bytes_on_disk
+    );
+    assert!(
+        observed > Duration::ZERO,
+        "the busy group never showed CPU time"
+    );
+
+    // Without a pgid file the cache is still measured and the CPU line is 0.
+    let reading = run_script(None);
+    assert!(
+        reading.bytes_on_disk >= 4096,
+        "got {}",
+        reading.bytes_on_disk
+    );
+    assert_eq!(reading.cpu_time, Duration::ZERO);
 }
