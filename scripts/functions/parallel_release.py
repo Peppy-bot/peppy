@@ -48,7 +48,6 @@ import httpx
 from .build import BuildArtifact, _release_rustflags, build_and_package, release_dist_dir
 from .build_release import (
     ALIGNED_BRANCH,
-    DOCS_DIR,
     DOCS_POLISH_BRANCH_PREFIX,
     DOCS_SYNC_BRANCH_PREFIX,
     GIT_REMOTE,
@@ -75,7 +74,13 @@ from .cli import (
     run_with_error_handling,
     validate_release_environment,
 )
-from .docs import RequiredChange, check_docs, print_minor_changes, update_docs
+from .docs import (
+    DOCS_DIR,
+    RequiredChange,
+    check_docs,
+    print_minor_changes,
+    update_docs,
+)
 from .github import RepoSlug, build_github_client, get_latest_release, github_repo_slug
 from .lima import (
     GO_LINUX_AMD64_SHA256,

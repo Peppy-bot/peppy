@@ -17,7 +17,7 @@ The diff helpers (``get_code_diff``, ``get_docs_diff``, ``truncate_diff``)
 are shared with the release-notes generator (``release_summary.py``), so the
 notes are drafted from the same changes the docs check judged.
 
-Both require ``claude`` and ``git`` on PATH. No special auth handling —
+Both require ``claude`` and ``git`` on PATH. No special auth handling:
 the invoking environment must already have claude authenticated.
 """
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,10 +36,14 @@ from .cli import ReleaseError, console, need_cmd, run_with_error_handling
 from .repo import get_repo_root
 
 
-# Paths excluded from the code diff fed to claude — changes here don't imply
+# The directory the docs check owns end to end: the updater edits it, and the
+# release commits it onto a branch of its own when it finds it stale.
+DOCS_DIR = "docs"
+
+# Paths excluded from the code diff fed to claude: changes here don't imply
 # doc updates are needed (and including docs/ would feed edits back as input).
 _EXCLUDE_PREFIXES: tuple[str, ...] = (
-    "docs/",
+    f"{DOCS_DIR}/",
     "target/",
     ".github/",
     "scripts/docs/",
@@ -59,6 +64,13 @@ USER_DOCS_PREFIX = "docs/src/content/docs/"
 
 _MAX_DIFF_BYTES = 400_000
 
+# The docs never use an em-dash (U+2014), and Claude writes one by habit. Every
+# text of Claude's that reaches a docs pull request is held to its absence: the
+# gap descriptions (quoted in the pull request body) through the check schema,
+# and the updater's edits by `_reword_added_em_dashes`.
+EM_DASH = "\u2014"
+_NO_EM_DASH_PATTERN = f"^[^{EM_DASH}]*$"
+
 SEVERITY_BLOCKING = "blocking"
 SEVERITY_MINOR = "minor"
 
@@ -78,7 +90,7 @@ _CHECK_SCHEMA: dict = {
                 "type": "object",
                 "properties": {
                     "file": {"type": "string"},
-                    "change": {"type": "string"},
+                    "change": {"type": "string", "pattern": _NO_EM_DASH_PATTERN},
                     "severity": {"enum": [SEVERITY_BLOCKING, SEVERITY_MINOR]},
                 },
                 "required": ["file", "change", "severity"],
@@ -113,6 +125,15 @@ _UPDATE_SCHEMA: dict = {
         "summary": {"type": "string"},
     },
     "required": ["results", "summary"],
+    "additionalProperties": False,
+}
+
+# Schema for the em-dash rewording report. The edits are the result and are
+# verified on disk; the summary only gives the run a structured answer.
+_REWORD_SCHEMA: dict = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}},
+    "required": ["summary"],
     "additionalProperties": False,
 }
 
@@ -159,6 +180,15 @@ class UpdateResult:
         return bool(self.results) and all(
             r.status == STATUS_ALREADY_COVERED for r in self.results
         )
+
+
+@dataclass(frozen=True)
+class EmDashLine:
+    """A line under ``docs/`` holding an em-dash, with its 1-based number."""
+
+    file: str
+    line: int
+    text: str
 
 
 def _run_git(args: list[str], cwd: Path) -> str:
@@ -223,26 +253,28 @@ def truncate_diff(diff: str) -> str:
         return diff
     return (
         diff[:_MAX_DIFF_BYTES]
-        + f"\n\n[diff truncated — original size {len(diff)} bytes]"
+        + f"\n\n[diff truncated: original size {len(diff)} bytes]"
     )
 
 
 _CHECK_PROMPT = """\
 You are judging whether the documentation in `docs/src/content/docs/` covers a
-set of code changes. The project is "peppy" — an Astro Starlight documentation
+set of code changes. The project is "peppy": an Astro Starlight documentation
 site paired with Rust crates under `crates/`.
 
 Your task:
 1. Use Read/Grep/Glob to explore `docs/src/content/docs/` and compare it
-   against the diff below. Judge only what this diff changes — this is not a
+   against the diff below. Judge only what this diff changes; this is not a
    general documentation audit.
 2. Report every documentation gap the diff creates as an entry in
    `required_changes` (the doc file path, a one-sentence description of the
-   edit needed, and a severity):
+   edit needed, and a severity). The description is quoted in a pull request
+   and handed to the writer of the edit, so never use an em-dash (U+2014) in
+   it: reword with a comma, a colon, parentheses, or a separate sentence.
    - "blocking": the docs now state something false, or a user-facing change
      in the diff (a CLI flag or subcommand, a `peppy.json5` schema key, a
      message format, a step in a guide or workflow) is entirely undocumented.
-   - "minor": everything else — wording, clarity, style, restructuring,
+   - "minor": everything else: wording, clarity, style, restructuring,
      extra cross-references, nice-to-have examples, mentioning a feature in
      more places. Docs being improvable is not the same as docs being out of
      date. When unsure between the two severities, choose "minor".
@@ -261,23 +293,27 @@ Unified diff:
 
 _UPDATE_PROMPT = """\
 You are updating the documentation in `docs/src/content/docs/` to close a
-fixed list of gaps left by a set of code changes. The project is "peppy" — an
+fixed list of gaps left by a set of code changes. The project is "peppy": an
 Astro Starlight documentation site paired with Rust crates under `crates/`.
 
-Gaps to close — implement exactly these, nothing else:
+Gaps to close (implement exactly these, nothing else):
 {changes}
 
 Your task:
 1. For each listed gap, Read the named doc file (and any closely related
    pages) and make the smallest edit that closes it. The diff below is the
-   source of truth for the facts — never state behaviour it does not show.
+   source of truth for the facts: never state behaviour it does not show.
 2. If on inspection the docs already cover a listed gap, skip it and edit
    nothing for it.
 3. Only touch files under `docs/src/content/docs/`. Do not reword,
    restructure, or "improve" prose that is still accurate, and do not modify
    `.astro` config, `package.json`, or anything outside `docs/`.
-4. Report one `results` entry per listed gap — its file, its change text,
-   and a status of "implemented" or "already_covered" — plus a short overall
+4. Never write an em-dash (U+2014): this documentation does not use one.
+   Reword with a comma, a colon, parentheses, or a separate sentence, and
+   never replace it with another dash (a hyphen, a double hyphen, or an
+   en-dash).
+5. Report one `results` entry per listed gap (its file, its change text,
+   and a status of "implemented" or "already_covered"), plus a short overall
    `summary`.
 
 Changed paths:
@@ -285,6 +321,17 @@ Changed paths:
 
 Unified diff:
 {diff}
+"""
+
+
+_REWORD_PROMPT = """\
+Documentation edits under `docs/` added the lines below, and each holds an
+em-dash (U+2014), which this documentation never uses. Reword every listed
+line so it holds none: use a comma, a colon, parentheses, or a separate
+sentence, and never replace it with another dash (a hyphen, a double hyphen, or
+an en-dash). Keep each line's meaning, and edit nothing but these lines.
+
+{lines}
 """
 
 
@@ -316,6 +363,10 @@ def _parse_check_response(payload: dict) -> CheckResult:
         if severity not in (SEVERITY_BLOCKING, SEVERITY_MINOR):
             raise ReleaseError(
                 f"claude verdict change entry has unknown severity: {item!r}"
+            )
+        if EM_DASH in change:
+            raise ReleaseError(
+                f"claude verdict change entry holds an em-dash: {item!r}"
             )
         changes.append(
             RequiredChange(file=file, change=change, severity=severity)
@@ -356,6 +407,104 @@ def _parse_update_response(payload: dict) -> UpdateResult:
     return UpdateResult(results=tuple(results), summary=summary)
 
 
+def _em_dash_lines(repo_root: Path) -> tuple[EmDashLine, ...]:
+    """Every line under ``docs/`` holding an em-dash, committed or not.
+
+    Untracked files count (the updater may write a new page); ignored and
+    binary files do not.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "grep",
+            "-z",
+            "-n",
+            "-I",
+            "--untracked",
+            "-F",
+            "-e",
+            EM_DASH,
+            "--",
+            DOCS_DIR,
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    # git grep exits 1 when nothing matches.
+    if result.returncode == 1 and not result.stderr.strip():
+        return ()
+    if result.returncode != 0:
+        raise ReleaseError(
+            f"git grep for em-dashes under '{DOCS_DIR}/' failed: "
+            f"{result.stderr.strip()}"
+        )
+    lines: list[EmDashLine] = []
+    for record in result.stdout.splitlines():
+        file, line, text = record.split("\0", 2)
+        lines.append(EmDashLine(file=file, line=int(line), text=text.strip()))
+    return tuple(lines)
+
+
+def _added_em_dash_lines(
+    before: tuple[EmDashLine, ...], repo_root: Path
+) -> tuple[EmDashLine, ...]:
+    """The em-dash lines under ``docs/`` that were not there *before*.
+
+    Lines are matched by file and text, not number, so an edit that only moves
+    an existing line never counts it as added.
+    """
+    existing = Counter((line.file, line.text) for line in before)
+    added: list[EmDashLine] = []
+    for line in _em_dash_lines(repo_root):
+        key = (line.file, line.text)
+        if existing[key]:
+            existing[key] -= 1
+            continue
+        added.append(line)
+    return tuple(added)
+
+
+def _render_em_dash_lines(lines: tuple[EmDashLine, ...]) -> str:
+    return "\n".join(
+        f"- `{line.file}` line {line.line}: {line.text}" for line in lines
+    )
+
+
+def _reword_added_em_dashes(
+    before: tuple[EmDashLine, ...], repo_root: Path
+) -> None:
+    """Remove the em-dashes an edit added under ``docs/``, or stop.
+
+    The update prompt already forbids them; this is what guarantees none
+    reaches a pull request. Claude gets one pass at rewording the lines, and
+    any it leaves stop the release with the lines named.
+    """
+    added = _added_em_dash_lines(before, repo_root)
+    if not added:
+        return
+    console.print(
+        f"[yellow]The docs update added {len(added)} line(s) holding an "
+        f"em-dash; asking Claude to reword them...[/yellow]"
+    )
+    run_claude(
+        _REWORD_PROMPT.format(lines=_render_em_dash_lines(added)),
+        allowed_tools="Read Edit",
+        permission_mode="acceptEdits",
+        cwd=repo_root,
+        json_schema=_REWORD_SCHEMA,
+        tools="Read Edit",
+    )
+    remaining = _added_em_dash_lines(before, repo_root)
+    if remaining:
+        raise ReleaseError(
+            f"the docs update still adds an em-dash after rewording, and the "
+            f"docs never use one:\n{_render_em_dash_lines(remaining)}\n"
+            f"The edits are left under '{DOCS_DIR}/'; reword those lines by hand."
+        )
+
+
 def check_docs(base: str, head: str) -> CheckResult:
     """Check whether ``docs/`` reflects code changes between base and head."""
     repo_root = get_repo_root()
@@ -387,11 +536,12 @@ def update_docs(
 
     The change list scopes the edits: the updater implements those gaps and
     nothing else, so the resulting diff is derived from the verdict rather
-    than from a free-form re-audit of the docs.
+    than from a free-form re-audit of the docs. The edits add no em-dash.
     """
     if not changes:
         raise ReleaseError("update_docs called with no changes to implement")
     repo_root = get_repo_root()
+    em_dashes_before = _em_dash_lines(repo_root)
     diff, paths = get_code_diff(base, head, repo_root)
     prompt = _UPDATE_PROMPT.format(
         changes="\n".join(f"- `{c.file}`: {c.change}" for c in changes),
@@ -406,7 +556,9 @@ def update_docs(
         json_schema=_UPDATE_SCHEMA,
         tools="Read Edit Write Grep Glob",
     )
-    return _parse_update_response(payload)
+    result = _parse_update_response(payload)
+    _reword_added_em_dashes(em_dashes_before, repo_root)
+    return result
 
 
 def print_minor_changes(minor: tuple[RequiredChange, ...]) -> None:
@@ -437,7 +589,7 @@ def _run_check() -> None:
     if not result.blocking:
         console.print("[green]docs are up to date[/green]")
         return
-    console.print("[red]docs are out of date — blocking changes:[/red]")
+    console.print("[red]docs are out of date, blocking changes:[/red]")
     for change in result.blocking:
         console.print(f"  [bold]{change.file}[/bold]: {change.change}")
     sys.exit(1)
@@ -450,7 +602,7 @@ def _run_update() -> None:
     check = check_docs(args.base, args.head)
     print_minor_changes(check.minor)
     if not check.blocking:
-        console.print("[green]docs are up to date — nothing to update[/green]")
+        console.print("[green]docs are up to date, nothing to update[/green]")
         return
     update = update_docs(args.base, args.head, check.blocking)
     for outcome in update.results:

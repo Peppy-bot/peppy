@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -12,12 +15,18 @@ import pytest
 from functions.claude import CLAUDE_EFFORT, CLAUDE_MODEL
 from functions.cli import ReleaseError
 from functions.docs import (
+    _CHECK_PROMPT,
     _CHECK_SCHEMA,
+    _REWORD_PROMPT,
+    _UPDATE_PROMPT,
     _UPDATE_SCHEMA,
+    EM_DASH,
     CheckResult,
+    EmDashLine,
     RequiredChange,
     UpdateOutcome,
     UpdateResult,
+    _em_dash_lines,
     _is_code_path,
     _parse_check_response,
     _parse_update_response,
@@ -186,6 +195,23 @@ def test_check_schema_pins_required_fields_and_severity_enum() -> None:
     assert item["properties"]["severity"]["enum"] == ["blocking", "minor"]
 
 
+def test_check_schema_forbids_an_em_dash_in_a_gap_description() -> None:
+    # The description is quoted in the docs pull request body and handed to
+    # the updater as its instruction, so the CLI must reject an em-dash in it.
+    item = _CHECK_SCHEMA["properties"]["required_changes"]["items"]
+    pattern = item["properties"]["change"]["pattern"]
+    assert re.fullmatch(pattern, "add the flag, then its default")
+    assert re.fullmatch(pattern, f"add the flag {EM_DASH} then its default") is None
+
+
+@pytest.mark.parametrize(
+    "prompt", [_CHECK_PROMPT, _UPDATE_PROMPT, _REWORD_PROMPT]
+)
+def test_prompts_hold_no_em_dash(prompt: str) -> None:
+    # Claude mirrors the style of what it reads.
+    assert EM_DASH not in prompt
+
+
 def test_update_schema_pins_required_fields_and_status_enum() -> None:
     assert _UPDATE_SCHEMA["required"] == ["results", "summary"]
     item = _UPDATE_SCHEMA["properties"]["results"]["items"]
@@ -269,6 +295,20 @@ def test_parse_check_response_change_entry_missing_fields() -> None:
         )
 
 
+def test_parse_check_response_rejects_an_em_dash_in_a_change() -> None:
+    payload = {
+        "required_changes": [
+            {
+                "file": "docs/x.mdx",
+                "change": f"add the flag {EM_DASH} and its default",
+                "severity": "blocking",
+            }
+        ]
+    }
+    with pytest.raises(ReleaseError, match="em-dash"):
+        _parse_check_response(payload)
+
+
 def test_parse_check_response_unknown_severity() -> None:
     with pytest.raises(ReleaseError, match="unknown severity"):
         _parse_check_response(
@@ -337,10 +377,17 @@ def _mock_subprocess_run_for_claude(
     """Build a MagicMock replacement for subprocess.run.
 
     Returns the provided object as the envelope's structured output for
-    claude calls; git calls are not expected (get_code_diff is patched).
+    claude calls. get_code_diff is patched, so the only git call is the
+    em-dash scan of ``docs/``, which finds nothing.
     """
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["git", "grep"]:
+            mock = MagicMock()
+            mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = ""
+            return mock
         if cmd and cmd[0] == "claude":
             if capture is not None:
                 capture["cmd"] = cmd
@@ -550,3 +597,188 @@ def test_update_docs_pins_model_and_effort(tmp_path: Path) -> None:
     )
     assert _flag_value(cmd, "--model") == CLAUDE_MODEL
     assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
+
+
+# --- em-dashes added under docs/ (real git, mocked claude) ---
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _docs_repo(tmp_path: Path) -> Path:
+    """A git repository whose committed page already holds one em-dash line."""
+    repo = tmp_path / "repo"
+    page = repo / "docs" / "src" / "content" / "docs" / "page.mdx"
+    page.parent.mkdir(parents=True)
+    page.write_text(f"# Page\n\nAn old line {EM_DASH} kept as is.\n")
+    (repo / ".gitignore").write_text("docs/node_modules/\n")
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+_PAGE = "docs/src/content/docs/page.mdx"
+
+_REAL_RUN = subprocess.run
+
+
+def _claude_edits(
+    repo: Path,
+    edits: list[Callable[[Path], None]],
+    prompts: list[str],
+) -> MagicMock:
+    """Answer each claude call by applying the next of *edits* to *repo*.
+
+    Every other command runs for real, so the em-dash scan reads the edits
+    from disk. Each prompt is recorded in *prompts*.
+    """
+
+    def _run(cmd: list[str], *args: object, **kwargs: object) -> Any:
+        if cmd[0] != "claude":
+            return _REAL_RUN(cmd, *args, **kwargs)
+        prompts.append(str(kwargs.get("input")))
+        edits.pop(0)(repo)
+        # Answers both the update report and the rewording report: the
+        # rewording caller reads nothing from it.
+        structured = {"results": [], "summary": "done"}
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = json.dumps(
+            {"type": "result", "result": "", "structured_output": structured}
+        )
+        mock.stderr = ""
+        return mock
+
+    return MagicMock(side_effect=_run)
+
+
+def _append(relative: str, text: str) -> Callable[[Path], None]:
+    def _edit(repo: Path) -> None:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(text)
+
+    return _edit
+
+
+def _replace(relative: str, old: str, new: str) -> Callable[[Path], None]:
+    def _edit(repo: Path) -> None:
+        path = repo / relative
+        path.write_text(path.read_text().replace(old, new))
+
+    return _edit
+
+
+def _update(repo: Path, edits: list[Callable[[Path], None]], prompts: list[str]):
+    with patch("functions.docs.get_repo_root", return_value=repo), \
+         patch(
+             "functions.docs.get_code_diff",
+             return_value=("diff", ["crates/foo.rs"]),
+         ), \
+         patch("subprocess.run", _claude_edits(repo, edits, prompts)):
+        return update_docs("BASE", "HEAD", (_blocking(),))
+
+
+def test_em_dash_lines_cover_tracked_and_untracked_docs_only(
+    tmp_path: Path,
+) -> None:
+    repo = _docs_repo(tmp_path)
+    (repo / "docs" / "new.mdx").write_text(f"plain\nnew {EM_DASH} line\n")
+    ignored = repo / "docs" / "node_modules" / "dep.js"
+    ignored.parent.mkdir()
+    ignored.write_text(f"// ignored {EM_DASH} line\n")
+    (repo / "docs" / "image.bin").write_bytes(
+        b"\x00binary " + EM_DASH.encode() + b"\n"
+    )
+    (repo / "README.md").write_text(f"outside {EM_DASH} docs\n")
+
+    assert set(_em_dash_lines(repo)) == {
+        EmDashLine(file="docs/new.mdx", line=2, text=f"new {EM_DASH} line"),
+        EmDashLine(file=_PAGE, line=3, text=f"An old line {EM_DASH} kept as is."),
+    }
+
+
+def test_em_dash_lines_is_empty_without_a_match(tmp_path: Path) -> None:
+    repo = _docs_repo(tmp_path)
+    (repo / _PAGE).write_text("# Page\n")
+    assert _em_dash_lines(repo) == ()
+
+
+def test_update_docs_without_an_added_em_dash_asks_claude_once(
+    tmp_path: Path,
+) -> None:
+    repo = _docs_repo(tmp_path)
+    prompts: list[str] = []
+    result = _update(repo, [_append(_PAGE, "A new line, no dash.\n")], prompts)
+    assert result.summary == "done"
+    assert len(prompts) == 1
+
+
+def test_update_docs_rewords_only_the_em_dashes_it_added(tmp_path: Path) -> None:
+    repo = _docs_repo(tmp_path)
+    prompts: list[str] = []
+    added = f"The copy never starts {EM_DASH} loosen a constraint."
+    _update(
+        repo,
+        [
+            _append(_PAGE, f"{added}\n"),
+            _replace(_PAGE, added, "The copy never starts: loosen a constraint."),
+        ],
+        prompts,
+    )
+
+    assert len(prompts) == 2
+    reword = prompts[1]
+    assert f"- `{_PAGE}` line 4: {added}" in reword
+    # The committed em-dash is not the update's to reword.
+    assert "An old line" not in reword
+    assert "The copy never starts: loosen a constraint." in (repo / _PAGE).read_text()
+
+
+def test_update_docs_does_not_count_a_moved_em_dash_line_as_added(
+    tmp_path: Path,
+) -> None:
+    repo = _docs_repo(tmp_path)
+    prompts: list[str] = []
+    old = f"An old line {EM_DASH} kept as is."
+    _update(
+        repo,
+        [_replace(_PAGE, old, f"A new first line.\n\n{old}")],
+        prompts,
+    )
+    assert len(prompts) == 1
+
+
+def test_update_docs_catches_an_em_dash_in_a_new_page(tmp_path: Path) -> None:
+    repo = _docs_repo(tmp_path)
+    prompts: list[str] = []
+    new_page = "docs/src/content/docs/new.mdx"
+    with pytest.raises(ReleaseError, match="em-dash") as raised:
+        _update(
+            repo,
+            [
+                _append(new_page, f"# New {EM_DASH} page\n"),
+                lambda _repo: None,
+            ],
+            prompts,
+        )
+    assert len(prompts) == 2
+    assert f"- `{new_page}` line 1: # New {EM_DASH} page" in prompts[1]
+    assert f"`{new_page}` line 1" in str(raised.value)
