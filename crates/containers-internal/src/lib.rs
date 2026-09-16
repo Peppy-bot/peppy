@@ -9,7 +9,7 @@ mod error;
 mod mount_source;
 
 pub use apptainer::Apptainer;
-pub use apptainer::CacheUsageProbe;
+pub use apptainer::{BuildActivity, BuildActivityProbe};
 #[cfg(target_os = "linux")]
 pub use apptainer::{SetupStatus, check_setup_status};
 pub use error::{Error, Result};

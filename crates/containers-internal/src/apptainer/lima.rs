@@ -176,6 +176,43 @@ pub(crate) fn lima_terminate_pgid_argv(pgid_file: &Path) -> Vec<String> {
     ]
 }
 
+/// Guest-side argv (after the `limactl shell ... --` separator) that reports
+/// what a running build has done so far, on two lines: the byte size of the
+/// guest apptainer cache (resolved with the same override-then-default rule as
+/// the host probe, so the two spellings cannot fork), then the CPU time in
+/// milliseconds of the process group recorded at `pgid_file` by
+/// [`lima_guest_pgid_argv`]: every member's user and system time plus that of
+/// the children it reaped, summed off `/proc/<pid>/stat` and converted with
+/// the guest's `CLK_TCK`. The `sh -c` script is a fixed constant and the pgid
+/// file arrives as `$1`, so it needs no shell escaping; `None` passes an empty
+/// path, which yields no CPU reading. A missing cache dir, a missing pgid file
+/// (the build has not started, or is over) and a process that exits mid-scan
+/// each read as 0 rather than failing the sample.
+pub(crate) fn lima_guest_activity_argv(pgid_file: Option<&Path>) -> Vec<String> {
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        GUEST_ACTIVITY_SCRIPT.to_string(),
+        "sh".to_string(),
+        pgid_file.map_or_else(String::new, |file| file.display().to_string()),
+    ]
+}
+
+/// The script behind [`lima_guest_activity_argv`]. The stat files are read
+/// one by one in the shell and piped to awk rather than named as its inputs:
+/// an input file that vanished mid-scan would stop mawk, the guest's awk, at
+/// the first one. The command name in each line sits in parentheses and may
+/// hold spaces and parentheses of its own, so the fields are counted from the
+/// last closing parenthesis: the process group is the third from there, the
+/// four CPU counters the twelfth to fifteenth (`proc_pid_stat(5)`).
+pub(crate) const GUEST_ACTIVITY_SCRIPT: &str = r#"printf '%s\n' "$(du -sb "${APPTAINER_CACHEDIR:-$HOME/.apptainer/cache}" 2>/dev/null | cut -f1)"
+pgid="$(cat "$1" 2>/dev/null)"
+hz="$(getconf CLK_TCK 2>/dev/null)"
+for f in /proc/[0-9]*/stat; do read -r line < "$f" 2>/dev/null && printf '%s\n' "$line"; done |
+awk -v pgid="$pgid" -v hz="${hz:-100}" '
+    { sub(/^[0-9]+ \(.*\) /, ""); if (pgid != "" && $3 == pgid) ticks += $12 + $13 + $14 + $15 }
+    END { printf "%d\n", ticks * 1000 / hz }'"#;
+
 /// Build a `limactl shell <instance>` command pre-configured with LIMA_HOME,
 /// stopping before the `--` separator so callers can inject `limactl`-level flags
 /// (e.g. `lima_shell_extra_args`) between the instance and the guest command.
