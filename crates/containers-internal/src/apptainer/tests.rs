@@ -1,12 +1,13 @@
 use super::activity::{
-    BuildActivity, BuildActivityProbe, parse_guest_activity, parse_ps_cputime,
-    sum_ps_process_group_cpu_time,
+    BuildActivity, BuildActivityProbe, ProcessCpu, build_cpu_time, parse_guest_activity,
+    parse_ps_cputime, parse_ps_process_table,
 };
 use super::facade::{Apptainer, Backend, is_uri, prepare_scratch_dir};
 #[cfg(target_os = "linux")]
 use super::facade::{apparmor_profile_ref, check_setup_status, shell_escape_single_quoted};
 use crate::error::Error;
 use std::fs;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -2177,47 +2178,79 @@ fn build_activity_probe_counts_a_symlink_itself_not_its_target() {
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn parse_process_stat_counts_the_fields_from_the_last_parenthesis() {
-    use super::activity::{ProcessStat, parse_process_stat};
+    use super::activity::{ProcessCpu, parse_process_stat};
 
     // A command name holding spaces and parentheses of its own, as `/proc`
     // renders a process named "my (odd) worker".
     let line = "4242 (my (odd) worker) S 1 4200 4200 0 -1 4194304 110 0 0 0 7 3 2 1 \
                 20 0 1 0 12345 6789 100 18446744073709551615";
     assert_eq!(
-        parse_process_stat(line),
-        Some(ProcessStat {
+        parse_process_stat(line, TICKS_PER_SECOND),
+        Some(ProcessCpu {
+            pid: 4242,
+            parent: 1,
             process_group: 4200,
-            cpu_ticks: 7 + 3 + 2 + 1,
+            cpu_time: Duration::from_millis((7 + 3 + 2 + 1) * 10),
         })
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn parse_process_stat_rejects_a_line_missing_a_counter() {
+fn parse_process_stat_converts_ticks_at_the_given_rate() {
+    use super::activity::parse_process_stat;
+
+    let line = "7 (worker) R 1 7 7 0 -1 0 0 0 0 0 200 50 0 0";
+    let at = |hz| {
+        parse_process_stat(line, NonZeroU64::new(hz).expect("nonzero"))
+            .expect("the line parses")
+            .cpu_time
+    };
+    assert_eq!(at(100), Duration::from_millis(2_500));
+    assert_eq!(at(250), Duration::from_millis(1_000));
+}
+
+#[test]
+fn parse_process_stat_rejects_a_line_missing_a_field() {
     use super::activity::parse_process_stat;
 
     assert_eq!(
-        parse_process_stat("4242 (short) S 1 4200 4200 0 -1 4194304 110 0 0 0 7 3 2"),
+        parse_process_stat(
+            "4242 (short) S 1 4200 4200 0 -1 4194304 110 0 0 0 7 3 2",
+            TICKS_PER_SECOND
+        ),
+        None,
+        "a missing counter"
+    );
+    assert_eq!(
+        parse_process_stat("no parenthesis at all", TICKS_PER_SECOND),
         None
     );
-    assert_eq!(parse_process_stat("no parenthesis at all"), None);
+    // A command name holding a newline splits its line in two; neither half
+    // reads as a process.
+    assert_eq!(parse_process_stat("4242 (two", TICKS_PER_SECOND), None);
+    assert_eq!(
+        parse_process_stat(
+            "lines) S 1 4200 4200 0 -1 4194304 110 0 0 0 7 3 2 1",
+            TICKS_PER_SECOND
+        ),
+        None
+    );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn parse_process_stat_counts_a_negative_reaped_counter_as_zero() {
-    use super::activity::{ProcessStat, parse_process_stat};
+    use super::activity::{ProcessCpu, parse_process_stat};
 
     let line = "1 (init) S 0 1 1 0 -1 4194560 0 0 0 0 5 5 -1 -1";
     assert_eq!(
-        parse_process_stat(line),
-        Some(ProcessStat {
+        parse_process_stat(line, TICKS_PER_SECOND),
+        Some(ProcessCpu {
+            pid: 1,
+            parent: 0,
             process_group: 1,
-            cpu_ticks: 10,
+            cpu_time: Duration::from_millis(100),
         })
     );
 }
@@ -2228,8 +2261,62 @@ fn parse_process_stat_reads_the_kernels_own_rendering() {
     use super::activity::parse_process_stat;
 
     let own = fs::read_to_string("/proc/self/stat").expect("read this process's stat");
-    let stat = parse_process_stat(&own).expect("the kernel's format parses");
+    let stat = parse_process_stat(&own, TICKS_PER_SECOND).expect("the kernel's format parses");
+    assert_eq!(stat.pid, std::process::id());
+    assert_eq!(stat.parent, std::os::unix::process::parent_id());
     assert!(stat.process_group > 0, "got {stat:?}");
+}
+
+/// The rate the fixture stat lines are read at: 10 ms per tick.
+const TICKS_PER_SECOND: NonZeroU64 = NonZeroU64::new(100).unwrap();
+
+fn process(pid: u32, parent: u32, process_group: u32, cpu_secs: u64) -> ProcessCpu {
+    ProcessCpu {
+        pid,
+        parent,
+        process_group,
+        cpu_time: Duration::from_secs(cpu_secs),
+    }
+}
+
+#[test]
+fn build_cpu_time_counts_the_leader_its_group_and_its_descendants() {
+    let table = [
+        // The build: its leader, a `%post` step in its group, and a step
+        // orphaned to init that stays in the group.
+        process(100, 1, 100, 1),
+        process(101, 100, 100, 2),
+        process(104, 1, 100, 4),
+        // A daemon the step started in a session of its own, adopted by the
+        // leader, and the compiler it runs.
+        process(102, 100, 102, 8),
+        process(103, 102, 102, 16),
+        // Unrelated processes, one of them a child of an unrelated group.
+        process(200, 1, 200, 32),
+        process(201, 200, 200, 64),
+    ];
+    assert_eq!(
+        build_cpu_time(&table, 100),
+        Duration::from_secs(1 + 2 + 4 + 8 + 16)
+    );
+    assert_eq!(build_cpu_time(&table, 200), Duration::from_secs(32 + 64));
+    assert_eq!(
+        build_cpu_time(&table, 999),
+        Duration::ZERO,
+        "a leader no process belongs to reads as no CPU time"
+    );
+}
+
+#[test]
+fn build_cpu_time_walks_a_parent_cycle_once() {
+    // A snapshot read while pids are reused can link a process back to its
+    // own descendant.
+    let table = [
+        process(10, 12, 10, 1),
+        process(11, 10, 11, 2),
+        process(12, 11, 12, 4),
+    ];
+    assert_eq!(build_cpu_time(&table, 10), Duration::from_secs(1 + 2 + 4));
 }
 
 /// A shell spinning in a process group of its own, the way every build is
@@ -2246,6 +2333,69 @@ fn spawn_busy_process_group() -> std::process::Child {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn a busy shell")
+}
+
+/// A build whose CPU is burned outside its process group: a shell leading a
+/// group of its own, the way every build is spawned, starts a spinning shell
+/// through `setsid`, in a session and group of its own, the way a Rust
+/// build's `RUSTC_WRAPPER` starts the sccache server. `setsid -f -w` forks
+/// and waits, so the spinning shell stays a descendant of the leader.
+#[cfg(target_os = "linux")]
+struct BuildWithEscapedBusyProcess {
+    leader: std::process::Child,
+    escaped_pid: u32,
+}
+
+#[cfg(target_os = "linux")]
+impl BuildWithEscapedBusyProcess {
+    fn spawn() -> Self {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+
+        let mut leader = Command::new("sh")
+            .args([
+                "-c",
+                "setsid -f -w sh -c 'echo $$; while :; do :; done' & wait",
+            ])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn the build leader");
+        let mut pid_line = String::new();
+        BufReader::new(leader.stdout.take().expect("piped stdout"))
+            .read_line(&mut pid_line)
+            .expect("read the escaped process's pid");
+        let escaped_pid = pid_line
+            .trim()
+            .parse()
+            .expect("the escaped process prints its pid");
+        let build = Self {
+            leader,
+            escaped_pid,
+        };
+        let escaped = fs::read_to_string(format!("/proc/{escaped_pid}/stat"))
+            .ok()
+            .and_then(|stat| super::activity::parse_process_stat(&stat, TICKS_PER_SECOND));
+        if !escaped.is_some_and(|escaped| escaped.process_group != build.leader_pid()) {
+            build.stop();
+            panic!("the spinning shell must run outside the leader's group, got {escaped:?}");
+        }
+        build
+    }
+
+    fn leader_pid(&self) -> u32 {
+        self.leader.id()
+    }
+
+    fn stop(mut self) {
+        let _ = Command::new("kill")
+            .args(["-KILL", &self.escaped_pid.to_string()])
+            .status();
+        let _ = self.leader.kill();
+        let _ = self.leader.wait();
+    }
 }
 
 /// Re-reads `sample` until it shows CPU time. The loop burns CPU from its
@@ -2278,9 +2428,22 @@ fn build_activity_probe_sees_the_cpu_a_busy_process_group_burns() {
         "the busy group never showed CPU time"
     );
 
-    // A group no process belongs to reads as no CPU time at all.
+    // A leader no process belongs to reads as no CPU time at all.
     let absent = BuildActivityProbe::host(Vec::new(), Some(u32::MAX));
     assert_eq!(absent.sample().cpu_time, Duration::ZERO);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn build_activity_probe_sees_the_cpu_a_process_that_left_the_group_burns() {
+    let build = BuildWithEscapedBusyProcess::spawn();
+    let probe = BuildActivityProbe::host(Vec::new(), Some(build.leader_pid()));
+    let observed = wait_for_cpu_time(|| probe.sample().cpu_time);
+    build.stop();
+    assert!(
+        observed > Duration::ZERO,
+        "the descendant outside the group never showed CPU time"
+    );
 }
 
 #[test]
@@ -2310,54 +2473,114 @@ fn parse_ps_cputime_reads_bsd_and_procps_clocks() {
 }
 
 #[test]
-fn sum_ps_process_group_cpu_time_sums_the_groups_lines() {
-    let listing = "  100   0:01.50\n  200   0:00.10\n  100   -\n  100   0:02.00\nheader junk\n";
+fn parse_ps_process_table_reads_pid_parent_group_and_time() {
+    let listing = "  100     1   100   0:01.50\n  \
+                   101   100   100   0:00.10\n  \
+                   102   100   100   -\n\
+                   header junk\n  \
+                   103   101   103   00:00:02\n";
     assert_eq!(
-        sum_ps_process_group_cpu_time(listing, 100),
-        Duration::from_millis(3_500)
+        parse_ps_process_table(listing),
+        [
+            ProcessCpu {
+                pid: 100,
+                parent: 1,
+                process_group: 100,
+                cpu_time: Duration::from_millis(1_500),
+            },
+            ProcessCpu {
+                pid: 101,
+                parent: 100,
+                process_group: 100,
+                cpu_time: Duration::from_millis(100),
+            },
+            ProcessCpu {
+                pid: 103,
+                parent: 101,
+                process_group: 103,
+                cpu_time: Duration::from_secs(2),
+            },
+        ]
     );
-    assert_eq!(
-        sum_ps_process_group_cpu_time(listing, 200),
-        Duration::from_millis(100)
-    );
-    assert_eq!(sum_ps_process_group_cpu_time(listing, 300), Duration::ZERO);
 }
 
 /// The `ps` listing is read on macOS in production and on Linux here, where
 /// procps renders the same columns in its own clock format.
 #[cfg(unix)]
 #[test]
-fn ps_process_group_cpu_time_sees_the_cpu_a_busy_process_group_burns() {
-    use super::activity::ps_process_group_cpu_time;
+fn ps_build_cpu_time_sees_the_cpu_a_busy_process_group_burns() {
+    use super::activity::ps_build_cpu_time;
 
     let mut busy = spawn_busy_process_group();
-    let observed = wait_for_cpu_time(|| ps_process_group_cpu_time(busy.id()));
+    let observed = wait_for_cpu_time(|| ps_build_cpu_time(busy.id()));
     let _ = busy.kill();
     let _ = busy.wait();
     assert!(
         observed > Duration::ZERO,
         "the busy group never showed CPU time"
     );
-    assert_eq!(ps_process_group_cpu_time(u32::MAX), Duration::ZERO);
+    assert_eq!(ps_build_cpu_time(u32::MAX), Duration::ZERO);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ps_build_cpu_time_sees_the_cpu_a_process_that_left_the_group_burns() {
+    use super::activity::ps_build_cpu_time;
+
+    let build = BuildWithEscapedBusyProcess::spawn();
+    let observed = wait_for_cpu_time(|| ps_build_cpu_time(build.leader_pid()));
+    build.stop();
+    assert!(
+        observed > Duration::ZERO,
+        "the descendant outside the group never showed CPU time"
+    );
 }
 
 #[test]
-fn parse_guest_activity_reads_bytes_then_cpu_millis() {
+fn parse_guest_activity_reads_the_cache_size_and_the_builds_cpu_time() {
+    // The cache size, the guest's tick rate, the leader, then the guest's
+    // stat lines: the build's leader, a compiler it runs in a group of its
+    // own, and an unrelated process.
+    let stat_lines = "40 (sh) S 1 40 40 0 -1 0 0 0 0 0 1 1 0 0\n\
+                      41 (rustc) R 40 41 41 0 -1 0 0 0 0 0 150 50 0 0\n\
+                      90 (sshd) S 1 90 90 0 -1 0 0 0 0 0 500 500 0 0\n";
     assert_eq!(
-        parse_guest_activity("2048\n1500\n"),
+        parse_guest_activity(&format!("2048\n100\n40\n{stat_lines}")),
         BuildActivity {
             bytes_on_disk: 2048,
-            cpu_time: Duration::from_millis(1500),
+            cpu_time: Duration::from_millis(2_020),
         }
     );
-    // A missing cache dir prints an empty first line; the CPU line still counts.
+    // The guest's own tick rate converts the counters.
     assert_eq!(
-        parse_guest_activity("\n1500\n"),
+        parse_guest_activity(&format!("2048\n250\n40\n{stat_lines}")).cpu_time,
+        Duration::from_millis(808)
+    );
+    // An unknown tick rate reads at the default.
+    assert_eq!(
+        parse_guest_activity(&format!("2048\n\n40\n{stat_lines}")).cpu_time,
+        Duration::from_millis(2_020)
+    );
+    // A missing cache dir prints an empty first line; the CPU still counts.
+    assert_eq!(
+        parse_guest_activity(&format!("\n100\n40\n{stat_lines}")),
         BuildActivity {
             bytes_on_disk: 0,
-            cpu_time: Duration::from_millis(1500),
+            cpu_time: Duration::from_millis(2_020),
         }
     );
+    // No leader recorded (the build has not started, or is over), or a zero
+    // one, reads as no CPU time; the cache is still measured.
+    for leader in ["", "0"] {
+        assert_eq!(
+            parse_guest_activity(&format!("2048\n100\n{leader}\n{stat_lines}")),
+            BuildActivity {
+                bytes_on_disk: 2048,
+                cpu_time: Duration::ZERO,
+            },
+            "leader line {leader:?}"
+        );
+    }
     // Garbage and nothing at all both read as zero.
     assert_eq!(
         parse_guest_activity("du: cannot read\n"),
@@ -2390,18 +2613,18 @@ fn lima_guest_activity_argv_passes_the_pgid_file_as_the_script_parameter() {
 }
 
 /// The guest activity script is plain POSIX shell over `/proc`, `du` and
-/// `awk`, so a Linux host runs it exactly as the Lima guest does.
+/// `getconf`, so a Linux host runs it exactly as the Lima guest does.
 #[cfg(target_os = "linux")]
 #[test]
-fn guest_activity_script_reports_the_cache_size_and_the_groups_cpu_time() {
+fn guest_activity_script_reports_the_cache_size_and_the_builds_cpu_time() {
     use super::lima::lima_guest_activity_argv;
 
     let cache = TempDir::new().expect("tempdir");
     fs::write(cache.path().join("blob"), vec![0u8; 4096]).expect("write");
     let pgids = TempDir::new().expect("tempdir");
     let pgid_file = pgids.path().join("build.pgid");
-    let mut busy = spawn_busy_process_group();
-    fs::write(&pgid_file, busy.id().to_string()).expect("write the pgid file");
+    let build = BuildWithEscapedBusyProcess::spawn();
+    fs::write(&pgid_file, build.leader_pid().to_string()).expect("write the pgid file");
 
     let run_script = |pgid_file: Option<&Path>| {
         let argv = lima_guest_activity_argv(pgid_file);
@@ -2424,8 +2647,7 @@ fn guest_activity_script_reports_the_cache_size_and_the_groups_cpu_time() {
         reading = run_script(Some(&pgid_file));
         reading.cpu_time
     });
-    let _ = busy.kill();
-    let _ = busy.wait();
+    build.stop();
     assert!(
         reading.bytes_on_disk >= 4096,
         "`du -sb` must count the blob, got {}",
@@ -2433,10 +2655,10 @@ fn guest_activity_script_reports_the_cache_size_and_the_groups_cpu_time() {
     );
     assert!(
         observed > Duration::ZERO,
-        "the busy group never showed CPU time"
+        "the build's descendant outside its group never showed CPU time"
     );
 
-    // Without a pgid file the cache is still measured and the CPU line is 0.
+    // Without a pgid file the cache is still measured and the CPU is 0.
     let reading = run_script(None);
     assert!(
         reading.bytes_on_disk >= 4096,

@@ -177,17 +177,19 @@ pub(crate) fn lima_terminate_pgid_argv(pgid_file: &Path) -> Vec<String> {
 }
 
 /// Guest-side argv (after the `limactl shell ... --` separator) that reports
-/// what a running build has done so far, on two lines: the byte size of the
-/// guest apptainer cache (resolved with the same override-then-default rule as
-/// the host probe, so the two spellings cannot fork), then the CPU time in
-/// milliseconds of the process group recorded at `pgid_file` by
-/// [`lima_guest_pgid_argv`]: every member's user and system time plus that of
-/// the children it reaped, summed off `/proc/<pid>/stat` and converted with
-/// the guest's `CLK_TCK`. The `sh -c` script is a fixed constant and the pgid
-/// file arrives as `$1`, so it needs no shell escaping; `None` passes an empty
-/// path, which yields no CPU reading. A missing cache dir, a missing pgid file
-/// (the build has not started, or is over) and a process that exits mid-scan
-/// each read as 0 rather than failing the sample.
+/// what a running build has done so far for
+/// [`super::activity::parse_guest_activity`] to read. The script prints, one
+/// per line, the byte size of the guest apptainer cache (resolved with the
+/// same override-then-default rule as the host probe, so the two spellings
+/// cannot fork), the guest's `CLK_TCK` and the pid of the build's leader
+/// recorded at `pgid_file` by [`lima_guest_pgid_argv`], then every guest
+/// `/proc/<pid>/stat` line, which the host sums over the build's processes
+/// the same way it sums its own table. The `sh -c` script is a fixed constant
+/// and the pgid file arrives as `$1`, so it needs no shell escaping; `None`
+/// passes an empty path, which yields no leader and no stat lines. A missing
+/// cache dir, a missing pgid file (the build has not started, or is over) and
+/// a process that exits mid-scan each read as absent rather than failing the
+/// sample.
 pub(crate) fn lima_guest_activity_argv(pgid_file: Option<&Path>) -> Vec<String> {
     vec![
         "sh".to_string(),
@@ -199,19 +201,18 @@ pub(crate) fn lima_guest_activity_argv(pgid_file: Option<&Path>) -> Vec<String> 
 }
 
 /// The script behind [`lima_guest_activity_argv`]. The stat files are read
-/// one by one in the shell and piped to awk rather than named as its inputs:
-/// an input file that vanished mid-scan would stop mawk, the guest's awk, at
-/// the first one. The command name in each line sits in parentheses and may
-/// hold spaces and parentheses of its own, so the fields are counted from the
-/// last closing parenthesis: the process group is the third from there, the
-/// four CPU counters the twelfth to fifteenth (`proc_pid_stat(5)`).
+/// one by one in the shell: a glob expanded before the loop can name a
+/// process that exits before its turn, and its failed read is skipped. The
+/// script exits 0 explicitly, since the loop's status is that of its last
+/// read, which a vanished process fails.
 pub(crate) const GUEST_ACTIVITY_SCRIPT: &str = r#"printf '%s\n' "$(du -sb "${APPTAINER_CACHEDIR:-$HOME/.apptainer/cache}" 2>/dev/null | cut -f1)"
-pgid="$(cat "$1" 2>/dev/null)"
-hz="$(getconf CLK_TCK 2>/dev/null)"
-for f in /proc/[0-9]*/stat; do read -r line < "$f" 2>/dev/null && printf '%s\n' "$line"; done |
-awk -v pgid="$pgid" -v hz="${hz:-100}" '
-    { sub(/^[0-9]+ \(.*\) /, ""); if (pgid != "" && $3 == pgid) ticks += $12 + $13 + $14 + $15 }
-    END { printf "%d\n", ticks * 1000 / hz }'"#;
+printf '%s\n' "$(getconf CLK_TCK 2>/dev/null)"
+leader="$(cat "$1" 2>/dev/null)"
+printf '%s\n' "$leader"
+if [ -n "$leader" ]; then
+    for f in /proc/[0-9]*/stat; do read -r line < "$f" 2>/dev/null && printf '%s\n' "$line"; done
+fi
+exit 0"#;
 
 /// Build a `limactl shell <instance>` command pre-configured with LIMA_HOME,
 /// stopping before the `--` separator so callers can inject `limactl`-level flags
