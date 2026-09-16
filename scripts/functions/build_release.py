@@ -78,6 +78,7 @@ from .pending_upload import (
     record_pending_upload,
 )
 from .docs import (
+    DOCS_DIR,
     RequiredChange,
     check_docs,
     print_minor_changes,
@@ -117,10 +118,6 @@ from .repo import (
 GIT_REMOTE = "origin"
 RELEASE_BRANCH = "dev"
 ALIGNED_BRANCH = "main"
-
-# The directory the docs check owns end to end: it is regenerated wholesale and
-# committed on a branch of its own when the release finds it stale.
-DOCS_DIR = "docs"
 
 # Commands a fresh release needs on top of git: cargo and rustc build the
 # archives, claude runs the docs check and drafts the notes. Publishing

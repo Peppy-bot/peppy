@@ -5,14 +5,16 @@ name: Parallel release
 # Actions tab. Each archive builds natively on a runner of its own platform,
 # all three at once, so no runner has to start a VM:
 #
-#   prepare ────────────┐
-#   provision (x3) ─────┴──> build (x3, in parallel) ──> publish
+#   prepare ──> provision (x3, in parallel) ──> build (x3, in parallel) ──> publish
 #
 # The provision jobs build what every archive embeds but only one platform
 # builds natively: the peppylib bindings (macOS) and apptainer (one Linux
-# runner per architecture). The form collects every answer the release would
-# otherwise ask for, and the release notes Claude drafts are published as they
-# are, since nobody is there to review them; the prepare job prints them.
+# runner per architecture). They start only once prepare passes, so a release
+# that stops there (a docs pull request to merge first, a tag already taken,
+# `dev` moved on) never pays for their runners. The form collects every answer
+# the release would otherwise ask for, and the release notes Claude drafts are
+# published as they are, since nobody is there to review them; the prepare job
+# prints them.
 on:
   workflow_dispatch:
     inputs:
@@ -112,11 +114,10 @@ jobs:
           path: ${{ runner.temp }}/release-plan/
           retention-days: 1
 
-  # Runs alongside prepare: nothing here is published, and the builds wait for
-  # both. The same three runner types as the builds, each building what it
-  # builds natively.
+  # Waits for prepare, which stops a release that must not be built. The same
+  # three runner types as the builds, each building what it builds natively.
   provision:
-    if: github.ref == 'refs/heads/dev'
+    needs: prepare
     strategy:
       matrix:
         include:
