@@ -1,7 +1,8 @@
-//! Harness Config rendering for pairing-slot vacancy: an optional slot gets
-//! a `<link>_vacant` knob guarding only the peer-pin seeding (the mock still
-//! starts, its pinned subscription resolves the readiness barrier); a
-//! required slot gets none.
+//! Harness Config rendering per pairing-slot cardinality: a `zero_or_one`
+//! slot gets a `<link>_vacant` knob guarding only the peer-pin seeding (the
+//! mock still starts, its pinned subscription resolves the readiness
+//! barrier); a `one` slot gets none; a multi slot gets a member count and an
+//! explicit member list, one mock per member.
 
 use super::*;
 use crate::generator::testgen::{
@@ -9,7 +10,7 @@ use crate::generator::testgen::{
 };
 use config::node::{Cardinality, MessageFormat};
 
-fn registry_with_pairing(optional: bool) -> TestGenRegistry {
+fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
     let mut registry = TestGenRegistry::default();
     registry.record_node_identity("relay_node", "v1");
     registry.pairings.insert(
@@ -17,7 +18,7 @@ fn registry_with_pairing(optional: bool) -> TestGenRegistry {
         PairingLinkSpec {
             pairing_name: "joint_link".to_string(),
             pairing_tag: "v1".to_string(),
-            optional,
+            cardinality,
             node_emits: Vec::new(),
             node_consumes: Vec::new(),
         },
@@ -38,7 +39,7 @@ fn rendered_harness(registry: &TestGenRegistry) -> String {
 
 #[test]
 fn optional_pairing_slot_gets_a_vacant_knob_guarding_only_the_pin() {
-    let rendered = rendered_harness(&registry_with_pairing(true));
+    let rendered = rendered_harness(&registry_with_pairing(Cardinality::ZeroOrOne));
     assert_contains_all(
         &rendered,
         &[
@@ -109,8 +110,39 @@ fn every_harness_carries_the_daemon_clock_stand_in() {
 }
 
 #[test]
+fn multi_pairing_slot_gets_member_knobs_and_one_mock_per_member() {
+    let rendered = rendered_harness(&registry_with_pairing(Cardinality::ZeroOrMore));
+    assert_contains_all(
+        &rendered,
+        &[
+            "pub struct PeerMemberSpec",
+            "pub backbone_instances: usize",
+            "backbone_instances: 0",
+            "pub backbone_members: Vec<PeerMemberSpec>",
+            "backbone_members: Vec::new()",
+            "pub backbone: Vec<",
+            "Mock::start_as(",
+            "&member.instance_id,",
+            "for member in &backbone_member_specs",
+            "with_peer_pin_in_copy(",
+            "with_peer_pin(",
+        ],
+    );
+    assert!(
+        !rendered.contains("backbone_vacant"),
+        "a multi slot has no vacant boot; an empty member list is its empty state"
+    );
+
+    let floored = rendered_harness(&registry_with_pairing(Cardinality::OneOrMore));
+    assert!(
+        floored.contains("backbone_instances: 1"),
+        "a one_or_more slot starts one mock peer by default"
+    );
+}
+
+#[test]
 fn required_pairing_slot_has_no_vacancy_knob() {
-    let rendered = rendered_harness(&registry_with_pairing(false));
+    let rendered = rendered_harness(&registry_with_pairing(Cardinality::One));
     assert!(rendered.contains("with_peer_pin("));
     assert!(
         !rendered.contains("backbone_vacant"),

@@ -31,18 +31,24 @@ use config::node::Cardinality;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// One `PublisherReadiness(...)` entry's source lines: `link_id` only for
-/// pairing-slot topics (the mock's own subscription link).
-fn publisher_readiness_lines(target: &str, topic: &str, link_id: Option<&str>) -> Vec<String> {
+/// One `publisher_readiness.append(PublisherReadiness(...))` statement's
+/// source lines: `link_id` and the mock peer's identity only for
+/// pairing-slot topics (the node's slot and the peer it publishes to).
+fn publisher_readiness_lines(
+    target: &str,
+    topic: &str,
+    pairing: Option<(&str, &str)>,
+) -> Vec<String> {
     let mut lines = vec![
-        "peppylib.testing.PublisherReadiness(".to_string(),
+        "publisher_readiness.append(peppylib.testing.PublisherReadiness(".to_string(),
         format!("    target={target},"),
         format!("    topic={topic:?},"),
     ];
-    if let Some(link_id) = link_id {
+    if let Some((link_id, peer_expr)) = pairing {
         lines.push(format!("    link_id={link_id:?},"));
+        lines.push(format!("    peer={peer_expr},"));
     }
-    lines.push("),".to_string());
+    lines.push("))".to_string());
     lines
 }
 
@@ -867,47 +873,127 @@ fn render_harness(
             &alias,
         ));
         let local = format!("pair_{attr}");
-        mock_starts.push(format!(
-            "{local} = await {alias}.Mock.start(router, instance_id)"
-        ));
-        if spec.optional {
-            // The mock still starts when vacant: its pinned subscription is
-            // what resolves the publisher-readiness barrier, and an unpaired
-            // node's publishes on the slot are legal no-ops, so only the
-            // pin seeding is withheld.
-            let kwarg = format!("{attr}_vacant");
-            slot_kwargs.push(SlotKwarg {
-                name: kwarg.clone(),
-                default: "False".to_string(),
-                doc: format!(
-                    "{kwarg}: boot with the optional `{link_id}` pairing slot \
-                     unpaired (the peer pin is not seeded; the still-started \
-                     mock's subscriptions stay silent)."
-                ),
-            });
-            seeding.push(format!("if not {kwarg}:"));
-            seeding.push(format!(
-                "    standalone = standalone.with_peer_pin({link_id:?}, \
-                 {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
-            ));
-        } else {
-            seeding.push(format!(
-                "standalone = standalone.with_peer_pin({link_id:?}, {alias}.MOCK_CORE_NODE, \
-                 {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
-            ));
-        }
         // The mock subscribes to every topic the node emits on this slot;
-        // barrier on each so the node's first publish routes.
+        // barrier on each, addressed to the mock's identity, so the node's
+        // first publish routes.
         let pairing_target = target_python_expr(&TargetSpec::Pairing {
             name: spec.pairing_name.clone(),
             tag: spec.pairing_tag.clone(),
         });
-        for topic in &spec.node_emits {
-            publisher_readiness.push(publisher_readiness_lines(
-                &pairing_target,
-                &topic.name,
-                Some(link_id),
-            ));
+        let readiness_of = |peer_expr: &str| -> Vec<Vec<String>> {
+            spec.node_emits
+                .iter()
+                .map(|topic| {
+                    publisher_readiness_lines(
+                        &pairing_target,
+                        &topic.name,
+                        Some((link_id, peer_expr)),
+                    )
+                })
+                .collect()
+        };
+        match spec.cardinality {
+            Cardinality::One | Cardinality::ZeroOrOne => {
+                mock_starts.push(format!(
+                    "{local} = await {alias}.Mock.start(router, instance_id)"
+                ));
+                if spec.cardinality == Cardinality::ZeroOrOne {
+                    // The mock still starts when vacant: its pinned subscription is
+                    // what resolves the publisher-readiness barrier, and an unpaired
+                    // node's publishes on the slot are legal no-ops, so only the
+                    // pin seeding is withheld.
+                    let kwarg = format!("{attr}_vacant");
+                    slot_kwargs.push(SlotKwarg {
+                        name: kwarg.clone(),
+                        default: "False".to_string(),
+                        doc: format!(
+                            "{kwarg}: boot with the `zero_or_one` pairing slot `{link_id}` \
+                             unpaired (the peer pin is not seeded; the still-started \
+                             mock's subscriptions stay silent)."
+                        ),
+                    });
+                    seeding.push(format!("if not {kwarg}:"));
+                    seeding.push(format!(
+                        "    standalone = standalone.with_peer_pin({link_id:?}, \
+                         {alias}.MOCK_CORE_NODE, {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
+                    ));
+                } else {
+                    seeding.push(format!(
+                        "standalone = standalone.with_peer_pin({link_id:?}, {alias}.MOCK_CORE_NODE, \
+                         {alias}.MOCK_INSTANCE_ID, {alias}.PEER_LINK_ID)"
+                    ));
+                }
+                publisher_readiness.extend(readiness_of(&format!("{alias}.peer_info()")));
+            }
+            Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
+                let kwarg = format!("{attr}_instances");
+                let default_count: usize = match spec.cardinality {
+                    Cardinality::OneOrMore => 1,
+                    _ => 0,
+                };
+                slot_kwargs.push(SlotKwarg {
+                    name: kwarg.clone(),
+                    default: default_count.to_string(),
+                    doc: format!(
+                        "{kwarg}: how many mock peers to pair into the `{link_id}` \
+                         pairing slot, each under its own instance id and outside any \
+                         copy."
+                    ),
+                });
+                let members_kwarg = format!("{attr}_members");
+                slot_kwargs.push(SlotKwarg {
+                    name: members_kwarg.clone(),
+                    default: "None".to_string(),
+                    doc: format!(
+                        "{members_kwarg}: explicit mock peers for the `{link_id}` pairing \
+                         slot as a dict of instance id to the copy it belongs to (`None` \
+                         outside a copy), overriding `{kwarg}` when given. For nodes \
+                         that group pairs by copy or classify peers by instance name."
+                    ),
+                });
+                let members_local = format!("{local}_member_specs");
+                mock_starts.push(format!(
+                    "{members_local} = list({members_kwarg}.items()) if {members_kwarg} is \
+                     not None else [(f\"{{{alias}.MOCK_INSTANCE_ID}}-{{index}}\", None) for \
+                     index in range({kwarg})]"
+                ));
+                mock_starts.push(format!("{local} = []"));
+                mock_starts.push(format!(
+                    "for member_instance_id, _member_copy in {members_local}:"
+                ));
+                mock_starts.push(format!(
+                    "    {local}.append(await {alias}.Mock.start(router, instance_id, \
+                     member_instance_id))"
+                ));
+                seeding.push(format!(
+                    "for member_instance_id, member_copy in {members_local}:"
+                ));
+                seeding.push("    if member_copy is None:".to_string());
+                seeding.push(format!(
+                    "        standalone = standalone.with_peer_pin({link_id:?}, \
+                     {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.PEER_LINK_ID)"
+                ));
+                seeding.push("    else:".to_string());
+                seeding.push(format!(
+                    "        standalone = standalone.with_peer_pin_in_copy({link_id:?}, \
+                     {alias}.MOCK_CORE_NODE, member_instance_id, {alias}.PEER_LINK_ID, \
+                     member_copy)"
+                ));
+                let per_member =
+                    readiness_of(&format!("{alias}.peer_info_for(member_instance_id)"));
+                if !per_member.is_empty() {
+                    let mut block = vec![format!(
+                        "for member_instance_id, _member_copy in {members_local}:"
+                    )];
+                    block.extend(
+                        per_member
+                            .into_iter()
+                            .flatten()
+                            .map(|line| format!("    {line}")),
+                    );
+                    publisher_readiness.push(block);
+                }
+            }
         }
         pairing_attrs.push(attr);
     }
@@ -1267,15 +1353,9 @@ if parameters is not None:
     standalone = standalone.with_parameters(parameters)
 "#);
                 builder.lines(&seeding);
-                if publisher_readiness.is_empty() {
-                    builder.line("publisher_readiness = []");
-                } else {
-                    builder.block("publisher_readiness = [", |builder| {
-                        for entry in &publisher_readiness {
-                            builder.lines(entry);
-                        }
-                    });
-                    builder.line("]");
+                builder.line("publisher_readiness = []");
+                for entry in &publisher_readiness {
+                    builder.lines(entry);
                 }
                 builder.line("service_readiness = [clock.readiness()]");
                 builder.lines(&service_readiness);

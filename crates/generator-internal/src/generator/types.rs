@@ -116,11 +116,10 @@ pub struct PeerContext {
     pub link_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
-    /// Whether a deployment may run this slot with no peer
-    /// (`depends_on.pairings[].optional`; always false for observer slots,
-    /// whose vacancy is expressed through cardinality instead). The generated
-    /// test harness offers a vacant-boot knob only for optional slots.
-    pub optional: bool,
+    /// The slot's declared `cardinality`: how many pairs a participant slot
+    /// holds, or how many pairings an observer slot watches. It picks the
+    /// generated accessors and the harness knobs of the slot.
+    pub cardinality: Cardinality,
 }
 
 impl PeerContext {
@@ -381,6 +380,7 @@ pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> 
                 "has no absent case to answer.",
             ],
             api_note: None,
+            closing: OBSERVER_CLOSING_NOTE,
         },
         Cardinality::ZeroOrOne => AccessorDoc {
             summary: "The pairing this module's observer slot observes, if any.",
@@ -391,6 +391,7 @@ pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> 
                 "it, and `None` is the steady state wherever it wrote the slot vacant.",
             ],
             api_note: None,
+            closing: OBSERVER_CLOSING_NOTE,
         },
         Cardinality::OneOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
@@ -401,6 +402,7 @@ pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> 
                 "to it, so the set is never empty and",
             ],
             api_note: Some(language.never_empty_tail()),
+            closing: OBSERVER_CLOSING_NOTE,
         },
         Cardinality::ZeroOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
@@ -411,7 +413,51 @@ pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> 
                 "all, so the empty set is an expected steady state.",
             ],
             api_note: None,
+            closing: OBSERVER_CLOSING_NOTE,
         },
+    }
+}
+
+/// The note every observer accessor's doc ends on.
+const OBSERVER_CLOSING_NOTE: &[&str] = &[
+    "Purely local configuration state; there is no health-derived helper,",
+    "because a third node's health is not knowable here.",
+];
+
+/// The note every multi pairing slot's `peers()` doc ends on.
+const PEER_SET_CLOSING_NOTE: &[&str] = &[
+    "Each member carries the copy its peer belongs to, so pairs from one",
+    "`stack join` group by `copy`; `publish_to` names a member's `info`.",
+];
+
+/// The doc of a multi pairing slot's `peers()` accessor, shared by both
+/// generators; `None` for a scalar slot, which exposes `paired()` and
+/// `wait_paired()`.
+pub fn peer_set_doc(cardinality: Cardinality) -> Option<AccessorDoc> {
+    match cardinality {
+        Cardinality::One | Cardinality::ZeroOrOne => None,
+        Cardinality::OneOrMore => Some(AccessorDoc {
+            summary: "Every pair this module's slot currently holds, in establishment order.",
+            body: &[
+                "The set is live: a pair joins it when its peer's instance starts and",
+                "leaves it when either side stops. This slot declares cardinality",
+                "`one_or_more`: the plan pairs at least one peer to it, and the set",
+                "still empties once every peer has stopped.",
+            ],
+            api_note: None,
+            closing: PEER_SET_CLOSING_NOTE,
+        }),
+        Cardinality::ZeroOrMore => Some(AccessorDoc {
+            summary: "Every pair this module's slot currently holds, in establishment order.",
+            body: &[
+                "The set is live: a pair joins it when its peer's instance starts and",
+                "leaves it when either side stops. This slot declares cardinality",
+                "`zero_or_more`: the plan may pair nothing to it, so the empty set is an",
+                "expected steady state.",
+            ],
+            api_note: None,
+            closing: PEER_SET_CLOSING_NOTE,
+        }),
     }
 }
 
@@ -451,16 +497,12 @@ pub struct AccessorDoc {
     /// where the cardinality leaves one open. Resolved when the doc is built,
     /// so reading it cannot drop it.
     pub api_note: Option<&'static str>,
+    /// The note the accessor's doc ends on, shared by every cardinality of
+    /// one slot kind.
+    pub closing: &'static [&'static str],
 }
 
 impl AccessorDoc {
-    /// The note every observer accessor's doc ends on, held once rather than
-    /// repeated per cardinality.
-    const CLOSING_NOTE: &'static [&'static str] = &[
-        "Purely local configuration state; there is no health-derived helper,",
-        "because a third node's health is not knowable here.",
-    ];
-
     /// Everything after the summary: the cardinality's prose, then its API tail
     /// sentence where it has one, then the closing note. The tail sits ahead of
     /// the closing note because it finishes the cardinality's sentence.
@@ -469,7 +511,7 @@ impl AccessorDoc {
             .iter()
             .copied()
             .chain(self.api_note)
-            .chain(Self::CLOSING_NOTE.iter().copied())
+            .chain(self.closing.iter().copied())
     }
 
     /// Every line in order, for a language with no summary-line convention.

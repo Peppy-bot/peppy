@@ -22,7 +22,7 @@ fn peer_context() -> crate::generator::types::PeerContext {
         link_id: "controller".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     }
 }
 
@@ -52,10 +52,14 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
         "LINK_ID = \"controller\"",
         "PAIRING_NAME = \"arm_link\"",
         "PAIRING_TAG = \"v1\"",
-        "peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG)",
-        "link_id=LINK_ID",
+        "node_runner.declare_sole_peer_publisher(",
+        "LINK_ID,",
+        "PAIRING_NAME,",
+        "PAIRING_TAG,",
+        "TOPIC_NAME,",
         "def build_message(",
-        "async def declare_publisher(",
+        "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
+        "reaches the paired peer",
         "def paired(",
         "async def wait_paired(",
         "node_runner.peer(LINK_ID)",
@@ -207,6 +211,83 @@ fn observed_topic_accessor_is_cardinality_typed() {
             cardinality == Cardinality::OneOrMore,
             "the never-empty note belongs to `one_or_more` alone; got: {code}"
         );
+    }
+}
+
+/// The Python mirror of the Rust participant matrix: a scalar slot exposes
+/// `paired()`/`wait_paired()`, a multi slot `peers() -> List[PeerMember]`,
+/// with `one_or_more` stating its never-empty guarantee in the docstring
+/// because Python cannot spell a non-empty list.
+#[test]
+fn peer_slot_state_is_cardinality_typed() {
+    let topic = parse_topic(JOINT_STATES);
+    for (cardinality, present, absent) in [
+        (
+            Cardinality::One,
+            vec![
+                "def paired(",
+                "async def wait_paired(",
+                "reaches the paired peer",
+            ],
+            vec!["def peers(", "peer_set(LINK_ID)"],
+        ),
+        (
+            Cardinality::ZeroOrOne,
+            vec![
+                "def paired(",
+                "async def wait_paired(",
+                "reaches the paired peer",
+            ],
+            vec!["def peers(", "peer_set(LINK_ID)"],
+        ),
+        (
+            Cardinality::OneOrMore,
+            vec![
+                "def peers(node_runner: peppylib.NodeRunner) -> List[peppylib.PeerMember]:",
+                "node_runner.peer_set(LINK_ID).members()",
+                "`one_or_more`: the plan pairs at least one",
+                "group by `copy`",
+                "`publish_to` names the peer",
+            ],
+            vec![
+                "def paired(",
+                "wait_paired",
+                "node_runner.peer(LINK_ID)",
+                "non_empty_members",
+                "`[0]` is always valid.",
+            ],
+        ),
+        (
+            Cardinality::ZeroOrMore,
+            vec![
+                "def peers(node_runner: peppylib.NodeRunner) -> List[peppylib.PeerMember]:",
+                "node_runner.peer_set(LINK_ID).members()",
+                "`zero_or_more`: the plan may pair nothing",
+                "`publish_to` names the peer",
+            ],
+            vec![
+                "def paired(",
+                "wait_paired",
+                "non_empty_members",
+                "`[0]` is always valid.",
+            ],
+        ),
+    ] {
+        let peer = crate::generator::types::PeerContext {
+            cardinality,
+            ..peer_context()
+        };
+        let mut generator = PythonGenerator::new();
+        generator.add_peer_emitted_topic(&topic, &peer).unwrap();
+        let artifacts = generator.into_artifacts();
+        let code = &artifacts[0].code_output;
+        assert_contains_all(code, &present);
+        for needle in absent {
+            assert!(
+                !code.contains(needle),
+                "a {cardinality:?} slot must not expose `{needle}`; got: {code}"
+            );
+        }
     }
 }
 

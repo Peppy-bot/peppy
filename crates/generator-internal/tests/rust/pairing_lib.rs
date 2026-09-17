@@ -49,7 +49,7 @@ fn controller_peer_context() -> PeerContext {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     }
 }
 
@@ -160,6 +160,96 @@ fn main() -> Result<()> {
     compile_project(&user_node);
 }
 
+/// A multi participant slot: the engine side holding every backbone's
+/// `arm_link/v1` pair through one slot. `peers()` is typed by the floor the
+/// way an observer slot's `sources()` is, `declare_publisher` answers a
+/// `PeerPublisher` driven with `publish_to`, and each member carries the copy
+/// its peer belongs to.
+#[test]
+fn generated_multi_peer_modules_compile_against_peppylib() {
+    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
+    let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
+
+    let (mut generator, output_dir, user_node, peppy_node_config_path) =
+        init_test_env::<generator::RustGenerator>(&temp_dir, STUB_NODE_CONFIG);
+    let limbs = PeerContext {
+        link_id: "limbs".to_string(),
+        cardinality: config::node::Cardinality::ZeroOrMore,
+        ..controller_peer_context()
+    };
+    let crew = PeerContext {
+        link_id: "crew".to_string(),
+        cardinality: config::node::Cardinality::OneOrMore,
+        ..controller_peer_context()
+    };
+    generator.add_peer_emitted_topic(&commands, &limbs).unwrap();
+    generator.add_peer_consumed_topic(&states, &limbs).unwrap();
+    generator.add_peer_emitted_topic(&commands, &crew).unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator
+        .build(&output_dir, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    init_cargo_user_node(&user_node);
+    let user_main = r#"
+use peppygen::NodeBuilder;
+use peppygen::Result;
+use peppygen::paired_topics::crew::joint_commands as crew_commands;
+use peppygen::paired_topics::limbs::{joint_commands, joint_states};
+
+fn main() -> Result<()> {
+    NodeBuilder::new().run(|_parameters: peppygen::Parameters, node_runner| async move {
+        assert_eq!(joint_commands::LINK_ID, "limbs");
+
+        // A `zero_or_more` slot reads a plain Vec of members, each with the
+        // copy its peer belongs to; the copy groups one robot's limbs.
+        let members: Vec<peppygen::PeerMember> = joint_commands::peers(&node_runner)?;
+        let publisher: peppygen::PeerPublisher =
+            joint_commands::declare_publisher(&node_runner).await?;
+        for member in &members {
+            let payload = joint_commands::build_message([0.0, 0.5, 1.0], 0.25)?;
+            publisher.publish_to(&member.info, payload).await?;
+            println!(
+                "{} in copy {:?} (own copy {:?})",
+                member.info.producer.instance_id,
+                member.copy,
+                node_runner.copy()
+            );
+        }
+
+        // A `one_or_more` slot reads like any other multi slot: its floor is
+        // what the plan guarantees, not what every read finds.
+        let crew: Vec<peppygen::PeerMember> = crew_commands::peers(&node_runner)?;
+        println!("{} crew members", crew.len());
+        if let Some(lead) = crew.first() {
+            println!("led by {}", lead.info.producer.instance_id);
+        }
+
+        // One subscription fans in across every pair; the tag names the peer.
+        let mut subscription = joint_states::subscribe(&node_runner).await?;
+        if let Some((peer, states)) = subscription.next().await? {
+            println!(
+                "{} joints from {}/{}",
+                states.positions.len(),
+                peer.producer.core_node,
+                peer.producer.instance_id
+            );
+        }
+        Ok(())
+    })
+}
+"#;
+    fs::write(user_node.join("src").join("main.rs"), user_main).unwrap();
+
+    compile_project(&user_node);
+}
+
 /// The recorder side observing `arm_link/v1`: taps the `arm` role's
 /// `joint_states` through an observer slot whose link_id is `observed_arm`.
 fn recorder_observer_context() -> PeerContext {
@@ -167,7 +257,7 @@ fn recorder_observer_context() -> PeerContext {
         link_id: "observed_arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     }
 }
 
@@ -178,7 +268,7 @@ fn commander_observer_context() -> PeerContext {
         link_id: "observed_arms".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     }
 }
 
@@ -203,7 +293,7 @@ fn generated_observer_modules_compile_against_peppylib() {
                 link_id: "maybe_observed_arm".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
-                optional: false,
+                cardinality: config::node::Cardinality::One,
             },
             Cardinality::ZeroOrOne,
         )
@@ -323,7 +413,7 @@ fn generated_multi_observer_modules_compile_against_peppylib() {
                 link_id: "spare_arms".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
-                optional: false,
+                cardinality: config::node::Cardinality::One,
             },
             Cardinality::ZeroOrMore,
         )

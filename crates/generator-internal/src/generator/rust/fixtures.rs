@@ -790,59 +790,148 @@ fn render_harness(
     for (link_id, spec) in &registry.pairings {
         let field = Ident::new(&sanitize_rust_module_name(link_id), Span::call_site());
         let module = production_module("mock", &["pairings", link_id]);
-        pairing_mock_fields.push(quote!(pub #field: #module::Mock));
-        mock_starts.push(quote! {
-            let #field = #module::Mock::start(&router, &instance_id).await?;
+        let pairing_target = target_expr(&TargetSpec::Pairing {
+            name: spec.pairing_name.clone(),
+            tag: spec.pairing_tag.clone(),
         });
-        pairing_mock_inits.push(field.clone());
-        let seed_pin = quote! {
-            standalone = standalone.with_peer_pin(
-                #link_id,
-                #module::MOCK_CORE_NODE,
-                #module::MOCK_INSTANCE_ID,
-                #module::PEER_LINK_ID,
-            );
-        };
-        if spec.optional {
-            // The mock still starts when vacant: its pinned subscription is
-            // what resolves the publisher-readiness barrier, and an unpaired
-            // node's publishes on the slot are legal no-ops, so only the
-            // pin seeding is withheld.
-            let vacant_field = Ident::new(&format!("{field}_vacant"), Span::call_site());
-            let vacant_doc = format!(
-                "Boot with the optional `{link_id}` pairing slot unpaired: \
-                 the peer pin is not seeded, so the node's `paired()` stays \
-                 false, its publishes on this slot are no-ops, and the \
-                 still-started mock's subscriptions stay silent."
-            );
-            config_fields.push(quote! {
-                #[doc = #vacant_doc]
-                pub #vacant_field: bool
-            });
-            config_defaults.push(quote!(#vacant_field: false));
-            seeding.push(quote! {
-                if !config.#vacant_field {
-                    #seed_pin
-                }
-            });
-        } else {
-            seeding.push(seed_pin);
-        }
         // The mock subscribes to every topic the node emits on this slot;
-        // barrier on each so the node's first publish routes.
-        for topic in &spec.node_emits {
-            let topic_name = topic.name.as_str();
-            let pairing_target = target_expr(&TargetSpec::Pairing {
-                name: spec.pairing_name.clone(),
-                tag: spec.pairing_tag.clone(),
-            });
-            publisher_readiness.push(quote! {
-                peppylib::testing::PublisherReadiness {
-                    target: #pairing_target,
-                    link_id: Some(#link_id.to_string()),
-                    topic: #topic_name.to_string(),
-                },
-            });
+        // barrier on each, addressed to the mock's identity, so the node's
+        // first publish routes.
+        let readiness_of = |peer: TokenStream| -> Vec<TokenStream> {
+            spec.node_emits
+                .iter()
+                .map(|topic| {
+                    let topic_name = topic.name.as_str();
+                    quote! {
+                        publisher_readiness.push(peppylib::testing::PublisherReadiness {
+                            target: #pairing_target,
+                            link_id: Some(#link_id.to_string()),
+                            peer: Some(#peer),
+                            topic: #topic_name.to_string(),
+                        });
+                    }
+                })
+                .collect()
+        };
+        match spec.cardinality {
+            Cardinality::One | Cardinality::ZeroOrOne => {
+                pairing_mock_fields.push(quote!(pub #field: #module::Mock));
+                mock_starts.push(quote! {
+                    let #field = #module::Mock::start(&router, &instance_id).await?;
+                });
+                pairing_mock_inits.push(field.clone());
+                let seed_pin = quote! {
+                    standalone = standalone.with_peer_pin(
+                        #link_id,
+                        #module::MOCK_CORE_NODE,
+                        #module::MOCK_INSTANCE_ID,
+                        #module::PEER_LINK_ID,
+                    );
+                };
+                if spec.cardinality == Cardinality::ZeroOrOne {
+                    // The mock still starts when vacant: its pinned subscription is
+                    // what resolves the publisher-readiness barrier, and an unpaired
+                    // node's publishes on the slot are legal no-ops, so only the
+                    // pin seeding is withheld.
+                    let vacant_field = Ident::new(&format!("{field}_vacant"), Span::call_site());
+                    let vacant_doc = format!(
+                        "Boot with the `zero_or_one` pairing slot `{link_id}` unpaired: \
+                         the peer pin is not seeded, so the node's `paired()` stays \
+                         `None`, its publishes on this slot are no-ops, and the \
+                         still-started mock's subscriptions stay silent."
+                    );
+                    config_fields.push(quote! {
+                        #[doc = #vacant_doc]
+                        pub #vacant_field: bool
+                    });
+                    config_defaults.push(quote!(#vacant_field: false));
+                    seeding.push(quote! {
+                        if !config.#vacant_field {
+                            #seed_pin
+                        }
+                    });
+                } else {
+                    seeding.push(seed_pin);
+                }
+                publisher_readiness.extend(readiness_of(quote!(#module::peer_info())));
+            }
+            Cardinality::OneOrMore | Cardinality::ZeroOrMore => {
+                let count_field = Ident::new(&format!("{field}_instances"), Span::call_site());
+                let default_count: usize = match spec.cardinality {
+                    Cardinality::OneOrMore => 1,
+                    _ => 0,
+                };
+                let count_doc = format!(
+                    "How many mock peers to pair into the `{link_id}` pairing slot, \
+                     each under its own instance id and outside any copy."
+                );
+                let members_field = Ident::new(&format!("{field}_members"), Span::call_site());
+                let members_doc = format!(
+                    "Explicit mock peers for the `{link_id}` pairing slot, each with \
+                     the copy it belongs to, overriding `{count_field}` when non-empty. \
+                     For nodes that group pairs by copy or classify peers by instance \
+                     name."
+                );
+                let members_local = Ident::new(&format!("{field}_member_specs"), Span::call_site());
+                config_fields.push(quote! {
+                    #[doc = #count_doc]
+                    pub #count_field: usize
+                });
+                config_fields.push(quote! {
+                    #[doc = #members_doc]
+                    pub #members_field: Vec<PeerMemberSpec>
+                });
+                config_defaults.push(quote!(#count_field: #default_count));
+                config_defaults.push(quote!(#members_field: Vec::new()));
+                pairing_mock_fields.push(quote!(pub #field: Vec<#module::Mock>));
+                mock_starts.push(quote! {
+                    let #members_local: Vec<PeerMemberSpec> = if config.#members_field.is_empty() {
+                        (0..config.#count_field)
+                            .map(|index| PeerMemberSpec {
+                                instance_id: format!("{}-{}", #module::MOCK_INSTANCE_ID, index),
+                                copy: None,
+                            })
+                            .collect()
+                    } else {
+                        config.#members_field.clone()
+                    };
+                    let mut #field = Vec::new();
+                    for member in &#members_local {
+                        #field.push(
+                            #module::Mock::start_as(&router, &member.instance_id, &instance_id)
+                                .await?,
+                        );
+                    }
+                });
+                seeding.push(quote! {
+                    for member in &#members_local {
+                        standalone = match &member.copy {
+                            Some(copy) => standalone.with_peer_pin_in_copy(
+                                #link_id,
+                                #module::MOCK_CORE_NODE,
+                                member.instance_id.clone(),
+                                #module::PEER_LINK_ID,
+                                copy.clone(),
+                            ),
+                            None => standalone.with_peer_pin(
+                                #link_id,
+                                #module::MOCK_CORE_NODE,
+                                member.instance_id.clone(),
+                                #module::PEER_LINK_ID,
+                            ),
+                        };
+                    }
+                });
+                let per_member = readiness_of(quote!(#module::peer_info_for(&member.instance_id)));
+                if !per_member.is_empty() {
+                    publisher_readiness.push(quote! {
+                        for member in &#members_local {
+                            #( #per_member )*
+                        }
+                    });
+                }
+                pairing_mock_inits.push(field.clone());
+            }
         }
     }
 
@@ -968,11 +1057,12 @@ fn render_harness(
         });
         emitted_inits.push(field);
         publisher_readiness.push(quote! {
-            peppylib::testing::PublisherReadiness {
+            publisher_readiness.push(peppylib::testing::PublisherReadiness {
                 target: #target,
                 link_id: None,
+                peer: None,
                 topic: #topic.to_string(),
-            },
+            });
         });
     }
 
@@ -1013,6 +1103,14 @@ fn render_harness(
         /// crate's manifest (always `<node>/.peppy/libs/peppygen`).
         pub const PEPPY_CONFIG_PATH: &str =
             concat!(env!("CARGO_MANIFEST_DIR"), #config_path_suffix);
+
+        /// One mock peer of a multi pairing slot, as [`Config`] names it:
+        /// its instance id and the copy it belongs to, `None` outside a copy.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct PeerMemberSpec {
+            pub instance_id: String,
+            pub copy: Option<String>,
+        }
 
         /// Optional overrides for [`Harness::start_with`].
         pub struct Config {
@@ -1149,9 +1247,9 @@ fn render_harness(
                 #parameters_seed
                 #( #seeding )*
 
-                let publisher_readiness = vec![
-                    #( #publisher_readiness )*
-                ];
+                let mut publisher_readiness: Vec<peppylib::testing::PublisherReadiness> =
+                    Vec::new();
+                #( #publisher_readiness )*
                 let mut service_readiness: Vec<peppylib::testing::ServiceReadiness> =
                     Vec::new();
                 service_readiness.push(clock.readiness()?);

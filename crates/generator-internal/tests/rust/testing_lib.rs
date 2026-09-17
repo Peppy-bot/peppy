@@ -42,7 +42,8 @@ const NODE_CONFIG: &str = r#"{
         { name: "brain", tag: "v1", link_id: "brain" }
       ],
       pairings: [
-        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" }
+        { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
+        { name: "arm_link", tag: "v1", role: "controller", link_id: "limbs", cardinality: "zero_or_more" }
       ]
     }
   },
@@ -110,6 +111,8 @@ pub async fn setup(
         peppygen::emitted_topics::status::declare_publisher(&node_runner).await?;
     let commands =
         peppygen::paired_topics::arm::joint_commands::declare_publisher(&node_runner).await?;
+    let limb_commands =
+        peppygen::paired_topics::limbs::joint_commands::declare_publisher(&node_runner).await?;
     // The node's own exposed service, answered concurrently with the frame loop.
     let ping_runner = Arc::clone(&node_runner);
     tokio::spawn(async move {
@@ -167,6 +170,20 @@ pub async fn setup(
         commands
             .publish(peppygen::paired_topics::arm::joint_commands::build_message(0.5)?)
             .await?;
+        // The multi slot: one message per pair, shaped by the copy the peer
+        // belongs to, addressed to that peer alone.
+        for member in peppygen::paired_topics::limbs::joint_commands::peers(&node_runner)? {
+            let max_velocity = match member.copy.as_deref() {
+                Some("robot_a") => 1.0,
+                _ => 2.0,
+            };
+            limb_commands
+                .publish_to(
+                    &member.info,
+                    peppygen::paired_topics::limbs::joint_commands::build_message(max_velocity)?,
+                )
+                .await?;
+        }
     }
     Ok(())
 }
@@ -277,10 +294,16 @@ fn generated_mocks_and_fixtures_drive_a_node_end_to_end() {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     };
     generator.add_peer_emitted_topic(&commands, &peer).unwrap();
     generator.add_peer_consumed_topic(&states, &peer).unwrap();
+    let limbs = PeerContext {
+        link_id: "limbs".to_string(),
+        cardinality: config::node::Cardinality::ZeroOrMore,
+        ..peer
+    };
+    generator.add_peer_emitted_topic(&commands, &limbs).unwrap();
 
     let output_config = copy_config_to_output(&user_node, &output_dir);
     generator
@@ -322,14 +345,28 @@ peppylib = {{ path = "{PEPPYLIB_OUTPUT_PATH}" }}
         r#"
 use std::time::Duration;
 
-use peppygen::fixtures::harness::Harness;
+use peppygen::fixtures::harness::{{Config, Harness, PeerMemberSpec}};
 use peppygen::mock::deps::brain::plan_motion as mock_plan;
 use peppygen::mock::deps::camera::enable_camera as mock_enable;
 use peppygen::mock::deps::camera::video_stream as mock_frames;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
-    let (mut harness, mut mocks) = Harness::start({crate_name}::setup)
+    // Two mock peers in the multi slot, one per robot copy.
+    let config = Config {{
+        limbs_members: vec![
+            PeerMemberSpec {{
+                instance_id: "left".to_string(),
+                copy: Some("robot_a".to_string()),
+            }},
+            PeerMemberSpec {{
+                instance_id: "right".to_string(),
+                copy: Some("robot_b".to_string()),
+            }},
+        ],
+        ..Config::default()
+    }};
+    let (mut harness, mut mocks) = Harness::start_with(config, {crate_name}::setup)
         .await
         .expect("harness should start");
 
@@ -392,6 +429,23 @@ async fn mocks_and_fixtures_drive_the_node_end_to_end() {{
         .expect("pairing command should decode")
         .expect("pairing subscription should be open");
     assert!((command.max_velocity - 0.5).abs() < f64::EPSILON);
+
+    // Each mock peer of the multi slot hears the one message addressed to
+    // it, shaped by the copy the harness seeded it in.
+    let left = mocks.pairings.limbs[0]
+        .joint_commands
+        .next()
+        .await
+        .expect("left limb command should decode")
+        .expect("left limb subscription should be open");
+    assert!((left.max_velocity - 1.0).abs() < f64::EPSILON);
+    let right = mocks.pairings.limbs[1]
+        .joint_commands
+        .next()
+        .await
+        .expect("right limb command should decode")
+        .expect("right limb subscription should be open");
+    assert!((right.max_velocity - 2.0).abs() < f64::EPSILON);
 
     // The node's own exposed service, driven through fixtures.
     let pong = peppygen::fixtures::exposed_services::ping::poll(

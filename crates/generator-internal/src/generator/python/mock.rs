@@ -1045,7 +1045,7 @@ fn render_pairing_link(
 
     builder.py(r#"
 def producer_ref() -> peppylib.ProducerRef:
-    """The mock peer's wire identity."""
+    """The default mock peer's wire identity."""
     return peppylib.ProducerRef(MOCK_CORE_NODE, MOCK_INSTANCE_ID)
 "#);
     builder.blank_line();
@@ -1055,8 +1055,23 @@ def producer_ref() -> peppylib.ProducerRef:
             "The full pin identity the harness seeds for this slot: what the node's \
              `paired()` / `wait_paired()` resolve to.",
         );
-        builder.line("return peppylib.PeerInfo(producer_ref(), PEER_LINK_ID)");
+        builder.line("return peer_info_for(MOCK_INSTANCE_ID)");
     });
+    builder.blank_line();
+
+    builder.block(
+        "def peer_info_for(instance_id: str) -> peppylib.PeerInfo:",
+        |builder| {
+            builder.docstring(
+                "`peer_info` under an explicit instance id (multi slots): the `info` of \
+                 the member the node's `peers()` lists for it.",
+            );
+            builder.line(
+                "return peppylib.PeerInfo(peppylib.ProducerRef(MOCK_CORE_NODE, instance_id), \
+                 PEER_LINK_ID)",
+            );
+        },
+    );
     builder.blank_line();
 
     let mut members: Vec<MockMember> = Vec::new();
@@ -1087,21 +1102,35 @@ def producer_ref() -> peppylib.ProducerRef:
         )?);
     }
 
+    builder.add_import("from typing import Optional");
     let doc = format!(
         "Mock peer for the `{link_id}` pairing slot: publishes the topics the node \
-         consumes and holds triple-pinned subscriptions to the topics the node emits, \
-         under the pin identity the harness seeds (`peer_info()`)."
+         consumes to the node's slot and holds pinned subscriptions to the topics \
+         the node emits, under the pin identity the harness seeds (`peer_info()`); \
+         a multi slot starts several instances with distinct instance ids."
     );
     emit_mock_class(
         &mut builder,
         &doc,
         "Connects a dedicated session, declares the peer publishers and opens the \
-         pinned subscriptions to the node's emissions. `node_instance_id` is the \
-         node-under-test's instance id (the harness passes its own).",
+         pinned subscriptions to the node's emissions, under `MOCK_INSTANCE_ID` \
+         unless an explicit instance id is given (multi slots). `node_instance_id` \
+         is the node-under-test's instance id (the harness passes its own).",
         "Simulates the peer disappearing: every declaration and the session are \
          released.",
-        "cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str",
-        &[],
+        "cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str, \
+         instance_id: Optional[str] = None",
+        &[
+            "if instance_id is None:".to_string(),
+            "    instance_id = MOCK_INSTANCE_ID".to_string(),
+            "# The node under test on its slot: the peer every publisher of this".to_string(),
+            "# mock addresses and every subscription pins.".to_string(),
+            "node = peppylib.PeerInfo(".to_string(),
+            "    peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id),"
+                .to_string(),
+            "    LINK_ID,".to_string(),
+            ")".to_string(),
+        ],
         &members,
     );
 
@@ -1141,8 +1170,8 @@ fn render_pair_publisher(
     builder.block(&format!("class {camel}Publisher:"), |builder| {
         builder.docstring(&format!(
             "Typed peer publisher for `{topic_name}` (the node consumes this \
-             direction): publishes under the mock peer's identity and slot id, so the \
-             node's triple-pinned subscription receives it."
+             direction): publishes from the mock peer's slot to the node's slot, so \
+             the node's pinned subscription receives it."
         ));
         builder.blank_line();
         builder.py(r#"
@@ -1151,22 +1180,26 @@ def __init__(self, core) -> None:
 "#);
         builder.blank_line();
         builder.line("@classmethod");
-        builder.block("async def _declare(cls, session):", |builder| {
-            builder.call(
-                "core = await peppylib.testing.TestTopicPublisher.declare(",
-                &[
-                    "session,",
-                    "MOCK_CORE_NODE,",
-                    "MOCK_INSTANCE_ID,",
-                    &format!("{pairing_target},"),
-                    &format!("{topic_name:?},"),
-                    &format!("{qos},"),
-                    "link_id=PEER_LINK_ID,",
-                ],
-                ")",
-            );
-            builder.line("return cls(core)");
-        });
+        builder.block(
+            "async def _declare(cls, session, instance_id, node):",
+            |builder| {
+                builder.call(
+                    "core = await peppylib.testing.TestTopicPublisher.declare_to_peer(",
+                    &[
+                        "session,",
+                        "MOCK_CORE_NODE,",
+                        "instance_id,",
+                        &format!("{pairing_target},"),
+                        "PEER_LINK_ID,",
+                        &format!("{topic_name:?},"),
+                        &format!("{qos},"),
+                        "node,",
+                    ],
+                    ")",
+                );
+                builder.line("return cls(core)");
+            },
+        );
         builder.blank_line();
         builder.block(
             &format!("async def publish(self, message: {alias}.Message) -> None:"),
@@ -1195,7 +1228,7 @@ def __init__(self, core) -> None:
     builder.blank_line();
 
     Ok(MockMember {
-        construct: format!("{attr} = await {camel}Publisher._declare(session)"),
+        construct: format!("{attr} = await {camel}Publisher._declare(session, instance_id, node)"),
         attr,
         action_stop: None,
         service_close: None,
@@ -1244,23 +1277,23 @@ def __init__(self, inner) -> None:
         builder.blank_line();
         builder.line("@classmethod");
         builder.block(
-            "async def _open(cls, session, node_instance_id):",
+            "async def _open(cls, session, instance_id, node):",
             |builder| {
                 builder.py(r#"
 # The exact wire shape of a paired peer's subscription: node
-# identity, pairing target, and the node's own slot link_id all
-# pinned. No pin-following: the mock's peer (the node under test)
-# is known from construction.
-node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)
+# identity, pairing target, the node's own slot link_id and the
+# mock's own slot all pinned. No pin-following: the mock's peer
+# (the node under test) is known from construction.
 "#);
                 builder.call(
                     "inner = await peppylib.TopicMessenger.subscribe_peer_pinned(",
                     &[
                         "session,",
                         "MOCK_CORE_NODE,",
-                        "MOCK_INSTANCE_ID,",
+                        "instance_id,",
+                        "PEER_LINK_ID,",
                         &format!("{pairing_target},"),
-                        "node,",
+                        "node.producer,",
                         "LINK_ID,",
                         &format!("{topic_name:?},"),
                         &format!("{qos},"),
@@ -1290,7 +1323,7 @@ if message is None:
     builder.blank_line();
 
     Ok(MockMember {
-        construct: format!("{attr} = await {camel}Subscription._open(session, node_instance_id)"),
+        construct: format!("{attr} = await {camel}Subscription._open(session, instance_id, node)"),
         attr,
         action_stop: None,
         service_close: None,
@@ -1323,6 +1356,7 @@ fn render_observed_link(
         format!("PAIRING_NAME = {:?}", spec.pairing_name),
         format!("PAIRING_TAG = {:?}", spec.pairing_tag),
         format!("SOURCE_LINK_ID = {MOCK_SOURCE_LINK_ID:?}"),
+        format!("PEER_LINK_ID = {MOCK_PEER_LINK_ID:?}"),
         format!("MOCK_CORE_NODE = {MOCK_CORE_NODE:?}"),
         format!("MOCK_INSTANCE_ID = {default_instance:?}"),
     ]);
@@ -1332,6 +1366,18 @@ fn render_observed_link(
 def source() -> peppylib.ObservedSource:
     """The default mock source, as the harness seeds it."""
     return source_for(MOCK_INSTANCE_ID)
+"#);
+    builder.blank_line();
+
+    builder.py(r#"
+def peer_of(instance_id: str) -> peppylib.PeerInfo:
+    """The peer a mock source under `instance_id` publishes to: a pairing
+    emission names its peer, and the node observes every pair of the source's
+    slot."""
+    return peppylib.PeerInfo(
+        peppylib.ProducerRef(MOCK_CORE_NODE, f"{instance_id}-peer"),
+        PEER_LINK_ID,
+    )
 "#);
     builder.blank_line();
 
@@ -1418,7 +1464,7 @@ fn render_observed_publisher(
     builder.block(&format!("class {camel}Publisher:"), |builder| {
         builder.docstring(&format!(
             "Typed source publisher for the observed topic `{topic_name}`: publishes \
-             under the mock source's identity and source link_id, so the node's \
+             from the mock source's slot to its own peer, so the node's \
              generation-checked observation subscription receives it."
         ));
         builder.blank_line();
@@ -1432,15 +1478,16 @@ def __init__(self, core) -> None:
             "async def _declare(cls, session, instance_id):",
             |builder| {
                 builder.call(
-                    "core = await peppylib.testing.TestTopicPublisher.declare(",
+                    "core = await peppylib.testing.TestTopicPublisher.declare_to_peer(",
                     &[
                         "session,",
                         "MOCK_CORE_NODE,",
                         "instance_id,",
                         &format!("{pairing_target},"),
+                        "SOURCE_LINK_ID,",
                         &format!("{topic_name:?},"),
                         &format!("{qos},"),
-                        "link_id=SOURCE_LINK_ID,",
+                        "peer_of(instance_id),",
                     ],
                     ")",
                 );

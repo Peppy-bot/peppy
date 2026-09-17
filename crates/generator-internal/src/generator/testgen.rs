@@ -189,9 +189,9 @@ pub(crate) struct PairTopicSpec {
 pub(crate) struct PairingLinkSpec {
     pub pairing_name: String,
     pub pairing_tag: String,
-    /// Whether the manifest allows running this slot with no peer: the
-    /// harness Config gets a `<link>_vacant` knob only when it does.
-    pub optional: bool,
+    /// The slot's declared cardinality: a `zero_or_one` slot gets a
+    /// `<link>_vacant` knob in the harness Config.
+    pub cardinality: Cardinality,
     /// Topics the NODE emits on this slot (the mock subscribes).
     pub node_emits: Vec<PairTopicSpec>,
     /// Topics the NODE consumes on this slot (the mock publishes).
@@ -295,7 +295,7 @@ impl TestGenRegistry {
             .or_insert_with(|| PairingLinkSpec {
                 pairing_name: peer.pairing_name.clone(),
                 pairing_tag: peer.pairing_tag.clone(),
-                optional: peer.optional,
+                cardinality: peer.cardinality,
                 node_emits: Vec::new(),
                 node_consumes: Vec::new(),
             })
