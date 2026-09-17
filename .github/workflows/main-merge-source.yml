@@ -22,8 +22,9 @@ jobs:
   # blocked just the same.
   main-from-dev:
     # A GitHub-hosted runner, where the rest of the repository runs on the
-    # Blacksmith pool. This job is the gate on `main`, so it keeps its
-    # availability tied to GitHub alone, and it is free on a public repository.
+    # self-hosted one. This job is the gate on `main`, so it keeps its
+    # availability tied to GitHub alone rather than to a single box that takes
+    # one job at a time, and it is free on a public repository.
     runs-on: ubuntu-latest
     # The head branch comes off the event payload. Nothing here reads the
     # repository, so the job runs with no token.
