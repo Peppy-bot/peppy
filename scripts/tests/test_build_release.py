@@ -13,6 +13,7 @@ from functions.build_release import (
     _build_all_targets,
     _build_release_payload,
     _commit_notes_and_align_main,
+    _create_draft_release,
     _confirm_release_content,
     _docs_check_base,
     _find_open_docs_sync_pr,
@@ -22,10 +23,12 @@ from functions.build_release import (
     _open_editor,
     _parse_editable,
     _prepare_release_content,
+    _publish_pending_upload,
     _push_docs_sync_branch,
     _render_editable,
     _run_full,
     _run_local,
+    _upload_archives_and_publish,
     _verify_docs_up_to_date,
     _verify_release_branch_state,
 )
@@ -36,7 +39,7 @@ from functions.docs import (
     UpdateOutcome,
     UpdateResult,
 )
-from functions.github import RepoSlug
+from functions.github import ReleaseInfo, RepoSlug
 from functions.pending_upload import load_pending_upload, record_pending_upload
 from functions.release_summary import ReleaseChanges, ReleaseContent
 
@@ -338,8 +341,6 @@ def _setup_run_full_mocks(
     mock_parse: MagicMock,
 ) -> None:
     """Common setup for _run_full integration tests."""
-    from functions.github import ReleaseInfo, RepoSlug
-
     mock_repo_root.return_value = tmp_path
     # The tag is the only typed prompt; Claude-drafted content is mocked.
     mock_prompt.return_value = "v0.1.0"
@@ -366,6 +367,7 @@ def _setup_run_full_mocks(
     )
 
 
+@patch("functions.build_release.find_draft_releases", return_value=[])
 @patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._commit_notes_and_align_main")
@@ -411,6 +413,7 @@ def test_run_full_uploads_all_artifacts(
     mock_align: MagicMock,
     mock_docs_gate: MagicMock,
     mock_need_cmd: MagicMock,
+    mock_find_drafts: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -470,10 +473,11 @@ def test_run_full_uploads_all_artifacts(
     )
 
 
+@patch("functions.build_release.find_draft_releases", return_value=[])
 @patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._prepare_release_content")
-@patch("functions.build_release.delete_release")
+@patch("functions.build_release.delete_draft_release")
 @patch("functions.build_release.publish_release")
 @patch("functions.build_release.replace_and_upload_asset")
 @patch("functions.build_release.parse_release_response")
@@ -507,10 +511,11 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     mock_parse: MagicMock,
     mock_upload: MagicMock,
     mock_publish: MagicMock,
-    mock_delete_release: MagicMock,
+    mock_delete_draft: MagicMock,
     mock_prepare: MagicMock,
     mock_docs_gate: MagicMock,
     mock_need_cmd: MagicMock,
+    mock_find_drafts: MagicMock,
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
@@ -532,7 +537,7 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     with pytest.raises(ReleaseError, match="upload timeout"):
         _run_full()
 
-    mock_delete_release.assert_called_once_with(
+    mock_delete_draft.assert_called_once_with(
         mock_client.return_value, 1, mock_slug.return_value
     )
     mock_publish.assert_not_called()
@@ -550,10 +555,11 @@ def test_run_full_cleans_up_draft_on_upload_failure(
     assert f"checkout of 'dev' at {DEV_COMMIT[:12]} on another machine" in output
 
 
+@patch("functions.build_release.find_draft_releases", return_value=[])
 @patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._prepare_release_content")
-@patch("functions.build_release.delete_release")
+@patch("functions.build_release.delete_draft_release")
 @patch("functions.build_release.publish_release")
 @patch("functions.build_release.replace_and_upload_asset")
 @patch("functions.build_release.parse_release_response")
@@ -587,10 +593,11 @@ def test_run_full_warns_on_cleanup_failure(
     mock_parse: MagicMock,
     mock_upload: MagicMock,
     mock_publish: MagicMock,
-    mock_delete_release: MagicMock,
+    mock_delete_draft: MagicMock,
     mock_prepare: MagicMock,
     mock_docs_gate: MagicMock,
     mock_need_cmd: MagicMock,
+    mock_find_drafts: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -607,16 +614,17 @@ def test_run_full_warns_on_cleanup_failure(
         mock_parse=mock_parse,
     )
     mock_upload.side_effect = ReleaseError("upload timeout")
-    mock_delete_release.side_effect = ReleaseError("cleanup failed")
+    mock_delete_draft.side_effect = ReleaseError("cleanup failed")
 
     # Original error is re-raised, not the cleanup error
     with pytest.raises(ReleaseError, match="upload timeout"):
         _run_full()
 
-    mock_delete_release.assert_called_once()
+    mock_delete_draft.assert_called_once()
     mock_publish.assert_not_called()
 
 
+@patch("functions.build_release.find_draft_releases", return_value=[])
 @patch("functions.build_release.need_cmd")
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch(
@@ -665,6 +673,7 @@ def test_run_full_reports_manual_steps_when_git_align_fails(
     mock_align: MagicMock,
     mock_docs_gate: MagicMock,
     mock_need_cmd: MagicMock,
+    mock_find_drafts: MagicMock,
     tmp_path: Path,
 ) -> None:
     _setup_run_full_mocks(
@@ -696,6 +705,7 @@ def test_run_full_reports_manual_steps_when_git_align_fails(
     mock_publish.assert_called_once()
 
 
+@patch("functions.build_release.find_draft_releases", return_value=[])
 @patch("functions.build_release._verify_docs_up_to_date")
 @patch("functions.build_release._commit_notes_and_align_main")
 @patch("functions.build_release._prepare_release_content")
@@ -741,6 +751,7 @@ def test_run_full_publishes_archives_copied_from_another_machine(
     mock_prepare: MagicMock,
     mock_align: MagicMock,
     mock_docs_gate: MagicMock,
+    mock_find_drafts: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -819,6 +830,126 @@ def test_run_full_publishes_archives_copied_from_another_machine(
     assert not (staging / "pending-upload.json").exists()
     assert all((staging / a.asset_name).is_file() for a in archives)
     assert (mac_dist / "pending-upload.json").is_file()
+
+
+# --- draft release lifecycle ---
+
+
+@patch("functions.build_release.github_api", return_value={"id": 7, "html_url": "u"})
+@patch("functions.build_release.delete_draft_release", return_value=True)
+@patch("functions.build_release.find_draft_releases")
+def test_create_draft_release_deletes_drafts_an_earlier_run_left(
+    mock_find_drafts: MagicMock,
+    mock_delete_draft: MagicMock,
+    mock_api: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    slug = RepoSlug(owner="test-owner", repo="test-repo")
+    client = MagicMock()
+    pending = record_pending_upload(
+        tmp_path / "dist" / "pending-upload.json",
+        "v0.1.0",
+        DEV_COMMIT,
+        RELEASE_CONTENT,
+        _write_release_archives(tmp_path / "dist"),
+    )
+    mock_find_drafts.return_value = [
+        ReleaseInfo(release_id=3, html_url="https://github.com/t/releases/tag/untagged-3"),
+        ReleaseInfo(release_id=2, html_url="https://github.com/t/releases/tag/untagged-2"),
+    ]
+    order = MagicMock()
+    order.attach_mock(mock_delete_draft, "delete")
+    order.attach_mock(mock_api, "api")
+
+    info = _create_draft_release(client, slug, pending)
+
+    assert info.release_id == 7
+    mock_find_drafts.assert_called_once_with(client, slug, "v0.1.0")
+    # Both leftovers are gone before the new draft is created.
+    assert [c[0] for c in order.mock_calls] == ["delete", "delete", "api"]
+    assert mock_delete_draft.call_args_list == [call(client, 3, slug), call(client, 2, slug)]
+    output = _unwrapped(capfd.readouterr().err)
+    assert "left by an earlier run: https://github.com/t/releases/tag/untagged-3" in output
+
+
+@patch("functions.build_release.delete_draft_release", return_value=True)
+@patch("functions.build_release.publish_release")
+@patch("functions.build_release.replace_and_upload_asset", side_effect=KeyboardInterrupt)
+def test_upload_interrupt_deletes_the_draft(
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_delete_draft: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    slug = RepoSlug(owner="test-owner", repo="test-repo")
+    client = MagicMock()
+    info = ReleaseInfo(release_id=1, html_url="https://github.com/t/releases/tag/untagged-1")
+
+    # Ctrl-C, or the interrupt a cancelled CI run hands the script.
+    with pytest.raises(KeyboardInterrupt):
+        _upload_archives_and_publish(
+            client, slug, info, _write_release_archives(tmp_path / "dist")
+        )
+
+    mock_delete_draft.assert_called_once_with(client, 1, slug)
+    mock_publish.assert_not_called()
+    assert "Draft release deleted." in capfd.readouterr().err
+
+
+@patch("functions.build_release.delete_draft_release", return_value=False)
+@patch("functions.build_release.publish_release", side_effect=KeyboardInterrupt)
+@patch("functions.build_release.replace_and_upload_asset")
+def test_publish_interrupt_leaves_a_release_that_went_live(
+    mock_upload: MagicMock,
+    mock_publish: MagicMock,
+    mock_delete_draft: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    slug = RepoSlug(owner="test-owner", repo="test-repo")
+    info = ReleaseInfo(release_id=1, html_url="https://github.com/t/releases/tag/untagged-1")
+
+    with pytest.raises(KeyboardInterrupt):
+        _upload_archives_and_publish(
+            MagicMock(), slug, info, _write_release_archives(tmp_path / "dist")
+        )
+
+    output = _unwrapped(capfd.readouterr().err)
+    assert "Draft release deleted." not in output
+    assert (
+        "The release went live before the failure, so it is left in place: "
+        "https://github.com/test-owner/test-repo/releases"
+    ) in output
+
+
+@patch("functions.build_release._create_draft_release", side_effect=KeyboardInterrupt)
+def test_publish_pending_upload_keeps_the_archives_when_interrupted(
+    mock_create: MagicMock,
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    manifest_path = tmp_path / "dist" / "pending-upload.json"
+    pending = record_pending_upload(
+        manifest_path,
+        "v0.1.0",
+        DEV_COMMIT,
+        RELEASE_CONTENT,
+        _write_release_archives(tmp_path / "dist"),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        _publish_pending_upload(
+            MagicMock(),
+            RepoSlug(owner="test-owner", repo="test-repo"),
+            pending,
+            manifest_path,
+            tmp_path,
+        )
+
+    assert manifest_path.is_file()
+    assert "offers to upload them again" in _unwrapped(capfd.readouterr().err)
 
 
 # --- offering a pending upload ---
