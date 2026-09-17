@@ -200,7 +200,7 @@ pub struct Participant {
     pub node: IndexedNode,
     pub role: String,
     pub link_id: String,
-    pub optional: bool,
+    pub cardinality: Cardinality,
     pub sha256: Option<String>,
     pub pin: PinStatus,
 }
@@ -233,8 +233,9 @@ pub struct SlotPeers {
     pub pairing_tag: String,
     /// The role the searched node plays; a peer plays the other one.
     pub role: String,
-    /// The slot may run with no peer, so an empty `peers` is survivable.
-    pub optional: bool,
+    /// How many pairs the slot holds; a floor of zero makes an empty
+    /// `peers` survivable.
+    pub cardinality: Cardinality,
     /// The complementary slots, ordered as every other section is.
     pub peers: Vec<Participant>,
 }
@@ -580,7 +581,7 @@ fn usage_report(
                     node: indexed(repo, node),
                     role: slot.role.clone(),
                     link_id: slot.link_id.clone(),
-                    optional: slot.optional,
+                    cardinality: slot.cardinality,
                     sha256: slot.sha256.clone(),
                     pin: pairing_pin(slot.sha256.as_deref()),
                 });
@@ -613,7 +614,7 @@ fn usage_report(
                         node: indexed(repo, node),
                         role: slot.role.clone(),
                         link_id: slot.link_id.clone(),
-                        optional: slot.optional,
+                        cardinality: slot.cardinality,
                         sha256: slot.sha256.clone(),
                         pin: slot_pin(index, own, slot.sha256.as_deref()),
                     });
@@ -636,7 +637,7 @@ fn usage_report(
                 pairing_name: slot.name.as_str().to_owned(),
                 pairing_tag: slot.tag,
                 role: slot.role,
-                optional: slot.optional,
+                cardinality: slot.cardinality,
                 peers,
             }
         })
@@ -953,7 +954,14 @@ mod tests {
             with_links(
                 node_entry("arm", "v1", fs(hub.join("arm/peppy.json5"))),
                 DeclaredLinks {
-                    pairings: vec![participates("rgb_camera", "v1", "arm", "arm", true, None)],
+                    pairings: vec![participates(
+                        "rgb_camera",
+                        "v1",
+                        "arm",
+                        "arm",
+                        Cardinality::ZeroOrOne,
+                        None,
+                    )],
                     ..DeclaredLinks::default()
                 },
             ),
@@ -1045,7 +1053,7 @@ mod tests {
                 node: node("arm"),
                 role: "arm".to_owned(),
                 link_id: "arm".to_owned(),
-                optional: true,
+                cardinality: Cardinality::ZeroOrOne,
                 sha256: None,
                 pin: PinStatus::Unpinned,
             }]
@@ -1086,8 +1094,15 @@ mod tests {
                 node_entry("arm", "v1", fs(hub.join("arm/peppy.json5"))),
                 DeclaredLinks {
                     pairings: vec![
-                        participates("arm_link", "v1", "arm", "link", false, None),
-                        participates("solo_link", "v1", "watcher", "solo", true, None),
+                        participates("arm_link", "v1", "arm", "link", Cardinality::One, None),
+                        participates(
+                            "solo_link",
+                            "v1",
+                            "watcher",
+                            "solo",
+                            Cardinality::ZeroOrOne,
+                            None,
+                        ),
                     ],
                     ..DeclaredLinks::default()
                 },
@@ -1100,7 +1115,7 @@ mod tests {
                         "v1",
                         "controller",
                         "arm",
-                        false,
+                        Cardinality::One,
                         Some(&pairing_sha),
                     )],
                     ..DeclaredLinks::default()
@@ -1109,7 +1124,14 @@ mod tests {
             with_links(
                 node_entry("second_arm", "v1", fs(hub.join("second_arm/peppy.json5"))),
                 DeclaredLinks {
-                    pairings: vec![participates("arm_link", "v1", "arm", "link", true, None)],
+                    pairings: vec![participates(
+                        "arm_link",
+                        "v1",
+                        "arm",
+                        "link",
+                        Cardinality::ZeroOrOne,
+                        None,
+                    )],
                     ..DeclaredLinks::default()
                 },
             ),
@@ -1140,7 +1162,7 @@ mod tests {
                     pairing_name: "arm_link".to_owned(),
                     pairing_tag: "v1".to_owned(),
                     role: "arm".to_owned(),
-                    optional: false,
+                    cardinality: Cardinality::One,
                     peers: vec![Participant {
                         node: IndexedNode {
                             node_name: "controller".to_owned(),
@@ -1153,7 +1175,7 @@ mod tests {
                         },
                         role: "controller".to_owned(),
                         link_id: "arm".to_owned(),
-                        optional: false,
+                        cardinality: Cardinality::One,
                         sha256: Some(pairing_sha),
                         pin: PinStatus::Current,
                     }],
@@ -1163,7 +1185,7 @@ mod tests {
                     pairing_name: "solo_link".to_owned(),
                     pairing_tag: "v1".to_owned(),
                     role: "watcher".to_owned(),
-                    optional: true,
+                    cardinality: Cardinality::ZeroOrOne,
                     peers: Vec::new(),
                 },
             ],
@@ -1187,8 +1209,22 @@ mod tests {
             node_entry("backbone", "v1", fs(hub.join("backbone/peppy.json5"))),
             DeclaredLinks {
                 pairings: vec![
-                    participates("arm_link", "v1", "controller", "downstream", false, None),
-                    participates("arm_link", "v1", "arm", "upstream", true, None),
+                    participates(
+                        "arm_link",
+                        "v1",
+                        "controller",
+                        "downstream",
+                        Cardinality::One,
+                        None,
+                    ),
+                    participates(
+                        "arm_link",
+                        "v1",
+                        "arm",
+                        "upstream",
+                        Cardinality::ZeroOrOne,
+                        None,
+                    ),
                 ],
                 ..DeclaredLinks::default()
             },
@@ -1494,7 +1530,7 @@ mod tests {
                     "v1",
                     "arm",
                     "arm",
-                    false,
+                    Cardinality::One,
                     Some(&pairing_sha),
                 )],
                 pairing_observers: vec![observes(

@@ -1444,7 +1444,7 @@ mod tests {
     implements: [{{ name: "rgb_camera", tag: "v1", link_id: "camera", sha256: "{pin}" }}],
     depends_on: {{
       contracts: [{{ name: "depth", tag: "v2", link_id: "depth_in", cardinality: "zero_or_one" }}],
-      pairings: [{{ name: "arm_link", tag: "v1", role: "arm", link_id: "arm", optional: true }}],
+      pairings: [{{ name: "arm_link", tag: "v1", role: "arm", link_id: "arm", cardinality: "zero_or_one" }}],
       pairing_observers: [{{ name: "arm_link", tag: "v1", role: "controller", link_id: "watch" }}],
     }},
   }},
@@ -1485,7 +1485,14 @@ mod tests {
                     Cardinality::ZeroOrOne,
                     None
                 )],
-                pairings: vec![participates("arm_link", "v1", "arm", "arm", true, None)],
+                pairings: vec![participates(
+                    "arm_link",
+                    "v1",
+                    "arm",
+                    "arm",
+                    Cardinality::ZeroOrOne,
+                    None
+                )],
                 pairing_observers: vec![observes(
                     "arm_link",
                     "v1",

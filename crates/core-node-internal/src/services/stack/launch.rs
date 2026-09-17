@@ -35,11 +35,29 @@ use std::collections::{HashMap, HashSet};
 /// a join adding one copy to it.
 #[derive(Clone, Copy)]
 pub(super) enum PhaseChange<'a> {
-    Launch,
+    /// A launch, with the copies its launcher deploys.
+    Launch(&'a [daemon_config::launcher::CopyRecord]),
     Join(&'a JoinScope),
 }
 
 impl PhaseChange<'_> {
+    /// The copy `instance_id` belongs to, or `None` for an instance the
+    /// launcher deploys outside any copy.
+    pub(super) fn copy_of(&self, instance_id: &str) -> Option<config::runtime::Name> {
+        let copies: &[daemon_config::launcher::CopyRecord] = match self {
+            Self::Launch(copies) => copies,
+            Self::Join(scope) => std::slice::from_ref(&scope.copy.record),
+        };
+        copies
+            .iter()
+            .find(|copy| {
+                copy.instance_ids
+                    .iter()
+                    .any(|id| id.as_str() == instance_id)
+            })
+            .map(|copy| copy.name.clone())
+    }
+
     /// Whether the phases add to a running stack: a join reuses the nodes
     /// that already run where it places instances and extends the
     /// observations already registered.
@@ -49,7 +67,7 @@ impl PhaseChange<'_> {
 
     fn reuses(&self, node: &NodeKey, core_node: &str) -> bool {
         match self {
-            Self::Launch => false,
+            Self::Launch(_) => false,
             Self::Join(scope) => scope.reuses(node, core_node),
         }
     }
@@ -344,7 +362,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     )
     .with_clocks(clocks.clone(), incarnations)
     .with_watchers(watchers);
-    active.record_copies(copies, &ordered);
+    active.record_copies(copies.clone(), &ordered);
     let phase = PhaseGoal {
         launch_id: goal.launch_id.clone(),
         rebuild: goal.rebuild,
@@ -371,7 +389,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         add_nodes_to_stack(
             &ctx,
             &phase,
-            PhaseChange::Launch,
+            PhaseChange::Launch(&copies),
             &ordered,
             &planned_by_key,
             &placements,
@@ -407,7 +425,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         start_node_instances(
             &ctx,
             &phase,
-            PhaseChange::Launch,
+            PhaseChange::Launch(&copies),
             &ordered,
             &planned_by_key,
             &mut run_log_paths,

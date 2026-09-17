@@ -121,11 +121,14 @@ pub(in crate::services::stack) async fn start_node_instances(
             .or_default()
             .entry(observation.observer_link_id.clone())
             .or_default()
-            .push(ObservationTarget::new(
-                observation.source.instance_id.clone(),
-                observation.source_link_id.clone(),
-                observation.source.core_node.clone(),
-            ));
+            .push(ObservationTarget {
+                peer: observation.peer.clone(),
+                ..ObservationTarget::new(
+                    observation.source.instance_id.clone(),
+                    observation.source_link_id.clone(),
+                    observation.source.core_node.clone(),
+                )
+            });
     }
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 
@@ -138,8 +141,9 @@ pub(in crate::services::stack) async fn start_node_instances(
     // Only slots the launcher declared `{ vacant: "<why>" }` ride
     // `vacant_pairs`.
     let mut start_index: HashMap<&str, usize> = HashMap::new();
-    let mut requested_by_instance: HashMap<&str, BTreeMap<String, PairTarget>> = HashMap::new();
-    let mut covered_by_instance: HashMap<&str, BTreeMap<String, PairTarget>> = HashMap::new();
+    let mut requested_by_instance: HashMap<&str, BTreeMap<String, Vec<PairTarget>>> =
+        HashMap::new();
+    let mut covered_by_instance: HashMap<&str, BTreeMap<String, Vec<PairTarget>>> = HashMap::new();
     let mut vacant_by_instance: HashMap<&str, BTreeMap<String, String>> = HashMap::new();
     for key in ordered {
         let Some(item) = planned_by_key.get(key) else {
@@ -200,17 +204,23 @@ pub(in crate::services::stack) async fn start_node_instances(
                     pairing_name: pairing.pairing_name.clone(),
                     pairing_tag: pairing.pairing_tag.clone(),
                     peer_role: peer.role.clone(),
+                    peer_cardinality: peer.cardinality,
+                    peer_copy: change.copy_of(peer.instance_id.as_str()),
                 })
             };
 
         requested_by_instance
             .entry(later.instance_id.as_str())
             .or_default()
-            .insert(later.link_id.clone(), pair_target(later, earlier));
+            .entry(later.link_id.clone())
+            .or_default()
+            .push(pair_target(later, earlier));
         covered_by_instance
             .entry(earlier.instance_id.as_str())
             .or_default()
-            .insert(earlier.link_id.clone(), pair_target(earlier, later));
+            .entry(earlier.link_id.clone())
+            .or_default()
+            .push(pair_target(earlier, later));
     }
 
     for key in ordered {
@@ -241,6 +251,7 @@ pub(in crate::services::stack) async fn start_node_instances(
             // on this path exactly as on every other. One assembly site, and it
             // is what lets a peer start a node this daemon planned.
             let instance_plan = config::runtime::NodeInstancePlan {
+                copy: change.copy_of(instance.instance_id.as_str()),
                 arguments: instance.arguments.clone(),
                 clock: clocks.binding_for(instance_id),
                 slot_bindings,
