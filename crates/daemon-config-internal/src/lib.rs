@@ -89,9 +89,8 @@ pub mod launcher {
         PlannedPairEndpoint, PlannedPairing, PreparedLauncher, ResolvedClocks, RunningStack,
         SELF_COPY_NAME_REFUSAL, Selection, SkipReason, SkippedAdjustment, UnitSelection,
         VacantReason, WALL_CLOCK, check_composition, mint_incarnation, participant_vacancies,
-        resolve_clocks,
-        split_link_target, validate_bindings, validate_clock_connections, validate_link_plan,
-        validate_link_slots, validate_pairings,
+        resolve_clocks, split_link_target, validate_bindings, validate_clock_connections,
+        validate_link_plan, validate_link_slots, validate_pairings,
     };
 }
 

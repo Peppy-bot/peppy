@@ -14,8 +14,7 @@ mod types;
 // `.json5` file whose body declares the launcher schema.
 pub use bindings::{BindingValidationItem, validate_bindings};
 pub use clocks::{
-    ClockIncarnations, ResolvedClocks, mint_incarnation, resolve_clocks,
-    validate_clock_connections,
+    ClockIncarnations, ResolvedClocks, mint_incarnation, resolve_clocks, validate_clock_connections,
 };
 pub use compose::{
     AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyRecord,

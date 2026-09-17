@@ -195,6 +195,59 @@ def test_upload_asset_timeout_retries_and_succeeds(
     assert result["id"] == 99
 
 
+# --- Upload: retry a connection that died mid-upload ---
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        httpx.ReadError("[Errno 54] Connection reset by peer"),
+        httpx.WriteError("[Errno 32] Broken pipe"),
+        httpx.ConnectError("connection refused"),
+        httpx.RemoteProtocolError("server disconnected without sending a response"),
+    ],
+    ids=["read-reset", "write-broken-pipe", "connect-refused", "server-hung-up"],
+)
+@patch("functions.github.time.sleep")
+@patch("functions.github.delete_asset_if_exists")
+def test_upload_asset_retries_a_dead_connection(
+    mock_delete: object,
+    mock_sleep: object,
+    transport_error: httpx.RequestError,
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+    asset_file: Path,
+) -> None:
+    mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(
+        side_effect=[transport_error, httpx.Response(201, json={"id": 99})]
+    )
+
+    result = github_upload_asset(
+        github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=2
+    )
+    assert result["id"] == 99
+
+
+# --- Upload: a request this client malformed is not retried ---
+
+
+def test_upload_asset_does_not_retry_a_local_protocol_error(
+    mock_api: respx.MockRouter,
+    github_client: httpx.Client,
+    asset_file: Path,
+) -> None:
+    route = mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(
+        side_effect=httpx.LocalProtocolError("illegal header value")
+    )
+
+    with pytest.raises(ReleaseError, match="failed to upload asset"):
+        github_upload_asset(
+            github_client, 1, "peppy-test.tgz", asset_file, SLUG, max_attempts=3
+        )
+
+    assert route.call_count == 1
+
+
 # --- Upload: all retries exhausted ---
 
 
@@ -237,21 +290,23 @@ def test_upload_asset_non_retryable_error_no_retry(
     assert route.call_count == 1
 
 
-# --- Upload: 502 retries then succeeds ---
+# --- Upload: a server-side status retries then succeeds ---
 
 
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
 @patch("functions.github.time.sleep")
 @patch("functions.github.delete_asset_if_exists")
-def test_upload_asset_502_retries(
+def test_upload_asset_server_error_retries(
     mock_delete: object,
     mock_sleep: object,
+    status: int,
     mock_api: respx.MockRouter,
     github_client: httpx.Client,
     asset_file: Path,
 ) -> None:
     mock_api.post(f"{UPLOAD_URL}?name=peppy-test.tgz").mock(
         side_effect=[
-            httpx.Response(502, text="Bad Gateway"),
+            httpx.Response(status, text="server error"),
             httpx.Response(201, json={"id": 99}),
         ]
     )

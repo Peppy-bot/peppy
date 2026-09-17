@@ -22,13 +22,21 @@ _API_VERSION = "2022-11-28"
 _DEFAULT_ACCEPT = "application/vnd.github+json"
 
 _UPLOAD_TIMEOUT = 600.0
-_UPLOAD_MAX_ATTEMPTS = 3
+# An archive is hundreds of megabytes and the asset endpoint has no
+# resumption, so every attempt restarts it from the first byte and a single
+# upload is exposed to GitHub's flakiness for many minutes. Consecutive
+# failures on one archive are common enough that a budget of three leaves a
+# release with nothing in hand after two of them.
+_UPLOAD_MAX_ATTEMPTS = 6
 _UPLOAD_RETRY_BASE_DELAY = 5.0
 _UPLOAD_CHUNK_SIZE = 1024 * 1024
 _UPLOAD_PROGRESS_INTERVAL = 10.0
 _RELEASES_PAGE_SIZE = 100
 _MIB = 1024 * 1024
-_RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
+# Statuses the upload endpoint answers when it is the one having trouble, 500
+# included: it ends a large upload partway through often enough that treating
+# it as the client's fault costs a release its archives.
+_RETRYABLE_STATUS_CODES = frozenset({500, 502, 503, 504})
 
 _GIT_REMOTE_PATTERNS: list[tuple[str, str]] = [
     ("git@github.com:", "git@github.com:"),
@@ -145,8 +153,23 @@ def github_api(
 
 
 def _is_retryable(exc: Exception) -> bool:
-    """Return True if the exception is transient and worth retrying."""
-    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError)):
+    """Return True if the exception is transient and worth retrying.
+
+    The retryable transport failures are the ones where the connection died
+    rather than the request being wrong: a timeout, a connection refused or
+    reset (a reset mid-body surfaces as a read or write error, never as a
+    connect error, because the connection was already established), and a
+    server that hung up without answering. A release uploads hundreds of
+    megabytes per archive, so the odds of one of these landing mid-upload are
+    high, and each says nothing about the next attempt over a new connection.
+
+    `httpx.LocalProtocolError` stays out although it shares a base class with
+    the remote one: it is this client sending something malformed, which every
+    retry would send again.
+    """
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.RemoteProtocolError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _RETRYABLE_STATUS_CODES
