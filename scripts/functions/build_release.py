@@ -60,7 +60,8 @@ from .github import (
     ReleaseInfo,
     RepoSlug,
     build_github_client,
-    delete_release,
+    delete_draft_release,
+    find_draft_releases,
     get_latest_release,
     github_api,
     github_repo_slug,
@@ -927,7 +928,18 @@ def _create_draft_release(
     The draft is invisible until every upload succeeds. Its tag is pinned to
     the exact commit the archives were built from rather than to the branch
     name, so a push to `dev` during the upload cannot retag the release.
+    Drafts of the same tag that an earlier run could not clean up (a killed
+    process, a lost CI runner, a failed cleanup request) are deleted first, so
+    the release never has more than one.
     """
+    for draft in find_draft_releases(client, slug, pending.tag):
+        console.print(
+            f"[yellow]Deleting a draft release of {pending.tag} left by an "
+            f"earlier run: {draft.html_url}[/yellow]",
+            soft_wrap=True,
+        )
+        delete_draft_release(client, draft.release_id, slug)
+
     payload = _build_release_payload(
         pending.tag,
         pending.content.title,
@@ -952,8 +964,9 @@ def _upload_archives_and_publish(
 ) -> None:
     """Upload every archive to the draft, then publish it.
 
-    The draft is deleted on any failure so no half-uploaded release lingers
-    on GitHub; the failure itself propagates to the caller.
+    The draft is deleted on any failure, an interrupt included (Ctrl-C, or a
+    cancelled CI run), so no half-uploaded release lingers on GitHub; the
+    failure itself propagates to the caller.
     """
     try:
         for artifact in artifacts:
@@ -963,11 +976,19 @@ def _upload_archives_and_publish(
 
         console.print("Publishing release...")
         publish_release(client, info.release_id, slug)
-    except Exception:
-        console.print("[red]Upload or publish failed. Cleaning up draft release...[/red]")
+    except BaseException:
+        console.print(
+            "[red]Upload or publish did not finish. Cleaning up draft release...[/red]"
+        )
         try:
-            delete_release(client, info.release_id, slug)
-            console.print("[yellow]Draft release deleted.[/yellow]")
+            if delete_draft_release(client, info.release_id, slug):
+                console.print("[yellow]Draft release deleted.[/yellow]")
+            else:
+                console.print(
+                    f"[yellow]The release went live before the failure, so it is "
+                    f"left in place: https://github.com/{slug.full}/releases[/yellow]",
+                    soft_wrap=True,
+                )
         except Exception as cleanup_err:
             console.print(
                 f"[red]WARNING: Failed to delete draft release "
@@ -997,7 +1018,7 @@ def _publish_pending_upload(
     try:
         info = _create_draft_release(client, slug, pending)
         _upload_archives_and_publish(client, slug, info, pending.artifacts)
-    except Exception:
+    except BaseException:
         console.print(
             f"[yellow]The archives are kept in '{manifest_path.parent}'. The "
             f"next run offers to upload them again without rebuilding; that "
