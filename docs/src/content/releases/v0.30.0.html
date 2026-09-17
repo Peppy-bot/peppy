@@ -1,0 +1,38 @@
+<entry>
+  <title>v0.30.0</title>
+  <id>https://docs.peppy.bot/releases/v0-30-0/</id>
+  <updated>2026-09-17T00:00:00Z</updated>
+
+  <summary>A pairing slot can hold several peers through a declared cardinality, and `--nv` now renders through the GPU on Jetson boards.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.30.0&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;A pairing slot can hold several peers through a declared cardinality, and `--nv` now renders through the GPU on Jetson boards.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 17, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A pairing slot states that it may run empty with &lt;code&gt;cardinality: "zero_or_one"&lt;/code&gt; instead of &lt;code&gt;optional: true&lt;/code&gt;; replace &lt;code&gt;optional: true&lt;/code&gt; on every &lt;code&gt;depends_on.pairings&lt;/code&gt; entry (the default &lt;code&gt;one&lt;/code&gt; still requires a pair).&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy repo show&lt;/code&gt; and its &lt;code&gt;--json&lt;/code&gt; output report each pairing slot's &lt;code&gt;cardinality&lt;/code&gt; in place of the former &lt;code&gt;optional&lt;/code&gt; flag; update any parser reading that field.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Pairing&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A pairing slot can hold several pairs: declaring &lt;code&gt;cardinality: "one_or_more"&lt;/code&gt; or &lt;code&gt;"zero_or_more"&lt;/code&gt; pairs one instance with many peers, read through the generated &lt;code&gt;peers()&lt;/code&gt; and published to with &lt;code&gt;publish_to&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy stack list&lt;/code&gt; prints one row per pair tagged with each peer's copy, and &lt;code&gt;stack join&lt;/code&gt; / &lt;code&gt;stack remove&lt;/code&gt; add and dissolve pairs on a running multi slot.&lt;/li&gt;
+&lt;li&gt;An observer link can watch a single pair by naming its other end (&lt;code&gt;watch: "peer_instance/link"&lt;/code&gt;) instead of the whole source slot.&lt;/li&gt;
+&lt;li&gt;The generated test harness gives a multi pairing slot &lt;code&gt;&amp;lt;link&amp;gt;_instances&lt;/code&gt; and &lt;code&gt;&amp;lt;link&amp;gt;_members&lt;/code&gt; knobs that start one mock peer per member.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Containers&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Passing &lt;code&gt;apptainer_run_extra_args: ["--nv"]&lt;/code&gt; now binds the Tegra driver libraries, so a node renders or computes through the GPU on Jetson boards as it does on desktop NVIDIA hardware.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Other changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;While a build is quiet, each build-progress line names the last line the build printed and how long ago.&lt;/li&gt;
+&lt;li&gt;A daemon's derived core-node name now takes the form &lt;code&gt;cn-{adjective}-{animal}&lt;/code&gt;.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
