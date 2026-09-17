@@ -34,8 +34,7 @@ runs:
         commit: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'on-change' || 'false' }}
 
     # Symlinks rather than CARGO_TARGET_DIR and CARGO_HOME: the docs snippet
-    # runner builds its nodes under the workspace's own `target/`, the
-    # workspace's .cargo/config.toml routes uv's cache under it too, and the
+    # runner builds its nodes under the workspace's own `target/`, and the
     # rustup proxies live in ~/.cargo/bin beside the registry. Linking the
     # directories leaves every path where each tool expects it. The build
     # scripts' tool cache (`~/.peppy/tmp`: the apptainer and squashfuse
@@ -45,16 +44,23 @@ runs:
     # every entry. Incremental compilation is off: its caches are most of a
     # debug target directory and the disk is billed per gigabyte, while all
     # it would save is the seconds a warm rebuild of a crate's own code takes.
+    #
+    # One subtree of `target/` stays off the disk: the workspace's
+    # .cargo/config.toml routes uv's cache to `target/uv-cache`, and the
+    # Python generator tests fill it with a freshly built peppylib wheel per
+    # test, each under a new hash in an append-only cache. Tens of gigabytes
+    # per run that no later run reads, so that directory lives in the
+    # runner's temp dir and dies with the job.
     - name: Link cargo and the build scripts to the disk
       shell: bash
       run: |
         set -euo pipefail
         disk="$HOME/.cache/peppy-ci"
-        # link <path> <disk subdirectory>: the path becomes a symlink to the
-        # subdirectory. A real directory already at the path is a job that
-        # ran cargo before this action, which this refuses to hide.
+        # link <path> <store>: the path becomes a symlink to the store. A
+        # real directory already at the path is a job that ran cargo before
+        # this action, which this refuses to hide.
         link() {
-          local path=$1 store="$disk/$2"
+          local path=$1 store=$2
           mkdir -p "$store" "$(dirname "$path")"
           if [ -e "$path" ] && [ ! -L "$path" ]; then
             echo "::error::$path exists and is not a symlink; cargo-cache must run before any cargo step"
@@ -62,9 +68,16 @@ runs:
           fi
           ln -sfn "$store" "$path"
         }
-        link "$GITHUB_WORKSPACE/target" target
-        link "$HOME/.cargo/registry" cargo-registry
-        link "$HOME/.cargo/git" cargo-git
-        link "$HOME/.peppy/tmp" peppy-tmp
+        link "$GITHUB_WORKSPACE/target" "$disk/target"
+        link "$HOME/.cargo/registry" "$disk/cargo-registry"
+        link "$HOME/.cargo/git" "$disk/cargo-git"
+        link "$HOME/.peppy/tmp" "$disk/peppy-tmp"
+        # A snapshot committed while uv's cache still lived on the disk holds
+        # it as a real directory; it goes before the link takes its place.
+        if [ -d "$disk/target/uv-cache" ] && [ ! -L "$disk/target/uv-cache" ]; then
+          rm -rf "$disk/target/uv-cache"
+        fi
+        link "$disk/target/uv-cache" "$RUNNER_TEMP/uv-cache"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
-        du -sh "$disk"/* 2>/dev/null || true
+        echo "Disk contents at mount:"
+        du -sh "$disk"/* "$disk"/target/* 2>/dev/null || true
