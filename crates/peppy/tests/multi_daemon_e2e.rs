@@ -1029,6 +1029,20 @@ const COPIES_ONLY_LAUNCHER: &str = r#"{
   } }]
 }"#;
 
+const PAIRING_FLEET_LAUNCHER_FILE: &str = "pairing_fleet.json5";
+/// One hub holding a pair per leader through a `zero_or_more` slot, and a
+/// leader axis whose copies pair into it from whichever machine they are
+/// placed on. Every leader needs a value of its own, which the join sets.
+const PAIRING_FLEET_LAUNCHER: &str = r#"{
+  peppy_schema: "launcher/v1",
+  deployments: [{ source: { name: "pairing_hub", tag: "v1" },
+    instances: [{ instance_id: "hub_inst" }] }],
+  components: [{ name: "leader", cardinality: "zero_or_more", options: {
+    limb: { deployments: [{ source: { name: "pairing_leader", tag: "v1" },
+      instances: [{ instance_id: "leader_inst", links: { hub: "hub_inst" } }] }] }
+  } }]
+}"#;
+
 /// A launch that starts one idle gate per daemon, deploys the copy the test
 /// launches, and takes the rest as joins:
 /// one arm serving a heartbeat topic, echo and release services and a move
@@ -1501,6 +1515,10 @@ impl Substrate {
         for (file_name, launcher) in [
             (NAMED_FLEET_LAUNCHER_FILE, NAMED_FLEET_LAUNCHER.to_owned()),
             (COPIES_ONLY_LAUNCHER_FILE, COPIES_ONLY_LAUNCHER.to_owned()),
+            (
+                PAIRING_FLEET_LAUNCHER_FILE,
+                PAIRING_FLEET_LAUNCHER.to_owned(),
+            ),
             (ISOLATION_FLEET_LAUNCHER_FILE, isolation_fleet_launcher()),
             (
                 MISSING_PUBLISHER_CLOCK_LAUNCHER_FILE,
@@ -4395,4 +4413,205 @@ mod copy_traffic_oracle {
             vec!["never held `charlie1-1h`".to_owned()]
         );
     }
+}
+
+/// How many states a leader has heard carrying `value`, from its log.
+async fn hearings(daemon: &Daemon, instance_id: &str, value: f64) -> usize {
+    daemon
+        .node_log(instance_id)
+        .await
+        .matches(&format!("heard positions=[{value:?}, "))
+        .count()
+}
+
+/// Polls until `instance_id` has heard more states carrying `value` than
+/// `before`: the pair is still carrying that leader's own stream.
+async fn wait_for_more_hearings(daemon: &Daemon, instance_id: &str, value: f64, before: usize) {
+    let started = Instant::now();
+    while started.elapsed() < TIMEOUT {
+        if hearings(daemon, instance_id, value).await > before {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("{instance_id} heard no state carrying {value:?} after its neighbour left");
+}
+
+/// FRAMEWORK-220 across machines: a `zero_or_more` follower slot starts
+/// empty on the coordinator, three leaders pair into it one at a time, two
+/// of them from the second daemon, the hub lists them in join order and
+/// each leader hears only the states answered to it, removing the second
+/// leaves the other two paired and streaming, and rejoining under the same
+/// name pairs once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
+    let federation = start_federation("peppy-pairing-fleet").await;
+    let cloud = federation.cloud_core_node.as_str();
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                &container_launcher(PAIRING_FLEET_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the hub",
+    );
+    // The slot starts empty, with no link and no vacancy written.
+    federation
+        .robot
+        .wait_for_node_log("hub_inst", "[pairing-hub] up, peers=\n")
+        .await;
+
+    let leaders: [(&str, f64, Option<&str>); 3] = [
+        ("alpha", 1.0, None),
+        ("bravo", 2.0, Some(cloud)),
+        ("charlie", 3.0, Some(cloud)),
+    ];
+    for (name, value, place) in leaders {
+        let argument = format!("leader_inst.value={value}");
+        let mut args = vec![
+            "stack",
+            "join",
+            "limb",
+            "-i",
+            name,
+            "--set-arguments",
+            &argument,
+        ];
+        if let Some(core_node) = place {
+            args.extend(["--place", core_node]);
+        }
+        require_success(federation.robot.peppy(&args).await, "join a leader");
+        // The hub hears this leader on a pair tagged with its copy.
+        federation
+            .robot
+            .wait_for_node_log(
+                "hub_inst",
+                &format!("setpoint from {name}_leader_inst copy={name} positions=[{value:?}, "),
+            )
+            .await;
+    }
+    federation
+        .robot
+        .wait_for_node_log(
+            "hub_inst",
+            "peers=alpha_leader_inst/alpha,bravo_leader_inst/bravo,charlie_leader_inst/charlie",
+        )
+        .await;
+
+    // Every leader hears its own value back, and nothing of another's.
+    let daemon_of = |name: &str| {
+        if name == "alpha" {
+            &federation.robot
+        } else {
+            &federation.cloud
+        }
+    };
+    for (name, value, _) in leaders {
+        let instance = format!("{name}_leader_inst");
+        let log = daemon_of(name)
+            .wait_for_node_log(&instance, &format!("heard positions=[{value:?}, "))
+            .await;
+        for (other, other_value, _) in leaders {
+            if other != name {
+                assert!(
+                    !log.contains(&format!("heard positions=[{other_value:?}, ")),
+                    "{instance} heard {other}'s states:\n{log}"
+                );
+            }
+        }
+    }
+
+    // The coordinator lists every pair of the slot, each with the machine
+    // its leader runs on.
+    let listed = require_success(
+        federation
+            .robot
+            .stack_list(Some(&federation.robot_core_node))
+            .await,
+        "list the hub's pairs",
+    );
+    for (name, place) in [
+        ("alpha", federation.robot_core_node.as_str()),
+        ("bravo", cloud),
+        ("charlie", cloud),
+    ] {
+        let row = format!("limbs ⇌ {name}_leader_inst:hub@{place}");
+        assert_eq!(listed.matches(&row).count(), 1, "{row} in:\n{listed}");
+    }
+
+    // Removing the second leaves the other two paired and streaming.
+    let alpha_before = hearings(&federation.robot, "alpha_leader_inst", 1.0).await;
+    let charlie_before = hearings(&federation.cloud, "charlie_leader_inst", 3.0).await;
+    require_success(
+        federation.robot.peppy(&["stack", "remove", "bravo"]).await,
+        "remove a leader",
+    );
+    federation
+        .robot
+        .wait_for_node_log(
+            "hub_inst",
+            "peers=alpha_leader_inst/alpha,charlie_leader_inst/charlie\n",
+        )
+        .await;
+    wait_for_more_hearings(&federation.robot, "alpha_leader_inst", 1.0, alpha_before).await;
+    wait_for_more_hearings(
+        &federation.cloud,
+        "charlie_leader_inst",
+        3.0,
+        charlie_before,
+    )
+    .await;
+
+    // Rejoining under the same name pairs once, at the end of the set.
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "join",
+                "limb",
+                "-i",
+                "bravo",
+                "--set-arguments",
+                "leader_inst.value=2",
+                "--place",
+                cloud,
+            ])
+            .await,
+        "rejoin a leader",
+    );
+    federation
+        .robot
+        .wait_for_node_log(
+            "hub_inst",
+            "peers=alpha_leader_inst/alpha,charlie_leader_inst/charlie,bravo_leader_inst/bravo",
+        )
+        .await;
+    federation
+        .cloud
+        .wait_for_node_log("bravo_leader_inst", "heard positions=[2.0, ")
+        .await;
+    let listed = require_success(
+        federation
+            .robot
+            .stack_list(Some(&federation.robot_core_node))
+            .await,
+        "list the hub's pairs after the rejoin",
+    );
+    assert_eq!(
+        listed.matches("limbs ⇌ bravo_leader_inst:hub@").count(),
+        1,
+        "the rejoined leader holds one pair:\n{listed}"
+    );
+
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the pairing fleet",
+    );
 }
