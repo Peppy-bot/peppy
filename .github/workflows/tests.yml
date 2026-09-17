@@ -27,13 +27,12 @@ env:
 # left them, so it compiles only what the change touched. The gated suites wait
 # only for the changes job, never for another suite.
 #
-# Every job runs on the self-hosted runner, except on a pull request from a
-# fork: fork code must not run on a box that persists between jobs and holds
-# every repository's build caches, so those runs go to a GitHub-hosted runner,
-# which starts from a cold cache. `github.event.pull_request.head.repo.fork` is
-# null on push, which the expression reads as false. The self-hosted runner
-# executes one job at a time, so the suites below queue rather than run in
-# parallel.
+# Every job runs on the self-hosted runner; no job uses a GitHub-hosted one.
+# The runner executes one job at a time, so the suites below queue rather than
+# run in parallel, and the workflow's wall clock is the sum of what it runs.
+# A pull request from a fork lands on the same box, so what keeps fork code
+# away from it is the repository's fork-PR approval gate, not the runner it is
+# scheduled on.
 jobs:
   # Which of the gated suites have had their inputs touched. The per-suite
   # source sets are derived from cargo metadata's resolve graph at run time
@@ -41,7 +40,7 @@ jobs:
   # to maintain here. A suite whose inputs are untouched has its job skipped,
   # and the action reports the reason in this job's annotations and summary.
   changes:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
     outputs:
@@ -70,7 +69,7 @@ jobs:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
 
   workspace-tests:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
 
@@ -95,7 +94,7 @@ jobs:
   container-e2e:
     needs: changes
     if: needs.changes.outputs.container_e2e == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
 
@@ -116,7 +115,7 @@ jobs:
           command: cargo test --locked -p core-node --features container_e2e --test container_e2e
 
   multi-daemon-e2e:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
 
@@ -137,10 +136,9 @@ jobs:
       # default builder of the runner's own Docker daemon, and on a self-hosted
       # runner that buildkit instance and its layer cache outlive the job. So
       # the apt and uv-python layers are built once and reused across runs with
-      # nothing to hydrate or commit. On a fork's pull request the job runs on a
-      # GitHub-hosted runner, where the builder is fresh and the image is built
-      # from scratch; the test falls back to the testcontainers build where no
-      # buildx client is installed at all, building the identical image body.
+      # nothing to hydrate or commit. Where no buildx client is installed at
+      # all the test falls back to the testcontainers build, building the
+      # identical image body.
       - uses: ./.github/actions/cargo-suite
         with:
           command: cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
@@ -148,7 +146,7 @@ jobs:
   docs-integration:
     needs: changes
     if: needs.changes.outputs.docs_integration == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
 
@@ -182,7 +180,7 @@ jobs:
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
 
@@ -227,7 +225,7 @@ jobs:
   # apptainer needs a Lima VM or a pre-seeded cache and a check build never
   # runs containers.
   cross-check:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions:
       contents: read
 
@@ -277,7 +275,7 @@ jobs:
     # Runs whatever happened above: on the default condition a failed or
     # cancelled suite would leave this check unreported instead of red.
     if: always()
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: self-hosted
     permissions: {}
 
     steps:

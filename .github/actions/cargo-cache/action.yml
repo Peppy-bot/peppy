@@ -24,17 +24,15 @@ runs:
     # dependency bump or a profile change superseded, so a target directory
     # only grows. The first run of a month starts empty and pays one cold
     # build per suite, the prune below drops the previous month, and a
-    # directory is never older than a month of leftovers. On a fork's pull
-    # request the job runs on a GitHub-hosted runner instead, where this path
-    # starts empty and dies with the job: a cold build, which is correct
-    # rather than degraded.
+    # directory is never older than a month of leftovers.
     #
     # Unlike the Blacksmith sticky disk this replaces, the directory is live
     # rather than a clone of a committed snapshot: a run reads what the
-    # previous run left, and a pull request of this repository writes into
-    # what later runs build on. So nothing stored here may be state one run
-    # depends on another having written — only what cargo and the build
-    # scripts rebuild from scratch. The single self-hosted runner executes one
+    # previous run left, and any pull request scheduled here — a fork's
+    # included, since every job runs on this runner — writes into what later
+    # runs build on. So nothing stored here may be state one run depends on
+    # another having written, only what cargo and the build scripts rebuild
+    # from scratch. The single self-hosted runner executes one
     # job at a time, so concurrent writers are not a concern today; a second
     # runner would make the registry and target directories shared mutable
     # state and is a reason to revisit this.

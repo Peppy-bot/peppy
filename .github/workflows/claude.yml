@@ -55,7 +55,7 @@ jobs:
         && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
         && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
 
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     permissions:
       contents: read
     outputs:
@@ -93,10 +93,12 @@ jobs:
     needs: authorize
     if: needs.authorize.outputs.is_admin == 'true'
 
-    # GitHub-hosted rather than the self-hosted runner the other workflows use.
-    # This job installs its own toolchain and would otherwise contend with the
-    # long cargo and container builds that already occupy the self-hosted box.
-    runs-on: ubuntu-24.04
+    # The self-hosted runner, as everywhere else here. This job installs its
+    # own toolchain and contends with the long cargo and container builds that
+    # occupy the box, so an `@claude` mention can wait behind a test run; it
+    # also holds `contents: write` and the Claude credential on a machine that
+    # persists between jobs, which the admin gate above is what limits.
+    runs-on: self-hosted
 
     permissions:
       contents: write # push the branch when Claude is asked to make a change

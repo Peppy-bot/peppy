@@ -250,10 +250,9 @@ async fn e2e_image() -> (String, String) {
 /// default builder, and on the self-hosted CI runner that builder belongs to a
 /// Docker daemon that outlives the job, so its layer cache persists and the apt
 /// and uv-python layers of [`e2e_dockerfile`] are built once and reused across
-/// runs. Where the runner is discarded with the job (a fork's pull request runs
-/// on a GitHub-hosted one) the cache starts empty and the image is built from
-/// scratch. Where no buildx client is installed the testcontainers build
-/// remains, driving the daemon's own embedded builder and building the
+/// runs. On a machine that starts clean the cache starts empty and the image is
+/// built from scratch. Where no buildx client is installed the testcontainers
+/// build remains, driving the daemon's own embedded builder and building the
 /// identical image body either way.
 ///
 /// `--load` exports the built image into the local daemon, which is where
