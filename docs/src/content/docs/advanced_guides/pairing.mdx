@@ -319,6 +319,25 @@ On the CLI the array becomes repetition: `--link limbs@ctrl_1 --link limbs@ctrl_
 
 A multi slot's set grows and shrinks with the stack. `peppy stack join` pairs a joining copy's instances into a running instance's multi slot, so a robot added to a running fleet pairs its backbone with the engine that is already simulating the others; `peppy stack remove` dissolves exactly those pairs, and an instance that dies takes its pairs with it, as on a scalar slot. Each pair carries the copy its peer was launched in, so a node holding four limb pairs per robot groups them by copy without naming conventions; an instance run outside a copy pairs with no copy name. `peppy stack list` renders one row per pair.
 
+Each row names the copy its peer was launched in, so an engine simulating several robots reads them apart with no naming convention (a pair whose peer runs outside a copy carries no `[copy ...]`):
+
+```
+Instance pairings
+
+NODE            INSTANCE    PAIRINGS
+sim_engine:v1   engine_1    limbs ⇌ alpha_backbone:engine@cn-adoring-zebra [copy alpha] (arm_link:v1)
+                            limbs ⇌ bravo_backbone:engine@cn-adoring-zebra [copy bravo] (arm_link:v1)
+```
+
+Before any robot joins, the same slot holds nothing, which reads as `(no pairs)`, not `(unpaired)`: an empty `zero_or_more` slot is its steady state rather than a slot missing a peer it expects.
+
+```
+Instance pairings
+
+NODE            INSTANCE    PAIRINGS
+sim_engine:v1   engine_1    limbs ⇌ (no pairs) [role arm of arm_link:v1]
+```
+
 The declared cardinality names the generated accessor. A scalar slot (`one`, `zero_or_one`) exposes `paired()` and `wait_paired()`. A multi slot (`one_or_more`, `zero_or_more`) exposes `peers()` returning every pair the slot holds as a list. A `one_or_more` slot's floor is what the plan guarantees at launch, so its accessor reads the live set like any other and the list empties once every peer has stopped. Each member is a `PeerMember`: its `info` is the peer's identity, the same `PeerInfo` a scalar slot's `paired()` answers, and its `copy` is the copy the peer belongs to. The set is live and read in establishment order.
 
 Publishing names the peer. `declare_publisher` on a multi slot answers a `PeerPublisher` whose `publish_to(peer, payload)` addresses one member's `info`; a peer the slot does not hold is refused, so a message never leaves for a pair that ended. On a scalar slot `declare_publisher` answers the same `TopicPublisher` an ordinary topic does, whose `publish(payload)` reaches the one paired peer and is a no-op while unpaired. `subscribe` keeps its shape at every cardinality and fans in across the whole set, tagging each message with the `PeerInfo` that published it.
