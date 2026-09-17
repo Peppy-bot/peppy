@@ -225,6 +225,12 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/archives
 
+      # Cancelling the run signals this step's shell alone: without the trap,
+      # the shell exits and the release script carries on uploading to (or
+      # publishing) the draft on its own. The trap hands the interrupt to
+      # pixi, which passes it on to the script so it deletes the draft before
+      # exiting, and ignores the runner's follow-up SIGTERM so that cleanup is
+      # not cut short. A signal ends `wait` early, hence the loop.
       - name: Publish the release
         env:
           PEPPY_RELEASE_TOKEN: ${{ secrets.PEPPY_RELEASE_TOKEN }}
@@ -232,7 +238,16 @@ jobs:
           ./scripts/parallel_release.sh publish \
             --plan "$RUNNER_TEMP/release-plan/release-plan.json" \
             --archives "$RUNNER_TEMP/archives" \
-            < /dev/null
+            < /dev/null &
+          publish_pid=$!
+          trap 'trap "" INT TERM; kill -INT "$publish_pid" || true' INT TERM
+          status=0
+          wait "$publish_pid" || status=$?
+          while kill -0 "$publish_pid" 2>/dev/null; do
+            status=0
+            wait "$publish_pid" || status=$?
+          done
+          exit "$status"
 
       # A pending-upload manifest outlives the run only when the archives were
       # verified but never published. Copied into dist/ of a `dev` checkout at
