@@ -1,10 +1,11 @@
 name: Cargo build cache
 description: >-
-  Points the cargo target directory, the cargo registry and git checkouts, and
-  the build scripts' tool cache at a directory that persists on the self-hosted
-  runner between jobs, so a job compiles only what changed since the suite last
-  ran. Expects the checkout and the rust-build-env action to have run first, and
-  must precede every cargo step.
+  Points the cargo target directory at a directory that persists on the
+  self-hosted runner between jobs, so a job compiles only what changed since the
+  suite last ran. The cargo registry and the build scripts' tool cache are left
+  to the runner, which keeps them across jobs of its own accord. Expects the
+  checkout and the rust-build-env action to have run first, and must precede
+  every cargo step.
 
 inputs:
   suite:
@@ -34,8 +35,8 @@ runs:
     # another having written, only what cargo and the build scripts rebuild
     # from scratch. The single self-hosted runner executes one
     # job at a time, so concurrent writers are not a concern today; a second
-    # runner would make the registry and target directories shared mutable
-    # state and is a reason to revisit this.
+    # runner would make the target directories shared mutable state and is a
+    # reason to revisit this.
     - name: Name the suite's cache directory
       id: cache
       shell: bash
@@ -62,20 +63,32 @@ runs:
           fi
         done
 
-    # Symlinks rather than CARGO_TARGET_DIR and CARGO_HOME: the docs snippet
-    # runner builds its nodes under the workspace's own `target/`, and the
-    # rustup proxies live in ~/.cargo/bin beside the registry. Linking the
-    # directories leaves every path where each tool expects it. The build
-    # scripts' tool cache (`~/.peppy/tmp`: the apptainer and squashfuse
-    # sources they compile, the zenohd and Lima downloads, the peppylib
-    # cross-build outputs) is keyed by version and content in
-    # build_helpers::cache_dir, so the cache is either a hit or a miss for
-    # every entry. Incremental compilation is off: its caches are most of a
-    # debug target directory and all it would save is the seconds a warm
-    # rebuild of a crate's own code takes. Debug info is held to line tables
-    # for the same reason: with full debug info every test binary of this
-    # workspace exceeds a gigabyte and one suite's target directory reached
-    # 39 GB, while all CI reads of it are the file and line in a panic
+    # Only `target/` is redirected, and only through a symlink rather than
+    # CARGO_TARGET_DIR: the docs snippet runner builds its nodes under the
+    # workspace's own `target/`, so linking the directory leaves the path
+    # where every tool expects it.
+    #
+    # What this deliberately does NOT touch is anything under $HOME. The
+    # cargo registry, the git checkouts and the build scripts' tool cache
+    # (`~/.peppy/tmp`) used to be linked in here too, which made sense when
+    # the runner was discarded with the job: nothing else would ever be in
+    # those paths. On the reused self-hosted runner they are the box's own
+    # directories, shared with every other repository's jobs — public-peppy-libs
+    # runs `cargo test` as the same user — so a real directory sitting there is
+    # the normal state rather than the ordering mistake the old guard took it
+    # for, and linking them away both failed that guard and fought the other
+    # repositories for $HOME. They persist on the box by themselves and are
+    # keyed by content (the registry by crate and checksum, the tool cache by
+    # version and content in build_helpers::cache_dir), so they are a hit or a
+    # miss per entry and need no management from here. The trade is that they
+    # fall outside the monthly prune below; the registry grows slowly, where
+    # `target/` is what reached 39 GB in one suite.
+    #
+    # Incremental compilation is off: its caches are most of a debug target
+    # directory and all it would save is the seconds a warm rebuild of a
+    # crate's own code takes. Debug info is held to line tables for the same
+    # reason: with full debug info every test binary of this workspace exceeds
+    # a gigabyte, while all CI reads of it are the file and line in a panic
     # backtrace, which line tables keep. The test profile inherits the dev
     # profile's setting.
     #
@@ -85,14 +98,15 @@ runs:
     # test, each under a new hash in an append-only cache. Tens of gigabytes
     # per run that no later run reads, so that directory lives in the
     # runner's temp dir and dies with the job.
-    - name: Link cargo and the build scripts to the cache
+    - name: Link the target directory to the cache
       shell: bash
       run: |
         set -euo pipefail
         disk="${{ steps.cache.outputs.dir }}"
-        # link <path> <store>: the path becomes a symlink to the store. A
-        # real directory already at the path is a job that ran cargo before
-        # this action, which this refuses to hide.
+        # link <path> <store>: the path becomes a symlink to the store. These
+        # are per-job paths inside the checkout, which `actions/checkout`
+        # cleans, so a real directory at one is a cargo step that ran before
+        # this action — an ordering mistake this refuses to hide.
         link() {
           local path=$1 store=$2
           mkdir -p "$store" "$(dirname "$path")"
@@ -103,9 +117,6 @@ runs:
           ln -sfn "$store" "$path"
         }
         link "$GITHUB_WORKSPACE/target" "$disk/target"
-        link "$HOME/.cargo/registry" "$disk/cargo-registry"
-        link "$HOME/.cargo/git" "$disk/cargo-git"
-        link "$HOME/.peppy/tmp" "$disk/peppy-tmp"
         # A cache directory written while uv's cache still lived in it holds
         # it as a real directory; it goes before the link takes its place.
         if [ -d "$disk/target/uv-cache" ] && [ ! -L "$disk/target/uv-cache" ]; then

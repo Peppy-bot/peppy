@@ -22,10 +22,11 @@ env:
 
 # Every suite runs in a job of its own, so the workflow finishes with its
 # slowest suite rather than the sum of them. Each cargo job builds in a cache
-# directory of its own (the cargo-cache action) holding the target directory,
-# the cargo registry and the build scripts' tool cache as the suite's last run
-# left them, so it compiles only what the change touched. The gated suites wait
-# only for the changes job, never for another suite.
+# directory of its own (the cargo-cache action) holding the target directory as
+# the suite's last run left it, so it compiles only what the change touched; the
+# cargo registry and the build scripts' tool cache are the reused runner's own
+# and shared with every repository on it. The gated suites wait only for the
+# changes job, never for another suite.
 #
 # Every job runs on the self-hosted runner; no job uses a GitHub-hosted one.
 # The runner executes one job at a time, so the suites below queue rather than
@@ -206,7 +207,21 @@ jobs:
           # permission a reboot resets. Neither is state a later run may
           # depend on, so the steps stay rather than moving into the runner's
           # provisioning, and they need passwordless sudo on the box.
-          sudo apt-get install -y -qq qemu-utils qemu-system
+          #
+          # The package lists are refreshed here rather than relied on from
+          # rust-build-env, which now skips `apt-get update` whenever its own
+          # packages are already installed: on the reused runner that is every
+          # job after the first, so this step cannot assume someone else left
+          # the lists fresh.
+          qemu_missing=()
+          for package in qemu-utils qemu-system; do
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null \
+              | grep -q '^install ok installed$' || qemu_missing+=("$package")
+          done
+          if [ ${#qemu_missing[@]} -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${qemu_missing[@]}"
+          fi
           if [ -e /dev/kvm ] && ! [ -r /dev/kvm -a -w /dev/kvm ]; then
             sudo chmod 666 /dev/kvm
           fi
