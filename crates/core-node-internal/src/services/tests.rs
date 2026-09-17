@@ -222,7 +222,7 @@ fn derived_name_is_deterministic_per_host_id() {
     );
 }
 
-/// Shape: `cn-{adjective}-{surname}` — omitting the generator's numeric block —
+/// Shape: `cn-{adjective}-{animal}`, omitting the generator's numeric block,
 /// and the result passes `Name::new` validation.
 #[test]
 fn derived_name_has_compact_two_word_shape() {
@@ -237,7 +237,7 @@ fn derived_name_has_compact_two_word_shape() {
     assert_eq!(
         segments.len(),
         3,
-        "derived name must contain only the prefix, adjective, and surname: `{name}`"
+        "derived name must contain only the prefix, adjective, and animal: `{name}`"
     );
     assert_eq!(segments[0], "cn");
     assert!(!segments[1].is_empty());
@@ -245,7 +245,7 @@ fn derived_name_has_compact_two_word_shape() {
     assert!(
         !segments
             .iter()
-            .any(|segment| { segment.len() == 4 && segment.chars().all(|c| c.is_ascii_digit()) })
+            .any(|segment| { segment.chars().all(|c| c.is_ascii_digit()) })
     );
 
     assert!(Name::new(name.to_string()).is_ok());

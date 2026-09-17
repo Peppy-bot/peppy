@@ -3124,9 +3124,9 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "names-generator2"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "980249d06e11bc023ff3b555de7161d6b211ab3e3b146a42102d83ea30d373ae"
+checksum = "c3281dbf717dc21abef1e6ed1edb6c351e293d967a416ec13a7203b73e3affeb"
 dependencies = [
  "rand_core 0.10.1",
 ]
