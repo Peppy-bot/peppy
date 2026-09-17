@@ -17,6 +17,7 @@ from functions.cli import ReleaseError
 from functions.docs import (
     _CHECK_PROMPT,
     _CHECK_SCHEMA,
+    _MAX_DIFF_BYTES,
     _REWORD_PROMPT,
     _UPDATE_PROMPT,
     _UPDATE_SCHEMA,
@@ -435,6 +436,38 @@ def test_check_docs_parses_claude_verdict(tmp_path: Path) -> None:
         result = check_docs("BASE", "HEAD")
     assert result.blocking == (_blocking(),)
     assert result.minor == ()
+
+
+def _check_docs_with_diff(
+    tmp_path: Path, diff: str, paths: list[str]
+) -> CheckResult:
+    """Run the check on a canned diff with Claude answering that all is covered."""
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
+         patch("functions.docs.get_code_diff", return_value=(diff, paths)), \
+         patch(
+             "functions.claude.subprocess.run",
+             _mock_subprocess_run_for_claude({"required_changes": []}),
+         ):
+        return check_docs("BASE", "HEAD")
+
+
+def test_check_docs_says_how_much_claude_reads(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    _check_docs_with_diff(tmp_path, "x" * (3 * 1024), ["crates/a.rs", "crates/b.rs"])
+
+    err = " ".join(capfd.readouterr().err.split())
+    assert "2 changed code path(s), 3 KB of diff" in err
+    assert "not judged" not in err
+
+
+def test_check_docs_warns_when_the_diff_is_cut_short(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    _check_docs_with_diff(tmp_path, "x" * (_MAX_DIFF_BYTES + 1), ["crates/a.rs"])
+
+    err = " ".join(capfd.readouterr().err.split())
+    assert "the changes past that point are not judged" in err
 
 
 def test_check_docs_enforces_schema_and_readonly_tools(tmp_path: Path) -> None:

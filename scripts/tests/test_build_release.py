@@ -14,7 +14,9 @@ from functions.build_release import (
     _build_release_payload,
     _commit_notes_and_align_main,
     _confirm_release_content,
+    _docs_check_base,
     _find_open_docs_sync_pr,
+    _latest_release_tag,
     _offer_pending_upload,
     _open_docs_pr,
     _open_editor,
@@ -1082,6 +1084,111 @@ def test_verify_release_branch_state_rejects_main_ahead_of_dev(
 # --- the docs freshness gate ---
 
 
+# --- the latest release tag and the docs check base ---
+
+LATEST_TAG = "v0.29.0"
+
+
+@patch("functions.build_release.fetch_tag")
+@patch(
+    "functions.build_release.get_latest_release",
+    return_value={"tag_name": LATEST_TAG},
+)
+def test_latest_release_tag_fetches_the_tag_before_answering(
+    mock_latest: MagicMock, mock_fetch: MagicMock
+) -> None:
+    assert _latest_release_tag(MagicMock(), RepoSlug("o", "r")) == LATEST_TAG
+
+    # The tag can be newer than the checkout, so it is fetched before it is read.
+    mock_fetch.assert_called_once_with("origin", LATEST_TAG)
+
+
+@patch("functions.build_release.fetch_tag")
+@patch("functions.build_release.get_latest_release", return_value=None)
+def test_latest_release_tag_is_none_without_a_published_release(
+    mock_latest: MagicMock, mock_fetch: MagicMock
+) -> None:
+    assert _latest_release_tag(MagicMock(), RepoSlug("o", "r")) is None
+
+    mock_fetch.assert_not_called()
+
+
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release._latest_release_tag", return_value=None)
+def test_docs_check_base_is_origin_main_without_a_published_release(
+    mock_tag: MagicMock, mock_is_ancestor: MagicMock
+) -> None:
+    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+
+    mock_is_ancestor.assert_not_called()
+
+
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release._latest_release_tag", return_value=LATEST_TAG)
+def test_docs_check_base_is_origin_main_once_aligned_to_the_latest_release(
+    mock_tag: MagicMock, mock_is_ancestor: MagicMock
+) -> None:
+    # main sits one notes commit past the tag, as a finished release leaves it.
+    mock_is_ancestor.side_effect = _ancestry_resolver(
+        {(LATEST_TAG, "origin/main"): True}
+    )
+
+    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+
+
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release._latest_release_tag", return_value=LATEST_TAG)
+def test_docs_check_base_is_the_latest_release_tag_when_main_lags_it(
+    mock_tag: MagicMock,
+    mock_is_ancestor: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # A release published but never aligned: the tag is past main, on the way
+    # to the commit being released.
+    mock_is_ancestor.side_effect = _ancestry_resolver(
+        {
+            (LATEST_TAG, "origin/main"): False,
+            ("origin/main", LATEST_TAG): True,
+            (LATEST_TAG, DEV_COMMIT): True,
+        }
+    )
+
+    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
+
+    err = _unwrapped(capfd.readouterr().err)
+    assert f"origin/main is behind the latest release {LATEST_TAG}" in err
+
+
+@pytest.mark.parametrize(
+    "ancestry",
+    [
+        # A tag cut from main itself, off the dev line.
+        {
+            (LATEST_TAG, "origin/main"): False,
+            ("origin/main", LATEST_TAG): True,
+            (LATEST_TAG, DEV_COMMIT): False,
+        },
+        # A tag on neither branch.
+        {
+            (LATEST_TAG, "origin/main"): False,
+            ("origin/main", LATEST_TAG): False,
+        },
+    ],
+)
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release._latest_release_tag", return_value=LATEST_TAG)
+def test_docs_check_base_stays_origin_main_when_the_tag_is_off_the_release_line(
+    mock_tag: MagicMock,
+    mock_is_ancestor: MagicMock,
+    ancestry: dict[tuple[str, str], bool],
+) -> None:
+    mock_is_ancestor.side_effect = _ancestry_resolver(ancestry)
+
+    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+
+
+# --- the docs gate ---
+
 _BLOCKING_CHANGE = RequiredChange(
     file="docs/x.mdx", change="document --verbose", severity="blocking"
 )
@@ -1094,14 +1201,16 @@ def _docs_gate(
     client: MagicMock | None = None,
     slug: MagicMock | None = None,
     repo_root: Path | None = None,
+    base: str = "origin/main",
 ) -> None:
-    """Invoke the gate with placeholder GitHub handles."""
-    _verify_docs_up_to_date(
-        client or MagicMock(),
-        slug or RepoSlug(owner="test-owner", repo="test-repo"),
-        DEV_COMMIT,
-        repo_root or Path("/repo"),
-    )
+    """Invoke the gate with placeholder GitHub handles, diffing from *base*."""
+    with patch("functions.build_release._docs_check_base", return_value=base):
+        _verify_docs_up_to_date(
+            client or MagicMock(),
+            slug or RepoSlug(owner="test-owner", repo="test-repo"),
+            DEV_COMMIT,
+            repo_root or Path("/repo"),
+        )
 
 
 @patch("functions.build_release.update_docs")
@@ -1110,16 +1219,16 @@ def _docs_gate(
     return_value=CheckResult(changes=()),
 )
 @patch("functions.build_release.has_changes_in_paths", return_value=False)
-def test_docs_gate_passes_and_diffs_against_origin_main(
+def test_docs_gate_passes_and_diffs_from_the_last_shipped_commit(
     mock_has_changes: MagicMock,
     mock_check: MagicMock,
     mock_update: MagicMock,
 ) -> None:
-    _docs_gate(repo_root=Path("/repo"))
+    _docs_gate(repo_root=Path("/repo"), base="v0.29.0")
 
-    # origin/main is the last shipped commit, so it is the base the docs have
-    # to cover; the head is the dev commit being released.
-    mock_check.assert_called_once_with("origin/main", DEV_COMMIT)
+    # The base names the last shipped commit; the head is the dev commit
+    # being released.
+    mock_check.assert_called_once_with("v0.29.0", DEV_COMMIT)
     mock_update.assert_not_called()
 
 
@@ -1190,11 +1299,9 @@ def test_docs_gate_opens_an_optional_polish_pr_and_continues(
     mock_has_changes.side_effect = [False, True]
     mock_open_pr.return_value = "https://github.com/test-owner/test-repo/pull/8"
 
-    _docs_gate(repo_root=Path("/repo"))
+    _docs_gate(repo_root=Path("/repo"), base="v0.29.0")
 
-    mock_update.assert_called_once_with(
-        "origin/main", DEV_COMMIT, (_MINOR_CHANGE,)
-    )
+    mock_update.assert_called_once_with("v0.29.0", DEV_COMMIT, (_MINOR_CHANGE,))
     branch = f"auto/docs-polish-{DEV_COMMIT[:12]}"
     mock_push_branch.assert_called_once_with(
         branch, Path("/repo/docs"), "docs: minor polish"
@@ -1822,9 +1929,11 @@ def test_confirm_release_content_edits_then_accepts() -> None:
 @patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
 @patch("functions.build_release.generate_release_content")
 @patch("functions.build_release.collect_release_changes")
+@patch("functions.build_release.fetch_tag")
 @patch("functions.build_release.get_latest_release")
 def test_prepare_release_content_uses_previous_release_tag(
     mock_latest: MagicMock,
+    mock_fetch: MagicMock,
     mock_collect: MagicMock,
     mock_generate: MagicMock,
     mock_confirm: MagicMock,
@@ -1845,8 +1954,10 @@ def test_prepare_release_content_uses_previous_release_tag(
     )
 
     assert result == content
-    # Changes are gathered from the previous release tag up to the exact commit
-    # being released, not via the GitHub API.
+    # Changes are gathered from the previous release tag, fetched first since
+    # it can be newer than the checkout, up to the exact commit being
+    # released, not via the GitHub API.
+    mock_fetch.assert_called_once_with("origin", "v0.11.1")
     mock_collect.assert_called_once_with("v0.11.1", DEV_COMMIT, tmp_path)
     mock_generate.assert_called_once_with(changes, "v0.12.0", tmp_path)
     mock_confirm.assert_called_once_with(content)
@@ -1855,9 +1966,11 @@ def test_prepare_release_content_uses_previous_release_tag(
 @patch("functions.build_release._confirm_release_content", side_effect=lambda c: c)
 @patch("functions.build_release.generate_release_content")
 @patch("functions.build_release.collect_release_changes")
+@patch("functions.build_release.fetch_tag")
 @patch("functions.build_release.get_latest_release", return_value=None)
 def test_prepare_release_content_handles_no_previous_release(
     mock_latest: MagicMock,
+    mock_fetch: MagicMock,
     mock_collect: MagicMock,
     mock_generate: MagicMock,
     mock_confirm: MagicMock,
@@ -1872,5 +1985,7 @@ def test_prepare_release_content_handles_no_previous_release(
         MagicMock(), RepoSlug("o", "r"), "v0.1.0", DEV_COMMIT, tmp_path
     )
 
-    # With no prior release, the change collection falls back to the full history.
+    # With no prior release, there is no tag to fetch and the change
+    # collection falls back to the full history.
+    mock_fetch.assert_not_called()
     mock_collect.assert_called_once_with(None, DEV_COMMIT, tmp_path)

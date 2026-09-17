@@ -505,12 +505,32 @@ def _reword_added_em_dashes(
         )
 
 
+def _print_diff_size(diff: str, paths: list[str]) -> None:
+    """Say how much Claude is about to judge, so a long wait reads as work.
+
+    Nothing is printed while Claude runs, and a large diff keeps it busy for
+    many minutes. A diff past the cap is cut short and the changes past the
+    cut are never judged, which is said outright rather than left to the
+    verdict to hide.
+    """
+    console.print(
+        f"[dim]{len(paths)} changed code path(s), {len(diff) // 1024} KB of "
+        f"diff for Claude to judge; this takes a few minutes.[/dim]"
+    )
+    if len(diff) > _MAX_DIFF_BYTES:
+        console.print(
+            f"[yellow]The diff exceeds the {_MAX_DIFF_BYTES // 1024} KB the "
+            f"check reads; the changes past that point are not judged.[/yellow]"
+        )
+
+
 def check_docs(base: str, head: str) -> CheckResult:
     """Check whether ``docs/`` reflects code changes between base and head."""
     repo_root = get_repo_root()
     diff, paths = get_code_diff(base, head, repo_root)
     if not paths:
         return CheckResult(changes=())
+    _print_diff_size(diff, paths)
     prompt = _CHECK_PROMPT.format(
         paths="\n".join(paths),
         diff=truncate_diff(diff),

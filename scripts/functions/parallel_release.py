@@ -52,9 +52,11 @@ from .build_release import (
     DOCS_SYNC_BRANCH_PREFIX,
     GIT_REMOTE,
     RELEASE_BRANCH,
+    _docs_check_base,
     _docs_polish_pr_body,
     _docs_sync_pr_body,
     _find_open_docs_sync_pr,
+    _latest_release_tag,
     _open_docs_pr,
     _print_release_content,
     _publish_pending_upload,
@@ -81,7 +83,7 @@ from .docs import (
     print_minor_changes,
     update_docs,
 )
-from .github import RepoSlug, build_github_client, get_latest_release, github_repo_slug
+from .github import RepoSlug, build_github_client, github_repo_slug
 from .lima import (
     GO_LINUX_AMD64_SHA256,
     GO_LINUX_ARM64_SHA256,
@@ -96,7 +98,7 @@ from .release_summary import (
     collect_release_changes,
     generate_release_content,
 )
-from .repo import fetch_tag, get_commit, get_repo_root, has_changes_in_paths
+from .repo import get_commit, get_repo_root, has_changes_in_paths
 from .verify_release import verify_all_releases
 
 # File names the provisioning stages write and the build stage reads.
@@ -271,6 +273,7 @@ def _close_blocking_docs_gaps(
     release_commit: str,
     docs_dir: Path,
     blocking: tuple[RequiredChange, ...],
+    base: str,
 ) -> None:
     """Open the pull request closing *blocking* and stop the release.
 
@@ -290,7 +293,7 @@ def _close_blocking_docs_gaps(
         _stop_for_docs_pr(pr_url)
 
     console.print("Asking Claude to update the docs...")
-    update = update_docs(f"{GIT_REMOTE}/{ALIGNED_BRANCH}", release_commit, blocking)
+    update = update_docs(base, release_commit, blocking)
     console.print(update.summary)
 
     if not has_changes_in_paths([docs_dir]):
@@ -325,6 +328,7 @@ def _open_minor_docs_pr(
     release_commit: str,
     docs_dir: Path,
     minor: tuple[RequiredChange, ...],
+    base: str,
 ) -> None:
     """Open the optional pull request applying *minor*; the release goes on."""
     branch = f"{DOCS_POLISH_BRANCH_PREFIX}{release_commit[:12]}"
@@ -337,7 +341,7 @@ def _open_minor_docs_pr(
         return
 
     console.print("Asking Claude to apply the minor suggestions...")
-    update = update_docs(f"{GIT_REMOTE}/{ALIGNED_BRANCH}", release_commit, minor)
+    update = update_docs(base, release_commit, minor)
     console.print(update.summary)
 
     if not has_changes_in_paths([docs_dir]):
@@ -381,19 +385,21 @@ def verify_docs_gate(
             f"edits into the pull request."
         )
 
-    base = f"{GIT_REMOTE}/{ALIGNED_BRANCH}"
+    base = _docs_check_base(client, slug, release_commit)
     console.print(f"Checking '{DOCS_DIR}/' covers the code changes since {base}...")
     result = check_docs(base, release_commit)
     print_minor_changes(result.minor)
 
     if result.blocking:
         _close_blocking_docs_gaps(
-            client, slug, release_commit, docs_dir, result.blocking
+            client, slug, release_commit, docs_dir, result.blocking, base
         )
         return
 
     if result.minor and open_minor_docs_pr:
-        _open_minor_docs_pr(client, slug, release_commit, docs_dir, result.minor)
+        _open_minor_docs_pr(
+            client, slug, release_commit, docs_dir, result.minor, base
+        )
     console.print(f"[green]'{DOCS_DIR}/' is up to date.[/green]")
 
 
@@ -409,12 +415,8 @@ def _draft_release_content(
     The same draft the single-host release offers for review. Nobody reviews
     it here, so it is printed for the log instead.
     """
-    latest = get_latest_release(client, slug)
-    previous_tag = latest.get("tag_name") if latest else None
+    previous_tag = _latest_release_tag(client, slug)
     if previous_tag:
-        # The last release can be newer than this checkout, whose clone holds
-        # only the tags that existed when it was made.
-        fetch_tag(GIT_REMOTE, previous_tag)
         console.print(f"Listing changes since last release [bold]{previous_tag}[/bold]...")
     else:
         console.print(
