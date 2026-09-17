@@ -7,8 +7,11 @@ import random
 import re
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any
 
 import httpx
@@ -21,6 +24,10 @@ _DEFAULT_ACCEPT = "application/vnd.github+json"
 _UPLOAD_TIMEOUT = 600.0
 _UPLOAD_MAX_ATTEMPTS = 3
 _UPLOAD_RETRY_BASE_DELAY = 5.0
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+_UPLOAD_PROGRESS_INTERVAL = 10.0
+_RELEASES_PAGE_SIZE = 100
+_MIB = 1024 * 1024
 _RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
 
 _GIT_REMOTE_PATTERNS: list[tuple[str, str]] = [
@@ -146,6 +153,71 @@ def _is_retryable(exc: Exception) -> bool:
     return False
 
 
+def format_mib(size_bytes: float) -> str:
+    """Format a byte count (or a byte rate) in mebibytes, for upload output."""
+    return f"{size_bytes / _MIB:.1f} MiB"
+
+
+class UploadProgress:
+    """How much of one asset upload has gone out, for the upload's log lines.
+
+    The upload advances the byte count as the connection takes each chunk of
+    chunks(), while a reporting thread reads it on its own schedule, so the
+    lines keep coming (at 0.0 MiB/s) while the connection is stalled.
+    """
+
+    def __init__(self, asset_name: str, total_bytes: int, started_at: float) -> None:
+        self.asset_name = asset_name
+        self.total_bytes = total_bytes
+        self.sent_bytes = 0
+        self._started_at = started_at
+        self._reported_bytes = 0
+        self._reported_at = started_at
+
+    def chunks(self, path: Path) -> Iterator[bytes]:
+        """Yield the file chunk by chunk, counting each once the connection took it."""
+        with open(path, "rb") as f:
+            while chunk := f.read(_UPLOAD_CHUNK_SIZE):
+                yield chunk
+                self.sent_bytes += len(chunk)
+
+    def progress_line(self, now: float) -> str:
+        """Describe the bytes sent so far and the rate since the previous line."""
+        sent = self.sent_bytes
+        elapsed = now - self._reported_at
+        rate = (sent - self._reported_bytes) / elapsed if elapsed > 0 else 0.0
+        self._reported_bytes, self._reported_at = sent, now
+        percent = sent * 100 // self.total_bytes if self.total_bytes else 100
+        return (
+            f"  {self.asset_name}: {format_mib(sent)} of "
+            f"{format_mib(self.total_bytes)} ({percent}%), {format_mib(rate)}/s"
+        )
+
+    def summary_line(self, now: float) -> str:
+        """Describe the finished upload: how long it took and its average rate."""
+        elapsed = now - self._started_at
+        rate = self.total_bytes / elapsed if elapsed > 0 else 0.0
+        return f"Uploaded {self.asset_name} in {elapsed:.0f}s ({format_mib(rate)}/s)."
+
+
+@contextmanager
+def _printing_progress(progress: UploadProgress) -> Iterator[None]:
+    """Print a progress line every _UPLOAD_PROGRESS_INTERVAL seconds while the block runs."""
+    stopped = Event()
+
+    def print_until_stopped() -> None:
+        while not stopped.wait(_UPLOAD_PROGRESS_INTERVAL):
+            console.print(progress.progress_line(time.monotonic()))
+
+    reporter = Thread(target=print_until_stopped, daemon=True)
+    reporter.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        reporter.join()
+
+
 def github_upload_asset(
     client: httpx.Client,
     release_id: int,
@@ -159,6 +231,8 @@ def github_upload_asset(
     """Upload a binary asset to a GitHub release with retry on transient failures.
 
     Uses the uploads.github.com endpoint with application/octet-stream.
+    The file is streamed from disk, with a progress line every
+    _UPLOAD_PROGRESS_INTERVAL seconds and a summary once GitHub accepted it.
     Retries on timeouts, connection errors, and HTTP 502/503/504.
     Cleans up partial uploads before each retry to avoid 422 conflicts.
     Returns the parsed JSON response from the upload.
@@ -167,9 +241,7 @@ def github_upload_asset(
         f"https://uploads.github.com/repos/{slug.full}/releases/{release_id}"
         f"/assets?name={asset_name}"
     )
-
-    with open(asset_path, "rb") as f:
-        data = f.read()
+    total_bytes = asset_path.stat().st_size
 
     last_exc: Exception | None = None
     for attempt in range(max_attempts):
@@ -182,17 +254,23 @@ def github_upload_asset(
             )
             time.sleep(delay)
 
+        progress = UploadProgress(asset_name, total_bytes, time.monotonic())
         try:
-            response = client.post(
-                upload_url,
-                content=data,
-                headers={
-                    "Accept": _DEFAULT_ACCEPT,
-                    "Content-Type": "application/octet-stream",
-                },
-                timeout=httpx.Timeout(timeout),
-            )
+            with _printing_progress(progress):
+                response = client.post(
+                    upload_url,
+                    content=progress.chunks(asset_path),
+                    headers={
+                        "Accept": _DEFAULT_ACCEPT,
+                        "Content-Type": "application/octet-stream",
+                        # Given the length, httpx sends the streamed body as
+                        # is instead of switching to chunked encoding.
+                        "Content-Length": str(total_bytes),
+                    },
+                    timeout=httpx.Timeout(timeout),
+                )
             response.raise_for_status()
+            console.print(progress.summary_line(time.monotonic()))
             return response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
             if not _is_retryable(e) or attempt == max_attempts - 1:
@@ -315,18 +393,64 @@ def replace_and_upload_asset(
 ) -> None:
     """Delete an existing asset (if any) and upload a new one."""
     delete_asset_if_exists(client, release_id, asset_name, slug)
-    console.print(f"Uploading [bold]{asset_name}[/bold]...")
+    console.print(
+        f"Uploading [bold]{asset_name}[/bold] ({format_mib(asset_path.stat().st_size)})..."
+    )
     github_upload_asset(client, release_id, asset_name, asset_path, slug)
 
 
-def delete_release(
+def find_draft_releases(
+    client: httpx.Client,
+    slug: RepoSlug,
+    tag: str,
+) -> list[ReleaseInfo]:
+    """Return every unpublished draft release of *tag*, across all release pages."""
+    drafts: list[ReleaseInfo] = []
+    page = 1
+    while True:
+        releases = github_api(
+            client,
+            "GET",
+            f"https://api.github.com/repos/{slug.full}/releases"
+            f"?per_page={_RELEASES_PAGE_SIZE}&page={page}",
+        )
+        if not isinstance(releases, list):
+            raise ReleaseError(
+                "unexpected GitHub API response for the release list (expected JSON array)"
+            )
+        drafts.extend(
+            parse_release_response(release)
+            for release in releases
+            if isinstance(release, dict)
+            and release.get("draft") is True
+            and release.get("tag_name") == tag
+        )
+        if len(releases) < _RELEASES_PAGE_SIZE:
+            return drafts
+        page += 1
+
+
+def delete_draft_release(
     client: httpx.Client,
     release_id: int,
     slug: RepoSlug,
-) -> None:
-    """Delete a GitHub release by ID. Used to clean up draft releases on failure."""
+) -> bool:
+    """Delete a GitHub release by ID, only while it is still a draft.
+
+    A publish request cut short on the client can still have gone through on
+    GitHub, so the release a failure cleans up may already be live; that one
+    is left alone. Returns True when the draft was deleted.
+    """
     url = f"https://api.github.com/repos/{slug.full}/releases/{release_id}"
+    release = github_api(client, "GET", url)
+    if not isinstance(release, dict):
+        raise ReleaseError(
+            "unexpected GitHub API response for the release (expected JSON object)"
+        )
+    if release.get("draft") is not True:
+        return False
     github_api(client, "DELETE", url)
+    return True
 
 
 def publish_release(
