@@ -21,11 +21,19 @@ env:
   PEPPY_CROSS_BUILD: "1"
 
 # Every suite runs in a job of its own, so the workflow finishes with its
-# slowest suite rather than the sum of them. Each cargo job builds on a sticky
-# disk of its own (the cargo-cache action) holding the target directory, the
-# cargo registry and the build scripts' tool cache as the suite's last
-# committed run left them, so it compiles only what the change touched. The
-# gated suites wait only for the changes job, never for another suite.
+# slowest suite rather than the sum of them. Each cargo job builds in a cache
+# directory of its own (the cargo-cache action) holding the target directory,
+# the cargo registry and the build scripts' tool cache as the suite's last run
+# left them, so it compiles only what the change touched. The gated suites wait
+# only for the changes job, never for another suite.
+#
+# Every job runs on the self-hosted runner, except on a pull request from a
+# fork: fork code must not run on a box that persists between jobs and holds
+# every repository's build caches, so those runs go to a GitHub-hosted runner,
+# which starts from a cold cache. `github.event.pull_request.head.repo.fork` is
+# null on push, which the expression reads as false. The self-hosted runner
+# executes one job at a time, so the suites below queue rather than run in
+# parallel.
 jobs:
   # Which of the gated suites have had their inputs touched. The per-suite
   # source sets are derived from cargo metadata's resolve graph at run time
@@ -33,7 +41,7 @@ jobs:
   # to maintain here. A suite whose inputs are untouched has its job skipped,
   # and the action reports the reason in this job's annotations and summary.
   changes:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
     outputs:
@@ -62,7 +70,7 @@ jobs:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
 
   workspace-tests:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
 
@@ -87,7 +95,7 @@ jobs:
   container-e2e:
     needs: changes
     if: needs.changes.outputs.container_e2e == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
 
@@ -108,7 +116,7 @@ jobs:
           command: cargo test --locked -p core-node --features container_e2e --test container_e2e
 
   multi-daemon-e2e:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
 
@@ -124,20 +132,15 @@ jobs:
         with:
           suite: multi-daemon-e2e
 
-      # A persistent Docker builder: setup-docker-builder starts a buildkitd
-      # whose layer cache lives on a sticky disk, hydrated from this job's
-      # previous runs and committed back when the job succeeds, and makes it
-      # the default builder for every later `docker buildx` command. The
-      # multi-daemon e2e builds its daemon image through that client, so its
-      # apt and uv layers are built once and reused across runs; the Docker
-      # daemon's own embedded builder would rebuild them from scratch on
-      # every ephemeral runner. One cache key per build workload, per
-      # Blacksmith's scoping guidance.
-      - name: Set up the cached Docker builder
-        uses: useblacksmith/setup-docker-builder@v2
-        with:
-          cache-key: peppy/multi-daemon-e2e-image
-
+      # No builder setup step: the suite builds its daemon image through
+      # `docker buildx build` (see build_e2e_daemon_image), which resolves the
+      # default builder of the runner's own Docker daemon, and on a self-hosted
+      # runner that buildkit instance and its layer cache outlive the job. So
+      # the apt and uv-python layers are built once and reused across runs with
+      # nothing to hydrate or commit. On a fork's pull request the job runs on a
+      # GitHub-hosted runner, where the builder is fresh and the image is built
+      # from scratch; the test falls back to the testcontainers build where no
+      # buildx client is installed at all, building the identical image body.
       - uses: ./.github/actions/cargo-suite
         with:
           command: cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
@@ -145,7 +148,7 @@ jobs:
   docs-integration:
     needs: changes
     if: needs.changes.outputs.docs_integration == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
 
@@ -179,7 +182,7 @@ jobs:
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
 
@@ -199,6 +202,12 @@ jobs:
           # packages match what the suite's own failure message names. KVM
           # opens when present but group-inaccessible; without it Lima falls
           # back to software emulation, which only costs time.
+          #
+          # Both lines outlive the job on the self-hosted runner: apt is a
+          # no-op once the packages are there, and the chmod re-applies a
+          # permission a reboot resets. Neither is state a later run may
+          # depend on, so the steps stay rather than moving into the runner's
+          # provisioning, and they need passwordless sudo on the box.
           sudo apt-get install -y -qq qemu-utils qemu-system
           if [ -e /dev/kvm ] && ! [ -r /dev/kvm -a -w /dev/kvm ]; then
             sudo chmod 666 /dev/kvm
@@ -218,7 +227,7 @@ jobs:
   # apptainer needs a Lima VM or a pre-seeded cache and a check build never
   # runs containers.
   cross-check:
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions:
       contents: read
 
@@ -233,6 +242,9 @@ jobs:
         with:
           suite: cross-check
 
+      # Both are no-ops once present, which is what every run after the
+      # first on the reused self-hosted runner sees; they need passwordless
+      # sudo on the box.
       - name: Install the aarch64 cross toolchain
         run: |
           rustup target add aarch64-unknown-linux-gnu
@@ -265,7 +277,7 @@ jobs:
     # Runs whatever happened above: on the default condition a failed or
     # cancelled suite would leave this check unreported instead of red.
     if: always()
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || 'self-hosted' }}
     permissions: {}
 
     steps:

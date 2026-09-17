@@ -247,15 +247,14 @@ async fn e2e_image() -> (String, String) {
 /// Builds the daemon image into the local Docker daemon.
 ///
 /// Prefers the buildx client: `docker buildx build` resolves the configured
-/// default builder, and the CI runners run one whose layer cache persists
-/// between runs (Blacksmith hydrates a dedicated builder from a sticky disk
-/// for jobs that set up `useblacksmith/setup-docker-builder`), so the apt and
-/// uv-python layers of [`e2e_dockerfile`] are built once and reused across
-/// runs. The daemon's own embedded builder, which the testcontainers build
-/// below drives, keeps its cache only inside the ephemeral runner and
-/// rebuilds the image from scratch every run. Where no buildx client is
-/// installed the testcontainers build remains, building the identical
-/// image body either way.
+/// default builder, and on the self-hosted CI runner that builder belongs to a
+/// Docker daemon that outlives the job, so its layer cache persists and the apt
+/// and uv-python layers of [`e2e_dockerfile`] are built once and reused across
+/// runs. Where the runner is discarded with the job (a fork's pull request runs
+/// on a GitHub-hosted one) the cache starts empty and the image is built from
+/// scratch. Where no buildx client is installed the testcontainers build
+/// remains, driving the daemon's own embedded builder and building the
+/// identical image body either way.
 ///
 /// `--load` exports the built image into the local daemon, which is where
 /// the containers below expect to find it. The Dockerfile arrives on stdin
