@@ -18,6 +18,10 @@ use std::collections::{BTreeMap, HashSet};
 
 pub use crate::internal::source::DeploymentSource;
 
+/// The rule a slot's link targets keep, whatever kind of slot names them:
+/// every surface that refuses a repeated target ends its message with it.
+pub const EACH_TARGET_ONCE: &str = "a slot lists each target once";
+
 #[derive(Debug, Clone)]
 pub struct PeppyLauncher {
     pub peppy_schema: PeppySchema,
@@ -539,9 +543,9 @@ pub enum LinkValue {
     /// `leader_left_arm: { vacant: "monitor rig: nothing commands this
     /// backbone" }`: the slot boots unresolved on purpose, and the deployment
     /// says why. Legal only where the node's own manifest declares the slot
-    /// emptiable: `optional: true` on a participant pairing slot, or
-    /// `cardinality: "zero_or_one"` on an observer slot or a producer-binding
-    /// slot. A slot the manifest declares required cannot be vacated at all,
+    /// emptiable: `cardinality: "zero_or_one"` on a participant pairing slot,
+    /// an observer slot or a producer-binding slot. A slot the manifest
+    /// declares required cannot be vacated at all,
     /// and a multi-cardinality slot writes its emptiness as `[]` or an omitted
     /// key; [`crate::launcher::links::validate_link_slots`] rejects a vacancy
     /// on either.
@@ -605,11 +609,12 @@ impl Selection {
         }
     }
 
-    /// The single target of a participant pairing link, or `None` when the
-    /// selection carries a set of targets. A pairing is strictly 1:1, so a
-    /// participant slot takes exactly one `<instance>[/<link_id>]` target and
-    /// its validator calls this to reject a multi-target value up front.
-    /// Observer slots are sized by their `cardinality` instead and go through
+    /// The single target of a scalar participant pairing link, or `None`
+    /// when the selection carries a set of targets. A `one` or `zero_or_one`
+    /// slot holds one pair, so it takes exactly one `<instance>[/<link_id>]`
+    /// target and its validator calls this to reject a multi-target value up
+    /// front; a multi slot takes every target as one pair. Observer slots are
+    /// sized by their `cardinality` instead and go through
     /// [`check_cardinality_shape`]. A launch-file scalar and a
     /// single CLI `--link KEY@target` occurrence (a one-element
     /// [`Selection::Flags`]) both count as one target; an array or a repeated
@@ -773,8 +778,8 @@ pub fn check_cardinality_shape(
 /// The target list of a [`Selection::Array`] / [`Selection::Flags`]
 /// value, duplicate-free by construction: every path that builds one (the
 /// launch-file value parser, CLI flag accumulation, programmatic plan
-/// building) funnels through [`LinkTargets::new`], so a slot's bound
-/// set naming a producer twice is unrepresentable rather than re-checked
+/// building) funnels through [`LinkTargets::new`], so a slot's target
+/// set naming a target twice is unrepresentable rather than re-checked
 /// at each boundary. Declaration order is preserved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
@@ -813,7 +818,7 @@ impl LinkTargets {
 /// Error from [`LinkTargets::new`]: `target` appears more than once
 /// within one slot's set. Boundaries prefix it with their own surface
 /// context (the link key at launch-file parse, the `--link` flag pair
-/// on the CLI); the rule sentence itself is stated only here.
+/// on the CLI); the rule sentence is [`EACH_TARGET_ONCE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateLinkTarget {
     pub target: String,
@@ -823,7 +828,7 @@ impl std::fmt::Display for DuplicateLinkTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "names target `{}` more than once: a slot's bound set lists each producer once",
+            "names target `{}` more than once: {EACH_TARGET_ONCE}",
             self.target
         )
     }
@@ -941,10 +946,11 @@ pub struct DeploymentInstance {
     /// against the node's `depends_on`:
     ///   - a producer slot (`depends_on.{nodes,contracts}`) takes a scalar or
     ///     an array of producer `instance_id`s per its cardinality;
-    ///   - a participant pairing slot takes a single peer target
+    ///   - a participant pairing slot takes one peer target per pair
     ///     (`"<instance_id>"` or `"<instance_id>/<peer_link_id>"` to
-    ///     disambiguate) — declaring the pair on ONE side covers both
-    ///     endpoints' slots;
+    ///     disambiguate), a scalar on a `one` or `zero_or_one` slot and an
+    ///     array on a `one_or_more` or `zero_or_more` slot; declaring a pair
+    ///     on ONE side covers both endpoints' slots;
     ///   - an observer slot takes source targets
     ///     (`"<source_instance>"` or `"<source_instance>/<source_link_id>"`),
     ///     as a scalar or an array per its cardinality, exactly like a
@@ -953,9 +959,8 @@ pub struct DeploymentInstance {
     /// A slot that starts unresolved on purpose says so in this same map, as
     /// `{ vacant: "<why>" }`: the fate of every declared slot is one entry
     /// here, and forgetting a slot is an absence rather than a value. Only a
-    /// slot the node's manifest declares emptiable (`optional: true` on a
-    /// participant, `cardinality: "zero_or_one"` on an observer or a producer
-    /// slot) may take that value.
+    /// slot the node's manifest declares `cardinality: "zero_or_one"` may take
+    /// that value.
     ///
     /// The launch parser has no manifest knowledge, so shape is validated
     /// against slot kind at plan time; only shape-local rules (empty targets,

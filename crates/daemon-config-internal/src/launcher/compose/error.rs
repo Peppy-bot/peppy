@@ -10,6 +10,8 @@
 
 use thiserror::Error;
 
+use super::super::types::EACH_TARGET_ONCE;
+
 #[derive(Debug, Error)]
 pub enum CompositionError {
     #[error(
@@ -496,7 +498,8 @@ pub enum CompositionError {
 
     #[error(
         "adjustment in {origin} adds `{added}` to slot `{slot}` on `{target}`, which already \
-         binds it: a slot's bound set lists each producer once"
+         lists it: {}",
+        EACH_TARGET_ONCE
     )]
     AddLinksDuplicateTarget {
         origin: String,

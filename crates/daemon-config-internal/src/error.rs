@@ -284,18 +284,32 @@ pub struct PairingTargetAmbiguous {
     pub candidate_link_ids: String,
 }
 
-/// Payload for [`ParsingError::PairingSlotAlreadyPaired`]. A slot (instance ×
-/// link_id) was claimed by more than one pair in the same plan, or is already
-/// paired in the running stack.
+/// Payload for [`ParsingError::PairingSlotAlreadyPaired`]. A `one` or
+/// `zero_or_one` slot (instance × link_id) was claimed by more than one pair
+/// in the same plan, or is already paired in the running stack.
 #[derive(Debug, Clone, Error)]
 #[error(
     "pairing slot `{link_id}` of instance `{instance_id}` is already paired \
-     (with `{existing_peer}`); a pairing slot is exclusive until cleared"
+     (with `{existing_peer}`); a `one` or `zero_or_one` slot holds one pair until it is cleared"
 )]
 pub struct PairingSlotAlreadyPaired {
     pub instance_id: String,
     pub link_id: String,
     pub existing_peer: String,
+}
+
+/// Payload for [`ParsingError::PairAlreadyHeld`]. A `one_or_more` or
+/// `zero_or_more` slot (instance × link_id) already holds the pair a
+/// declaration names.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "pairing slot `{link_id}` of instance `{instance_id}` already holds a pair with \
+     `{peer}`; a slot holds each pair once until it is cleared"
+)]
+pub struct PairAlreadyHeld {
+    pub instance_id: String,
+    pub link_id: String,
+    pub peer: String,
 }
 
 /// Payload for [`ParsingError::PairingConflict`]. Both endpoints declared the
@@ -333,12 +347,12 @@ pub struct PairingSha256Mismatch {
 
 /// Payload for [`ParsingError::PairingSlotUncovered`]. A declared pairing slot
 /// was neither paired nor declared vacant. Forgetting a slot is an error
-/// whether or not the manifest declares it optional: an optional slot may run
+/// whatever cardinality the manifest declares: a `zero_or_one` slot may run
 /// empty, but only where the deployment says so.
 ///
 /// `Display` is hand-written rather than derived because the remedies it offers
-/// follow `optional`: only a slot the manifest declares optional may be
-/// vacated, so only its message names the vacancy spelling.
+/// follow the slot's cardinality: only a `zero_or_one` slot may be vacated,
+/// so only its message names the vacancy spelling.
 #[derive(Debug, Clone)]
 pub struct PairingSlotUncovered {
     pub instance_id: String,
@@ -346,8 +360,8 @@ pub struct PairingSlotUncovered {
     pub pairing_name: String,
     pub pairing_tag: String,
     pub role: String,
-    /// Whether the node's manifest declares this slot `optional: true`.
-    pub optional: bool,
+    /// The slot's declared cardinality, which picks the remedy.
+    pub cardinality: Cardinality,
 }
 
 impl std::fmt::Display for PairingSlotUncovered {
@@ -358,22 +372,15 @@ impl std::fmt::Display for PairingSlotUncovered {
             pairing_name,
             pairing_tag,
             role,
-            optional,
+            cardinality,
         } = self;
-        let (kind, fix) = if *optional {
-            ("optional", format!("or {}", vacancy_hint(link_id)))
-        } else {
-            (
-                "required",
-                emptiable_hint(link_id, PARTICIPANT_EMPTIABLE_KEY),
-            )
-        };
+        let shape = link_shape_hint(link_id, "<peer_instance>", *cardinality);
+        let fix = uncovered_slot_fix(link_id, *cardinality, PARTICIPANT_EMPTIABLE_KEY);
         write!(
             f,
-            "instance `{instance_id}` declares {kind} pairing slot `{link_id}` (pairing \
-             `{pairing_name}:{pairing_tag}`, role `{role}`) with no pair. Pair it (launcher \
-             `links: {{ {link_id}: \"<peer_instance>\" }}` / \
-             `--link {link_id}@<peer_instance>`), {fix}"
+            "instance `{instance_id}` declares pairing slot `{link_id}` (pairing \
+             `{pairing_name}:{pairing_tag}`, role `{role}`, cardinality `{cardinality}`) with \
+             no pair. Pair it (launcher `{shape}` / `--link {link_id}@<peer_instance>`), {fix}"
         )
     }
 }
@@ -381,16 +388,17 @@ impl std::fmt::Display for PairingSlotUncovered {
 impl std::error::Error for PairingSlotUncovered {}
 
 /// Payload for [`ParsingError::ObservationTargetNotObservable`]. The observer
-/// slot's source instance declares no participant slot playing the observed
-/// role for the referenced pairing document. Mirror of
-/// [`PairingTargetNotComplementary`] for the observer mechanism (an observer
-/// taps a participant's role output, so the source must actually play that
-/// role).
+/// link's target instance declares no participant slot of the observed
+/// pairing, or none under the `/<link_id>` the link named. Mirror of
+/// [`PairingTargetNotComplementary`] for the observer mechanism: an observer
+/// taps one role's stream of a pairing, so the target names either an
+/// instance playing that role or the other end of one of its pairs.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "observer link `{key}` on instance `{owner_instance_id}`: source `{source_instance_id}` \
-     (deploys `{source_name}:{source_tag}`) declares no participant slot playing role \
-     `{observed_role}` for pairing `{pairing_name}:{pairing_tag}`"
+    "observer link `{key}` on instance `{owner_instance_id}`: target `{source_instance_id}` \
+     (deploys `{source_name}:{source_tag}`) declares no participant slot of pairing \
+     `{pairing_name}:{pairing_tag}` the link can name: name an instance playing role \
+     `{observed_role}` (`{key}@<instance>[/<link_id>]`), or the other end of one of its pairs"
 )]
 pub struct ObservationTargetNotObservable {
     pub owner_instance_id: String,
@@ -404,16 +412,16 @@ pub struct ObservationTargetNotObservable {
 }
 
 /// Payload for [`ParsingError::ObservationTargetAmbiguous`]. The observer's
-/// source instance plays the observed role through more than one participant
-/// slot and the observer spec did not name one. Mirror of
+/// target instance plays one role of the pairing through more than one
+/// participant slot and the observer spec did not name one. Mirror of
 /// [`PairingTargetAmbiguous`]; unlike pairing there is no exclusivity, so
 /// every candidate is available, but the observer must still pick which
 /// producer-side link_id to pin.
 #[derive(Debug, Clone, Error)]
 #[error(
-    "observer link `{key}` on instance `{owner_instance_id}`: source `{source_instance_id}` \
-     plays role `{observed_role}` for `{pairing_name}:{pairing_tag}` through multiple slots \
-     ([{candidate_link_ids}]) — disambiguate with `{key}@{source_instance_id}/<source_link_id>`"
+    "observer link `{key}` on instance `{owner_instance_id}`: target `{source_instance_id}` \
+     plays role `{candidate_role}` for `{pairing_name}:{pairing_tag}` through several slots \
+     ([{candidate_link_ids}]): name one, `{key}@{source_instance_id}/<link_id>`"
 )]
 pub struct ObservationTargetAmbiguous {
     pub owner_instance_id: String,
@@ -421,8 +429,51 @@ pub struct ObservationTargetAmbiguous {
     pub source_instance_id: String,
     pub pairing_name: String,
     pub pairing_tag: String,
-    pub observed_role: String,
+    /// The role the candidate slots play: the observed role, or the other
+    /// role when the link names a pair by its far end.
+    pub candidate_role: String,
     pub candidate_link_ids: String,
+}
+
+/// Payload for [`ParsingError::ObservationTargetUnpaired`]. The observer link
+/// named a pair by the end playing the other role, and that end holds no pair
+/// in the plan or the running stack, so there is no stream to tap through it.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "observer link `{key}` on instance `{owner_instance_id}`: \
+     `{target_instance_id}/{target_link_id}` plays role `{target_role}` of pairing \
+     `{pairing_name}:{pairing_tag}` and holds no pair, so it names no `{observed_role}` \
+     stream: pair that slot in this launch, or name an instance playing role \
+     `{observed_role}` directly"
+)]
+pub struct ObservationTargetUnpaired {
+    pub owner_instance_id: String,
+    pub key: String,
+    pub target_instance_id: String,
+    pub target_link_id: String,
+    pub target_role: String,
+    pub pairing_name: String,
+    pub pairing_tag: String,
+    pub observed_role: String,
+}
+
+/// Payload for [`ParsingError::ObservationTargetHoldsSeveralPairs`]. The
+/// observer link named a pair by an end that holds several, so it names no
+/// single pair.
+#[derive(Debug, Clone, Error)]
+#[error(
+    "observer link `{key}` on instance `{owner_instance_id}`: \
+     `{target_instance_id}/{target_link_id}` holds {pair_count} pairs (with [{peers}]), so it \
+     names no single pair: name the pair by the end that holds one, \
+     `{key}@<peer_instance>/<peer_link_id>` for one of those peers"
+)]
+pub struct ObservationTargetHoldsSeveralPairs {
+    pub owner_instance_id: String,
+    pub key: String,
+    pub target_instance_id: String,
+    pub target_link_id: String,
+    pub pair_count: usize,
+    pub peers: String,
 }
 
 /// Payload for [`ParsingError::ObservationSlotUncovered`]. A declared `one`,
@@ -507,15 +558,44 @@ pub enum ParsingError {
     /// "unknown binding slot" / "dead pairing key" errors.
     #[error(transparent)]
     LinkUnknownSlot(Box<LinkUnknownSlot>),
-    /// A `links:` value on a participant pairing slot arrived in array (or
-    /// repeated-flag) shape. A pairing is strictly 1:1, so a participant slot
-    /// takes exactly one target (`<peer_instance>[/<link_id>]`), never a set.
+    /// A `links:` value on a scalar participant pairing slot (`one` or
+    /// `zero_or_one`) arrived in array (or repeated-flag) shape. Such a slot
+    /// holds one pair, so it takes exactly one target
+    /// (`<peer_instance>[/<link_id>]`); a slot that holds several declares
+    /// `one_or_more` or `zero_or_more` and takes an array.
     #[error(
-        "link `{link}` on instance `{owner_instance_id}` names a participant pairing slot but \
-         its value is an array; a pairing is strictly 1:1, so the slot takes a single \
-         `<instance>[/<link_id>]` target"
+        "link `{link}` on instance `{owner_instance_id}` names a participant pairing slot of \
+         cardinality `one` or `zero_or_one`, which takes a single `<instance>[/<link_id>]` \
+         target; a slot that holds several pairs declares `cardinality: \"one_or_more\"` or \
+         `\"zero_or_more\"` on its `depends_on.pairings` entry and takes an array"
     )]
     LinkTargetNotScalar {
+        owner_instance_id: String,
+        link: String,
+    },
+    /// A `links:` scalar on a multi participant pairing slot (`one_or_more` /
+    /// `zero_or_more`). Such a slot takes one target per pair it holds, even
+    /// when it holds one, so the value is an array on every multi slot.
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is a scalar, but the participant \
+         pairing slot's cardinality is `{cardinality}`: link an array \
+         (`{link}: [\"<peer_instance>\", ...]`)"
+    )]
+    PairingScalarOnMultiSlot {
+        owner_instance_id: String,
+        link: String,
+        cardinality: Cardinality,
+    },
+    /// An empty array on a `one_or_more` participant pairing slot: the link
+    /// entry exists but names no peer, so the slot's minimum of one pair is
+    /// unmet. (An empty array is a valid definition only for `zero_or_more`.)
+    #[error(
+        "link `{link}` on instance `{owner_instance_id}` is an empty array, but the participant \
+         pairing slot's cardinality is `one_or_more`: link at least one peer, or declare \
+         `cardinality: \"zero_or_more\"` on the `depends_on.pairings` entry if holding no pair \
+         is meaningful"
+    )]
+    PairingCardinalityUnmet {
         owner_instance_id: String,
         link: String,
     },
@@ -656,6 +736,8 @@ pub enum ParsingError {
     #[error(transparent)]
     PairingSlotAlreadyPaired(Box<PairingSlotAlreadyPaired>),
     #[error(transparent)]
+    PairAlreadyHeld(Box<PairAlreadyHeld>),
+    #[error(transparent)]
     PairingConflict(Box<PairingConflict>),
     #[error(transparent)]
     PairingSha256Mismatch(Box<PairingSha256Mismatch>),
@@ -667,6 +749,10 @@ pub enum ParsingError {
     ObservationTargetNotObservable(Box<ObservationTargetNotObservable>),
     #[error(transparent)]
     ObservationTargetAmbiguous(Box<ObservationTargetAmbiguous>),
+    #[error(transparent)]
+    ObservationTargetUnpaired(Box<ObservationTargetUnpaired>),
+    #[error(transparent)]
+    ObservationTargetHoldsSeveralPairs(Box<ObservationTargetHoldsSeveralPairs>),
     #[error(transparent)]
     ObservationSlotUncovered(Box<ObservationSlotUncovered>),
     /// A launch-file array value (of any length) on a `cardinality: "one"`
@@ -725,10 +811,11 @@ pub enum ParsingError {
         target_count: usize,
     },
     /// Two of an observer slot's targets resolved to the same observed pairing
-    /// (same source instance, same source-side slot). Caught after resolution
-    /// because distinct target strings can name one pairing: on a source with a
-    /// single observable slot, `"dual_1"` and `"dual_1/left_ctl"` are the same
-    /// member.
+    /// (same source instance, same source-side slot, same pinned peer if any).
+    /// Caught after resolution because distinct target strings can name one
+    /// pairing: on a source with a single observable slot, `"dual_1"` and
+    /// `"dual_1/left_ctl"` are the same member, and so are a pair named by
+    /// either of its ends.
     #[error(
         "link `{link}` on instance `{owner_instance_id}` observes `{source_instance_id}/\
          {source_link_id}` twice: an observer slot observes each pairing once, so drop the \
@@ -768,7 +855,7 @@ pub enum VacancyRefusal {
     ManifestRequires {
         /// The manifest key that would make the slot emptiable, named so the
         /// error offers the node-side remedy alongside the deployment-side one.
-        declare_optional: &'static str,
+        declare_emptiable: &'static str,
     },
     /// The slot cannot be empty in any spelling, so the only remedy is to fill
     /// it (or to declare a cardinality with a floor of zero).
@@ -783,9 +870,9 @@ pub enum VacancyRefusal {
 impl std::fmt::Display for VacancyRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            VacancyRefusal::ManifestRequires { declare_optional } => write!(
+            VacancyRefusal::ManifestRequires { declare_emptiable } => write!(
                 f,
-                "The node manifest declares it required: link it, or declare {declare_optional}"
+                "The node manifest declares it required: link it, or declare {declare_emptiable}"
             ),
             VacancyRefusal::NoEmptyState { requirement } => {
                 write!(f, "It has no empty state: it takes {requirement}")
@@ -805,7 +892,7 @@ impl std::fmt::Display for VacancyRefusal {
 /// once so the uncovered-slot remedy and [`VacancyRefusal::ManifestRequires`]
 /// cannot drift on it.
 pub(crate) const PARTICIPANT_EMPTIABLE_KEY: &str =
-    "`optional: true` on its `depends_on.pairings` entry";
+    "`cardinality: \"zero_or_one\"` on its `depends_on.pairings` entry";
 
 /// The manifest key that declares an observer slot emptiable, shared for the
 /// same reason as [`PARTICIPANT_EMPTIABLE_KEY`].
