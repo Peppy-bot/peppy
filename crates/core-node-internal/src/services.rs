@@ -250,7 +250,7 @@ fn derive_name_from_host_id(host_id: &str) -> Name {
     format_core_node_name(&get_random(&mut seeded))
 }
 
-/// Assembles the compact `cn-{adjective}-{surname}` default. A generated
+/// Assembles the compact `cn-{adjective}-{animal}` default. A generated
 /// name is only an operator-friendly candidate: [`presence::claim_name`]
 /// atomically arbitrates it before startup, so two daemons in one connected
 /// messaging namespace cannot finish boot with the same candidate.
@@ -258,7 +258,7 @@ fn format_core_node_name(generated: &str) -> Name {
     let (words, digits) = generated
         .rsplit_once('-')
         .expect("names_generator2 output always ends in a numeric segment");
-    debug_assert_eq!(digits.len(), 4);
+    debug_assert_eq!(digits.len(), 3);
     debug_assert!(digits.chars().all(|c| c.is_ascii_digit()));
     Name::new(format!("cn-{words}")).unwrap()
 }

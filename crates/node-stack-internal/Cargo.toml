@@ -12,7 +12,7 @@ core-node-api = { workspace = true }
 petgraph = "0.8.3"
 thiserror = "2.0"
 rand = "0.10"
-names-generator2 = "0.2.1"
+names-generator2 = "0.3.0"
 tokio = { version = "1", features = [
     "io-util",
     "process",
