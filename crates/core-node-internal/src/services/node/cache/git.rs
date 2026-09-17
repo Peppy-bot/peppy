@@ -155,6 +155,26 @@ fn is_checked_out_at(dir: &Path, commit: &GitCommit) -> bool {
     head_commit(&repo).is_ok_and(|head| head == *commit)
 }
 
+/// The working tree of `(repo_url, commit)` this machine already holds, or
+/// `None` when nothing has materialized it yet.
+///
+/// Reads the cache and writes nothing: no clone, no fetch, no marker. It is
+/// what a caller that must not reach the network uses to read a file out of
+/// a tree the caches have already brought down, `repo refresh` handing every
+/// clone it makes to [`adopt_checkout`]. A miss is an answer, not a failure:
+/// the caller says what it could not read rather than fetching behind the
+/// operator's back.
+pub fn materialized_checkout(
+    peppy_dirs: &PeppyDirs,
+    repo_url: &str,
+    commit: &GitCommit,
+) -> Option<PathBuf> {
+    let dir = checkout_dir_for(peppy_dirs, repo_url, commit);
+    let lock = LOCKS.lock_for(&dir.to_string_lossy());
+    let _guard = lock.lock();
+    is_checked_out_at(&dir, commit).then_some(dir)
+}
+
 /// Ensures a checkout of `commit` exists and returns its working-tree
 /// directory.
 ///
