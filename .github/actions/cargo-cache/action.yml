@@ -1,0 +1,70 @@
+name: Cargo build cache
+description: >-
+  Mounts the suite's Blacksmith sticky disk and links the cargo target
+  directory, the cargo registry and git checkouts, and the build scripts' tool
+  cache into it, so a job compiles only what changed since the disk was last
+  committed. Expects the checkout and the rust-build-env action to have run
+  first, and must precede every cargo step.
+
+inputs:
+  suite:
+    description: >-
+      The suite the job runs, one disk per suite: the suites compile different
+      feature sets and test targets, and a disk per suite holds a snapshot that
+      is warm for exactly the build reading it.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Every run mounts a clone of the disk's last committed snapshot, so
+    # nothing stored on it may be state one run depends on another having
+    # written: only what cargo and the build scripts rebuild from scratch.
+    # The key carries the architecture because every artifact on the disk is
+    # built for the host that built it. A job commits only when it changed
+    # the disk, and never from a fork's pull request: what every later run
+    # builds on is written by this repository alone. Concurrent commits of
+    # one key (two pull requests running the same suite) resolve to the last
+    # committer, whose clone is a warm snapshot either way.
+    - name: Mount the suite's build cache
+      uses: useblacksmith/stickydisk@35ba2e331a80056a42af053ee54968511de2b7c7 # v1.5.0
+      with:
+        key: ${{ github.repository }}-cargo-${{ inputs.suite }}-${{ runner.arch }}
+        path: ~/.cache/peppy-ci
+        commit: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'on-change' || 'false' }}
+
+    # Symlinks rather than CARGO_TARGET_DIR and CARGO_HOME: the docs snippet
+    # runner builds its nodes under the workspace's own `target/`, the
+    # workspace's .cargo/config.toml routes uv's cache under it too, and the
+    # rustup proxies live in ~/.cargo/bin beside the registry. Linking the
+    # directories leaves every path where each tool expects it. The build
+    # scripts' tool cache (`~/.peppy/tmp`: the apptainer and squashfuse
+    # sources they compile, the zenohd and Lima downloads, the peppylib
+    # cross-build outputs) is keyed by version and content in
+    # build_helpers::cache_dir, so a snapshot is either a hit or a miss for
+    # every entry. Incremental compilation is off: its caches are most of a
+    # debug target directory and the disk is billed per gigabyte, while all
+    # it would save is the seconds a warm rebuild of a crate's own code takes.
+    - name: Link cargo and the build scripts to the disk
+      shell: bash
+      run: |
+        set -euo pipefail
+        disk="$HOME/.cache/peppy-ci"
+        # link <path> <disk subdirectory>: the path becomes a symlink to the
+        # subdirectory. A real directory already at the path is a job that
+        # ran cargo before this action, which this refuses to hide.
+        link() {
+          local path=$1 store="$disk/$2"
+          mkdir -p "$store" "$(dirname "$path")"
+          if [ -e "$path" ] && [ ! -L "$path" ]; then
+            echo "::error::$path exists and is not a symlink; cargo-cache must run before any cargo step"
+            exit 1
+          fi
+          ln -sfn "$store" "$path"
+        }
+        link "$GITHUB_WORKSPACE/target" target
+        link "$HOME/.cargo/registry" cargo-registry
+        link "$HOME/.cargo/git" cargo-git
+        link "$HOME/.peppy/tmp" peppy-tmp
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        du -sh "$disk"/* 2>/dev/null || true
