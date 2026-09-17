@@ -53,6 +53,7 @@ async fn spawn_starting(
             slot_bindings: std::collections::BTreeMap::new(),
             clock: Default::default(),
             launch: None,
+            copy: None,
             env_vars: &[],
             mount_paths_resolved: &[],
             peppy_dirs: &harness.peppy_dirs,

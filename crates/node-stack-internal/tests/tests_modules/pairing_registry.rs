@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use config::runtime::{Name, PairingSlotBinding};
+use config::runtime::{Name, PairedPeer};
 use node_stack::{NodeStack, NodeStackError, RemoteSlotMeta, SlotAddr};
 
 /// The core-node name of the test stack's root entity. Slot addresses are
@@ -76,8 +76,7 @@ async fn pair_clear_repair_lifecycle() {
     let ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm");
 
     // Both slots start unpaired.
-    let unpaired = stack.unpaired_pairing_slots();
-    assert_eq!(unpaired.len(), 2, "unpaired: {unpaired:?}");
+    assert!(stack.pairs().is_empty(), "pairs: {:?}", stack.pairs());
 
     let pairing = stack
         .pair_slots(&ctrl_slot, &arm_slot)
@@ -86,17 +85,34 @@ async fn pair_clear_repair_lifecycle() {
     assert_eq!(pairing.a.role, "controller");
     assert_eq!(pairing.b.role, "arm");
     assert_eq!(stack.pairs().len(), 1);
-    assert!(stack.unpaired_pairing_slots().is_empty());
 
-    // Exclusivity: a second pair on either slot is rejected.
+    // The pair held is refused a second time.
     let err = stack.pair_slots(&ctrl_slot, &arm_slot).unwrap_err();
     assert!(
-        matches!(err, NodeStackError::PairingSlotAlreadyPaired { .. }),
-        "expected PairingSlotAlreadyPaired, got {err:?}"
+        matches!(err, NodeStackError::PairAlreadyHeld { .. }),
+        "expected PairAlreadyHeld, got {err:?}"
+    );
+
+    // The arm's `one` slot holds its pair, so a second controller is refused.
+    let _other_ctrl = fixtures::start_instance_in_stack(
+        &stack,
+        &harness,
+        "arm_controller",
+        "v1",
+        Some(&name("ctrl_2")),
+    )
+    .await;
+    let other_ctrl_slot = SlotAddr::new(TEST_CORE_NODE, "ctrl_2", "arm");
+    let err = stack.pair_slots(&other_ctrl_slot, &arm_slot).unwrap_err();
+    assert!(
+        matches!(err, NodeStackError::PairingSlotAlreadyPaired { ref peer, .. } if peer.contains("ctrl_1")),
+        "expected PairingSlotAlreadyPaired naming ctrl_1, got {err:?}"
     );
 
     // Clear releases both slots; re-pairing works.
-    let cleared = stack.clear_pair(&arm_slot).expect("pair should exist");
+    let cleared = stack
+        .clear_pair(&arm_slot, &ctrl_slot)
+        .expect("pair should exist");
     assert_eq!(cleared, pairing);
     assert!(stack.pairs().is_empty());
     stack
@@ -199,14 +215,6 @@ async fn death_dissolves_pairs_and_reads_prune_lazily() {
         stack.pairs().is_empty(),
         "registry reads must prune pairs whose endpoint died"
     );
-    // And the survivor's slot is claimable again.
-    assert!(
-        stack
-            .unpaired_pairing_slots()
-            .iter()
-            .any(|(slot, _)| slot == &arm_slot),
-        "the survivor's slot must be released"
-    );
 }
 
 /// The cross-daemon counterpart of the lazy prune above, and the reason that
@@ -227,6 +235,8 @@ async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
         role: "controller".to_string(),
+        cardinality: config::node::Cardinality::One,
+        copy: None,
     };
     stack
         .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
@@ -241,14 +251,6 @@ async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice
             "a remote pair must survive registry reads"
         );
     }
-    assert!(
-        !stack
-            .unpaired_pairing_slots()
-            .iter()
-            .any(|(slot, _)| slot == &arm_slot),
-        "the local slot stays claimed while the pair stands"
-    );
-
     // A same-named instance on a DIFFERENT daemon dying must not touch it.
     assert!(
         stack
@@ -265,13 +267,6 @@ async fn a_remote_pair_survives_reads_and_is_dissolved_only_by_its_owners_notice
         Some(remote_slot)
     );
     assert!(stack.pairs().is_empty());
-    assert!(
-        stack
-            .unpaired_pairing_slots()
-            .iter()
-            .any(|(slot, _)| slot == &arm_slot),
-        "the survivor's slot must be claimable again"
-    );
 }
 
 /// The daemon's teardown seam asks "who else needs to hear about this
@@ -360,16 +355,16 @@ async fn serialized_graph_overlays_pairing_slots() {
     )
     .await;
 
-    // Unpaired: both slots surface with Unpaired bindings + manifest metadata.
+    // Unpaired: both slots surface holding no pair, with manifest metadata.
     let graph = stack.to_serialized_graph();
     let arm_node = graph.find_node("robot_arm", "v1").expect("arm in graph");
     let arm_slots = &arm_node.instances[0].pairing_slots;
     let slot = arm_slots.get("controller").expect("declared slot surfaces");
     assert_eq!(slot.pairing_name, "arm_link");
     assert_eq!(slot.role, "arm");
-    assert_eq!(slot.binding, PairingSlotBinding::Unpaired);
+    assert!(slot.peers.is_empty());
 
-    // Paired: the binding carries the peer's full address + slot link_id.
+    // Paired: the pair carries the peer's full address + slot link_id.
     stack
         .pair_slots(
             &SlotAddr::new(TEST_CORE_NODE, "ctrl_1", "arm"),
@@ -382,8 +377,13 @@ async fn serialized_graph_overlays_pairing_slots() {
         .expect("controller in graph");
     let ctrl_slots = &ctrl_node.instances[0].pairing_slots;
     let slot = ctrl_slots.get("arm").expect("declared slot surfaces");
-    let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding else {
-        panic!("expected Paired, got {:?}", slot.binding);
+    let [
+        PairedPeer {
+            peer, peer_link_id, ..
+        },
+    ] = slot.peers.as_slice()
+    else {
+        panic!("expected one pair, got {:?}", slot.peers);
     };
     assert_eq!(peer.instance_id, "arm_1");
     assert_eq!(
@@ -409,6 +409,8 @@ async fn serialized_graph_stamps_a_remote_peer_with_its_own_core_node() {
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
         role: "controller".to_string(),
+        cardinality: config::node::Cardinality::One,
+        copy: None,
     };
     stack
         .pair_slot_with_remote(&arm_slot, &remote_slot, &remote_meta)
@@ -420,8 +422,13 @@ async fn serialized_graph_stamps_a_remote_peer_with_its_own_core_node() {
         .pairing_slots
         .get("controller")
         .expect("declared slot surfaces");
-    let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding else {
-        panic!("expected Paired, got {:?}", slot.binding);
+    let [
+        PairedPeer {
+            peer, peer_link_id, ..
+        },
+    ] = slot.peers.as_slice()
+    else {
+        panic!("expected one pair, got {:?}", slot.peers);
     };
     assert_eq!(peer.instance_id, "ctrl_remote");
     assert_eq!(

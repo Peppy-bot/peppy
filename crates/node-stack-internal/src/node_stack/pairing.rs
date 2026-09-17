@@ -9,7 +9,8 @@
 //! operations and calls into this registry to commit.
 
 /// Address of one pairing slot: core node × instance × link_id. A pair is
-/// strictly 1:1 between two complementary slots, exclusive until cleared.
+/// one peer to one peer between two complementary slots; a slot holds as
+/// many pairs as its cardinality admits, each until cleared.
 ///
 /// The core node is part of the identity because two daemons can host
 /// same-named instances: without it, a local `reflex_inst` and a remote one
@@ -69,14 +70,20 @@ pub struct RemoteSlotMeta {
     pub pairing_name: String,
     pub pairing_tag: String,
     pub role: String,
+    /// Only a scalar slot is taken by one pair.
+    pub cardinality: config::node::Cardinality,
+    /// The copy the remote instance belongs to; `None` outside a copy.
+    pub copy: Option<config::runtime::Name>,
 }
 
-/// One endpoint of an established pair: the slot plus the role its manifest
-/// declares for it (recorded at pair time so readers don't re-derive it).
+/// One endpoint of an established pair: the slot, the role its manifest
+/// declares for it, and the copy its instance belongs to (recorded at pair
+/// time so readers don't re-derive them).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PairEndpoint {
     pub slot: SlotAddr,
     pub role: String,
+    pub copy: Option<config::runtime::Name>,
 }
 
 /// One established pair.
@@ -130,16 +137,36 @@ pub(crate) struct PairingRegistry {
 }
 
 impl PairingRegistry {
+    /// The first pair `slot` takes part in, which is its only one on a
+    /// scalar slot.
     pub(crate) fn find_by_slot(&self, slot: &SlotAddr) -> Option<&Pairing> {
-        self.pairs.iter().find(|p| p.endpoint(slot).is_some())
+        self.pairs_of_slot(slot).next()
+    }
+
+    /// Every pair `slot` takes part in, in establishment order.
+    fn pairs_of_slot(&self, slot: &SlotAddr) -> impl Iterator<Item = &Pairing> + '_ {
+        let slot = slot.clone();
+        self.pairs
+            .iter()
+            .filter(move |p| p.endpoint(&slot).is_some())
+    }
+
+    /// The pair between `a` and `b`, whichever way round it was recorded.
+    pub(crate) fn find_pair(&self, a: &SlotAddr, b: &SlotAddr) -> Option<&Pairing> {
+        self.pairs
+            .iter()
+            .find(|p| p.endpoint(a).is_some() && p.endpoint(b).is_some())
     }
 
     pub(crate) fn insert(&mut self, pairing: Pairing) {
         self.pairs.push(pairing);
     }
 
-    pub(crate) fn remove_by_slot(&mut self, slot: &SlotAddr) -> Option<Pairing> {
-        let idx = self.pairs.iter().position(|p| p.endpoint(slot).is_some())?;
+    pub(crate) fn remove_pair(&mut self, a: &SlotAddr, b: &SlotAddr) -> Option<Pairing> {
+        let idx = self
+            .pairs
+            .iter()
+            .position(|p| p.endpoint(a).is_some() && p.endpoint(b).is_some())?;
         Some(self.pairs.remove(idx))
     }
 
