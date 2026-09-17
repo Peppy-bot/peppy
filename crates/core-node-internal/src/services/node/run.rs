@@ -1070,7 +1070,10 @@ async fn process_node_run(
             line: vacant_slot_feedback(instance_id_str, link_id, reason),
         });
     }
-    for (link_id, peer) in &covered_pairs {
+    for (link_id, peer) in covered_pairs
+        .iter()
+        .flat_map(|(link_id, targets)| targets.iter().map(move |target| (link_id, target)))
+    {
         let _ = ctx.feedback_tx.send(FeedbackLine {
             stream: FeedbackStream::Stdout,
             line: format!(
@@ -1273,6 +1276,7 @@ async fn process_node_run(
         slot_bindings: runtime_config.node_instance.slot_bindings.clone(),
         clock: runtime_config.node_instance.framework.clock.clone(),
         launch,
+        copy: runtime_config.node_instance.copy.clone(),
         env_vars: &env_vars,
         mount_paths_resolved: &resolved_mount_paths,
         peppy_dirs: &ctx.action.peppy_dirs,

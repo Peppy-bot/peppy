@@ -1,8 +1,8 @@
 // One waldo engine instance with the arguments the openarm_v2 launcher's
 // waldo option gives it when the scene commander is selected. Every pairing
-// slot is optional on the engine and left vacant here: the relays and camera
-// viewers that fill them in a robot stack are not part of this fixture, and
-// the generated bindings do not depend on what a slot is bound to.
+// slot is `zero_or_one` on the engine and left vacant here: the relays and
+// camera viewers that fill them in a robot stack are not part of this
+// fixture, and the generated bindings do not depend on what a slot holds.
 {
   peppy_schema: "launcher/v1",
   deployments: [

@@ -24,9 +24,13 @@ pub enum Error {
     #[error("pairing endpoint instance `{instance_id}` is not running in this stack")]
     PairingInstanceNotRunning { instance_id: String },
     #[error(
-        "pairing slot `{slot}` is already paired with `{peer}`; a pairing slot is exclusive until cleared"
+        "pairing slot `{slot}` is already paired with `{peer}`; a `one` or `zero_or_one` slot holds one pair until it is cleared"
     )]
     PairingSlotAlreadyPaired { slot: String, peer: String },
+    #[error(
+        "pairing slot `{slot}` already holds a pair with `{peer}`; a slot holds each pair once until it is cleared"
+    )]
+    PairAlreadyHeld { slot: String, peer: String },
     #[error(
         "cannot pair `{a}` with `{b}`: both declare role `{role}` of pairing `{name}:{tag}` (roles must be complementary)"
     )]

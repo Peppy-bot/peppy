@@ -231,11 +231,13 @@ pub fn collect_pairing_interfaces(
             .expect("validate_pairing_specs returns a doc per declared slot")
     };
     let context_of =
-        |name: &str, tag: &str, link_id: &str, optional: bool| generator::PeerContext {
-            link_id: link_id.to_string(),
-            pairing_name: name.to_string(),
-            pairing_tag: tag.to_string(),
-            optional,
+        |name: &str, tag: &str, link_id: &str, cardinality: config::node::Cardinality| {
+            generator::PeerContext {
+                link_id: link_id.to_string(),
+                pairing_name: name.to_string(),
+                pairing_tag: tag.to_string(),
+                cardinality,
+            }
         };
 
     let mut out = Vec::new();
@@ -246,7 +248,7 @@ pub fn collect_pairing_interfaces(
             participant.name.as_str(),
             &participant.tag,
             &participant.link_id,
-            participant.optional,
+            participant.cardinality,
         );
         let mismatch = collect_participant_slot(
             participant,
@@ -261,12 +263,11 @@ pub fn collect_pairing_interfaces(
         }
     }
     for observer in &depends_on.pairing_observers {
-        // Observer vacancy is expressed through cardinality, never `optional`.
         let context = context_of(
             observer.name.as_str(),
             &observer.tag,
             &observer.link_id,
-            false,
+            observer.cardinality,
         );
         let mismatch = collect_observer_slot(
             observer,

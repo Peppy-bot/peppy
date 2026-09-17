@@ -4,22 +4,27 @@
 //! entries of the same `links` map are owned by `bindings` / `observations`;
 //! this validator steps over them.
 //!
-//! A pair is strictly 1:1 between two complementary slots (slot = instance ×
-//! link_id): same pairing `(name, tag)`, opposite roles, both unclaimed.
-//! Declaring the pair on ONE side covers both endpoints' slots; declaring it
-//! from both sides is allowed but must agree. Every pairing slot of every
-//! planned instance must end up paired, or, where the node's manifest declares
-//! the slot `optional: true`, explicitly declared vacant; otherwise the plan is
-//! rejected (`PairingSlotUncovered`): no silent unpaired boots.
+//! A pair is one peer to one peer between two complementary slots (slot =
+//! instance × link_id): same pairing `(name, tag)`, opposite roles. A slot
+//! holds as many pairs as its `cardinality` admits: a `one` or `zero_or_one`
+//! slot one, a `one_or_more` or `zero_or_more` slot any number, each pair
+//! held once. Declaring a pair on ONE side covers both endpoints' slots;
+//! declaring it from both sides is allowed but must agree. Every pairing slot
+//! of every planned instance must end up paired, or, where the node's
+//! manifest declares the slot `zero_or_one`, explicitly declared vacant, or,
+//! where it declares `zero_or_more`, may hold nothing yet; otherwise the plan
+//! is rejected (`PairingSlotUncovered`): no silent unpaired boots.
 
 use crate::error::{
-    PairingConflict, PairingSha256Mismatch, PairingSlotAlreadyPaired, PairingSlotUncovered,
-    PairingTargetAmbiguous, PairingTargetNotComplementary, ParsingError,
+    PairAlreadyHeld, PairingConflict, PairingSha256Mismatch, PairingSlotAlreadyPaired,
+    PairingSlotUncovered, PairingTargetAmbiguous, PairingTargetNotComplementary, ParsingError,
 };
 use config::node::{PairingObserverDependency, PairingParticipantDependency};
 use std::collections::BTreeMap;
 
-use super::types::{DeploymentInstance, split_link_target};
+use super::types::{
+    CardinalityShapeViolation, DeploymentInstance, check_cardinality_shape, split_link_target,
+};
 
 /// Minimal view of one node's planned (or already-running) instances needed
 /// for pairing validation. Mirrors `BindingValidationItem` for the pairing
@@ -49,6 +54,9 @@ pub struct PlannedPairEndpoint {
     pub instance_id: String,
     pub link_id: String,
     pub role: String,
+    /// The slot's declared cardinality, carried to a daemon that cannot read
+    /// the manifest declaring it.
+    pub cardinality: config::node::Cardinality,
 }
 
 /// One validated pair, ready to be applied when both endpoints reach
@@ -71,10 +79,11 @@ pub struct ValidatedPairings {
     pub planned: Vec<PlannedPairing>,
 }
 
-/// Slots of already-running instances that are exclusively claimed right
-/// now, keyed by `(instance_id, link_id)`; the value is a human-readable
-/// peer label for error messages.
-pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
+/// Pairs already established on running instances, keyed by `(instance_id,
+/// link_id)`: the peer slots `(instance_id, link_id)` each slot holds right
+/// now. A scalar slot listed here is taken; a multi slot listed here is open
+/// to every peer it does not already hold.
+pub type AlreadyPairedSlots = BTreeMap<(String, String), Vec<(String, String)>>;
 
 /// `(instance_id, link_id)` slots this validator must treat as covered
 /// although it can see no pair for them, because something outside its view
@@ -91,27 +100,70 @@ pub type AlreadyPairedSlots = BTreeMap<(String, String), String>;
 /// leak to a sibling deploying the same node.
 pub type ExternallyCoveredSlots = std::collections::BTreeSet<(String, String)>;
 
+/// The pairs claimed in this plan, keyed by slot: the peer slots each slot
+/// takes part in a pair with, recorded in both directions.
+type Claims = BTreeMap<(String, String), Vec<(String, String)>>;
+
+/// Speaks a [`CardinalityShapeViolation`] in participant vocabulary, the way
+/// `observations` and `bindings` speak it in theirs. A scalar slot given a set
+/// keeps the existing `LinkTargetNotScalar`, whose message already covers both
+/// the array and the repeated-flag spelling.
+fn shape_error(violation: CardinalityShapeViolation, owner_id: &str, key: &str) -> ParsingError {
+    let owner_instance_id = owner_id.to_string();
+    let link = key.to_string();
+    match violation {
+        CardinalityShapeViolation::ArrayOnScalarSlot { .. }
+        | CardinalityShapeViolation::SingleSlotMultipleTargets { .. } => {
+            ParsingError::LinkTargetNotScalar {
+                owner_instance_id,
+                link,
+            }
+        }
+        CardinalityShapeViolation::ScalarOnMultiSlot { cardinality } => {
+            ParsingError::PairingScalarOnMultiSlot {
+                owner_instance_id,
+                link,
+                cardinality,
+            }
+        }
+        CardinalityShapeViolation::Unmet => ParsingError::PairingCardinalityUnmet {
+            owner_instance_id,
+            link,
+        },
+    }
+}
+
+/// How a peer slot is named in an error: `<instance>:<link_id>`.
+fn peer_label(instance_id: &str, link_id: &str) -> String {
+    format!("{instance_id}:{link_id}")
+}
+
 /// Run all pairing validator rules over the plan.
 ///
 /// Rules:
 /// 1. Only `links` keys that name one of this node's participant slots are
 ///    processed; every other key is skipped (a key naming no slot at all is
-///    reported once by `validate_link_slots`). A participant entry whose value
-///    is an array instead of a single target is `LinkTargetNotScalar`.
+///    reported once by `validate_link_slots`). A scalar slot's value is one
+///    target; an array on it is `LinkTargetNotScalar`. A multi slot's value
+///    is one target per pair, in the order written.
 /// 2. The target instance exists in the plan/stack (`UnknownInstanceId`).
 /// 3. The target has exactly one available complementary slot — same
-///    pairing `(name, tag)`, opposite role, unclaimed — or the declaration
-///    names one via the `/<peer_link_id>` suffix
-///    (`PairingTargetNotComplementary` / `PairingTargetAmbiguous`).
-/// 4. Slots are exclusive: a slot claimed twice in-plan, or already paired
-///    in the running stack, is `PairingSlotAlreadyPaired`.
+///    pairing `(name, tag)`, opposite role, open to this pair, or the
+///    declaration names one via the `/<peer_link_id>` suffix
+///    (`PairingTargetNotComplementary` / `PairingTargetAmbiguous`). A scalar
+///    slot is open while nothing claims it; a multi slot is open to every
+///    peer it does not hold.
+/// 4. A scalar slot claimed twice in-plan, or already paired in the running
+///    stack, is `PairingSlotAlreadyPaired`; a multi slot already holding the
+///    pair declared is `PairAlreadyHeld`.
 /// 5. Both-sides declarations must agree (`PairingConflict`).
 /// 6. When both endpoints pin a `sha256` for the pairing document, the pins
 ///    must match (`PairingSha256Mismatch`).
 /// 7. Coverage: every participant slot of every planned instance is paired,
 ///    declared vacant (`links: { <link_id>: { vacant: "<why>" } }`), or listed
-///    in `externally_covered` (`PairingSlotUncovered` otherwise). Whether a
-///    slot may be vacant at all is `validate_link_slots`'s call.
+///    in `externally_covered` (`PairingSlotUncovered` otherwise); a
+///    `zero_or_more` slot may hold nothing. Whether a slot may be vacant at
+///    all is `validate_link_slots`'s call.
 pub fn validate_pairings(
     items: &[PairingValidationItem<'_>],
     already_paired: &AlreadyPairedSlots,
@@ -127,14 +179,13 @@ pub fn validate_pairings(
         }
     }
 
-    // (instance_id, link_id) → the peer (instance_id, link_id) claimed by
-    // this plan. Both directions are recorded per pair.
-    let mut claims: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
+    let mut claims: Claims = BTreeMap::new();
 
     // Deterministic processing order: declarations sorted by owner
     // instance_id, then key (BTreeMap iteration gives key order; items are
-    // walked in slice order, instances in slice order — sort explicitly so
-    // the resolution never depends on caller ordering).
+    // walked in slice order, instances in slice order, so sort explicitly and
+    // the resolution never depends on caller ordering). A multi slot's
+    // targets keep the order they were written in.
     let mut declarations: Vec<(
         &DeploymentInstance,
         &PairingParticipantDependency,
@@ -162,14 +213,14 @@ pub fn validate_pairings(
                 let Some(selection) = value.selection() else {
                     continue;
                 };
-                let Some(target) = selection.as_scalar() else {
-                    out.errors.push(ParsingError::LinkTargetNotScalar {
-                        owner_instance_id: instance.instance_id.to_string(),
-                        link: key.clone(),
-                    });
+                if let Err(violation) = check_cardinality_shape(own_dep.cardinality, selection) {
+                    out.errors
+                        .push(shape_error(violation, instance.instance_id.as_str(), key));
                     continue;
-                };
-                declarations.push((instance, own_dep, key.as_str(), target));
+                }
+                for target in selection.targets() {
+                    declarations.push((instance, own_dep, key.as_str(), target.as_str()));
+                }
             }
         }
     }
@@ -189,8 +240,11 @@ pub fn validate_pairings(
             Ok(Some(pair)) => {
                 let own_slot = (pair.a.instance_id.clone(), pair.a.link_id.clone());
                 let peer_slot = (pair.b.instance_id.clone(), pair.b.link_id.clone());
-                claims.insert(own_slot.clone(), peer_slot.clone());
-                claims.insert(peer_slot, own_slot);
+                claims
+                    .entry(own_slot.clone())
+                    .or_default()
+                    .push(peer_slot.clone());
+                claims.entry(peer_slot).or_default().push(own_slot);
                 out.planned.push(pair);
             }
             Ok(None) => {}
@@ -201,6 +255,20 @@ pub fn validate_pairings(
     validate_coverage(items, &claims, externally_covered, &mut out.errors);
 
     out
+}
+
+/// The peers a slot holds in this plan and in the running stack, in that
+/// order.
+fn peers_of<'a>(
+    slot: &(String, String),
+    claims: &'a Claims,
+    already_paired: &'a AlreadyPairedSlots,
+) -> impl Iterator<Item = &'a (String, String)> {
+    claims
+        .get(slot)
+        .into_iter()
+        .flatten()
+        .chain(already_paired.get(slot).into_iter().flatten())
 }
 
 /// Resolves ONE `pairings` declaration against the plan built so far (rules
@@ -216,7 +284,7 @@ fn resolve_pair_declaration(
     key: &str,
     target: &str,
     lookup: &BTreeMap<&str, &PairingValidationItem<'_>>,
-    claims: &BTreeMap<(String, String), (String, String)>,
+    claims: &Claims,
     already_paired: &AlreadyPairedSlots,
 ) -> Result<Option<PlannedPairing>, ParsingError> {
     let (target_instance, requested_peer_link) = split_link_target(target);
@@ -229,6 +297,7 @@ fn resolve_pair_declaration(
     };
 
     let own_slot = (owner_id.to_string(), key.to_string());
+    let own_scalar = own_dep.cardinality.is_scalar();
 
     // Error builders shared by the rule branches below (each is raised from
     // several sites with the same payload shape).
@@ -237,6 +306,13 @@ fn resolve_pair_declaration(
             instance_id,
             link_id,
             existing_peer,
+        }))
+    };
+    let pair_held = |instance_id: String, link_id: String, peer: String| {
+        ParsingError::PairAlreadyHeld(Box::new(PairAlreadyHeld {
+            instance_id,
+            link_id,
+            peer,
         }))
     };
     let not_complementary = || {
@@ -254,27 +330,34 @@ fn resolve_pair_declaration(
 
     // Both-sides agreement: the reciprocal declaration may have already
     // claimed our slot. Agreement = it claimed us against the same peer
-    // instance (and slot, when we name one); anything else conflicts.
-    if let Some((claimed_peer_inst, claimed_peer_link)) = claims.get(&own_slot) {
-        let agrees = claimed_peer_inst == target_instance
-            && requested_peer_link.is_none_or(|l| l == claimed_peer_link);
+    // instance (and slot, when we name one). On a scalar slot anything else
+    // conflicts; a multi slot takes the disagreeing declaration as another
+    // pair.
+    if let Some(peers) = claims.get(&own_slot) {
+        let agrees = peers.iter().any(|(claimed_inst, claimed_link)| {
+            claimed_inst == target_instance && requested_peer_link.is_none_or(|l| l == claimed_link)
+        });
         if agrees {
             return Ok(None);
         }
-        return Err(ParsingError::PairingConflict(Box::new(PairingConflict {
-            instance_a: claimed_peer_inst.clone(),
-            link_a: claimed_peer_link.clone(),
-            target_a: format!("{owner_id}/{key}"),
-            instance_b: owner_id.to_string(),
-            link_b: key.to_string(),
-            target_b: target.to_string(),
-        })));
+        if own_scalar {
+            let (claimed_inst, claimed_link) = &peers[0];
+            return Err(ParsingError::PairingConflict(Box::new(PairingConflict {
+                instance_a: claimed_inst.clone(),
+                link_a: claimed_link.clone(),
+                target_a: format!("{owner_id}/{key}"),
+                instance_b: owner_id.to_string(),
+                link_b: key.to_string(),
+                target_b: target.to_string(),
+            })));
+        }
     }
-    if let Some(peer_label) = already_paired.get(&own_slot) {
+    if own_scalar && let Some((inst, link)) = already_paired.get(&own_slot).and_then(|p| p.first())
+    {
         return Err(slot_taken(
             owner_id.to_string(),
             key.to_string(),
-            peer_label.clone(),
+            peer_label(inst, link),
         ));
     }
 
@@ -284,6 +367,12 @@ fn resolve_pair_declaration(
         .iter()
         .filter(|d| d.name == own_dep.name && d.tag == own_dep.tag && d.role != own_dep.role)
         .collect();
+    // A scalar candidate is open while nothing claims or holds it; a multi
+    // candidate is open to any peer.
+    let open = |d: &PairingParticipantDependency| {
+        let slot = (target_instance.to_string(), d.link_id.clone());
+        !d.cardinality.is_scalar() || peers_of(&slot, claims, already_paired).next().is_none()
+    };
 
     let resolved_peer_link = if let Some(peer_link) = requested_peer_link {
         // Explicit disambiguation: the named slot must exist and be
@@ -293,15 +382,10 @@ fn resolve_pair_declaration(
             None => return Err(not_complementary()),
         }
     } else {
-        // No explicit slot: exactly one AVAILABLE complementary slot
-        // must remain (in-plan claim tracking).
-        let available: Vec<&&PairingParticipantDependency> = complementary
-            .iter()
-            .filter(|d| {
-                let slot = (target_instance.to_string(), d.link_id.clone());
-                !claims.contains_key(&slot) && !already_paired.contains_key(&slot)
-            })
-            .collect();
+        // No explicit slot: exactly one OPEN complementary slot must remain
+        // (in-plan claim tracking).
+        let available: Vec<&&PairingParticipantDependency> =
+            complementary.iter().filter(|d| open(d)).collect();
         match available.as_slice() {
             [] => {
                 // Distinguish "the target has no such slot at all" from
@@ -313,13 +397,15 @@ fn resolve_pair_declaration(
                     let slot = (target_instance.to_string(), d.link_id.clone());
                     claims
                         .get(&slot)
+                        .and_then(|peers| peers.first())
                         .map(|peer| (d.link_id.clone(), peer.clone()))
                 });
                 let taken_running = complementary.iter().find_map(|d| {
                     let slot = (target_instance.to_string(), d.link_id.clone());
                     already_paired
                         .get(&slot)
-                        .map(|label| (d.link_id.clone(), label.clone()))
+                        .and_then(|peers| peers.first())
+                        .map(|(inst, link)| (d.link_id.clone(), peer_label(inst, link)))
                 });
                 return Err(
                     if let Some((taken_link, (peer_inst, peer_link))) = taken_in_plan {
@@ -357,31 +443,45 @@ fn resolve_pair_declaration(
             }
         }
     };
-
-    // Exclusivity of the resolved peer slot (reachable via the explicit
-    // `/<peer_link_id>` path; the implicit path filtered claimed slots).
-    let peer_slot = (target_instance.to_string(), resolved_peer_link.clone());
-    if let Some((existing_inst, existing_link)) = claims.get(&peer_slot) {
-        return Err(slot_taken(
-            target_instance.to_string(),
-            resolved_peer_link.clone(),
-            format!("{existing_inst}:{existing_link}"),
-        ));
-    }
-    if let Some(peer_label) = already_paired.get(&peer_slot) {
-        return Err(slot_taken(
-            target_instance.to_string(),
-            resolved_peer_link.clone(),
-            peer_label.clone(),
-        ));
-    }
-
-    // Rule 6: both-pinned sha256 must match.
     let peer_dep = target_item
         .pairing_deps
         .iter()
         .find(|d| d.link_id == resolved_peer_link)
         .expect("resolved peer slot comes from target_item.pairing_deps");
+
+    // Exclusivity of the resolved peer slot (reachable via the explicit
+    // `/<peer_link_id>` path; the implicit path filtered taken slots). A
+    // scalar peer slot is taken by any pair; a multi one already holding this
+    // pair refuses it again.
+    let peer_slot = (target_instance.to_string(), resolved_peer_link.clone());
+    let mut held = peers_of(&peer_slot, claims, already_paired);
+    if peer_dep.cardinality.is_scalar() {
+        if let Some((inst, link)) = held.next() {
+            return Err(slot_taken(
+                target_instance.to_string(),
+                resolved_peer_link.clone(),
+                peer_label(inst, link),
+            ));
+        }
+    } else if held.any(|(inst, link)| inst == owner_id && link == key) {
+        return Err(pair_held(
+            target_instance.to_string(),
+            resolved_peer_link.clone(),
+            peer_label(owner_id, key),
+        ));
+    }
+    // The same pair held twice on this node's own multi slot.
+    if peers_of(&own_slot, claims, already_paired)
+        .any(|(inst, link)| inst == target_instance && *link == resolved_peer_link)
+    {
+        return Err(pair_held(
+            owner_id.to_string(),
+            key.to_string(),
+            peer_label(target_instance, &resolved_peer_link),
+        ));
+    }
+
+    // Rule 6: both-pinned sha256 must match.
     if let (Some(sha_own), Some(sha_peer)) = (&own_dep.sha256, &peer_dep.sha256)
         && sha_own != sha_peer
     {
@@ -404,24 +504,27 @@ fn resolve_pair_declaration(
             instance_id: owner_id.to_string(),
             link_id: key.to_string(),
             role: own_dep.role.clone(),
+            cardinality: own_dep.cardinality,
         },
         b: PlannedPairEndpoint {
             instance_id: target_instance.to_string(),
             link_id: resolved_peer_link,
             role: peer_dep.role.clone(),
+            cardinality: peer_dep.cardinality,
         },
     }))
 }
 
 /// Rule 7 of [`validate_pairings`], over every planned (non-preexisting)
-/// instance: each participant slot is paired in this plan, declared vacant, or
-/// covered outside this validator's view. An optional slot is not exempt, only
-/// vacatable: a slot with no `links` entry at all is uncovered whatever the
-/// manifest says, so forgetting one stays an error and the manifest flag only
-/// decides which remedies the error offers.
+/// instance: each participant slot is paired in this plan, declared vacant,
+/// covered outside this validator's view, or declared `zero_or_more`, which
+/// may hold nothing. A `zero_or_one` slot is not exempt, only vacatable: a
+/// slot with no `links` entry at all is uncovered whatever the manifest says,
+/// so forgetting one stays an error and the cardinality only decides which
+/// remedies the error offers.
 fn validate_coverage(
     items: &[PairingValidationItem<'_>],
-    claims: &BTreeMap<(String, String), (String, String)>,
+    claims: &Claims,
     externally_covered: &ExternallyCoveredSlots,
     errors: &mut Vec<ParsingError>,
 ) {
@@ -429,6 +532,9 @@ fn validate_coverage(
         for instance in item.instances {
             let owner_id = instance.instance_id.as_str();
             for dep in item.pairing_deps {
+                if dep.cardinality.allows_empty() {
+                    continue;
+                }
                 let slot = (owner_id.to_string(), dep.link_id.clone());
                 let covered = claims.contains_key(&slot)
                     || externally_covered.contains(&slot)
@@ -444,7 +550,7 @@ fn validate_coverage(
                             pairing_name: dep.name.as_str().to_string(),
                             pairing_tag: dep.tag.clone(),
                             role: dep.role.clone(),
-                            optional: dep.optional,
+                            cardinality: dep.cardinality,
                         },
                     )));
                 }
@@ -511,6 +617,86 @@ mod tests {
             preexisting: true,
             ..item(node_name, instances, pairing_deps)
         }
+    }
+
+    /// A multi participant slot takes one target per pair it holds, so a
+    /// scalar is refused there exactly as it is on an observer or a
+    /// producer-binding slot. All three families ask one shape rule.
+    #[test]
+    fn a_scalar_on_a_multi_participant_slot_is_refused() {
+        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
+        let arm_pairing_deps = arm_deps();
+        let engine_instances =
+            parse_instances(r#"[{ instance_id: "engine_1", links: { controllers: "arm_1" } }]"#);
+        let engine_pairing_deps = parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "controllers", cardinality: "zero_or_more" }]"#,
+        );
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_pairing_deps),
+            item("sim_engine", &engine_instances, &engine_pairing_deps),
+        ];
+        let out = validate(&items, &BTreeMap::new());
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| e.to_string().contains("controllers")
+                    && e.to_string().contains("link an array")),
+            "the refusal names the slot and what to write instead: {:?}",
+            out.errors
+        );
+        assert!(out.planned.is_empty(), "a refused shape plans no pair");
+    }
+
+    /// An empty array on a `one_or_more` participant slot names no peer, so
+    /// the slot's floor is unmet and the plan says which spelling means
+    /// "may hold nothing" instead.
+    #[test]
+    fn an_empty_array_on_a_one_or_more_participant_slot_is_refused() {
+        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
+        let arm_pairing_deps = arm_deps();
+        let engine_instances =
+            parse_instances(r#"[{ instance_id: "engine_1", links: { controllers: [] } }]"#);
+        let engine_pairing_deps = parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "controllers", cardinality: "one_or_more" }]"#,
+        );
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_pairing_deps),
+            item("sim_engine", &engine_instances, &engine_pairing_deps),
+        ];
+        let out = validate(&items, &BTreeMap::new());
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| e.to_string().contains("controllers")
+                    && e.to_string().contains("at least one peer")),
+            "the refusal names the slot and its minimum: {:?}",
+            out.errors
+        );
+        assert!(out.planned.is_empty(), "a refused shape plans no pair");
+    }
+
+    /// The shared rule reports two distinct violations, an array on a scalar
+    /// slot and repeated flags on one, through the single-target error that
+    /// already spells both. This guards that collapsing.
+    #[test]
+    fn an_array_on_a_scalar_participant_slot_still_names_the_single_target_rule() {
+        let arm_instances = parse_instances(r#"[{ instance_id: "arm_1" }]"#);
+        let arm_pairing_deps = arm_deps();
+        let ctrl_instances =
+            parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: ["arm_1", "arm_2"] } }]"#);
+        let ctrl_pairing_deps = controller_deps();
+        let items = vec![
+            item("robot_arm", &arm_instances, &arm_pairing_deps),
+            item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
+        ];
+        let out = validate(&items, &BTreeMap::new());
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| e.to_string().contains("takes a single")),
+            "a scalar slot given a set keeps the single-target error: {:?}",
+            out.errors
+        );
     }
 
     #[test]
@@ -763,7 +949,7 @@ mod tests {
         ];
         let already: AlreadyPairedSlots = [(
             ("arm_1".to_string(), "controller".to_string()),
-            "ctrl_1:arm".to_string(),
+            vec![("ctrl_1".to_string(), "arm".to_string())],
         )]
         .into_iter()
         .collect();
@@ -804,11 +990,11 @@ mod tests {
         assert_eq!(info.role, "controller");
         let msg = info.to_string();
         assert!(
-            msg.contains("required pairing slot") && msg.contains("--link arm@"),
+            msg.contains("cardinality `one`") && msg.contains("--link arm@"),
             "message should show the fix: {msg}"
         );
         assert!(
-            msg.contains("`optional: true`"),
+            msg.contains("`cardinality: \"zero_or_one\"`"),
             "message should name the manifest key that waives the peer: {msg}"
         );
         assert!(
@@ -818,12 +1004,12 @@ mod tests {
         );
     }
 
-    /// An optional slot is vacatable, not exempt: forgetting it is the same
-    /// error, and only its remedy list differs.
+    /// A `zero_or_one` slot is vacatable, not exempt: forgetting it is the
+    /// same error, and only its remedy list differs.
     #[test]
     fn optional_slot_is_uncovered_when_forgotten_and_covered_when_vacated() {
         let optional_deps = parse_pairing_deps(
-            r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", optional: true }]"#,
+            r#"[{ name: "arm_link", tag: "v1", role: "controller", link_id: "arm", cardinality: "zero_or_one" }]"#,
         );
 
         let forgotten = parse_instances(r#"[{ instance_id: "ctrl_1" }]"#);
@@ -841,8 +1027,8 @@ mod tests {
             .expect("a forgotten optional slot is still uncovered");
         let msg = info.to_string();
         assert!(
-            msg.contains("optional pairing slot") && msg.contains("--vacant-link 'arm=<why>'"),
-            "an optional slot's message offers both remedies: {msg}"
+            msg.contains("cardinality `zero_or_one`") && msg.contains("--vacant-link 'arm=<why>'"),
+            "a zero_or_one slot's message offers both remedies: {msg}"
         );
 
         let vacated = parse_instances(
@@ -1060,5 +1246,167 @@ mod tests {
         let out = validate(&items, &BTreeMap::new());
         assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
         assert_eq!(out.planned.len(), 1);
+    }
+
+    fn engine_deps() -> Vec<PairingParticipantDependency> {
+        parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controllers", cardinality: "zero_or_more" }]"#,
+        )
+    }
+
+    /// A multi slot takes one target per pair: two controllers naming the
+    /// engine pair into its one `controllers` slot, and the engine itself may
+    /// name both in an array.
+    #[test]
+    fn a_multi_slot_holds_one_pair_per_target() {
+        let engine_instances = parse_instances(r#"[{ instance_id: "engine" }]"#);
+        let engine_pairing_deps = engine_deps();
+        let ctrl_instances = parse_instances(
+            r#"[
+                { instance_id: "ctrl_1", links: { arm: "engine" } },
+                { instance_id: "ctrl_2", links: { arm: "engine" } }
+            ]"#,
+        );
+        let ctrl_pairing_deps = controller_deps();
+        let items = vec![
+            item("sim_engine", &engine_instances, &engine_pairing_deps),
+            item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
+        ];
+        let out = validate(&items, &BTreeMap::new());
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(out.planned.len(), 2);
+        assert!(
+            out.planned
+                .iter()
+                .all(|pair| pair.b.instance_id == "engine" && pair.b.link_id == "controllers")
+        );
+
+        let engine_instances = parse_instances(
+            r#"[{ instance_id: "engine", links: { controllers: ["ctrl_1", "ctrl_2"] } }]"#,
+        );
+        let ctrl_instances =
+            parse_instances(r#"[{ instance_id: "ctrl_1" }, { instance_id: "ctrl_2" }]"#);
+        let items = vec![
+            item("sim_engine", &engine_instances, &engine_pairing_deps),
+            item("arm_controller", &ctrl_instances, &ctrl_pairing_deps),
+        ];
+        let out = validate(&items, &BTreeMap::new());
+        assert!(out.errors.is_empty(), "unexpected errors: {:?}", out.errors);
+        assert_eq!(
+            out.planned
+                .iter()
+                .map(|pair| pair.b.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ctrl_1", "ctrl_2"],
+            "pairs keep the order the array wrote"
+        );
+    }
+
+    /// A running multi slot stays open to a new peer and closed to a peer it
+    /// already holds; a scalar slot takes one target only.
+    #[test]
+    fn a_running_multi_slot_takes_new_peers_and_refuses_a_held_one() {
+        let engine_instances = parse_instances(r#"[{ instance_id: "engine" }]"#);
+        let engine_pairing_deps = engine_deps();
+        let ctrl_pairing_deps = controller_deps();
+        let already: AlreadyPairedSlots = [(
+            ("engine".to_string(), "controllers".to_string()),
+            vec![("ctrl_1".to_string(), "arm".to_string())],
+        )]
+        .into_iter()
+        .collect();
+
+        let joining = parse_instances(r#"[{ instance_id: "ctrl_2", links: { arm: "engine" } }]"#);
+        let items = vec![
+            preexisting("sim_engine", &engine_instances, &engine_pairing_deps),
+            item("arm_controller", &joining, &ctrl_pairing_deps),
+        ];
+        let out = validate(&items, &already);
+        assert!(
+            out.errors.is_empty(),
+            "a held multi slot stays open: {:?}",
+            out.errors
+        );
+        assert_eq!(out.planned.len(), 1);
+
+        let rejoining = parse_instances(r#"[{ instance_id: "ctrl_1", links: { arm: "engine" } }]"#);
+        let items = vec![
+            preexisting("sim_engine", &engine_instances, &engine_pairing_deps),
+            item("arm_controller", &rejoining, &ctrl_pairing_deps),
+        ];
+        let out = validate(&items, &already);
+        let info = out
+            .errors
+            .iter()
+            .find_map(|e| match e {
+                ParsingError::PairAlreadyHeld(info) => Some(info),
+                _ => None,
+            })
+            .expect("the same pair twice is refused");
+        assert_eq!(
+            (info.instance_id.as_str(), info.link_id.as_str()),
+            ("engine", "controllers")
+        );
+        assert_eq!(info.peer, "ctrl_1:arm");
+        assert!(
+            info.to_string()
+                .contains("holds each pair once until it is cleared"),
+            "the refusal states the multi slot's rule: {info}"
+        );
+
+        let arrayed = parse_instances(r#"[{ instance_id: "ctrl_3", links: { arm: ["engine"] } }]"#);
+        let items = vec![
+            preexisting("sim_engine", &engine_instances, &engine_pairing_deps),
+            item("arm_controller", &arrayed, &ctrl_pairing_deps),
+        ];
+        let out = validate(&items, &already);
+        assert!(
+            out.errors
+                .iter()
+                .any(|e| matches!(e, ParsingError::LinkTargetNotScalar { .. })),
+            "a scalar slot takes one target: {:?}",
+            out.errors
+        );
+    }
+
+    /// A `zero_or_more` slot is covered holding nothing; a `one_or_more` slot
+    /// with no pair is uncovered and pointed at the cardinality that may hold
+    /// nothing.
+    #[test]
+    fn coverage_follows_the_slot_cardinality() {
+        let engine_instances = parse_instances(r#"[{ instance_id: "engine" }]"#);
+        let engine_pairing_deps = engine_deps();
+        let out = validate(
+            &[item("sim_engine", &engine_instances, &engine_pairing_deps)],
+            &BTreeMap::new(),
+        );
+        assert!(
+            out.errors.is_empty(),
+            "zero_or_more holds nothing: {:?}",
+            out.errors
+        );
+
+        let floored_deps = parse_pairing_deps(
+            r#"[{ name: "arm_link", tag: "v1", role: "arm", link_id: "controllers", cardinality: "one_or_more" }]"#,
+        );
+        let out = validate(
+            &[item("sim_engine", &engine_instances, &floored_deps)],
+            &BTreeMap::new(),
+        );
+        let info = out
+            .errors
+            .iter()
+            .find_map(|e| match e {
+                ParsingError::PairingSlotUncovered(info) => Some(info),
+                _ => None,
+            })
+            .expect("a one_or_more slot with no pair is uncovered");
+        let msg = info.to_string();
+        assert!(
+            msg.contains("cardinality `one_or_more`")
+                && msg.contains("[\"<peer_instance>\", ...]")
+                && msg.contains("`cardinality: \"zero_or_more\"`"),
+            "{msg}"
+        );
     }
 }

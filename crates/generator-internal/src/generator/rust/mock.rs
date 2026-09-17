@@ -1027,8 +1027,9 @@ fn render_pairing_link(
 
     let doc = format!(
         "Mock peer for the `{link_id}` pairing slot: publishes the topics the node \
-         consumes and holds triple-pinned subscriptions to the topics the node emits, \
-         under the pin identity the harness seeds (`peer_info()`)."
+         consumes to the node's slot and holds pinned subscriptions to the topics \
+         the node emits, under the pin identity the harness seeds (`peer_info()`); \
+         a multi slot starts several instances with distinct instance ids."
     );
     let tokens = quote! {
         #![doc = #doc]
@@ -1042,10 +1043,10 @@ fn render_pairing_link(
         pub const PEER_LINK_ID: &str = #MOCK_PEER_LINK_ID;
         /// Core-node segment of the mock's wire identity.
         pub const MOCK_CORE_NODE: &str = #MOCK_CORE_NODE;
-        /// Instance segment of the mock's wire identity.
+        /// Default instance segment of the mock's wire identity.
         pub const MOCK_INSTANCE_ID: &str = #default_instance;
 
-        /// The mock peer's wire identity.
+        /// The default mock peer's wire identity.
         pub fn producer_ref() -> peppylib::messaging::ProducerRef {
             peppylib::messaging::ProducerRef::new(MOCK_CORE_NODE, MOCK_INSTANCE_ID)
         }
@@ -1053,13 +1054,20 @@ fn render_pairing_link(
         /// The full pin identity the harness seeds for this slot: what the
         /// node's `paired()` / `wait_paired()` resolve to.
         pub fn peer_info() -> peppylib::messaging::PeerInfo {
+            peer_info_for(MOCK_INSTANCE_ID)
+        }
+
+        /// [`peer_info`] under an explicit instance id (multi slots): the
+        /// `info` of the member the node's `peers()` lists for it.
+        pub fn peer_info_for(instance_id: &str) -> peppylib::messaging::PeerInfo {
             peppylib::messaging::PeerInfo {
-                producer: producer_ref(),
+                producer: peppylib::messaging::ProducerRef::new(MOCK_CORE_NODE, instance_id),
                 peer_link_id: PEER_LINK_ID.to_string(),
             }
         }
 
-        /// The mock peer for this slot; construct with [`Mock::start`].
+        /// One mock peer instance for this slot; construct with
+        /// [`Mock::start`] / [`Mock::start_as`].
         pub struct Mock {
             _session: peppylib::MessengerHandle,
             #( #fields ),*
@@ -1067,14 +1075,33 @@ fn render_pairing_link(
 
         impl Mock {
             /// Connects a dedicated session, declares the peer publishers and
-            /// opens the pinned subscriptions to the node's emissions.
-            /// `node_instance_id` is the node-under-test's instance id (the
-            /// harness passes its own).
+            /// opens the pinned subscriptions to the node's emissions, under
+            /// the default [`MOCK_INSTANCE_ID`]. `node_instance_id` is the
+            /// node-under-test's instance id (the harness passes its own).
             pub async fn start(
                 router: &peppylib::testing::EphemeralRouter,
                 node_instance_id: &str,
             ) -> crate::Result<Self> {
+                Self::start_as(router, MOCK_INSTANCE_ID, node_instance_id).await
+            }
+
+            /// [`Mock::start`] under an explicit instance id, for pairing
+            /// several mock peers into one multi slot.
+            pub async fn start_as(
+                router: &peppylib::testing::EphemeralRouter,
+                instance_id: &str,
+                node_instance_id: &str,
+            ) -> crate::Result<Self> {
                 let session = router.connect().await?;
+                // The node under test on its slot: the peer every publisher
+                // of this mock addresses and every subscription pins.
+                let node = peppylib::messaging::PeerInfo {
+                    producer: peppylib::messaging::ProducerRef::new(
+                        peppylib::testing::STANDALONE_CORE_NODE,
+                        node_instance_id,
+                    ),
+                    peer_link_id: LINK_ID.to_string(),
+                };
                 #( #constructs )*
                 Ok(Self {
                     _session: session,
@@ -1119,8 +1146,8 @@ fn render_pair_publisher(
 
     let doc = format!(
         "Typed peer publisher for `{topic_name}` (the node consumes this direction): \
-         publishes under the mock peer's identity and slot id, so the node's \
-         triple-pinned subscription receives it."
+         publishes from the mock peer's slot to the node's slot, so the node's \
+         pinned subscription receives it."
     );
     let module = quote! {
         #[doc = #doc]
@@ -1136,15 +1163,18 @@ fn render_pair_publisher(
             impl Publisher {
                 pub(super) async fn declare(
                     session: &peppylib::MessengerHandle,
+                    instance_id: &str,
+                    node: &peppylib::messaging::PeerInfo,
                 ) -> crate::Result<Self> {
-                    let core = peppylib::testing::TestTopicPublisher::declare(
+                    let core = peppylib::testing::TestTopicPublisher::declare_to_peer(
                         session,
                         super::MOCK_CORE_NODE,
-                        super::MOCK_INSTANCE_ID,
+                        instance_id,
                         #pairing_target,
-                        Some(super::PEER_LINK_ID),
+                        super::PEER_LINK_ID,
                         #topic_name,
                         #qos,
+                        node.clone(),
                     )
                     .await?;
                     Ok(Self { core })
@@ -1173,7 +1203,8 @@ fn render_pair_publisher(
         module,
         field_ty: quote!(#module_ident::Publisher),
         construct: quote! {
-            let #module_ident = #module_ident::Publisher::declare(&session).await?;
+            let #module_ident =
+                #module_ident::Publisher::declare(&session, instance_id, &node).await?;
         },
         module_ident,
     })
@@ -1219,22 +1250,21 @@ fn render_pair_subscription(
             impl Subscription {
                 pub(super) async fn open(
                     session: &peppylib::MessengerHandle,
-                    node_instance_id: &str,
+                    instance_id: &str,
+                    node: &peppylib::messaging::PeerInfo,
                 ) -> crate::Result<Self> {
                     // The exact wire shape of a paired peer's subscription:
-                    // node identity, pairing target, and the node's own slot
-                    // link_id all pinned. No pin-following, since the mock's peer
-                    // (the node under test) is known from construction.
-                    let node = peppylib::messaging::ProducerRef::new(
-                        peppylib::testing::STANDALONE_CORE_NODE,
-                        node_instance_id,
-                    );
+                    // node identity, pairing target, the node's own slot
+                    // link_id and the mock's own slot all pinned. No
+                    // pin-following, since the mock's peer (the node under
+                    // test) is known from construction.
                     let inner = peppylib::testing::subscribe_peer_pinned(
                         session,
                         super::MOCK_CORE_NODE,
-                        super::MOCK_INSTANCE_ID,
+                        instance_id,
+                        super::PEER_LINK_ID,
                         #pairing_target,
-                        &node,
+                        &node.producer,
                         super::LINK_ID,
                         #topic_name,
                         #qos,
@@ -1263,7 +1293,7 @@ fn render_pair_subscription(
         field_ty: quote!(#module_ident::Subscription),
         construct: quote! {
             let #module_ident =
-                #module_ident::Subscription::open(&session, node_instance_id).await?;
+                #module_ident::Subscription::open(&session, instance_id, &node).await?;
         },
         module_ident,
     })
@@ -1320,6 +1350,10 @@ fn render_observed_link(
         pub const PAIRING_TAG: &str = #pairing_tag;
         /// The producer-side link_id mock sources publish under.
         pub const SOURCE_LINK_ID: &str = #MOCK_SOURCE_LINK_ID;
+        /// The slot of the peer each mock source publishes to: a pairing
+        /// emission names its peer, and the node observes every pair of the
+        /// source's slot.
+        pub const PEER_LINK_ID: &str = #MOCK_PEER_LINK_ID;
         /// Core-node segment of the mock's wire identity.
         pub const MOCK_CORE_NODE: &str = #MOCK_CORE_NODE;
         /// Default instance segment of the mock's wire identity.
@@ -1330,11 +1364,23 @@ fn render_observed_link(
             source_for(MOCK_INSTANCE_ID)
         }
 
+        /// The peer a mock source under `instance_id` publishes to.
+        pub fn peer_of(instance_id: &str) -> peppylib::messaging::PeerInfo {
+            peppylib::messaging::PeerInfo {
+                producer: peppylib::messaging::ProducerRef::new(
+                    MOCK_CORE_NODE,
+                    format!("{instance_id}-peer"),
+                ),
+                peer_link_id: PEER_LINK_ID.to_string(),
+            }
+        }
+
         /// [`source`] under an explicit instance id (multi-member slots).
         pub fn source_for(instance_id: &str) -> peppylib::messaging::ObservedSource {
             peppylib::messaging::ObservedSource {
                 producer: peppylib::messaging::ProducerRef::new(MOCK_CORE_NODE, instance_id),
                 source_link_id: SOURCE_LINK_ID.to_string(),
+                peer: None,
             }
         }
 
@@ -1405,9 +1451,9 @@ fn render_observed_publisher(
     )?;
 
     let doc = format!(
-        "Typed source publisher for the observed topic `{topic_name}`: publishes under \
-         the mock source's identity and source link_id, so the node's \
-         generation-checked observation subscription receives it."
+        "Typed source publisher for the observed topic `{topic_name}`: publishes from \
+         the mock source's slot to its own peer, so the node's generation-checked \
+         observation subscription receives it."
     );
     let module = quote! {
         #[doc = #doc]
@@ -1425,14 +1471,15 @@ fn render_observed_publisher(
                     session: &peppylib::MessengerHandle,
                     instance_id: &str,
                 ) -> crate::Result<Self> {
-                    let core = peppylib::testing::TestTopicPublisher::declare(
+                    let core = peppylib::testing::TestTopicPublisher::declare_to_peer(
                         session,
                         super::MOCK_CORE_NODE,
                         instance_id,
                         #pairing_target,
-                        Some(super::SOURCE_LINK_ID),
+                        super::SOURCE_LINK_ID,
                         #topic_name,
                         #qos,
+                        super::peer_of(instance_id),
                     )
                     .await?;
                     Ok(Self { core })

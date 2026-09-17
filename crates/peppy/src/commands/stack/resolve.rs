@@ -77,7 +77,7 @@ impl Default for JoinPreview {
 ///
 /// The flat plan is then held to the launch-time link rules that need no
 /// daemon: slot-key and vacancy legality, and the pairing rules, coverage
-/// included, so a launcher that leaves an optional pairing slot neither
+/// included, so a launcher that leaves a `zero_or_one` pairing slot neither
 /// paired nor vacant fails here instead of minutes later at launch. The
 /// node manifests come from this machine's nodes cache; when one is not
 /// readable locally the check is skipped and says so, because a partial

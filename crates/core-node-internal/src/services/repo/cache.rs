@@ -87,8 +87,7 @@ pub struct ContractSlot {
 }
 
 /// One `depends_on.pairings` entry: the node plays `role` in the pairing
-/// through the slot named `link_id`; `optional` says the slot may run with
-/// no peer.
+/// through the slot named `link_id`, holding `cardinality` pairs.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PairingSlot {
     pub name: config::runtime::Name,
@@ -96,7 +95,7 @@ pub struct PairingSlot {
     pub role: String,
     pub link_id: String,
     pub sha256: Option<String>,
-    pub optional: bool,
+    pub cardinality: Cardinality,
 }
 
 /// One `depends_on.pairing_observers` entry: the node observes the topics
@@ -152,7 +151,7 @@ impl From<&config::node::Manifest> for DeclaredLinks {
                             role: slot.role.clone(),
                             link_id: slot.link_id.clone(),
                             sha256: slot.sha256.clone(),
-                            optional: slot.optional,
+                            cardinality: slot.cardinality,
                         })
                         .collect()
                 })
@@ -1146,7 +1145,7 @@ pub(crate) mod test_support {
         tag: &str,
         role: &str,
         link_id: &str,
-        optional: bool,
+        cardinality: Cardinality,
         sha256: Option<&str>,
     ) -> PairingSlot {
         PairingSlot {
@@ -1155,7 +1154,7 @@ pub(crate) mod test_support {
             role: role.to_owned(),
             link_id: link_id.to_owned(),
             sha256: sha256.map(ToOwned::to_owned),
-            optional,
+            cardinality,
         }
     }
 
@@ -1421,7 +1420,14 @@ mod tests {
                         Cardinality::ZeroOrMore,
                         None,
                     )],
-                    pairings: vec![participates("arm_link", "v1", "arm", "arm", true, None)],
+                    pairings: vec![participates(
+                        "arm_link",
+                        "v1",
+                        "arm",
+                        "arm",
+                        Cardinality::ZeroOrOne,
+                        None,
+                    )],
                     pairing_observers: vec![observes(
                         "arm_link",
                         "v1",

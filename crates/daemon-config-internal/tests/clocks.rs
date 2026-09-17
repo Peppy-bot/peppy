@@ -469,11 +469,13 @@ fn a_connection_across_two_clocks_is_refused_naming_both() {
             instance_id: "unbound".to_owned(),
             link_id: "arm".to_owned(),
             role: "commander".to_owned(),
+            cardinality: config::node::Cardinality::One,
         },
         b: PlannedPairEndpoint {
             instance_id: "bound".to_owned(),
             link_id: "commander".to_owned(),
             role: "arm".to_owned(),
+            cardinality: config::node::Cardinality::One,
         },
     }];
     let observations = [PlannedObservation {
@@ -484,6 +486,7 @@ fn a_connection_across_two_clocks_is_refused_naming_both() {
         observed_role: "arm".to_owned(),
         source: ProducerRef::new(MACHINE, "bound"),
         source_link_id: "commander".to_owned(),
+        peer: None,
     }];
 
     let errors = validate_clock_connections(&clocks, &slot_bindings, &pairings, &observations);

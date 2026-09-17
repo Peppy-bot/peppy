@@ -22,7 +22,7 @@ fn peer_context() -> crate::generator::types::PeerContext {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     }
 }
 
@@ -56,10 +56,12 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
             "pub const LINK_ID: &str = \"arm\"",
             "pub const PAIRING_NAME: &str = \"arm_link\"",
             "pub const PAIRING_TAG: &str = \"v1\"",
-            // The pairing wire target + the OWN slot link_id splice.
-            "SenderTarget::pairing(",
-            "PAIRING_NAME",
-            "Some(LINK_ID)",
+            // The slot-scoped publisher splice.
+            "peppylib::runtime::declare_sole_peer_publisher(",
+            "LINK_ID,",
+            "PAIRING_NAME,",
+            "PAIRING_TAG,",
+            "TOPIC_NAME,",
             // Pin-state helpers.
             "pub fn paired(",
             "pub async fn wait_paired(",
@@ -67,6 +69,8 @@ fn peer_emitted_topic_publishes_slot_scoped_under_pairing_target() {
             // Standard emit surface.
             "pub fn build_message(",
             "pub async fn declare_publisher(",
+            "-> crate::Result<peppylib::TopicPublisher>",
+            "reaches the paired peer",
         ],
     );
     // Pairing publishers never use node/interface targets or the default
@@ -246,6 +250,85 @@ fn observed_topic_accessor_is_cardinality_typed() {
             cardinality == Cardinality::OneOrMore,
             "the never-empty note belongs to `one_or_more` alone; got: {rendered}"
         );
+    }
+}
+
+/// A participant slot's state accessor is named against its cardinality: a
+/// scalar slot exposes `paired()` and `wait_paired()`, a multi slot exposes
+/// `peers()` answering a `Vec<PeerMember>` whose doc states the floor the
+/// cardinality declares. The publisher doc names the publish call that fits.
+#[test]
+fn peer_slot_state_is_cardinality_typed() {
+    let topic = parse_topic(JOINT_COMMANDS);
+    for (cardinality, present, absent) in [
+        (
+            Cardinality::One,
+            vec![
+                "pub fn paired(",
+                "pub async fn wait_paired(",
+                "reaches the paired peer",
+            ],
+            vec!["pub fn peers(", "peer_set(LINK_ID)"],
+        ),
+        (
+            Cardinality::ZeroOrOne,
+            vec![
+                "pub fn paired(",
+                "pub async fn wait_paired(",
+                "reaches the paired peer",
+            ],
+            vec!["pub fn peers(", "peer_set(LINK_ID)"],
+        ),
+        (
+            Cardinality::OneOrMore,
+            vec![
+                "pub fn peers(",
+                "-> crate::Result<Vec<peppylib::messaging::PeerMember>>",
+                "node_runner.peer_set(LINK_ID)?.members()",
+                "`one_or_more`: the plan pairs at least one",
+                "group by `copy`",
+                "`publish_to` names the peer",
+            ],
+            vec![
+                "pub fn paired(",
+                "wait_paired",
+                "node_runner.peer(LINK_ID)",
+                "NonEmptyPeers",
+                "`first()` is infallible.",
+            ],
+        ),
+        (
+            Cardinality::ZeroOrMore,
+            vec![
+                "pub fn peers(",
+                "-> crate::Result<Vec<peppylib::messaging::PeerMember>>",
+                "node_runner.peer_set(LINK_ID)?.members()",
+                "`zero_or_more`: the plan may pair nothing",
+                "`publish_to` names the peer",
+            ],
+            vec![
+                "pub fn paired(",
+                "wait_paired",
+                "NonEmptyPeers",
+                "`first()` is infallible.",
+            ],
+        ),
+    ] {
+        let peer = crate::generator::types::PeerContext {
+            cardinality,
+            ..peer_context()
+        };
+        let mut generator = RustGenerator::new();
+        generator.add_peer_emitted_topic(&topic, &peer).unwrap();
+        let artifacts = generator.into_artifacts();
+        let rendered = &artifacts[0].code_output;
+        assert_contains_all(rendered, &present);
+        for needle in absent {
+            assert!(
+                !rendered.contains(needle),
+                "a {cardinality:?} slot must not expose `{needle}`; got: {rendered}"
+            );
+        }
     }
 }
 

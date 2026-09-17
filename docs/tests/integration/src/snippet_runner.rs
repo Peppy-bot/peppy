@@ -369,8 +369,8 @@ fn forward_resolved_zenohd(command: &mut Command) {
 /// it is registered as an fs repo and refreshed, then the snippet is synced
 /// with `-r`, added, built, and launched with `start_args`. The pairing
 /// snippets launch solo with `--vacant-link <slot>=<why>`: a slot the manifest
-/// declares `optional: true` boots unpaired when the run declares it vacant,
-/// with no peer present.
+/// declares `cardinality: "zero_or_one"` boots unpaired when the run declares
+/// it vacant, with no peer present.
 pub fn run_snippet_with_contract_repo(
     snippets_root: &str,
     snippet_name: &str,

@@ -31,6 +31,16 @@
         path: "nodes/my_python_robot_arm/peppy.json5"
       }
     },
+    pairing_hub: {
+      v1: {
+        path: "nodes/pairing_hub/peppy.json5"
+      }
+    },
+    pairing_leader: {
+      v1: {
+        path: "nodes/pairing_leader/peppy.json5"
+      }
+    },
     reactive_policy: {
       v1: {
         path: "nodes/reactive_policy/peppy.json5"
@@ -68,6 +78,16 @@
     deliberation: {
       v1: {
         path: "pairings/deliberation.json5"
+      }
+    },
+    gripper_link: {
+      v1: {
+        path: "pairings/gripper_link.json5"
+      }
+    },
+    joint_link: {
+      v1: {
+        path: "pairings/joint_link.json5"
       }
     }
   }

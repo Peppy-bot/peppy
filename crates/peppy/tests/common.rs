@@ -1,5 +1,5 @@
 use peppy::context::AppContext;
-use peppy::test_support::ServeCommandEmulation;
+use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
 use peppylib::messaging::SenderTarget;
 use std::io::{BufRead, BufReader};
@@ -410,8 +410,143 @@ pub async fn emulate_cooperative_shutdown(
     });
 }
 
+/// A node declaring one `arm_link/v1` participant slot of the given
+/// `cardinality`, with the `interfaces.topics` entries the role owes: `emits`
+/// must cover the role's topics exactly, `consumes` names the counterpart's.
+/// `run_cmd` is a keep-alive so the daemon has a real process to own; the
+/// node's services are emulated in-process by the test. The keep-alive lasts
+/// as long as `instances`: the pairing tests drive long
+/// establish/stop/repair/remove sequences and every step needs its instances
+/// still in the stack.
+pub fn pairing_node_config(
+    name: &str,
+    role: &str,
+    link_id: &str,
+    cardinality: config::node::Cardinality,
+    instances: &InstanceLifetime,
+    pidfile: &std::path::Path,
+) -> String {
+    let cardinality = cardinality.as_str();
+    let (emits, consumes) = arm_link_topics(role);
+    // Records the daemon-tracked pid ($$ is the shell it spawned) before
+    // waiting, so `emulate_cooperative_shutdown` can end this exact process.
+    let run_cmd = format!(
+        r#"["sh", "-c", "echo $$ > '{}'; {}"]"#,
+        pidfile.display(),
+        instances.keep_alive_script()
+    );
+    format!(
+        r#"{{
+            peppy_schema: "node/v1",
+            manifest: {{
+                name: "{name}",
+                tag: "v1",
+                depends_on: {{
+                    pairings: [
+                        {{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", cardinality: "{cardinality}" }}
+                    ]
+                }}
+            }},
+            interfaces: {{
+                topics: {{
+                    emits: [{{ link_id: "{link_id}", name: "{emits}" }}],
+                    consumes: [{{ link_id: "{link_id}", name: "{consumes}" }}]
+                }}
+            }},
+            execution: {{ language: "rust", run_cmd: {run_cmd} }}
+        }}"#
+    )
+}
+
+/// The `(emitted, consumed)` topic names of [`ARM_LINK_PAIRING`] for a role,
+/// so a manifest's entries stay in step with the document.
+pub fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
+    match role {
+        "controller" => ("joint_commands", "joint_states"),
+        "arm" => ("joint_states", "joint_commands"),
+        other => panic!("arm_link declares no role `{other}`"),
+    }
+}
+
+/// Starts the in-process services an emulated pairing instance exposes (ready,
+/// health, shutdown) plus its `peer_update` endpoint, and hands back the
+/// pairing slot's set watch. For tests that drive several pairing instances
+/// through one launch and read the set each one is delivered.
+pub async fn emulate_pairing_node_services(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+    link_id: &str,
+) -> tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState> {
+    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
+    let (_shutdown, _) = peppylib::services::shutdown::listen_for_shutdown(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("shutdown service should start");
+
+    let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerSetState::empty());
+    let slots = Arc::new(std::collections::BTreeMap::from([(
+        link_id.to_string(),
+        tx,
+    )]));
+    peppylib::services::peer_update::listen_for_peer_update(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+        slots,
+    )
+    .await
+    .expect("peer_update service should start");
+    rx
+}
+
+/// Emulates a spawned pairing instance's in-process services (ready, health,
+/// shutdown, peer_update) and hands back the pairing slot's set watch. Unlike
+/// [`emulate_pairing_node_services`] its shutdown ends the run_cmd process
+/// whose pid `pidfile` holds.
+pub async fn emulate_pairing_instance(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+    link_id: &str,
+    pidfile: &std::path::Path,
+) -> tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState> {
+    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
+    emulate_cooperative_shutdown(
+        messenger,
+        core_node_name,
+        node_name,
+        instance_id,
+        pidfile.to_path_buf(),
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerSetState::empty());
+    let slots = Arc::new(std::collections::BTreeMap::from([(
+        link_id.to_string(),
+        tx,
+    )]));
+    peppylib::services::peer_update::listen_for_peer_update(
+        messenger,
+        core_node_name,
+        instance_id,
+        test_node_target(node_name),
+        slots,
+    )
+    .await
+    .expect("peer_update service should start");
+    rx
+}
+
 /// A minimal two-role pairing document, shared by the pairing e2e tests
-/// (`node_pair`, `repo_refresh`, `node_sync`).
+/// (`node_pair`, `node_observe`, `repo_refresh`, `node_sync`).
 pub const ARM_LINK_PAIRING: &str = r#"{
     peppy_schema: "pairing/v1",
     manifest: { name: "arm_link", tag: "v1" },

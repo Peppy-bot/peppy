@@ -124,7 +124,7 @@ fn populate<G: LanguageGenerator>(generator: &mut G) {
         link_id: "arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     };
     generator.add_peer_emitted_topic(&commands, &peer).unwrap();
     generator.add_peer_consumed_topic(&states, &peer).unwrap();
@@ -133,7 +133,7 @@ fn populate<G: LanguageGenerator>(generator: &mut G) {
         link_id: "observed_arm".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     };
     generator
         .add_observed_topic(&states, &observer, Cardinality::One)
@@ -142,7 +142,7 @@ fn populate<G: LanguageGenerator>(generator: &mut G) {
         link_id: "fleet_arms".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     };
     generator
         .add_observed_topic(&states, &multi_observer, Cardinality::ZeroOrMore)

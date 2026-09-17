@@ -321,6 +321,9 @@ pub struct StartContext<'a> {
     /// [`TrackedNodeInstance`] so a clock domain it publishes names the launch
     /// that owns it. `None` for an instance `peppy node run` started.
     pub launch: Option<LaunchIdentity>,
+    /// The copy this instance belongs to, recorded on the
+    /// `TrackedNodeInstance` so every pair it takes part in can name it.
+    pub copy: Option<config::runtime::Name>,
     /// User + injected env vars (already passed through
     /// `validate_goal_env_vars`, `inject_rust_build_env`, and
     /// `inject_node_runtime_env` in core-node).
@@ -969,7 +972,8 @@ impl NodeEntity {
                 ctx.slot_bindings.clone(),
             )
             .with_clock(ctx.clock.clone())
-            .with_launch(ctx.launch.clone());
+            .with_launch(ctx.launch.clone())
+            .with_copy(ctx.copy.clone());
             if let Some(endpoints) = built_in_endpoints {
                 instance = instance.with_endpoints(endpoints);
             }
@@ -1479,6 +1483,9 @@ pub struct TrackedNodeInstance {
     /// instance publishes. `None` for an instance `peppy node run` started,
     /// and for a snapshot-restored or test-fixture instance.
     launch: Option<LaunchIdentity>,
+    /// The copy this instance belongs to, as the launch composed it; `None`
+    /// for an instance run on its own.
+    copy: Option<config::runtime::Name>,
     /// Last `node_health` outcome recorded by the daemon's health monitor.
     /// Behind an `Arc<AtomicBool>` so the monitor can update it through the
     /// cheap clone returned by `NodeStack::find_by_instance_id`, without taking
@@ -1524,6 +1531,7 @@ impl TrackedNodeInstance {
             slot_bindings,
             clock: config::runtime::ClockBinding::Wall,
             launch: None,
+            copy: None,
             healthy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             endpoints: Vec::new(),
@@ -1561,6 +1569,18 @@ impl TrackedNodeInstance {
     /// Records the launch the change that started this instance belongs to.
     pub fn with_launch(mut self, launch: Option<LaunchIdentity>) -> Self {
         self.launch = launch;
+        self
+    }
+
+    /// The copy this instance belongs to; `None` for an instance run on its
+    /// own.
+    pub fn copy(&self) -> Option<&config::runtime::Name> {
+        self.copy.as_ref()
+    }
+
+    /// Records the copy this instance belongs to.
+    pub fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
+        self.copy = copy;
         self
     }
 

@@ -19,8 +19,8 @@ pub mod mock;
 
 pub use parameters::Parameters;
 pub use peppylib::config::QoSProfile;
-pub use peppylib::messaging::{ObservedSource, PeerInfo, ProducerRef};
-pub use peppylib::runtime::{NodeBuilder, NodeRunner, StandaloneConfig};
+pub use peppylib::messaging::{ObservedSource, PeerInfo, PeerMember, ProducerRef};
+pub use peppylib::runtime::{NodeBuilder, NodeRunner, PeerPublisher, StandaloneConfig};
 pub use peppylib::{
     MessengerHandle, PeppyError as Error, PeppyResult as Result, ServiceMessenger,
 };

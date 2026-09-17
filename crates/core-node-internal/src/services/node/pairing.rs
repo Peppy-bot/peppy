@@ -20,14 +20,14 @@ use config::runtime::Name;
 use core_node_api::encoding::PairCommitRequest;
 use core_node_api::encoding::PairTarget;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, DeploymentInstance, ExternallyCoveredSlots, LinkValue,
+    AlreadyPairedSlots, DeploymentInstance, ExternallyCoveredSlots, LinkTargets, LinkValue,
     PairingValidationItem, ResolvedClocks, Selection, VacantReason, validate_clock_connections,
     validate_pairings,
 };
 use node_stack::{NodeStack, Pairing, PairingNodeSnapshot, RemoteSlotMeta, SlotAddr};
 use peppylib::MessengerHandle;
 use peppylib::encoding::peer_update::PeerUpdateRequest;
-use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerInfo, ProducerRef};
+use peppylib::messaging::{PEER_UPDATE_SERVICE, PeerInfo, PeerMember, ProducerRef};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -206,24 +206,19 @@ impl PairingCoordinator {
                 {
                     continue;
                 }
-                let pin = PeerInfo {
-                    // The peer's OWN core node, not this daemon's: a pin names
-                    // where the peer actually runs, and for a cross-daemon pair
-                    // those differ.
-                    producer: ProducerRef::new(peer.slot.core_node.clone(), &peer.slot.instance_id),
-                    peer_link_id: peer.slot.link_id.clone(),
-                };
-                self.send_peer_update(&endpoint.slot, Some(pin)).await
+                self.send_peer_update(&endpoint.slot).await
             } else {
                 self.commit_pair_remotely(pairing, endpoint, peer).await
             };
 
             if let Err(reason) = outcome {
-                // Revert the commit; if the OTHER side already acked its pin,
-                // best-effort roll it back to Unpaired.
-                self.updates.node_stack().clear_pair(&endpoint.slot);
+                // Revert the commit; if the OTHER side already acked its set,
+                // best-effort deliver it the set without this pair.
+                self.updates
+                    .node_stack()
+                    .clear_pair(&endpoint.slot, &peer.slot);
                 if idx == 1 {
-                    self.notify_unpaired_best_effort(&peer.slot).await;
+                    self.notify_set_best_effort(&peer.slot).await;
                 }
                 return Err(format!(
                     "failed to deliver pair `{}` to instance '{}': {reason}",
@@ -273,6 +268,8 @@ impl PairingCoordinator {
                 pairing_name: request.pairing_name.clone(),
                 pairing_tag: request.pairing_tag.clone(),
                 role: request.peer_role.clone(),
+                cardinality: request.peer_cardinality,
+                copy: request.peer_copy.clone(),
             },
         ))
     }
@@ -290,11 +287,20 @@ impl PairingCoordinator {
         endpoint: &node_stack::PairEndpoint,
         peer: &node_stack::PairEndpoint,
     ) -> std::result::Result<(), String> {
+        // The peer is this daemon's own endpoint of the pair, so its slot's
+        // cardinality is read from the manifest here and carried across: the
+        // receiver holds the far half of every pair that slot takes part in.
+        let peer_cardinality = self
+            .updates
+            .node_stack()
+            .pairing_slot_declaration(&peer.slot)
+            .map_err(|e| e.to_string())?
+            .cardinality;
         let request = PairCommitRequest {
             pairing_name: pairing.pairing_name.clone(),
             pairing_tag: pairing.pairing_tag.clone(),
             // `local` is relative to the RECEIVER, so it names the endpoint's
-            // own core node — which is also the machine this request is routed
+            // own core node, which is also the machine this request is routed
             // to. Stating it lets the receiver verify the routing instead of
             // assuming "local means me".
             local: ProducerRef::new(&endpoint.slot.core_node, &endpoint.slot.instance_id),
@@ -303,6 +309,8 @@ impl PairingCoordinator {
             peer: ProducerRef::new(&peer.slot.core_node, &peer.slot.instance_id),
             peer_link_id: peer.slot.link_id.clone(),
             peer_role: peer.role.clone(),
+            peer_cardinality,
+            peer_copy: peer.copy.clone(),
         };
         let response = peppylib::core_node::transport::poll(
             &request,
@@ -341,15 +349,11 @@ impl PairingCoordinator {
             .pair_slot_with_remote(&local, &remote, &remote_meta)
             .map_err(|e| e.to_string())?;
 
-        let pin = PeerInfo {
-            producer: request.peer.clone(),
-            peer_link_id: request.peer_link_id.clone(),
-        };
-        if let Err(reason) = self.send_peer_update(&local, Some(pin)).await {
+        if let Err(reason) = self.send_peer_update(&local).await {
             // Undo the commit before answering: a pair this daemon recorded but
             // could not deliver is worse than none, because the node would
             // report a slot it never received.
-            self.updates.node_stack().clear_pair(&local);
+            self.updates.node_stack().clear_pair(&local, &remote);
             return Err(format!(
                 "could not pin `{}` on this daemon: {reason}",
                 request.local.instance_id
@@ -386,8 +390,8 @@ impl PairingCoordinator {
         }
     }
 
-    /// Tells this daemon's own endpoint of a dissolved pair that its slot is
-    /// now Unpaired.
+    /// Tells this daemon's own endpoint of a dissolved pair which pairs its
+    /// slot still holds.
     ///
     /// Only local endpoints are notified. A node accepts slot updates solely
     /// from its own daemon, so an endpoint on another machine is that daemon's
@@ -414,14 +418,15 @@ impl PairingCoordinator {
             if !endpoint.slot.is_on(&local_core_node) {
                 continue;
             }
-            self.notify_unpaired_best_effort(&endpoint.slot).await;
+            self.notify_set_best_effort(&endpoint.slot).await;
         }
     }
 
-    /// Best-effort absolute Unpaired delivery; failures are logged, never
-    /// propagated (the target may be mid-death, and the boot default plus
-    /// lazy registry pruning make the unpaired state eventually consistent).
-    async fn notify_unpaired_best_effort(&self, slot: &SlotAddr) {
+    /// Best-effort delivery of the pairs `slot` holds right now; failures are
+    /// logged, never propagated (the target may be mid-death, and the boot
+    /// default plus lazy registry pruning make the state eventually
+    /// consistent).
+    async fn notify_set_best_effort(&self, slot: &SlotAddr) {
         if !self
             .updates
             .node_stack()
@@ -429,27 +434,40 @@ impl PairingCoordinator {
         {
             return;
         }
-        if let Err(reason) = self.send_peer_update(slot, None).await {
+        if let Err(reason) = self.send_peer_update(slot).await {
             warn!(
-                "Best-effort unpair notification to '{}' slot `{}` failed: {reason}",
+                "Best-effort peer set notification to '{}' slot `{}` failed: {reason}",
                 slot.instance_id, slot.link_id
             );
         }
     }
 
-    /// One `peer_update` service call carrying the absolute pin state of
-    /// `slot` on its owning instance. `Ok` on an accepted or stale reply
-    /// (stale means a newer absolute state already landed, which is exactly
-    /// the invariant we want).
-    async fn send_peer_update(
-        &self,
-        slot: &SlotAddr,
-        pin: Option<PeerInfo>,
-    ) -> std::result::Result<(), String> {
+    /// One `peer_update` service call carrying every pair `slot` holds on its
+    /// owning instance, as the registry records them right now. `Ok` on an
+    /// accepted or stale reply (stale means a newer absolute state already
+    /// landed, which is exactly the invariant we want).
+    async fn send_peer_update(&self, slot: &SlotAddr) -> std::result::Result<(), String> {
+        let members = self
+            .updates
+            .node_stack()
+            .pairs()
+            .iter()
+            .filter_map(|pair| pair.peer_of(slot))
+            .map(|peer| PeerMember {
+                info: PeerInfo {
+                    // The peer's OWN core node, not this daemon's: a pin names
+                    // where the peer actually runs, and for a cross-daemon
+                    // pair those differ.
+                    producer: ProducerRef::new(peer.slot.core_node.clone(), &peer.slot.instance_id),
+                    peer_link_id: peer.slot.link_id.clone(),
+                },
+                copy: peer.copy.as_ref().map(|copy| copy.as_str().to_string()),
+            })
+            .collect();
         let request = PeerUpdateRequest {
             link_id: slot.link_id.clone(),
             sequence: self.updates.next_sequence(),
-            pin,
+            members,
         };
         let payload = request.encode().map_err(|e| e.to_string())?;
 
@@ -542,8 +560,8 @@ pub struct PairingRequest<'a> {
     pub node_tag: &'a str,
     pub instance_id: &'a str,
     pub pairing_deps: &'a [config::node::PairingParticipantDependency],
-    /// `link_id -> peer target` from `--link` / a launch plan.
-    pub requested: &'a std::collections::BTreeMap<String, PairTarget>,
+    /// `link_id -> every pair the slot takes` from `--link` / a launch plan.
+    pub requested: &'a std::collections::BTreeMap<String, Vec<PairTarget>>,
     /// Slots deliberately starting unpaired, each with the reason the
     /// deployment wrote down (`--vacant-link <link_id>=<why>` / the launcher's
     /// `links: { <link_id>: { vacant: "<why>" } }`).
@@ -553,7 +571,19 @@ pub struct PairingRequest<'a> {
     /// for the covered-vs-vacant distinction).
     ///
     /// [`NodeRunGoal::covered_pairs`]: core_node_api::encoding::NodeRunGoal::covered_pairs
-    pub covered: &'a std::collections::BTreeMap<String, PairTarget>,
+    pub covered: &'a std::collections::BTreeMap<String, Vec<PairTarget>>,
+}
+
+/// Every pair a goal's slot map carries, as `(slot link_id, pair)` in slot
+/// order then plan order. A slot holds as many pairs as its cardinality
+/// admits, so the map's values are lists and every rule below reads one pair
+/// at a time.
+fn flatten_pairs(
+    pairs: &std::collections::BTreeMap<String, Vec<PairTarget>>,
+) -> impl Iterator<Item = (&String, &PairTarget)> {
+    pairs
+        .iter()
+        .flat_map(|(link_id, targets)| targets.iter().map(move |target| (link_id, target)))
 }
 
 /// The daemon-side re-check of a `node_run` goal's pairing arguments — the
@@ -601,7 +631,7 @@ pub fn plan_requested_pairs(
         vacant,
         covered,
     } = request;
-    for (link_id, target) in requested {
+    for (link_id, target) in flatten_pairs(requested) {
         if target.peer.instance_id == instance_id {
             return Err(format!(
                 "pairing slot `{link_id}` targets its own instance '{instance_id}'; \
@@ -616,16 +646,17 @@ pub fn plan_requested_pairs(
     // observer keys share the namespace), so this boundary, where the goal has
     // already classified pairs, is where a stray key is caught. This restores
     // the old dead-key rejection that the by-validator classification dropped.
-    let slot_is_optional: std::collections::BTreeMap<&str, bool> = pairing_deps
-        .iter()
-        .map(|dependency| (dependency.link_id.as_str(), dependency.optional))
-        .collect();
+    let slot_cardinality: std::collections::BTreeMap<&str, config::node::Cardinality> =
+        pairing_deps
+            .iter()
+            .map(|dependency| (dependency.link_id.as_str(), dependency.cardinality))
+            .collect();
     for link_id in requested.keys().chain(covered.keys()).chain(vacant.keys()) {
-        if !slot_is_optional.contains_key(link_id.as_str()) {
+        if !slot_cardinality.contains_key(link_id.as_str()) {
             return Err(format!(
                 "pairing slot `{link_id}` on instance '{instance_id}' matches no declared \
                  participant pairing slot; declared: [{}]",
-                slot_is_optional
+                slot_cardinality
                     .keys()
                     .copied()
                     .collect::<Vec<_>>()
@@ -662,17 +693,20 @@ pub fn plan_requested_pairs(
         }
     }
 
-    // Only a slot the node's own manifest declares optional may boot with no
-    // peer. The launcher and the CLI check this before they build a goal, but
+    // Only a slot the node's own manifest declares `zero_or_one` may boot
+    // with no peer. The launcher and the CLI check this before they build a goal, but
     // this daemon holds the manifest and a goal arriving over the wire does not
     // have to have come from either, so the node's statement about itself is
     // enforced where the goal lands rather than only where it was written.
     for link_id in vacant.keys() {
-        if slot_is_optional.get(link_id.as_str()) == Some(&false) {
+        if slot_cardinality
+            .get(link_id.as_str())
+            .is_some_and(|cardinality| *cardinality != config::node::Cardinality::ZeroOrOne)
+        {
             return Err(format!(
                 "pairing slot `{link_id}` on instance '{instance_id}' is declared vacant, but \
                  node `{node_name}:{node_tag}` declares it required; pair it, or declare the slot \
-                 `optional: true` in the node manifest"
+                 `cardinality: \"zero_or_one\"` in the node manifest"
             ));
         }
     }
@@ -682,9 +716,8 @@ pub fn plan_requested_pairs(
     // its own. The planner that dispatched this goal holds both and already
     // checked them against each other, so those pairs are split out here and
     // built from that verdict. The local ones are validated exactly as before.
-    let (remote_requested, local_requested): (Vec<_>, Vec<_>) = requested
-        .iter()
-        .partition(|(_, target)| target.peer.core_node != local_core_node);
+    let (remote_requested, local_requested): (Vec<_>, Vec<_>) =
+        flatten_pairs(requested).partition(|(_, target)| target.peer.core_node != local_core_node);
 
     // Slots this daemon cannot see a pair for, although one exists or is
     // coming. Neither is a vacancy, so neither is written as one: a covered
@@ -697,25 +730,39 @@ pub fn plan_requested_pairs(
         .chain(remote_requested.iter().map(|(link, _)| *link))
         .map(|link_id| (instance_id.to_string(), link_id.clone()))
         .collect();
-    let own_instances = vec![DeploymentInstance {
-        // Rendered into the validator's launcher target grammar
-        // (`peer[/peer_link]`) as a scalar link value; lossless, since
-        // instance ids and link_ids are `/`-free names. A vacancy carries the
-        // reason the goal declared, unchanged.
-        links: local_requested
-            .iter()
-            .map(|(link_id, target)| {
-                (
-                    (*link_id).clone(),
-                    LinkValue::Bound(Selection::Scalar(target.to_string())),
-                )
-            })
-            .chain(
-                vacant
-                    .iter()
-                    .map(|(link_id, reason)| (link_id.clone(), LinkValue::Vacant(reason.clone()))),
+    // Rendered into the validator's launcher target grammar
+    // (`peer[/peer_link]`), one target per pair; lossless, since instance ids
+    // and link_ids are `/`-free names. A slot holding several pairs renders as
+    // the flag set the CLI writes for that slot, so the validator sizes it
+    // against the slot's cardinality exactly as it sizes a launcher's. A
+    // vacancy carries the reason the goal declared, unchanged.
+    let mut targets_by_slot: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (link_id, target) in &local_requested {
+        targets_by_slot
+            .entry((*link_id).clone())
+            .or_default()
+            .push(target.to_string());
+    }
+    let mut own_links: std::collections::BTreeMap<String, LinkValue> =
+        std::collections::BTreeMap::new();
+    for (link_id, targets) in targets_by_slot {
+        let targets = LinkTargets::new(targets).map_err(|err| {
+            format!(
+                "pairing slot `{link_id}` on instance '{instance_id}' names peer `{}` twice; \
+                 a slot holds each pair once",
+                err.target
             )
-            .collect(),
+        })?;
+        own_links.insert(link_id, LinkValue::Bound(Selection::Flags(targets)));
+    }
+    own_links.extend(
+        vacant
+            .iter()
+            .map(|(link_id, reason)| (link_id.clone(), LinkValue::Vacant(reason.clone()))),
+    );
+    let own_instances = vec![DeploymentInstance {
+        links: own_links,
         ..DeploymentInstance::empty(
             Name::new(instance_id)
                 .map_err(|e| format!("invalid instance id `{instance_id}`: {e}"))?,
@@ -756,21 +803,15 @@ pub fn plan_requested_pairs(
         preexisting: false,
     });
 
-    let already_paired: AlreadyPairedSlots = live_pairs
-        .iter()
-        .flat_map(|p| {
-            [
-                (
-                    (p.a.slot.instance_id.clone(), p.a.slot.link_id.clone()),
-                    p.b.slot.to_string(),
-                ),
-                (
-                    (p.b.slot.instance_id.clone(), p.b.slot.link_id.clone()),
-                    p.a.slot.to_string(),
-                ),
-            ]
-        })
-        .collect();
+    let mut already_paired = AlreadyPairedSlots::new();
+    for pair in live_pairs {
+        for (own, peer) in [(&pair.a, &pair.b), (&pair.b, &pair.a)] {
+            already_paired
+                .entry((own.slot.instance_id.clone(), own.slot.link_id.clone()))
+                .or_default()
+                .push((peer.slot.instance_id.clone(), peer.slot.link_id.clone()));
+        }
+    }
 
     let validated = validate_pairings(&items, &already_paired, &externally_covered);
     if !validated.errors.is_empty() {
@@ -858,6 +899,8 @@ fn remote_planned_pair(
             pairing_name: remote.pairing_name.clone(),
             pairing_tag: remote.pairing_tag.clone(),
             role: remote.peer_role.clone(),
+            cardinality: remote.peer_cardinality,
+            copy: remote.peer_copy.clone(),
         }),
     })
 }
@@ -884,9 +927,17 @@ mod tests {
     /// it. Only this shape may be written vacant.
     fn optional_dep(role: &str, link_id: &str) -> PairingParticipantDependency {
         serde_json5::from_str(&format!(
-            r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", optional: true }}"#
+            r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", cardinality: "zero_or_one" }}"#
         ))
         .expect("valid optional pairing dependency")
+    }
+
+    /// The same slot, declared to hold any number of pairs.
+    fn multi_dep(role: &str, link_id: &str) -> PairingParticipantDependency {
+        serde_json5::from_str(&format!(
+            r#"{{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", cardinality: "zero_or_more" }}"#
+        ))
+        .expect("valid multi pairing dependency")
     }
 
     fn snapshot_node(
@@ -915,6 +966,7 @@ mod tests {
         PairEndpoint {
             slot: SlotAddr::new(core_node, instance_id, link_id),
             role: role.to_owned(),
+            copy: None,
         }
     }
 
@@ -1034,6 +1086,8 @@ mod tests {
             peer: ProducerRef::new("core_b", "planner_inst"),
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
+            peer_cardinality: config::node::Cardinality::One,
+            peer_copy: None,
         };
 
         let (local, remote, meta) =
@@ -1053,6 +1107,8 @@ mod tests {
                 // The PEER's role: this daemon can read its own manifest, but
                 // not the one across the boundary.
                 role: "planner".to_owned(),
+                cardinality: config::node::Cardinality::One,
+                copy: None,
             }
         );
     }
@@ -1073,6 +1129,8 @@ mod tests {
             peer: ProducerRef::new("core_b", "planner_inst"),
             peer_link_id: "delegation".to_owned(),
             peer_role: "planner".to_owned(),
+            peer_cardinality: config::node::Cardinality::One,
+            peer_copy: None,
         };
 
         let error = PairingCoordinator::slots_from_commit_request(&request, TEST_CORE)
@@ -1081,11 +1139,62 @@ mod tests {
         assert!(error.contains(TEST_CORE), "got: {error}");
     }
 
-    fn requested(entries: &[(&str, PairTarget)]) -> BTreeMap<String, PairTarget> {
+    /// One requested pair per entry, in the per-slot lists a goal carries.
+    fn requested(entries: &[(&str, PairTarget)]) -> BTreeMap<String, Vec<PairTarget>> {
         entries
             .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
+            .map(|(k, v)| (k.to_string(), vec![v.clone()]))
             .collect()
+    }
+
+    /// A multi slot takes one pair per target, so a goal naming three peers
+    /// on one slot plans three pairs, each against its own peer. Both the CLI
+    /// and a launch plan build goals of this shape.
+    #[test]
+    fn a_multi_slot_plans_every_pair_its_goal_names() {
+        let engine_deps = [multi_dep("arm", "limbs")];
+        let snapshot = vec![snapshot_node(
+            "arm_controller",
+            &["ctrl_1", "ctrl_2", "ctrl_3"],
+            &[dep("controller", "arm")],
+        )];
+
+        let planned = plan_requested_pairs(
+            &snapshot,
+            &[],
+            &PairingRequest {
+                node_name: "sim_engine",
+                node_tag: "v1",
+                instance_id: "engine_1",
+                pairing_deps: &engine_deps,
+                requested: &BTreeMap::from([(
+                    "limbs".to_owned(),
+                    vec![
+                        PairTarget::new("ctrl_1", TEST_CORE),
+                        PairTarget::new("ctrl_2", TEST_CORE),
+                        PairTarget::new("ctrl_3", TEST_CORE),
+                    ],
+                )]),
+                vacant: &BTreeMap::new(),
+                covered: &BTreeMap::new(),
+            },
+            TEST_CORE,
+            &ResolvedClocks::default(),
+        )
+        .expect("a multi slot takes every target as a pair of its own");
+
+        assert_eq!(
+            planned
+                .iter()
+                .map(|pair| pair.peer.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ctrl_1", "ctrl_2", "ctrl_3"],
+            "every peer the goal names is paired"
+        );
+        assert!(
+            planned.iter().all(|pair| pair.own.link_id == "limbs"),
+            "every pair sits on the engine's one multi slot: {planned:?}"
+        );
     }
 
     /// `plan_requested_pairs` with no live pairs, no covered slots, and a
@@ -1094,7 +1203,7 @@ mod tests {
         snapshot: &[PairingNodeSnapshot],
         instance_id: &str,
         deps: &[PairingParticipantDependency],
-        req: &BTreeMap<String, PairTarget>,
+        req: &BTreeMap<String, Vec<PairTarget>>,
         vacant: &[&str],
     ) -> std::result::Result<Vec<PlannedPair>, String> {
         let vacant = vacant_slots(vacant);
@@ -1140,6 +1249,8 @@ mod tests {
                 pairing_name: "deliberation_link".to_owned(),
                 pairing_tag: "v1".to_owned(),
                 peer_role: "planner".to_owned(),
+                peer_cardinality: config::node::Cardinality::One,
+                peer_copy: None,
             },
         )
     }
@@ -1170,6 +1281,8 @@ mod tests {
                     pairing_name: "deliberation_link".to_owned(),
                     pairing_tag: "v1".to_owned(),
                     role: "planner".to_owned(),
+                    cardinality: config::node::Cardinality::One,
+                    copy: None,
                 }),
             }]
         );
@@ -1292,14 +1405,16 @@ mod tests {
 
     /// Every declared slot must be covered, and the remedies the error names
     /// follow the manifest: a required slot is offered the pairing flag and the
-    /// manifest key, an optional one both flags.
+    /// manifest key, a `zero_or_one` one both flags.
     #[test]
     fn uncovered_slot_names_the_exact_flags() {
         let required = [dep("controller", "arm")];
         let err = plan(&arm_snapshot(), "ctrl_1", &required, &BTreeMap::new(), &[])
             .expect_err("every declared slot must be covered");
         assert!(
-            err.contains("arm") && err.contains("--link") && err.contains("`optional: true`"),
+            err.contains("arm")
+                && err.contains("--link")
+                && err.contains(r#"`cardinality: "zero_or_one"`"#),
             "a required slot names the pairing flag and the manifest key: {err}"
         );
         assert!(
@@ -1346,7 +1461,7 @@ mod tests {
         assert!(
             err.contains("`arm`")
                 && err.contains("declares it required")
-                && err.contains("`optional: true`"),
+                && err.contains(r#"`cardinality: "zero_or_one"`"#),
             "the refusal must name the slot, the manifest and the key that lifts it: {err}"
         );
     }
@@ -1355,7 +1470,7 @@ mod tests {
     /// launch-planned pairs) and nothing else.
     fn plan_covered(
         deps: &[PairingParticipantDependency],
-        covered: &BTreeMap<String, PairTarget>,
+        covered: &BTreeMap<String, Vec<PairTarget>>,
     ) -> std::result::Result<Vec<PlannedPair>, String> {
         plan_requested_pairs(
             &arm_snapshot(),
@@ -1591,10 +1706,12 @@ mod tests {
             a: PairEndpoint {
                 slot: SlotAddr::new(TEST_CORE, "arm_1", "controller"),
                 role: "arm".to_string(),
+                copy: None,
             },
             b: PairEndpoint {
                 slot: SlotAddr::new(TEST_CORE, "ctrl_0", "arm"),
                 role: "controller".to_string(),
+                copy: None,
             },
         }];
         let deps = [dep("controller", "arm")];
@@ -1630,10 +1747,12 @@ mod tests {
             a: PairEndpoint {
                 slot: a,
                 role: "controller".to_string(),
+                copy: None,
             },
             b: PairEndpoint {
                 slot: b,
                 role: "arm".to_string(),
+                copy: None,
             },
         };
         let planned = vec![PlannedPair {

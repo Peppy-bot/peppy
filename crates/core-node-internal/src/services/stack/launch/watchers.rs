@@ -88,6 +88,7 @@ mod tests {
             observed_role: "arm".into(),
             source: config::runtime::ProducerRef::new("robot", "arm_inst"),
             source_link_id: "controller".into(),
+            peer: None,
         };
         let initial = lifecycle_watchers(&[observation("alpha_recorder")], &placements).unwrap();
         let joined = lifecycle_watchers(

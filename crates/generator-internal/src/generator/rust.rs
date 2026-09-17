@@ -1583,8 +1583,13 @@ impl LanguageGenerator for RustGenerator {
         )?;
         let struct_tokens = context.into_tokens();
         let header_tokens = build_peer_module_header(topic.name.as_str(), peer);
-        let method_tokens =
-            build_peer_topic_publisher(&params, encoding.as_ref(), &topic.qos_profile, &schema_key);
+        let method_tokens = build_peer_topic_publisher(
+            &params,
+            encoding.as_ref(),
+            &topic.qos_profile,
+            &schema_key,
+            peer.cardinality,
+        );
 
         let tokens: TokenStream = quote! {
             #header_tokens

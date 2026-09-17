@@ -31,7 +31,7 @@ use node_stack::NodeStack;
 use peppylib::MessengerHandle;
 use peppylib::encoding::observation_update::ObservationUpdateRequest;
 use peppylib::messaging::{
-    OBSERVATION_UPDATE_SERVICE, ObservedMemberState, ObservedSource, ProducerRef,
+    OBSERVATION_UPDATE_SERVICE, ObservedMemberState, ObservedSource, PeerInfo, ProducerRef,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -214,6 +214,7 @@ impl ObservationCoordinator {
                     pin: ObservedSource {
                         producer: obs.source.clone(),
                         source_link_id: obs.source_link_id.clone(),
+                        peer: obs.peer.as_ref().map(PeerInfo::from),
                     },
                 },
             );
@@ -252,6 +253,7 @@ impl ObservationCoordinator {
                         pin: ObservedSource {
                             producer: target.source.clone(),
                             source_link_id: target.source_link_id.clone(),
+                            peer: target.peer.as_ref().map(PeerInfo::from),
                         },
                     },
                 );
@@ -307,6 +309,7 @@ impl ObservationCoordinator {
                         config::runtime::ObservationSeedMember {
                             source: target.source.clone(),
                             source_link_id: target.source_link_id.clone(),
+                            peer: target.peer.clone(),
                             source_generation,
                             source_live,
                         }
@@ -733,6 +736,7 @@ mod tests {
                 vec![ObservationTarget {
                     source: ProducerRef::new("core_a", SOURCE_INSTANCE),
                     source_link_id: "controller".to_string(),
+                    peer: None,
                 }],
             )]
             .into_iter()
@@ -754,6 +758,7 @@ mod tests {
             observed_role: "follower".into(),
             source: ProducerRef::new("core_a", SOURCE_INSTANCE),
             source_link_id: "controller".into(),
+            peer: None,
         };
         for additions in [vec![joined], Vec::new()] {
             coordinator.extend_planned(&additions);

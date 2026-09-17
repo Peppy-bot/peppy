@@ -1,5 +1,5 @@
 // The waldo simulation engine's declarative surface, as a launch fixture:
-// four implemented contracts, seven optional pairing slots, two exposed
+// four implemented contracts, seven `zero_or_one` pairing slots, two exposed
 // services, seven exposed actions, fourteen emitted and four consumed
 // topics, with the engine's parameters. This is the interface set whose
 // binding generation (production, mock and fixture surfaces alike) the
@@ -22,13 +22,13 @@
     ],
     depends_on: {
       pairings: [
-        { name: "joint_link", tag: "v1", role: "follower", link_id: "left_arm", optional: true },
-        { name: "joint_link", tag: "v1", role: "follower", link_id: "right_arm", optional: true },
-        { name: "gripper_link", tag: "v1", role: "follower", link_id: "left_gripper", optional: true },
-        { name: "gripper_link", tag: "v1", role: "follower", link_id: "right_gripper", optional: true },
-        { name: "sim_rgb_camera_link", tag: "v1", role: "camera", link_id: "wrist_left", optional: true },
-        { name: "sim_rgb_camera_link", tag: "v1", role: "camera", link_id: "wrist_right", optional: true },
-        { name: "sim_rgbd_camera_link", tag: "v1", role: "camera", link_id: "chest", optional: true },
+        { name: "joint_link", tag: "v1", role: "follower", link_id: "left_arm", cardinality: "zero_or_one" },
+        { name: "joint_link", tag: "v1", role: "follower", link_id: "right_arm", cardinality: "zero_or_one" },
+        { name: "gripper_link", tag: "v1", role: "follower", link_id: "left_gripper", cardinality: "zero_or_one" },
+        { name: "gripper_link", tag: "v1", role: "follower", link_id: "right_gripper", cardinality: "zero_or_one" },
+        { name: "sim_rgb_camera_link", tag: "v1", role: "camera", link_id: "wrist_left", cardinality: "zero_or_one" },
+        { name: "sim_rgb_camera_link", tag: "v1", role: "camera", link_id: "wrist_right", cardinality: "zero_or_one" },
+        { name: "sim_rgbd_camera_link", tag: "v1", role: "camera", link_id: "chest", cardinality: "zero_or_one" },
       ],
     },
   },

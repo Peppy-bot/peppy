@@ -8,9 +8,11 @@
 //! `peer_update` services run in-process on the shared mock messenger,
 //! exactly the seams a real peppylib node exposes. Removing a paired node with
 //! `--stop-instances` dissolves its pairs and notifies the survivor the same
-//! way `node stop` does.
+//! way `node stop` does. A `zero_or_more` slot holds one pair per peer:
+//! peers pair into it one at a time or all at once from its own run's links,
+//! a stop shrinks the set and a rerun grows it again, and every delivery
+//! carries the whole set.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use peppy::commands::Command;
@@ -18,106 +20,13 @@ use peppy::commands::node::{NodeCommand, NodeCommands};
 use peppy::context::AppContext;
 use peppy::test_support::{InstanceLifetime, ServeCommandEmulation};
 use peppylib::MessengerHandle;
-use peppylib::messaging::PeerPinState;
-use peppylib::services::peer_update::listen_for_peer_update;
+use peppylib::messaging::PeerSetState;
 use tokio::sync::watch;
 
 use super::common::{
-    add_built_node, emulate_cooperative_shutdown, emulate_startup_services, node_run_command,
-    seed_pairing_repo, test_node_target,
+    add_built_node, emulate_cooperative_shutdown, emulate_pairing_instance,
+    emulate_startup_services, node_run_command, pairing_node_config, seed_pairing_repo,
 };
-
-/// A node declaring one pairing slot, with the `interfaces.topics` entries
-/// the role owes: `emits` must cover the role's topics exactly, `consumes`
-/// names the counterpart's. `run_cmd` is a keep-alive so the daemon has a real
-/// process to own; the node's services are emulated in-process by the test.
-/// The keep-alive is bounded by `instances` rather than by a duration: this
-/// test drives a long establish/stop/repair/remove sequence and every step
-/// needs its instances still in the stack, which a fixed `sleep` cannot
-/// promise on a loaded machine.
-fn node_config(
-    name: &str,
-    role: &str,
-    link_id: &str,
-    instances: &InstanceLifetime,
-    pidfile: &std::path::Path,
-) -> String {
-    let (emits, consumes) = arm_link_topics(role);
-    // Records the daemon-tracked pid ($$ is the shell it spawned) before
-    // waiting, so `emulate_cooperative_shutdown` can end this exact process.
-    let run_cmd = format!(
-        r#"["sh", "-c", "echo $$ > '{}'; {}"]"#,
-        pidfile.display(),
-        instances.keep_alive_script()
-    );
-    format!(
-        r#"{{
-            peppy_schema: "node/v1",
-            manifest: {{
-                name: "{name}",
-                tag: "v1",
-                depends_on: {{
-                    pairings: [
-                        // Optional: both sides of this fixture boot solo before
-                        // the other exists, so a run may write the slot vacant.
-                        {{ name: "arm_link", tag: "v1", role: "{role}", link_id: "{link_id}", optional: true }}
-                    ]
-                }}
-            }},
-            interfaces: {{
-                topics: {{
-                    emits: [{{ link_id: "{link_id}", name: "{emits}" }}],
-                    consumes: [{{ link_id: "{link_id}", name: "{consumes}" }}]
-                }}
-            }},
-            execution: {{ language: "rust", run_cmd: {run_cmd} }}
-        }}"#
-    )
-}
-
-/// The `(emitted, consumed)` topic names of `common::ARM_LINK_PAIRING` for a
-/// role, so a manifest's entries stay in step with the document.
-fn arm_link_topics(role: &str) -> (&'static str, &'static str) {
-    match role {
-        "controller" => ("joint_commands", "joint_states"),
-        "arm" => ("joint_states", "joint_commands"),
-        other => panic!("arm_link declares no role `{other}`"),
-    }
-}
-
-/// Emulates a spawned instance's in-process services (ready, health,
-/// shutdown, peer_update) and hands back the pairing slot's pin-state watch.
-async fn emulate_instance_services(
-    messenger: &MessengerHandle,
-    core_node_name: &str,
-    node_name: &str,
-    instance_id: &str,
-    link_id: &str,
-    pidfile: &std::path::Path,
-) -> watch::Receiver<PeerPinState> {
-    emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
-    emulate_cooperative_shutdown(
-        messenger,
-        core_node_name,
-        node_name,
-        instance_id,
-        pidfile.to_path_buf(),
-    )
-    .await;
-
-    let (tx, rx) = watch::channel(PeerPinState::unpaired());
-    let slots = Arc::new(BTreeMap::from([(link_id.to_string(), tx)]));
-    listen_for_peer_update(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-        slots,
-    )
-    .await
-    .expect("peer_update service should start");
-    rx
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pairing_establish_stop_repair_exclusivity_and_remove() {
@@ -152,16 +61,26 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     add_built_node(
         &ctx,
         arm_dir.path(),
-        &node_config("robot_arm", "arm", "controller", &instances, &arm_pidfile),
+        // `zero_or_one`: both sides of this fixture boot solo before the
+        // other exists, so a run may write the slot vacant.
+        &pairing_node_config(
+            "robot_arm",
+            "arm",
+            "controller",
+            config::node::Cardinality::ZeroOrOne,
+            &instances,
+            &arm_pidfile,
+        ),
     );
     let ctrl_dir = tempfile::tempdir().expect("controller node dir");
     add_built_node(
         &ctx,
         ctrl_dir.path(),
-        &node_config(
+        &pairing_node_config(
             "arm_controller",
             "controller",
             "arm",
+            config::node::Cardinality::ZeroOrOne,
             &instances,
             &ctrl_pidfile,
         ),
@@ -180,7 +99,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     );
 
     // ── Vacant boot: the arm starts unpaired ────────────────────────────
-    let mut arm_rx = emulate_instance_services(
+    let mut arm_rx = emulate_pairing_instance(
         &messenger,
         &core_node_name,
         "robot_arm",
@@ -201,12 +120,12 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     .execute(&ctx)
     .expect("run with --vacant-link should succeed");
     assert!(
-        arm_rx.borrow().pin.is_none(),
+        arm_rx.borrow().members.is_empty(),
         "a slot declared vacant must boot unpaired"
     );
 
     // ── Establish: the controller pairs at start ────────────────────────
-    let mut ctrl_rx = emulate_instance_services(
+    let mut ctrl_rx = emulate_pairing_instance(
         &messenger,
         &core_node_name,
         "arm_controller",
@@ -226,11 +145,17 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
 
     // Both endpoints received their absolute pin state live.
     let arm_pin = arm_rx.borrow_and_update().clone();
-    let pin = arm_pin.pin.expect("arm_1's slot should be pinned");
+    let pin = arm_pin
+        .peers()
+        .next()
+        .expect("arm_1's slot should be pinned");
     assert_eq!(pin.producer.instance_id, "ctrl_1");
     assert_eq!(pin.peer_link_id, "arm");
     let ctrl_pin = ctrl_rx.borrow_and_update().clone();
-    let pin = ctrl_pin.pin.expect("ctrl_1's slot should be pinned");
+    let pin = ctrl_pin
+        .peers()
+        .next()
+        .expect("ctrl_1's slot should be pinned");
     assert_eq!(pin.producer.instance_id, "arm_1");
     assert_eq!(pin.peer_link_id, "controller");
 
@@ -248,7 +173,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     );
 
     // ── Exclusivity: a second controller cannot claim the same slot ─────
-    let _ctrl2_rx = emulate_instance_services(
+    let _ctrl2_rx = emulate_pairing_instance(
         &messenger,
         &core_node_name,
         "arm_controller",
@@ -279,7 +204,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     .execute(&ctx)
     .expect("node stop should succeed");
     assert!(
-        arm_rx.borrow_and_update().pin.is_none(),
+        arm_rx.borrow_and_update().members.is_empty(),
         "the surviving arm must be live-notified Unpaired on peer death"
     );
     let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
@@ -316,9 +241,9 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "delivery failure should mention pairing: {err}"
     );
     // The failed delivery reverted the pair: the survivor stays unpaired.
-    assert!(arm_rx.borrow_and_update().pin.is_none());
+    assert!(arm_rx.borrow_and_update().members.is_empty());
 
-    let _ctrl3_rx = emulate_instance_services(
+    let _ctrl3_rx = emulate_pairing_instance(
         &messenger,
         &core_node_name,
         "arm_controller",
@@ -336,7 +261,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     .execute(&ctx)
     .expect("re-pairing the survivor should succeed");
     let arm_pin = arm_rx.borrow_and_update().clone();
-    let pin = arm_pin.pin.expect("arm_1 should be re-pinned");
+    let pin = arm_pin.peers().next().expect("arm_1 should be re-pinned");
     assert_eq!(
         pin.producer.instance_id, "ctrl_3",
         "the survivor must be pinned to the NEW controller"
@@ -359,7 +284,324 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
     .execute(&ctx)
     .expect("node remove --stop-instances should succeed");
     assert!(
-        arm_rx.borrow_and_update().pin.is_none(),
+        arm_rx.borrow_and_update().members.is_empty(),
         "removing the paired controller must live-notify the surviving arm Unpaired"
     );
+}
+
+/// The instance ids of the peers a slot's watch currently holds, in the
+/// order the set lists them.
+fn held_peers(rx: &mut watch::Receiver<PeerSetState>) -> Vec<String> {
+    rx.borrow_and_update()
+        .peers()
+        .map(|peer| peer.producer.instance_id.clone())
+        .collect()
+}
+
+/// A `zero_or_more` slot holds one pair per peer. An engine boots with the
+/// slot empty and no link, three controllers pair into it one at a time and
+/// each side reads the set it holds, a scalar slot already in a pair admits
+/// no second one, a stopped peer leaves the engine's set while the others
+/// keep their pairs, a rerun under the same instance id joins the set again,
+/// and a removal takes its pairs out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_multi_slot_holds_one_pair_per_peer_across_stops_and_reruns() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+    let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+
+    let work_dir = tempfile::tempdir().expect("temp work dir");
+    let ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let instances = InstanceLifetime::new();
+    let pid_dir = tempfile::tempdir().expect("temp pid dir");
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    // The engine plays `arm` for every controller through one slot.
+    let engine_pidfile = pid_dir.path().join("sim_engine.pid");
+    let engine_dir = tempfile::tempdir().expect("engine node dir");
+    add_built_node(
+        &ctx,
+        engine_dir.path(),
+        &pairing_node_config(
+            "sim_engine",
+            "arm",
+            "limbs",
+            config::node::Cardinality::ZeroOrMore,
+            &instances,
+            &engine_pidfile,
+        ),
+    );
+    // One controller node per instance, so each instance records its own
+    // pid and a stop ends exactly that process.
+    let controllers = ["ctrl_1", "ctrl_2", "ctrl_3"];
+    let controller_node = |instance_id: &str| format!("{instance_id}_node");
+    let mut controller_dirs = Vec::new();
+    let mut controller_pidfiles = Vec::new();
+    for instance_id in controllers {
+        let pidfile = pid_dir.path().join(format!("{instance_id}.pid"));
+        let dir = tempfile::tempdir().expect("controller node dir");
+        add_built_node(
+            &ctx,
+            dir.path(),
+            &pairing_node_config(
+                &controller_node(instance_id),
+                "controller",
+                "arm",
+                config::node::Cardinality::One,
+                &instances,
+                &pidfile,
+            ),
+        );
+        controller_dirs.push(dir);
+        controller_pidfiles.push(pidfile);
+    }
+
+    // ── An empty multi slot needs no link and no vacancy ────────────────
+    let mut engine_rx = emulate_pairing_instance(
+        &messenger,
+        &core_node_name,
+        "sim_engine",
+        "engine_1",
+        "limbs",
+        &engine_pidfile,
+    )
+    .await;
+    node_run_command("engine_1", "sim_engine", Vec::new(), Vec::new())
+        .execute(&ctx)
+        .expect("a zero_or_more slot boots empty with no link");
+    assert!(
+        held_peers(&mut engine_rx).is_empty(),
+        "an unlinked zero_or_more slot boots holding no pair"
+    );
+
+    // ── Each controller pairs into the open slot, one at a time ─────────
+    let mut controller_rxs = Vec::new();
+    for (instance_id, pidfile) in controllers.iter().zip(&controller_pidfiles) {
+        let rx = emulate_pairing_instance(
+            &messenger,
+            &core_node_name,
+            &controller_node(instance_id),
+            instance_id,
+            "arm",
+            pidfile,
+        )
+        .await;
+        node_run_command(
+            instance_id,
+            &controller_node(instance_id),
+            vec![("arm".to_string(), "engine_1".to_string())],
+            Vec::new(),
+        )
+        .execute(&ctx)
+        .expect("pairing into an open multi slot should succeed");
+        controller_rxs.push(rx);
+    }
+    assert_eq!(
+        held_peers(&mut engine_rx),
+        vec!["ctrl_1", "ctrl_2", "ctrl_3"],
+        "the engine holds one pair per controller, in establishment order"
+    );
+    for rx in &mut controller_rxs {
+        let state = rx.borrow_and_update().clone();
+        let pin = state.peers().next().expect("each controller is paired");
+        assert_eq!(pin.producer.instance_id, "engine_1");
+        assert_eq!(pin.peer_link_id, "limbs");
+    }
+    let listing = peppy::commands::stack::list_nodes_collecting(&ctx, false, None)
+        .await
+        .expect("stack list should succeed")
+        .output;
+    for instance_id in controllers {
+        assert!(
+            listing.contains(&format!(
+                "limbs ⇌ {instance_id}:arm@{core_node_name} (arm_link:v1)"
+            )),
+            "stack list renders one row per pair of the multi slot:\n{listing}"
+        );
+    }
+
+    // ── A scalar slot in a pair admits no second one ────────────────────
+    let err = node_run_command(
+        "engine_2",
+        "sim_engine",
+        vec![("limbs".to_string(), "ctrl_1".to_string())],
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect_err("a controller's scalar slot already in a pair refuses a second engine");
+    assert!(
+        err.to_string().to_lowercase().contains("pair"),
+        "exclusivity failure should mention pairing: {err}"
+    );
+
+    // ── A stopped peer leaves the set; the others keep their pairs ──────
+    NodeCommand {
+        command: NodeCommands::Stop {
+            instance_id: "ctrl_2".to_string(),
+        },
+    }
+    .execute(&ctx)
+    .expect("node stop should succeed");
+    assert_eq!(
+        held_peers(&mut engine_rx),
+        vec!["ctrl_1", "ctrl_3"],
+        "the stopped controller's pair dissolves and the survivors keep their positions"
+    );
+    assert_eq!(held_peers(&mut controller_rxs[0]), vec!["engine_1"]);
+    assert_eq!(held_peers(&mut controller_rxs[2]), vec!["engine_1"]);
+
+    // ── A rerun under the same instance id joins the set again ──────────
+    // Its in-process services are still listening, so the run delivers to
+    // the watch the test already holds for it.
+    node_run_command(
+        "ctrl_2",
+        &controller_node("ctrl_2"),
+        vec![("arm".to_string(), "engine_1".to_string())],
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect("a stopped peer pairs into the slot again");
+    assert_eq!(
+        held_peers(&mut engine_rx),
+        vec!["ctrl_1", "ctrl_3", "ctrl_2"],
+        "the rejoined controller takes the last position"
+    );
+    assert_eq!(held_peers(&mut controller_rxs[1]), vec!["engine_1"]);
+
+    // ── Removing a peer's node takes its pair out of the set ────────────
+    NodeCommand {
+        command: NodeCommands::Remove {
+            node_ref: (controller_node("ctrl_1"), "v1".to_string()),
+            stop_instances: true,
+            force: true,
+        },
+    }
+    .execute(&ctx)
+    .expect("node remove --stop-instances should succeed");
+    assert_eq!(
+        held_peers(&mut engine_rx),
+        vec!["ctrl_3", "ctrl_2"],
+        "the removed controller's pair dissolves; the others stay"
+    );
+}
+
+/// `peppy node run` takes every `--link` a multi slot's own run names: an
+/// engine started with two links on its `zero_or_more` slot holds one pair
+/// per link, in the order the run named them, and each peer's slot holds the
+/// engine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_pairs_every_link_its_multi_slot_names() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+    let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+
+    let work_dir = tempfile::tempdir().expect("temp work dir");
+    let ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let instances = InstanceLifetime::new();
+    let pid_dir = tempfile::tempdir().expect("temp pid dir");
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    // Two controllers whose own slots start open, so the engine's run is
+    // the side that names both pairs.
+    let controllers = ["ctrl_1", "ctrl_2"];
+    let controller_node = |instance_id: &str| format!("{instance_id}_node");
+    let mut controller_dirs = Vec::new();
+    let mut controller_rxs = Vec::new();
+    for instance_id in controllers {
+        let pidfile = pid_dir.path().join(format!("{instance_id}.pid"));
+        let dir = tempfile::tempdir().expect("controller node dir");
+        add_built_node(
+            &ctx,
+            dir.path(),
+            &pairing_node_config(
+                &controller_node(instance_id),
+                "controller",
+                "arm",
+                config::node::Cardinality::ZeroOrMore,
+                &instances,
+                &pidfile,
+            ),
+        );
+        let rx = emulate_pairing_instance(
+            &messenger,
+            &core_node_name,
+            &controller_node(instance_id),
+            instance_id,
+            "arm",
+            &pidfile,
+        )
+        .await;
+        node_run_command(
+            instance_id,
+            &controller_node(instance_id),
+            Vec::new(),
+            Vec::new(),
+        )
+        .execute(&ctx)
+        .expect("an open controller slot boots with no link");
+        controller_dirs.push(dir);
+        controller_rxs.push(rx);
+    }
+
+    let engine_pidfile = pid_dir.path().join("sim_engine.pid");
+    let engine_dir = tempfile::tempdir().expect("engine node dir");
+    add_built_node(
+        &ctx,
+        engine_dir.path(),
+        &pairing_node_config(
+            "sim_engine",
+            "arm",
+            "limbs",
+            config::node::Cardinality::ZeroOrMore,
+            &instances,
+            &engine_pidfile,
+        ),
+    );
+    let mut engine_rx = emulate_pairing_instance(
+        &messenger,
+        &core_node_name,
+        "sim_engine",
+        "engine_1",
+        "limbs",
+        &engine_pidfile,
+    )
+    .await;
+    node_run_command(
+        "engine_1",
+        "sim_engine",
+        controllers
+            .iter()
+            .map(|peer| ("limbs".to_string(), (*peer).to_string()))
+            .collect(),
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect("a multi slot takes every link its run names");
+
+    assert_eq!(
+        held_peers(&mut engine_rx),
+        vec!["ctrl_1", "ctrl_2"],
+        "the engine holds one pair per link, in the order the run named them"
+    );
+    for rx in &mut controller_rxs {
+        assert_eq!(
+            held_peers(rx),
+            vec!["engine_1"],
+            "each controller holds the engine"
+        );
+    }
 }

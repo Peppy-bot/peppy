@@ -235,12 +235,12 @@ fn contract_origin(link_id: &str) -> ContractOrigin {
     }
 }
 
-fn peer(link_id: &str, optional: bool) -> PeerContext {
+fn peer(link_id: &str, cardinality: Cardinality) -> PeerContext {
     PeerContext {
         link_id: link_id.to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional,
+        cardinality,
     }
 }
 
@@ -339,13 +339,16 @@ fn render_everything(node_dir: &Path) -> Vec<InterfaceArtifact> {
     // Pairing slots: required and optional, in both directions.
     let peer_topic: NativeEmittedTopic = parse(PEER_TOPIC);
     generator
-        .add_peer_emitted_topic(&peer_topic, &peer("controller", false))
+        .add_peer_emitted_topic(&peer_topic, &peer("controller", Cardinality::One))
         .unwrap();
     generator
-        .add_peer_consumed_topic(&peer_topic, &peer("sensor_bus", false))
+        .add_peer_consumed_topic(&peer_topic, &peer("sensor_bus", Cardinality::One))
         .unwrap();
     generator
-        .add_peer_emitted_topic(&peer_topic, &peer("spare_controller", true))
+        .add_peer_emitted_topic(
+            &peer_topic,
+            &peer("spare_controller", Cardinality::ZeroOrOne),
+        )
         .unwrap();
 
     // Observer slots, one per cardinality.
@@ -356,7 +359,7 @@ fn render_everything(node_dir: &Path) -> Vec<InterfaceArtifact> {
         ("watcher_pool", Cardinality::ZeroOrMore),
     ] {
         generator
-            .add_observed_topic(&peer_topic, &peer(link_id, false), cardinality)
+            .add_observed_topic(&peer_topic, &peer(link_id, cardinality), cardinality)
             .unwrap();
     }
 

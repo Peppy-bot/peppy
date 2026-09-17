@@ -47,7 +47,7 @@ fn arm_peer_context() -> PeerContext {
         link_id: "controller".to_string(),
         pairing_name: "arm_link".to_string(),
         pairing_tag: "v1".to_string(),
-        optional: false,
+        cardinality: config::node::Cardinality::One,
     }
 }
 
@@ -147,6 +147,95 @@ print("peer modules imported")
     );
 }
 
+/// A multi participant slot in Python: `peers()` annotates
+/// `List[peppylib.PeerMember]` at both multi cardinalities (Python has no
+/// non-empty list, so `one_or_more` states the guarantee in its docstring),
+/// `declare_publisher` answers a `peppylib.PeerPublisher`, and the scalar pin
+/// helpers are absent.
+#[test]
+fn generated_multi_peer_modules_are_cardinality_typed() {
+    let temp_dir = TempDir::new_in(crate::helpers::test_tmp_root()).unwrap();
+    let commands: NativeEmittedTopic = serde_json5::from_str(JOINT_COMMANDS).unwrap();
+    let states: NativeEmittedTopic = serde_json5::from_str(JOINT_STATES).unwrap();
+
+    let (mut generator, output_dir, user_node, peppy_node_config_path) =
+        init_test_env::<generator::PythonGenerator>(&temp_dir, STUB_PYTHON_NODE_CONFIG);
+    let limbs = PeerContext {
+        link_id: "limbs".to_string(),
+        cardinality: config::node::Cardinality::ZeroOrMore,
+        ..arm_peer_context()
+    };
+    let crew = PeerContext {
+        link_id: "crew".to_string(),
+        cardinality: config::node::Cardinality::OneOrMore,
+        ..arm_peer_context()
+    };
+    generator.add_peer_emitted_topic(&states, &limbs).unwrap();
+    generator
+        .add_peer_consumed_topic(&commands, &limbs)
+        .unwrap();
+    generator.add_peer_emitted_topic(&states, &crew).unwrap();
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator
+        .build(&output_dir, &test_peppy_dirs(), Default::default())
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+    config::fingerprint::create_codegen_fingerprint(
+        &peppy_node_config_path,
+        Path::new(PEPPYGEN_OUTPUT_PATH),
+    );
+
+    init_python_user_node(&user_node);
+    init_python_project_venv(&user_node);
+
+    let check = r#"
+import inspect
+from typing import List
+
+import peppylib
+from peppygen.paired_topics.crew import joint_states as crew_states
+from peppygen.paired_topics.limbs import joint_states, joint_commands
+
+assert joint_states.LINK_ID == "limbs"
+assert crew_states.LINK_ID == "crew"
+
+# Both multi cardinalities read a member list; the floor lives in the docstring.
+for module in (joint_states, joint_commands, crew_states):
+    assert callable(module.peers)
+    assert module.peers.__annotations__["return"] == List[peppylib.PeerMember]
+    for absent in ("paired", "wait_paired"):
+        assert not hasattr(module, absent), absent
+assert "`one_or_more`: the plan pairs at least one" in crew_states.peers.__doc__
+assert "`zero_or_more`: the plan may pair nothing" in joint_states.peers.__doc__
+# A pair ends when either side stops, so neither floor promises a member is
+# there to read, and the docstring states each floor as the plan's guarantee.
+for module in (joint_states, crew_states):
+    assert "`[0]` is always valid." not in module.peers.__doc__
+
+# The emitted side answers a PeerPublisher, driven with publish_to.
+assert inspect.iscoroutinefunction(joint_states.declare_publisher)
+assert joint_states.declare_publisher.__annotations__["return"] is peppylib.PeerPublisher
+assert "`publish_to` names the peer" in joint_states.declare_publisher.__doc__
+assert callable(peppylib.PeerPublisher.publish_to)
+
+# The consumed side keeps its shape.
+assert inspect.iscoroutinefunction(joint_commands.subscribe)
+assert inspect.isclass(joint_commands.Subscription)
+print("multi peer modules imported")
+"#;
+    let output = std::process::Command::new(user_node.join(".venv/bin/python"))
+        .args(["-c", check])
+        .current_dir(&user_node)
+        .output()
+        .expect("failed to run venv python");
+    assert!(
+        output.status.success(),
+        "importing generated multi peer modules failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// The observer half of the same surface, and the cardinality typing that goes
 /// with it: a scalar slot (`one` or `zero_or_one`) exposes `source()`, a multi
 /// slot exposes `sources()`, and none exposes a publisher or the participant
@@ -170,7 +259,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "observed_arm".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
-                optional: false,
+                cardinality: config::node::Cardinality::One,
             },
             Cardinality::One,
         )
@@ -182,7 +271,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "maybe_observed_arm".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
-                optional: false,
+                cardinality: config::node::Cardinality::One,
             },
             Cardinality::ZeroOrOne,
         )
@@ -194,7 +283,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "observed_arms".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
-                optional: false,
+                cardinality: config::node::Cardinality::One,
             },
             Cardinality::OneOrMore,
         )
@@ -206,7 +295,7 @@ fn generated_observer_modules_are_cardinality_typed() {
                 link_id: "spare_arms".to_string(),
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
-                optional: false,
+                cardinality: config::node::Cardinality::One,
             },
             Cardinality::ZeroOrMore,
         )

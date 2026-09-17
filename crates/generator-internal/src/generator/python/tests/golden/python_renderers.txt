@@ -1835,14 +1835,13 @@ def build_message(positions: list[float], timestamp: float) -> bytes:
     return capnp_msg.to_bytes()
 
 async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:
-    return await peppylib.TopicMessenger.declare_publisher(
-        node_runner.messenger(),
-        node_runner.bound_core_node(),
-        node_runner.bound_instance_id(),
-        peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),
+    """Declare the publisher for this pairing topic. `publish` reaches the paired peer; while unpaired it is a legal no-op, since a pairing is a live stream and nothing is waiting."""
+    return await node_runner.declare_sole_peer_publisher(
+        LINK_ID,
+        PAIRING_NAME,
+        PAIRING_TAG,
         TOPIC_NAME,
         QOS,
-        link_id=LINK_ID,
     )
 
 ================================================================
@@ -1963,14 +1962,13 @@ def build_message(positions: list[float], timestamp: float) -> bytes:
     return capnp_msg.to_bytes()
 
 async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:
-    return await peppylib.TopicMessenger.declare_publisher(
-        node_runner.messenger(),
-        node_runner.bound_core_node(),
-        node_runner.bound_instance_id(),
-        peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),
+    """Declare the publisher for this pairing topic. `publish` reaches the paired peer; while unpaired it is a legal no-op, since a pairing is a live stream and nothing is waiting."""
+    return await node_runner.declare_sole_peer_publisher(
+        LINK_ID,
+        PAIRING_NAME,
+        PAIRING_TAG,
         TOPIC_NAME,
         QOS,
-        link_id=LINK_ID,
     )
 
 ================================================================
@@ -3216,12 +3214,16 @@ MOCK_CORE_NODE = "mock-core"
 MOCK_INSTANCE_ID = "mock-controller"
 
 def producer_ref() -> peppylib.ProducerRef:
-    """The mock peer's wire identity."""
+    """The default mock peer's wire identity."""
     return peppylib.ProducerRef(MOCK_CORE_NODE, MOCK_INSTANCE_ID)
 
 def peer_info() -> peppylib.PeerInfo:
     """The full pin identity the harness seeds for this slot: what the node's `paired()` / `wait_paired()` resolve to."""
-    return peppylib.PeerInfo(producer_ref(), PEER_LINK_ID)
+    return peer_info_for(MOCK_INSTANCE_ID)
+
+def peer_info_for(instance_id: str) -> peppylib.PeerInfo:
+    """`peer_info` under an explicit instance id (multi slots): the `info` of the member the node's `peers()` lists for it."""
+    return peppylib.PeerInfo(peppylib.ProducerRef(MOCK_CORE_NODE, instance_id), PEER_LINK_ID)
 
 @lru_cache(maxsize=1)
 def _peer_controller_joint_states_message_capnp() -> types.ModuleType:
@@ -3249,18 +3251,18 @@ class JointStatesSubscription:
         self._inner = inner
 
     @classmethod
-    async def _open(cls, session, node_instance_id):
+    async def _open(cls, session, instance_id, node):
         # The exact wire shape of a paired peer's subscription: node
-        # identity, pairing target, and the node's own slot link_id all
-        # pinned. No pin-following: the mock's peer (the node under test)
-        # is known from construction.
-        node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)
+        # identity, pairing target, the node's own slot link_id and the
+        # mock's own slot all pinned. No pin-following: the mock's peer
+        # (the node under test) is known from construction.
         inner = await peppylib.TopicMessenger.subscribe_peer_pinned(
             session,
             MOCK_CORE_NODE,
-            MOCK_INSTANCE_ID,
+            instance_id,
+            PEER_LINK_ID,
             peppylib.SenderTarget.pairing("arm_link", "v1"),
-            node,
+            node.producer,
             LINK_ID,
             "joint_states",
             peppylib.QoSProfile.SensorData,
@@ -3275,7 +3277,7 @@ class JointStatesSubscription:
         return _deserialize_joint_states_message(message.payload)
 
 class Mock:
-    """Mock peer for the `controller` pairing slot: publishes the topics the node consumes and holds triple-pinned subscriptions to the topics the node emits, under the pin identity the harness seeds (`peer_info()`)."""
+    """Mock peer for the `controller` pairing slot: publishes the topics the node consumes to the node's slot and holds pinned subscriptions to the topics the node emits, under the pin identity the harness seeds (`peer_info()`); a multi slot starts several instances with distinct instance ids."""
 
     def __init__(self, session, joint_states) -> None:
         self._session = session
@@ -3283,10 +3285,18 @@ class Mock:
         self.joint_states = joint_states
 
     @classmethod
-    async def start(cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str) -> "Mock":
-        """Connects a dedicated session, declares the peer publishers and opens the pinned subscriptions to the node's emissions. `node_instance_id` is the node-under-test's instance id (the harness passes its own)."""
+    async def start(cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str, instance_id: Optional[str] = None) -> "Mock":
+        """Connects a dedicated session, declares the peer publishers and opens the pinned subscriptions to the node's emissions, under `MOCK_INSTANCE_ID` unless an explicit instance id is given (multi slots). `node_instance_id` is the node-under-test's instance id (the harness passes its own)."""
+        if instance_id is None:
+            instance_id = MOCK_INSTANCE_ID
+        # The node under test on its slot: the peer every publisher of this
+        # mock addresses and every subscription pins.
+        node = peppylib.PeerInfo(
+            peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id),
+            LINK_ID,
+        )
         session = await router.connect()
-        joint_states = await JointStatesSubscription._open(session, node_instance_id)
+        joint_states = await JointStatesSubscription._open(session, instance_id, node)
         return cls(session, joint_states)
 
     async def stop(self) -> None:
@@ -3306,6 +3316,7 @@ Mock :: pairings/sensor_bus
 from functools import lru_cache
 from importlib.resources import files
 from peppygen.paired_topics.sensor_bus import joint_states as _joint_states
+from typing import Optional
 import capnp
 import peppylib
 import peppylib.testing
@@ -3319,12 +3330,16 @@ MOCK_CORE_NODE = "mock-core"
 MOCK_INSTANCE_ID = "mock-sensor_bus"
 
 def producer_ref() -> peppylib.ProducerRef:
-    """The mock peer's wire identity."""
+    """The default mock peer's wire identity."""
     return peppylib.ProducerRef(MOCK_CORE_NODE, MOCK_INSTANCE_ID)
 
 def peer_info() -> peppylib.PeerInfo:
     """The full pin identity the harness seeds for this slot: what the node's `paired()` / `wait_paired()` resolve to."""
-    return peppylib.PeerInfo(producer_ref(), PEER_LINK_ID)
+    return peer_info_for(MOCK_INSTANCE_ID)
+
+def peer_info_for(instance_id: str) -> peppylib.PeerInfo:
+    """`peer_info` under an explicit instance id (multi slots): the `info` of the member the node's `peers()` lists for it."""
+    return peppylib.PeerInfo(peppylib.ProducerRef(MOCK_CORE_NODE, instance_id), PEER_LINK_ID)
 
 @lru_cache(maxsize=1)
 def _peer_sensor_bus_joint_states_message_capnp() -> types.ModuleType:
@@ -3344,21 +3359,22 @@ def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
 JointStatesMessage = _joint_states.Message
 
 class JointStatesPublisher:
-    """Typed peer publisher for `joint_states` (the node consumes this direction): publishes under the mock peer's identity and slot id, so the node's triple-pinned subscription receives it."""
+    """Typed peer publisher for `joint_states` (the node consumes this direction): publishes from the mock peer's slot to the node's slot, so the node's pinned subscription receives it."""
 
     def __init__(self, core) -> None:
         self._core = core
 
     @classmethod
-    async def _declare(cls, session):
-        core = await peppylib.testing.TestTopicPublisher.declare(
+    async def _declare(cls, session, instance_id, node):
+        core = await peppylib.testing.TestTopicPublisher.declare_to_peer(
             session,
             MOCK_CORE_NODE,
-            MOCK_INSTANCE_ID,
+            instance_id,
             peppylib.SenderTarget.pairing("arm_link", "v1"),
+            PEER_LINK_ID,
             "joint_states",
             peppylib.QoSProfile.SensorData,
-            link_id=PEER_LINK_ID,
+            node,
         )
         return cls(core)
 
@@ -3371,7 +3387,7 @@ class JointStatesPublisher:
         return await self._core.wait_for_subscriber(timeout)
 
 class Mock:
-    """Mock peer for the `sensor_bus` pairing slot: publishes the topics the node consumes and holds triple-pinned subscriptions to the topics the node emits, under the pin identity the harness seeds (`peer_info()`)."""
+    """Mock peer for the `sensor_bus` pairing slot: publishes the topics the node consumes to the node's slot and holds pinned subscriptions to the topics the node emits, under the pin identity the harness seeds (`peer_info()`); a multi slot starts several instances with distinct instance ids."""
 
     def __init__(self, session, joint_states) -> None:
         self._session = session
@@ -3379,10 +3395,18 @@ class Mock:
         self.joint_states = joint_states
 
     @classmethod
-    async def start(cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str) -> "Mock":
-        """Connects a dedicated session, declares the peer publishers and opens the pinned subscriptions to the node's emissions. `node_instance_id` is the node-under-test's instance id (the harness passes its own)."""
+    async def start(cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str, instance_id: Optional[str] = None) -> "Mock":
+        """Connects a dedicated session, declares the peer publishers and opens the pinned subscriptions to the node's emissions, under `MOCK_INSTANCE_ID` unless an explicit instance id is given (multi slots). `node_instance_id` is the node-under-test's instance id (the harness passes its own)."""
+        if instance_id is None:
+            instance_id = MOCK_INSTANCE_ID
+        # The node under test on its slot: the peer every publisher of this
+        # mock addresses and every subscription pins.
+        node = peppylib.PeerInfo(
+            peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id),
+            LINK_ID,
+        )
         session = await router.connect()
-        joint_states = await JointStatesPublisher._declare(session)
+        joint_states = await JointStatesPublisher._declare(session, instance_id, node)
         return cls(session, joint_states)
 
     async def stop(self) -> None:
@@ -3416,12 +3440,16 @@ MOCK_CORE_NODE = "mock-core"
 MOCK_INSTANCE_ID = "mock-spare_controller"
 
 def producer_ref() -> peppylib.ProducerRef:
-    """The mock peer's wire identity."""
+    """The default mock peer's wire identity."""
     return peppylib.ProducerRef(MOCK_CORE_NODE, MOCK_INSTANCE_ID)
 
 def peer_info() -> peppylib.PeerInfo:
     """The full pin identity the harness seeds for this slot: what the node's `paired()` / `wait_paired()` resolve to."""
-    return peppylib.PeerInfo(producer_ref(), PEER_LINK_ID)
+    return peer_info_for(MOCK_INSTANCE_ID)
+
+def peer_info_for(instance_id: str) -> peppylib.PeerInfo:
+    """`peer_info` under an explicit instance id (multi slots): the `info` of the member the node's `peers()` lists for it."""
+    return peppylib.PeerInfo(peppylib.ProducerRef(MOCK_CORE_NODE, instance_id), PEER_LINK_ID)
 
 @lru_cache(maxsize=1)
 def _peer_spare_controller_joint_states_message_capnp() -> types.ModuleType:
@@ -3449,18 +3477,18 @@ class JointStatesSubscription:
         self._inner = inner
 
     @classmethod
-    async def _open(cls, session, node_instance_id):
+    async def _open(cls, session, instance_id, node):
         # The exact wire shape of a paired peer's subscription: node
-        # identity, pairing target, and the node's own slot link_id all
-        # pinned. No pin-following: the mock's peer (the node under test)
-        # is known from construction.
-        node = peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id)
+        # identity, pairing target, the node's own slot link_id and the
+        # mock's own slot all pinned. No pin-following: the mock's peer
+        # (the node under test) is known from construction.
         inner = await peppylib.TopicMessenger.subscribe_peer_pinned(
             session,
             MOCK_CORE_NODE,
-            MOCK_INSTANCE_ID,
+            instance_id,
+            PEER_LINK_ID,
             peppylib.SenderTarget.pairing("arm_link", "v1"),
-            node,
+            node.producer,
             LINK_ID,
             "joint_states",
             peppylib.QoSProfile.SensorData,
@@ -3475,7 +3503,7 @@ class JointStatesSubscription:
         return _deserialize_joint_states_message(message.payload)
 
 class Mock:
-    """Mock peer for the `spare_controller` pairing slot: publishes the topics the node consumes and holds triple-pinned subscriptions to the topics the node emits, under the pin identity the harness seeds (`peer_info()`)."""
+    """Mock peer for the `spare_controller` pairing slot: publishes the topics the node consumes to the node's slot and holds pinned subscriptions to the topics the node emits, under the pin identity the harness seeds (`peer_info()`); a multi slot starts several instances with distinct instance ids."""
 
     def __init__(self, session, joint_states) -> None:
         self._session = session
@@ -3483,10 +3511,18 @@ class Mock:
         self.joint_states = joint_states
 
     @classmethod
-    async def start(cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str) -> "Mock":
-        """Connects a dedicated session, declares the peer publishers and opens the pinned subscriptions to the node's emissions. `node_instance_id` is the node-under-test's instance id (the harness passes its own)."""
+    async def start(cls, router: peppylib.testing.EphemeralRouter, node_instance_id: str, instance_id: Optional[str] = None) -> "Mock":
+        """Connects a dedicated session, declares the peer publishers and opens the pinned subscriptions to the node's emissions, under `MOCK_INSTANCE_ID` unless an explicit instance id is given (multi slots). `node_instance_id` is the node-under-test's instance id (the harness passes its own)."""
+        if instance_id is None:
+            instance_id = MOCK_INSTANCE_ID
+        # The node under test on its slot: the peer every publisher of this
+        # mock addresses and every subscription pins.
+        node = peppylib.PeerInfo(
+            peppylib.ProducerRef(peppylib.testing.STANDALONE_CORE_NODE, node_instance_id),
+            LINK_ID,
+        )
         session = await router.connect()
-        joint_states = await JointStatesSubscription._open(session, node_instance_id)
+        joint_states = await JointStatesSubscription._open(session, instance_id, node)
         return cls(session, joint_states)
 
     async def stop(self) -> None:
@@ -3516,12 +3552,22 @@ LINK_ID = "watchers"
 PAIRING_NAME = "arm_link"
 PAIRING_TAG = "v1"
 SOURCE_LINK_ID = "mock_source"
+PEER_LINK_ID = "mock_peer"
 MOCK_CORE_NODE = "mock-core"
 MOCK_INSTANCE_ID = "mock-watchers"
 
 def source() -> peppylib.ObservedSource:
     """The default mock source, as the harness seeds it."""
     return source_for(MOCK_INSTANCE_ID)
+
+def peer_of(instance_id: str) -> peppylib.PeerInfo:
+    """The peer a mock source under `instance_id` publishes to: a pairing
+    emission names its peer, and the node observes every pair of the source's
+    slot."""
+    return peppylib.PeerInfo(
+        peppylib.ProducerRef(MOCK_CORE_NODE, f"{instance_id}-peer"),
+        PEER_LINK_ID,
+    )
 
 def source_for(instance_id: str) -> peppylib.ObservedSource:
     """`source` under an explicit instance id (multi-member slots)."""
@@ -3548,21 +3594,22 @@ def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
 JointStatesMessage = _joint_states.Message
 
 class JointStatesPublisher:
-    """Typed source publisher for the observed topic `joint_states`: publishes under the mock source's identity and source link_id, so the node's generation-checked observation subscription receives it."""
+    """Typed source publisher for the observed topic `joint_states`: publishes from the mock source's slot to its own peer, so the node's generation-checked observation subscription receives it."""
 
     def __init__(self, core) -> None:
         self._core = core
 
     @classmethod
     async def _declare(cls, session, instance_id):
-        core = await peppylib.testing.TestTopicPublisher.declare(
+        core = await peppylib.testing.TestTopicPublisher.declare_to_peer(
             session,
             MOCK_CORE_NODE,
             instance_id,
             peppylib.SenderTarget.pairing("arm_link", "v1"),
+            SOURCE_LINK_ID,
             "joint_states",
             peppylib.QoSProfile.SensorData,
-            link_id=SOURCE_LINK_ID,
+            peer_of(instance_id),
         )
         return cls(core)
 
@@ -3618,12 +3665,22 @@ LINK_ID = "spare_watcher"
 PAIRING_NAME = "arm_link"
 PAIRING_TAG = "v1"
 SOURCE_LINK_ID = "mock_source"
+PEER_LINK_ID = "mock_peer"
 MOCK_CORE_NODE = "mock-core"
 MOCK_INSTANCE_ID = "mock-spare_watcher"
 
 def source() -> peppylib.ObservedSource:
     """The default mock source, as the harness seeds it."""
     return source_for(MOCK_INSTANCE_ID)
+
+def peer_of(instance_id: str) -> peppylib.PeerInfo:
+    """The peer a mock source under `instance_id` publishes to: a pairing
+    emission names its peer, and the node observes every pair of the source's
+    slot."""
+    return peppylib.PeerInfo(
+        peppylib.ProducerRef(MOCK_CORE_NODE, f"{instance_id}-peer"),
+        PEER_LINK_ID,
+    )
 
 def source_for(instance_id: str) -> peppylib.ObservedSource:
     """`source` under an explicit instance id (multi-member slots)."""
@@ -3650,21 +3707,22 @@ def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
 JointStatesMessage = _joint_states.Message
 
 class JointStatesPublisher:
-    """Typed source publisher for the observed topic `joint_states`: publishes under the mock source's identity and source link_id, so the node's generation-checked observation subscription receives it."""
+    """Typed source publisher for the observed topic `joint_states`: publishes from the mock source's slot to its own peer, so the node's generation-checked observation subscription receives it."""
 
     def __init__(self, core) -> None:
         self._core = core
 
     @classmethod
     async def _declare(cls, session, instance_id):
-        core = await peppylib.testing.TestTopicPublisher.declare(
+        core = await peppylib.testing.TestTopicPublisher.declare_to_peer(
             session,
             MOCK_CORE_NODE,
             instance_id,
             peppylib.SenderTarget.pairing("arm_link", "v1"),
+            SOURCE_LINK_ID,
             "joint_states",
             peppylib.QoSProfile.SensorData,
-            link_id=SOURCE_LINK_ID,
+            peer_of(instance_id),
         )
         return cls(core)
 
@@ -3720,12 +3778,22 @@ LINK_ID = "watcher_bank"
 PAIRING_NAME = "arm_link"
 PAIRING_TAG = "v1"
 SOURCE_LINK_ID = "mock_source"
+PEER_LINK_ID = "mock_peer"
 MOCK_CORE_NODE = "mock-core"
 MOCK_INSTANCE_ID = "mock-watcher_bank"
 
 def source() -> peppylib.ObservedSource:
     """The default mock source, as the harness seeds it."""
     return source_for(MOCK_INSTANCE_ID)
+
+def peer_of(instance_id: str) -> peppylib.PeerInfo:
+    """The peer a mock source under `instance_id` publishes to: a pairing
+    emission names its peer, and the node observes every pair of the source's
+    slot."""
+    return peppylib.PeerInfo(
+        peppylib.ProducerRef(MOCK_CORE_NODE, f"{instance_id}-peer"),
+        PEER_LINK_ID,
+    )
 
 def source_for(instance_id: str) -> peppylib.ObservedSource:
     """`source` under an explicit instance id (multi-member slots)."""
@@ -3752,21 +3820,22 @@ def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
 JointStatesMessage = _joint_states.Message
 
 class JointStatesPublisher:
-    """Typed source publisher for the observed topic `joint_states`: publishes under the mock source's identity and source link_id, so the node's generation-checked observation subscription receives it."""
+    """Typed source publisher for the observed topic `joint_states`: publishes from the mock source's slot to its own peer, so the node's generation-checked observation subscription receives it."""
 
     def __init__(self, core) -> None:
         self._core = core
 
     @classmethod
     async def _declare(cls, session, instance_id):
-        core = await peppylib.testing.TestTopicPublisher.declare(
+        core = await peppylib.testing.TestTopicPublisher.declare_to_peer(
             session,
             MOCK_CORE_NODE,
             instance_id,
             peppylib.SenderTarget.pairing("arm_link", "v1"),
+            SOURCE_LINK_ID,
             "joint_states",
             peppylib.QoSProfile.SensorData,
-            link_id=SOURCE_LINK_ID,
+            peer_of(instance_id),
         )
         return cls(core)
 
@@ -3822,12 +3891,22 @@ LINK_ID = "watcher_pool"
 PAIRING_NAME = "arm_link"
 PAIRING_TAG = "v1"
 SOURCE_LINK_ID = "mock_source"
+PEER_LINK_ID = "mock_peer"
 MOCK_CORE_NODE = "mock-core"
 MOCK_INSTANCE_ID = "mock-watcher_pool"
 
 def source() -> peppylib.ObservedSource:
     """The default mock source, as the harness seeds it."""
     return source_for(MOCK_INSTANCE_ID)
+
+def peer_of(instance_id: str) -> peppylib.PeerInfo:
+    """The peer a mock source under `instance_id` publishes to: a pairing
+    emission names its peer, and the node observes every pair of the source's
+    slot."""
+    return peppylib.PeerInfo(
+        peppylib.ProducerRef(MOCK_CORE_NODE, f"{instance_id}-peer"),
+        PEER_LINK_ID,
+    )
 
 def source_for(instance_id: str) -> peppylib.ObservedSource:
     """`source` under an explicit instance id (multi-member slots)."""
@@ -3854,21 +3933,22 @@ def _serialize_joint_states_message(value: _joint_states.Message) -> bytes:
 JointStatesMessage = _joint_states.Message
 
 class JointStatesPublisher:
-    """Typed source publisher for the observed topic `joint_states`: publishes under the mock source's identity and source link_id, so the node's generation-checked observation subscription receives it."""
+    """Typed source publisher for the observed topic `joint_states`: publishes from the mock source's slot to its own peer, so the node's generation-checked observation subscription receives it."""
 
     def __init__(self, core) -> None:
         self._core = core
 
     @classmethod
     async def _declare(cls, session, instance_id):
-        core = await peppylib.testing.TestTopicPublisher.declare(
+        core = await peppylib.testing.TestTopicPublisher.declare_to_peer(
             session,
             MOCK_CORE_NODE,
             instance_id,
             peppylib.SenderTarget.pairing("arm_link", "v1"),
+            SOURCE_LINK_ID,
             "joint_states",
             peppylib.QoSProfile.SensorData,
-            link_id=SOURCE_LINK_ID,
+            peer_of(instance_id),
         )
         return cls(core)
 
@@ -5270,7 +5350,7 @@ def start(setup, *, parameters=None, instance_id=None, node_dir=None, clock="wal
     camera_bank_instance_ids: explicit instance ids for the `camera_bank` mock producers, overriding `camera_bank_instances` when given. For nodes that classify producers by instance name.
     camera_pool_instances: how many mock producer instances to start and bind for the `camera_pool` dependency slot.
     camera_pool_instance_ids: explicit instance ids for the `camera_pool` mock producers, overriding `camera_pool_instances` when given. For nodes that classify producers by instance name.
-    spare_controller_vacant: boot with the optional `spare_controller` pairing slot unpaired (the peer pin is not seeded; the still-started mock's subscriptions stay silent).
+    spare_controller_vacant: boot with the `zero_or_one` pairing slot `spare_controller` unpaired (the peer pin is not seeded; the still-started mock's subscriptions stay silent).
     spare_watcher_vacant: leave the `spare_watcher` observer slot empty (its cardinality admits an empty set).
     watcher_bank_instances: how many mock sources to start for the `watcher_bank` observer slot.
     watcher_bank_instance_ids: explicit instance ids for the `watcher_bank` mock sources, overriding `watcher_bank_instances` when given. For nodes that classify sources by instance name.
@@ -5355,30 +5435,31 @@ async def _start(setup, parameters, instance_id, node_dir, harness_clock, spare_
             standalone = standalone.with_observed_source("watcher_bank", _obs_watcher_bank.MOCK_CORE_NODE, member_instance_id, _obs_watcher_bank.SOURCE_LINK_ID)
         for member_instance_id in obs_watcher_pool_member_ids:
             standalone = standalone.with_observed_source("watcher_pool", _obs_watcher_pool.MOCK_CORE_NODE, member_instance_id, _obs_watcher_pool.SOURCE_LINK_ID)
-        publisher_readiness = [
-            peppylib.testing.PublisherReadiness(
-                target=peppylib.SenderTarget.pairing("arm_link", "v1"),
-                topic="joint_states",
-                link_id="controller",
-            ),
-            peppylib.testing.PublisherReadiness(
-                target=peppylib.SenderTarget.pairing("arm_link", "v1"),
-                topic="joint_states",
-                link_id="spare_controller",
-            ),
-            peppylib.testing.PublisherReadiness(
-                target=peppylib.SenderTarget.node("relay_node", "v1"),
-                topic="video_stream",
-            ),
-            peppylib.testing.PublisherReadiness(
-                target=peppylib.SenderTarget.contract("camera_feed", "v1"),
-                topic="video_stream",
-            ),
-            peppylib.testing.PublisherReadiness(
-                target=peppylib.SenderTarget.node("relay_node", "v1"),
-                topic="heartbeat",
-            ),
-        ]
+        publisher_readiness = []
+        publisher_readiness.append(peppylib.testing.PublisherReadiness(
+            target=peppylib.SenderTarget.pairing("arm_link", "v1"),
+            topic="joint_states",
+            link_id="controller",
+            peer=_pair_controller.peer_info(),
+        ))
+        publisher_readiness.append(peppylib.testing.PublisherReadiness(
+            target=peppylib.SenderTarget.pairing("arm_link", "v1"),
+            topic="joint_states",
+            link_id="spare_controller",
+            peer=_pair_spare_controller.peer_info(),
+        ))
+        publisher_readiness.append(peppylib.testing.PublisherReadiness(
+            target=peppylib.SenderTarget.node("relay_node", "v1"),
+            topic="video_stream",
+        ))
+        publisher_readiness.append(peppylib.testing.PublisherReadiness(
+            target=peppylib.SenderTarget.contract("camera_feed", "v1"),
+            topic="video_stream",
+        ))
+        publisher_readiness.append(peppylib.testing.PublisherReadiness(
+            target=peppylib.SenderTarget.node("relay_node", "v1"),
+            topic="heartbeat",
+        ))
         service_readiness = [clock.readiness()]
         service_readiness.append(peppylib.testing.ServiceReadiness(target=peppylib.SenderTarget.node("uvc_camera", "v1"), name="enable_camera", producer=_dep_uvc_camera.producer_ref_for(_dep_uvc_camera.MOCK_INSTANCE_ID), kind="service"))
         if not spare_camera_vacant:

@@ -14,7 +14,9 @@
 //! ordinary flat document the rest of the pipeline consumes; this module is
 //! the grammar and the checks that need no I/O and no selection.
 
-use super::types::{Deployment, FrameworkOverrides, LauncherFramework, LinkValue};
+use super::types::{
+    Deployment, EACH_TARGET_ONCE, FrameworkOverrides, LauncherFramework, LinkValue,
+};
 use config::{AnyType, runtime::Name, schema::PeppySchema};
 use serde::{
     Deserialize, Serialize,
@@ -1253,7 +1255,7 @@ fn validate_adjustment(adjustment: &Adjustment, origin: &str) -> Result<(), Stri
                 if !seen.insert(target.as_str()) {
                     return Err(format!(
                         "adjustment on `{}` in {origin} adds target `{target}` to slot \
-                         `{slot}` more than once: a slot's bound set lists each producer once",
+                         `{slot}` more than once: {EACH_TARGET_ONCE}",
                         adjustment.target
                     ));
                 }

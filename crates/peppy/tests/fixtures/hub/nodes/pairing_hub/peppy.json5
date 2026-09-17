@@ -1,0 +1,34 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "pairing_hub",
+    tag: "v1",
+    depends_on: {
+      // One pair per leader that joins: the follower of every leader's
+      // joint_link through a single slot that holds any number of pairs.
+      pairings: [
+        { name: "joint_link", tag: "v1", role: "follower", link_id: "limbs", cardinality: "zero_or_more" }
+      ]
+    },
+    labels: ["hub"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "pairing_hub"],
+    parameters: {
+      // How often the hub logs the pairs it holds.
+      report_rate_hz: { $type: "u16", $default: 4 }
+    }
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        { link_id: "limbs", name: "joint_states" }
+      ],
+      consumes: [
+        { link_id: "limbs", name: "joint_setpoints" }
+      ]
+    }
+  }
+}

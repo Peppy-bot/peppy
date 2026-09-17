@@ -222,8 +222,11 @@ pub fn build_emitted_topic(
     Ok(builder.build())
 }
 
-/// Emits the module-level slot constants plus `paired()`/`wait_paired()`
-/// shared by both directions of a peer topic module.
+/// Emits the module-level slot constants plus the slot's live state, shared
+/// by both directions of a peer topic module. A scalar slot (`one`,
+/// `zero_or_one`) gets `paired()`/`wait_paired()`; a multi slot gets
+/// `peers() -> List[peppylib.PeerMember]`, with `one_or_more` stating its
+/// never-empty guarantee in the docstring, as the observer accessor does.
 fn emit_peer_module_header(
     builder: &mut PythonCodeBuilder,
     topic_name: &str,
@@ -231,7 +234,6 @@ fn emit_peer_module_header(
     peer: &crate::generator::types::PeerContext,
 ) {
     builder.add_import("import peppylib");
-    builder.add_import("from typing import Optional");
     builder.lines([
         format!("TOPIC_NAME = \"{topic_name}\""),
         format!("LINK_ID = \"{}\"", peer.link_id),
@@ -241,28 +243,52 @@ fn emit_peer_module_header(
     ]);
     builder.blank_line();
 
-    builder.block(
-        "def paired(node_runner: peppylib.NodeRunner) -> Optional[peppylib.PeerInfo]:",
-        |builder| {
-            builder.docstring("The peer currently paired on this slot, or None while unpaired.");
-            builder.line("return node_runner.peer(LINK_ID).paired()");
-        },
-    );
-    builder.blank_line();
+    match crate::generator::types::peer_set_doc(peer.cardinality) {
+        None => {
+            builder.add_import("from typing import Optional");
+            builder.block(
+                "def paired(node_runner: peppylib.NodeRunner) -> Optional[peppylib.PeerInfo]:",
+                |builder| {
+                    builder.docstring(
+                        "The peer currently paired on this slot, or None while unpaired.",
+                    );
+                    builder.line("return node_runner.peer(LINK_ID).paired()");
+                },
+            );
+            builder.blank_line();
 
-    builder.block(
-        "async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:",
-        |builder| {
-            builder.docstring("Wait until a peer is paired on this slot and return its identity.");
-            builder.line("return await node_runner.peer(LINK_ID).wait_paired()");
-        },
-    );
-    builder.blank_line();
+            builder.block(
+                "async def wait_paired(node_runner: peppylib.NodeRunner) -> peppylib.PeerInfo:",
+                |builder| {
+                    builder.docstring(
+                        "Wait until a peer is paired on this slot and return its identity.",
+                    );
+                    builder.line("return await node_runner.peer(LINK_ID).wait_paired()");
+                },
+            );
+            builder.blank_line();
+        }
+        Some(doc) => {
+            builder.add_import("from typing import List");
+            builder.block(
+                "def peers(node_runner: peppylib.NodeRunner) -> List[peppylib.PeerMember]:",
+                |builder| {
+                    builder.line(&format!("\"\"\"{}", doc.summary));
+                    builder.blank_line();
+                    builder.lines(doc.body_lines());
+                    builder.line("\"\"\"");
+                    builder.line("return node_runner.peer_set(LINK_ID).members()");
+                },
+            );
+            builder.blank_line();
+        }
+    }
 }
 
 /// Generates Python code for a pairing topic this node's role emits:
-/// `build_message` plus a slot-scoped `declare_publisher` (pairing wire
-/// target, producer-side link_id = this node's own slot link_id).
+/// `build_message` plus a slot-scoped `declare_publisher`. A scalar slot's
+/// answers a `peppylib.TopicPublisher` driven with `publish`, a multi slot's
+/// a `peppylib.PeerPublisher` driven with `publish_to`.
 pub fn build_peer_emitted_topic(
     topic: &NativeEmittedTopic,
     schema_info: Option<&PythonSchemaInfo>,
@@ -296,27 +322,37 @@ pub fn build_peer_emitted_topic(
         topic.message_format.as_ref(),
     );
 
-    // Slot-scoped publisher: publishing while unpaired is a legal no-op (the
-    // mesh drops it); the paired peer's triple-pinned subscription receives
-    // every publish made while the pair is live.
-    builder.block(
-        "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
-        |builder| {
-            builder.call(
-                "return await peppylib.TopicMessenger.declare_publisher(",
-                &[
-                    "node_runner.messenger(),",
-                    "node_runner.bound_core_node(),",
-                    "node_runner.bound_instance_id(),",
-                    "peppylib.SenderTarget.pairing(PAIRING_NAME, PAIRING_TAG),",
-                    "TOPIC_NAME,",
-                    "QOS,",
-                    "link_id=LINK_ID,",
-                ],
-                ")",
-            );
-        },
-    );
+    let (signature, publisher_doc, declare_call) = if peer.cardinality.is_scalar() {
+        (
+            "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.TopicPublisher:",
+            "Declare the publisher for this pairing topic. `publish` reaches the paired \
+             peer; while unpaired it is a legal no-op, since a pairing is a live stream \
+             and nothing is waiting.",
+            "return await node_runner.declare_sole_peer_publisher(",
+        )
+    } else {
+        (
+            "async def declare_publisher(node_runner: peppylib.NodeRunner) -> peppylib.PeerPublisher:",
+            "Declare the publisher for this pairing topic. The slot holds several pairs, \
+             so `publish_to` names the peer a message is for, one of `peers()`; a peer \
+             the slot does not hold is refused.",
+            "return node_runner.declare_peer_publisher(",
+        )
+    };
+    builder.block(signature, |builder| {
+        builder.docstring(publisher_doc);
+        builder.call(
+            declare_call,
+            &[
+                "LINK_ID,",
+                "PAIRING_NAME,",
+                "PAIRING_TAG,",
+                "TOPIC_NAME,",
+                "QOS,",
+            ],
+            ")",
+        );
+    });
 
     Ok(builder.build())
 }

@@ -8,9 +8,9 @@
 //!     [`ParsingError::LinkUnknownSlot`];
 //!   - a `{ vacant: "<why>" }` value on a slot the node's own manifest does not
 //!     declare emptiable is [`ParsingError::LinkVacantInvalid`]. Vacancy is a
-//!     two-sided contract: the manifest says a slot MAY run empty (`optional:
-//!     true` on a participant, `cardinality: "zero_or_one"` on an observer or
-//!     on a producer-binding slot), and the deployment says a specific instance
+//!     two-sided contract: the manifest says a slot MAY run empty
+//!     (`cardinality: "zero_or_one"` on a participant, an observer or a
+//!     producer-binding slot alike), and the deployment says a specific instance
 //!     DOES, and why. A slot the manifest declares required cannot be vacated
 //!     at all, and one that already has a spelling for "empty" (`[]`, or an
 //!     omitted key on a `zero_or_more` slot) keeps using it, because one
@@ -34,7 +34,7 @@ use config::node::{Cardinality, DependsOn};
 use std::collections::BTreeMap;
 
 use super::bindings::{BindingValidationItem, validate_bindings};
-use super::observations::{PlannedObservation, validate_observations};
+use super::observations::{PlannedObservation, observable_pairs, validate_observations};
 use super::pairings::{
     AlreadyPairedSlots, ExternallyCoveredSlots, PairingValidationItem, PlannedPairing,
     validate_pairings,
@@ -77,7 +77,8 @@ pub fn validate_link_plan(
     out.slot_bindings = bindings.slot_bindings;
 
     let pairings = validate_pairings(pairing_items, already_paired, externally_covered);
-    let observations = validate_observations(pairing_items, placements);
+    let observable = observable_pairs(&pairings.planned, already_paired);
+    let observations = validate_observations(pairing_items, placements, &observable);
     out.errors.extend(pairings.errors);
     out.errors.extend(observations.errors);
     if !out.errors.is_empty() {
@@ -144,11 +145,7 @@ pub fn validate_link_slots(items: &[BindingValidationItem<'_>]) -> Vec<ParsingEr
 #[derive(Clone, Copy)]
 enum LinkSlotKind {
     Binding(Cardinality),
-    /// A participant pairing slot, carrying whether its manifest entry declares
-    /// it `optional: true`.
-    Participant {
-        optional: bool,
-    },
+    Participant(Cardinality),
     Observer(Cardinality),
 }
 
@@ -156,14 +153,13 @@ impl LinkSlotKind {
     /// Why this slot refuses `{ vacant: "<why>" }`, or `None` when the node's
     /// manifest declares it emptiable and vacancy is how a deployment says so.
     ///
-    /// Vacancy is legal on exactly three slots, one per family, and each says
-    /// so in its own manifest key: `optional: true` on a participant, and
-    /// `cardinality: "zero_or_one"` on an observer or on a producer-binding
-    /// slot. Every other slot is refused, with the reason that fits it. A slot
-    /// the manifest declares required is not emptiable at all, so the remedy
-    /// is to fill it or to change the manifest. A slot that is already
-    /// emptiable through another spelling (`[]`, or an omitted `zero_or_more`
-    /// key) keeps that spelling, because one spelling per fact is the point.
+    /// Vacancy is legal on exactly one slot per family, the one whose
+    /// manifest entry says `cardinality: "zero_or_one"`. Every other slot is
+    /// refused, with the reason that fits it. A slot the manifest declares
+    /// required is not emptiable at all, so the remedy is to fill it or to
+    /// change the manifest. A slot that is already emptiable through another
+    /// spelling (`[]`, or an omitted `zero_or_more` key) keeps that spelling,
+    /// because one spelling per fact is the point.
     fn refuse_vacancy(self) -> Option<VacancyRefusal> {
         let multi_slot_empty_set = || {
             Some(VacancyRefusal::SpelledDifferently {
@@ -171,19 +167,24 @@ impl LinkSlotKind {
             })
         };
         match self {
-            LinkSlotKind::Participant { optional: true }
+            LinkSlotKind::Participant(Cardinality::ZeroOrOne)
             | LinkSlotKind::Observer(Cardinality::ZeroOrOne)
             | LinkSlotKind::Binding(Cardinality::ZeroOrOne) => None,
-            LinkSlotKind::Participant { optional: false } => {
-                Some(VacancyRefusal::ManifestRequires {
-                    declare_optional: PARTICIPANT_EMPTIABLE_KEY,
+            LinkSlotKind::Participant(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
+                declare_emptiable: PARTICIPANT_EMPTIABLE_KEY,
+            }),
+            LinkSlotKind::Participant(Cardinality::ZeroOrMore) => multi_slot_empty_set(),
+            LinkSlotKind::Participant(Cardinality::OneOrMore) => {
+                Some(VacancyRefusal::NoEmptyState {
+                    requirement: "at least one peer, or `cardinality: \"zero_or_more\"` on its \
+                                  `depends_on.pairings` entry",
                 })
             }
             LinkSlotKind::Observer(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
-                declare_optional: OBSERVER_EMPTIABLE_KEY,
+                declare_emptiable: OBSERVER_EMPTIABLE_KEY,
             }),
             LinkSlotKind::Binding(Cardinality::One) => Some(VacancyRefusal::ManifestRequires {
-                declare_optional: BINDING_EMPTIABLE_KEY,
+                declare_emptiable: BINDING_EMPTIABLE_KEY,
             }),
             LinkSlotKind::Observer(Cardinality::ZeroOrMore)
             | LinkSlotKind::Binding(Cardinality::ZeroOrMore) => multi_slot_empty_set(),
@@ -206,11 +207,8 @@ impl LinkSlotKind {
             LinkSlotKind::Binding(cardinality) => {
                 format!("a producer-binding slot (cardinality `{cardinality}`)")
             }
-            LinkSlotKind::Participant { optional: false } => {
-                "a required participant pairing slot".to_string()
-            }
-            LinkSlotKind::Participant { optional: true } => {
-                "an optional participant pairing slot".to_string()
+            LinkSlotKind::Participant(cardinality) => {
+                format!("a participant pairing slot (cardinality `{cardinality}`)")
             }
             LinkSlotKind::Observer(cardinality) => {
                 format!("an observer slot (cardinality `{cardinality}`)")
@@ -244,9 +242,7 @@ impl<'a> From<&'a DependsOn> for DeclaredLinkSlots<'a> {
         for dep in &depends_on.pairings {
             by_id.insert(
                 dep.link_id.as_str(),
-                LinkSlotKind::Participant {
-                    optional: dep.optional,
-                },
+                LinkSlotKind::Participant(dep.cardinality),
             );
         }
         for dep in &depends_on.pairing_observers {
@@ -413,11 +409,11 @@ mod tests {
         );
     }
 
-    /// The legality table, row by row. Vacancy is legal on exactly the three
-    /// slots the node's own manifest declares emptiable, one per family, and
-    /// every other slot is refused with the reason that fits it: the manifest
-    /// requires the slot filled, the slot has no empty state at any size, or
-    /// it already has its own spelling for "empty".
+    /// The legality table, row by row. Vacancy is legal on exactly the
+    /// `zero_or_one` slot of each family, and every other slot is refused
+    /// with the reason that fits it: the manifest requires the slot filled,
+    /// the slot has no empty state at any size, or it already has its own
+    /// spelling for "empty".
     #[test]
     fn vacancy_is_legal_only_where_the_manifest_declares_the_slot_emptiable() {
         let depends_on = parse_depends_on(
@@ -430,7 +426,9 @@ mod tests {
                 ],
                 pairings: [
                     { name: "arm_link", tag: "v1", role: "controller", link_id: "arm" },
-                    { name: "arm_link", tag: "v1", role: "controller", link_id: "spare_arm", optional: true }
+                    { name: "arm_link", tag: "v1", role: "controller", link_id: "spare_arm", cardinality: "zero_or_one" },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "controllers", cardinality: "one_or_more" },
+                    { name: "arm_link", tag: "v1", role: "arm", link_id: "spare_controllers", cardinality: "zero_or_more" }
                 ],
                 pairing_observers: [
                     { name: "arm_link", tag: "v1", role: "arm", link_id: "watch" },
@@ -444,7 +442,9 @@ mod tests {
             ("spare_arm", None),
             ("maybe_watch", None),
             ("wrist_camera", None),
-            ("arm", Some("`optional: true`")),
+            ("arm", Some("`cardinality: \"zero_or_one\"`")),
+            ("controllers", Some("at least one peer")),
+            ("spare_controllers", Some("empty array `[]`")),
             ("watch", Some("`cardinality: \"zero_or_one\"`")),
             ("watched_arms", Some("at least one source")),
             ("spare_arms", Some("empty array `[]`")),
@@ -490,9 +490,9 @@ mod tests {
         assert_eq!(messages.len(), 1, "one slot, one refusal: {messages:?}");
         let message = &messages[0];
         assert!(
-            message.contains("required participant pairing slot")
+            message.contains("participant pairing slot (cardinality `one`)")
                 && message.contains("declares it required")
-                && message.contains("`optional: true`"),
+                && message.contains("`cardinality: \"zero_or_one\"`"),
             "the refusal must name the manifest and the key that lifts it: {message}"
         );
         assert!(

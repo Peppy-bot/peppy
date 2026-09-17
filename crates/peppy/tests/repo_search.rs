@@ -109,7 +109,7 @@ fn seeded(
     write_node(
         &repo_dir.join("follower_arm"),
         "follower_arm",
-        r#", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "link", optional: true }] }"#,
+        r#", depends_on: { pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "link", cardinality: "zero_or_one" }] }"#,
         "{}",
     );
     write_node(
@@ -216,11 +216,11 @@ fn repo_show_reports_a_pairings_participants_and_observers() {
         "{text}"
     );
     assert!(
-        text.contains("    │ follower_arm │ v1  │ arm        │ link (optional) │ unpinned │ "),
+        text.contains("    │ follower_arm │ v1  │ arm        │ link (zero_or_one) │ unpinned │ "),
         "{text}"
     );
     assert!(
-        text.contains("    │ leader_arm   │ v1  │ controller │ arm             │ unpinned │ "),
+        text.contains("    │ leader_arm   │ v1  │ controller │ arm (one)          │ unpinned │ "),
         "{text}"
     );
     assert!(text.contains("\nObserved by 1 indexed node\n"), "{text}");
@@ -254,11 +254,13 @@ fn repo_show_reports_a_nodes_pairing_slot_peers() {
         "{text}"
     );
     assert!(
-        text.contains("\nSlot link (arm_link:v1 as arm, optional) can pair with 1 indexed node\n"),
+        text.contains(
+            "\nSlot link (arm_link:v1 as arm, zero_or_one) can pair with 1 indexed node\n"
+        ),
         "{text}"
     );
     assert!(
-        text.contains("    │ leader_arm │ v1  │ controller │ arm  │ unpinned │ "),
+        text.contains("    │ leader_arm │ v1  │ controller │ arm (one) │ unpinned │ "),
         "{text}"
     );
     assert!(
@@ -274,11 +276,12 @@ fn repo_show_reports_a_nodes_pairing_slot_peers() {
     // slot has nothing to add to its published line.
     let leader = show_rendered(&peppy_dirs, "leader_arm:v1", false, None).expect("shows");
     assert!(
-        leader.contains("\nSlot arm (arm_link:v1 as controller) can pair with 1 indexed node\n"),
+        leader
+            .contains("\nSlot arm (arm_link:v1 as controller, one) can pair with 1 indexed node\n"),
         "{leader}"
     );
     assert!(
-        leader.contains("    │ follower_arm │ v1  │ arm  │ link (optional) │"),
+        leader.contains("    │ follower_arm │ v1  │ arm  │ link (zero_or_one) │"),
         "{leader}"
     );
 
@@ -475,7 +478,7 @@ fn repo_show_json_carries_the_report() {
     assert_eq!(doc["matches"][0]["kind"], "pairing");
     let report = &doc["reports"][0];
     assert_eq!(report["participants"][0]["role"], "arm");
-    assert_eq!(report["participants"][0]["optional"], true);
+    assert_eq!(report["participants"][0]["cardinality"], "zero_or_one");
     assert_eq!(report["observers"][0]["role"], "controller");
     assert_eq!(report["observers"][0]["cardinality"], "one");
 }

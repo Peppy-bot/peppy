@@ -195,10 +195,12 @@ fn build_topic_build_message(
     }
 }
 
-/// Module-level constants + `paired()`/`wait_paired()` helpers shared by both
+/// Module-level constants + the slot's live state, shared by both
 /// directions of a peer topic module. Every `paired_topics/<link_id>/<topic>`
-/// module carries its slot identity as consts and exposes the slot's live pin
-/// state.
+/// module carries its slot identity as consts. A scalar slot (`one`,
+/// `zero_or_one`) exposes `paired()`/`wait_paired()`; a multi slot exposes
+/// `peers()` answering every pair it holds as a `Vec<PeerMember>`, whose doc
+/// states the floor its cardinality declares.
 pub fn build_peer_module_header(
     topic_name: &str,
     peer: &crate::generator::types::PeerContext,
@@ -208,6 +210,36 @@ pub fn build_peer_module_header(
     let pairing_name_literal = Literal::string(&peer.pairing_name);
     let pairing_tag_literal = Literal::string(&peer.pairing_tag);
 
+    let slot_state = match crate::generator::types::peer_set_doc(peer.cardinality) {
+        None => quote! {
+            /// The peer currently paired on this slot, or `None` while unpaired.
+            pub fn paired(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<Option<peppylib::messaging::PeerInfo>> {
+                Ok(node_runner.peer(LINK_ID)?.paired())
+            }
+
+            /// Waits until a peer is paired on this slot and returns its
+            /// identity. Returns immediately when already paired.
+            pub async fn wait_paired(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<peppylib::messaging::PeerInfo> {
+                node_runner.peer(LINK_ID)?.wait_paired().await
+            }
+        },
+        Some(doc) => {
+            let peers_doc = super::doc_attrs(&doc.lines().collect::<Vec<_>>());
+            quote! {
+                #( #peers_doc )*
+                pub fn peers(
+                    node_runner: &crate::NodeRunner,
+                ) -> crate::Result<Vec<peppylib::messaging::PeerMember>> {
+                    Ok(node_runner.peer_set(LINK_ID)?.members())
+                }
+            }
+        }
+    };
+
     quote! {
         pub const TOPIC_NAME: &str = #topic_literal;
         /// This node's own pairing-slot link_id.
@@ -215,20 +247,7 @@ pub fn build_peer_module_header(
         pub const PAIRING_NAME: &str = #pairing_name_literal;
         pub const PAIRING_TAG: &str = #pairing_tag_literal;
 
-        /// The peer currently paired on this slot, or `None` while unpaired.
-        pub fn paired(
-            node_runner: &crate::NodeRunner,
-        ) -> crate::Result<Option<peppylib::messaging::PeerInfo>> {
-            Ok(node_runner.peer(LINK_ID)?.paired())
-        }
-
-        /// Waits until a peer is paired on this slot and returns its
-        /// identity. Returns immediately when already paired.
-        pub async fn wait_paired(
-            node_runner: &crate::NodeRunner,
-        ) -> crate::Result<peppylib::messaging::PeerInfo> {
-            node_runner.peer(LINK_ID)?.wait_paired().await
-        }
+        #slot_state
     }
 }
 
@@ -317,47 +336,67 @@ pub fn build_observed_topic_subscription(
 }
 
 /// Publish side of a peer-emitted topic: `build_message` (same shape as
-/// emitted topics) plus a slot-scoped `declare_publisher` — the wire target
-/// is `SenderTarget::pairing(...)` and the producer-side link_id segment
-/// carries this node's OWN slot link_id, so per-slot streams stay
-/// wire-isolated (the slot IS the identity; no payload demux).
+/// emitted topics) plus a slot-scoped `declare_publisher`. A scalar slot's
+/// answers a `TopicPublisher` driven with `publish`, which reaches the one
+/// paired peer; a multi slot's answers a `PeerPublisher`, which keeps one
+/// wire publisher per pair the slot holds and is driven with `publish_to`,
+/// naming one of the slot's peers.
 pub fn build_peer_topic_publisher(
     params: &[FunctionParam],
     encoding: Option<&MessageEncodingSpec>,
     qos_profile: &QoSProfile,
     label: &str,
+    cardinality: Cardinality,
 ) -> TokenStream {
     let qos_tokens = qos_profile_tokens(qos_profile);
     let label_literal = Literal::string(label);
     let build_message = build_topic_build_message(params, encoding, &label_literal);
+    let declare_publisher = if cardinality.is_scalar() {
+        quote! {
+            /// Declares the publisher for this pairing topic. `publish`
+            /// reaches the paired peer; while unpaired it is a legal no-op,
+            /// since a pairing is a live stream and nothing is waiting.
+            pub async fn declare_publisher(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<peppylib::TopicPublisher> {
+                let qos = #qos_tokens;
+                peppylib::runtime::declare_sole_peer_publisher(
+                    node_runner,
+                    LINK_ID,
+                    PAIRING_NAME,
+                    PAIRING_TAG,
+                    TOPIC_NAME,
+                    qos,
+                )
+                .await
+            }
+        }
+    } else {
+        quote! {
+            /// Declares the publisher for this pairing topic. The slot holds
+            /// several pairs, so `publish_to` names the peer a message is
+            /// for, one of `peers()`; a peer the slot does not hold is
+            /// refused.
+            pub async fn declare_publisher(
+                node_runner: &crate::NodeRunner,
+            ) -> crate::Result<peppylib::runtime::PeerPublisher> {
+                let qos = #qos_tokens;
+                peppylib::runtime::declare_peer_publisher(
+                    node_runner,
+                    LINK_ID,
+                    PAIRING_NAME,
+                    PAIRING_TAG,
+                    TOPIC_NAME,
+                    qos,
+                )
+            }
+        }
+    };
 
     quote! {
         #build_message
 
-        /// Declares the slot-scoped publisher for this pairing topic.
-        /// Publishing while unpaired is a legal no-op (the mesh drops it);
-        /// the paired peer's triple-pinned subscription receives every
-        /// publish made while the pair is live.
-        pub async fn declare_publisher(
-            node_runner: &crate::NodeRunner,
-        ) -> crate::Result<peppylib::TopicPublisher> {
-            let qos = #qos_tokens;
-            let as_instance_id = node_runner.processor().bound_instance_id();
-            let with_core_node = node_runner.processor().bound_core_node();
-            let as_target = peppylib::messaging::SenderTarget::pairing(PAIRING_NAME, PAIRING_TAG)?;
-
-            let publisher = peppylib::TopicMessenger::declare_publisher(
-                node_runner.messenger(),
-                with_core_node,
-                as_instance_id,
-                as_target,
-                Some(LINK_ID),
-                TOPIC_NAME,
-                qos,
-            )
-            .await?;
-            Ok(publisher)
-        }
+        #declare_publisher
     }
 }
 

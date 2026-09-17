@@ -39,4 +39,4 @@ structure and drops the engine's own commentary.
   node's do; the container build the engine ships with deploys them by copy.
   The generated sources are the same either way.
 - The launcher leaves every pairing slot vacant. The engine declares all of
-  them optional, and generation does not depend on what a slot is bound to.
+  them `zero_or_one`, and generation does not depend on what a slot holds.

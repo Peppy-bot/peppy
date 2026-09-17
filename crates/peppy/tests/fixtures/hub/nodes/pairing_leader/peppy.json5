@@ -1,0 +1,38 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "pairing_leader",
+    tag: "v1",
+    depends_on: {
+      // The leader of one joint_link, paired into the hub's slot. Declared
+      // `zero_or_one` so a leader can start before any hub exists and be
+      // claimed by one that starts later, which is how a hub comes to hold
+      // several pairs on the one slot.
+      pairings: [
+        { name: "joint_link", tag: "v1", role: "leader", link_id: "hub", cardinality: "zero_or_one" }
+      ]
+    },
+    labels: ["leader"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "pairing_leader"],
+    parameters: {
+      // The value this leader sends as every joint's setpoint, so the
+      // states it hears back name the leader they were answered to.
+      value: "f64",
+      publish_rate_hz: { $type: "u16", $default: 5 }
+    }
+  },
+  interfaces: {
+    topics: {
+      emits: [
+        { link_id: "hub", name: "joint_setpoints" }
+      ],
+      consumes: [
+        { link_id: "hub", name: "joint_states" }
+      ]
+    }
+  }
+}

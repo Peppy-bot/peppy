@@ -433,6 +433,7 @@ async fn spawn_real_running_instance_inner(
         &handle,
         node_stack::StartContext {
             instance_id,
+            copy: None,
             runtime_config_json5: "{}",
             slot_bindings: std::collections::BTreeMap::new(),
             clock: Default::default(),
@@ -576,6 +577,7 @@ pub async fn spawn_real_starting_instance(
         &handle,
         node_stack::StartContext {
             instance_id,
+            copy: None,
             runtime_config_json5: "{}",
             slot_bindings: std::collections::BTreeMap::new(),
             clock: Default::default(),

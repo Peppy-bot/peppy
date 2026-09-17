@@ -380,6 +380,35 @@ assert!((command.max_velocity - 0.5).abs() < f64::EPSILON);
 
 Both directions carry the pairing's deterministic delivery guarantees: the consuming direction's first publish waits for the node's pinned subscription, and the emitting direction's subscription was opened before the node booted.
 
+A [multi slot](/advanced_guides/pairing/#pairing-with-several-peers-through-one-slot) gets one mock per member, delivered as a list in the order the configuration names them, each under its own instance id and the copy the configuration put it in; `peer_info_for(instance_id)` is the `info` the node's `peers()` lists for that member. The node's `publish_to` reaches the one mock it names:
+
+<Tabs>
+  <TabItem label="Python">
+```python
+async with harness.start(
+    setup, limbs_members={"left": "robot_a", "right": "robot_b"}
+) as h:
+    left, right = h.mocks.pairings.limbs
+    command = await left.joint_commands.next()
+```
+  </TabItem>
+  <TabItem label="Rust">
+```rust
+use peppygen::fixtures::harness::{Config, Harness, PeerMemberSpec};
+
+let config = Config {
+    limbs_members: vec![
+        PeerMemberSpec { instance_id: "left".into(), copy: Some("robot_a".into()) },
+        PeerMemberSpec { instance_id: "right".into(), copy: Some("robot_b".into()) },
+    ],
+    ..Config::default()
+};
+let (mut harness, mut mocks) = Harness::start_with(config, my_node::setup).await?;
+let command = mocks.pairings.limbs[0].joint_commands.next().await?;
+```
+  </TabItem>
+</Tabs>
+
 ### Observed sources
 
 An [observer slot](/advanced_guides/pairing/#observing-several-pairings-through-one-slot)'s mock is a source: it publishes the observed topics under the identity the harness seeded into the slot, so the node's `source()` / `sources()` accessor and observation subscription see it as a live member.
@@ -633,7 +662,9 @@ let (mut harness, mut mocks) = Harness::start_with(
 - **`<link_id>_vacant`** (per `zero_or_one` dependency or observer slot) boots the slot [written vacant](/advanced_guides/topics/#dependency-cardinality): no mock is started (the mock field is `None`), and the node's `bound_producer()` / `source()` accessor answers `None`, the branch this cardinality exists for.
 - **`<link_id>_instances`** (per multi-cardinality dependency or observer slot) sets how many mock instances to start, each under its own instance identity, delivered as a list. The default is 1 for `one_or_more` and 0 for `zero_or_more`.
 - **`<link_id>_instance_ids`** (same slots) names those instances explicitly, overriding the count when set. Reach for it when the node classifies producers by instance name (a health monitor keying reports on `left_arm`/`right_gripper` identities, a recorder naming limbs after its sources), so the mocks wear identities the node's classifier accepts.
-- **`<link_id>_vacant`** (per `optional: true` pairing slot) boots the slot unpaired: the peer pin is never seeded, so the node's `paired()` stays `false`, `wait_paired()` pends, and its publishes on the slot are no-ops. The peer mock still starts; its subscriptions simply stay silent (and publishing from it reaches nothing), so a test can assert the slot's silence. Required pairing slots offer no such knob.
+- **`<link_id>_vacant`** (per `zero_or_one` pairing slot) boots the slot unpaired: the peer pin is never seeded, so the node's `paired()` answers `None`, `wait_paired()` pends, and its publishes on the slot are no-ops. The peer mock still starts; its subscriptions simply stay silent (and publishing from it reaches nothing), so a test can assert the slot's silence. A `one` pairing slot offers no such knob.
+- **`<link_id>_instances`** (per multi-cardinality pairing slot) sets how many mock peers to pair into the slot, each under its own instance id and outside any copy, delivered as a list. The default is 1 for `one_or_more` and 0 for `zero_or_more`.
+- **`<link_id>_members`** (same slots) names those peers explicitly with the copy each belongs to, overriding the count when set: a list of `PeerMemberSpec` in Rust, a dict of instance id to copy (or `None`) in Python. Reach for it when the node groups pairs by copy or classifies peers by instance name.
 - **`node_dir`** (Python only) points at the directory holding the node's `peppy.json5` when neither of the automatic resolutions finds it: the harness first walks up from the current working directory to the nearest `peppy.json5`, then falls back to the absolute node path baked in at sync time. Running `pytest` from anywhere inside the node directory needs nothing; a runner with a foreign working directory on a moved checkout passes `node_dir` explicitly. The error on failure names all three sources. (Rust needs no equivalent: the config path is resolved from the generated crate's own manifest directory at compile time.)
 
 ## The clock
