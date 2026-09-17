@@ -21,10 +21,11 @@ env:
   PEPPY_CROSS_BUILD: "1"
 
 # Every suite runs in a job of its own, so the workflow finishes with its
-# slowest suite rather than the sum of them. Each cargo job builds from a cold
-# target directory; that build is a small fixed cost next to the suite it
-# unblocks. The gated suites wait only for the changes job, never for another
-# suite.
+# slowest suite rather than the sum of them. Each cargo job builds on a sticky
+# disk of its own (the cargo-cache action) holding the target directory, the
+# cargo registry and the build scripts' tool cache as the suite's last
+# committed run left them, so it compiles only what the change touched. The
+# gated suites wait only for the changes job, never for another suite.
 jobs:
   # Which of the gated suites have had their inputs touched. The per-suite
   # source sets are derived from cargo metadata's resolve graph at run time
@@ -75,6 +76,10 @@ jobs:
       # compiles apptainer against. Must precede every cargo step.
       - uses: ./.github/actions/rust-build-env
 
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: workspace-tests
+
       - uses: ./.github/actions/cargo-suite
         with:
           command: cargo test --locked
@@ -94,6 +99,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-env
 
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: container-e2e
+
       - uses: ./.github/actions/cargo-suite
         with:
           command: cargo test --locked -p core-node --features container_e2e --test container_e2e
@@ -110,6 +119,10 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: multi-daemon-e2e
 
       # A persistent Docker builder: setup-docker-builder starts a buildkitd
       # whose layer cache lives on a sticky disk, hydrated from this job's
@@ -143,6 +156,10 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: docs-integration
 
       # The snippet node tests run cargo offline
       # (snippet_runner::run_cargo_node_tests) and resolve against the registry
@@ -211,6 +228,10 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: cross-check
 
       - name: Install the aarch64 cross toolchain
         run: |
