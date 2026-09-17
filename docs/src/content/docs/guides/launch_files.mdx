@@ -138,16 +138,16 @@ Verify that the node stack was configured correctly:
 ```
 $ peppy stack list
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-adoring-wiles (host: robot-host)                                                                                                                             │
+│ Core node: cn-adoring-zebra (host: robot-host)                                                                                                                             │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ Slice of launch launch-brave-otter (coordinator: cn-adoring-wiles)                                                                                                         │
+│ Slice of launch launch-brave-otter (coordinator: cn-adoring-zebra)                                                                                                         │
 │                                                                                                                                                                            │
 │ Node stack                                                                                                                                                                 │
 │                                                                                                                                                                            │
 │ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────────────┐                                  │
 │ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                                       │                                  │
 │ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────────────┤                                  │
-│ │ cn-adoring-wiles:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                          │                                  │
+│ │ cn-adoring-zebra:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                          │                                  │
 │ │ fake_openarm01_controller:v1         │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_openarm01_controller_v1/b81d0e4c72a5f936.tar.zst │                                  │
 │ │ fake_robot_brain:v1                  │ Ready │ 1 running │ ~/.peppy/built_nodes/fake_robot_brain_v1/6c2e9f0a1d47b385.tar.zst          │                                  │
 │ │ fake_uvc_camera:v1                   │ Ready │ 2 running │ ~/.peppy/built_nodes/fake_uvc_camera_v1/e57a3b91c0d64f28.tar.zst           │                                  │
@@ -159,17 +159,17 @@ $ peppy stack list
 │ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────────────────────────────────────────────────────────────────────────┐ │
 │ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                                                                     │ │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ cn-adoring-wiles:v0.10.0             │ cn-adoring-wiles             │ running │ healthy │ (none)                                                                       │ │
+│ │ cn-adoring-zebra:v0.10.0             │ cn-adoring-zebra             │ running │ healthy │ (none)                                                                       │ │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
 │ │ fake_openarm01_controller:v1         │ vibrant-keller-2310          │ running │ healthy │ (none)                                                                       │ │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ fake_robot_brain:v1                  │ zealous-bohr-5512            │ running │ healthy │ fake_openarm01_controller → vibrant-keller-2310@cn-adoring-wiles             │ │
-│ │                                      │                              │         │         │ fake_uvc_camera → mystic-galois-7701@cn-adoring-wiles                        │ │
+│ │ fake_robot_brain:v1                  │ zealous-bohr-5512            │ running │ healthy │ fake_openarm01_controller → vibrant-keller-2310@cn-adoring-zebra             │ │
+│ │                                      │                              │         │         │ fake_uvc_camera → mystic-galois-7701@cn-adoring-zebra                        │ │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
 │ │ fake_uvc_camera:v1                   │ mystic-galois-7701           │ running │ healthy │ (none)                                                                       │ │
 │ │                                      │ brave-noether-3098           │ running │ healthy │ (none)                                                                       │ │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────────────────────────────────────────────────────────────────────────┤ │
-│ │ fake_video_reconstruction:v1         │ gallant-curie-4417           │ running │ healthy │ fake_uvc_camera → brave-noether-3098@cn-adoring-wiles                        │ │
+│ │ fake_video_reconstruction:v1         │ gallant-curie-4417           │ running │ healthy │ fake_uvc_camera → brave-noether-3098@cn-adoring-zebra                        │ │
 │ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────────────────────────────────────────────────────────────────────────┘ │
 │                                                                                                                                                                            │
 │ Dependencies                                                                                                                                                               │
