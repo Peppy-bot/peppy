@@ -8,15 +8,32 @@ description: >-
 runs:
   using: composite
   steps:
-    # The runner image's default toolchain trails the workspace's dependency
-    # graph (sysinfo already requires a newer rustc than the image ships), so
-    # the job pins itself to current stable instead of inheriting the image
-    # default. Must stay ahead of every cargo step.
+    # The self-hosted runner is provisioned outside this repository and ships no
+    # Rust at all, where the hosted images shipped rustup with a default
+    # toolchain that trails the workspace's dependency graph (sysinfo already
+    # requires a newer rustc than those images shipped). So: install rustup if
+    # it is absent, then pin to current stable rather than inheriting whatever
+    # default is there. Both halves are skipped when they are already satisfied,
+    # so a warm box pays nothing here — the runner takes one job at a time, and
+    # re-resolving a toolchain in every job would be pure queue time. Must stay
+    # ahead of every cargo step.
     - name: Install Rust toolchain
       shell: bash
       run: |
-        rustup toolchain install stable --profile minimal
-        rustup default stable
+        set -euo pipefail
+        if ! command -v rustup > /dev/null; then
+          echo "rustup absent; installing"
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        # `rustup default` prints the active toolchain; pin only when it is not
+        # already stable, so the common path makes no network call.
+        if ! rustup default 2>/dev/null | grep -q '^stable-'; then
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+        fi
         rustc --version
 
     # containers-internal's build script compiles apptainer and its bundled
@@ -39,19 +56,38 @@ runs:
     # one of the causes GitHub names for "the runner lost communication with the
     # server", so the drop-in holds needrestart to listing what it would restart
     # and the runner keeps the services it booted with.
+    #
+    # The whole step is skipped when every package is already installed, which
+    # on the reused self-hosted runner is every job after the first: `apt-get
+    # update` alone is tens of seconds, and the runner takes one job at a time,
+    # so it would be queue time paid by every suite to learn there is nothing
+    # to do.
     - name: Install apptainer build and runtime dependencies
       shell: bash
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
+        set -euo pipefail
+        packages=(
+          make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates
+          libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev
+          liblzma-dev libzstd-dev fuse2fs
+        )
+        missing=()
+        for package in "${packages[@]}"; do
+          dpkg-query -W -f='${Status}' "$package" 2>/dev/null \
+            | grep -q '^install ok installed$' || missing+=("$package")
+        done
+        if [ ${#missing[@]} -eq 0 ]; then
+          echo "every apptainer build dependency is already installed"
+          exit 0
+        fi
+        echo "installing: ${missing[*]}"
         sudo mkdir -p /etc/needrestart/conf.d
         printf '$nrconf{restart} = "l";\n' \
           | sudo tee /etc/needrestart/conf.d/90-no-service-restarts.conf > /dev/null
         sudo apt-get update -qq
-        sudo apt-get install -y -qq \
-          make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates \
-          libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
-          liblzma-dev libzstd-dev fuse2fs
+        sudo apt-get install -y -qq "${missing[@]}"
 
     # Apptainer is built without setuid and creates its user namespaces
     # unprivileged, through fakeroot. Ubuntu 24.04 images ship
@@ -99,10 +135,31 @@ runs:
     # `requires-pixi` (scripts/pixi.toml, peppylib-py's pixi.toml);
     # $GITHUB_PATH exports them to every later step of the calling job (the
     # installers' own profile edits are never sourced there).
+    #
+    # Each installer runs only when its tool is absent, so the reused runner
+    # pays for them once rather than in every job. The $GITHUB_PATH exports are
+    # unconditional: they cost nothing and a tool already on the box still has
+    # to be reachable from the calling job's later steps.
     - name: Install pixi and uv
       shell: bash
       run: |
-        curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.80.0 sh
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        set -euo pipefail
+        export PATH="$HOME/.pixi/bin:$HOME/.local/bin:$PATH"
+        # pixi is checked by version, not mere presence: the pin is what
+        # satisfies every `requires-pixi` in the workspace, so a box carrying
+        # some other pixi must be brought to this one rather than trusted.
+        pixi_pin=0.80.0
+        if [ "$(pixi --version 2>/dev/null || true)" = "pixi $pixi_pin" ]; then
+          echo "pixi $pixi_pin already installed"
+        else
+          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION="v$pixi_pin" sh
+        fi
+        # uv carries no pin here (the suites call it through their own
+        # lockfiles), so presence is the whole test.
+        if command -v uv > /dev/null; then
+          echo "uv already installed: $(uv --version)"
+        else
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+        fi
         echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
