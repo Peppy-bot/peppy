@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 from pathlib import Path
 
-from .cli import ReleaseError
+from .cli import ReleaseError, console
 
 # Pinned for reproducibility. The prompt and its inputs are already
 # deterministic for a given input, so the only sources of run-to-run drift are
@@ -35,6 +37,18 @@ from .cli import ReleaseError
 CLAUDE_MODEL = "claude-opus-4-8"
 CLAUDE_EFFORT = "xhigh"
 
+# How often, while ``claude`` runs, the log says it is still at work. A run
+# prints nothing of its own until it answers, and a large task keeps it busy
+# for many minutes.
+HEARTBEAT_SECONDS = 60.0
+
+
+def _heartbeat(activity: str, stop: threading.Event, started: float) -> None:
+    """Say every HEARTBEAT_SECONDS that *activity* goes on, until *stop* is set."""
+    while not stop.wait(HEARTBEAT_SECONDS):
+        minutes = round((time.monotonic() - started) / 60)
+        console.print(f"[dim]Still {activity} ({minutes} min so far)...[/dim]")
+
 
 def run_claude(
     prompt: str,
@@ -43,10 +57,16 @@ def run_claude(
     permission_mode: str,
     cwd: Path,
     json_schema: dict,
+    activity: str,
     tools: str | None = None,
     effort: str = CLAUDE_EFFORT,
 ) -> dict:
     """Run ``claude -p`` and return its schema-validated structured output.
+
+    ``activity`` names what the run does, as a verb phrase ("judging the
+    diff"): while the CLI runs, a line every HEARTBEAT_SECONDS says it is
+    still at it, with the minutes elapsed, so a long run reads as work rather
+    than a hang.
 
     ``json_schema`` is passed to the CLI via ``--json-schema``, which forces
     the final response through a validated structured-output tool call: a
@@ -83,9 +103,18 @@ def run_claude(
         cmd += ["--tools", tools]
     if allowed_tools:
         cmd += ["--allowed-tools", allowed_tools]
-    result = subprocess.run(
-        cmd, cwd=cwd, input=prompt, capture_output=True, text=True
+    stop = threading.Event()
+    ticker = threading.Thread(
+        target=_heartbeat, args=(activity, stop, time.monotonic()), daemon=True
     )
+    ticker.start()
+    try:
+        result = subprocess.run(
+            cmd, cwd=cwd, input=prompt, capture_output=True, text=True
+        )
+    finally:
+        stop.set()
+        ticker.join()
     if result.returncode != 0:
         raise ReleaseError(
             f"claude CLI failed (exit {result.returncode}): "

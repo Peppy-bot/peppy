@@ -247,10 +247,10 @@ def prepare_mocks(tmp_path: Path):
     ) as client, patch(
         "functions.parallel_release.verify_docs_gate"
     ) as docs_gate, patch(
-        "functions.parallel_release.get_latest_release",
+        "functions.build_release.get_latest_release",
         return_value={"tag_name": "v0.2.0"},
     ), patch(
-        "functions.parallel_release.fetch_tag"
+        "functions.build_release.fetch_tag"
     ) as fetch_tag, patch(
         "functions.parallel_release.collect_release_changes"
     ) as collect, patch(
@@ -319,10 +319,17 @@ def test_prepare_skips_the_docs_gate_when_asked(
 # --- the docs gate ---
 
 
-def _gate(tmp_path: Path, *, open_minor_docs_pr: bool) -> None:
-    verify_docs_gate(
-        MagicMock(), SLUG, RELEASE_COMMIT, tmp_path, open_minor_docs_pr=open_minor_docs_pr
-    )
+def _gate(
+    tmp_path: Path, *, open_minor_docs_pr: bool, base: str = "origin/main"
+) -> None:
+    with patch("functions.parallel_release._docs_check_base", return_value=base):
+        verify_docs_gate(
+            MagicMock(),
+            SLUG,
+            RELEASE_COMMIT,
+            tmp_path,
+            open_minor_docs_pr=open_minor_docs_pr,
+        )
 
 
 def _update_result(status: str, change: RequiredChange) -> UpdateResult:
@@ -356,11 +363,13 @@ def test_docs_gate_opens_the_sync_pr_and_stops_on_a_blocking_gap(
     mock_update.return_value = _update_result("implemented", BLOCKING)
 
     with pytest.raises(SystemExit) as exc_info:
-        _gate(tmp_path, open_minor_docs_pr=False)
+        _gate(tmp_path, open_minor_docs_pr=False, base="v0.29.0")
 
     assert exc_info.value.code == 1
     branch = f"auto/docs-update-{RELEASE_COMMIT[:12]}"
-    mock_update.assert_called_once_with("origin/main", RELEASE_COMMIT, (BLOCKING,))
+    # The check and the update diff from the same base, the last shipped commit.
+    mock_check.assert_called_once_with("v0.29.0", RELEASE_COMMIT)
+    mock_update.assert_called_once_with("v0.29.0", RELEASE_COMMIT, (BLOCKING,))
     mock_push.assert_called_once_with(
         branch, tmp_path / "docs", "docs: sync with the code being released"
     )

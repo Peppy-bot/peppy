@@ -99,6 +99,7 @@ from .docker import main as build_base_images_main
 from .repo import (
     commit_paths,
     fetch_remote_branches,
+    fetch_tag,
     get_commit,
     get_current_branch,
     get_repo_root,
@@ -314,8 +315,7 @@ def _prepare_release_content(
     self-contained list of user-facing changes (no external links), then lets
     the user review, edit, or abort before anything is built or published.
     """
-    latest = get_latest_release(client, slug)
-    previous_tag = latest.get("tag_name") if latest else None
+    previous_tag = _latest_release_tag(client, slug)
     if previous_tag:
         console.print(f"Listing changes since last release [bold]{previous_tag}[/bold]...")
     else:
@@ -450,6 +450,59 @@ def _verify_release_branch_state() -> str:
         )
 
     return release_commit
+
+
+def _latest_release_tag(client: httpx.Client, slug: RepoSlug) -> str | None:
+    """The tag of the latest published release, fetched, or None without one.
+
+    The last release can be newer than this checkout, whose clone holds only
+    the tags that existed when it was made, so the tag is fetched before it
+    is read.
+    """
+    latest = get_latest_release(client, slug)
+    tag = latest.get("tag_name") if latest else None
+    if not tag:
+        return None
+    fetch_tag(GIT_REMOTE, tag)
+    return tag
+
+
+def _docs_check_base(
+    client: httpx.Client, slug: RepoSlug, release_commit: str
+) -> str:
+    """The last shipped commit, which the docs check diffs the release from.
+
+    `origin/main` names it whenever the previous release ran to the end: the
+    last step of a release fast-forwards `main` to the commit carrying the
+    notes, whose only change is under `docs/`, so the code diff since `main`
+    is the code diff since the release tag. A release published but never
+    aligned (a publish that failed after the GitHub release went out, or a
+    release cut by hand) leaves `main` behind its tag. Diffing from `main`
+    would then re-audit a release the docs already went through, several
+    times slower, and since the check caps the diff it reads, the changes of
+    the release at hand can fall past the cap and go unjudged. The latest
+    published release's tag is the base then: the same commit the release
+    notes are drafted from.
+
+    `origin/main` stays the base without a published release, and when the
+    tag is not on the release line (a tag cut from elsewhere): the branch
+    check has already proved `origin/main` is.
+    """
+    aligned = f"{GIT_REMOTE}/{ALIGNED_BRANCH}"
+    tag = _latest_release_tag(client, slug)
+    if not tag:
+        return aligned
+    if is_ancestor(tag, aligned):
+        return aligned
+    if not (is_ancestor(aligned, tag) and is_ancestor(tag, release_commit)):
+        return aligned
+    console.print(
+        f"[yellow]{aligned} is behind the latest release {tag}, so it no "
+        f"longer names the last shipped commit: '{DOCS_DIR}/' is checked "
+        f"against {tag} instead. '{ALIGNED_BRANCH}' catches up when this "
+        f"release publishes.[/yellow]"
+    )
+    return tag
 
 
 def _docs_sync_pr_body(
@@ -596,6 +649,7 @@ def _offer_minor_docs_pr(
     release_commit: str,
     repo_root: Path,
     minor: tuple[RequiredChange, ...],
+    base: str,
 ) -> None:
     """Offer to apply minor doc suggestions in an optional pull request.
 
@@ -620,7 +674,6 @@ def _offer_minor_docs_pr(
         return
 
     console.print("Asking Claude to apply the minor suggestions...")
-    base = f"{GIT_REMOTE}/{ALIGNED_BRANCH}"
     update = update_docs(base, release_commit, minor)
     console.print(update.summary)
 
@@ -657,10 +710,8 @@ def _verify_docs_up_to_date(
     notes: everything past this point is slow or publishes something, and a
     release must not ship documentation for behaviour that changed.
 
-    `origin/main` is the diff base because `main` is fast-forwarded to the
-    release commit at the end of every release, so it names the last shipped
-    commit exactly; `_verify_release_branch_state` has already fetched it and
-    proved it is an ancestor of the release commit.
+    The diff base is the last shipped commit: `origin/main` as a rule, or the
+    latest release's tag when `main` was left behind it (`_docs_check_base`).
 
     Only blocking gaps stop the release: docs that now state something false,
     or a user-facing change with no documentation at all. Minor suggestions
@@ -687,7 +738,7 @@ def _verify_docs_up_to_date(
             f"them and retry."
         )
 
-    base = f"{GIT_REMOTE}/{ALIGNED_BRANCH}"
+    base = _docs_check_base(client, slug, release_commit)
     console.print(
         f"Checking '{DOCS_DIR}/' covers the code changes since {base}..."
     )
@@ -697,7 +748,7 @@ def _verify_docs_up_to_date(
     if not blocking:
         if result.minor:
             _offer_minor_docs_pr(
-                client, slug, release_commit, repo_root, result.minor
+                client, slug, release_commit, repo_root, result.minor, base
             )
         console.print(f"[green]'{DOCS_DIR}/' is up to date.[/green]")
         return

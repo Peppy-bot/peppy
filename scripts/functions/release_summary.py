@@ -272,6 +272,7 @@ def generate_release_content(
         permission_mode="bypassPermissions",
         cwd=repo_root,
         json_schema=_CONTENT_SCHEMA,
+        activity="drafting the release notes",
         tools="",
         effort="xhigh",
     )

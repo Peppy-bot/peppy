@@ -17,11 +17,14 @@ from functions.cli import ReleaseError
 from functions.docs import (
     _CHECK_PROMPT,
     _CHECK_SCHEMA,
+    _MAX_DIFF_CHARS,
+    _PART_SCOPE,
     _REWORD_PROMPT,
     _UPDATE_PROMPT,
     _UPDATE_SCHEMA,
     EM_DASH,
     CheckResult,
+    DiffPart,
     EmDashLine,
     RequiredChange,
     UpdateOutcome,
@@ -33,6 +36,7 @@ from functions.docs import (
     check_docs,
     get_code_diff,
     get_docs_diff,
+    split_diff,
     truncate_diff,
     update_docs,
 )
@@ -50,6 +54,11 @@ def _blocking(file: str = "docs/x.mdx", change: str = "add flag") -> RequiredCha
 
 def _minor(file: str = "docs/y.mdx", change: str = "reword") -> RequiredChange:
     return RequiredChange(file=file, change=change, severity="minor")
+
+
+def _gap(file: str, change: str, severity: str) -> dict:
+    """One entry of a check verdict, as claude returns it."""
+    return {"file": file, "change": change, "severity": severity}
 
 
 # --- _is_code_path ---
@@ -205,7 +214,7 @@ def test_check_schema_forbids_an_em_dash_in_a_gap_description() -> None:
 
 
 @pytest.mark.parametrize(
-    "prompt", [_CHECK_PROMPT, _UPDATE_PROMPT, _REWORD_PROMPT]
+    "prompt", [_CHECK_PROMPT, _UPDATE_PROMPT, _REWORD_PROMPT, _PART_SCOPE]
 )
 def test_prompts_hold_no_em_dash(prompt: str) -> None:
     # Claude mirrors the style of what it reads.
@@ -243,6 +252,14 @@ def test_update_result_all_already_covered() -> None:
 
 
 # --- _parse_check_response ---
+
+
+def test_parse_check_response_stamps_the_diff_part() -> None:
+    result = _parse_check_response(
+        {"required_changes": [_gap("docs/x.mdx", "add flag", "blocking")]},
+        diff_part=3,
+    )
+    assert result.changes[0].diff_part == 3
 
 
 def test_parse_check_response_empty_is_clean() -> None:
@@ -366,7 +383,131 @@ def test_parse_update_response_unknown_status() -> None:
         )
 
 
+# --- split_diff ---
+
+
+def _diff_of(*paths: str, body: str = "-old\n+new\n") -> str:
+    """A unified diff changing each of *paths*, *body* being the hunk lines."""
+    return "".join(
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+        f"@@ -1 +1 @@\n{body}"
+        for path in paths
+    )
+
+
+def _header_of(path: str) -> str:
+    """The lines of a file's section before its first hunk."""
+    return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+
+
+def test_split_diff_is_one_part_when_the_diff_fits() -> None:
+    diff = _diff_of("crates/a.rs", "crates/b.rs")
+
+    assert split_diff(diff, cap=len(diff)) == (
+        DiffPart(text=diff, paths=("crates/a.rs", "crates/b.rs")),
+    )
+
+
+def test_split_diff_keeps_whole_files_together_in_order() -> None:
+    diff = _diff_of("crates/a.rs", "crates/b.rs", "crates/c.rs")
+    section = _diff_of("crates/a.rs")
+
+    parts = split_diff(diff, cap=2 * len(section))
+
+    assert parts == (
+        DiffPart(
+            text=_diff_of("crates/a.rs", "crates/b.rs"),
+            paths=("crates/a.rs", "crates/b.rs"),
+        ),
+        DiffPart(text=_diff_of("crates/c.rs"), paths=("crates/c.rs",)),
+    )
+
+
+def test_split_diff_cuts_an_oversized_file_between_lines_under_its_header() -> None:
+    lines = [f"+line {i:02d} of the file\n" for i in range(6)]
+    body = "@@ -1 +1 @@\n" + "".join(lines)
+    header = _header_of("crates/big.rs")
+    cap = len(header) + 45
+
+    parts = split_diff(header + body, cap=cap)
+
+    # Two lines per piece fit the budget, the hunk line counting as one, and
+    # every piece is led by the header so its lines stay attributed.
+    assert len(parts) == 4
+    assert all(part.paths == ("crates/big.rs",) for part in parts)
+    assert all(part.text.startswith(header) for part in parts)
+    assert all(len(part.text) <= cap for part in parts)
+    assert "".join(part.text[len(header) :] for part in parts) == body
+
+
+def test_split_diff_cuts_a_line_past_the_cap_within_the_line() -> None:
+    body = "@@ -1 +1 @@\n+" + "x" * 99 + "\n"
+    header = _header_of("crates/blob.rs")
+    cap = len(header) + 40
+
+    parts = split_diff(header + body, cap=cap)
+
+    # The hunk line, then the long line in slices of the budget: nothing lost.
+    assert len(parts) == 4
+    assert all(len(part.text) <= cap for part in parts)
+    assert "".join(part.text[len(header) :] for part in parts) == body
+
+
+def test_split_diff_reads_a_quoted_path() -> None:
+    diff = (
+        'diff --git "a/crates/sp ace.rs" "b/crates/sp ace.rs"\n'
+        '--- "a/crates/sp ace.rs"\n+++ "b/crates/sp ace.rs"\n'
+        "@@ -1 +1 @@\n-old\n+new\n"
+    )
+
+    assert split_diff(diff, cap=len(diff))[0].paths == ("crates/sp ace.rs",)
+
+
+def test_split_diff_of_nothing_is_no_part() -> None:
+    assert split_diff("", cap=10) == ()
+
+
+def test_split_diff_refuses_text_outside_a_file_section() -> None:
+    with pytest.raises(ReleaseError, match="does not open with a 'diff --git'"):
+        split_diff("not a diff\n" + _diff_of("crates/a.rs"), cap=1000)
+
+
 # --- check_docs / update_docs (mocked claude) ---
+
+
+class _ClaudeCalls:
+    """A subprocess.run stand-in answering each claude call in turn.
+
+    The prompt of every call is appended to ``prompts``; the em-dash scan of
+    ``docs/`` (the one git call left once get_code_diff is patched) finds
+    nothing.
+    """
+
+    def __init__(self, *answers: object) -> None:
+        self._answers = iter(answers)
+        self.prompts: list[str] = []
+
+    def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+        mock = MagicMock()
+        mock.stderr = ""
+        if cmd[:2] == ["git", "grep"]:
+            mock.returncode = 1
+            mock.stdout = ""
+            return mock
+        if cmd and cmd[0] == "claude":
+            self.prompts.append(str(kwargs.get("input")))
+            structured = next(self._answers, None)
+            assert structured is not None, "claude called more often than answered"
+            mock.returncode = 0
+            mock.stdout = json.dumps(
+                {
+                    "type": "result",
+                    "result": json.dumps(structured),
+                    "structured_output": structured,
+                }
+            )
+            return mock
+        raise AssertionError(f"unexpected command: {cmd}")
 
 
 def _mock_subprocess_run_for_claude(
@@ -426,7 +567,7 @@ def test_check_docs_parses_claude_verdict(tmp_path: Path) -> None:
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("diff", ["crates/foo.rs"]),
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
          ), \
          patch(
              "functions.claude.subprocess.run",
@@ -437,13 +578,178 @@ def test_check_docs_parses_claude_verdict(tmp_path: Path) -> None:
     assert result.minor == ()
 
 
+def _check_docs_with_diff(
+    tmp_path: Path, diff: str, paths: list[str]
+) -> CheckResult:
+    """Run the check on a canned diff with Claude answering that all is covered."""
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
+         patch("functions.docs.get_code_diff", return_value=(diff, paths)), \
+         patch(
+             "functions.claude.subprocess.run",
+             _mock_subprocess_run_for_claude({"required_changes": []}),
+         ):
+        return check_docs("BASE", "HEAD")
+
+
+def test_check_docs_says_how_much_claude_reads(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    diff = _diff_of("crates/a.rs", "crates/b.rs", body="+" + "x" * 3000 + "\n")
+
+    _check_docs_with_diff(tmp_path, diff, ["crates/a.rs", "crates/b.rs"])
+
+    err = " ".join(capfd.readouterr().err.split())
+    assert (
+        f"2 changed code path(s), {len(diff) // 1024} KB of diff, judged in 1 part(s)."
+        in err
+    )
+    assert "Asking Claude to judge the diff (2 path(s)," in err
+
+
+def test_check_docs_keeps_the_whole_diff_in_one_run_when_it_fits(
+    tmp_path: Path,
+) -> None:
+    calls = _ClaudeCalls({"required_changes": []})
+    diff = _diff_of("crates/a.rs", "crates/b.rs")
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
+         patch(
+             "functions.docs.get_code_diff",
+             return_value=(diff, ["crates/a.rs", "crates/b.rs"]),
+         ), \
+         patch("functions.claude.subprocess.run", calls):
+        check_docs("BASE", "HEAD")
+
+    (prompt,) = calls.prompts
+    assert diff in prompt
+    assert "part 1 of" not in prompt
+
+
+def _two_part_diff() -> tuple[str, list[str]]:
+    """A diff of two files that split_diff cuts in two under _MAX_DIFF_CHARS."""
+    return _diff_of("crates/a.rs", "crates/b.rs"), ["crates/a.rs", "crates/b.rs"]
+
+
+def _patched_two_part_diff(tmp_path: Path, calls: _ClaudeCalls):
+    """Patch the repo, the diff and claude so the diff is handled in two parts."""
+    diff, paths = _two_part_diff()
+    return (
+        patch("functions.docs.get_repo_root", return_value=tmp_path),
+        patch("functions.docs.get_code_diff", return_value=(diff, paths)),
+        patch("functions.docs._MAX_DIFF_CHARS", len(diff) - 1),
+        patch("functions.claude.subprocess.run", calls),
+    )
+
+
+def test_check_docs_judges_a_large_diff_in_parts(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    calls = _ClaudeCalls(
+        {"required_changes": [_gap("docs/a.mdx", "say a", "blocking")]},
+        {"required_changes": [_gap("docs/b.mdx", "say b", "minor")]},
+    )
+    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    with repo, diff, cap, claude:
+        result = check_docs("BASE", "HEAD")
+
+    # Every verdict comes back, stamped with the part it was judged on.
+    assert result.changes == (
+        RequiredChange("docs/a.mdx", "say a", "blocking", diff_part=1),
+        RequiredChange("docs/b.mdx", "say b", "minor", diff_part=2),
+    )
+    first, second = calls.prompts
+    # Each run sees one part, told it is one, listing that part's paths only.
+    assert "part 1 of 2 of the whole change set" in first
+    assert _diff_of("crates/a.rs") in first
+    assert "crates/b.rs" not in first
+    assert "part 2 of 2 of the whole change set" in second
+    assert _diff_of("crates/b.rs") in second
+    assert "crates/a.rs" not in second
+    err = " ".join(capfd.readouterr().err.split())
+    assert "judged in 2 part(s)." in err
+    assert "Asking Claude to judge part 1 of 2 of the diff (1 path(s)," in err
+    assert "Asking Claude to judge part 2 of 2 of the diff (1 path(s)," in err
+
+
+def test_update_docs_hands_each_part_its_own_gaps(tmp_path: Path) -> None:
+    calls = _ClaudeCalls(
+        {
+            "results": [
+                {"file": "docs/a.mdx", "change": "say a", "status": "implemented"}
+            ],
+            "summary": "did a",
+        },
+        {
+            "results": [
+                {"file": "docs/b.mdx", "change": "say b", "status": "already_covered"}
+            ],
+            "summary": "b was there",
+        },
+    )
+    changes = (
+        RequiredChange("docs/a.mdx", "say a", "blocking", diff_part=1),
+        RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=2),
+    )
+    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    with repo, diff, cap, claude:
+        result = update_docs("BASE", "HEAD", changes)
+
+    assert result.results == (
+        UpdateOutcome("docs/a.mdx", "say a", "implemented"),
+        UpdateOutcome("docs/b.mdx", "say b", "already_covered"),
+    )
+    assert result.summary == "did a\nb was there"
+    first, second = calls.prompts
+    # A run gets the gaps its part shows, with that part as the facts.
+    assert "- `docs/a.mdx`: say a" in first
+    assert "docs/b.mdx" not in first
+    assert _diff_of("crates/a.rs") in first
+    assert "crates/b.rs" not in first
+    assert "part 1 of 2 of the whole change set" in first
+    assert "- `docs/b.mdx`: say b" in second
+    assert "docs/a.mdx" not in second
+    assert _diff_of("crates/b.rs") in second
+    assert "part 2 of 2 of the whole change set" in second
+
+
+def test_update_docs_skips_the_parts_with_no_gap(tmp_path: Path) -> None:
+    calls = _ClaudeCalls(
+        {
+            "results": [
+                {"file": "docs/b.mdx", "change": "say b", "status": "implemented"}
+            ],
+            "summary": "did b",
+        }
+    )
+    changes = (RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=2),)
+    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    with repo, diff, cap, claude:
+        result = update_docs("BASE", "HEAD", changes)
+
+    assert result.summary == "did b"
+    (prompt,) = calls.prompts
+    assert "part 2 of 2 of the whole change set" in prompt
+
+
+def test_update_docs_refuses_a_gap_naming_a_part_the_diff_lacks(
+    tmp_path: Path,
+) -> None:
+    calls = _ClaudeCalls()
+    changes = (RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=3),)
+    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    with repo, diff, cap, claude:
+        with pytest.raises(ReleaseError, match="has 2 part\\(s\\), but these changes"):
+            update_docs("BASE", "HEAD", changes)
+
+    assert calls.prompts == []
+
+
 def test_check_docs_enforces_schema_and_readonly_tools(tmp_path: Path) -> None:
     capture: dict[str, Any] = {}
     verdict: dict = {"required_changes": []}
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("diff", ["crates/foo.rs"]),
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
          ), \
          patch(
              "functions.claude.subprocess.run",
@@ -469,7 +775,7 @@ def test_check_docs_raises_on_claude_nonzero(tmp_path: Path) -> None:
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("diff", ["crates/foo.rs"]),
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
          ), \
          patch("functions.claude.subprocess.run", return_value=mock):
         with pytest.raises(ReleaseError, match="claude CLI failed"):
@@ -486,7 +792,7 @@ def test_check_docs_raises_on_missing_structured_output(tmp_path: Path) -> None:
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("diff", ["crates/foo.rs"]),
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
          ), \
          patch("functions.claude.subprocess.run", return_value=mock):
         with pytest.raises(ReleaseError, match="missing 'structured_output'"):
@@ -515,7 +821,10 @@ def test_update_docs_scopes_the_prompt_to_the_requested_changes(
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("THE-CODE-DIFF", ["crates/foo.rs"]),
+             return_value=(
+                 _diff_of("crates/foo.rs", body="+THE-CODE-DIFF\n"),
+                 ["crates/foo.rs"],
+             ),
          ), \
          patch(
              "functions.claude.subprocess.run",
@@ -540,7 +849,7 @@ def test_update_docs_invokes_claude_with_edit_permissions(tmp_path: Path) -> Non
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("diff", ["crates/foo.rs"]),
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
          ), \
          patch(
              "functions.claude.subprocess.run",
@@ -569,7 +878,7 @@ def _capture_claude_cmd(
     with patch("functions.docs.get_repo_root", return_value=tmp_path), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("diff", ["crates/foo.rs"]),
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
          ), \
          patch(
              "functions.claude.subprocess.run",
@@ -690,7 +999,7 @@ def _update(repo: Path, edits: list[Callable[[Path], None]], prompts: list[str])
     with patch("functions.docs.get_repo_root", return_value=repo), \
          patch(
              "functions.docs.get_code_diff",
-             return_value=("diff", ["crates/foo.rs"]),
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
          ), \
          patch("subprocess.run", _claude_edits(repo, edits, prompts)):
         return update_docs("BASE", "HEAD", (_blocking(),))

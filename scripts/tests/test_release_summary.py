@@ -107,6 +107,7 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
         permission_mode: str,
         cwd: Path,
         json_schema: dict,
+        activity: str,
         tools: str | None = None,
         effort: str = "max",
     ) -> dict:
@@ -115,6 +116,7 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
         captured["permission_mode"] = permission_mode
         captured["cwd"] = cwd
         captured["json_schema"] = json_schema
+        captured["activity"] = activity
         captured["tools"] = tools
         captured["effort"] = effort
         return {"title": "T", "description": "D", "notes": "N"}
@@ -131,6 +133,8 @@ def test_generate_release_content_runs_claude_without_tools(tmp_path: Path) -> N
     assert captured["allowed_tools"] == ""
     assert captured["effort"] == "xhigh"
     assert captured["cwd"] == tmp_path
+    # The heartbeat names the work while Claude drafts.
+    assert captured["activity"] == "drafting the release notes"
     # The response shape is enforced CLI-side.
     assert captured["json_schema"] == _CONTENT_SCHEMA
     # The tag, the previous tag, and the commit subjects are interpolated.
