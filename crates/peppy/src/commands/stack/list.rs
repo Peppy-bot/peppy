@@ -5,7 +5,6 @@ use std::time::Duration;
 use crate::commands::{CALLER_INSTANCE_ID, DomainLabels};
 use crate::context::AppContext;
 use crate::error::{Error, Result};
-use config::runtime::PairingSlotBinding;
 use core_node_api::encoding::{LaunchIdentity, StackListRequest};
 use core_node_api::{InstanceState, NodeStage, SerializedEdge, SerializedInstance, SerializedNode};
 use futures::future::join_all;
@@ -701,34 +700,56 @@ fn render_pairings_table(
     render_table(out, &PAIRING_HEADERS, &blocks, max_width);
 }
 
-/// One display string per pairing slot on the instance, ordered by link id:
-/// `link_id ⇌ peer_instance:peer_link@core_node (pairing:tag)` while paired
-/// (the `@core_node` suffix matches the bindings table's `instance@node`
-/// producer style), `link_id ⇌ (unpaired) [role r of pairing:tag]` while
-/// not; the role makes an unpaired row self-describing when composing a
+/// One display string per pair on the instance, ordered by link id and, on
+/// a slot holding several, in establishment order:
+/// `link_id ⇌ peer_instance:peer_link@core_node (pairing:tag)` per pair (the
+/// `@core_node` suffix matches the bindings table's `instance@node` producer
+/// style), `link_id ⇌ (unpaired) [role r of pairing:tag]` for a slot holding
+/// none; the role makes an unpaired row self-describing when composing a
 /// `--link` for it.
 fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Vec<String> {
     instance
         .pairing_slots
         .iter()
-        .map(|(link_id, slot)| {
+        .flat_map(|(link_id, slot)| {
             let link = paint(colorize, BINDING_COLOR, link_id);
-            match &slot.binding {
-                PairingSlotBinding::Paired { peer, peer_link_id } => format!(
-                    "{link} ⇌ {} ({}:{})",
-                    paint(
+            if slot.peers.is_empty() {
+                // A slot whose cardinality admits an empty set is holding its
+                // steady state; every other one is missing the peer it expects.
+                let empty = if slot.cardinality.allows_empty() {
+                    "(no pairs)"
+                } else {
+                    "(unpaired)"
+                };
+                return vec![format!(
+                    "{link} ⇌ {empty} [role {} of {}:{}]",
+                    slot.role, slot.pairing_name, slot.pairing_tag,
+                )];
+            }
+            slot.peers
+                .iter()
+                .map(|pair| {
+                    let peer = paint(
                         colorize,
                         INSTANCE_COLOR,
-                        &format!("{}:{}@{}", peer.instance_id, peer_link_id, peer.core_node),
-                    ),
-                    slot.pairing_name,
-                    slot.pairing_tag,
-                ),
-                PairingSlotBinding::Unpaired => format!(
-                    "{link} ⇌ (unpaired) [role {} of {}:{}]",
-                    slot.role, slot.pairing_name, slot.pairing_tag,
-                ),
-            }
+                        &format!(
+                            "{}:{}@{}",
+                            pair.peer.instance_id, pair.peer_link_id, pair.peer.core_node
+                        ),
+                    );
+                    // The copy is what tells one robot's limb from another's;
+                    // an instance running outside a copy has none to name.
+                    let copy = pair
+                        .copy
+                        .as_ref()
+                        .map(|copy| format!(" [copy {}]", copy.as_str()))
+                        .unwrap_or_default();
+                    format!(
+                        "{link} ⇌ {peer}{copy} ({}:{})",
+                        slot.pairing_name, slot.pairing_tag,
+                    )
+                })
+                .collect()
         })
         .collect()
 }
@@ -1799,10 +1820,12 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "arm".to_string(),
-                binding: config::runtime::PairingSlotBinding::Paired {
+                cardinality: config::node::Cardinality::One,
+                peers: vec![config::runtime::PairedPeer {
                     peer: ProducerRef::new("core_a", "ctrl_1"),
                     peer_link_id: "arm".to_string(),
-                },
+                    copy: None,
+                }],
             },
         );
         let mut ctrl = node(
@@ -1817,7 +1840,8 @@ mod tests {
                 pairing_name: "arm_link".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "controller".to_string(),
-                binding: config::runtime::PairingSlotBinding::Unpaired,
+                cardinality: config::node::Cardinality::One,
+                peers: Vec::new(),
             },
         );
 
@@ -1835,6 +1859,114 @@ mod tests {
         assert!(
             out.contains("arm ⇌ (unpaired) [role controller of arm_link:v1]"),
             "an unpaired row should carry the role and contract:\n{out}"
+        );
+    }
+
+    /// A slot holding several pairs renders one row per pair, in the order
+    /// the slot holds them, so an operator reading the listing sees each peer.
+    #[test]
+    fn pairings_table_renders_one_row_per_pair_of_a_multi_slot() {
+        let peer = |instance: &str| config::runtime::PairedPeer {
+            peer: ProducerRef::new("core_a", instance),
+            peer_link_id: "arm".to_string(),
+            copy: None,
+        };
+        let mut engine = node(
+            "sim_engine",
+            "v1",
+            NodeStage::Ready,
+            vec![("engine_1", InstanceState::Running)],
+        );
+        engine.instances[0].pairing_slots.insert(
+            "limbs".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "arm".to_string(),
+                cardinality: config::node::Cardinality::ZeroOrMore,
+                peers: vec![peer("ctrl_1"), peer("ctrl_2"), peer("ctrl_3")],
+            },
+        );
+
+        let out = format_stack_body(&[engine], &[], false, None);
+        let rows: Vec<usize> = ["ctrl_1", "ctrl_2", "ctrl_3"]
+            .iter()
+            .map(|instance| {
+                out.find(&format!("limbs ⇌ {instance}:arm@core_a (arm_link:v1)"))
+                    .unwrap_or_else(|| panic!("no row for {instance}:\n{out}"))
+            })
+            .collect();
+        assert!(
+            rows[0] < rows[1] && rows[1] < rows[2],
+            "rows should follow the slot's order:\n{out}"
+        );
+    }
+
+    /// The empty row says which kind of empty it is: a `zero_or_more` slot
+    /// holding nothing is its steady state, while any other cardinality is
+    /// missing the peer it expects. A pair names the copy its peer belongs to,
+    /// which is what tells one robot's limb from another's.
+    #[test]
+    fn pairings_table_separates_an_empty_multi_slot_and_names_each_copy() {
+        let mut engine = node(
+            "sim_engine",
+            "v1",
+            NodeStage::Ready,
+            vec![("engine_1", InstanceState::Running)],
+        );
+        engine.instances[0].pairing_slots.insert(
+            "limbs".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "arm".to_string(),
+                cardinality: config::node::Cardinality::ZeroOrMore,
+                peers: Vec::new(),
+            },
+        );
+        engine.instances[0].pairing_slots.insert(
+            "governor".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "arm".to_string(),
+                cardinality: config::node::Cardinality::One,
+                peers: Vec::new(),
+            },
+        );
+        let mut robot = node(
+            "backbone",
+            "v1",
+            NodeStage::Ready,
+            vec![("alpha_backbone", InstanceState::Running)],
+        );
+        robot.instances[0].pairing_slots.insert(
+            "engine".to_string(),
+            core_node_api::SerializedPairingSlot {
+                pairing_name: "arm_link".to_string(),
+                pairing_tag: "v1".to_string(),
+                role: "controller".to_string(),
+                cardinality: config::node::Cardinality::One,
+                peers: vec![config::runtime::PairedPeer {
+                    peer: ProducerRef::new("core_a", "engine_1"),
+                    peer_link_id: "limbs".to_string(),
+                    copy: Some(config::runtime::Name::new("alpha").expect("a name")),
+                }],
+            },
+        );
+
+        let out = format_stack_body(&[engine, robot], &[], false, None);
+        assert!(
+            out.contains("limbs ⇌ (no pairs) [role arm of arm_link:v1]"),
+            "a zero_or_more slot holding nothing is not an unpaired slot:\n{out}"
+        );
+        assert!(
+            out.contains("governor ⇌ (unpaired) [role arm of arm_link:v1]"),
+            "a one slot holding nothing is still missing its peer:\n{out}"
+        );
+        assert!(
+            out.contains("engine ⇌ engine_1:limbs@core_a [copy alpha] (arm_link:v1)"),
+            "a pair should name the copy its peer belongs to:\n{out}"
         );
     }
 
@@ -1943,10 +2075,12 @@ mod tests {
                 pairing_name: "臂链".to_string(),
                 pairing_tag: "v1".to_string(),
                 role: "控制器".to_string(),
-                binding: config::runtime::PairingSlotBinding::Paired {
+                cardinality: config::node::Cardinality::One,
+                peers: vec![config::runtime::PairedPeer {
                     peer: ProducerRef::new("core_a", "机械臂-1"),
                     peer_link_id: "控制".to_string(),
-                },
+                    copy: None,
+                }],
             },
         );
         let out = format_stack_body(&nodes, &[], false, None);

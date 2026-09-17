@@ -23,9 +23,9 @@ use peppylib::services::shutdown::listen_for_shutdown;
 
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
-    emulate_cooperative_shutdown, emulate_startup_services, install_node_manifest,
-    read_daemon_git_hash, register_repo_caches, run_cmd_json5, test_node_target,
-    write_node_config_for_helper,
+    emulate_cooperative_shutdown, emulate_pairing_node_services, emulate_startup_services,
+    install_node_manifest, read_daemon_git_hash, register_repo_caches, run_cmd_json5,
+    test_node_target, write_node_config_for_helper,
 };
 use peppylib::core_node::transport::poll;
 const CALLER_INSTANCE_ID: &str = "peppy-test";
@@ -2842,45 +2842,16 @@ async fn stack_launch_establishes_launcher_pairings() {
         ("robot_arm", "arm_1", "controller"),
         ("arm_controller", "ctrl_1", "arm"),
     ] {
-        let _ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let _health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
-        let (_shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerPinState::unpaired());
-        let slots = Arc::new(std::collections::BTreeMap::from([(
-            link_id.to_string(),
-            tx,
-        )]));
-        peppylib::services::peer_update::listen_for_peer_update(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-            slots,
-        )
-        .await
-        .expect("peer_update service should start");
-        watches.push(rx);
+        watches.push(
+            emulate_pairing_node_services(
+                &node_messenger,
+                &core_node_name,
+                node_name,
+                instance_id,
+                link_id,
+            )
+            .await,
+        );
     }
 
     // The pair is declared once, on the controller instance; the launcher
@@ -2933,11 +2904,17 @@ async fn stack_launch_establishes_launcher_pairings() {
 
     // Both endpoints are pinned to each other by the time launch returns.
     let arm_pin = watches[0].borrow().clone();
-    let pin = arm_pin.pin.expect("arm_1's slot should be pinned");
+    let pin = arm_pin
+        .peers()
+        .next()
+        .expect("arm_1's slot should be pinned");
     assert_eq!(pin.producer.instance_id, "ctrl_1");
     assert_eq!(pin.peer_link_id, "arm");
     let ctrl_pin = watches[1].borrow().clone();
-    let pin = ctrl_pin.pin.expect("ctrl_1's slot should be pinned");
+    let pin = ctrl_pin
+        .peers()
+        .next()
+        .expect("ctrl_1's slot should be pinned");
     assert_eq!(pin.producer.instance_id, "arm_1");
     assert_eq!(pin.peer_link_id, "controller");
 
@@ -2955,7 +2932,7 @@ async fn stack_launch_establishes_launcher_pairings() {
 }
 
 /// Vacancy is per instance, which is the whole reason it lives in the
-/// launcher rather than the manifest: one node with one `optional: true` slot,
+/// launcher rather than the manifest: one node with one `zero_or_one` slot,
 /// two instances of it in one deployment, one paired and one vacant. Both boot,
 /// and only the paired one ends up with a pin, so a slot's manifest optionality
 /// is a permission rather than a fate the node carries into every deployment.
@@ -2987,7 +2964,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
         &git_hash,
         &run_cmd,
         Some(
-            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }] }"#,
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", cardinality: "zero_or_one" }] }"#,
         ),
         None,
         Some(
@@ -3022,45 +2999,16 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
         ("robot_arm", "arm_watched", "controller"),
         ("arm_controller", "ctrl_1", "arm"),
     ] {
-        let _ready = listen_for_node_ready(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("ready service should start");
-        let _health = listen_for_node_health(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("health service should start");
-        let (_shutdown, _) = listen_for_shutdown(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-        )
-        .await
-        .expect("shutdown service should start");
-        let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerPinState::unpaired());
-        let slots = Arc::new(std::collections::BTreeMap::from([(
-            link_id.to_string(),
-            tx,
-        )]));
-        peppylib::services::peer_update::listen_for_peer_update(
-            &node_messenger,
-            &core_node_name,
-            instance_id,
-            test_node_target(node_name),
-            slots,
-        )
-        .await
-        .expect("peer_update service should start");
-        watches.push(rx);
+        watches.push(
+            emulate_pairing_node_services(
+                &node_messenger,
+                &core_node_name,
+                node_name,
+                instance_id,
+                link_id,
+            )
+            .await,
+        );
     }
 
     // Two instances of one node choosing different fates for the same slot:
@@ -3118,21 +3066,23 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
 
     let governed = watches[0].borrow().clone();
     let pin = governed
-        .pin
+        .peers()
+        .next()
         .expect("the governed instance's slot should be pinned");
     assert_eq!(pin.producer.instance_id, "ctrl_1");
     assert_eq!(pin.peer_link_id, "arm");
 
     let watched = watches[1].borrow().clone();
     assert!(
-        watched.pin.is_none(),
+        watched.members.is_empty(),
         "the vacant instance's slot must stay unpaired: {:?}",
-        watched.pin
+        watched.members
     );
 
     let controller = watches[2].borrow().clone();
     let pin = controller
-        .pin
+        .peers()
+        .next()
         .expect("the controller's slot should be pinned");
     assert_eq!(
         pin.producer.instance_id, "arm_governed",
@@ -3210,7 +3160,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         &git_hash,
         &run_cmd,
         Some(
-            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }] }"#,
+            r#"{ pairings: [{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", cardinality: "zero_or_one" }] }"#,
         ),
         None,
         Some(
@@ -3545,7 +3495,9 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     .expect_err("an uncovered required pairing slot must fail the launch");
     let msg = err.to_string();
     assert!(
-        msg.contains("controller") && msg.contains("--link") && msg.contains("`optional: true`"),
+        msg.contains("controller")
+            && msg.contains("--link")
+            && msg.contains(r#"`cardinality: "zero_or_one"`"#),
         "the failure should name the uncovered slot, the pairing key and the manifest key: {msg}"
     );
     assert!(
@@ -3754,7 +3706,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         ("openarm_gripper_leader", "grip_leader_1"),
         ("openarm_gripper_follower", "grip_follower_1"),
     ] {
-        let (tx, _rx) = tokio::sync::watch::channel(peppylib::messaging::PeerPinState::unpaired());
+        let (tx, _rx) = tokio::sync::watch::channel(peppylib::messaging::PeerSetState::empty());
         let slots = Arc::new(std::collections::BTreeMap::from([("limb".to_string(), tx)]));
         peer_handles.push(
             peppylib::services::peer_update::listen_for_peer_update(
@@ -4847,7 +4799,7 @@ fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile
                 depends_on: {
                     pairings: [
                         { name: "camera_link", tag: "v1", role: "viewer",
-                          link_id: "camera", optional: true },
+                          link_id: "camera", cardinality: "zero_or_one" },
                     ],
                 },
             },
@@ -4876,11 +4828,11 @@ fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile
     (dirs, root)
 }
 
-/// A launcher that leaves an optional pairing slot neither paired nor
+/// A launcher that leaves a `zero_or_one` pairing slot neither paired nor
 /// vacant fails `stack resolve` with the launch's own error, before any
 /// image is built.
 #[test]
-fn stack_resolve_fails_an_optional_pairing_slot_left_uncovered() {
+fn stack_resolve_fails_a_zero_or_one_pairing_slot_left_uncovered() {
     let (dirs, root) = peppy_root_with_pairing_node();
     let launcher = root.path().join("solo.json5");
     fs::write(
@@ -4896,11 +4848,13 @@ fn stack_resolve_fails_an_optional_pairing_slot_left_uncovered() {
     .expect("launcher");
 
     let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &Default::default())
-        .expect_err("an uncovered optional pairing slot must not resolve");
+        .expect_err("an uncovered zero_or_one pairing slot must not resolve");
     let msg = err.to_string();
     assert!(
-        msg.contains("optional pairing slot `camera`") && msg.contains("with no pair"),
-        "the refusal names the slot and the rule: {msg}"
+        msg.contains("pairing slot `camera`")
+            && msg.contains("cardinality `zero_or_one`")
+            && msg.contains("with no pair"),
+        "the refusal names the slot, its cardinality and the rule: {msg}"
     );
     assert!(
         msg.contains("vacant"),

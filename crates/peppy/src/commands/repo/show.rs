@@ -152,7 +152,7 @@ fn report_block(
         |hit| {
             vec![
                 hit.role.clone(),
-                slot_cell(&hit.link_id, hit.optional.then_some("optional"), colorize),
+                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
                 pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
@@ -197,15 +197,14 @@ fn report_block(
 /// resolves through and the role this node plays. The rows are the peers'
 /// own slots, so they read exactly as the pairing's own report does.
 ///
-/// A slot no indexed node can pair with says so on one line rather than
-/// vanishing, because that is the answer, and on a slot that is not
-/// `optional` it is the answer that no indexed node completes a launch of
-/// this one. Being listed here is a match of pairing and role, which is
+/// A slot no indexed node can pair with says so on one line, because that
+/// is the answer, and on a slot whose cardinality has a floor of one it is
+/// the answer that no indexed node completes a launch of this one. Being listed here is a match of pairing and role, which is
 /// what pairing requires and all the caches record; whether a stack of the
 /// two is one worth running is a launcher's business.
 fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> String {
     let label = format!(
-        "Slot {} ({} as {}{})",
+        "Slot {} ({} as {}, {})",
         paint(colorize, BINDING_COLOR, &slot.link_id),
         paint(
             colorize,
@@ -213,7 +212,7 @@ fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> S
             &format!("{}:{}", slot.pairing_name, slot.pairing_tag)
         ),
         slot.role,
-        if slot.optional { ", optional" } else { "" },
+        slot.cardinality.as_str(),
     );
     if slot.peers.is_empty() {
         return format!("\n{label}: no indexed node plays the other role\n");
@@ -226,7 +225,7 @@ fn peer_section(slot: &SlotPeers, colorize: bool, max_width: Option<usize>) -> S
         |hit| {
             vec![
                 hit.role.clone(),
-                slot_cell(&hit.link_id, hit.optional.then_some("optional"), colorize),
+                slot_cell(&hit.link_id, Some(hit.cardinality.as_str()), colorize),
                 pin_cell(hit.sha256.as_deref(), &hit.pin, colorize),
             ]
         },
@@ -249,7 +248,7 @@ fn published_line(item: &MatchedItem) -> String {
 }
 
 /// The SLOT column: the `link_id`, tinted like every link id, with the
-/// cardinality or `optional` qualifier the manifest declares on it.
+/// cardinality the manifest declares on it.
 fn slot_cell(link_id: &str, qualifier: Option<&str>, colorize: bool) -> String {
     let link = paint(colorize, BINDING_COLOR, link_id);
     match qualifier {
@@ -427,7 +426,7 @@ fn report_json(report: &SearchReport) -> serde_json::Value {
                 "link_id": slot.link_id,
                 "pairing": { "name": slot.pairing_name, "tag": slot.pairing_tag },
                 "role": slot.role,
-                "optional": slot.optional,
+                "cardinality": slot.cardinality,
                 "peers": slot.peers.iter().map(participant_json).collect::<Vec<_>>(),
             })
         })
@@ -450,7 +449,7 @@ fn participant_json(hit: &Participant) -> serde_json::Value {
         "node": node_json(&hit.node),
         "role": hit.role,
         "link_id": hit.link_id,
-        "optional": hit.optional,
+        "cardinality": hit.cardinality,
         "sha256": hit.sha256,
         "pin": pin_json(&hit.pin),
     })
@@ -535,7 +534,7 @@ mod tests {
                 node: node("viewer", "viewer/peppy.json5"),
                 role: "viewer".to_owned(),
                 link_id: "camera".to_owned(),
-                optional: true,
+                cardinality: Cardinality::ZeroOrOne,
                 sha256: None,
                 pin: PinStatus::Unpinned,
             }],
@@ -579,13 +578,13 @@ mod tests {
                     pairing_name: "sim_rgb_camera_link".to_owned(),
                     pairing_tag: "v1".to_owned(),
                     role: "viewer".to_owned(),
-                    optional: false,
+                    cardinality: Cardinality::One,
                     peers: vec![
                         Participant {
                             node: node("openarm_sim_isaac", "openarm/sim_isaac/peppy.json5"),
                             role: "camera".to_owned(),
                             link_id: "wrist_left".to_owned(),
-                            optional: true,
+                            cardinality: Cardinality::ZeroOrOne,
                             sha256: None,
                             pin: PinStatus::Unpinned,
                         },
@@ -593,7 +592,7 @@ mod tests {
                             node: node("openarm_sim_mujoco", "openarm/sim_mujoco/peppy.json5"),
                             role: "camera".to_owned(),
                             link_id: "wrist_left".to_owned(),
-                            optional: true,
+                            cardinality: Cardinality::ZeroOrOne,
                             sha256: Some(sha('a')),
                             pin: PinStatus::Current,
                         },
@@ -604,7 +603,7 @@ mod tests {
                     pairing_name: "sim_clock_link".to_owned(),
                     pairing_tag: "v1".to_owned(),
                     role: "follower".to_owned(),
-                    optional: true,
+                    cardinality: Cardinality::ZeroOrOne,
                     peers: Vec::new(),
                 },
             ],
@@ -629,8 +628,8 @@ mod tests {
     /// A node's report ends with one section per pairing slot it
     /// declares, titled with the slot, the pairing it resolves through
     /// and the role the node plays, listing the peers' own slots. A slot
-    /// nothing can fill says so on one line instead of vanishing, and
-    /// carries the `optional` that decides whether that is fatal.
+    /// nothing can fill says so on one line and carries the cardinality
+    /// that decides whether that is fatal.
     #[test]
     fn human_output_lists_a_nodes_pairing_slot_peers() {
         let text = render_human(&query("sim_rgb_camera:v1"), &node_with_slots(), false, None);
@@ -639,16 +638,16 @@ mod tests {
             "sim_rgb_camera:v1",
             "  node sim_rgb_camera:v1 published by https://github.com/Peppy-bot/nodes-hub.git (ref: main) at sim_rgb_camera/peppy.json5 (sha256 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
             "",
-            "Slot engine (sim_rgb_camera_link:v1 as viewer) can pair with 2 indexed nodes",
+            "Slot engine (sim_rgb_camera_link:v1 as viewer, one) can pair with 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    ┌────────────────────┬─────┬────────┬───────────────────────┬────────────────────────┬────────────────────────────────┐",
-            "    │ NODE               │ TAG │ ROLE   │ SLOT                  │ PIN                    │ PATH                           │",
-            "    ├────────────────────┼─────┼────────┼───────────────────────┼────────────────────────┼────────────────────────────────┤",
-            "    │ openarm_sim_isaac  │ v1  │ camera │ wrist_left (optional) │ unpinned               │ openarm/sim_isaac/peppy.json5  │",
-            "    │ openarm_sim_mujoco │ v1  │ camera │ wrist_left (optional) │ pin aaaaaaaa (current) │ openarm/sim_mujoco/peppy.json5 │",
-            "    └────────────────────┴─────┴────────┴───────────────────────┴────────────────────────┴────────────────────────────────┘",
+            "    ┌────────────────────┬─────┬────────┬──────────────────────────┬────────────────────────┬────────────────────────────────┐",
+            "    │ NODE               │ TAG │ ROLE   │ SLOT                     │ PIN                    │ PATH                           │",
+            "    ├────────────────────┼─────┼────────┼──────────────────────────┼────────────────────────┼────────────────────────────────┤",
+            "    │ openarm_sim_isaac  │ v1  │ camera │ wrist_left (zero_or_one) │ unpinned               │ openarm/sim_isaac/peppy.json5  │",
+            "    │ openarm_sim_mujoco │ v1  │ camera │ wrist_left (zero_or_one) │ pin aaaaaaaa (current) │ openarm/sim_mujoco/peppy.json5 │",
+            "    └────────────────────┴─────┴────────┴──────────────────────────┴────────────────────────┴────────────────────────────────┘",
             "",
-            "Slot clock (sim_clock_link:v1 as follower, optional): no indexed node plays the other role",
+            "Slot clock (sim_clock_link:v1 as follower, zero_or_one): no indexed node plays the other role",
             "",
         ]
         .join("\n");
@@ -670,7 +669,7 @@ mod tests {
         assert!(
             text.contains(&format!(
                 "Slot {BINDING_COLOR}engine{RESET} \
-                 ({NODE_COLOR}sim_rgb_camera_link:v1{RESET} as viewer) \
+                 ({NODE_COLOR}sim_rgb_camera_link:v1{RESET} as viewer, one) \
                  can pair with {COUNT_COLOR}2{RESET} indexed nodes"
             )),
             "{text}"
@@ -678,7 +677,7 @@ mod tests {
         assert!(
             text.contains(&format!(
                 "Slot {BINDING_COLOR}clock{RESET} ({NODE_COLOR}sim_clock_link:v1{RESET} \
-                 as follower, optional): no indexed node plays the other role"
+                 as follower, zero_or_one): no indexed node plays the other role"
             )),
             "{text}"
         );
@@ -714,11 +713,11 @@ mod tests {
             "",
             "Pairing roles played by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    ┌────────┬─────┬────────┬───────────────────┬──────────┬────────────────────┐",
-            "    │ NODE   │ TAG │ ROLE   │ SLOT              │ PIN      │ PATH               │",
-            "    ├────────┼─────┼────────┼───────────────────┼──────────┼────────────────────┤",
-            "    │ viewer │ v1  │ viewer │ camera (optional) │ unpinned │ viewer/peppy.json5 │",
-            "    └────────┴─────┴────────┴───────────────────┴──────────┴────────────────────┘",
+            "    ┌────────┬─────┬────────┬──────────────────────┬──────────┬────────────────────┐",
+            "    │ NODE   │ TAG │ ROLE   │ SLOT                 │ PIN      │ PATH               │",
+            "    ├────────┼─────┼────────┼──────────────────────┼──────────┼────────────────────┤",
+            "    │ viewer │ v1  │ viewer │ camera (zero_or_one) │ unpinned │ viewer/peppy.json5 │",
+            "    └────────┴─────┴────────┴──────────────────────┴──────────┴────────────────────┘",
             "",
             "Observed by 1 indexed node",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
@@ -776,8 +775,8 @@ mod tests {
             "    ┌────────┬─────┬────────┬───────────────────┬──────────┬───────────────────┐",
             "    │ NODE   │ TAG │ ROLE   │ SLOT              │ PIN      │ PATH              │",
             "    ├────────┼─────┼────────┼───────────────────┼──────────┼───────────────────┤",
-            "    │ viewer │ v1  │ viewer │ camera (optional) │ unpinned │ viewer/peppy.json │",
-            "    │        │     │        │                   │          │ 5                 │",
+            "    │ viewer │ v1  │ viewer │ camera            │ unpinned │ viewer/peppy.json │",
+            "    │        │     │        │ (zero_or_one)     │          │ 5                 │",
             "    └────────┴─────┴────────┴───────────────────┴──────────┴───────────────────┘",
             "",
             "Observed by 1 indexed node",
@@ -1082,7 +1081,7 @@ mod tests {
 
         assert_eq!(report["consumers"][0]["cardinality"], "one_or_more");
         assert_eq!(report["participants"][0]["role"], "viewer");
-        assert_eq!(report["participants"][0]["optional"], true);
+        assert_eq!(report["participants"][0]["cardinality"], "zero_or_one");
 
         let observer = &report["observers"][0];
         assert_eq!(observer["cardinality"], "zero_or_one");
@@ -1127,18 +1126,18 @@ mod tests {
             serde_json::json!({ "name": "sim_rgb_camera_link", "tag": "v1" })
         );
         assert_eq!(slots[0]["role"], "viewer");
-        assert_eq!(slots[0]["optional"], false);
+        assert_eq!(slots[0]["cardinality"], "one");
         let peers = slots[0]["peers"].as_array().expect("array");
         assert_eq!(peers.len(), 2);
         assert_eq!(peers[0]["node"]["node_name"], "openarm_sim_isaac");
         assert_eq!(peers[0]["role"], "camera");
         assert_eq!(peers[0]["link_id"], "wrist_left");
-        assert_eq!(peers[0]["optional"], true);
+        assert_eq!(peers[0]["cardinality"], "zero_or_one");
         assert!(peers[0]["sha256"].is_null());
         assert_eq!(peers[0]["pin"]["status"], "unpinned");
         assert_eq!(peers[1]["pin"], serde_json::json!({ "status": "current" }));
         assert_eq!(slots[1]["link_id"], "clock");
-        assert_eq!(slots[1]["optional"], true);
+        assert_eq!(slots[1]["cardinality"], "zero_or_one");
         assert_eq!(slots[1]["peers"], serde_json::json!([]));
     }
 

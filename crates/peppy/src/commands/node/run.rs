@@ -1,9 +1,6 @@
 use config::AnyType;
 use config::node::ImplementsEntry;
-use config::runtime::{
-    ClockBinding, ClockDomainId, CoreNodeName, Name, PairingSlotBinding,
-    ProducerRef,
-};
+use config::runtime::{ClockBinding, ClockDomainId, CoreNodeName, Name, ProducerRef};
 use core_node_api::encoding::{
     ClockDomainInfo, ClockListRequest, NodeInfoRequest, NodeInfoResponse, NodeRunFeedback,
     NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ObservationTarget, ObservationTargets,
@@ -497,7 +494,7 @@ pub(super) async fn resolve_clock_choice(
 #[derive(Default)]
 struct PreflightPlan {
     slot_bindings: config::runtime::SlotBindings,
-    requested_pairs: BTreeMap<String, PairTarget>,
+    requested_pairs: BTreeMap<String, Vec<PairTarget>>,
     vacant_pairs: BTreeMap<String, String>,
     requested_observations: BTreeMap<String, ObservationTargets>,
 }
@@ -615,11 +612,11 @@ async fn validate_links_against_stack(
         for inst in &info.instances {
             running_clocks.push((inst.instance_id.clone(), inst.clock.clone()));
             for (link_id, slot) in &inst.pairing_slots {
-                if let PairingSlotBinding::Paired { peer, peer_link_id } = &slot.binding {
-                    already_paired.insert(
-                        (inst.instance_id.clone(), link_id.clone()),
-                        format!("{}:{}", peer.instance_id, peer_link_id),
-                    );
+                for pair in &slot.peers {
+                    already_paired
+                        .entry((inst.instance_id.clone(), link_id.clone()))
+                        .or_default()
+                        .push((pair.peer.instance_id.clone(), pair.peer_link_id.clone()));
                 }
             }
         }
@@ -775,9 +772,9 @@ async fn validate_links_against_stack(
         )));
     }
 
-    // Extract the participant-pairing links into the `PairTarget` map the goal
+    // Extract the participant-pairing links into the pair map the goal
     // carries: the daemon's `node_run` re-plans them exactly as a launcher
-    // deployment would. A participant link's single scalar target parses into
+    // deployment would. Each target parses into
     // `<peer_instance>[/<peer_link_id>]`. Observer links produce no goal state.
     let participant_link_ids: std::collections::BTreeSet<&str> = target_pairing_deps
         .iter()
@@ -788,7 +785,7 @@ async fn validate_links_against_stack(
     // links do, and a producer vacancy rides as the empty set its resolved
     // `slot_bindings` entry carries rather than as a reason.
     let vacant_pairs = daemon_config::launcher::participant_vacancies(links, &participant_link_ids);
-    let mut requested_pairs: BTreeMap<String, PairTarget> = BTreeMap::new();
+    let mut requested_pairs: BTreeMap<String, Vec<PairTarget>> = BTreeMap::new();
     for (link_id, value) in links {
         if !participant_link_ids.contains(link_id.as_str()) {
             continue;
@@ -796,16 +793,19 @@ async fn validate_links_against_stack(
         let Some(selection) = value.selection() else {
             continue;
         };
-        // Scalar-ness was already enforced by `validate_pairings`; a
-        // participant link that survived it is a single target.
-        if let Some(target) = selection.as_scalar() {
-            let (peer_instance, peer_link) = split_link_target(target);
-            let pair_target = match peer_link {
-                Some(link) => PairTarget::pinned(peer_instance, link, core_node_name),
-                None => PairTarget::new(peer_instance, core_node_name),
-            };
-            requested_pairs.insert(link_id.clone(), pair_target);
-        }
+        // Every target of a participant link is one pair, in the order
+        // written: a scalar slot names one, a multi slot one per peer.
+        let targets = selection
+            .targets()
+            .iter()
+            .map(|target| match split_link_target(target) {
+                (peer_instance, Some(link)) => {
+                    PairTarget::pinned(peer_instance, link, core_node_name)
+                }
+                (peer_instance, None) => PairTarget::new(peer_instance, core_node_name),
+            })
+            .collect();
+        requested_pairs.insert(link_id.clone(), targets);
     }
 
     // Extract the observer links into the `ObservationTargets` map the goal
@@ -823,11 +823,14 @@ async fn validate_links_against_stack(
         observation_members
             .entry(observation.observer_link_id.clone())
             .or_default()
-            .push(ObservationTarget::new(
-                &observation.source.instance_id,
-                &observation.source_link_id,
-                core_node_name,
-            ));
+            .push(ObservationTarget {
+                peer: observation.peer.clone(),
+                ..ObservationTarget::new(
+                    &observation.source.instance_id,
+                    &observation.source_link_id,
+                    core_node_name,
+                )
+            });
     }
     let requested_observations = ObservationTargets::slots_from_plan(observation_members);
 
@@ -928,7 +931,7 @@ pub async fn run_instance_async(
     args: &[(String, String)],
     instance_id: Option<String>,
     slot_bindings: config::runtime::SlotBindings,
-    requested_pairs: BTreeMap<String, PairTarget>,
+    requested_pairs: BTreeMap<String, Vec<PairTarget>>,
     vacant_pairs: BTreeMap<String, String>,
     requested_observations: BTreeMap<String, ObservationTargets>,
     clock: ClockBinding,

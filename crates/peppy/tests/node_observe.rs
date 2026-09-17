@@ -28,13 +28,13 @@ use peppy::test_support::ServeCommandEmulation;
 use peppylib::MessengerHandle;
 use peppylib::messaging::{ObservationState, ObservedMemberState};
 use peppylib::services::observation_update::listen_for_observation_update;
-use peppylib::services::shutdown::listen_for_shutdown;
 use tokio::sync::watch;
 
 use peppy::test_support::InstanceLifetime;
 
 use super::common::{
-    add_built_node, emulate_startup_services, node_run_command, seed_pairing_repo, test_node_target,
+    add_built_node, emulate_cooperative_shutdown, emulate_startup_services, node_run_command,
+    pairing_node_config, seed_pairing_repo, test_node_target,
 };
 
 /// An observer manifest named `name`, running `run_cmd` (a json5 array): it
@@ -108,32 +108,16 @@ fn fleet_observer_config(instances: &InstanceLifetime) -> String {
 /// here).
 ///
 /// Its `run_cmd` records its own pid to `pidfile` before waiting, so a
-/// cooperatively-emulated shutdown can kill the exact process (see
-/// [`emulate_cooperative_source`]). `$$` is the shell the daemon spawned and
-/// therefore the pid it tracks.
+/// cooperatively-emulated shutdown can kill the exact process. `$$` is the
+/// shell the daemon spawned and therefore the pid it tracks.
 fn killable_source_config(pidfile: &Path, instances: &InstanceLifetime) -> String {
-    let keep_alive = instances.keep_alive_script();
-    format!(
-        r#"{{
-        peppy_schema: "node/v1",
-        manifest: {{
-            name: "robot_arm",
-            tag: "v1",
-            depends_on: {{
-                pairings: [
-                    {{ name: "arm_link", tag: "v1", role: "arm", link_id: "controller", optional: true }}
-                ]
-            }}
-        }},
-        interfaces: {{
-            topics: {{
-                emits: [{{ link_id: "controller", name: "joint_states" }}],
-                consumes: [{{ link_id: "controller", name: "joint_commands" }}]
-            }}
-        }},
-        execution: {{ language: "rust", run_cmd: ["sh", "-c", "echo $$ > '{pidfile}'; {keep_alive}"] }}
-    }}"#,
-        pidfile = pidfile.display()
+    pairing_node_config(
+        "robot_arm",
+        "arm",
+        "controller",
+        config::node::Cardinality::ZeroOrOne,
+        instances,
+        pidfile,
     )
 }
 
@@ -153,27 +137,7 @@ async fn emulate_cooperative_source(
     pidfile: PathBuf,
 ) {
     emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
-    let (_handle, shutdown_rx) = listen_for_shutdown(
-        messenger,
-        core_node_name,
-        instance_id,
-        test_node_target(node_name),
-    )
-    .await
-    .expect("shutdown service should start");
-    tokio::spawn(async move {
-        if shutdown_rx.await.is_ok()
-            && let Ok(pid) = std::fs::read_to_string(&pidfile)
-        {
-            let pid = pid.trim();
-            if !pid.is_empty() {
-                let _ = tokio::process::Command::new("kill")
-                    .args(["-9", pid])
-                    .status()
-                    .await;
-            }
-        }
-    });
+    emulate_cooperative_shutdown(messenger, core_node_name, node_name, instance_id, pidfile).await;
 }
 
 /// Emulates an observer instance's services (ready, health, observation_update)
@@ -772,5 +736,165 @@ async fn service_reset_clears_the_observation_registry() {
         member.source_generation, 1,
         "service reset must clear the observation registry, so the re-run source \
          is a clean incarnation at generation 1, not a stale carry-over"
+    );
+}
+
+/// An observer naming a pair by its controller end is pinned to that pair:
+/// through the same `node run --link` path, the daemon resolves the engine as
+/// the source and delivers the controller end as the member's peer, while
+/// naming the engine itself observes its whole slot with no peer. Naming an
+/// end that holds no pair is refused with the fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_observer_naming_a_pairs_other_end_is_pinned_to_it() {
+    use super::common::{emulate_pairing_instance, pairing_node_config};
+    use peppy::test_support::InstanceLifetime;
+
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+    let messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let work_dir = tempfile::tempdir().expect("temp work dir");
+    let ctx = Arc::new(
+        AppContext::with_messenger(work_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let instances = InstanceLifetime::new();
+    let pid_dir = tempfile::tempdir().expect("temp pid dir");
+    let repo_dir = tempfile::tempdir().expect("temp repo dir");
+    seed_pairing_repo(&serve, &ctx, repo_dir.path());
+
+    // The engine plays `arm` for every controller through one slot; a
+    // controller holds one pair, or none where the deployment writes it so.
+    let engine_pidfile = pid_dir.path().join("engine.pid");
+    let engine_dir = tempfile::tempdir().expect("engine node dir");
+    add_built_node(
+        &ctx,
+        engine_dir.path(),
+        &pairing_node_config(
+            "sim_engine",
+            "arm",
+            "limbs",
+            config::node::Cardinality::ZeroOrMore,
+            &instances,
+            &engine_pidfile,
+        ),
+    );
+    let ctrl_pidfile = pid_dir.path().join("ctrl.pid");
+    let ctrl_dir = tempfile::tempdir().expect("controller node dir");
+    add_built_node(
+        &ctx,
+        ctrl_dir.path(),
+        &pairing_node_config(
+            "arm_controller",
+            "controller",
+            "arm",
+            config::node::Cardinality::ZeroOrOne,
+            &instances,
+            &ctrl_pidfile,
+        ),
+    );
+    let observer_dir = tempfile::tempdir().expect("observer node dir");
+    add_built_node(&ctx, observer_dir.path(), &observer_config(&instances));
+
+    emulate_pairing_instance(
+        &messenger,
+        &core_node_name,
+        "sim_engine",
+        "engine_1",
+        "limbs",
+        &engine_pidfile,
+    )
+    .await;
+    node_run_command("engine_1", "sim_engine", Vec::new(), Vec::new())
+        .execute(&ctx)
+        .expect("the engine boots with its slot empty");
+    for instance_id in ["ctrl_1", "ctrl_2"] {
+        emulate_pairing_instance(
+            &messenger,
+            &core_node_name,
+            "arm_controller",
+            instance_id,
+            "arm",
+            &ctrl_pidfile,
+        )
+        .await;
+    }
+    node_run_command(
+        "ctrl_1",
+        "arm_controller",
+        vec![("arm".to_string(), "engine_1".to_string())],
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect("ctrl_1 pairs into the engine's slot");
+    node_run_command(
+        "ctrl_2",
+        "arm_controller",
+        Vec::new(),
+        vec![("arm".to_string(), "bench rig: no engine".to_string())],
+    )
+    .execute(&ctx)
+    .expect("ctrl_2 runs with its slot vacant");
+
+    // Naming the controller end pins the observation to its one pair.
+    let mut pinned_rx =
+        emulate_observer_services(&messenger, &core_node_name, "recorder", "rec_1", "watch").await;
+    node_run_command(
+        "rec_1",
+        "recorder",
+        vec![("watch".to_string(), "ctrl_1".to_string())],
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect("an observer names a pair by its controller end");
+    let member = sole_member(
+        &pinned_rx.borrow_and_update(),
+        "rec_1's slot after node run",
+    );
+    assert_eq!(member.source.producer.instance_id, "engine_1");
+    assert_eq!(member.source.producer.core_node, core_node_name);
+    assert_eq!(member.source.source_link_id, "limbs");
+    let peer = member
+        .source
+        .peer
+        .expect("the member is pinned to ctrl_1's pair");
+    assert_eq!(peer.producer.instance_id, "ctrl_1");
+    assert_eq!(peer.producer.core_node, core_node_name);
+    assert_eq!(peer.peer_link_id, "arm");
+
+    // Naming an end holding no pair is refused, with the fix.
+    let error = node_run_command(
+        "rec_2",
+        "recorder",
+        vec![("watch".to_string(), "ctrl_2".to_string())],
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect_err("an unpaired end names no stream");
+    let message = error.to_string();
+    assert!(
+        message.contains("holds no pair") && message.contains("ctrl_2/arm"),
+        "the refusal names the end and the fix: {message}"
+    );
+
+    // Naming the engine itself observes its whole slot, with no peer.
+    let mut whole_rx =
+        emulate_observer_services(&messenger, &core_node_name, "recorder", "rec_3", "watch").await;
+    node_run_command(
+        "rec_3",
+        "recorder",
+        vec![("watch".to_string(), "engine_1".to_string())],
+        Vec::new(),
+    )
+    .execute(&ctx)
+    .expect("an observer names the engine's slot");
+    let member = sole_member(&whole_rx.borrow_and_update(), "rec_3's slot after node run");
+    assert_eq!(member.source.producer.instance_id, "engine_1");
+    assert_eq!(member.source.source_link_id, "limbs");
+    assert_eq!(
+        member.source.peer, None,
+        "the whole slot is observed under one source"
     );
 }
