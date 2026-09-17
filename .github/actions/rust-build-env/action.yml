@@ -36,6 +36,54 @@ runs:
         fi
         rustc --version
 
+    # The box's own cargo configuration sets a `rustc-wrapper` of sccache
+    # (nothing in this repository does), and cargo fails outright when the
+    # wrapper it is told to use is not on disk: `could not execute process
+    # .../sccache .../rustc -vV (never executed)`. So install it when it is
+    # missing, skip when it is already there, and fall back to disabling the
+    # wrapper for this job if the download fails — a slower build beats a red
+    # suite over a compiler cache. The musl build is static, so it needs no
+    # runtime libraries.
+    - name: Install sccache when the runner's cargo config expects one
+      shell: bash
+      env:
+        SCCACHE_VERSION: v0.18.0
+      run: |
+        set -uo pipefail
+        # `cargo config get` would answer this directly but is nightly-only, so
+        # read the two places the setting can reach a stable cargo: the
+        # environment, and the user-global cargo config where the box's own
+        # setting lives. A workspace .cargo/config.toml could set it too; none in
+        # this repository does.
+        cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+        wrapper="${RUSTC_WRAPPER:-${CARGO_BUILD_RUSTC_WRAPPER:-}}"
+        if [ -z "$wrapper" ]; then
+          for config in "$cargo_home/config.toml" "$cargo_home/config"; do
+            [ -f "$config" ] || continue
+            wrapper=$(sed -n 's/^[[:space:]]*rustc-wrapper[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$config" | head -1)
+            [ -n "$wrapper" ] && break
+          done
+        fi
+        if [ -z "$wrapper" ]; then
+          echo "no rustc-wrapper configured; nothing to install"
+          exit 0
+        fi
+        if [ -x "$wrapper" ] || command -v "$(basename "$wrapper")" > /dev/null; then
+          echo "rustc-wrapper $wrapper is already available"
+          exit 0
+        fi
+        echo "rustc-wrapper $wrapper is configured but absent; installing sccache $SCCACHE_VERSION"
+        tarball="sccache-$SCCACHE_VERSION-x86_64-unknown-linux-musl"
+        url="https://github.com/mozilla/sccache/releases/download/$SCCACHE_VERSION/$tarball.tar.gz"
+        if curl -fsSL --connect-timeout 10 --max-time 180 "$url" | tar -xzf - -C "$RUNNER_TEMP"; then
+          mkdir -p "$HOME/.cargo/bin"
+          install -m 0755 "$RUNNER_TEMP/$tarball/sccache" "$HOME/.cargo/bin/sccache"
+          "$HOME/.cargo/bin/sccache" --version
+        else
+          echo "::warning::could not install sccache; building without the wrapper"
+          echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+        fi
+
     # containers-internal's build script compiles apptainer and its bundled
     # squashfuse from source, and refuses to start unless every package in
     # APPTAINER_BUILD_DEPS (crates/containers-internal/build.rs) is present: a
