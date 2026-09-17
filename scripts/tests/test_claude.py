@@ -9,7 +9,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from functions.claude import CLAUDE_EFFORT, CLAUDE_MODEL, run_claude
+from functions.claude import (
+    CLAUDE_EFFORT,
+    CLAUDE_MODEL,
+    HEARTBEAT_SECONDS,
+    _heartbeat,
+    run_claude,
+)
 from functions.cli import ReleaseError
 
 _SCHEMA: dict = {
@@ -65,6 +71,7 @@ def test_run_claude_returns_structured_output(tmp_path: Path) -> None:
             permission_mode="bypassPermissions",
             cwd=tmp_path,
             json_schema=_SCHEMA,
+            activity="judging",
         )
     assert out == {"ok": True}
 
@@ -83,6 +90,7 @@ def test_run_claude_pins_model_effort_and_pipes_prompt_via_stdin(
             permission_mode="bypassPermissions",
             cwd=tmp_path,
             json_schema=_SCHEMA,
+            activity="judging",
         )
     cmd = capture["cmd"]
     assert cmd[0] == "claude"
@@ -109,6 +117,7 @@ def test_run_claude_passes_schema_as_json(tmp_path: Path) -> None:
             permission_mode="default",
             cwd=tmp_path,
             json_schema=_SCHEMA,
+            activity="judging",
         )
     # The schema rides argv as serialized JSON the CLI can validate against.
     assert json.loads(_flag_value(capture["cmd"], "--json-schema")) == _SCHEMA
@@ -126,6 +135,7 @@ def test_run_claude_disables_tools_when_tools_empty(tmp_path: Path) -> None:
             permission_mode="bypassPermissions",
             cwd=tmp_path,
             json_schema=_SCHEMA,
+            activity="judging",
             tools="",
         )
     cmd = capture["cmd"]
@@ -146,6 +156,7 @@ def test_run_claude_effort_override(tmp_path: Path) -> None:
             permission_mode="default",
             cwd=tmp_path,
             json_schema=_SCHEMA,
+            activity="judging",
             effort="low",
         )
     assert _flag_value(capture["cmd"], "--effort") == "low"
@@ -163,6 +174,7 @@ def test_run_claude_defaults_to_pinned_effort(tmp_path: Path) -> None:
             permission_mode="default",
             cwd=tmp_path,
             json_schema=_SCHEMA,
+            activity="judging",
         )
     assert _flag_value(capture["cmd"], "--effort") == CLAUDE_EFFORT
 
@@ -179,6 +191,7 @@ def test_run_claude_omits_tools_flag_by_default(tmp_path: Path) -> None:
             permission_mode="default",
             cwd=tmp_path,
             json_schema=_SCHEMA,
+            activity="judging",
         )
     cmd = capture["cmd"]
     assert "--tools" not in cmd
@@ -198,6 +211,7 @@ def test_run_claude_raises_on_nonzero_exit(tmp_path: Path) -> None:
                 permission_mode="bypassPermissions",
                 cwd=tmp_path,
                 json_schema=_SCHEMA,
+                activity="judging",
             )
 
 
@@ -214,6 +228,7 @@ def test_run_claude_raises_on_invalid_outer_json(tmp_path: Path) -> None:
                 permission_mode="bypassPermissions",
                 cwd=tmp_path,
                 json_schema=_SCHEMA,
+                activity="judging",
             )
 
 
@@ -230,6 +245,7 @@ def test_run_claude_raises_on_non_object_envelope(tmp_path: Path) -> None:
                 permission_mode="bypassPermissions",
                 cwd=tmp_path,
                 json_schema=_SCHEMA,
+                activity="judging",
             )
 
 
@@ -251,6 +267,7 @@ def test_run_claude_raises_on_missing_structured_output(tmp_path: Path) -> None:
                 permission_mode="bypassPermissions",
                 cwd=tmp_path,
                 json_schema=_SCHEMA,
+                activity="judging",
             )
     assert "The docs are fine." in str(excinfo.value)
 
@@ -272,7 +289,99 @@ def test_run_claude_raises_on_non_object_structured_output(
                 permission_mode="bypassPermissions",
                 cwd=tmp_path,
                 json_schema=_SCHEMA,
+                activity="judging",
             )
+
+
+# --- the heartbeat ---
+
+
+def test_heartbeat_says_the_minutes_so_far_until_stopped(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    stop = MagicMock()
+    stop.wait.side_effect = [False, False, True]
+    with patch("functions.claude.time.monotonic", side_effect=[70.0, 130.0]):
+        _heartbeat("judging the diff", stop, 10.0)
+
+    err = " ".join(capfd.readouterr().err.split())
+    assert "Still judging the diff (1 min so far)..." in err
+    assert "Still judging the diff (2 min so far)..." in err
+    stop.wait.assert_called_with(HEARTBEAT_SECONDS)
+
+
+class _RecordedThread:
+    """A stand-in for threading.Thread that records how it was driven."""
+
+    started: list[_RecordedThread] = []
+
+    def __init__(self, *, target: Any, args: tuple, daemon: bool) -> None:
+        self.target = target
+        self.args = args
+        self.daemon = daemon
+        self.running = False
+        self.joined = False
+
+    def start(self) -> None:
+        self.running = True
+        _RecordedThread.started.append(self)
+
+    def join(self) -> None:
+        self.joined = True
+
+
+@pytest.fixture
+def recorded_threads() -> list[_RecordedThread]:
+    _RecordedThread.started = []
+    with patch("functions.claude.threading.Thread", _RecordedThread):
+        yield _RecordedThread.started
+
+
+def test_run_claude_keeps_a_heartbeat_only_while_the_cli_runs(
+    tmp_path: Path, recorded_threads: list[_RecordedThread]
+) -> None:
+    with patch(
+        "functions.claude.subprocess.run", side_effect=_mock_run({"ok": True})
+    ):
+        run_claude(
+            "p",
+            allowed_tools="Read",
+            permission_mode="default",
+            cwd=tmp_path,
+            json_schema=_SCHEMA,
+            activity="judging the diff",
+        )
+
+    (thread,) = recorded_threads
+    assert thread.target is _heartbeat
+    assert thread.daemon
+    activity, stop, _started = thread.args
+    assert activity == "judging the diff"
+    # Stopped and joined once the CLI answered, so no line prints afterwards.
+    assert stop.is_set()
+    assert thread.joined
+
+
+def test_run_claude_stops_the_heartbeat_when_the_cli_fails(
+    tmp_path: Path, recorded_threads: list[_RecordedThread]
+) -> None:
+    with patch(
+        "functions.claude.subprocess.run",
+        side_effect=_mock_run({"ok": True}, returncode=2),
+    ):
+        with pytest.raises(ReleaseError, match="claude CLI failed"):
+            run_claude(
+                "p",
+                allowed_tools="Read",
+                permission_mode="default",
+                cwd=tmp_path,
+                json_schema=_SCHEMA,
+                activity="judging the diff",
+            )
+
+    (thread,) = recorded_threads
+    assert thread.args[1].is_set()
+    assert thread.joined
 
 
 # --- pinned model / effort (reproducibility) ---

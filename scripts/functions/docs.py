@@ -13,6 +13,11 @@ nice-to-haves are reported as *minor* and never fail the check or feed the
 updater: tooling must not generate wording churn, and a release must not
 hinge on how the model would phrase a sentence today.
 
+A code diff larger than one Claude run reads is judged in parts
+(``split_diff``), each in a run of its own, and every gap records the part
+that shows the change it covers, so the updater hands Claude that same part.
+No part of the diff is ever dropped.
+
 The diff helpers (``get_code_diff``, ``get_docs_diff``, ``truncate_diff``)
 are shared with the release-notes generator (``release_summary.py``), so the
 notes are drafted from the same changes the docs check judged.
@@ -24,6 +29,7 @@ the invoking environment must already have claude authenticated.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -62,7 +68,15 @@ _EXCLUDE_PATHS: tuple[str, ...] = ("Cargo.lock",)
 # site's own configuration are not part of it.
 USER_DOCS_PREFIX = "docs/src/content/docs/"
 
-_MAX_DIFF_BYTES = 400_000
+# The most diff one Claude run reads, in characters. The docs check judges a
+# larger code diff in parts of at most this size (`split_diff`); the release
+# notes cut their diffs to it (`truncate_diff`).
+_MAX_DIFF_CHARS = 400_000
+
+# The `diff --git` line opening each file's section of a unified diff; the
+# group is the file's path on the new side, quoted by git when it holds
+# unusual characters.
+_DIFF_HEADER = re.compile(r'^diff --git "?a/.*? "?b/(.*?)"?$', re.MULTILINE)
 
 # The docs never use an em-dash (U+2014), and Claude writes one by habit. Every
 # text of Claude's that reaches a docs pull request is held to its absence: the
@@ -143,6 +157,9 @@ class RequiredChange:
     file: str
     change: str
     severity: str
+    # 1-based number of the code diff part (`split_diff`) showing the change
+    # this gap covers; the updater hands Claude that part when closing it.
+    diff_part: int = 1
 
 
 @dataclass(frozen=True)
@@ -180,6 +197,14 @@ class UpdateResult:
         return bool(self.results) and all(
             r.status == STATUS_ALREADY_COVERED for r in self.results
         )
+
+
+@dataclass(frozen=True)
+class DiffPart:
+    """A slice of a code diff small enough for one Claude run to read whole."""
+
+    text: str
+    paths: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -249,19 +274,124 @@ def get_docs_diff(base: str, head: str, repo_root: Path) -> tuple[str, list[str]
 
 
 def truncate_diff(diff: str) -> str:
-    if len(diff) <= _MAX_DIFF_BYTES:
+    if len(diff) <= _MAX_DIFF_CHARS:
         return diff
     return (
-        diff[:_MAX_DIFF_BYTES]
+        diff[:_MAX_DIFF_CHARS]
         + f"\n\n[diff truncated: original size {len(diff)} bytes]"
     )
+
+
+def _file_sections(diff: str) -> list[tuple[str, str]]:
+    """Split a unified diff into one (path, section) per file, in diff order."""
+    headers = list(_DIFF_HEADER.finditer(diff))
+    if diff and (not headers or headers[0].start() != 0):
+        raise ReleaseError(
+            "the code diff does not open with a 'diff --git' header, so it "
+            "cannot be split into files"
+        )
+    sections: list[tuple[str, str]] = []
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(diff)
+        sections.append((header.group(1), diff[header.start() : end]))
+    return sections
+
+
+def _cut_section(section: str, cap: int) -> list[str]:
+    """Cut one file's diff section into pieces of at most *cap* characters.
+
+    Every piece starts with the section's header (the lines before its first
+    hunk), so its lines stay attributed to the file. The cut falls between
+    lines, or within a line that is past the cap on its own.
+    """
+    lines = section.splitlines(keepends=True)
+    body_start = next(
+        (i for i, line in enumerate(lines) if line.startswith("@@")), len(lines)
+    )
+    header = "".join(lines[:body_start])
+    budget = cap - len(header)
+    pieces: list[str] = []
+    run: list[str] = []
+    size = 0
+    for line in lines[body_start:]:
+        if size and size + len(line) > budget:
+            pieces.append(header + "".join(run))
+            run, size = [], 0
+        if len(line) <= budget:
+            run.append(line)
+            size += len(line)
+            continue
+        pieces.extend(
+            header + line[start : start + budget]
+            for start in range(0, len(line), budget)
+        )
+    if run:
+        pieces.append(header + "".join(run))
+    return pieces
+
+
+def _part_of(sections: list[tuple[str, str]]) -> DiffPart:
+    return DiffPart(
+        text="".join(section for _, section in sections),
+        paths=tuple(path for path, _ in sections),
+    )
+
+
+def split_diff(diff: str, cap: int) -> tuple[DiffPart, ...]:
+    """Cut *diff* into parts of at most *cap* characters, dropping none of it.
+
+    Files stay whole and keep the diff's order, packed as many to a part as
+    fit. A file whose own section is past the cap is cut into pieces of its
+    own (`_cut_section`), each a part by itself.
+    """
+    parts: list[DiffPart] = []
+    pending: list[tuple[str, str]] = []
+    size = 0
+    for path, section in _file_sections(diff):
+        if size and size + len(section) > cap:
+            parts.append(_part_of(pending))
+            pending, size = [], 0
+        if len(section) <= cap:
+            pending.append((path, section))
+            size += len(section)
+            continue
+        parts.extend(
+            DiffPart(text=piece, paths=(path,))
+            for piece in _cut_section(section, cap)
+        )
+    if pending:
+        parts.append(_part_of(pending))
+    return tuple(parts)
+
+
+# Placed in a prompt when the diff is judged in parts: Claude sees one part
+# per run and must not reason about, or report on, changes it cannot see.
+_PART_SCOPE = """
+The diff below is part {number} of {total} of the whole change set. The other
+parts hold other files' changes and are handled in runs of their own, so act
+on what this part shows only.
+"""
+
+
+def _part_name(number: int, total: int) -> str:
+    """How the log names a part: 'the diff' when it is the whole of it."""
+    if total == 1:
+        return "the diff"
+    return f"part {number} of {total} of the diff"
+
+
+def _part_scope(number: int, total: int) -> str:
+    """The prompt paragraph placing a part in the whole; empty for a whole diff."""
+    if total == 1:
+        return ""
+    return _PART_SCOPE.format(number=number, total=total)
 
 
 _CHECK_PROMPT = """\
 You are judging whether the documentation in `docs/src/content/docs/` covers a
 set of code changes. The project is "peppy": an Astro Starlight documentation
 site paired with Rust crates under `crates/`.
-
+{scope}
 Your task:
 1. Use Read/Grep/Glob to explore `docs/src/content/docs/` and compare it
    against the diff below. Judge only what this diff changes; this is not a
@@ -295,7 +425,7 @@ _UPDATE_PROMPT = """\
 You are updating the documentation in `docs/src/content/docs/` to close a
 fixed list of gaps left by a set of code changes. The project is "peppy": an
 Astro Starlight documentation site paired with Rust crates under `crates/`.
-
+{scope}
 Gaps to close (implement exactly these, nothing else):
 {changes}
 
@@ -335,12 +465,14 @@ an en-dash). Keep each line's meaning, and edit nothing but these lines.
 """
 
 
-def _parse_check_response(payload: dict) -> CheckResult:
+def _parse_check_response(payload: dict, diff_part: int = 1) -> CheckResult:
     """Validate the check verdict object into a CheckResult.
 
     The CLI already validated the payload against ``_CHECK_SCHEMA``, but that
     enforcement lives in an unpinned external tool; re-checking here keeps a
     drifted CLI surfacing as a ReleaseError instead of a stray KeyError.
+    Every change is stamped with *diff_part*, the part of the diff it was
+    judged on.
     """
     raw_changes = payload.get("required_changes")
     if not isinstance(raw_changes, list):
@@ -369,7 +501,9 @@ def _parse_check_response(payload: dict) -> CheckResult:
                 f"claude verdict change entry holds an em-dash: {item!r}"
             )
         changes.append(
-            RequiredChange(file=file, change=change, severity=severity)
+            RequiredChange(
+                file=file, change=change, severity=severity, diff_part=diff_part
+            )
         )
     return CheckResult(changes=tuple(changes))
 
@@ -494,6 +628,7 @@ def _reword_added_em_dashes(
         permission_mode="acceptEdits",
         cwd=repo_root,
         json_schema=_REWORD_SCHEMA,
+        activity="rewording the em-dash lines",
         tools="Read Edit",
     )
     remaining = _added_em_dash_lines(before, repo_root)
@@ -505,48 +640,47 @@ def _reword_added_em_dashes(
         )
 
 
-def _print_diff_size(diff: str, paths: list[str]) -> None:
-    """Say how much Claude is about to judge, so a long wait reads as work.
-
-    Nothing is printed while Claude runs, and a large diff keeps it busy for
-    many minutes. A diff past the cap is cut short and the changes past the
-    cut are never judged, which is said outright rather than left to the
-    verdict to hide.
-    """
-    console.print(
-        f"[dim]{len(paths)} changed code path(s), {len(diff) // 1024} KB of "
-        f"diff for Claude to judge; this takes a few minutes.[/dim]"
-    )
-    if len(diff) > _MAX_DIFF_BYTES:
-        console.print(
-            f"[yellow]The diff exceeds the {_MAX_DIFF_BYTES // 1024} KB the "
-            f"check reads; the changes past that point are not judged.[/yellow]"
-        )
-
-
 def check_docs(base: str, head: str) -> CheckResult:
-    """Check whether ``docs/`` reflects code changes between base and head."""
+    """Check whether ``docs/`` reflects code changes between base and head.
+
+    The code diff is judged in parts of at most `_MAX_DIFF_CHARS`, one Claude
+    run each, and the verdicts are merged; every change names its part.
+    """
     repo_root = get_repo_root()
     diff, paths = get_code_diff(base, head, repo_root)
     if not paths:
         return CheckResult(changes=())
-    _print_diff_size(diff, paths)
-    prompt = _CHECK_PROMPT.format(
-        paths="\n".join(paths),
-        diff=truncate_diff(diff),
+    parts = split_diff(diff, _MAX_DIFF_CHARS)
+    console.print(
+        f"[dim]{len(paths)} changed code path(s), {len(diff) // 1024} KB of "
+        f"diff, judged in {len(parts)} part(s).[/dim]"
     )
-    # tools (not just allowed_tools) is restricted: under bypassPermissions
-    # the allowlist approves rather than limits, and the check must stay
-    # read-only.
-    payload = run_claude(
-        prompt,
-        allowed_tools="Read Grep Glob",
-        permission_mode="bypassPermissions",
-        cwd=repo_root,
-        json_schema=_CHECK_SCHEMA,
-        tools="Read Grep Glob",
-    )
-    return _parse_check_response(payload)
+    changes: list[RequiredChange] = []
+    for number, part in enumerate(parts, 1):
+        name = _part_name(number, len(parts))
+        console.print(
+            f"Asking Claude to judge {name} ({len(part.paths)} path(s), "
+            f"{len(part.text) // 1024} KB)..."
+        )
+        prompt = _CHECK_PROMPT.format(
+            scope=_part_scope(number, len(parts)),
+            paths="\n".join(part.paths),
+            diff=part.text,
+        )
+        # tools (not just allowed_tools) is restricted: under bypassPermissions
+        # the allowlist approves rather than limits, and the check must stay
+        # read-only.
+        payload = run_claude(
+            prompt,
+            allowed_tools="Read Grep Glob",
+            permission_mode="bypassPermissions",
+            cwd=repo_root,
+            json_schema=_CHECK_SCHEMA,
+            activity=f"judging {name}",
+            tools="Read Grep Glob",
+        )
+        changes.extend(_parse_check_response(payload, diff_part=number).changes)
+    return CheckResult(changes=tuple(changes))
 
 
 def update_docs(
@@ -556,29 +690,52 @@ def update_docs(
 
     The change list scopes the edits: the updater implements those gaps and
     nothing else, so the resulting diff is derived from the verdict rather
-    than from a free-form re-audit of the docs. The edits add no em-dash.
+    than from a free-form re-audit of the docs. The diff is split into the
+    same parts the check judged, and each part with gaps gets a run of its
+    own, handed those gaps and that part. The edits add no em-dash.
     """
     if not changes:
         raise ReleaseError("update_docs called with no changes to implement")
     repo_root = get_repo_root()
     em_dashes_before = _em_dash_lines(repo_root)
-    diff, paths = get_code_diff(base, head, repo_root)
-    prompt = _UPDATE_PROMPT.format(
-        changes="\n".join(f"- `{c.file}`: {c.change}" for c in changes),
-        paths="\n".join(paths),
-        diff=truncate_diff(diff),
-    )
-    payload = run_claude(
-        prompt,
-        allowed_tools="Read Edit Write Grep Glob",
-        permission_mode="acceptEdits",
-        cwd=repo_root,
-        json_schema=_UPDATE_SCHEMA,
-        tools="Read Edit Write Grep Glob",
-    )
-    result = _parse_update_response(payload)
+    diff, _ = get_code_diff(base, head, repo_root)
+    parts = split_diff(diff, _MAX_DIFF_CHARS)
+    strays = [c for c in changes if not 1 <= c.diff_part <= len(parts)]
+    if strays:
+        raise ReleaseError(
+            f"the diff {base}..{head} has {len(parts)} part(s), but these "
+            f"changes name another: {strays!r}"
+        )
+    results: list[UpdateOutcome] = []
+    summaries: list[str] = []
+    for number, part in enumerate(parts, 1):
+        part_changes = [c for c in changes if c.diff_part == number]
+        if not part_changes:
+            continue
+        name = _part_name(number, len(parts))
+        console.print(
+            f"Asking Claude to close {len(part_changes)} gap(s) shown by {name}..."
+        )
+        prompt = _UPDATE_PROMPT.format(
+            scope=_part_scope(number, len(parts)),
+            changes="\n".join(f"- `{c.file}`: {c.change}" for c in part_changes),
+            paths="\n".join(part.paths),
+            diff=part.text,
+        )
+        payload = run_claude(
+            prompt,
+            allowed_tools="Read Edit Write Grep Glob",
+            permission_mode="acceptEdits",
+            cwd=repo_root,
+            json_schema=_UPDATE_SCHEMA,
+            activity=f"updating the docs for {name}",
+            tools="Read Edit Write Grep Glob",
+        )
+        result = _parse_update_response(payload)
+        results.extend(result.results)
+        summaries.append(result.summary)
     _reword_added_em_dashes(em_dashes_before, repo_root)
-    return result
+    return UpdateResult(results=tuple(results), summary="\n".join(summaries))
 
 
 def print_minor_changes(minor: tuple[RequiredChange, ...]) -> None:
