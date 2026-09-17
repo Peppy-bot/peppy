@@ -183,14 +183,14 @@ Now we need to make sure our nodes are started. If we take a look at our node st
 ```
 $ peppy stack list
 ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-sweet-germain (host: robot-host)                                                                                    │
+│ Core node: cn-sweet-buffalo (host: robot-host)                                                                                    │
 ├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ Node stack                                                                                                                        │
 │                                                                                                                                   │
 │ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────┐ │
 │ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                               │ │
 │ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────┤ │
-│ │ cn-sweet-germain:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                  │ │
+│ │ cn-sweet-buffalo:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                  │ │
 │ │ hello_receiver:v1                    │ Ready │ 0         │ ~/.peppy/built_nodes/hello_receiver_v1/a0c3e8f51b72d946.tar.zst    │ │
 │ │ hello_world_param:v1                 │ Ready │ 0         │ ~/.peppy/built_nodes/hello_world_param_v1/4e7b2d19c6a8f053.tar.zst │ │
 │ └──────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────┘ │
@@ -200,7 +200,7 @@ $ peppy stack list
 │ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬──────────┐                            │
 │ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS │                            │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼──────────┤                            │
-│ │ cn-sweet-germain:v0.10.0             │ cn-sweet-germain             │ running │ healthy │ (none)   │                            │
+│ │ cn-sweet-buffalo:v0.10.0             │ cn-sweet-buffalo             │ running │ healthy │ (none)   │                            │
 │ └──────────────────────────────────────┴──────────────────────────────┴─────────┴─────────┴──────────┘                            │
 │                                                                                                                                   │
 │ Dependencies                                                                                                                      │
@@ -278,14 +278,14 @@ The receiver now follows `admiring-black-0614`, and only it. `gifted-moser-9365`
 ```
 $ peppy stack list
 ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Core node: cn-sweet-germain (host: robot-host)                                                                                    │
+│ Core node: cn-sweet-buffalo (host: robot-host)                                                                                    │
 ├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ Node stack                                                                                                                        │
 │                                                                                                                                   │
 │ ┌──────────────────────────────────────┬───────┬───────────┬────────────────────────────────────────────────────────────────────┐ │
 │ │ NODE                                 │ STAGE │ INSTANCES │ PATH                                                               │ │
 │ ├──────────────────────────────────────┼───────┼───────────┼────────────────────────────────────────────────────────────────────┤ │
-│ │ cn-sweet-germain:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                  │ │
+│ │ cn-sweet-buffalo:v0.10.0             │ Root  │ 1 running │ ~/workspace/peppy                                                  │ │
 │ │ hello_receiver:v1                    │ Ready │ 1 running │ ~/.peppy/built_nodes/hello_receiver_v1/a0c3e8f51b72d946.tar.zst    │ │
 │ │ hello_world_param:v1                 │ Ready │ 2 running │ ~/.peppy/built_nodes/hello_world_param_v1/4e7b2d19c6a8f053.tar.zst │ │
 │ └──────────────────────────────────────┴───────┴───────────┴────────────────────────────────────────────────────────────────────┘ │
@@ -295,7 +295,7 @@ $ peppy stack list
 │ ┌──────────────────────────────────────┬──────────────────────────────┬─────────┬─────────┬───────────────────────────┐           │
 │ │ NODE                                 │ INSTANCE                     │ STATUS  │ HEALTH  │ BINDINGS                  │           │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤           │
-│ │ cn-sweet-germain:v0.10.0             │ cn-sweet-germain             │ running │ healthy │ (none)                    │           │
+│ │ cn-sweet-buffalo:v0.10.0             │ cn-sweet-buffalo             │ running │ healthy │ (none)                    │           │
 │ ├──────────────────────────────────────┼──────────────────────────────┼─────────┼─────────┼───────────────────────────┤           │
 │ │ hello_receiver:v1                    │ vigorous-buck-8117           │ running │ healthy │ hello_world_param →       │           │
 │ │                                      │                              │         │         │ admiring-black-0614@cn-sw │           │
