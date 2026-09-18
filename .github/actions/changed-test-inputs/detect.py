@@ -47,9 +47,36 @@ SUITES = {
 
 # Suites with no cargo package: each one's whole world is a single tree,
 # toolchain included.
+#
+# The release scripts split across two of them because their two halves cost
+# three orders of magnitude apart. The mocked half runs the whole tree in
+# about a second, so it is gated on the whole tree. The Lima half boots a
+# guest per distro and takes a quarter of an hour, so it is gated on the files
+# that decide what it installs and how: a change to the release-notes drafter
+# or the docs gate cannot alter what install.sh does to a guest, and used to
+# boot three of them to prove it.
 TREE_SUITES = {
-    # ./scripts/run_tests.sh --all
+    # pixi run test-fast
     "scripts": ["scripts/**"],
+    # pixi run test-vm. install.sh is what the guests run; lima_helpers and
+    # the two test modules are what drives them; and build/build_release/cli
+    # produce the release archive the guests install from (see
+    # conftest._build_release_archives). The manifests pin the pixi
+    # environment the guests and limactl come out of.
+    "scripts_vm": [
+        "scripts/install.sh",
+        "scripts/functions/build.py",
+        "scripts/functions/build_release.py",
+        "scripts/functions/cli.py",
+        "scripts/functions/docker.py",
+        "scripts/functions/lima.py",
+        "scripts/tests/conftest.py",
+        "scripts/tests/lima_helpers.py",
+        "scripts/tests/test_install.py",
+        "scripts/tests/test_install_container.py",
+        "scripts/pixi.toml",
+        "scripts/pixi.lock",
+    ],
 }
 
 # The sealed tree, its cargo workspace, and the one member of that workspace
@@ -67,6 +94,7 @@ JOBS = {
     "container-e2e": ["container_e2e"],
     "docs-integration": ["docs_integration"],
     "release-scripts": ["scripts"],
+    "release-scripts-vm": ["scripts_vm"],
     "public-libs-shared": ["public_libs_shared_packages", "public_libs_peppylib_py"],
     "public-libs-crates": ["public_libs_crates"],
     "public-libs-python": ["public_libs_python"],

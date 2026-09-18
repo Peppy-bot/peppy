@@ -25,6 +25,9 @@ from .lima_helpers import (
     setup_lima_guest,
 )
 
+# Boots a guest; see the note in test_install.py.
+pytestmark = pytest.mark.vm
+
 LINUX_DISTROS = ["ubuntu"]
 
 

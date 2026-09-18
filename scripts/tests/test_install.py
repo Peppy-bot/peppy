@@ -33,6 +33,11 @@ from .lima_helpers import (
     setup_lima_guest,
 )
 
+# Every test here boots a guest, which is three orders of magnitude dearer
+# than the rest of the suite: `pixi run test-fast` deselects this module,
+# `pixi run test-vm` runs it alone, and CI gates the two on different files.
+pytestmark = pytest.mark.vm
+
 LINUX_DISTROS = ["ubuntu", "fedora", "archlinux"]
 
 # Arch Linux aarch64 has no official cloud image; the built-in

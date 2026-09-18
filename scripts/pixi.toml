@@ -37,6 +37,14 @@ build-base-images = "build-base-images"
 is-doc-up-to-date = "is-doc-up-to-date"
 update-docs = "update-docs"
 test = "pytest tests/ -v"
+# The suite's two halves, which CI runs as two jobs. `test-fast` is the mocked
+# tests: about a second for some 417 of them. `test-vm` is the Lima install
+# tests: 27 of them, a quarter of an hour, and the other 99.9% of the runtime.
+test-fast = "pytest tests/ -v -m 'not vm'"
+test-vm = "pytest tests/ -v -m vm"
+# Adds the cross-arch guests, which exist only where the release build
+# produces the other triples -- macOS (see cli.get_targets_for_platform). On
+# Linux this selects nothing `test` does not already run.
 test-all = "pytest tests/ -v --cross-arch"
 test-one = "pytest tests/ -v -k"
 test-container = "pytest tests/test_install_container.py -v -s"

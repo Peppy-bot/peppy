@@ -43,5 +43,6 @@ runs:
     # intentionally left in place (see build_helpers::cache_dir).
     - name: Clean up isolated peppy data root
       if: always()
-      shell: bash
-      run: rm -rf "$RUNNER_TEMP/peppy-home"
+      uses: ./.github/actions/reclaim-data-root
+      with:
+        path: ${{ runner.temp }}/peppy-home

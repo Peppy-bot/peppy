@@ -29,21 +29,47 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "cross_arch: marks tests as cross-architecture (may be slow under QEMU emulation)",
     )
+    config.addinivalue_line(
+        "markers",
+        "vm: marks tests that boot a Lima guest (minutes each, vs milliseconds "
+        "for the mocked suite)",
+    )
     _ensure_lima_guest_agents()
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Skip cross-arch VM parameterizations unless --cross-arch is passed."""
-    if config.getoption("--cross-arch"):
-        return
+    """Skip VM parameterizations this host cannot say anything with.
+
+    Two separate cases, and they are not the same question:
+
+    * A cross-arch guest is slow enough to be opt-in, so it waits for
+      ``--cross-arch``.
+    * A test *marked* ``cross_arch`` asks whether a cross-build put the right
+      architecture in the archive.  Pointed at a native guest it compares the
+      host's own architecture against itself and passes by construction, so it
+      is skipped whatever the flag says.  Only macOS builds the other triples
+      (``get_targets_for_platform``), so on Linux these never have anything to
+      police -- and they cost about a minute a run.
+    """
+    run_cross = config.getoption("--cross-arch")
     skip_cross = pytest.mark.skip(reason="Cross-arch tests disabled (use --cross-arch)")
+    skip_native = pytest.mark.skip(
+        reason="cross_arch test on a native-arch guest: it would assert the "
+        "host architecture against itself"
+    )
     for item in items:
-        if hasattr(item, "callspec") and "lima_vm" in item.callspec.params:
-            vm_config = item.callspec.params["lima_vm"]
-            if isinstance(vm_config, VMConfig) and vm_config.is_cross_arch:
+        if not (hasattr(item, "callspec") and "lima_vm" in item.callspec.params):
+            continue
+        vm_config = item.callspec.params["lima_vm"]
+        if not isinstance(vm_config, VMConfig):
+            continue
+        if vm_config.is_cross_arch:
+            if not run_cross:
                 item.add_marker(skip_cross)
+        elif item.get_closest_marker("cross_arch"):
+            item.add_marker(skip_native)
 
 
 def _ensure_lima_guest_agents() -> None:

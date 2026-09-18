@@ -75,4 +75,6 @@ jobs:
       # even when the test step failed.
       - name: Clean up isolated peppy data root
         if: always()
-        run: rm -rf "$RUNNER_TEMP/peppy-home"
+        uses: ./.github/actions/reclaim-data-root
+        with:
+          path: ${{ runner.temp }}/peppy-home
