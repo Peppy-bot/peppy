@@ -1,7 +1,7 @@
 use super::super::action_loop::{
     GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
 };
-use super::endpoints::{HostAddressSource, expand_announcements};
+use super::endpoints::{HostAddressSource, expand_announcements, host_addresses};
 use super::gate::ConcurrencyGate;
 use super::health_monitor::{HealthMonitorParams, HealthMonitorPolicy, spawn_health_monitor};
 use super::pairing::plan_requested_pairs;
@@ -1216,7 +1216,7 @@ async fn process_node_run(
     let mut launch_config = runtime_config.clone();
     // Kept aside before the defaults are consumed below: the endpoints the
     // node announces are expanded against these once it is healthy.
-    let host_addresses = ctx.action.daemon_defaults.host_addresses.clone();
+    let host_source = ctx.action.daemon_defaults.host_addresses.clone();
     apply_daemon_defaults(
         &mut launch_config,
         ctx.action.daemon_defaults,
@@ -1384,7 +1384,7 @@ async fn process_node_run(
         _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
         res = poll_startup_service(&signal_target, StartupProbe::Ready, ctx.action.node_startup_timeout, &mut child) => {
             match res {
-                Ok(_) => StartupOutcome::Ok(Vec::new()),
+                Ok(_) => StartupOutcome::Ok,
                 Err(e) => StartupOutcome::Failed(e),
             }
         }
@@ -1425,7 +1425,7 @@ async fn process_node_run(
         _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
         res = poll_startup_service(&signal_target, StartupProbe::Health, ctx.action.node_start_health_timeout, &mut child) => {
             match res {
-                Ok(_) => StartupOutcome::Ok(Vec::new()),
+                Ok(_) => StartupOutcome::Ok,
                 Err(e) => StartupOutcome::Failed(e),
             }
         }
@@ -1435,9 +1435,10 @@ async fn process_node_run(
     // (the runtime seals and offers them in the same post-setup step as
     // `node_health`) and expanded against this machine's addresses. A node
     // whose manifest declares none is never asked.
+    let mut endpoints = Vec::new();
     let health_outcome = match health_outcome {
-        StartupOutcome::Ok(_) if !node_config.execution.endpoints.is_empty() => {
-            let host_addresses = host_addresses.read();
+        StartupOutcome::Ok if !node_config.execution.endpoints.is_empty() => {
+            let host = host_addresses(&host_source);
             tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
@@ -1449,10 +1450,13 @@ async fn process_node_run(
                             instance_id_str,
                             &node_config.execution.endpoints,
                             response.endpoints,
-                            &host_addresses,
+                            &host,
                         )
                     }) {
-                        Ok(endpoints) => StartupOutcome::Ok(endpoints),
+                        Ok(read) => {
+                            endpoints = read;
+                            StartupOutcome::Ok
+                        }
                         Err(e) => StartupOutcome::Failed(e),
                     }
                 }
@@ -1462,7 +1466,7 @@ async fn process_node_run(
     };
 
     match health_outcome {
-        StartupOutcome::Ok(endpoints) => {
+        StartupOutcome::Ok => {
             debug!(
                 "Health check passed for node instance '{}'",
                 instance_id_str
@@ -1661,7 +1665,7 @@ async fn process_node_run(
             let reason = match health_outcome {
                 StartupOutcome::Cancelled => "cancelled during health check".to_string(),
                 StartupOutcome::Failed(e) => e,
-                StartupOutcome::Ok(_) => unreachable!(),
+                StartupOutcome::Ok => unreachable!(),
             };
             debug!(
                 "Aborting node instance '{}' during health check: {}",
@@ -1695,16 +1699,14 @@ async fn process_node_run(
 /// Outcome of a startup step (ready-signal wait, health check, endpoint
 /// read) racing against external cancellation.
 enum StartupOutcome {
-    /// The step passed, carrying the endpoints read so far: empty until the
-    /// endpoint read of a node that declares some.
-    Ok(Vec<core_node_api::InstanceEndpoint>),
+    Ok,
     Cancelled,
     Failed(String),
 }
 
 fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
     match outcome {
-        StartupOutcome::Ok(_) => None,
+        StartupOutcome::Ok => None,
         StartupOutcome::Cancelled => Some("cancelled during ready-signal wait"),
         StartupOutcome::Failed(msg) => Some(msg.as_str()),
     }
@@ -2225,7 +2227,7 @@ mod tests {
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
             namespace: config::namespace::Namespace::local(),
-            host_addresses: HostAddressSource::Fixed(Vec::new()),
+            host_addresses: Some(Vec::new()),
         }
     }
 
@@ -2317,7 +2319,7 @@ mod tests {
         let defaults = DaemonDefaults::from_peppy_config(
             &config,
             config::namespace::Namespace::local(),
-            HostAddressSource::Fixed(Vec::new()),
+            Some(Vec::new()),
         );
 
         assert!(!defaults.gossip);

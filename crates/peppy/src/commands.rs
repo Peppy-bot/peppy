@@ -114,9 +114,10 @@ impl DomainLabels {
 /// with the label column padded to the longest label of the block and the
 /// URLs under it in the order the daemon expanded them. Empty input renders
 /// nothing.
-pub fn render_endpoints(out: &mut String, entries: &[InstanceEndpoints]) {
+pub fn render_endpoints(entries: &[InstanceEndpoints]) -> String {
     use std::fmt::Write as _;
 
+    let mut out = String::new();
     let mut ordered: Vec<&InstanceEndpoints> = entries.iter().collect();
     ordered.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
 
@@ -145,26 +146,37 @@ pub fn render_endpoints(out: &mut String, entries: &[InstanceEndpoints]) {
             .flat_map(|(_, endpoints)| endpoints.iter().map(|endpoint| endpoint.label.len()))
             .max()
             .unwrap_or(0);
-        let _ = writeln!(out, "{heading}");
+        let _ = writeln!(&mut out, "{heading}");
         for (entry, endpoints) in block {
             let _ = writeln!(
-                out,
+                &mut out,
                 "  {} ({}) @{}",
                 entry.instance_id, entry.node_label, entry.core_node
             );
             for endpoint in endpoints {
-                let mut urls = endpoint.urls.iter();
-                let _ = writeln!(
-                    out,
-                    "    {:<label_width$}  {}",
-                    endpoint.label,
-                    urls.next().map(String::as_str).unwrap_or_default()
-                );
-                for url in urls {
-                    let _ = writeln!(out, "    {:<label_width$}  {url}", "");
+                // The label heads its first URL; the rest sit under it in a
+                // blank column. An endpoint the daemon expanded to no URL at
+                // all contributes no line.
+                for (index, url) in endpoint.urls.iter().enumerate() {
+                    let label = if index == 0 {
+                        endpoint.label.as_str()
+                    } else {
+                        ""
+                    };
+                    let _ = writeln!(&mut out, "    {label:<label_width$}  {url}");
                 }
             }
         }
+    }
+    out
+}
+
+/// The blocks [`render_endpoints`] produces, on the node log, for the
+/// commands that start instances. The one place the rendered block reaches
+/// an operator, so a change to how it is delivered is made once.
+pub fn log_endpoints(entries: &[InstanceEndpoints]) {
+    for line in render_endpoints(entries).lines() {
+        tracing::info!("{line}");
     }
 }
 
@@ -308,17 +320,11 @@ mod tests {
         }
     }
 
-    fn rendered(entries: &[InstanceEndpoints]) -> String {
-        let mut out = String::new();
-        render_endpoints(&mut out, entries);
-        out
-    }
-
     /// Pages and MCP endpoints land under their own headings, pages first,
     /// with per-block label padding and every URL under its label.
     #[test]
     fn render_endpoints_groups_kinds_under_their_headings_in_order() {
-        let out = rendered(&[
+        let out = render_endpoints(&[
             instance(
                 "alpha_commander_inst",
                 "mcp_openarm_v2_v1_scene_lighting_v1:builtin",
@@ -364,7 +370,7 @@ MCP endpoints:
     /// come in instance id order whatever order they arrived in.
     #[test]
     fn render_endpoints_prints_one_heading_for_one_kind_and_orders_instances() {
-        let out = rendered(&[
+        let out = render_endpoints(&[
             instance(
                 "simulation_inst",
                 "waldo:v1",
@@ -402,7 +408,7 @@ Web pages:
     /// and an instance serving both kinds appears in both blocks.
     #[test]
     fn render_endpoints_pads_labels_per_block() {
-        let out = rendered(&[instance(
+        let out = render_endpoints(&[instance(
             "hybrid_inst",
             "hybrid:v1",
             vec![
@@ -429,9 +435,9 @@ MCP endpoints:
 
     #[test]
     fn render_endpoints_renders_nothing_for_empty_input() {
-        assert_eq!(rendered(&[]), "");
+        assert_eq!(render_endpoints(&[]), "");
         assert_eq!(
-            rendered(&[instance("silent_inst", "silent:v1", Vec::new())]),
+            render_endpoints(&[instance("silent_inst", "silent:v1", Vec::new())]),
             ""
         );
     }

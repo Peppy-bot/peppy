@@ -1,8 +1,7 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
 use config::node::{EndpointDeclaration, EndpointKind, EndpointLabel, NodeConfigParser};
 use core_node::{
-    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, HostAddress,
-    HostAddressSource,
+    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, test_host_addresses,
 };
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
@@ -91,27 +90,6 @@ impl Default for InstanceLifetime {
 }
 
 const LIFETIME_SENTINEL: &str = "instances.alive";
-
-/// The host addresses every emulated daemon expands instance endpoints
-/// against: loopback first, then two interfaces, so the URLs a test asserts
-/// on are the same on every machine.
-pub fn test_host_addresses() -> Vec<HostAddress> {
-    [
-        ("lo", "127.0.0.1"),
-        ("eth0", "192.168.1.5"),
-        ("tailscale0", "100.123.58.116"),
-    ]
-    .into_iter()
-    .map(|(interface, ip)| {
-        let ip: std::net::IpAddr = ip.parse().expect("an IP literal");
-        HostAddress {
-            interface: interface.to_string(),
-            ip,
-            loopback: ip.is_loopback(),
-        }
-    })
-    .collect()
-}
 
 /// The keep-alive argv shared by [`override_run_cmd_while`] and
 /// [`InstanceLifetime::keep_alive_run_cmd`]. See the former for why neither
@@ -391,7 +369,7 @@ impl ServeCommandEmulation {
         let core_node = CoreNode::new(CoreNodeConfig {
             messenger: Arc::clone(&shared_messenger),
             node_name: Some(core_node_name.to_string()),
-            host_addresses: HostAddressSource::Fixed(test_host_addresses()),
+            host_addresses: Some(test_host_addresses()),
             arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),

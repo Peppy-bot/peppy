@@ -6,7 +6,6 @@ use daemon_config::mcp_deployment::{
     McpDeploymentError, McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, SPEC_ENV_VAR,
     endpoint_label, plan_deployment,
 };
-use daemon_config::source::ExposureRef;
 use message_codec::consumer::ConsumerIdentity;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureSet};
 use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner};
@@ -104,10 +103,10 @@ async fn run(
     let mut announcements = Vec::with_capacity(prepared.len());
     for exposure in prepared {
         announcements.push((
-            endpoint_label(&ExposureRef {
-                name: exposure.bundle.exposure.name.clone(),
-                tag: exposure.bundle.exposure.tag.clone(),
-            }),
+            endpoint_label(
+                &exposure.bundle.exposure.name,
+                &exposure.bundle.exposure.tag,
+            ),
             exposure.bundle.exposure.endpoint_path(),
         ));
         let mut builder = ExposureServer::builder(exposure.bundle).with_clock(clock.clone());

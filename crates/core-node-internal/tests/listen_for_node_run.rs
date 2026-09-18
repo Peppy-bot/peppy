@@ -2542,12 +2542,12 @@ fn panel_binding() -> peppylib::runtime::EndpointBinding {
 }
 
 /// Adds the panel node, installs the ready and health responders, and,
-/// when given, the `node_endpoints` responder answering `announced`.
+/// and the `node_endpoints` responder answering `announced`.
 async fn add_panel_node_with_services(
     started: &common::StartedCoreNode,
     node_name: &str,
     instance_id: &str,
-    announced: Option<Vec<peppylib::runtime::AnnouncedEndpoint>>,
+    announced: Vec<peppylib::runtime::AnnouncedEndpoint>,
 ) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
     let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
     write_peppy_json5(source_dir.path(), &panel_node_json5(node_name));
@@ -2589,19 +2589,17 @@ async fn add_panel_node_with_services(
             .expect("node health service should start"),
         ),
     ];
-    if let Some(announced) = announced {
-        services.push(AbortOnDrop(
-            peppylib::services::endpoints::listen_for_node_endpoints(
-                &node_messenger,
-                &started.core_node_name,
-                instance_id,
-                common::test_node_target(node_name),
-                announced,
-            )
-            .await
-            .expect("node endpoints service should start"),
-        ));
-    }
+    services.push(AbortOnDrop(
+        peppylib::services::endpoints::listen_for_node_endpoints(
+            &node_messenger,
+            &started.core_node_name,
+            instance_id,
+            common::test_node_target(node_name),
+            announced,
+        )
+        .await
+        .expect("node endpoints service should start"),
+    ));
     // Allow the services to establish their listeners.
     tokio::time::sleep(Duration::from_millis(50)).await;
     services
@@ -2641,10 +2639,10 @@ async fn listen_for_node_run_reports_the_endpoints_a_node_announces() {
         &started,
         NODE_NAME,
         INSTANCE_ID,
-        Some(vec![peppylib::runtime::AnnouncedEndpoint {
+        vec![peppylib::runtime::AnnouncedEndpoint {
             label: "panel".to_string(),
             binding: panel_binding(),
-        }]),
+        }],
     )
     .await;
 
@@ -2657,9 +2655,9 @@ async fn listen_for_node_run_reports_the_endpoints_a_node_announces() {
     let expected = vec![core_node_api::InstanceEndpoint {
         label: "panel".to_string(),
         kind: config::node::EndpointKind::Page,
-        urls: common::test_host_addresses()
+        urls: core_node::test_host_addresses()
             .iter()
-            .map(|address| format!("http://{}:8765", address.ip))
+            .map(|ip| format!("http://{ip}:8765"))
             .collect(),
     }];
     assert_eq!(
@@ -2684,7 +2682,7 @@ async fn listen_for_node_run_fails_when_a_declared_endpoint_is_never_announced()
 
     let started = start_core_node_with_mock_messenger().await;
     let _services =
-        add_panel_node_with_services(&started, NODE_NAME, INSTANCE_ID, Some(Vec::new())).await;
+        add_panel_node_with_services(&started, NODE_NAME, INSTANCE_ID, Vec::new()).await;
 
     let start_response = run_panel_node(&started, NODE_NAME, INSTANCE_ID).await;
     assert!(
@@ -2727,10 +2725,10 @@ async fn listen_for_node_run_refuses_an_announced_label_the_manifest_does_not_de
         &started,
         NODE_NAME,
         INSTANCE_ID,
-        Some(vec![peppylib::runtime::AnnouncedEndpoint {
+        vec![peppylib::runtime::AnnouncedEndpoint {
             label: "admin".to_string(),
             binding: panel_binding(),
-        }]),
+        }],
     )
     .await;
 

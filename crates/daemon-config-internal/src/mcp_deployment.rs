@@ -56,16 +56,12 @@ pub fn built_in_identity(exposures: &[ExposureRef]) -> Name {
     Name::new(name).expect("exposure names and tags are made of name characters")
 }
 
-/// The label the synthesized manifest declares the endpoint of `exposure`
-/// under, and the one the server announces it with: `<name>_<tag>`, the
-/// tokens the deployment identity is built from, with the tag normalized the
-/// way generated code spells it (`-` becomes `_`).
-pub fn endpoint_label(exposure: &ExposureRef) -> String {
-    format!(
-        "{}_{}",
-        exposure.name,
-        config::consts::normalize_tag(&exposure.tag)
-    )
+/// The label the synthesized manifest declares an exposure's endpoint under,
+/// and the one the server announces it with: `<name>_<tag>`, the tokens the
+/// deployment identity is built from, with the tag normalized the way
+/// generated code spells it (`-` becomes `_`).
+pub fn endpoint_label(name: &str, tag: &str) -> String {
+    format!("{name}_{}", config::consts::normalize_tag(tag))
 }
 
 /// A parsed document with the pin that names its bytes.
@@ -344,7 +340,7 @@ pub fn plan_deployment(
         .iter()
         .map(|exposure| {
             (
-                endpoint_label(&exposure.reference()),
+                endpoint_label(exposure.pin.name.as_str(), exposure.pin.tag.as_str()),
                 serde_json::json!({
                     "kind": "mcp",
                     "description": exposure.document.server.title,
@@ -796,7 +792,7 @@ mod tests {
                 .all(|declaration| declaration.kind == config::node::EndpointKind::Mcp)
         );
         assert_eq!(
-            endpoint_label(&reference("camera", "v1-beta")),
+            endpoint_label("camera", "v1-beta"),
             "camera_v1_beta",
             "a tag is normalized the way generated code spells it"
         );

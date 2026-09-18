@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use core_node::{idle_timeout_flag, slow_connection_hint};
 use core_node_api::encoding::{
-    InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult,
-    NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry, StackBudgets,
+    LaunchFeedback, LaunchFeedbackStep, LaunchGoalResponse, LaunchResult, NodeAddLogEntry,
+    NodeBuildLogEntry, NodeRunLogEntry, StackBudgets,
 };
 use peppylib::ActionMessenger;
 use peppylib::core_node::transport::send_goal;
@@ -100,16 +100,6 @@ fn display_node_log_files(
                 info!("    {text}");
             }
         }
-    }
-}
-
-/// The `Web pages:` and `MCP endpoints:` blocks of the instances the
-/// operation started, after the log files and before the completion line.
-fn display_instance_endpoints(entries: &[InstanceEndpoints]) {
-    let mut rendered = String::new();
-    crate::commands::render_endpoints(&mut rendered, entries);
-    for line in rendered.lines() {
-        info!("{line}");
     }
 }
 
@@ -323,7 +313,7 @@ pub(super) async fn drive_stack_goal<G: StackGoal>(
                 &result.node_build_logs,
                 &result.node_run_logs,
             );
-            display_instance_endpoints(&result.instance_endpoints);
+            crate::commands::log_endpoints(&result.instance_endpoints);
 
             if !result.success {
                 let error_msg = result

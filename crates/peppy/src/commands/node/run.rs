@@ -1013,19 +1013,12 @@ pub async fn run_instance_async(
     }
     // The URLs the daemon expanded the instance's announced sockets into,
     // rendered the way a launch prints them.
-    let mut endpoints = String::new();
-    crate::commands::render_endpoints(
-        &mut endpoints,
-        &[InstanceEndpoints {
-            instance_id: instance_id.clone(),
-            node_label: format!("{node_name}:{tag}"),
-            core_node: core_node_name.to_string(),
-            endpoints: start_result.endpoints,
-        }],
-    );
-    for line in endpoints.lines() {
-        info!("{line}");
-    }
+    crate::commands::log_endpoints(&[InstanceEndpoints {
+        instance_id: instance_id.clone(),
+        node_label: format!("{node_name}:{tag}"),
+        core_node: core_node_name.to_string(),
+        endpoints: start_result.endpoints,
+    }]);
     Ok(instance_id)
 }
 

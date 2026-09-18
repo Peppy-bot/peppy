@@ -16,37 +16,21 @@ use core_node_api::InstanceEndpoint;
 use nix::net::if_::InterfaceFlags;
 use peppylib::runtime::{AnnouncedEndpoint, EndpointBinding};
 
-/// One address of the host that runs an instance.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostAddress {
-    pub interface: String,
-    pub ip: IpAddr,
-    pub loopback: bool,
-}
+/// The host addresses an instance's endpoints expand against: `None` reads
+/// this machine's interfaces, `Some` is the fixed list a test injects so an
+/// expansion is deterministic.
+pub type HostAddressSource = Option<Vec<IpAddr>>;
 
-/// Where the daemon takes its host addresses from: the system's interfaces,
-/// or a fixed list a test injects so an expansion is deterministic.
-#[derive(Debug, Clone)]
-pub enum HostAddressSource {
-    System,
-    Fixed(Vec<HostAddress>),
-}
-
-impl HostAddressSource {
-    /// The host addresses, loopback first, then the other interfaces in
-    /// enumeration order.
-    pub fn read(&self) -> Vec<HostAddress> {
-        match self {
-            HostAddressSource::System => read_host_addresses(),
-            HostAddressSource::Fixed(addresses) => addresses.clone(),
-        }
-    }
+/// The addresses `source` expands against, reading the system's interfaces
+/// when it names none.
+pub fn host_addresses(source: &HostAddressSource) -> Vec<IpAddr> {
+    source.clone().unwrap_or_else(read_host_addresses)
 }
 
 /// Reads the addresses of this machine's interfaces that are up, skipping
 /// IPv6 link-local addresses, loopback first, deduplicated. The one function
 /// here that touches the system.
-pub fn read_host_addresses() -> Vec<HostAddress> {
+pub fn read_host_addresses() -> Vec<IpAddr> {
     let interfaces = match nix::ifaddrs::getifaddrs() {
         Ok(interfaces) => interfaces,
         Err(error) => {
@@ -69,13 +53,20 @@ pub fn read_host_addresses() -> Vec<HostAddress> {
         if !keep_interface(interface.flags, ip) {
             continue;
         }
-        addresses.push(HostAddress {
-            interface: interface.interface_name,
-            ip,
-            loopback: ip.is_loopback(),
-        });
+        addresses.push(ip);
     }
     order_host_addresses(addresses)
+}
+
+/// The fixed addresses a test expands against, so an expected URL is the same
+/// whatever machine runs the test: loopback, a LAN address and a tailscale
+/// one. Lives beside the reader it stands in for, since the URLs asserted in
+/// this crate's and `peppy`'s tests are written against exactly this list.
+pub fn test_host_addresses() -> Vec<IpAddr> {
+    ["127.0.0.1", "192.168.1.5", "100.123.58.116"]
+        .iter()
+        .map(|ip| ip.parse().expect("an IP literal"))
+        .collect()
 }
 
 /// The reader's filter: an interface that is up, and an address an operator
@@ -98,12 +89,12 @@ fn is_link_local(ip: Ipv6Addr) -> bool {
 
 /// Loopback addresses first, then the rest in the order they were read,
 /// each address once.
-fn order_host_addresses(addresses: Vec<HostAddress>) -> Vec<HostAddress> {
+fn order_host_addresses(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
     let mut seen = BTreeSet::new();
     let (loopback, others): (Vec<_>, Vec<_>) = addresses
         .into_iter()
-        .filter(|address| seen.insert(address.ip))
-        .partition(|address| address.loopback);
+        .filter(|ip| seen.insert(*ip))
+        .partition(IpAddr::is_loopback);
     loopback.into_iter().chain(others).collect()
 }
 
@@ -111,15 +102,13 @@ fn order_host_addresses(addresses: Vec<HostAddress>) -> Vec<HostAddress> {
 /// addresses. An unspecified IPv4 address expands to every IPv4 address of
 /// the host, an unspecified IPv6 address to every address; any other
 /// address yields the one URL for that literal.
-pub fn expand_binding(binding: &EndpointBinding, host: &[HostAddress]) -> Vec<String> {
+pub fn expand_binding(binding: &EndpointBinding, host: &[IpAddr]) -> Vec<String> {
     let bound = binding.address.ip();
     let reachable: Vec<IpAddr> = match bound {
-        IpAddr::V4(v4) if v4.is_unspecified() => host
-            .iter()
-            .map(|address| address.ip)
-            .filter(IpAddr::is_ipv4)
-            .collect(),
-        IpAddr::V6(v6) if v6.is_unspecified() => host.iter().map(|address| address.ip).collect(),
+        IpAddr::V4(v4) if v4.is_unspecified() => {
+            host.iter().copied().filter(IpAddr::is_ipv4).collect()
+        }
+        IpAddr::V6(v6) if v6.is_unspecified() => host.to_vec(),
         literal => vec![literal],
     };
     reachable
@@ -143,26 +132,22 @@ pub fn expand_announcements(
     instance_id: &str,
     declared: &EndpointDeclarations,
     announced: Vec<AnnouncedEndpoint>,
-    host: &[HostAddress],
+    host: &[IpAddr],
 ) -> std::result::Result<Vec<InstanceEndpoint>, String> {
+    // Compared as sets: a node is free to announce in whatever order its
+    // setup binds, and the result is sorted by label below.
     let announced_labels: BTreeSet<&str> = announced
         .iter()
         .map(|endpoint| endpoint.label.as_str())
         .collect();
     let declared_labels: BTreeSet<&str> = declared.keys().map(|label| label.as_str()).collect();
     if announced_labels != declared_labels {
+        let joined =
+            |labels: &BTreeSet<&str>| labels.iter().copied().collect::<Vec<_>>().join(", ");
         return Err(format!(
             "instance '{instance_id}' announced endpoints [{}] but its manifest declares [{}]",
-            announced_labels
-                .iter()
-                .copied()
-                .collect::<Vec<_>>()
-                .join(", "),
-            declared_labels
-                .iter()
-                .copied()
-                .collect::<Vec<_>>()
-                .join(", "),
+            joined(&announced_labels),
+            joined(&declared_labels),
         ));
     }
     let mut endpoints: Vec<InstanceEndpoint> = announced
@@ -182,25 +167,20 @@ mod tests {
     use super::*;
     use config::node::EndpointKind;
 
-    fn host(interface: &str, ip: &str) -> HostAddress {
-        let ip: IpAddr = ip.parse().expect("an IP literal");
-        HostAddress {
-            interface: interface.to_string(),
-            ip,
-            loopback: ip.is_loopback(),
-        }
-    }
-
     /// The addresses the expansion tests inject: loopback first, then two
-    /// interfaces, IPv6 included.
-    fn test_host() -> Vec<HostAddress> {
-        vec![
-            host("lo", "127.0.0.1"),
-            host("lo", "::1"),
-            host("eth0", "192.168.1.5"),
-            host("eth0", "2001:db8::7"),
-            host("tailscale0", "100.123.58.116"),
+    /// interfaces, IPv6 included so the bracketing and the v4-only filter are
+    /// both covered.
+    fn test_host() -> Vec<IpAddr> {
+        [
+            "127.0.0.1",
+            "::1",
+            "192.168.1.5",
+            "2001:db8::7",
+            "100.123.58.116",
         ]
+        .iter()
+        .map(|ip| ip.parse().expect("an IP literal"))
+        .collect()
     }
 
     fn binding(scheme: &str, address: &str, path: &str) -> EndpointBinding {
@@ -274,39 +254,38 @@ mod tests {
 
     #[test]
     fn host_addresses_come_loopback_first_and_deduplicated() {
+        let ip = |literal: &str| literal.parse::<IpAddr>().expect("an IP literal");
+        // `192.168.1.5` twice stands for one address read from two aliased
+        // interfaces: it survives once, in the position it was first read.
         let ordered = order_host_addresses(vec![
-            host("eth0", "192.168.1.5"),
-            host("lo", "127.0.0.1"),
-            host("eth0:1", "192.168.1.5"),
-            host("lo", "::1"),
-            host("wlan0", "10.0.0.9"),
+            ip("192.168.1.5"),
+            ip("127.0.0.1"),
+            ip("192.168.1.5"),
+            ip("::1"),
+            ip("10.0.0.9"),
         ]);
-        let rendered: Vec<String> = ordered
-            .iter()
-            .map(|address| format!("{}={}", address.interface, address.ip))
-            .collect();
         assert_eq!(
-            rendered,
+            ordered,
             [
-                "lo=127.0.0.1",
-                "lo=::1",
-                "eth0=192.168.1.5",
-                "wlan0=10.0.0.9"
+                ip("127.0.0.1"),
+                ip("::1"),
+                ip("192.168.1.5"),
+                ip("10.0.0.9")
             ]
         );
-        assert!(ordered[0].loopback && !ordered[2].loopback);
+        assert!(ordered[0].is_loopback() && !ordered[2].is_loopback());
     }
 
     #[test]
     fn the_system_reader_answers_loopback_first() {
         let addresses = read_host_addresses();
         assert!(
-            addresses.first().is_some_and(|address| address.loopback),
+            addresses.first().is_some_and(IpAddr::is_loopback),
             "every host has an up loopback interface: {addresses:?}"
         );
         assert!(
-            addresses.iter().all(|address| match address.ip {
-                IpAddr::V6(v6) => !is_link_local(v6),
+            addresses.iter().all(|ip| match ip {
+                IpAddr::V6(v6) => !is_link_local(*v6),
                 IpAddr::V4(_) => true,
             }),
             "link-local addresses are filtered: {addresses:?}"
