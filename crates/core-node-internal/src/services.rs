@@ -13,6 +13,7 @@ mod stack;
 
 use clock::{ClockSource, WallClockSource};
 
+pub use node::cache::git::{checkout_dir_for, materialized_checkout};
 pub use node::{
     HealthMonitorPolicy, TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances,
 };

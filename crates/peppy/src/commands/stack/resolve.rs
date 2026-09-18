@@ -79,9 +79,10 @@ impl Default for JoinPreview {
 /// daemon: slot-key and vacancy legality, and the pairing rules, coverage
 /// included, so a launcher that leaves a `zero_or_one` pairing slot neither
 /// paired nor vacant fails here instead of minutes later at launch. The
-/// node manifests come from this machine's nodes cache; when one is not
-/// readable locally the check is skipped and says so, because a partial
-/// item list would misreport rules that need both endpoints.
+/// node manifests come from this machine's nodes cache, a git-backed one out
+/// of the checkout the caches materialized for it; when one is not readable
+/// locally the check is skipped and says so, because a partial item list
+/// would misreport rules that need both endpoints.
 pub fn resolve(launcher_config_path: PathBuf, words: Vec<String>, join: JoinPreview) -> Result<()> {
     let (document, report) =
         resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &join)?;
@@ -155,7 +156,8 @@ pub fn resolve_rendered(
 /// launch-only because satisfying them can involve the root node, which only
 /// the daemon knows.
 ///
-/// Manifests come from the nodes cache. The check runs only when every
+/// Manifests come from the nodes cache, a git-backed entry's from the
+/// checkout the caches materialized for it. The check runs only when every
 /// deployed node's manifest is readable on this machine: the pairing rules
 /// judge links by both endpoints' declarations, so validating a partial item
 /// list would trade missed errors for false ones. When something is missing
@@ -218,13 +220,27 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
         };
         let manifest_path = match &entry.origin {
             EntryOrigin::Fs { path } => path.clone(),
-            EntryOrigin::Git { .. } => {
-                // A git-backed manifest may need a fetch to read, and this
-                // command never fetches.
-                unavailable.push(format!(
-                    "{id} (a git entry's manifest needs materializing to read)"
-                ));
-                continue;
+            EntryOrigin::Git {
+                repo_url,
+                commit,
+                path,
+                ..
+            } => {
+                // Read out of the checkout the caches already hold: `repo
+                // refresh` clones every repository it indexes and hands that
+                // clone to the checkout cache, so the tree behind an entry it
+                // wrote is on this machine. A commit nothing has materialized
+                // is named instead of fetched, because this command never
+                // reaches the network.
+                match core_node::materialized_checkout(dirs, repo_url, commit) {
+                    Some(checkout) => checkout.join(path.as_path()),
+                    None => {
+                        unavailable.push(format!(
+                            "{id} (no checkout of {commit} on this machine; run `peppy repo refresh`)"
+                        ));
+                        continue;
+                    }
+                }
             }
         };
         match NodeConfigParser::from_path(&manifest_path) {

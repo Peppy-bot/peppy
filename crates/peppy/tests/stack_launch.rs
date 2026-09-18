@@ -4781,34 +4781,45 @@ fn empty_peppy_dirs() -> daemon_config::consts::PeppyDirs {
     daemon_config::consts::PeppyDirs::new(dir.path())
 }
 
-/// A peppy root, a node manifest declaring one optional pairing slot, and a
-/// nodes cache pointing at it, so `stack resolve` can hold a launcher to the
-/// pairing rules without a daemon. Returns the dirs and the launcher dir;
-/// the caller writes the launcher it wants judged.
-fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile::TempDir) {
-    let root = tempfile::tempdir().expect("temp peppy root");
-    let node_dir = root.path().join("nodes/viewer");
-    fs::create_dir_all(&node_dir).expect("node dir");
-    fs::write(
-        node_dir.join("peppy.json5"),
-        r#"{
-            peppy_schema: "node/v1",
-            manifest: {
-                name: "viewer",
-                tag: "v1",
-                depends_on: {
-                    pairings: [
-                        { name: "camera_link", tag: "v1", role: "viewer",
-                          link_id: "camera", cardinality: "zero_or_one" },
-                    ],
-                },
-            },
-            execution: { language: "rust", run_cmd: ["./bin/viewer"] },
-        }"#,
-    )
-    .expect("node manifest");
-    let cache_dir = root.path().join("cache");
-    fs::create_dir_all(&cache_dir).expect("cache dir");
+/// The node every pairing root publishes: one manifest declaring a single
+/// optional pairing slot, which is what the pairing rules are judged on.
+const VIEWER_PAIRING_MANIFEST: &str = r#"{
+    peppy_schema: "node/v1",
+    manifest: {
+        name: "viewer",
+        tag: "v1",
+        depends_on: {
+            pairings: [
+                { name: "camera_link", tag: "v1", role: "viewer",
+                  link_id: "camera", cardinality: "zero_or_one" },
+            ],
+        },
+    },
+    execution: { language: "rust", run_cmd: ["./bin/viewer"] },
+}"#;
+
+/// A launcher deploying the viewer with its pairing slot neither paired nor
+/// vacant, so whether the link rules ran is exactly whether it resolves.
+const UNCOVERED_VIEWER_LAUNCHER: &str = r#"{
+    peppy_schema: "launcher/v1",
+    deployments: [
+        { source: { name: "viewer", tag: "v1" },
+          instances: [{ instance_id: "viewer_inst" }] },
+    ],
+}"#;
+
+/// The repository the git-backed root publishes the viewer from. Never
+/// reached: the manifest is read from the checkout cache, and a test that
+/// empties it asserts the skip rather than a fetch.
+const VIEWER_REPO_URL: &str = "https://github.com/peppy-test/nodes-hub.git";
+
+/// Where the git-backed root files the viewer inside that repository.
+const VIEWER_REPO_MANIFEST_PATH: &str = "nodes/viewer/peppy.json5";
+
+/// Writes the nodes cache of a root publishing [`VIEWER_PAIRING_MANIFEST`]
+/// from `origin`, in the shape `repo refresh` writes.
+fn write_viewer_nodes_cache(cache_dir: &Path, origin: &str) {
+    fs::create_dir_all(cache_dir).expect("cache dir");
     // The links are serialized from the type `repo refresh` writes, so a
     // change to their shape reaches this fixture.
     let links = serde_json::to_string(&core_node::DeclaredLinks::default()).expect("links");
@@ -4817,15 +4828,97 @@ fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile
         format!(
             r#"[{{ node_name: "viewer", node_tag: "v1",
                   sha256: "{}",
-                  origin: {{ source_type: "fs", path: "{}" }},
+                  origin: {origin},
                   links: {links} }}]"#,
             "0".repeat(64),
-            node_dir.join("peppy.json5").display(),
         ),
     )
     .expect("nodes cache");
+}
+
+/// A peppy root, a node manifest declaring one optional pairing slot, and a
+/// nodes cache pointing at it, so `stack resolve` can hold a launcher to the
+/// pairing rules without a daemon. Returns the dirs and the launcher dir;
+/// the caller writes the launcher it wants judged.
+fn peppy_root_with_pairing_node() -> (daemon_config::consts::PeppyDirs, tempfile::TempDir) {
+    let root = tempfile::tempdir().expect("temp peppy root");
+    let node_dir = root.path().join("nodes/viewer");
+    fs::create_dir_all(&node_dir).expect("node dir");
+    fs::write(node_dir.join("peppy.json5"), VIEWER_PAIRING_MANIFEST).expect("node manifest");
+    write_viewer_nodes_cache(
+        &root.path().join("cache"),
+        &format!(
+            r#"{{ source_type: "fs", path: "{}" }}"#,
+            node_dir.join("peppy.json5").display()
+        ),
+    );
     let dirs = daemon_config::consts::PeppyDirs::new(root.path());
     (dirs, root)
+}
+
+/// Commits everything under `dir` as a fresh git repository and answers the
+/// commit it recorded.
+///
+/// The identity and the timestamp are fixed here rather than read from the
+/// host's git configuration, so a machine with no `user.email` configured, or
+/// with commit signing turned on, produces the same repository as any other.
+fn commit_worktree(dir: &Path) -> daemon_config::repository::GitCommit {
+    let repository = git2::Repository::init(dir)
+        .unwrap_or_else(|error| panic!("git init in {}: {error}", dir.display()));
+    let mut index = repository.index().expect("the repository index");
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+        .expect("staging the worktree");
+    index.write().expect("writing the index");
+    let tree_id = index.write_tree().expect("writing the tree");
+    let tree = repository
+        .find_tree(tree_id)
+        .expect("reading back the tree");
+    let author = git2::Signature::new(
+        "peppy resolve fixture",
+        "fixture@peppy.invalid",
+        &git2::Time::new(0, 0),
+    )
+    .expect("the fixture commit signature should be valid");
+    let commit = repository
+        .commit(
+            Some("HEAD"),
+            &author,
+            &author,
+            "Fixture repository",
+            &tree,
+            &[],
+        )
+        .expect("committing the fixture repository");
+    daemon_config::repository::GitCommit::parse(&commit.to_string())
+        .expect("a git2 commit id is a full hash")
+}
+
+/// The same viewer published by a git repository: a checkout of one commit
+/// under the checkout cache and a nodes cache entry naming that commit, which
+/// is what a machine holds once `repo refresh` has read a hub. Returns the
+/// dirs, the launcher dir, and the checkout the manifest is read from.
+fn peppy_root_with_git_pairing_node()
+-> (daemon_config::consts::PeppyDirs, tempfile::TempDir, PathBuf) {
+    let root = tempfile::tempdir().expect("temp peppy root");
+    let clone = root.path().join("clone");
+    let node_dir = clone.join("nodes/viewer");
+    fs::create_dir_all(&node_dir).expect("node dir");
+    fs::write(node_dir.join("peppy.json5"), VIEWER_PAIRING_MANIFEST).expect("node manifest");
+    let commit = commit_worktree(&clone);
+
+    let dirs = daemon_config::consts::PeppyDirs::new(root.path());
+    let checkout = core_node::checkout_dir_for(&dirs, VIEWER_REPO_URL, &commit);
+    fs::create_dir_all(dirs.git_checkouts_dir()).expect("checkout cache");
+    fs::rename(&clone, &checkout).expect("adopting the clone as the cached checkout");
+    write_viewer_nodes_cache(
+        &root.path().join("cache"),
+        &format!(
+            r#"{{ source_type: "git", repo_url: "{VIEWER_REPO_URL}", repo_ref: "main",
+                  commit: "{commit}", path: "{VIEWER_REPO_MANIFEST_PATH}" }}"#
+        ),
+    );
+    (dirs, root, checkout)
 }
 
 /// A launcher that leaves a `zero_or_one` pairing slot neither paired nor
@@ -5016,6 +5109,54 @@ fn stack_resolve_reports_the_check_skipped_on_an_empty_cache() {
     assert!(
         report_text.contains("link rules not checked") && report_text.contains("repo refresh"),
         "the skip tells the user how to enable the check: {report_text}"
+    );
+}
+
+/// A node a git repository publishes is judged like any other: its manifest
+/// is read out of the checkout the caches already hold, so a launcher that
+/// leaves a `zero_or_one` pairing slot uncovered fails here. This is the
+/// shape every hub has, and a check that skipped it would pass every plan a
+/// machine resolves against published nodes.
+#[test]
+fn stack_resolve_checks_link_rules_against_a_cached_git_checkout() {
+    let (dirs, root, _checkout) = peppy_root_with_git_pairing_node();
+    let launcher = root.path().join("solo.json5");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
+
+    let err = peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &Default::default())
+        .expect_err("an uncovered zero_or_one pairing slot must not resolve");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("pairing slot `camera`")
+            && msg.contains("cardinality `zero_or_one`")
+            && msg.contains("with no pair"),
+        "the refusal names the slot, its cardinality and the rule: {msg}"
+    );
+}
+
+/// A git entry whose commit nothing on this machine has materialized turns
+/// the check into a named skip: the command never fetches, so it says which
+/// commit it could not read and what brings it down.
+#[test]
+fn stack_resolve_reports_the_check_skipped_when_a_git_checkout_is_missing() {
+    let (dirs, root, checkout) = peppy_root_with_git_pairing_node();
+    fs::remove_dir_all(&checkout).expect("emptying the checkout cache");
+    let launcher = root.path().join("solo.json5");
+    fs::write(&launcher, UNCOVERED_VIEWER_LAUNCHER).expect("launcher");
+
+    let (_document, report) =
+        peppy::commands::stack::resolve_rendered(&dirs, launcher, &[], &Default::default())
+            .expect("a commit no checkout holds skips the link check");
+    let report_text = report.join("\n");
+    assert!(
+        report_text.contains("link rules not checked")
+            && report_text.contains("viewer:v1")
+            && report_text.contains("repo refresh"),
+        "the skip names the node and how to materialize it: {report_text}"
+    );
+    assert!(
+        !report_text.contains("link rules hold"),
+        "a skipped check must not also claim to have run: {report_text}"
     );
 }
 
