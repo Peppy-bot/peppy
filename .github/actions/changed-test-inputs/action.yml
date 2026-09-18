@@ -1,12 +1,13 @@
 name: Detect changed test inputs
 description: >-
-  Emits one boolean output per conditionally-run suite in tests.yml, true
-  when the change set touches that suite's inputs. The per-suite crate sets
-  are derived from cargo metadata's resolve graph at run time, so newly
-  added or rewired workspace crates are picked up with nothing to maintain
-  here. Gated-off suites get their skip reason reported to the job's
-  annotations and step summary. Fails open: on any detection error every
-  suite runs.
+  Emits one output per conditionally-run job in tests.yml naming what the
+  change set requires it to run: a boolean for the jobs that are all or
+  nothing, and a selection of packages or directories for the jobs that split
+  into units testable on their own. The dependency graph behind the selection
+  is read from the manifests at run time, so newly added or rewired crates and
+  libraries are picked up with nothing to maintain here. Jobs gated off get
+  their skip reason reported to the job's annotations and step summary. Fails
+  open: on any detection error every suite runs with everything selected.
 inputs:
   base:
     description: Commit the branch's changes are diffed against (the PR
@@ -22,15 +23,35 @@ outputs:
   scripts:
     description: Whether the release scripts suite's inputs changed.
     value: ${{ steps.detect.outputs.scripts }}
-  public_libs:
-    description: Whether the public-peppy-libs suites' inputs changed.
-    value: ${{ steps.detect.outputs.public_libs }}
+  public_libs_shared_packages:
+    description: >-
+      The cargo package selection flags for the peppy-shared workspace, naming
+      the packages whose own directory or whose dependencies were touched
+      (`-p a -p b`, or `--workspace --exclude peppylib-py` when everything
+      runs). Empty when no package of the workspace was reached.
+    value: ${{ steps.detect.outputs.public_libs_shared_packages }}
+  public_libs_peppylib_py:
+    description: >-
+      Whether the peppylib-py Python suite's inputs changed. It is the one
+      peppy-shared package tested outside cargo, so it carries its own gate.
+    value: ${{ steps.detect.outputs.public_libs_peppylib_py }}
+  public_libs_crates:
+    description: >-
+      The standalone crates of public-peppy-libs whose inputs changed, as a
+      space-separated list of directory names. Empty when none did.
+    value: ${{ steps.detect.outputs.public_libs_crates }}
+  public_libs_python:
+    description: >-
+      The standalone Python libraries of public-peppy-libs whose inputs
+      changed, as a space-separated list of directory names. Empty when none
+      did.
+    value: ${{ steps.detect.outputs.public_libs_python }}
 runs:
   using: composite
   steps:
     - id: detect
       # Needs cargo on PATH for the metadata query, so tests.yml runs this
-      # after rust-build-env.
+      # after the rust-toolchain action.
       shell: bash
       run: python3 "$GITHUB_ACTION_PATH/detect.py"
       env:
