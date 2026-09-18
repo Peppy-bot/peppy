@@ -106,11 +106,7 @@ mod ruff_build {
             version = super::RUFF_VERSION,
         );
 
-        println!(
-            "cargo:warning=Downloading ruff {} for {}...",
-            super::RUFF_VERSION,
-            target
-        );
+        build_helpers::progress!("Downloading ruff {} for {}...", super::RUFF_VERSION, target);
 
         let temp_dir = dest.parent().unwrap().join("ruff-download-tmp");
         std::fs::create_dir_all(&temp_dir).ok();
@@ -169,10 +165,7 @@ mod ruff_build {
 
         // 1. Check architecture-aware cache
         if cached_ruff_path.exists() {
-            println!(
-                "cargo:warning=Using cached ruff binary from {:?}",
-                cached_ruff_path
-            );
+            build_helpers::progress!("Using cached ruff binary from {:?}", cached_ruff_path);
             build_helpers::copy_if_changed(&cached_ruff_path, ruff_binary_path.as_ref());
             return;
         }
@@ -180,8 +173,8 @@ mod ruff_build {
         // 2. Download pre-built binary from GitHub releases
         if !download_ruff(&target, &cached_ruff_path) {
             // 3. Compile from source as fallback
-            println!(
-                "cargo:warning=Pre-built ruff not available for {target}, compiling from source..."
+            build_helpers::progress!(
+                "Pre-built ruff not available for {target}, compiling from source..."
             );
             match build_helpers::cargo_install_binary(
                 "ruff",
@@ -403,7 +396,7 @@ mod peppylib_build {
         let lock_path = build_helpers::cache_dir("peppylib-py").join("pixi-build.lock");
         let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
 
-        println!("cargo:warning=Building peppylib-py native extension via pixi ({pixi_task})…");
+        build_helpers::progress!("Building peppylib-py native extension via pixi ({pixi_task})…");
         run_pixi_task(peppylib_py_dir, pixi_task, target_dir);
 
         assert!(
@@ -445,9 +438,10 @@ mod peppylib_build {
         target_dir: &Path,
         so_dir: &Path,
     ) {
-        println!(
-            "cargo:warning=Cross-compiling peppylib-py for {} via pixi ({})…",
-            target.platform_suffix, target.pixi_task
+        build_helpers::progress!(
+            "Cross-compiling peppylib-py for {} via pixi ({})…",
+            target.platform_suffix,
+            target.pixi_task
         );
 
         ensure_linux_rust_target(target.target_triple);
@@ -973,7 +967,7 @@ mod peppylib_build {
             );
             state.insert(host.clone(), host_state);
         } else {
-            println!("cargo:warning=Skipping peppylib-py host native build (sources unchanged).");
+            build_helpers::progress!("Skipping peppylib-py host native build (sources unchanged).");
         }
 
         // Linux container bindings (macOS only). The build host is macOS, so

@@ -16,6 +16,7 @@ mod cargo;
 mod command;
 mod fs;
 mod hash;
+mod progress;
 
 pub use cargo::{
     UnsupportedCapnpTarget, build_target_triple, bundled_capnp_for_embedding, cargo_install_binary,
@@ -26,3 +27,4 @@ pub use fs::{
     acquire_file_lock, cache_dir, copy_if_changed, move_file, set_executable, write_if_changed,
 };
 pub use hash::verify_sha256;
+pub use progress::report_progress;

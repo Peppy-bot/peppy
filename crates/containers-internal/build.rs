@@ -348,9 +348,10 @@ mod apptainer_build {
         if !complete || cache_arch_matches(cache_dir, arch) {
             return;
         }
-        println!(
-            "cargo:warning=Cached apptainer at {:?} is not built for {}; discarding it",
-            cache_dir, arch
+        build_helpers::progress!(
+            "Cached apptainer at {:?} is not built for {}; discarding it",
+            cache_dir,
+            arch
         );
         force_remove_dir(cache_dir);
     }
@@ -550,17 +551,15 @@ mod apptainer_build {
         let cached_limactl = cache_dir.join("bin/limactl");
 
         if cached_limactl.exists() {
-            println!(
-                "cargo:warning=Using cached Lima {} installation from {:?}",
-                version, cache_dir
+            build_helpers::progress!(
+                "Using cached Lima {} installation from {:?}",
+                version,
+                cache_dir
             );
             return Some(cache_dir);
         }
 
-        println!(
-            "cargo:warning=Downloading Lima {} for {}-{}...",
-            version, os, arch
-        );
+        build_helpers::progress!("Downloading Lima {} for {}-{}...", version, os, arch);
 
         let Some(expected_sha256) = lima_archive_sha256(version, os, arch) else {
             println!(
@@ -741,9 +740,10 @@ mod apptainer_build {
             "vz"
         };
         if lima_instance_vmtype(lima).is_some_and(|t| t != desired_vmtype) {
-            println!(
-                "cargo:warning=Lima {} has the wrong VM type for this build; recreating it as {}...",
-                lima.instance, desired_vmtype
+            build_helpers::progress!(
+                "Lima {} has the wrong VM type for this build; recreating it as {}...",
+                lima.instance,
+                desired_vmtype
             );
             delete_lima_instance(lima);
         }
@@ -754,7 +754,7 @@ mod apptainer_build {
             }
             Some(status) if status == "Running" => {}
             Some(_) => {
-                println!("cargo:warning=Starting Lima {} instance...", lima.instance);
+                build_helpers::progress!("Starting Lima {} instance...", lima.instance);
                 start_existing_lima_instance(lima);
             }
         }
@@ -769,8 +769,8 @@ mod apptainer_build {
             return true;
         }
 
-        println!(
-            "cargo:warning=Lima {} instance is unusable (guest unreachable over SSH); deleting and recreating it from scratch...",
+        build_helpers::progress!(
+            "Lima {} instance is unusable (guest unreachable over SSH); deleting and recreating it from scratch...",
             lima.instance
         );
         delete_lima_instance(lima);
@@ -853,9 +853,10 @@ mod apptainer_build {
         arch: Option<&str>,
         rosetta: bool,
     ) -> bool {
-        println!(
-            "cargo:warning=Creating Lima {} instance with {} (this may take a few minutes on first run)...",
-            lima.instance, template
+        build_helpers::progress!(
+            "Creating Lima {} instance with {} (this may take a few minutes on first run)...",
+            lima.instance,
+            template
         );
         let name_flag = format!("--name={}", lima.instance);
         let cpus_flag = format!("--cpus={}", build_vm_cpus());
@@ -955,7 +956,7 @@ mod apptainer_build {
             );
             return false;
         }
-        println!("cargo:warning=Bundled {:?} into {:?}", source, lib_dir);
+        build_helpers::progress!("Bundled {:?} into {:?}", source, lib_dir);
         true
     }
 
@@ -1025,9 +1026,11 @@ mod apptainer_build {
             return false;
         };
 
-        println!(
-            "cargo:warning=Installing gocryptfs {} ({}) into {:?}",
-            GOCRYPTFS_VERSION, arch, bin_dir
+        build_helpers::progress!(
+            "Installing gocryptfs {} ({}) into {:?}",
+            GOCRYPTFS_VERSION,
+            arch,
+            bin_dir
         );
 
         let downloads_dir = build_helpers::cache_dir("downloads");
@@ -1285,10 +1288,7 @@ mod apptainer_build {
     /// kernel through anything but the stable `/dev/fuse` protocol.
     fn build_and_install_squashfuse(install_dir: &Path) -> bool {
         let dest = squashfuse_binary_path(install_dir);
-        println!(
-            "cargo:warning=Building squashfuse {} into {:?}",
-            SQUASHFUSE_VERSION, dest
-        );
+        build_helpers::progress!("Building squashfuse {} into {:?}", SQUASHFUSE_VERSION, dest);
 
         let source_cache = build_helpers::cache_dir("squashfuse-source");
 
@@ -1604,8 +1604,8 @@ mod apptainer_build {
     /// before any of the work below.
     fn build_apptainer_from_source(version: &str, install_dir: &Path, target_arch: &str) -> bool {
         assert_host_build_deps();
-        println!(
-            "cargo:warning=Building apptainer {} from source (requires Go and {})...",
+        build_helpers::progress!(
+            "Building apptainer {} from source (requires Go and {})...",
             version,
             apptainer_build_deps_apt()
         );
@@ -1862,9 +1862,11 @@ mod apptainer_build {
         } else {
             "a native VM"
         };
-        println!(
-            "cargo:warning=Building apptainer {} for {} via {} (this may take several minutes)...",
-            version, target_arch, strategy
+        build_helpers::progress!(
+            "Building apptainer {} for {} via {} (this may take several minutes)...",
+            version,
+            target_arch,
+            strategy
         );
 
         let guest_install_dir = GUEST_APPTAINER_DIR;
@@ -2288,16 +2290,18 @@ echo "=== Apptainer build complete ==="
             // every consumer, and fail the release far from the cause.
             discard_mislabeled_cache(&target_cache, target);
             if sentinel.exists() && target_cache.join("bin/apptainer").exists() {
-                println!(
-                    "cargo:warning=Apptainer {} for {} already cached",
-                    APPTAINER_VERSION, target
+                build_helpers::progress!(
+                    "Apptainer {} for {} already cached",
+                    APPTAINER_VERSION,
+                    target
                 );
                 continue;
             }
 
-            println!(
-                "cargo:warning=Pre-building apptainer {} for {} via Lima VM...",
-                APPTAINER_VERSION, target
+            build_helpers::progress!(
+                "Pre-building apptainer {} for {} via Lima VM...",
+                APPTAINER_VERSION,
+                target
             );
 
             // Each architecture gets its own Lima instance so the VM
@@ -2371,10 +2375,7 @@ echo "=== Apptainer build complete ==="
         if !usable {
             return None;
         }
-        println!(
-            "cargo:warning=Using macOS-side cached apptainer from {:?}",
-            candidate
-        );
+        build_helpers::progress!("Using macOS-side cached apptainer from {:?}", candidate);
         Some(candidate)
     }
 
@@ -2390,10 +2391,7 @@ echo "=== Apptainer build complete ==="
         // so a mislabeled cache is discarded and rebuilt rather than trusted.
         discard_mislabeled_cache(&cache_dir, arch);
         if sentinel.exists() && cached_bin.exists() {
-            println!(
-                "cargo:warning=Using cached apptainer installation from {:?}",
-                cache_dir
-            );
+            build_helpers::progress!("Using cached apptainer installation from {:?}", cache_dir);
             // The cache may pre-date the gocryptfs bundle or the Tegra
             // entries of the --nv list; both are retrofitted in place even
             // when the rest of the build is skipped.
@@ -2412,10 +2410,7 @@ echo "=== Apptainer build complete ==="
         }
 
         // No cache available; build from source (Linux host only).
-        println!(
-            "cargo:warning=Building apptainer {} from source...",
-            APPTAINER_VERSION
-        );
+        build_helpers::progress!("Building apptainer {} from source...", APPTAINER_VERSION);
         let success = build_apptainer_from_source(APPTAINER_VERSION, &cache_dir, arch);
         assert!(
             success,
