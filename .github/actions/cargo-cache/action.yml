@@ -13,6 +13,11 @@ inputs:
       feature sets and test targets, and a disk per suite holds a snapshot that
       is warm for exactly the build reading it.
     required: true
+  target-dir:
+    description: >-
+      The cargo target directory the suite builds into, relative to the
+      repository root: `target` of whichever workspace the suite runs in.
+    default: target
 
 runs:
   using: composite
@@ -85,7 +90,7 @@ runs:
           fi
           ln -sfn "$store" "$path"
         }
-        link "$GITHUB_WORKSPACE/target" "$disk/target"
+        link "$GITHUB_WORKSPACE/${{ inputs.target-dir }}" "$disk/target"
         link "$HOME/.cargo/registry" "$disk/cargo-registry"
         link "$HOME/.cargo/git" "$disk/cargo-git"
         link "$HOME/.peppy/tmp" "$disk/peppy-tmp"

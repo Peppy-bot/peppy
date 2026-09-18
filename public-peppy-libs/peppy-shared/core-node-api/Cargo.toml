@@ -6,8 +6,6 @@ edition.workspace = true
 
 [dependencies]
 # This is the only crate that is allowed to be imported to avoid future circular dependencies
-# `config` stays in the peppy workspace (shared by many peppy crates); reach it
-# via a reverse path, the same way peppylib-rs does.
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
 # `unaligned`: messages are decoded in place from the transport's buffer,
 # which carries no alignment guarantee.

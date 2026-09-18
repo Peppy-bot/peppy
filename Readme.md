@@ -135,7 +135,7 @@ To build Peppy, just type the following:
 cargo build --release --all-targets
 ```
 
-The public-facing crates (`config`, `peppylib`, `pmi`, and friends) are git dependencies on [`public-peppy-libs`](https://github.com/Peppy-bot/public-peppy-libs), resolved through `Cargo.lock`. Nothing extra to clone; `cargo update` moves them forward.
+The public-facing crates (`config`, `peppylib`, `pmi`, and friends) live in [`public-peppy-libs/`](public-peppy-libs/), a sealed tree this workspace depends on by path. The tree is not part of the workspace and the dependency runs one way only: nothing in it may depend on `crates/`, which is what lets `platform-backend` and the hub nodes consume it on its own. Its [README](public-peppy-libs/README.md) explains the boundary and how it is checked.
 
 ### Test
 
@@ -149,8 +149,17 @@ The workspace's `default-members` covers `crates/*` only, so the slow documentat
 cargo test -p docs-integration-tests
 ```
 
-CI runs both, plus the feature-gated container and multi-daemon end-to-end suites and the release-scripts tests. See [`.github/workflows/tests.yml`](.github/workflows/tests.yml) for the exact commands.
+The `public-peppy-libs` tree holds a workspace of its own, so its suites run from there:
+
+```
+cd public-peppy-libs/peppy-shared
+cargo test --workspace --exclude peppylib-py --locked
+```
+
+CI runs all of these, plus the feature-gated container and multi-daemon end-to-end suites and the release-scripts tests. See [`.github/workflows/tests.yml`](.github/workflows/tests.yml) for the exact commands.
 
 ## 📄 License
 
 Peppy is licensed under the [Business Source License 1.1](LICENSE). You may make production use of it, provided that use does not include offering a product or service to third parties whose value derives primarily from Peppy. On 2031-01-01 the license converts to Apache License, Version 2.0.
+
+The [`public-peppy-libs/`](public-peppy-libs/) directory is licensed separately, under the [Apache License, Version 2.0](public-peppy-libs/LICENSE).

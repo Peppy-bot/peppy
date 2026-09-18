@@ -22,6 +22,9 @@ outputs:
   scripts:
     description: Whether the release scripts suite's inputs changed.
     value: ${{ steps.detect.outputs.scripts }}
+  public_libs:
+    description: Whether the public-peppy-libs suites' inputs changed.
+    value: ${{ steps.detect.outputs.public_libs }}
 runs:
   using: composite
   steps:

@@ -7,9 +7,9 @@ mod capnp_build {
     /// Embed the bundled capnp binary for the target platform.
     ///
     /// The binary is the single source of truth shipped with `build-helpers`
-    /// in public-peppy-libs (`peppy-shared/peppy-config-model/tools`). peppy
-    /// pulls build-helpers as a cargo git dependency, so the tools dir is always
-    /// present in the checkout: no superproject sibling and no cmake required.
+    /// in public-peppy-libs (`peppy-shared/peppy-config-model/tools`).
+    /// build-helpers locates the tools dir as its own sibling, so it is always
+    /// present wherever the crate is: no cmake required.
     pub fn run() {
         let target = build_helpers::build_target_triple();
         let binary_path = build_helpers::bundled_capnp_for_embedding(&target)

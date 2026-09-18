@@ -134,12 +134,12 @@ impl TryFrom<&str> for CapnpPlatform {
 /// baked in at compile time via `CARGO_MANIFEST_DIR`. That makes it the single
 /// source of truth for every consumer, regardless of how `build-helpers` is
 /// pulled in:
-///   - As a path dependency inside the `peppy-shared` workspace, the tools
-///     dir is the real sibling on disk.
-///   - As a cargo **git** dependency (for example from the `peppy` workspace),
-///     cargo checks out the whole `public-peppy-libs` repo, so the sibling
-///     tools dir rides along in that checkout with no superproject sibling or
-///     duplicated copy required.
+///   - As a path dependency (inside the `peppy-shared` workspace, or from the
+///     `peppy` workspace next to this tree), the tools dir is the real sibling
+///     on disk.
+///   - As a cargo **git** dependency (for example from `platform-backend`),
+///     cargo checks out the whole repository, so the sibling tools dir rides
+///     along in that checkout with no duplicated copy required.
 fn bundled_tools_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -248,11 +248,11 @@ pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedC
 /// compile time via `CARGO_MANIFEST_DIR`, the same single-source approach as
 /// [`bundled_capnp_path`], so it resolves correctly regardless of how
 /// `build-helpers` is pulled in:
-///   - As a path dependency inside `peppy-shared`, it is the real dir on disk.
-///   - As a cargo **git** dependency (for example from the `peppy` workspace),
-///     cargo checks out the whole `public-peppy-libs` repo, so every sibling
-///     rides along in that checkout — no superproject sibling and no fragile
-///     `../../../` reaches from each consumer.
+///   - As a path dependency (inside `peppy-shared`, or from the `peppy`
+///     workspace next to this tree), it is the real dir on disk.
+///   - As a cargo **git** dependency (for example from `platform-backend`),
+///     cargo checks out the whole repository, so every sibling rides along in
+///     that checkout, with no fragile `../../../` reaches from each consumer.
 ///
 /// Consumers such as `generator`'s build script use this to find the shared
 /// crate source trees they embed, giving one source of truth instead of a

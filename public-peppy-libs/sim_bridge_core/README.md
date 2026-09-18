@@ -18,7 +18,7 @@ Used by the Isaac Sim and MuJoCo variants of `openarm_backbone`, `openarm_arm`, 
 
 ```toml
 [dependencies]
-sim_bridge_core = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "sim_bridge_core" }
+sim_bridge_core = { git = "https://github.com/Peppy-bot/peppy", package = "sim_bridge_core" }
 ```
 
 > `sim_bridge_core` depends on `peppylib` which is generated per-node by the peppy CLI. Run `peppy node sync` in your node directory before building.

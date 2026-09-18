@@ -15,12 +15,10 @@ readme = "Readme.md"
 name = "peppylib"
 
 [dependencies]
-# Reverse path deps into the peppy submodule: these crates have not been moved
-# to peppy-shared yet. Valid only inside the superproject checkout (peppy and
-# public-peppy-libs are sibling submodules). Tightens as crates migrate per PR.
+# Siblings in the peppy-shared workspace. Path dependencies never leave the
+# public-peppy-libs tree (build-helpers/tests/sealed_tree.rs).
 pmi = { path = "../peppy-messaging-interface" }
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
-# core-node-api now lives here in peppy-shared; local sibling path.
 core-node-api = { path = "../core-node-api" }
 thiserror = "2.0"                                  # Avoid Anyhow in this crate
 tokio = { version = "1", features = ["full"] }

@@ -1,11 +1,10 @@
 # Virtual workspace for Peppy shared, public-facing crates.
 #
-# Crates are migrated here from the `peppy` workspace PR by PR. Earlier PRs moved
-# `peppylib-py` and `peppylib` (the Rust lib, now the `peppylib-rs` package);
-# `core-node-api` follows. Crates that have not been moved yet are referenced from
-# `peppy` via relative reverse paths (`../../../peppy/crates/<crate>`), which only
-# resolve inside the superproject checkout where `peppy` and `public-peppy-libs` are
-# sibling submodules.
+# This workspace is part of the sealed `public-peppy-libs` tree. It sits inside
+# the `peppy` repository but outside the `peppy` workspace (whose root excludes
+# the tree), resolves and locks on its own, and depends on nothing beyond the
+# tree. The `peppy` crates depend on these by path, `platform-backend` by git;
+# the dependency never runs the other way (build-helpers/tests/sealed_tree.rs).
 #
 # `build-helpers` holds the generic build-script
 # helpers shared by both workspaces. It lives here, at the bottom of the dependency
