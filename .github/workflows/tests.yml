@@ -51,6 +51,7 @@ jobs:
       container_e2e: ${{ steps.changes.outputs.container_e2e }}
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
       scripts: ${{ steps.changes.outputs.scripts }}
+      scripts_vm: ${{ steps.changes.outputs.scripts_vm }}
       public_libs_shared_packages: ${{ steps.changes.outputs.public_libs_shared_packages }}
       public_libs_peppylib_py: ${{ steps.changes.outputs.public_libs_peppylib_py }}
       public_libs_crates: ${{ steps.changes.outputs.public_libs_crates }}
@@ -191,6 +192,12 @@ jobs:
         with:
           command: cargo test --locked -p docs-integration-tests
 
+  # The release scripts test in two jobs because their two halves cost three
+  # orders of magnitude apart. Measured on run 35394542148: 444 tests in
+  # 891s, of which the 27 that boot a Lima guest took 890s and the other 417
+  # took about one second between them. Running them together billed every
+  # change under scripts/ -- a release-note wording fix included -- for three
+  # guest boots.
   release-scripts:
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
@@ -207,18 +214,65 @@ jobs:
       # Provides the pixi the suite runs under.
       - uses: ./.github/actions/rust-build-env
 
-      - name: Run release scripts tests
+      - name: Run the mocked release scripts tests
+        run: ./scripts/run_tests.sh -m 'not vm'
+
+  # The Lima half. Gated on the files that decide what a guest installs and
+  # how (see TREE_SUITES in the changes action), and run unconditionally on
+  # the way into main, so a promotion re-proves the install path even when the
+  # narrow gate stayed shut on every pull request behind it.
+  release-scripts-vm:
+    needs: changes
+    if: needs.changes.outputs.scripts_vm == 'true' || github.event_name == 'push'
+    runs-on: self-hosted
+    permissions:
+      contents: read
+    # Three guests, a release build and a container build. A healthy run is
+    # about 15 minutes; the failure this bounds is the one that does not fail
+    # at all, where a guest never finishes booting and the job sits for hours
+    # holding a box (run 35394542148 was still going after one).
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Provides the pixi the suite runs under.
+      - uses: ./.github/actions/rust-build-env
+
+      # The install tests boot Lima VMs (limactl itself comes from the pixi
+      # environment) on the runner's QEMU, which comes from the box's
+      # provisioning. KVM access is set here because a reboot resets the
+      # permission: it opens when present but group-inaccessible. Needs
+      # passwordless sudo on the box.
+      #
+      # Without KVM Lima falls back to software emulation. That is not an
+      # error and the suite still passes, which is the problem: it turns a
+      # 15-minute job into an hours-long one and says nothing, so the box
+      # reads as slow rather than as misprovisioned. Say it where it will be
+      # read -- an annotation and the step summary -- rather than leaving it
+      # to whoever next wonders why this job is the slowest thing in CI.
+      - name: Open KVM to the runner, and say so when it is not there
         run: |
-          # The install tests boot Lima VMs (limactl itself comes from the pixi
-          # environment) on the runner's QEMU, which comes from the box's
-          # provisioning. KVM access is set here because a reboot resets the
-          # permission: it opens when present but group-inaccessible, and
-          # without it Lima falls back to software emulation, which only costs
-          # time. Needs passwordless sudo on the box.
-          if [ -e /dev/kvm ] && ! [ -r /dev/kvm -a -w /dev/kvm ]; then
-            sudo chmod 666 /dev/kvm
+          if [ -e /dev/kvm ]; then
+            if ! [ -r /dev/kvm -a -w /dev/kvm ]; then
+              sudo chmod 666 /dev/kvm
+            fi
+            echo "KVM available: guests run at native speed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=No KVM on ${RUNNER_NAME:-this runner}::/dev/kvm is absent, so Lima falls back to software emulation. This job will take hours instead of ~15 minutes. The box needs KVM (nested virtualisation on a VPS) to run the install tests at a sane speed."
+            {
+              echo "### No KVM on ${RUNNER_NAME:-this runner}"
+              echo
+              echo "\`/dev/kvm\` is absent, so every guest boots under QEMU software"
+              echo "emulation. Expect hours rather than ~15 minutes."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
-          ./scripts/run_tests.sh --all
+
+      - name: Run the Lima install tests
+        run: ./scripts/run_tests.sh -m vm
 
   # Three jobs test the sealed public-peppy-libs tree: the cargo packages of
   # its peppy-shared workspace together with the peppylib Python bindings
@@ -551,6 +605,7 @@ jobs:
       - multi-daemon-e2e
       - docs-integration
       - release-scripts
+      - release-scripts-vm
       - public-libs-shared
       - public-libs-crates
       - public-libs-python

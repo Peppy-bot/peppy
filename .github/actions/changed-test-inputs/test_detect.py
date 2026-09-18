@@ -150,6 +150,52 @@ class Detection(unittest.TestCase):
                 self.assertEqual(selection["container_e2e"], "true")
                 self.assertEqual(selection["docs_integration"], "true")
                 self.assertEqual(selection["scripts"], "true")
+                self.assertEqual(selection["scripts_vm"], "true")
+
+    def test_the_mocked_release_scripts_run_for_any_change_under_scripts(self):
+        # The cheap half costs about a second, so it is gated on the whole
+        # tree and nothing about a change has to be understood to run it.
+        for path in (
+            "scripts/functions/docs.py",
+            "scripts/functions/release_notes.py",
+            "scripts/tests/test_github.py",
+            "scripts/install.sh",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["scripts"], "true")
+
+    def test_the_lima_release_scripts_run_for_what_reaches_a_guest(self):
+        for path in (
+            "scripts/install.sh",
+            "scripts/tests/lima_helpers.py",
+            "scripts/tests/test_install.py",
+            "scripts/tests/test_install_container.py",
+            "scripts/functions/lima.py",
+            "scripts/functions/docker.py",
+            "scripts/functions/build_release.py",
+            "scripts/pixi.toml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["scripts_vm"], "true")
+
+    def test_the_lima_release_scripts_stay_off_for_the_rest_of_the_tree(self):
+        # The modules that churn most: none of them can change what install.sh
+        # does to a guest, and booting three guests to prove it was the whole
+        # cost of this suite on a typical release-scripts change.
+        for path in (
+            "scripts/functions/docs.py",
+            "scripts/functions/github.py",
+            "scripts/functions/parallel_release.py",
+            "scripts/functions/release_notes.py",
+            "scripts/functions/release_summary.py",
+            "scripts/functions/claude.py",
+            "scripts/tests/test_docs.py",
+            "scripts/tests/test_github.py",
+        ):
+            with self.subTest(path=path):
+                selection = select(path)
+                self.assertEqual(selection["scripts_vm"], "false")
+                self.assertEqual(selection["scripts"], "true")
 
     def test_an_unknowable_change_set_runs_everything(self):
         selection = detect.select_everything(CRATES, LIBRARIES)
