@@ -46,6 +46,24 @@ pub(super) fn skip_csi(chars: &mut std::str::Chars<'_>) {
     take_csi(chars);
 }
 
+/// Drops ANSI SGR escape sequences so a colored render can be compared
+/// against its plain counterpart. The renderer tests share it to assert that
+/// colorizing is purely additive: stripping the codes must reproduce the
+/// plain layout byte for byte.
+#[cfg(test)]
+pub(super) fn strip_ansi(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            skip_csi(&mut chars);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Consumes a CSI escape sequence whose leading `\x1b` has already been
 /// taken, returning the consumed characters: an optional `[` introducer,
 /// then bytes up to and including a final byte in `@`..=`~`. The `[` itself

@@ -284,7 +284,7 @@ fn format_stack_list(
         }
         let header = format!(
             "Core node: {} (host: {})",
-            paint(colorize, NODE_COLOR, &section.core_node),
+            paint(colorize, CORE_NODE_COLOR, &section.core_node),
             section.host_name
         );
         let mut body = String::new();
@@ -516,9 +516,9 @@ fn format_stack_body(
 // these codes before measuring, so a colored cell occupies the same display
 // columns as its plain text and the box stays aligned.
 use crate::commands::colors::{
-    BINDING_COLOR, COUNT_COLOR, HEALTH_HEALTHY_COLOR, HEALTH_UNHEALTHY_COLOR, INSTANCE_COLOR,
-    NODE_COLOR, STATUS_FAILED_COLOR, STATUS_FINISHED_COLOR, STATUS_RUNNING_COLOR,
-    STATUS_STARTING_COLOR, paint,
+    BINDING_COLOR, CORE_NODE_COLOR, COUNT_COLOR, ENDPOINT_LABEL_COLOR, HEALTH_HEALTHY_COLOR,
+    HEALTH_UNHEALTHY_COLOR, INSTANCE_COLOR, NODE_COLOR, STATUS_FAILED_COLOR, STATUS_FINISHED_COLOR,
+    STATUS_RUNNING_COLOR, STATUS_STARTING_COLOR, paint,
 };
 use crate::commands::table::{col_width, render_table, wrap};
 
@@ -651,7 +651,7 @@ fn render_endpoints_table(
                 let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
                 for endpoint in &instance.endpoints {
                     let mut kind_cell = endpoint.kind.to_string();
-                    let mut label_cell = endpoint.label.clone();
+                    let mut label_cell = paint(colorize, ENDPOINT_LABEL_COLOR, &endpoint.label);
                     for url in &endpoint.urls {
                         rows.push(vec![
                             std::mem::take(&mut node_cell),
@@ -925,7 +925,7 @@ fn shorten_home_with(path: &str, home: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::table::skip_csi;
+    use crate::commands::table::strip_ansi;
     use config::runtime::{ClockBinding, ProducerRef};
     use core_node_api::{NodeStage, SerializedInstance};
     use unicode_width::UnicodeWidthStr;
@@ -2175,21 +2175,6 @@ mod tests {
         assert_eq!(shorten_home_with("/etc/passwd", "/"), "/etc/passwd");
         // A trailing slash on the resolved home is tolerated.
         assert_eq!(shorten_home_with("/home/user/x", "/home/user/"), "~/x");
-    }
-
-    /// Drops ANSI SGR escape sequences so a colored render can be compared
-    /// against its plain counterpart.
-    fn strip_ansi(s: &str) -> String {
-        let mut out = String::new();
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                skip_csi(&mut chars);
-            } else {
-                out.push(c);
-            }
-        }
-        out
     }
 
     #[test]

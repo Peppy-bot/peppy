@@ -1,13 +1,16 @@
-//! Shared ANSI color palette for the CLI's boxed views, so `stack list`,
-//! `stack benchmark`, `repo list`, and `repo search` tint the same things the
-//! same way (node labels cyan, link ids yellow, …). Applied only when
-//! `colorize` is set; the table width logic strips these codes before
+//! Shared ANSI color palette for the CLI's views, so `stack list`,
+//! `stack benchmark`, `repo list`, `repo search`, and the endpoint blocks a
+//! launch prints tint the same things the same way (node labels cyan,
+//! instance ids magenta, core nodes blue, link ids yellow, …). Applied only
+//! when `colorize` is set; the table width logic strips these codes before
 //! measuring, so a colored cell occupies the same display columns as its
 //! plain text and stays aligned.
 
 pub(super) const NODE_COLOR: &str = "\x1b[36m"; // cyan: node labels
 pub(super) const COUNT_COLOR: &str = "\x1b[32m"; // green: per-node instance counts
 pub(super) const INSTANCE_COLOR: &str = "\x1b[35m"; // magenta: instance ids
+pub(super) const CORE_NODE_COLOR: &str = "\x1b[34m"; // blue: core node names
+pub(super) const ENDPOINT_LABEL_COLOR: &str = "\x1b[33m"; // yellow: endpoint labels
 pub(super) const BINDING_COLOR: &str = "\x1b[33m"; // yellow: slot bindings / link ids
 pub(super) const MEASURE_SERVICE_COLOR: &str = "\x1b[34m"; // blue: svc-probe measurement
 pub(super) const MEASURE_ACTION_COLOR: &str = "\x1b[35m"; // magenta: act-probe measurement
@@ -19,6 +22,7 @@ pub(super) const STATUS_FINISHED_COLOR: &str = "\x1b[34m"; // blue: a cleanly-fi
 pub(super) const STATUS_FAILED_COLOR: &str = "\x1b[31m"; // red: a crashed instance
 pub(super) const HEALTH_HEALTHY_COLOR: &str = "\x1b[32m"; // green: a healthy instance
 pub(super) const HEALTH_UNHEALTHY_COLOR: &str = "\x1b[31m"; // red: an unhealthy instance
+pub(super) const HEADING_STYLE: &str = "\x1b[1m"; // bold: the heading of an output block
 pub(super) const RESET: &str = "\x1b[0m";
 
 /// Orange, for the states that are not errors but are not the plain answer
