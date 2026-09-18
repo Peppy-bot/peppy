@@ -1,6 +1,7 @@
 use super::super::action_loop::{
     GoalHandler, accept_goal, reject_goal, run_action_loop, under_goal_cancel,
 };
+use super::endpoints::{HostAddressSource, expand_announcements};
 use super::gate::ConcurrencyGate;
 use super::health_monitor::{HealthMonitorParams, HealthMonitorPolicy, spawn_health_monitor};
 use super::pairing::plan_requested_pairs;
@@ -24,12 +25,13 @@ use daemon_config::peppy_config::PeppyConfig;
 use futures::FutureExt;
 use node_stack::{self, EntityHandle, NodeEntity, NodeStack};
 use parking_lot::Mutex as StdMutex;
+use peppylib::encoding::endpoints::{NodeEndpointsRequest, NodeEndpointsResponse};
 use peppylib::encoding::health::NodeHealthRequest;
 use peppylib::encoding::ready::NodeReadyRequest;
 use peppylib::messaging::SenderTarget;
 use peppylib::messaging::{
-    ActionFeedbackPublisher, ConcurrentAction, NODE_HEALTH_SERVICE, NODE_READY_SERVICE,
-    PendingGoal, ServiceTarget,
+    ActionFeedbackPublisher, ConcurrentAction, NODE_ENDPOINTS_SERVICE, NODE_HEALTH_SERVICE,
+    NODE_READY_SERVICE, PendingGoal, ServiceTarget,
 };
 use peppylib::types::Payload;
 use peppylib::{MessengerHandle, PeppyError, PeppyResult, ServiceMessenger};
@@ -118,16 +120,22 @@ pub struct DaemonDefaults {
     /// from the cached credentials, not from `peppy_config`, so it is threaded in
     /// rather than derived in `from_peppy_config`.
     pub namespace: config::namespace::Namespace,
+    /// Where the daemon reads the addresses of the machine it runs on, which
+    /// a started instance's endpoints expand against: the system's interfaces
+    /// in production, a fixed list under test.
+    pub host_addresses: HostAddressSource,
 }
 
 impl DaemonDefaults {
     /// Resolves the per-node defaults from the daemon's loaded `peppy_config`
     /// (the single place that knows which of its fields are shipped to
     /// spawned nodes) plus the daemon's resolved `namespace`, which comes
-    /// from the credentials rather than from `peppy_config`.
+    /// from the credentials rather than from `peppy_config`, and the source
+    /// of the host addresses its instances' endpoints expand against.
     pub fn from_peppy_config(
         config: &PeppyConfig,
         namespace: config::namespace::Namespace,
+        host_addresses: HostAddressSource,
     ) -> Self {
         Self {
             gossip: config.zenoh.gossip(),
@@ -135,6 +143,7 @@ impl DaemonDefaults {
             daemon_grace_secs: config.lifecycle.daemon_grace_secs,
             shutdown_grace_secs: config.lifecycle.shutdown_grace_secs,
             namespace,
+            host_addresses,
         }
     }
 }
@@ -1205,6 +1214,9 @@ async fn process_node_run(
     // container always routes through the router as a client even in the peer
     // topology.
     let mut launch_config = runtime_config.clone();
+    // Kept aside before the defaults are consumed below: the endpoints the
+    // node announces are expanded against these once it is healthy.
+    let host_addresses = ctx.action.daemon_defaults.host_addresses.clone();
     apply_daemon_defaults(
         &mut launch_config,
         ctx.action.daemon_defaults,
@@ -1370,9 +1382,9 @@ async fn process_node_run(
     let ready_outcome = tokio::select! {
         biased;
         _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
-        res = wait_for_ready_signal(&signal_target, ctx.action.node_startup_timeout, &mut child) => {
+        res = poll_startup_service(&signal_target, StartupProbe::Ready, ctx.action.node_startup_timeout, &mut child) => {
             match res {
-                Ok(()) => StartupOutcome::Ok,
+                Ok(_) => StartupOutcome::Ok(Vec::new()),
                 Err(e) => StartupOutcome::Failed(e),
             }
         }
@@ -1411,16 +1423,46 @@ async fn process_node_run(
     let health_outcome = tokio::select! {
         biased;
         _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
-        res = perform_health_check(&signal_target, ctx.action.node_start_health_timeout, &mut child) => {
+        res = poll_startup_service(&signal_target, StartupProbe::Health, ctx.action.node_start_health_timeout, &mut child) => {
             match res {
-                Ok(()) => StartupOutcome::Ok,
+                Ok(_) => StartupOutcome::Ok(Vec::new()),
                 Err(e) => StartupOutcome::Failed(e),
             }
         }
     };
 
+    // The endpoints the node bound during setup, read once it is healthy
+    // (the runtime seals and offers them in the same post-setup step as
+    // `node_health`) and expanded against this machine's addresses. A node
+    // whose manifest declares none is never asked.
+    let health_outcome = match health_outcome {
+        StartupOutcome::Ok(_) if !node_config.execution.endpoints.is_empty() => {
+            let host_addresses = host_addresses.read();
+            tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => StartupOutcome::Cancelled,
+                res = poll_startup_service(&signal_target, StartupProbe::Endpoints, ctx.action.node_start_health_timeout, &mut child) => {
+                    match res.and_then(|reply| {
+                        let response = NodeEndpointsResponse::decode(reply.as_ref())
+                            .map_err(|e| format!("failed to decode the node endpoints reply: {e}"))?;
+                        expand_announcements(
+                            instance_id_str,
+                            &node_config.execution.endpoints,
+                            response.endpoints,
+                            &host_addresses,
+                        )
+                    }) {
+                        Ok(endpoints) => StartupOutcome::Ok(endpoints),
+                        Err(e) => StartupOutcome::Failed(e),
+                    }
+                }
+            }
+        }
+        other => other,
+    };
+
     match health_outcome {
-        StartupOutcome::Ok => {
+        StartupOutcome::Ok(endpoints) => {
             debug!(
                 "Health check passed for node instance '{}'",
                 instance_id_str
@@ -1459,6 +1501,7 @@ async fn process_node_run(
                 child,
                 started_ctx,
                 instance_id.clone(),
+                endpoints.clone(),
             )
             .await;
             match commit_result {
@@ -1594,7 +1637,7 @@ async fn process_node_run(
                             is_container,
                         )
                         .await;
-                    let result = NodeRunResult::success(pid);
+                    let result = NodeRunResult::success(pid).with_endpoints(endpoints);
                     publish_enabled.store(false, Ordering::Release);
                     result
                 }
@@ -1618,7 +1661,7 @@ async fn process_node_run(
             let reason = match health_outcome {
                 StartupOutcome::Cancelled => "cancelled during health check".to_string(),
                 StartupOutcome::Failed(e) => e,
-                StartupOutcome::Ok => unreachable!(),
+                StartupOutcome::Ok(_) => unreachable!(),
             };
             debug!(
                 "Aborting node instance '{}' during health check: {}",
@@ -1637,6 +1680,9 @@ async fn process_node_run(
                 &instance_id,
             )
             .await;
+            // The run log is where an operator reads why an instance never
+            // started; the reason travels on the result too.
+            write_error_to_log(&ctx.log_file, &msg);
             feedback_sync
                 .drain_or_warn(instance_id_str, drain_quiet_window(is_container), false)
                 .await;
@@ -1646,17 +1692,19 @@ async fn process_node_run(
     }
 }
 
-/// Outcome of a startup step (ready-signal wait or health check) racing
-/// against external cancellation.
+/// Outcome of a startup step (ready-signal wait, health check, endpoint
+/// read) racing against external cancellation.
 enum StartupOutcome {
-    Ok,
+    /// The step passed, carrying the endpoints read so far: empty until the
+    /// endpoint read of a node that declares some.
+    Ok(Vec<core_node_api::InstanceEndpoint>),
     Cancelled,
     Failed(String),
 }
 
 fn startup_abort_reason(outcome: &StartupOutcome) -> Option<&str> {
     match outcome {
-        StartupOutcome::Ok => None,
+        StartupOutcome::Ok(_) => None,
         StartupOutcome::Cancelled => Some("cancelled during ready-signal wait"),
         StartupOutcome::Failed(msg) => Some(msg.as_str()),
     }
@@ -1757,96 +1805,84 @@ struct NodeSignalTarget<'a> {
     target_instance_id: &'a str,
 }
 
-/// Performs a health check on a newly started node instance.
-/// Polls the node's health service with a timeout and returns Ok if the node responds.
-/// Also monitors the child process to detect early exits.
-async fn perform_health_check(
-    target: &NodeSignalTarget<'_>,
-    timeout: Duration,
-    child: &mut Child,
-) -> std::result::Result<(), String> {
-    let request_payload = NodeHealthRequest::new()
-        .encode()
-        .map_err(|e| format!("failed to encode node health request: {e}"))?;
-    let deadline = Instant::now() + timeout;
-    let mut last_err: Option<PeppyError> = None;
+/// The framework services the daemon polls on a starting node, in order:
+/// the ready signal (the runtime is up), the health check (setup returned),
+/// and, for a node whose manifest declares endpoints, the sockets it bound.
+#[derive(Clone, Copy)]
+enum StartupProbe {
+    Ready,
+    Health,
+    Endpoints,
+}
 
-    // Poll in short intervals to avoid a startup race where the node subscribes to
-    // `node_health` after the first request has already been published.
-    loop {
-        // Check if the child process has exited
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(format!(
-                    "node process exited before becoming healthy (status={status})"
-                ));
+impl StartupProbe {
+    fn service(self) -> &'static str {
+        match self {
+            StartupProbe::Ready => NODE_READY_SERVICE,
+            StartupProbe::Health => NODE_HEALTH_SERVICE,
+            StartupProbe::Endpoints => NODE_ENDPOINTS_SERVICE,
+        }
+    }
+
+    fn request(self) -> std::result::Result<Payload, String> {
+        match self {
+            StartupProbe::Ready => NodeReadyRequest::new()
+                .encode()
+                .map_err(|e| format!("failed to encode node ready request: {e}")),
+            StartupProbe::Health => NodeHealthRequest::new()
+                .encode()
+                .map_err(|e| format!("failed to encode node health request: {e}")),
+            StartupProbe::Endpoints => NodeEndpointsRequest::new()
+                .encode()
+                .map_err(|e| format!("failed to encode node endpoints request: {e}")),
+        }
+    }
+
+    /// The failure when the node process exits while this probe is pending.
+    fn exited(self, status: std::process::ExitStatus) -> String {
+        match self {
+            StartupProbe::Ready => format!("node process exited during startup (status={status})"),
+            StartupProbe::Health => {
+                format!("node process exited before becoming healthy (status={status})")
             }
-            Ok(None) => {}
-            Err(err) => return Err(format!("failed to query node process status: {err}")),
+            StartupProbe::Endpoints => {
+                format!("node process exited before announcing its endpoints (status={status})")
+            }
         }
+    }
 
-        let now = Instant::now();
-        if now >= deadline {
-            let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
-                instance_id: Some(target.target_instance_id.to_string()),
-                service_name: NODE_HEALTH_SERVICE.to_string(),
-            });
-            return Err(format!("health check timed out: {err}"));
-        }
-
-        let remaining = deadline - now;
-        let attempt_timeout = remaining.min(Duration::from_millis(500));
-
-        match ServiceMessenger::poll(
-            target.messenger,
-            target.core_node_name,
-            target.caller_instance_id,
-            SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
-            NODE_HEALTH_SERVICE,
-            ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
-                target.target_core_node,
-                target.target_instance_id,
-            )),
-            request_payload.clone(),
-            attempt_timeout,
-        )
-        .await
-        {
-            Ok(_) => return Ok(()),
-            Err(err) => {
-                last_err = Some(err);
-                tokio::time::sleep(Duration::from_millis(50)).await;
+    /// The failure when the probe's budget runs out.
+    fn timed_out(self, err: PeppyError) -> String {
+        match self {
+            StartupProbe::Ready => format!(
+                "startup timed out waiting for node to be ready (node may still be compiling): {err}"
+            ),
+            StartupProbe::Health => format!("health check timed out: {err}"),
+            StartupProbe::Endpoints => {
+                format!("timed out waiting for the node to report its endpoints: {err}")
             }
         }
     }
 }
 
-/// Waits for a node to signal it's ready (runner::run() has started).
-/// Polls the node's ready service with a timeout and returns Ok when the node responds.
-/// Also monitors the child process to detect early exits (e.g., compilation failures).
-///
-/// This is used during startup to wait for compilation to complete before
-/// starting the health check timer.
-async fn wait_for_ready_signal(
+/// Polls one framework service of a newly started node until it answers,
+/// returning the reply payload, and fails when `timeout` runs out or the
+/// child process exits first. Polling in short intervals covers the startup
+/// race where the node registers the service after a first request was
+/// already published.
+async fn poll_startup_service(
     target: &NodeSignalTarget<'_>,
+    probe: StartupProbe,
     timeout: Duration,
     child: &mut Child,
-) -> std::result::Result<(), String> {
-    let request_payload = NodeReadyRequest::new()
-        .encode()
-        .map_err(|e| format!("failed to encode node ready request: {e}"))?;
+) -> std::result::Result<Payload, String> {
+    let request_payload = probe.request()?;
     let deadline = Instant::now() + timeout;
     let mut last_err: Option<PeppyError> = None;
 
-    // Poll in short intervals to detect when the node becomes ready
     loop {
-        // Check if the child process has exited (e.g., compilation failed)
         match child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(format!(
-                    "node process exited during startup (status={status})"
-                ));
-            }
+            Ok(Some(status)) => return Err(probe.exited(status)),
             Ok(None) => {}
             Err(err) => return Err(format!("failed to query node process status: {err}")),
         }
@@ -1855,11 +1891,9 @@ async fn wait_for_ready_signal(
         if now >= deadline {
             let err = last_err.unwrap_or_else(|| PeppyError::ServiceTimeout {
                 instance_id: Some(target.target_instance_id.to_string()),
-                service_name: NODE_READY_SERVICE.to_string(),
+                service_name: probe.service().to_string(),
             });
-            return Err(format!(
-                "startup timed out waiting for node to be ready (node may still be compiling): {err}"
-            ));
+            return Err(probe.timed_out(err));
         }
 
         let remaining = deadline - now;
@@ -1870,7 +1904,7 @@ async fn wait_for_ready_signal(
             target.core_node_name,
             target.caller_instance_id,
             SenderTarget::node_from_validated(target.to_node_name, target.to_node_tag),
-            NODE_READY_SERVICE,
+            probe.service(),
             ServiceTarget::Producer(&peppylib::messaging::ProducerRef::new(
                 target.target_core_node,
                 target.target_instance_id,
@@ -1880,7 +1914,7 @@ async fn wait_for_ready_signal(
         )
         .await
         {
-            Ok(_) => return Ok(()),
+            Ok(reply) => return Ok(reply.payload()),
             Err(err) => {
                 last_err = Some(err);
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2191,6 +2225,7 @@ mod tests {
             daemon_grace_secs: 123,
             shutdown_grace_secs: 17,
             namespace: config::namespace::Namespace::local(),
+            host_addresses: HostAddressSource::Fixed(Vec::new()),
         }
     }
 
@@ -2279,8 +2314,11 @@ mod tests {
             ..PeppyConfig::default()
         };
 
-        let defaults =
-            DaemonDefaults::from_peppy_config(&config, config::namespace::Namespace::local());
+        let defaults = DaemonDefaults::from_peppy_config(
+            &config,
+            config::namespace::Namespace::local(),
+            HostAddressSource::Fixed(Vec::new()),
+        );
 
         assert!(!defaults.gossip);
         assert_eq!(

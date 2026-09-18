@@ -2,9 +2,9 @@ use config::AnyType;
 use config::node::ImplementsEntry;
 use config::runtime::{ClockBinding, ClockDomainId, CoreNodeName, Name, ProducerRef};
 use core_node_api::encoding::{
-    ClockDomainInfo, ClockListRequest, NodeInfoRequest, NodeInfoResponse, NodeRunFeedback,
-    NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ObservationTarget, ObservationTargets,
-    PairTarget, StackListRequest,
+    ClockDomainInfo, ClockListRequest, InstanceEndpoints, NodeInfoRequest, NodeInfoResponse,
+    NodeRunFeedback, NodeRunGoal, NodeRunGoalResponse, NodeRunResult, ObservationTarget,
+    ObservationTargets, PairTarget, StackListRequest,
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
@@ -1010,6 +1010,21 @@ pub async fn run_instance_async(
         info!("Started node instance '{}' (pid: {})", instance_id, pid);
     } else {
         info!("Started node instance '{}'", instance_id);
+    }
+    // The URLs the daemon expanded the instance's announced sockets into,
+    // rendered the way a launch prints them.
+    let mut endpoints = String::new();
+    crate::commands::render_endpoints(
+        &mut endpoints,
+        &[InstanceEndpoints {
+            instance_id: instance_id.clone(),
+            node_label: format!("{node_name}:{tag}"),
+            core_node: core_node_name.to_string(),
+            endpoints: start_result.endpoints,
+        }],
+    );
+    for line in endpoints.lines() {
+        info!("{line}");
     }
     Ok(instance_id)
 }

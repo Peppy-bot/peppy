@@ -4,11 +4,12 @@
 use crate::bridges::{self, PreparedExposure};
 use daemon_config::mcp_deployment::{
     McpDeploymentError, McpDeploymentPlan, McpServeSpec, PORT_PARAMETER, SPEC_ENV_VAR,
-    plan_deployment,
+    endpoint_label, plan_deployment,
 };
+use daemon_config::source::ExposureRef;
 use message_codec::consumer::ConsumerIdentity;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureSet};
-use peppylib::runtime::{NodeBuilder, NodeRunner};
+use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner};
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
@@ -100,7 +101,15 @@ async fn run(
 
     let mut servers = Vec::with_capacity(prepared.len());
     let mut pumps = Vec::new();
+    let mut announcements = Vec::with_capacity(prepared.len());
     for exposure in prepared {
+        announcements.push((
+            endpoint_label(&ExposureRef {
+                name: exposure.bundle.exposure.name.clone(),
+                tag: exposure.bundle.exposure.tag.clone(),
+            }),
+            exposure.bundle.exposure.endpoint_path(),
+        ));
         let mut builder = ExposureServer::builder(exposure.bundle).with_clock(clock.clone());
         for tool in exposure.tools {
             let tool = Arc::new(tool);
@@ -146,6 +155,22 @@ async fn run(
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
         .map_err(|source| ServeError::Bind { port, source })?;
+    let bound = listener
+        .local_addr()
+        .map_err(|source| ServeError::Bind { port, source })?;
+    // The daemon learns the URLs the same way it does for every node: each
+    // exposure is announced under the label its synthesized manifest
+    // declares, with the loopback socket the listener bound and its path.
+    for (label, path) in announcements {
+        node_runner.announce_endpoint(
+            &label,
+            EndpointBinding {
+                scheme: "http".to_owned(),
+                address: bound,
+                path,
+            },
+        )?;
+    }
     tracing::info!(
         port,
         endpoints = endpoints.join(", "),

@@ -1,6 +1,9 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::node::NodeConfigParser;
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
+use config::node::{EndpointDeclaration, EndpointKind, EndpointLabel, NodeConfigParser};
+use core_node::{
+    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, HostAddress,
+    HostAddressSource,
+};
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
@@ -89,6 +92,27 @@ impl Default for InstanceLifetime {
 
 const LIFETIME_SENTINEL: &str = "instances.alive";
 
+/// The host addresses every emulated daemon expands instance endpoints
+/// against: loopback first, then two interfaces, so the URLs a test asserts
+/// on are the same on every machine.
+pub fn test_host_addresses() -> Vec<HostAddress> {
+    [
+        ("lo", "127.0.0.1"),
+        ("eth0", "192.168.1.5"),
+        ("tailscale0", "100.123.58.116"),
+    ]
+    .into_iter()
+    .map(|(interface, ip)| {
+        let ip: std::net::IpAddr = ip.parse().expect("an IP literal");
+        HostAddress {
+            interface: interface.to_string(),
+            ip,
+            loopback: ip.is_loopback(),
+        }
+    })
+    .collect()
+}
+
 /// The keep-alive argv shared by [`override_run_cmd_while`] and
 /// [`InstanceLifetime::keep_alive_run_cmd`]. See the former for why neither
 /// exit condition is a duration.
@@ -142,6 +166,23 @@ pub fn override_run_cmd_while(peppy_json5: &Path, sentinel: &Path) {
     modify_node_config(peppy_json5, |cfg| {
         cfg.execution.run_cmd = Some(keep_alive_argv(sentinel));
         cfg.execution.build_cmd = None;
+    });
+}
+
+/// Declares `endpoints` under a node's `execution.endpoints`, each as
+/// `(label, kind, description)`, and regenerates the codegen fingerprint, so
+/// a test can make an emulated node one the daemon asks for its endpoints.
+pub fn declare_endpoints(peppy_json5: &Path, endpoints: &[(&str, EndpointKind, &str)]) {
+    modify_node_config(peppy_json5, |cfg| {
+        for (label, kind, description) in endpoints {
+            cfg.execution.endpoints.insert(
+                EndpointLabel::new(*label).expect("a valid endpoint label"),
+                EndpointDeclaration {
+                    kind: *kind,
+                    description: (*description).to_string(),
+                },
+            );
+        }
     });
 }
 
@@ -350,6 +391,7 @@ impl ServeCommandEmulation {
         let core_node = CoreNode::new(CoreNodeConfig {
             messenger: Arc::clone(&shared_messenger),
             node_name: Some(core_node_name.to_string()),
+            host_addresses: HostAddressSource::Fixed(test_host_addresses()),
             arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),

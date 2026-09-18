@@ -3,7 +3,10 @@
 use super::poll::AbortOnDrop;
 use super::test_node_target;
 use config::consts::DEFAULT_MESSAGING_HOST;
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
+use core_node::{
+    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, HostAddress,
+    HostAddressSource,
+};
 use daemon_config::consts::PeppyDirs;
 use node_stack::NodeStack;
 use peppylib::messaging::MessengerHandle;
@@ -29,6 +32,27 @@ pub async fn create_mock_messenger() -> Arc<Mutex<Messenger>> {
         .await
         .expect("failed to start mock session");
     Arc::new(Mutex::new(messenger))
+}
+
+/// The host addresses every test daemon expands instance endpoints against:
+/// loopback first, then two interfaces, so an expansion is deterministic
+/// whatever machine runs the tests.
+pub fn test_host_addresses() -> Vec<HostAddress> {
+    [
+        ("lo", "127.0.0.1"),
+        ("eth0", "192.168.1.5"),
+        ("tailscale0", "100.123.58.116"),
+    ]
+    .into_iter()
+    .map(|(interface, ip)| {
+        let ip: std::net::IpAddr = ip.parse().expect("an IP literal");
+        HostAddress {
+            interface: interface.to_string(),
+            ip,
+            loopback: ip.is_loopback(),
+        }
+    })
+    .collect()
 }
 
 #[allow(dead_code)]
@@ -293,6 +317,7 @@ async fn start_core_node_with_messenger(
         messenger: Arc::clone(&shared_messenger),
         node_name: Some("test_core_node".to_string()),
         arguments: node_arguments,
+        host_addresses: HostAddressSource::Fixed(test_host_addresses()),
         root_dir,
         peppy_dirs: peppy_dirs.clone(),
         peppy_config,
@@ -447,9 +472,15 @@ async fn spawn_real_running_instance_inner(
     .await
     .expect("prepare_and_spawn should succeed on Ready entity");
     let pid = child.id().expect("child should have pid");
-    node_stack::NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
-        .await
-        .expect("commit_started should succeed");
+    node_stack::NodeEntity::commit_started(
+        &handle,
+        child,
+        started_ctx,
+        instance_id.clone(),
+        Vec::new(),
+    )
+    .await
+    .expect("commit_started should succeed");
 
     // Optionally install a messenger-side shutdown listener that kills the
     // child when the production stop/remove flow fires a SHUTDOWN_SERVICE

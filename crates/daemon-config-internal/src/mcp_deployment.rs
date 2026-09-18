@@ -56,6 +56,18 @@ pub fn built_in_identity(exposures: &[ExposureRef]) -> Name {
     Name::new(name).expect("exposure names and tags are made of name characters")
 }
 
+/// The label the synthesized manifest declares the endpoint of `exposure`
+/// under, and the one the server announces it with: `<name>_<tag>`, the
+/// tokens the deployment identity is built from, with the tag normalized the
+/// way generated code spells it (`-` becomes `_`).
+pub fn endpoint_label(exposure: &ExposureRef) -> String {
+    format!(
+        "{}_{}",
+        exposure.name,
+        config::consts::normalize_tag(&exposure.tag)
+    )
+}
+
 /// A parsed document with the pin that names its bytes.
 #[derive(Debug, Clone)]
 pub struct Pinned<T> {
@@ -325,6 +337,21 @@ pub fn plan_deployment(
             })
         })
         .collect();
+    // One endpoint per exposure, labelled from the same tokens the identity
+    // is built from so two tags of one exposure name stay distinct; the
+    // server announces each one under this label when it binds.
+    let endpoints: serde_json::Map<String, serde_json::Value> = ordered
+        .iter()
+        .map(|exposure| {
+            (
+                endpoint_label(&exposure.reference()),
+                serde_json::json!({
+                    "kind": "mcp",
+                    "description": exposure.document.server.title,
+                }),
+            )
+        })
+        .collect();
     let document = serde_json::json!({
         "peppy_schema": "node/v1",
         "manifest": {
@@ -339,6 +366,7 @@ pub fn plan_deployment(
             "parameters": {
                 PORT_PARAMETER: { "$type": "u16", "$default": DEFAULT_PORT },
             },
+            "endpoints": endpoints,
         },
     });
     // The manifest goes through the node document parser rather than being
@@ -711,6 +739,14 @@ mod tests {
             manifest["execution"]["run_cmd"],
             serde_json::json!(["peppy", "mcp", "serve"])
         );
+        assert_eq!(
+            manifest["execution"]["endpoints"],
+            serde_json::json!({
+                "camera_and_recording_v1": { "kind": "mcp", "description": "Both" },
+                "camera_only_v1": { "kind": "mcp", "description": "camera_only" },
+            }),
+            "one endpoint per exposure, labelled `<name>_<tag>` with the exposure's title"
+        );
         let served: Vec<String> = plan
             .exposures
             .iter()
@@ -720,6 +756,49 @@ mod tests {
             served,
             ["/camera_and_recording/v1/mcp", "/camera_only/v1/mcp"],
             "bundles follow the identity order"
+        );
+    }
+
+    /// Two tags of one exposure name serve side by side, so their endpoints
+    /// get distinct labels, in identity order.
+    #[test]
+    fn two_tags_of_one_exposure_get_distinct_endpoint_labels() {
+        let v2 = exposure(&exposure_document(
+            "camera",
+            "v2",
+            "cam",
+            "rgb_camera",
+            None,
+            "video_stream_info",
+        ));
+        let v1 = exposure(&exposure_document(
+            "camera",
+            "v1",
+            "cam",
+            "rgb_camera",
+            None,
+            "video_stream_info",
+        ));
+        let plan = plan_deployment(&[v2, v1], &[contract(CAMERA_CONTRACT)]).expect("plans");
+        let labels: Vec<String> = plan
+            .config
+            .execution
+            .endpoints
+            .keys()
+            .map(|label| label.to_string())
+            .collect();
+        assert_eq!(labels, ["camera_v1", "camera_v2"]);
+        assert!(
+            plan.config
+                .execution
+                .endpoints
+                .values()
+                .all(|declaration| declaration.kind == config::node::EndpointKind::Mcp)
+        );
+        assert_eq!(
+            endpoint_label(&reference("camera", "v1-beta")),
+            "camera_v1_beta",
+            "a tag is normalized the way generated code spells it"
         );
     }
 

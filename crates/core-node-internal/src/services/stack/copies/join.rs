@@ -26,8 +26,8 @@ use super::{
 };
 use crate::services::node::common::panic_message;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
-    StackJoinGoal,
+    InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
+    NodeRunLogEntry, StackJoinGoal,
 };
 use daemon_config::launcher::CopyRecord;
 use futures::FutureExt;
@@ -48,16 +48,20 @@ pub(in crate::services::stack) async fn join(
         join_inner(&goal, active, &ctx, &mut logs).boxed().await
     })
     .await;
-    result.with_node_logs(logs.add, logs.build, logs.run)
+    result
+        .with_node_logs(logs.add, logs.build, logs.run)
+        .with_instance_endpoints(logs.endpoints)
 }
 
 /// What the join's node phases produced: the log of every add, build and
-/// run, and the nodes whose add on a peer outlived its budget.
+/// run, the endpoints of every started instance that serves one, and the
+/// nodes whose add on a peer outlived its budget.
 #[derive(Default)]
 struct JoinLogs {
     add: Vec<NodeAddLogEntry>,
     build: Vec<NodeBuildLogEntry>,
     run: Vec<NodeRunLogEntry>,
+    endpoints: Vec<InstanceEndpoints>,
     unresolved: Vec<UnresolvedAdd>,
 }
 
@@ -273,6 +277,7 @@ async fn join_inner(
             &ordered,
             &delta,
             &mut logs.run,
+            &mut logs.endpoints,
             &bindings,
             &pairings,
             &observations,

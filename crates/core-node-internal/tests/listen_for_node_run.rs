@@ -2514,3 +2514,236 @@ async fn shutdown_token_suppresses_exit_relabel_and_health_warning() {
         log_content
     );
 }
+
+/// A manifest declaring one page endpoint, `panel`, with a keep-alive
+/// `run_cmd`; the test answers the node's framework services itself.
+fn panel_node_json5(node_name: &str) -> String {
+    r#"{
+        peppy_schema: "node/v1",
+        manifest: { name: "{NODE_NAME}", tag: "v1" },
+        execution: {
+            language: "rust",
+            run_cmd: ["sleep", "30"],
+            endpoints: {
+                panel: { kind: "page", description: "The operator panel." },
+            },
+        }
+    }"#
+    .replace("{NODE_NAME}", node_name)
+}
+
+/// The binding the emulated panel node announces: every interface, port 8765.
+fn panel_binding() -> peppylib::runtime::EndpointBinding {
+    peppylib::runtime::EndpointBinding {
+        scheme: "http".to_string(),
+        address: "0.0.0.0:8765".parse().expect("a socket address"),
+        path: String::new(),
+    }
+}
+
+/// Adds the panel node, installs the ready and health responders, and,
+/// when given, the `node_endpoints` responder answering `announced`.
+async fn add_panel_node_with_services(
+    started: &common::StartedCoreNode,
+    node_name: &str,
+    instance_id: &str,
+    announced: Option<Vec<peppylib::runtime::AnnouncedEndpoint>>,
+) -> Vec<AbortOnDrop<peppylib::PeppyResult<()>>> {
+    let source_dir = tempfile::tempdir().expect("failed to create temp source dir");
+    write_peppy_json5(source_dir.path(), &panel_node_json5(node_name));
+    let add_response = send_node_add_then_build(
+        &started.caller_handle,
+        &started.core_node_name,
+        source_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(
+        add_response.success,
+        "node_add should succeed, got error: {:?}",
+        add_response.error_message
+    );
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+    let mut services = vec![
+        AbortOnDrop(
+            listen_for_node_ready(
+                &node_messenger,
+                &started.core_node_name,
+                instance_id,
+                common::test_node_target(node_name),
+            )
+            .await
+            .expect("node ready service should start"),
+        ),
+        AbortOnDrop(
+            listen_for_node_health(
+                &node_messenger,
+                &started.core_node_name,
+                instance_id,
+                common::test_node_target(node_name),
+            )
+            .await
+            .expect("node health service should start"),
+        ),
+    ];
+    if let Some(announced) = announced {
+        services.push(AbortOnDrop(
+            peppylib::services::endpoints::listen_for_node_endpoints(
+                &node_messenger,
+                &started.core_node_name,
+                instance_id,
+                common::test_node_target(node_name),
+                announced,
+            )
+            .await
+            .expect("node endpoints service should start"),
+        ));
+    }
+    // Allow the services to establish their listeners.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    services
+}
+
+async fn run_panel_node(
+    started: &common::StartedCoreNode,
+    node_name: &str,
+    instance_id: &str,
+) -> common::NodeRunTestResponse {
+    send_node_run_and_wait(
+        &started.caller_handle,
+        &started.core_node_name,
+        common::default_instance_plan(instance_id),
+        node_name,
+        "v1",
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(15),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete")
+}
+
+/// A node that declares `panel` and announces it on `0.0.0.0` starts with
+/// the URLs expanded against the daemon's injected host addresses, loopback
+/// first, on the result and on the tracked instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_reports_the_endpoints_a_node_announces() {
+    const NODE_NAME: &str = "panel_node";
+    const INSTANCE_ID: &str = "panel_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    let _services = add_panel_node_with_services(
+        &started,
+        NODE_NAME,
+        INSTANCE_ID,
+        Some(vec![peppylib::runtime::AnnouncedEndpoint {
+            label: "panel".to_string(),
+            binding: panel_binding(),
+        }]),
+    )
+    .await;
+
+    let start_response = run_panel_node(&started, NODE_NAME, INSTANCE_ID).await;
+    assert!(
+        start_response.result.success,
+        "node_run should succeed, got error: {:?}",
+        start_response.result.error_message
+    );
+    let expected = vec![core_node_api::InstanceEndpoint {
+        label: "panel".to_string(),
+        kind: config::node::EndpointKind::Page,
+        urls: common::test_host_addresses()
+            .iter()
+            .map(|address| format!("http://{}:8765", address.ip))
+            .collect(),
+    }];
+    assert_eq!(
+        expected[0].urls[0], "http://127.0.0.1:8765",
+        "loopback first"
+    );
+    assert_eq!(start_response.result.endpoints, expected);
+
+    let instance = started
+        .node_stack
+        .find_by_instance_id(&NodeName::new(INSTANCE_ID).expect("valid instance id"))
+        .expect("the instance is tracked after a successful start");
+    assert_eq!(instance.endpoints(), expected.as_slice());
+}
+
+/// A node that declares `panel` but announces nothing fails to start, and
+/// the refusal names the label in the result and in the run log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_fails_when_a_declared_endpoint_is_never_announced() {
+    const NODE_NAME: &str = "silent_panel_node";
+    const INSTANCE_ID: &str = "silent_panel_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    let _services =
+        add_panel_node_with_services(&started, NODE_NAME, INSTANCE_ID, Some(Vec::new())).await;
+
+    let start_response = run_panel_node(&started, NODE_NAME, INSTANCE_ID).await;
+    assert!(
+        !start_response.result.success,
+        "a declared endpoint that is never announced fails the start"
+    );
+    let error = start_response
+        .result
+        .error_message
+        .expect("the failure carries its reason");
+    assert!(
+        error.contains("announced endpoints [] but its manifest declares [panel]"),
+        "the refusal names the label: {error}"
+    );
+    assert!(start_response.result.endpoints.is_empty());
+    let run_log = std::fs::read_to_string(&start_response.goal_response.log_path)
+        .expect("the run log exists");
+    assert!(
+        run_log.contains("its manifest declares [panel]"),
+        "the run log carries the refusal: {run_log}"
+    );
+    assert!(
+        started
+            .node_stack
+            .find_by_instance_id(&NodeName::new(INSTANCE_ID).expect("valid instance id"))
+            .is_none(),
+        "a failed start leaves no tracked instance"
+    );
+}
+
+/// A node whose reply names a label its manifest does not declare fails to
+/// start, naming both sets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn listen_for_node_run_refuses_an_announced_label_the_manifest_does_not_declare() {
+    const NODE_NAME: &str = "stray_panel_node";
+    const INSTANCE_ID: &str = "stray_panel_instance";
+
+    let started = start_core_node_with_mock_messenger().await;
+    let _services = add_panel_node_with_services(
+        &started,
+        NODE_NAME,
+        INSTANCE_ID,
+        Some(vec![peppylib::runtime::AnnouncedEndpoint {
+            label: "admin".to_string(),
+            binding: panel_binding(),
+        }]),
+    )
+    .await;
+
+    let start_response = run_panel_node(&started, NODE_NAME, INSTANCE_ID).await;
+    assert!(!start_response.result.success);
+    let error = start_response
+        .result
+        .error_message
+        .expect("the failure carries its reason");
+    assert!(
+        error.contains(
+            "instance 'stray_panel_instance' announced endpoints [admin] but its manifest declares [panel]"
+        ),
+        "the refusal names both sets: {error}"
+    );
+}

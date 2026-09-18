@@ -141,6 +141,7 @@ Let's go through the different options:
    - `language`: The programming language used by the node (e.g. `"python"`, `"rust"`)
    - `build_cmd`: Command run during the build phase of the node (e.g. via `peppy node build`, `peppy node add --build`, or the combined shorthands `peppy node add -sb` / `-sr`). This is typically the place where you want to run heavy operations like code compilation.
    - `run_cmd`: Command run when a node instance is started
+   - `endpoints`: The sockets the node binds during setup, when it serves something an operator opens (see [Serving a page or an MCP endpoint](#serving-a-page-or-an-mcp-endpoint))
  - `interfaces`: This is where the interfaces used to communicate with the other nodes are defined
 
 :::note[Tag format]
@@ -223,3 +224,57 @@ A node instance rarely gets to decide when it stops: [`peppy node stop`](/guides
 </Tabs>
 
 The whole shutdown is bounded by a grace period (`lifecycle.shutdown_grace_secs`, 5 seconds by default) for your cleanup to run: a node that shuts down cooperatively is reported as a clean stop, one that ignores the ask is force-killed, and `peppy node stop` warns about the latter. The [shutdown lifecycle guide](/advanced_guides/shutdown/) covers the full contract: every stop path, hook ordering, the grace windows, and Python's task-teardown mechanics.
+
+## Serving a page or an MCP endpoint
+
+A node that serves something over the network, an operator panel, a viewer page, an MCP server, declares the sockets it binds under `execution.endpoints`. Each entry has a label, a `kind` (`page` for a URL an operator opens in a browser, `mcp` for one an MCP client attaches to) and a `description`. The declaration says *that* a socket is served under the label, never *where*: the port stays an ordinary parameter, the node decides the address at bind time (a port that is already taken can fall back to one the operating system picks) and announces what it got.
+
+```json5 title="peppy.json5"
+{
+  // ...
+  execution: {
+    language: "rust",
+    parameters: {
+      http_host: { $type: "string", $default: "0.0.0.0" },
+      http_port: { $type: "u16", $default: 8765 },
+    },
+    endpoints: {
+      panel: { kind: "page", description: "The operator panel, HTTP and WebSocket." },
+    },
+  },
+}
+```
+
+Inside `setup`, right after the bind, the node announces the socket under its label. Every declared label must be announced before `setup` returns, and nothing can be announced after: a label left unannounced fails the start with a message naming it.
+
+<Tabs>
+  <TabItem label="Python">
+    ```python
+    async def setup(params, node_runner: NodeRunner):
+        server = ThreadingHTTPServer((params.http_host, params.http_port), Handler)
+        host, port = server.server_address[:2]
+        node_runner.announce_endpoint("panel", "http", host, port)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return []
+    ```
+  </TabItem>
+  <TabItem label="Rust">
+    ```rust
+    async fn setup(params: Parameters, node_runner: Arc<NodeRunner>) -> Result<()> {
+        let listener = TcpListener::bind((params.http_host.as_str(), params.http_port)).await?;
+        node_runner.announce_endpoint(
+            "panel",
+            EndpointBinding {
+                scheme: "http".to_string(),
+                address: listener.local_addr()?,
+                path: String::new(),
+            },
+        )?;
+        tokio::spawn(serve(listener));
+        Ok(())
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The daemon that hosts the instance reads the announced sockets once the node is healthy and turns each one into the URLs an operator opens, one per address of that machine (a socket bound on `0.0.0.0` answers on every interface, so loopback comes first, then the others). Every command that starts or inspects instances prints them: `peppy node run` and `peppy stack launch` end with a `Web pages:` block and an `MCP endpoints:` block, `peppy stack list` has an `Instance endpoints` table, and `peppy node info` lists them under each instance.

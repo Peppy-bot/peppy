@@ -41,6 +41,7 @@ The execution section defines how to prepare and launch the node:
 | `build_cmd` | Command to run during the node build phase |
 | `run_cmd` | Command to launch the node |
 | `container` | Optional container configuration. Exactly one of `run_cmd` or `container` must be present; a container node's build goes through the container image, so `build_cmd` is not used |
+| `endpoints` | Optional map of the sockets the node binds during setup, keyed by label (lowercase letters, digits and underscores, starting with a letter). Each entry declares a `kind`, `page` for a URL opened in a browser or `mcp` for one an MCP client attaches to, and a non-empty `description`. The node announces the socket it bound under each label, and the daemon reports the URLs; a declared label that setup never announces fails the start |
 
 ### Interfaces
 

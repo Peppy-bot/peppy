@@ -127,6 +127,7 @@ fn test_core_node_config(
         messenger,
         node_name: node_name.map(str::to_string),
         arguments: test_node_arguments(),
+        host_addresses: crate::services::node::endpoints::HostAddressSource::Fixed(Vec::new()),
         root_dir: std::env::temp_dir(),
         peppy_dirs,
         peppy_config: daemon_config::peppy_config::PeppyConfig::default(),

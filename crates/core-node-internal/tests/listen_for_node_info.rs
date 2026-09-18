@@ -401,3 +401,119 @@ async fn node_info_reports_not_in_stack_and_recovers() {
     );
     assert_eq!(info_response.config.manifest.tag, TARGET_NODE_TAG);
 }
+
+/// `node info` carries the endpoints a running instance serves, as the
+/// start sequence expanded them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_info_carries_the_endpoints_of_a_running_instance() {
+    const NODE_NAME: &str = "info_panel_node";
+    const INSTANCE_ID: &str = "info_panel_instance";
+
+    let started_core_node = start_core_node_with_mock_messenger().await;
+    let node_dir = tempfile::tempdir().expect("failed to create temp node dir");
+    write_peppy_json5(
+        node_dir.path(),
+        &r#"{
+            peppy_schema: "node/v1",
+            manifest: { name: "{NODE_NAME}", tag: "v1" },
+            execution: {
+                language: "rust",
+                run_cmd: ["sleep", "30"],
+                endpoints: {
+                    viewer: { kind: "page", description: "The viewer page." },
+                },
+            }
+        }"#
+        .replace("{NODE_NAME}", NODE_NAME),
+    );
+    let add_response = send_node_add_then_build(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        node_dir.path(),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_add should succeed");
+    assert!(add_response.success, "{:?}", add_response.error_message);
+
+    let node_messenger =
+        MessengerHandle::from_shared(Arc::clone(&started_core_node.shared_messenger));
+    let _ready = AbortOnDrop(
+        listen_for_node_ready(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+        )
+        .await
+        .expect("node ready service should start"),
+    );
+    let _health = AbortOnDrop(
+        listen_for_node_health(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+        )
+        .await
+        .expect("node health service should start"),
+    );
+    let _endpoints = AbortOnDrop(
+        peppylib::services::endpoints::listen_for_node_endpoints(
+            &node_messenger,
+            &started_core_node.core_node_name,
+            INSTANCE_ID,
+            common::test_node_target(NODE_NAME),
+            vec![peppylib::runtime::AnnouncedEndpoint {
+                label: "viewer".to_string(),
+                binding: peppylib::runtime::EndpointBinding {
+                    scheme: "https".to_string(),
+                    address: "127.0.0.1:8080".parse().expect("a socket address"),
+                    path: "/".to_string(),
+                },
+            }],
+        )
+        .await
+        .expect("node endpoints service should start"),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let start_response = send_node_run_and_wait(
+        &started_core_node.caller_handle,
+        &started_core_node.core_node_name,
+        common::default_instance_plan(INSTANCE_ID),
+        NODE_NAME,
+        "v1",
+        &NodeRunTestTimeouts {
+            goal: Duration::from_secs(5),
+            result: Duration::from_secs(15),
+        },
+        None,
+    )
+    .await
+    .expect("node_run action should complete");
+    assert!(
+        start_response.result.success,
+        "{:?}",
+        start_response.result.error_message
+    );
+
+    let info = poll_node_info(
+        &started_core_node,
+        &NodeInfoRequest::new(NODE_NAME, "v1"),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("node_info request should succeed");
+    assert_eq!(info.instances.len(), 1);
+    assert_eq!(
+        info.instances[0].endpoints,
+        vec![core_node_api::InstanceEndpoint {
+            label: "viewer".to_string(),
+            kind: config::node::EndpointKind::Page,
+            urls: vec!["https://127.0.0.1:8080/".to_string()],
+        }],
+        "a literal binding yields the one URL, carried with its declared kind"
+    );
+}

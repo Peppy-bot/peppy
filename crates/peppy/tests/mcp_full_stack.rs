@@ -667,6 +667,10 @@ struct Stack {
     peppy_dirs: PeppyDirs,
     _hub: tempfile::TempDir,
     nodes_dir: tempfile::TempDir,
+    /// Everything the CLI commands log on this thread, the launch output
+    /// included.
+    log_capture: peppy::test_support::LogCapture,
+    _log_guard: tracing::subscriber::DefaultGuard,
 }
 
 impl Stack {
@@ -758,12 +762,22 @@ impl Stack {
         }
         super::common::seed_docs_repo(&serve, &ctx, hub);
 
+        let log_capture = peppy::test_support::LogCapture::new();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(log_capture.clone())
+            .finish();
+        let log_guard = tracing::subscriber::set_default(subscriber);
+
         Self {
             serve,
             ctx,
             peppy_dirs,
             _hub: hub_dir,
             nodes_dir,
+            log_capture,
+            _log_guard: log_guard,
         }
     }
 
@@ -1016,11 +1030,42 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     let v2 = endpoint(port, "/camera_endpoint/v2/mcp");
     let both = endpoint(port, "/camera_and_recording/v1/mcp");
 
-    // --- Operations: `stack list` shows every endpoint of the instance,
-    // under one node identity derived from the sorted exposure set.
+    // --- Operations: the launch printed every endpoint the server announced,
+    // labelled `<name>_<tag>`, under `MCP endpoints:`, and `stack list` shows
+    // them under one node identity derived from the sorted exposure set.
+    let launch_output = stack.log_capture.logs();
+    let mcp_block = launch_output
+        .find("MCP endpoints:")
+        .unwrap_or_else(|| panic!("the launch prints the MCP block:\n{launch_output}"));
+    assert!(
+        !launch_output.contains("Web pages:"),
+        "nothing in this stack serves a page:\n{launch_output}"
+    );
+    for (label, url) in [
+        ("camera_and_recording_v1", &both),
+        ("camera_endpoint_v1", &v1),
+        ("camera_endpoint_v2", &v2),
+    ] {
+        let line = format!("    {label:<23}  {url}");
+        let at = launch_output
+            .find(&line)
+            .unwrap_or_else(|| panic!("`{line}` is printed:\n{launch_output}"));
+        assert!(at > mcp_block, "`{line}` sits under the MCP heading");
+    }
     let listing = stack.stack_list().await;
-    for url in [&v1, &v2, &both] {
-        assert!(listing.contains(url.as_str()), "{listing}");
+    for (label, url) in [
+        ("camera_and_recording_v1", &both),
+        ("camera_endpoint_v1", &v1),
+        ("camera_endpoint_v2", &v2),
+    ] {
+        let row = listing
+            .lines()
+            .find(|line| line.contains(url.as_str()))
+            .unwrap_or_else(|| panic!("a row for {url}:\n{listing}"));
+        assert!(
+            row.contains("mcp") && row.contains(label),
+            "the row carries the kind and the `<name>_<tag>` label: {row}"
+        );
     }
     assert!(
         listing

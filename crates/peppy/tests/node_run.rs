@@ -2239,3 +2239,159 @@ async fn node_run_covers_a_zero_or_one_slot_by_link_or_vacancy() {
          Got: {msg}"
     );
 }
+
+/// `node run` ends with the `Web pages:` block of a node that declares a
+/// page: the label and, under it, one URL per address of the daemon's
+/// machine, loopback first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_run_prints_the_web_pages_of_a_node_that_declares_a_page() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for node");
+    let node_name = "page_node";
+    let instance_id = "page_node_instance";
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5_path = node_path.join("peppy.json5");
+    let instances = InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5_path, &instances.sentinel());
+    peppy::test_support::declare_endpoints(
+        &peppy_json5_path,
+        &[(
+            "panel",
+            config::node::EndpointKind::Page,
+            "The operator panel.",
+        )],
+    );
+
+    NodeCommand {
+        command: NodeCommands::Add {
+            clock: None,
+            publish_clock: None,
+            source: Some(node_path.display().to_string()),
+            git_ref: None,
+            sync: false,
+            build: true,
+            run: false,
+            args: Vec::new(),
+            instance_id: None,
+            links: Vec::new(),
+            vacant_links: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            force: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node add command should succeed");
+
+    // The emulated node: ready, health, and the endpoints it bound.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let _node_ready_handle = listen_for_node_ready(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node ready service should start");
+    let _node_health_handle = listen_for_node_health(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+    )
+    .await
+    .expect("node health service should start");
+    let _node_endpoints_handle = peppylib::services::endpoints::listen_for_node_endpoints(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+        vec![peppylib::runtime::AnnouncedEndpoint {
+            label: "panel".to_string(),
+            binding: peppylib::runtime::EndpointBinding {
+                scheme: "http".to_string(),
+                address: "0.0.0.0:8765".parse().expect("a socket address"),
+                path: String::new(),
+            },
+        }],
+    )
+    .await
+    .expect("node endpoints service should start");
+
+    NodeCommand {
+        command: NodeCommands::Run {
+            clock: None,
+            publish_clock: None,
+            node_ref: None,
+            node_name: Some(node_name.to_string()),
+            tag: Some("v1".to_string()),
+            args: Vec::new(),
+            instance_id: Some(instance_id.to_string()),
+            links: Vec::new(),
+            vacant_links: Vec::new(),
+            idle_timeout: 60,
+            max_timeout: 3600,
+            build: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node run command should succeed");
+
+    let logs = log_capture.logs();
+    let started = logs
+        .find("Started node instance")
+        .expect("the start is announced");
+    let block = logs
+        .find("Web pages:")
+        .expect("the page block follows the start");
+    assert!(
+        block > started,
+        "the block comes after the start line:\n{logs}"
+    );
+    let expected_lines = [
+        format!("  {instance_id} ({node_name}:v1) @{core_node_name}"),
+        "    panel  http://127.0.0.1:8765".to_string(),
+        "           http://192.168.1.5:8765".to_string(),
+        "           http://100.123.58.116:8765".to_string(),
+    ];
+    let mut cursor = block;
+    for line in expected_lines {
+        let at = logs[cursor..]
+            .find(&line)
+            .unwrap_or_else(|| panic!("`{line}` follows in order in:\n{logs}"));
+        cursor += at + line.len();
+    }
+    assert!(
+        !logs.contains("MCP endpoints:"),
+        "a node declaring only a page prints no MCP block:\n{logs}"
+    );
+}
