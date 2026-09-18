@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+
+# `sh scripts/setup_machine.sh` bypasses the shebang above, and Ubuntu's sh is
+# dash, which has no `pipefail` and cannot parse the arrays below. It reports
+# that as `set: Illegal option -o pipefail` on line 2, which says nothing about
+# the cause, so the invocation is corrected here rather than diagnosed.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # Set up a new machine for Peppy: everything the workspace builds and tests
@@ -120,8 +129,20 @@ SUDO=""
 if [ "$PLATFORM" = "ubuntu" ] && [ "$(id -u)" -ne 0 ]; then
     have sudo || die "root privileges are required (apt, /usr/local); install sudo or run as root"
     SUDO="sudo"
-    log "Requesting sudo access (needed for apt and /usr/local)"
-    sudo -v
+    # Only prompt where a password is actually wanted. `sudo -v` caches
+    # credentials and authenticates to do it, and a host that already grants
+    # this account passwordless sudo — which every cloud image does for its
+    # default user, and which the CI runners need anyway — typically has no
+    # password set for it at all. There `sudo -v` prompts for a password that
+    # cannot exist and fails, while every real command the script goes on to
+    # run succeeds. `sudo -n true` asks the question that matters instead:
+    # can we elevate without a prompt?
+    if sudo -n true 2>/dev/null; then
+        log "Passwordless sudo is already available"
+    else
+        log "Requesting sudo access (needed for apt and /usr/local)"
+        sudo -v
+    fi
 fi
 
 # Homebrew is the recommended source for qemu, Go, and Lima on macOS.
@@ -156,9 +177,12 @@ ensure_path_line() {
 # The packages containers-internal's build script needs to compile apptainer
 # and its bundled squashfuse from source. The list mirrors APPTAINER_BUILD_DEPS
 # in crates/containers-internal/build.rs, which that build script asserts before
-# it starts, plus two the constant does not carry: fuse2fs, which apptainer
-# needs at run time to mount EXT3 images, and g++, which `mconfig` probes for
-# among its base checks and which Ubuntu's `gcc` package does not pull in.
+# it starts, plus three the constant does not carry because they are needed to
+# run apptainer rather than to build it: fuse2fs, to mount EXT3 images; uidmap,
+# which provides the newuidmap/newgidmap that fakeroot needs and whose absence
+# `peppy container setup` reports as "Install uidmap package (provides newuidmap
+# for fakeroot)" before refusing to continue; and g++, which `mconfig` probes
+# for among its base checks and which Ubuntu's `gcc` package does not pull in.
 # Keep in step with that constant and with scripts/functions/lima.py.
 #
 # macOS builds apptainer inside Lima rather than natively, so the guest carries
@@ -170,7 +194,7 @@ install_build_deps() {
     local packages=(
         make gcc g++ pkg-config squashfs-tools cryptsetup curl ca-certificates
         libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev
-        liblzma-dev libzstd-dev fuse2fs
+        liblzma-dev libzstd-dev fuse2fs uidmap
     )
     local missing=()
     local package
