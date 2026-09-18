@@ -208,6 +208,14 @@ impl std::error::Error for UnknownHardwareVersion {}
 #[cfg(feature = "meshes")]
 const TORSO_MESH: &[u8] = include_bytes!("../assets/meshes/body_link0_symp.stl");
 
+/// The v2 head camera's collision hull: the convex hull of the ZED Mini, its
+/// bracket and the head cover, byte-identical to the waldo-assets pack the
+/// simulated robots draw from. A test asserts it encloses the lens fronts the
+/// pack's rig gives, so this and the mount joint place the same camera the
+/// sim renders.
+#[cfg(feature = "meshes")]
+const HEAD_CAMERA_MESH: &[u8] = include_bytes!("../assets/meshes_v20/head_camera.stl");
+
 /// The bundled collision meshes as `(file name, bytes)`. The bimanual collision builder
 /// resolves the URDF's `package://` mesh refs by file name against a meshes directory, so
 /// [`HardwareVersion::write_meshes_to`] lays these down under their bare names.
@@ -251,10 +259,11 @@ const V1_MESHES: &[(&str, &[u8])] = &[
 
 /// OpenArm v2.0 collision meshes: reoriented arm links (`base_link`, `link1..link6`) and
 /// the revolute pinch gripper (`ee_base_link`, `finger_inner`, `finger_outer`), plus the
-/// shared torso proxy mesh.
+/// shared torso proxy mesh and the head camera hull the v2 pedestal carries.
 #[cfg(feature = "meshes")]
 const V2_MESHES: &[(&str, &[u8])] = &[
     ("body_link0_symp.stl", TORSO_MESH),
+    ("head_camera.stl", HEAD_CAMERA_MESH),
     (
         "base_link.stl",
         include_bytes!("../assets/meshes_v20/base_link.stl"),
@@ -404,6 +413,179 @@ mod tests {
     fn v2_torso_asset_stays_byte_identical_to_the_shared_embed() {
         let v2_file: &[u8] = include_bytes!("../assets/meshes_v20/body_link0_symp.stl");
         assert_eq!(TORSO_MESH, v2_file);
+    }
+
+    /// The centres of the ZED Mini's lens fronts in the pedestal link's frame,
+    /// as Waldo's derivation reads them off the OpenArm_2.0_w_Head_Camera CAD
+    /// and its pack publishes them. The simulated chest camera renders from the
+    /// left one, and the sim nodes check their camera config against the same
+    /// numbers, so both sides of the fence pin one lens position.
+    const LENS_FRONTS_M: [[f64; 3]; 2] = [
+        [0.079202, 0.031497, 0.794103],
+        [0.079202, -0.031503, 0.794103],
+    ];
+
+    /// The hull's extents in the pedestal link's frame under that placement:
+    /// the camera reaches 63 mm above the torso mesh, whose own top is 0.773.
+    const HEAD_CAMERA_EXTENTS_M: [[f64; 3]; 2] =
+        [[0.0230, -0.0564, 0.7220], [0.0895, 0.0738, 0.8364]];
+
+    /// The one collision entry of the head camera link.
+    fn head_camera_collision(robot: &urdf_rs::Robot) -> &urdf_rs::Collision {
+        let [collision] = robot
+            .links
+            .iter()
+            .find(|l| l.name == "openarm_head_camera")
+            .expect("v2 carries the head camera link")
+            .collision
+            .as_slice()
+        else {
+            panic!("the head camera link carries one collision geometry");
+        };
+        collision
+    }
+
+    /// The head camera's collision hull in the pedestal link's frame: its
+    /// triangles under the mesh scale and the mount translation, the placement
+    /// the collision consumer applies. The two origins are asserted on the way
+    /// through, so a scale and a translation are the whole of it.
+    #[cfg(feature = "meshes")]
+    fn head_camera_hull_in_link_frame(robot: &urdf_rs::Robot) -> Vec<[[f64; 3]; 3]> {
+        let joint = robot
+            .joints
+            .iter()
+            .find(|j| j.name == "openarm_head_camera_mount_joint")
+            .expect("v2 carries the head camera mount joint");
+        assert_eq!(joint.joint_type, urdf_rs::JointType::Fixed);
+        assert_eq!(joint.parent.link, "openarm_body_link0");
+        assert_eq!(joint.child.link, "openarm_head_camera");
+        assert_eq!(*joint.origin.rpy, [0.0, 0.0, 0.0]);
+        let mount = *joint.origin.xyz;
+
+        let collision = head_camera_collision(robot);
+        assert_eq!(*collision.origin.xyz, [0.0, 0.0, 0.0]);
+        assert_eq!(*collision.origin.rpy, [0.0, 0.0, 0.0]);
+        let urdf_rs::Geometry::Mesh { scale, .. } = &collision.geometry else {
+            panic!("the head camera collides as a mesh");
+        };
+        let scale = scale.map(|s| *s).unwrap_or([1.0, 1.0, 1.0]);
+
+        triangles(HEAD_CAMERA_MESH)
+            .into_iter()
+            .map(|triangle| {
+                triangle.map(|vertex| std::array::from_fn(|i| vertex[i] * scale[i] + mount[i]))
+            })
+            .collect()
+    }
+
+    /// The triangles of a binary STL: 50-byte records after the 80-byte header
+    /// and the count, each a face normal then three vertices. Test-local: the
+    /// crate's one dependency is its URDF parser, and the collision consumer
+    /// reads the same files through its own reader.
+    #[cfg(feature = "meshes")]
+    fn triangles(stl: &[u8]) -> Vec<[[f64; 3]; 3]> {
+        let count = u32::from_le_bytes(stl[80..84].try_into().expect("STL count")) as usize;
+        assert_eq!(
+            stl.len(),
+            84 + 50 * count,
+            "binary STL of {count} triangles"
+        );
+        (0..count)
+            .map(|i| {
+                let record = 84 + 50 * i + 12;
+                std::array::from_fn(|v| {
+                    std::array::from_fn(|c| {
+                        let at = record + 12 * v + 4 * c;
+                        f32::from_le_bytes(stl[at..at + 4].try_into().expect("STL vertex")) as f64
+                    })
+                })
+            })
+            .collect()
+    }
+
+    /// How far outside `mesh` the point lies: the largest signed distance to
+    /// any of its face planes, negative when the point is within every one.
+    /// Exact for a closed convex mesh wound outward, which a convex hull is.
+    #[cfg(feature = "meshes")]
+    fn depth_outside(mesh: &[[[f64; 3]; 3]], point: [f64; 3]) -> f64 {
+        let sub = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] { std::array::from_fn(|i| a[i] - b[i]) };
+        mesh.iter()
+            .filter_map(|[v0, v1, v2]| {
+                let (e1, e2) = (sub(*v1, *v0), sub(*v2, *v0));
+                let normal = [
+                    e1[1] * e2[2] - e1[2] * e2[1],
+                    e1[2] * e2[0] - e1[0] * e2[2],
+                    e1[0] * e2[1] - e1[1] * e2[0],
+                ];
+                let length = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
+                let offset = sub(point, *v0);
+                let dot: f64 = (0..3).map(|i| normal[i] * offset[i]).sum();
+                (length > 0.0).then(|| dot / length)
+            })
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    #[test]
+    fn only_v2_mounts_the_head_camera_on_the_torso() {
+        let v2 = parsed(HardwareVersion::V2);
+        let urdf_rs::Geometry::Mesh { filename, .. } = &head_camera_collision(&v2).geometry else {
+            panic!("the head camera collides as a mesh");
+        };
+        assert!(
+            filename.ends_with("/head_camera.stl"),
+            "the head camera collides with its own hull, not {filename}"
+        );
+
+        let v1 = parsed(HardwareVersion::V1);
+        assert!(
+            !v1.links.iter().any(|l| l.name == "openarm_head_camera"),
+            "the v1 pedestal carries no head camera"
+        );
+    }
+
+    #[cfg(feature = "meshes")]
+    #[test]
+    fn the_head_camera_hull_sits_where_the_pack_mounts_it() {
+        // Containment of the lenses below leaves the hull free to slide tens of
+        // millimetres across its own width, so the placement is pinned outright:
+        // a wrong mount origin on any axis, a swapped mesh or a millimetre-scaled
+        // one moves an extent by more than the tolerance.
+        let corners = head_camera_hull_in_link_frame(&parsed(HardwareVersion::V2))
+            .into_iter()
+            .flatten()
+            .fold(
+                [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]],
+                |[min, max], vertex| {
+                    [
+                        std::array::from_fn(|i| min[i].min(vertex[i])),
+                        std::array::from_fn(|i| max[i].max(vertex[i])),
+                    ]
+                },
+            );
+        for (corner, expected) in corners.iter().zip(HEAD_CAMERA_EXTENTS_M) {
+            for (axis, (actual, want)) in corner.iter().zip(expected).enumerate() {
+                assert!(
+                    (actual - want).abs() < 5e-4,
+                    "head camera extent on axis {axis}: {actual:+.4} m, expected {want:+.4} m"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "meshes")]
+    #[test]
+    fn the_head_camera_hull_encloses_the_zed_lens_fronts() {
+        // The geometry the governor keeps the arms off is the geometry the
+        // camera looks out of. The lenses sit behind the cover's outer face, so
+        // containment is the claim, not contact.
+        let hull = head_camera_hull_in_link_frame(&parsed(HardwareVersion::V2));
+        for lens in LENS_FRONTS_M {
+            let depth = depth_outside(&hull, lens);
+            assert!(
+                depth < 0.0,
+                "lens front {lens:?} sits {depth:+.4} m outside the head camera hull"
+            );
+        }
     }
 
     #[test]

@@ -26,11 +26,23 @@ pub struct CommandOutput {
     pub stderr: String,
 }
 
-/// Runs a command, streaming its stdout and stderr as `cargo:warning=` lines.
+/// How many trailing output lines a failed command reports as warnings.
 ///
-/// Each output line is forwarded as `cargo:warning=[{label}] {line}` so the
-/// user sees real-time progress during long-running build script operations.
-/// The full captured stdout and stderr are returned for post-hoc error reporting.
+/// Enough to carry a compiler or downloader error with the context above it,
+/// short enough that a failing build does not bury its own error message.
+const FAILURE_TAIL_LINES: usize = 40;
+
+/// Runs a command, reporting its stdout and stderr as build progress.
+///
+/// Each output line is reported as `[{label}] {line}` through
+/// [`crate::report_progress`], so the user sees real-time progress during
+/// long-running build script operations without cargo replaying that log on
+/// every later build. When the command fails, the tail of its captured output
+/// is emitted as `cargo:warning=` lines instead, which keeps a broken build
+/// diagnosable where no terminal is watching.
+///
+/// The full captured stdout and stderr are returned for post-hoc error
+/// reporting.
 ///
 /// Any stdout/stderr configuration already set on `command` is overridden
 /// with `Stdio::piped()`; stdin is left inherited — pass
@@ -78,7 +90,7 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
                     }
                 }
                 let line = String::from_utf8_lossy(bytes);
-                println!("cargo:warning=[{}] {}", label, line);
+                crate::progress!("[{}] {}", label, line);
                 captured.push_str(&line);
                 captured.push('\n');
                 buf.clear();
@@ -105,7 +117,14 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
     };
 
     if !status.success() {
-        println!("cargo:warning=[{label}] Command failed with exit status: {status}");
+        for warning in failure_warnings(
+            label,
+            &format!("Command failed with exit status: {status}"),
+            &stdout_captured,
+            &stderr_captured,
+        ) {
+            println!("{warning}");
+        }
     }
 
     CommandOutput {
@@ -113,6 +132,41 @@ pub fn run_command_streaming(command: &mut Command, label: &str) -> CommandOutpu
         stdout: stdout_captured,
         stderr: stderr_captured,
     }
+}
+
+/// Cargo warning lines reporting a failed command: the failure itself, then
+/// the tail of each stream the command wrote to.
+///
+/// A failure has to reach whoever reads the build log, including the CI build
+/// that has no terminal for the progress lines, so the output the user needs
+/// to diagnose it is repeated here. Only the tail is repeated: the error a
+/// tool reports sits at the end of its output, and a full compile log would
+/// bury it.
+fn failure_warnings(label: &str, failure: &str, stdout: &str, stderr: &str) -> Vec<String> {
+    let mut warnings = vec![format!("cargo:warning=[{label}] {failure}")];
+
+    for (stream, captured) in [("stderr", stderr), ("stdout", stdout)] {
+        let lines: Vec<&str> = captured.lines().collect();
+        if lines.is_empty() {
+            continue;
+        }
+        let first_reported = lines.len().saturating_sub(FAILURE_TAIL_LINES);
+        warnings.push(match first_reported {
+            0 => format!("cargo:warning=[{label}] {stream}:"),
+            _ => format!(
+                "cargo:warning=[{label}] {stream}, last {} of {} lines:",
+                FAILURE_TAIL_LINES,
+                lines.len()
+            ),
+        });
+        warnings.extend(
+            lines[first_reported..]
+                .iter()
+                .map(|line| format!("cargo:warning=[{label}]   {line}")),
+        );
+    }
+
+    warnings
 }
 
 /// Runs a command with a timeout, capturing stdout/stderr without forwarding it
@@ -265,6 +319,61 @@ mod tests {
         assert!(output.success);
         assert!(output.stdout.contains("out-line"));
         assert!(output.stderr.contains("err-line"));
+    }
+
+    /// Output whose every line is identifiable by index, for tail assertions.
+    fn numbered_lines(count: usize) -> String {
+        (0..count).map(|index| format!("line-{index}\n")).collect()
+    }
+
+    #[test]
+    fn failure_warnings_report_the_failure_alone_when_nothing_was_captured() {
+        assert_eq!(
+            failure_warnings("build-tool", "Command failed with exit status: 1", "", ""),
+            ["cargo:warning=[build-tool] Command failed with exit status: 1"]
+        );
+    }
+
+    #[test]
+    fn failure_warnings_report_stderr_before_stdout() {
+        assert_eq!(
+            failure_warnings("build-tool", "failed", "out-line\n", "err-line\n"),
+            [
+                "cargo:warning=[build-tool] failed",
+                "cargo:warning=[build-tool] stderr:",
+                "cargo:warning=[build-tool]   err-line",
+                "cargo:warning=[build-tool] stdout:",
+                "cargo:warning=[build-tool]   out-line",
+            ]
+        );
+    }
+
+    #[test]
+    fn failure_warnings_report_short_output_in_full() {
+        let captured = numbered_lines(FAILURE_TAIL_LINES);
+        let warnings = failure_warnings("build-tool", "failed", "", &captured);
+        assert_eq!(warnings.len(), FAILURE_TAIL_LINES + 2);
+        assert_eq!(warnings[1], "cargo:warning=[build-tool] stderr:");
+        assert_eq!(warnings[2], "cargo:warning=[build-tool]   line-0");
+    }
+
+    #[test]
+    fn failure_warnings_report_only_the_tail_of_long_output() {
+        let line_count = FAILURE_TAIL_LINES + 10;
+        let captured = numbered_lines(line_count);
+        let warnings = failure_warnings("build-tool", "failed", "", &captured);
+        assert_eq!(warnings.len(), FAILURE_TAIL_LINES + 2);
+        assert_eq!(
+            warnings[1],
+            format!(
+                "cargo:warning=[build-tool] stderr, last {FAILURE_TAIL_LINES} of {line_count} lines:"
+            )
+        );
+        assert_eq!(warnings[2], "cargo:warning=[build-tool]   line-10");
+        assert_eq!(
+            warnings[warnings.len() - 1],
+            format!("cargo:warning=[build-tool]   line-{}", line_count - 1)
+        );
     }
 
     #[test]

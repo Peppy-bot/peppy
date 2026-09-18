@@ -1,8 +1,8 @@
 name: Cargo test suite
 description: >-
   Runs one cargo test command against a peppy data root private to the job,
-  then proves the build consumed the committed lockfile. Expects the
-  rust-build-env action to have run first.
+  then proves the build consumed the committed lockfile. Expects the Rust
+  toolchain, and whatever else the suite builds against, to be in place.
 
 inputs:
   command:

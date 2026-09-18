@@ -4,8 +4,8 @@ description: >-
   self-hosted runner between jobs, so a job compiles only what changed since the
   suite last ran. The cargo registry and the build scripts' tool cache are left
   to the runner, which keeps them across jobs of its own accord. Expects the
-  checkout and the rust-build-env action to have run first, and must precede
-  every cargo step.
+  checkout and the Rust toolchain to be in place, and must precede every cargo
+  step.
 
 inputs:
   suite:

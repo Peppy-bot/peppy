@@ -7,8 +7,11 @@ target/
 # Backtraces emitted on panic.
 *.rs.bk
 
-# Cargo.lock is committed for binaries and ignored for libraries; leave the
-# decision to each subproject and do not ignore it globally.
+# Cargo.lock is committed by every crate of this tree. CI builds and tests each
+# of them `--locked`, so the lock is the dependency graph a green run attests to
+# and a bump to it is a reviewable diff. A library's lockfile is ignored by
+# downstream consumers, which resolve their own, so committing it costs them
+# nothing.
 
 # ---------------------------------------------------------------------------
 # Python
@@ -81,4 +84,3 @@ ENV/
 .idea/
 .vscode/
 *.swp
-/openarm_description/Cargo.lock

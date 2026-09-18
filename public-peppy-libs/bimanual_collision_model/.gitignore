@@ -45,6 +45,3 @@ node_modules
 __pycache__/
 *.pyc
 *.abi3*.so
-
-# Library crate: the lockfile is not tracked (consumers resolve their own).
-/Cargo.lock
