@@ -309,6 +309,14 @@ jobs:
   # peppy-shared holding a Cargo.toml, each its own workspace with its own
   # lockfile. They build into one target directory, so a dependency two of
   # them share is compiled once, and the sticky disk carries it between runs.
+  #
+  # openarm_can's bus tests read OPENARM_CAN_TEST_IFACE for a CAN interface to
+  # drive and skip themselves when it names none, which is what they do here:
+  # the interface would be a virtual CAN link, and the runner kernel carries
+  # no vcan module to create one with. What this job holds that crate to is
+  # therefore that it compiles and its host-only tests pass; the bus tests are
+  # run against a vcan link on a development machine, as their module
+  # documentation describes.
   public-libs-crates:
     needs: changes
     if: needs.changes.outputs.public_libs_crates != ''
@@ -317,9 +325,6 @@ jobs:
       contents: read
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/public-peppy-libs/target
-      # openarm_can's suite drives a virtual CAN interface, and skips every
-      # test when this names none. The step below creates the interface.
-      OPENARM_CAN_TEST_IFACE: vcan0
 
     steps:
       - uses: actions/checkout@v7
@@ -339,17 +344,6 @@ jobs:
         with:
           suite: public-libs-crates
           target-dir: public-peppy-libs/target
-
-      # vcan is a kernel module rather than a device the image ships, so the
-      # interface is created here. Loud on failure: a suite that quietly
-      # skipped itself would report green having tested nothing.
-      - name: Create the virtual CAN interface openarm_can's suite drives
-        if: contains(needs.changes.outputs.public_libs_crates, 'openarm_can')
-        run: |
-          set -euo pipefail
-          sudo modprobe vcan
-          sudo ip link add dev "$OPENARM_CAN_TEST_IFACE" mtu 72 type vcan
-          sudo ip link set up "$OPENARM_CAN_TEST_IFACE"
 
       # Every selected crate runs even after one fails, so a red run names
       # every failing crate instead of the first. `--all-features` because a
