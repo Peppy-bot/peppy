@@ -223,18 +223,35 @@ jobs:
       contents: read
 
     steps:
-      # The root .gitignore is git plumbing for the path down to the tree, not
-      # code: cargo fingerprints a build script by listing its package's files
-      # through git, which evaluates the ignore rules of every directory from
-      # the repository root down. A sparse checkout is a partial clone, so a
-      # .gitignore left out of it has no blob to read and the listing fails
-      # ("Failed to update the excludes stack").
+      # The workspace checkout, whole: it carries the composite actions below,
+      # and it is the checkout every other job of this repository inherits on
+      # a reused runner. Nothing of the tree under test is built from here.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      # The tree under test, on its own, in a directory of its own. The
+      # partial checkout has to live somewhere this workspace does not: a
+      # sparse checkout outlives the job that asked for it (actions/checkout
+      # leaves core.sparseCheckout set in the repository's local config, see
+      # the repair in rust-build-env), and on a box where one workspace serves
+      # every job, sealing this tree off would hand the next job a repository
+      # with no `crates/` and no root manifest.
+      #
+      # The root .gitignore comes too, as git plumbing for the path down to
+      # the tree rather than as code: cargo fingerprints a build script by
+      # listing its package's files through git, which evaluates the ignore
+      # rules of every directory from the repository root down, and a
+      # .gitignore with no blob in a partial clone fails that listing
+      # ("Failed to update the excludes stack"). `.github/` does not: the
+      # actions are used from the workspace checkout above, and leaving it out
+      # keeps this checkout to the tree and the one file it needs.
+      - uses: actions/checkout@v7
+        with:
+          path: sealed
+          persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
-            /.github/
             /.gitignore
             /public-peppy-libs/
 
@@ -245,7 +262,7 @@ jobs:
       - uses: ./.github/actions/cargo-cache
         with:
           suite: public-libs
-          target-dir: public-peppy-libs/peppy-shared/target
+          target-dir: sealed/public-peppy-libs/peppy-shared/target
 
       # peppylib-py is excluded: its cdylib build and tests/python_tests.rs
       # only wrap `pixi run test`, which the step below runs directly. The
@@ -253,7 +270,7 @@ jobs:
       # peppylib-py's manifest.
       - uses: ./.github/actions/cargo-suite
         with:
-          working-directory: public-peppy-libs/peppy-shared
+          working-directory: sealed/public-peppy-libs/peppy-shared
           command: cargo test --workspace --exclude peppylib-py --locked
 
       # `pixi run test` builds the native module with `maturin develop` and
@@ -263,7 +280,7 @@ jobs:
       # never hides another.
       - name: Run the peppylib-py Python tests
         if: ${{ !cancelled() }}
-        working-directory: public-peppy-libs/peppy-shared/peppylib-py
+        working-directory: sealed/public-peppy-libs/peppy-shared/peppylib-py
         run: |
           peppy_home="$RUNNER_TEMP/peppy-home-py"
           mkdir -p "$peppy_home/tmpdir"
@@ -279,7 +296,7 @@ jobs:
       # fails, so a red run names every failing library instead of the first.
       - name: Run every standalone Python library's suite
         if: ${{ !cancelled() }}
-        working-directory: public-peppy-libs
+        working-directory: sealed/public-peppy-libs
         run: |
           set -euo pipefail
           failed=()
@@ -304,6 +321,7 @@ jobs:
       # manifests and lockfiles, not rewritten them.
       - name: Prove the Python suites tested the committed manifests and lockfiles
         if: ${{ !cancelled() }}
+        working-directory: sealed
         run: git diff --exit-code -- 'public-peppy-libs/*pyproject.toml' 'public-peppy-libs/*uv.lock' 'public-peppy-libs/*pixi.toml' 'public-peppy-libs/*pixi.lock'
 
       - name: Clean up the Python suite's peppy data root

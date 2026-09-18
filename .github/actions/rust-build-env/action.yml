@@ -8,6 +8,40 @@ description: >-
 runs:
   using: composite
   steps:
+    # A job that checks out sparsely leaves this workspace sparse for the job
+    # after it. actions/checkout writes core.sparseCheckout into the
+    # repository's local config, `git sparse-checkout disable` clears it in the
+    # worktree config, and checkout then unsets extensions.worktreeConfig — so
+    # git reads the local `true` again, with .git/info/sparse-checkout still
+    # beside it. On a runner discarded with the job none of that survives; on
+    # these boxes one workspace serves every job of this repository, and the
+    # next one is handed a partial tree while git calls it clean.
+    #
+    # That cost a run on 2026-09-18: release-scripts stopped at
+    # "./scripts/run_tests.sh: No such file or directory" and container-e2e at
+    # "could not find `Cargo.toml`", each on a box whose checkout had just
+    # reported success, and each blaming the file it could not see rather than
+    # the job before it.
+    #
+    # Only the workspace checkout is repaired. A job that wants a partial tree
+    # takes it in a directory of its own (see public-libs), which this leaves
+    # alone.
+    - name: Repair a workspace an earlier job left sparse
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        git rev-parse --git-dir > /dev/null 2>&1 || exit 0
+        # Exits 128 with "this worktree is not sparse", which is the ordinary
+        # case and says nothing.
+        git sparse-checkout list > /dev/null 2>&1 || exit 0
+        echo "::warning::${RUNNER_NAME:-this runner} handed this job a sparse" \
+          "workspace left by an earlier one; restoring the full checkout."
+        git sparse-checkout disable || true
+        git config --unset-all core.sparseCheckout || true
+        rm -f "$(git rev-parse --git-dir)/info/sparse-checkout"
+        git checkout --force HEAD
+
     # Nothing here installs a toolchain. A box that runs these suites is
     # provisioned before it takes a job, by the Peppy superproject's
     # scripts/setup_machine.sh --ci-runner, and a box missing any of it is a
