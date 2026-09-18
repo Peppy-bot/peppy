@@ -87,17 +87,46 @@ To provision a fresh development machine, run:
 
 It installs the following tooling with each project's recommended method, skipping anything already present:
 
+- **apptainer's build and runtime dependencies** (`apt`, Ubuntu only — macOS builds apptainer inside Lima, so the host needs none of them)
+- **the Rust toolchain, with clippy** (rustup; clippy is a test dependency, not just a lint — the generator suites run `cargo clippy -- -D warnings` over the crates they generate)
 - **qemu** (`apt` on Ubuntu, Homebrew on macOS)
 - **Go** (official go.dev tarball into `/usr/local/go` on Ubuntu, Homebrew on macOS)
 - **pixi** (official installer)
 - **uv** (official installer)
+- **Docker and buildx** (`apt`, Ubuntu only — the multi-daemon suite builds its image with `docker buildx`; on macOS choose your own runtime)
 - **Lima** (Homebrew, macOS only)
 
-Supported platforms are Ubuntu and macOS. On macOS the script expects [Homebrew](https://brew.sh) to be installed first. When Go is installed from the tarball on Ubuntu, the script adds `/usr/local/go/bin` to your `~/.profile`, so open a new shell (or `source ~/.profile`) afterwards.
+Supported platforms are Ubuntu and macOS. On macOS the script expects [Homebrew](https://brew.sh) to be installed first. When Go is installed from the tarball on Ubuntu, the script adds `/usr/local/go/bin` to your `~/.profile`, so open a new shell (or `source ~/.profile`) afterwards. Docker group membership only applies to new logins, so log out and back in before running the multi-daemon suite.
+
+### Self-hosted CI runners
+
+The same script prepares a host to run this repository's CI. On the runner box, **as the user the Actions runner executes as** (not `root`, and not through `sudo` — rustup, pixi and uv install into `$HOME`, and a run under `sudo` puts them somewhere the runner will never look):
+
+```
+curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/dev/scripts/setup_machine.sh -o /tmp/setup_machine.sh
+bash /tmp/setup_machine.sh --ci-runner
+```
+
+`--ci-runner` grants that user passwordless sudo, which the container suites need: each job installs a peppy release under its own directory and runs `peppy container setup`, which writes an AppArmor profile keyed to that install's path, and a job has no terminal for `sudo` to prompt at. The grant is skipped when it is already in place. It is full root on a host that also runs pull request code, so it sits behind the flag rather than happening by default.
+
+Two steps afterwards, both needed:
+
+```
+# 1. docker group membership and anything new on PATH only reach new sessions
+sudo systemctl restart 'actions.runner.*'
+
+# 2. the runner service does not source ~/.profile, so name the toolchains in
+#    its own environment file, <runner-dir>/.env, then restart it again:
+PATH=$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.pixi/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+```
+
+Without the second, jobs cannot see the toolchains the script installed, and the workflow re-installs them per job instead.
+
+A box that has not had this run is not a neutral member of the pool: every job targets a bare `self-hosted` label, so an unprepared runner takes work it cannot complete and fails it. Provision first, then register.
 
 ### Build
 
-Install [cargo & Rust](https://doc.rust-lang.org/cargo/getting-started/installation.html) then make sure the Rust toolchain is up to date with:
+The setup script above installs the Rust toolchain. If you skipped it, install [cargo & Rust](https://doc.rust-lang.org/cargo/getting-started/installation.html) yourself, then keep the toolchain current with:
 ```
 rustup update
 ```
