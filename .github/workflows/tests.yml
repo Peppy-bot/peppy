@@ -198,8 +198,8 @@ jobs:
       - name: Run release scripts tests
         run: |
           # The install tests boot Lima VMs (limactl itself comes from the pixi
-          # environment) on the runner's QEMU, which scripts/setup_machine.sh
-          # installs along with everything else these suites build against.
+          # environment) on the runner's QEMU, which comes from the box's
+          # provisioning along with everything else these suites build against.
           #
           # KVM is the exception this step still handles: it opens when present
           # but group-inaccessible, and a reboot resets the permission, so it
@@ -240,8 +240,7 @@ jobs:
           suite: cross-check
 
       # No toolchain step: the aarch64 target and the cross gcc come from the
-      # box's provisioning (scripts/setup_machine.sh --ci-runner), as the rest
-      # of what this job builds with does.
+      # box's provisioning, as the rest of what this job builds with does.
       #
       # The linker matters even though `cargo check` itself never links:
       # pmi's build script cargo-installs zenohd for the target, a real

@@ -8,22 +8,22 @@ description: >-
 runs:
   using: composite
   steps:
-    # Nothing here installs a toolchain. scripts/setup_machine.sh is what
-    # provisions a host for this repository — the apptainer build dependencies,
-    # rustup with stable and clippy, Go, qemu, pixi, uv and Docker — and the
-    # self-hosted runners have run it (`--ci-runner`, per the Readme), so a box
-    # taking a job already carries all of it. A box that does not is a
-    # provisioning failure to fix once on that box, not something for every job
-    # on every runner to re-check and paper over. The one caller whose host is
-    # not provisioned ahead of time is release-host-env, which runs that same
-    # script itself before this action; see the note there.
+    # Nothing here installs a toolchain. A box that runs these suites is
+    # provisioned before it takes a job, by the Peppy superproject's
+    # scripts/setup_machine.sh --ci-runner: the apptainer build dependencies,
+    # rustup with stable and clippy, Go, qemu, Node, pixi, uv and Docker. A box
+    # that is missing any of it is a provisioning failure to fix once on that
+    # box, not something for every job on every runner to re-check and paper
+    # over. The one caller whose host is a fresh image each run is
+    # release-host-env, which installs what a release stage needs before this
+    # action; see the note there.
     #
     # What a job does still have to do is PATH. The runner executes steps in a
     # shell that is neither a login nor an interactive one, so the profile
     # edits those installers make are never sourced, and the tools under $HOME
     # and /usr/local/go have to be named on $GITHUB_PATH to be reachable from
-    # the calling job's later steps. The directories are exactly the install
-    # locations setup_machine.sh uses.
+    # the calling job's later steps. The directories are exactly the ones the
+    # provisioning installs into.
     #
     # The check is there to name a gap in one line instead of letting it become
     # an error minutes later inside a build script, where it reads as something
@@ -52,7 +52,8 @@ runs:
         cargo clippy --version > /dev/null 2>&1 || missing+=("clippy")
         if [ ${#missing[@]} -gt 0 ]; then
           echo "::error::${RUNNER_NAME:-this host} is missing ${missing[*]}." \
-            "Provision it with scripts/setup_machine.sh --ci-runner."
+            "Self-hosted boxes are provisioned with the Peppy superproject's" \
+            "scripts/setup_machine.sh --ci-runner."
           exit 1
         fi
         rustc --version

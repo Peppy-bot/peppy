@@ -21,26 +21,63 @@ runs:
   using: composite
   steps:
     # The release is the one workflow left on hosted runners, because it builds
-    # for macOS and arm64 and the self-hosted box is a single Linux x86 one. A
-    # hosted runner is a fresh image on every run and carries none of what
-    # scripts/setup_machine.sh installs, whereas the self-hosted boxes have run
-    # that script already — so this stage runs it on itself, and rust-build-env
-    # below can then assume a provisioned host wherever it is used. The script
-    # skips anything the image already ships, and being the single definition
-    # of what a host needs, it keeps the release runners and the CI boxes from
-    # drifting apart.
-    - name: Provision the hosted runner
+    # for macOS and arm64 while the rest of CI runs on self-hosted Linux x86
+    # boxes. Those boxes are provisioned before they take a job and every other
+    # workflow installs nothing; a hosted runner is a fresh image each run, so
+    # this is where a Linux release stage installs what it builds with.
+    #
+    # The packages are the ones containers-internal's build script asserts
+    # before it compiles apptainer and its bundled squashfuse
+    # (APPTAINER_BUILD_DEPS in crates/containers-internal/build.rs, which this
+    # list mirrors), plus three that constant does not carry: fuse2fs, which
+    # apptainer needs at run time to mount EXT3 images; uidmap, which provides
+    # the newuidmap fakeroot wants; and g++, which apptainer's mconfig probes
+    # for among its base checks and which Ubuntu's gcc package does not pull
+    # in. Go is absent deliberately: the apptainer stage installs the toolchain
+    # it pins itself (scripts/functions/parallel_release.py).
+    #
+    # needrestart is held to listing what it would restart. The install pulls
+    # newer libc, libcurl and ca-certificates into the image, and its automatic
+    # mode then restarts every service linked against them, systemd-journald,
+    # networkd, resolved and udevd among them, underneath the running job:
+    # one of the causes GitHub names for "the runner lost communication with
+    # the server".
+    #
+    # stable is installed rather than inherited, because the image's default
+    # trails the workspace's dependency graph (sysinfo alone already requires a
+    # newer rustc than the images ship). clippy comes with it: the generator
+    # suites run `cargo clippy --all-targets -- -D warnings` over the crates
+    # they generate, so it is a test dependency rather than a lint. pixi is
+    # what generator-internal's build script builds the embedded peppylib .so
+    # through, and it refuses to serve a stale .so when pixi is absent; its pin
+    # is the version every `requires-pixi` in the workspace accepts
+    # (scripts/pixi.toml, peppylib-py's pixi.toml), so bump them together. uv
+    # is what the bindings stage's build script refuses to start without.
+    - name: Install what a Linux release stage builds with
       if: inputs.rust == 'true' && runner.os == 'Linux'
       shell: bash
-      run: "$GITHUB_WORKSPACE/scripts/setup_machine.sh"
+      run: |
+        set -euo pipefail
+        sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l \
+          apt-get update -qq
+        sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l \
+          apt-get install -y -qq \
+          make gcc g++ pkg-config squashfs-tools cryptsetup curl ca-certificates \
+          libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
+          liblzma-dev libzstd-dev fuse2fs uidmap
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+        rustup component add clippy
+        curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.80.0 sh
+        curl -LsSf https://astral.sh/uv/install.sh | sh
 
     # Linux builds in the same environment as every cargo job of this
-    # repository.
+    # repository, which is also what checks the step above left a complete one.
     - if: inputs.rust == 'true' && runner.os == 'Linux'
       uses: ./.github/actions/rust-build-env
 
-    # Pinned to current stable rather than the runner image's default, as
-    # scripts/setup_machine.sh does on the Linux hosts.
+    # Pinned to current stable rather than the runner image's default, as the
+    # Linux step above does.
     - name: Install the Rust toolchain
       if: inputs.rust == 'true' && runner.os == 'macOS'
       shell: bash
@@ -49,7 +86,7 @@ runs:
         rustup default stable
         rustc --version
 
-    # Pinned to the version scripts/setup_machine.sh installs, which is the one
+    # Pinned to the same version as the Linux step above, which is the one
     # that satisfies every `requires-pixi` in the workspace.
     - name: Install pixi
       if: inputs.rust != 'true' || runner.os != 'Linux'
@@ -60,7 +97,7 @@ runs:
 
     # The bindings stage builds peppylib-py, whose build script refuses to
     # start without uv on PATH, and the macOS image ships none. Installed as
-    # scripts/setup_machine.sh installs it on the Linux hosts.
+    # the Linux step above installs it.
     - name: Install uv
       if: inputs.rust == 'true' && runner.os == 'macOS'
       shell: bash
