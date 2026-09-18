@@ -5,13 +5,23 @@ description: >-
   to create unprivileged user namespaces, and enough loop devices to mount
   several images at once.
 
+inputs:
+  cross-toolchain:
+    description: >-
+      Expect the aarch64 cross toolchain among what the host is provisioned
+      with. True of every self-hosted box, which scripts/setup_machine.sh
+      --ci-runner gives it to; false on the hosted release runners, whose
+      provisioning is release-host-env's own and builds for the host alone
+    default: "true"
+
 runs:
   using: composite
   steps:
     # Nothing here installs a toolchain. A box that runs these suites is
     # provisioned before it takes a job, by the Peppy superproject's
     # scripts/setup_machine.sh --ci-runner: the apptainer build dependencies,
-    # rustup with stable and clippy, Go, qemu, Node, pixi, uv and Docker. A box
+    # rustup with stable, clippy and the aarch64 cross toolchain, Go, qemu,
+    # Node, pixi, uv and Docker. A box
     # that is missing any of it is a provisioning failure to fix once on that
     # box, not something for every job on every runner to re-check and paper
     # over. The one caller whose host is a fresh image each run is
@@ -35,6 +45,8 @@ runs:
     # ahead of every cargo step.
     - name: Check the host's toolchain
       shell: bash
+      env:
+        CROSS_TOOLCHAIN: ${{ inputs.cross-toolchain }}
       run: |
         set -euo pipefail
         for dir in "$HOME/.cargo/bin" /usr/local/go/bin "$HOME/.pixi/bin" "$HOME/.local/bin"; do
@@ -50,8 +62,25 @@ runs:
           command -v "$tool" > /dev/null || missing+=("$tool")
         done
         cargo clippy --version > /dev/null 2>&1 || missing+=("clippy")
+        # The cross toolchain is state of the box like everything above it:
+        # the aarch64 target's standard library, and the linker driver pmi's
+        # build script needs when it builds zenohd for that target for real.
+        # A box without them fails the cross-check job from inside cargo,
+        # which reports a dependency that cannot find `core` rather than a
+        # runner that was never given the target. Captured before the grep
+        # sees it, because `grep -q` returns on the first match and would
+        # leave rustup writing into a closed pipe for pipefail to read as a
+        # failure.
+        if [ "$CROSS_TOOLCHAIN" = "true" ]; then
+          targets=$(rustup target list --installed 2>/dev/null || true)
+          grep -qx aarch64-unknown-linux-gnu <<< "$targets" ||
+            missing+=("the aarch64 Rust target")
+          command -v aarch64-linux-gnu-gcc > /dev/null ||
+            missing+=("aarch64-linux-gnu-gcc")
+        fi
         if [ ${#missing[@]} -gt 0 ]; then
-          echo "::error::${RUNNER_NAME:-this host} is missing ${missing[*]}." \
+          list=$(printf '%s, ' "${missing[@]}")
+          echo "::error::${RUNNER_NAME:-this host} is missing ${list%, }." \
             "Self-hosted boxes are provisioned with the Peppy superproject's" \
             "scripts/setup_machine.sh --ci-runner."
           exit 1
