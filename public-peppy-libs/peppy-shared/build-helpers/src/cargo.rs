@@ -297,7 +297,7 @@ fn cargo_install_binary_with(
     cache_dir: &Path,
 ) -> Option<PathBuf> {
     fn use_cached(name: &str, cached_binary: PathBuf) -> Option<PathBuf> {
-        println!("cargo:warning=Using cached {name} binary from {cached_binary:?}");
+        crate::progress!("Using cached {name} binary from {cached_binary:?}");
         Some(cached_binary)
     }
 
@@ -316,8 +316,8 @@ fn cargo_install_binary_with(
         return use_cached(name, cached_binary);
     }
 
-    println!(
-        "cargo:warning=Compiling {name} {version} from source for {target} (this may take several minutes)..."
+    crate::progress!(
+        "Compiling {name} {version} from source for {target} (this may take several minutes)..."
     );
 
     let install_root = cache_dir.join(format!("{name}-install-tmp"));
@@ -366,7 +366,7 @@ fn cargo_install_binary_with(
         return None;
     }
 
-    println!("cargo:warning=Successfully compiled and cached {name} {version} for {target}");
+    crate::progress!("Successfully compiled and cached {name} {version} for {target}");
     Some(cached_binary)
 }
 
