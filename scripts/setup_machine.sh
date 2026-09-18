@@ -1,34 +1,68 @@
 #!/usr/bin/env bash
+
+# `sh scripts/setup_machine.sh` bypasses the shebang above, and Ubuntu's sh is
+# dash, which has no `pipefail` and cannot parse the arrays below. It reports
+# that as `set: Illegal option -o pipefail` on line 2, which says nothing about
+# the cause, so the invocation is corrected here rather than diagnosed.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
-# Set up a new development machine for Peppy.
+# Set up a new machine for Peppy: everything the workspace builds and tests
+# against, so a host that has run this can compile peppy, build apptainer from
+# source, and run the container suites.
 #
 # Installs each of the following with its recommended method, skipping anything
 # that is already on the system:
+#   - the apptainer build dependencies (and fuse2fs, needed at run time)
+#   - the Rust toolchain, with clippy
 #   - qemu
 #   - Go
 #   - pixi
 #   - uv
+#   - Docker (Ubuntu; the multi-daemon suite builds its image with buildx)
 #   - Lima (macOS only)
+#
+# The list is not a matter of taste: every entry is here because its absence
+# broke a real build. `g++` because apptainer's `mconfig` probes a host C++
+# compiler and Ubuntu's `gcc` package does not pull one in; clippy because the
+# generator suites run `cargo clippy -- -D warnings` over the crates they
+# generate; Go because containers-internal compiles apptainer with the `go` on
+# PATH and only its Lima path bootstraps a toolchain of its own.
 #
 # Supported platforms: Ubuntu (apt) and macOS (Homebrew).
 #
 # Usage:
-#   ./scripts/setup_machine.sh
+#   ./scripts/setup_machine.sh [--ci-runner]
 
 usage() {
     cat <<'EOF'
-Usage: ./scripts/setup_machine.sh
+Usage: ./scripts/setup_machine.sh [--ci-runner]
 
-Installs qemu, Go, pixi, uv, and (on macOS) Lima, skipping anything already
+Installs the apptainer build dependencies, the Rust toolchain (with clippy),
+qemu, Go, pixi, uv, Docker, and (on macOS) Lima, skipping anything already
 present. Supported platforms: Ubuntu and macOS.
+
+  --ci-runner   Additionally prepare the host to run this repository's CI as a
+                self-hosted GitHub Actions runner: grant the invoking user
+                passwordless sudo. The container suites re-install peppy under
+                a fresh directory on every job and then run `peppy container
+                setup`, which writes an AppArmor profile keyed to that install
+                and so needs root without a terminal to prompt at. This grants
+                real privilege; read the note it prints before using it.
 EOF
 }
 
+CI_RUNNER=false
 case "${1:-}" in
 -h | --help)
     usage
     exit 0
+    ;;
+--ci-runner)
+    CI_RUNNER=true
     ;;
 "") ;;
 *)
@@ -95,8 +129,20 @@ SUDO=""
 if [ "$PLATFORM" = "ubuntu" ] && [ "$(id -u)" -ne 0 ]; then
     have sudo || die "root privileges are required (apt, /usr/local); install sudo or run as root"
     SUDO="sudo"
-    log "Requesting sudo access (needed for apt and /usr/local)"
-    sudo -v
+    # Only prompt where a password is actually wanted. `sudo -v` caches
+    # credentials and authenticates to do it, and a host that already grants
+    # this account passwordless sudo — which every cloud image does for its
+    # default user, and which the CI runners need anyway — typically has no
+    # password set for it at all. There `sudo -v` prompts for a password that
+    # cannot exist and fails, while every real command the script goes on to
+    # run succeeds. `sudo -n true` asks the question that matters instead:
+    # can we elevate without a prompt?
+    if sudo -n true 2>/dev/null; then
+        log "Passwordless sudo is already available"
+    else
+        log "Requesting sudo access (needed for apt and /usr/local)"
+        sudo -v
+    fi
 fi
 
 # Homebrew is the recommended source for qemu, Go, and Lima on macOS.
@@ -127,6 +173,103 @@ ensure_path_line() {
 }
 
 # --- installers -------------------------------------------------------------
+
+# The packages containers-internal's build script needs to compile apptainer
+# and its bundled squashfuse from source. The list mirrors APPTAINER_BUILD_DEPS
+# in crates/containers-internal/build.rs, which that build script asserts before
+# it starts, plus three the constant does not carry because they are needed to
+# run apptainer rather than to build it: fuse2fs, to mount EXT3 images; uidmap,
+# which provides the newuidmap/newgidmap that fakeroot needs and whose absence
+# `peppy container setup` reports as "Install uidmap package (provides newuidmap
+# for fakeroot)" before refusing to continue; and g++, which `mconfig` probes
+# for among its base checks and which Ubuntu's `gcc` package does not pull in.
+# Keep in step with that constant and with scripts/functions/lima.py.
+#
+# macOS builds apptainer inside Lima rather than natively, so the guest carries
+# these and the host needs none of them.
+install_build_deps() {
+    if [ "$PLATFORM" != "ubuntu" ]; then
+        return
+    fi
+    local packages=(
+        make gcc g++ pkg-config squashfs-tools cryptsetup curl ca-certificates
+        libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev
+        liblzma-dev libzstd-dev fuse2fs uidmap
+    )
+    local missing=()
+    local package
+    for package in "${packages[@]}"; do
+        dpkg-query -W -f='${Status}' "$package" 2>/dev/null |
+            grep -q '^install ok installed$' || missing+=("$package")
+    done
+    if [ ${#missing[@]} -eq 0 ]; then
+        skip "apptainer build dependencies" "all ${#packages[@]} packages"
+        return
+    fi
+    log "Installing apptainer build dependencies: ${missing[*]}"
+    apt_install "${missing[@]}"
+}
+
+# rustup rather than a distribution package: the workspace tracks current
+# stable (sysinfo alone already requires a newer rustc than the runner images
+# this replaced shipped), and a packaged toolchain goes stale in place.
+#
+# clippy is not optional here. generator-internal's test helpers generate a
+# crate and run `cargo clippy --all-targets -- -D warnings` over it, so a
+# machine without clippy fails those tests rather than merely skipping a lint.
+install_rust() {
+    if have rustup || [ -x "$HOME/.cargo/bin/rustup" ]; then
+        skip "rustup" "$(command -v rustup || echo "$HOME/.cargo/bin/rustup")"
+    else
+        log "Installing the Rust toolchain"
+        curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain stable
+    fi
+    export PATH="$HOME/.cargo/bin:$PATH"
+    have rustup || die "rustup is still not on PATH after installing it"
+    # `--profile minimal` above omits clippy, so it is asked for by name. Both
+    # calls are no-ops when they are already satisfied.
+    if ! rustup default 2>/dev/null | grep -q '^stable-'; then
+        log "Pinning the default toolchain to stable"
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+    fi
+    if cargo clippy --version >/dev/null 2>&1; then
+        skip "clippy" "$(cargo clippy --version)"
+    else
+        log "Installing clippy"
+        rustup component add clippy
+    fi
+}
+
+# The multi-daemon end-to-end suite builds its daemon image with `docker buildx
+# build` (see build_e2e_daemon_image), falling back to a testcontainers build
+# when no buildx client is present. Both paths want a working Docker.
+#
+# Not installed on macOS: Docker Desktop is a licensed GUI application, so the
+# choice of runtime (Desktop, Colima, OrbStack) is the developer's to make.
+install_docker() {
+    if [ "$PLATFORM" != "ubuntu" ]; then
+        if ! have docker; then
+            warn "no docker found; install Docker Desktop, Colima or OrbStack for the multi-daemon suite"
+        fi
+        return
+    fi
+    if have docker; then
+        skip "Docker" "$(command -v docker)"
+    else
+        log "Installing Docker"
+        apt_install docker.io docker-buildx
+    fi
+    # The daemon's socket is root-owned and group-writable, so membership is
+    # what lets the suite talk to it without sudo. A new group does not apply
+    # to the current session, hence the note rather than a silent success.
+    if [ "$(id -u)" -ne 0 ] && ! id -nG "$(id -un)" | grep -qw docker; then
+        log "Adding $(id -un) to the docker group"
+        $SUDO usermod -aG docker "$(id -un)"
+        warn "docker group membership applies to new logins; log out and back in before running the multi-daemon suite"
+    fi
+}
 
 install_qemu() {
     if have qemu-system-x86_64 || have qemu-system-aarch64 || have qemu-img; then
@@ -200,12 +343,64 @@ install_lima() {
     brew install lima
 }
 
+# Prepare the host to run this repository's CI as a self-hosted runner.
+#
+# Only one thing here cannot be expressed as a package: passwordless sudo. The
+# container suites install a peppy release under the job's own directory and
+# then run `peppy container setup`, which writes an AppArmor profile whose file
+# name hashes the canonical path of that install's `starter` binary (see
+# apparmor_profile in crates/containers-internal/src/apptainer/facade.rs). A
+# job has no terminal for sudo to prompt at, so without this the step fails
+# with "sudo: a password is required" and every container suite on the box goes
+# red — which is exactly how each freshly added runner has announced itself.
+#
+# The grant is deliberately not silent and not implied by a plain run: it is
+# full sudo for the invoking user, on a host that also executes pull request
+# code. That is the same trade every CI runner makes, but it should be a
+# decision rather than a side effect, hence the flag and this message.
+configure_ci_runner() {
+    if [ "$PLATFORM" != "ubuntu" ]; then
+        die "--ci-runner targets the Ubuntu self-hosted runners; this host is ${PLATFORM}"
+    fi
+    local user file
+    user="$(id -un)"
+    if [ "$user" = "root" ]; then
+        skip "passwordless sudo" "running as root"
+        return
+    fi
+    file="/etc/sudoers.d/peppy-ci-$user"
+    if $SUDO test -f "$file"; then
+        skip "passwordless sudo" "$file"
+        return
+    fi
+    log "Granting $user passwordless sudo for CI ($file)"
+    warn "this grants $user full root without a password, on a host that runs pull request code"
+    # Written through a temporary file and validated before it is installed: a
+    # malformed drop-in can lock sudo out of the whole machine, and visudo -c
+    # is what catches that while the file is still harmless.
+    local tmp
+    tmp="$(mktemp)"
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$user" >"$tmp"
+    if ! $SUDO visudo -c -f "$tmp" >/dev/null; then
+        rm -f "$tmp"
+        die "refusing to install an invalid sudoers drop-in"
+    fi
+    $SUDO install -m 0440 -o root -g root "$tmp" "$file"
+    rm -f "$tmp"
+}
+
 # --- run --------------------------------------------------------------------
 
 log "Setting up a new machine for Peppy (${PLATFORM}/${ARCH})"
+install_build_deps
+install_rust
 install_qemu
 install_go
 install_pixi
 install_uv
+install_docker
 install_lima
+if $CI_RUNNER; then
+    configure_ci_runner
+fi
 log "Done. Open a new shell (or source your profile) so freshly installed tools are on PATH."
