@@ -8,6 +8,11 @@ inputs:
   command:
     description: The cargo command that runs the suite.
     required: true
+  working-directory:
+    description: >-
+      The workspace the command runs in, relative to the repository root. Its
+      Cargo.lock is the one proven untouched.
+    default: .
 
 runs:
   using: composite
@@ -18,6 +23,7 @@ runs:
     # scripts/install.sh keeps defaulting PEPPY_HOME to $HOME/.peppy.
     - name: Run the suite in an isolated peppy data root
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: |
         peppy_home="$RUNNER_TEMP/peppy-home"
         mkdir -p "$peppy_home/tmpdir"
@@ -29,6 +35,7 @@ runs:
     # suite: placed before it, it proves nothing.
     - name: Prove CI did not rewrite the shipping lockfile
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: git diff --exit-code -- Cargo.lock
 
     # Reclaim the data root so disk does not grow on every run. Runs even when

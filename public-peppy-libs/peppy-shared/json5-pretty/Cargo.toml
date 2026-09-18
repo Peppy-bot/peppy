@@ -1,0 +1,12 @@
+[package]
+name = "json5-pretty"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+[dev-dependencies]
+serde_json5 = "0.2"

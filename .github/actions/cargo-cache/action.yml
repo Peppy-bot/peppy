@@ -14,6 +14,11 @@ inputs:
       different feature sets and test targets, and a directory per suite stays
       warm for exactly the build reading it.
     required: true
+  target-dir:
+    description: >-
+      The cargo target directory the suite builds into, relative to the
+      repository root: `target` of whichever workspace the suite runs in.
+    default: target
 
 runs:
   using: composite
@@ -60,10 +65,10 @@ runs:
           fi
         done
 
-    # Only `target/` is redirected, and through a symlink rather than
-    # CARGO_TARGET_DIR: the docs snippet runner builds its nodes under the
-    # workspace's own `target/`, so linking the directory leaves the path
-    # where every tool expects it.
+    # Only the suite's target directory is redirected, and through a symlink
+    # rather than CARGO_TARGET_DIR: the docs snippet runner builds its nodes
+    # under the workspace's own `target/`, so linking the directory leaves the
+    # path where every tool expects it.
     #
     # Nothing under $HOME is touched. The cargo registry, the git checkouts
     # and the build scripts' tool cache (`~/.peppy/tmp`) are the box's own
@@ -106,7 +111,7 @@ runs:
           fi
           ln -sfn "$store" "$path"
         }
-        link "$GITHUB_WORKSPACE/target" "$disk/target"
+        link "$GITHUB_WORKSPACE/${{ inputs.target-dir }}" "$disk/target"
         link "$disk/target/uv-cache" "$RUNNER_TEMP/uv-cache"
         {
           echo "CARGO_INCREMENTAL=0"

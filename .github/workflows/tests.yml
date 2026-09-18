@@ -49,6 +49,7 @@ jobs:
       container_e2e: ${{ steps.changes.outputs.container_e2e }}
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
       scripts: ${{ steps.changes.outputs.scripts }}
+      public_libs: ${{ steps.changes.outputs.public_libs }}
 
     steps:
       - uses: actions/checkout@v7
@@ -205,6 +206,110 @@ jobs:
           fi
           ./scripts/run_tests.sh --all
 
+  # The suites of the sealed public-peppy-libs tree: its peppy-shared workspace,
+  # the peppylib Python bindings, and the standalone Python libraries.
+  #
+  # The tree may depend on nothing outside itself, and this job is where that
+  # is a fact rather than a convention: the checkout materializes the tree and
+  # the CI plumbing and nothing else. With `crates/` and the root manifest
+  # absent, a dependency, `#[path]` or `include!` reaching out of the tree has
+  # nothing to resolve to and fails the build. The manifest-level rule has a
+  # test of its own with a readable failure (build-helpers' sealed_tree).
+  public-libs:
+    needs: changes
+    if: needs.changes.outputs.public_libs == 'true'
+    runs-on: self-hosted
+    permissions:
+      contents: read
+
+    steps:
+      # The root .gitignore is git plumbing for the path down to the tree, not
+      # code: cargo fingerprints a build script by listing its package's files
+      # through git, which evaluates the ignore rules of every directory from
+      # the repository root down. A sparse checkout is a partial clone, so a
+      # .gitignore left out of it has no blob to read and the listing fails
+      # ("Failed to update the excludes stack").
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /.gitignore
+            /public-peppy-libs/
+
+      # Puts the box's toolchain on PATH, including the pixi and uv the Python
+      # suites run under.
+      - uses: ./.github/actions/rust-build-env
+
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: public-libs
+          target-dir: public-peppy-libs/peppy-shared/target
+
+      # peppylib-py is excluded: its cdylib build and tests/python_tests.rs
+      # only wrap `pixi run test`, which the step below runs directly. The
+      # lockfile is workspace-global, so `--locked` still validates it against
+      # peppylib-py's manifest.
+      - uses: ./.github/actions/cargo-suite
+        with:
+          working-directory: public-peppy-libs/peppy-shared
+          command: cargo test --workspace --exclude peppylib-py --locked
+
+      # `pixi run test` builds the native module with `maturin develop` and
+      # runs the pytest suite. The install goes first and `--locked`, so a
+      # stale pixi.lock fails here instead of being re-resolved by the run.
+      # The later suites run whatever the earlier ones did, so one red suite
+      # never hides another.
+      - name: Run the peppylib-py Python tests
+        if: ${{ !cancelled() }}
+        working-directory: public-peppy-libs/peppy-shared/peppylib-py
+        run: |
+          peppy_home="$RUNNER_TEMP/peppy-home-py"
+          mkdir -p "$peppy_home/tmpdir"
+          export PEPPY_HOME="$peppy_home" TMPDIR="$peppy_home/tmpdir"
+          pixi install --locked
+          pixi run test
+
+      # Every directory holding a pyproject.toml and a tests/ tree is
+      # discovered from the filesystem and runs its suite from its own uv
+      # environment, resolved --frozen against its committed uv.lock. The
+      # suites are self-contained unit tests: no peppy daemon, no container
+      # runtime, no hardware. Every discovered library runs even after one
+      # fails, so a red run names every failing library instead of the first.
+      - name: Run every standalone Python library's suite
+        if: ${{ !cancelled() }}
+        working-directory: public-peppy-libs
+        run: |
+          set -euo pipefail
+          failed=()
+          for manifest in */pyproject.toml; do
+            lib=$(dirname "$manifest")
+            [ -d "$lib/tests" ] || continue
+            echo "::group::pytest: $lib"
+            if (cd "$lib" && uv sync --frozen --quiet && uv run --frozen pytest); then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::pytest failed in $lib"
+              failed+=("$lib")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "failing libraries: ${failed[*]}" >&2
+            exit 1
+          fi
+
+      # The frozen and locked installs above must have consumed the committed
+      # manifests and lockfiles, not rewritten them.
+      - name: Prove the Python suites tested the committed manifests and lockfiles
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code -- 'public-peppy-libs/*pyproject.toml' 'public-peppy-libs/*uv.lock' 'public-peppy-libs/*pixi.toml' 'public-peppy-libs/*pixi.lock'
+
+      - name: Clean up the Python suite's peppy data root
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/peppy-home-py"
+
   # Build scripts execute on the build host even when cargo compiles for
   # another target, so a build script that runs a binary selected by the
   # target triple only fails when host and target differ. The one cross build
@@ -281,6 +386,7 @@ jobs:
       - multi-daemon-e2e
       - docs-integration
       - release-scripts
+      - public-libs
       - cross-check
     # Runs whatever happened above: on the default condition a failed or
     # cancelled suite would leave this check unreported instead of red.

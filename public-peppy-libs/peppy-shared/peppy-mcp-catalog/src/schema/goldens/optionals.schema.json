@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "properties": {
+    "required_label": {
+      "type": "string"
+    },
+    "optional_label": {
+      "type": "string"
+    },
+    "optional_blob": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "optional_stamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "optional_extent": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "optional_samples": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      }
+    }
+  },
+  "required": [
+    "required_label"
+  ],
+  "additionalProperties": false
+}

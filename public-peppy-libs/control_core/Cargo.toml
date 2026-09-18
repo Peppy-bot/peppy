@@ -1,0 +1,10 @@
+[package]
+name = "control_core"
+version = "0.1.0"
+edition = "2024"
+description = "Shared control-loop primitives for the openarm control nodes: a fixed-rate Pacer with overrun accounting. Pure Rust, no hardware or messaging deps. A home for further control primitives as they are factored out."
+
+[dependencies]
+tokio = { version = "1", features = ["time"] }
+tracing = "0.1"
+thiserror = "2"

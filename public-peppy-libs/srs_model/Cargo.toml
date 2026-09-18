@@ -1,0 +1,22 @@
+[package]
+name = "srs_model"
+version = "0.1.0"
+edition = "2024"
+description = "Kinematics + dynamics (FK, closed-form IK, gravity/Coriolis) for a 7-DOF SRS arm. Robot-agnostic: all geometry derives from the supplied URDF. Pure Rust, no hardware or messaging deps."
+
+[dependencies]
+chain_kinematics = { path = "../chain_kinematics" }
+thiserror = "2"
+nalgebra = "0.35"
+urdf-rs = "0.9"
+
+[dev-dependencies]
+# Only to cross-check forward kinematics against an independent implementation
+# (see `ik::tests::poe_fk_matches_an_independent_chain`); no production path uses it.
+k = "0.32"
+rand = "0.10"
+criterion = "0.8"
+
+[[bench]]
+name = "compute"
+harness = false

@@ -1,0 +1,23 @@
+# Test-support fixtures shared across the Peppy workspaces, extracted from
+# `config`'s former `test_helpers` feature so a release build of `config` never
+# carries them (and the heavy libgit2/askama scaffolding stays out of consumers
+# that only need a scratch dir). The package is named `config-test-support`
+# (matching its directory); consumers `use config_test_support::...`.
+[package]
+name = "config-test-support"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Public API only: `consts::{NODE_CONFIG_FILE, PEPPY_HOME_ENV}`. No dependency
+# cycle — `config`'s own tests do not use these fixtures.
+config = { package = "peppy-config-model", path = "../peppy-config-model" }
+# git2 (→ libgit2) and askama back the git-repo + node-config-template fixtures;
+# gated so the always-on `assert_contains_all`/`test_tmp_root` helpers stay pure-std.
+git2 = { version = "0.21", optional = true }
+askama = { version = "0.16", optional = true }
+
+[features]
+default = []
+git_fixtures = ["dep:git2", "dep:askama"]

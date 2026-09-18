@@ -1,0 +1,106 @@
+// Peppy Configuration
+// This is the main configuration file that defines the deployments on the current machine.
+// Every deployment references a node from the repository index by `name:tag`;
+// local nodes (like the ones in this example directory) become resolvable by
+// registering their parent directory with `peppy repo add <path>`.
+{
+  peppy_schema: "launcher/v1",
+  deployments: [
+    {
+      // the source property is mandatory
+      source: {
+        name: "brain",
+        tag: "v1",
+      },
+      instances: [
+        {
+          instance_id: "the_brain",
+          arguments: {}
+        }
+      ],
+    },
+    {
+      // `name: "<name>:<tag>"` is the combined shorthand for { name, tag }
+      source: {
+        name: "controller:v1",
+      },
+      instances: [
+        {
+          instance_id: "the_nervous_system",
+          arguments: {}
+        }
+      ]
+    },
+    {
+      source: {
+        name: "uvc_camera:v1"
+      },
+      instances: [
+        {
+          instance_id: "camera_front",
+          arguments: {
+            device: {
+              physical: "/dev/video_right",
+              sim: "mujoco:camera_right",
+              priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+            },
+          }
+        },
+        {
+          instance_id: "camera_rear",
+          arguments: {
+            device: {
+              physical: "/dev/video_left",
+              sim: "mujoco:camera_left",
+              priority: "physical" // "physical" or "sim". If the physical path is not accessible, the sim path is attempted
+            },
+            video: {
+              frame_rate: 30,
+              resolution: {
+                width: 1920,
+                height: 1080,
+              },
+              encoding: "yuyv", // "rgb8", "bgr8", "yuyv", "mjpeg"
+            },
+          }
+        }
+      ]
+    },
+    {
+      source: {
+        name: "video_reconstruction:v1"
+      },
+      instances: [
+        {
+          instance_id: "video_reconstruction_1",
+          arguments: {
+            video_duration_seconds: 5
+          }
+        }
+      ]
+    },
+    {
+      source: {
+        name: "esp32_board:v1"
+      },
+      instances: [
+        {
+          instance_id: "esp32_1",
+          // This env var becomes available during the execution of `build_cmd` and `run_cmd`
+          env_vars: {
+            ESP32_DEVICE: "/dev/tty.usbmodem585A0076841"
+          },
+          // No arguments given for this node, no_std env cannot accept dynamic parameters after compilation
+        }
+      ]
+    },
+  ]
+}

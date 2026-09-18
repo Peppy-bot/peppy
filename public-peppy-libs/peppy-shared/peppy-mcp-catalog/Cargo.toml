@@ -1,0 +1,33 @@
+# The exposure catalog sits at the bottom of the MCP dependency graph: the
+# `peppy` binary derives catalogs when it checks a hub and when it serves
+# exposures, and the MCP server runtime consumes the derived catalog, so the
+# document model, the schema mapping, the validation, and the catalog shape
+# live here rather than in either consumer.
+[package]
+name = "peppy-mcp-catalog"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "The mcp_exposure/v1 document model, its validation against pinned contracts, and the exposure catalog it derives"
+
+[dependencies]
+# The contract member shapes an exposure selects (`config::node` native
+# items and their `message_format` DSL), the shared identifier rules, the
+# document fingerprint, and the schema tag.
+peppy-config-model = { path = "../peppy-config-model" }
+# Ordered maps for exposure targets and restrictions, so the document's
+# declaration order carries through to the derived catalog.
+indexmap = { version = "2.2", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+# preserve_order: derived JSON Schemas keep their field order from the contract
+# message formats, and the catalog JSON is compared byte-for-byte by goldens
+# and by the catalog command's consumers.
+serde_json = { version = "1.0", features = ["preserve_order"] }
+thiserror = "2.0"
+
+[dev-dependencies]
+# Fixture documents and formats are written in JSON5, as in a hub.
+serde_json5 = "0.2"
+# The derived schemas are checked as real JSON Schemas against instances.
+# Default features are dropped so no HTTP resolver or TLS stack rides along.
+jsonschema = { version = "0.56", default-features = false }
