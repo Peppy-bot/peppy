@@ -1,0 +1,31 @@
+<entry>
+  <title>v0.30.1</title>
+  <id>https://docs.peppy.bot/releases/v0-30-1/</id>
+  <updated>2026-09-18T00:00:00Z</updated>
+
+  <summary>Nodes can now serve web pages and MCP endpoints, and peppy reports their URLs across its commands.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.30.1&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;Nodes can now serve web pages and MCP endpoints, and peppy reports their URLs across its commands.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 18, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy stack list&lt;/code&gt; endpoint output changed: the table adds &lt;code&gt;KIND&lt;/code&gt; and &lt;code&gt;LABEL&lt;/code&gt; columns and &lt;code&gt;--json&lt;/code&gt; lists each endpoint as &lt;code&gt;{label, kind, urls}&lt;/code&gt; rather than a URL string — update your parsers.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Serving pages and MCP endpoints&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;Declare a node's served endpoints under &lt;code&gt;execution.endpoints&lt;/code&gt; in &lt;code&gt;peppy.json5&lt;/code&gt; — each with a label, a &lt;code&gt;page&lt;/code&gt; or &lt;code&gt;mcp&lt;/code&gt; kind, and a description — and announce each bound socket from &lt;code&gt;setup&lt;/code&gt; with &lt;code&gt;announce_endpoint&lt;/code&gt;.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy node run&lt;/code&gt;, &lt;code&gt;peppy stack launch&lt;/code&gt;, and &lt;code&gt;peppy stack join&lt;/code&gt; now end by printing the URLs each started instance serves, grouped under &lt;code&gt;Web pages:&lt;/code&gt; and &lt;code&gt;MCP endpoints:&lt;/code&gt; headings.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;peppy node info&lt;/code&gt; and &lt;code&gt;peppy stack list&lt;/code&gt; now show each running instance's endpoints with their kind, label, and every URL.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Auditing composed launches&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;peppy stack resolve&lt;/code&gt; now checks link rules for git-published nodes too, reading their manifests from the checkout cache &lt;code&gt;peppy repo refresh&lt;/code&gt; fills instead of skipping them, without touching the network.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
