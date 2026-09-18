@@ -22,5 +22,7 @@ pub use cargo::{
     embed_git_tag, host_capnp_for_execution, peppy_shared_dir,
 };
 pub use command::{CommandOutput, run_command, run_command_streaming, run_command_with_timeout};
-pub use fs::{acquire_file_lock, cache_dir, copy_if_changed, set_executable, write_if_changed};
+pub use fs::{
+    acquire_file_lock, cache_dir, copy_if_changed, move_file, set_executable, write_if_changed,
+};
 pub use hash::verify_sha256;

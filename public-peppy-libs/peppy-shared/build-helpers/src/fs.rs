@@ -117,6 +117,68 @@ pub fn copy_if_changed(src: &Path, dst: &Path) -> bool {
     true
 }
 
+/// Moves `src` to `dst`, replacing `dst`, whether or not the two sit on the
+/// same filesystem.
+///
+/// A rename is atomic but only works within one filesystem, and a build
+/// script's source tree and its cache directory are often on different ones (a
+/// cache on a disk of its own, a repository on a separate drive). Across
+/// filesystems the file is copied next to `dst` and renamed into place, so a
+/// reader of `dst` sees the file it replaces or the whole new one, never a
+/// partial copy. `src` is removed last.
+///
+/// Panics if the move fails for any other reason.
+pub fn move_file(src: &Path, dst: &Path) {
+    move_file_with(src, dst, |from, to| std::fs::rename(from, to));
+}
+
+fn move_file_with(src: &Path, dst: &Path, rename: impl Fn(&Path, &Path) -> std::io::Result<()>) {
+    match rename(src, dst) {
+        Ok(()) => return,
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {}
+        Err(e) => panic!(
+            "Failed to move {} to {}: {}",
+            src.display(),
+            dst.display(),
+            e
+        ),
+    }
+
+    let dst_name = dst.file_name().unwrap_or_else(|| {
+        panic!(
+            "Cannot move {} to {}: no file name",
+            src.display(),
+            dst.display()
+        )
+    });
+    // Staged under a name no consumer of the destination directory matches,
+    // unique to this process so concurrent moves never share a staging file.
+    let staged = dst.with_file_name(format!(
+        ".{}.{}.partial",
+        dst_name.to_string_lossy(),
+        std::process::id()
+    ));
+    std::fs::copy(src, &staged).unwrap_or_else(|e| {
+        panic!(
+            "Failed to copy {} to {}: {}",
+            src.display(),
+            staged.display(),
+            e
+        );
+    });
+    rename(&staged, dst).unwrap_or_else(|e| {
+        let _ = std::fs::remove_file(&staged);
+        panic!(
+            "Failed to move {} into place at {}: {}",
+            staged.display(),
+            dst.display(),
+            e
+        );
+    });
+    std::fs::remove_file(src)
+        .unwrap_or_else(|e| panic!("Failed to remove {} after moving it: {}", src.display(), e));
+}
+
 /// Acquire an exclusive file lock for serializing concurrent build invocations.
 ///
 /// Creates the lock directory if needed, opens the lock file, and acquires
@@ -290,6 +352,107 @@ mod tests {
         let dst = dir.path().join("dst.txt");
         std::fs::write(&dst, b"existing").expect("write dst");
         copy_if_changed(&dir.path().join("no-such-src"), &dst);
+    }
+
+    /// A rename that refuses the `src` to `dst` move the way the kernel refuses
+    /// one across filesystems, and performs every other rename for real.
+    fn rename_across_filesystems(src: &Path) -> impl Fn(&Path, &Path) -> std::io::Result<()> + '_ {
+        move |from, to| {
+            if from == src {
+                return Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices));
+            }
+            std::fs::rename(from, to)
+        }
+    }
+
+    fn file_names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn move_file_renames_within_a_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("built.so");
+        let dst = dir.path().join("cached.so");
+        std::fs::write(&src, b"new").unwrap();
+
+        move_file(&src, &dst);
+
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new");
+        assert_eq!(file_names_in(dir.path()), vec!["cached.so"]);
+    }
+
+    #[test]
+    fn move_file_replaces_an_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("built.so");
+        let dst = dir.path().join("cached.so");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dst, b"a longer, older artifact").unwrap();
+
+        move_file(&src, &dst);
+
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new");
+        assert_eq!(file_names_in(dir.path()), vec!["cached.so"]);
+    }
+
+    #[test]
+    fn move_file_copies_across_filesystems_and_leaves_nothing_behind() {
+        let source_tree = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let src = source_tree.path().join("built.so");
+        let dst = cache.path().join("cached.so");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dst, b"a longer, older artifact").unwrap();
+
+        move_file_with(&src, &dst, rename_across_filesystems(&src));
+
+        assert_eq!(std::fs::read(&dst).unwrap(), b"new");
+        // The source is gone and no staging file outlives the move.
+        assert_eq!(file_names_in(source_tree.path()), Vec::<String>::new());
+        assert_eq!(file_names_in(cache.path()), vec!["cached.so"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_file_across_filesystems_keeps_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let source_tree = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let src = source_tree.path().join("built.so");
+        let dst = cache.path().join("cached.so");
+        std::fs::write(&src, b"new").unwrap();
+        set_executable(&src);
+
+        move_file_with(&src, &dst, rename_across_filesystems(&src));
+
+        let mode = std::fs::metadata(&dst).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
+    #[test]
+    #[should_panic(expected = "Failed to move")]
+    fn move_file_panics_on_a_rename_error_other_than_crossing_filesystems() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("built.so");
+        std::fs::write(&src, b"new").unwrap();
+
+        move_file_with(&src, &dir.path().join("cached.so"), |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Failed to move")]
+    fn move_file_panics_when_src_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        move_file(&dir.path().join("absent.so"), &dir.path().join("cached.so"));
     }
 
     #[test]

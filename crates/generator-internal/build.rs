@@ -414,12 +414,8 @@ mod peppylib_build {
 
         let host_suffix = host_platform_suffix();
         let native_so_path = so_dir.join(format!("_peppylib.abi3.{host_suffix}.so"));
-        std::fs::rename(so_path, &native_so_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to rename {:?} to {:?}: {e}",
-                so_path, native_so_path
-            )
-        });
+        // The source tree and the cache dir need not share a filesystem.
+        build_helpers::move_file(so_path, &native_so_path);
 
         // Strip debug info from the embedded native extension. This `.so` is a
         // pure runtime artifact; it is baked into the generator binary and
