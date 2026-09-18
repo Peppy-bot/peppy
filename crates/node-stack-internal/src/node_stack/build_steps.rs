@@ -643,27 +643,49 @@ mod tests {
     /// programs against the daemon's environment, and one that carries a
     /// PATH resolves against that PATH alone.
     ///
-    /// The stub is a symlink to a system tool rather than a script this test
-    /// writes. A file this process has just written is still open for writing
-    /// in every child a sibling test forked, until that child reaches its own
-    /// `execve`, and executing it inside that window fails with `ETXTBSY`.
-    /// Pointing the name at a binary nothing writes keeps the lookup under
-    /// test and takes the race out of it.
+    /// The stub is a symlink to a script this repository carries rather than
+    /// to one the test writes. A file this process has just written is still
+    /// open for writing in every child a sibling test forked, until that
+    /// child reaches its own `execve`, and executing it inside that window
+    /// fails with `ETXTBSY`. Pointing the name at a file nothing writes keeps
+    /// the lookup under test and takes the race out of it.
+    ///
+    /// The target is a script of this repository's rather than a system tool
+    /// because the child is spawned under the stub's own name: `argv[0]` is
+    /// `peppy-test-stub-tool`, not whatever the symlink resolves to. A host
+    /// whose coreutils are a single multi-call binary (the Rust `uutils`
+    /// build several distributions ship, or busybox) reads `argv[0]` as the
+    /// utility being asked for and refuses a name it does not know, so a
+    /// symlink to `/bin/echo` exits nonzero there and the PATH lookup this
+    /// test is about never gets its verdict. What runs a `#!/bin/sh` script
+    /// is the interpreter the kernel reads out of its first line, which
+    /// `argv[0]` does not reach.
     #[cfg(unix)]
     #[tokio::test]
     async fn run_build_cmd_resolves_the_program_via_the_child_path() {
-        // `echo` lives in /bin on both Linux and macOS, ignores the argument
-        // the command carries, and exits 0.
-        const SYSTEM_TOOL: &str = "/bin/echo";
+        use std::os::unix::fs::PermissionsExt;
+
+        let stub = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("stub_tool.sh");
+        // A checkout that dropped the mode bit fails the spawn with a message
+        // about resolving the program, which is not what would be wrong.
         assert!(
-            std::path::Path::new(SYSTEM_TOOL).exists(),
-            "the fixture stands on {SYSTEM_TOOL}, which every host it runs on ships"
+            stub.metadata()
+                .unwrap_or_else(|e| panic!("the fixture stands on {}: {e}", stub.display()))
+                .permissions()
+                .mode()
+                & 0o111
+                != 0,
+            "{} must be executable in the checkout",
+            stub.display()
         );
         let tool_dir = tempfile::tempdir().expect("tempdir should succeed");
         // Reachable under this name nowhere but this directory, so only the
         // PATH the test hands the child can resolve it.
         let tool = tool_dir.path().join("peppy-test-stub-tool");
-        std::os::unix::fs::symlink(SYSTEM_TOOL, &tool).expect("symlink stub tool");
+        std::os::unix::fs::symlink(&stub, &tool).expect("symlink stub tool");
 
         let working_dir = tempfile::tempdir().expect("tempdir should succeed");
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
