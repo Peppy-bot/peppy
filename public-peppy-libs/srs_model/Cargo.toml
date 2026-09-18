@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Kinematics + dynamics (FK, closed-form IK, gravity/Coriolis) for a 7-DOF SRS arm. Robot-agnostic: all geometry derives from the supplied URDF. Pure Rust, no hardware or messaging deps."
 
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
+# holds every package of the tree to that.
+[workspace]
+
 [dependencies]
 chain_kinematics = { path = "../chain_kinematics" }
 thiserror = "2"

@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Shared control-loop primitives for the openarm control nodes: a fixed-rate Pacer with overrun accounting. Pure Rust, no hardware or messaging deps. A home for further control primitives as they are factored out."
 
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
+# holds every package of the tree to that.
+[workspace]
+
 [dependencies]
 tokio = { version = "1", features = ["time"] }
 tracing = "0.1"

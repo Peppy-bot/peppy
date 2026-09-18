@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "The OpenArm robot descriptions (v1.0 and v2.0): the single embedded source of truth for the URDFs (and, behind the `meshes` feature, the collision meshes), plus the constants and joint limits describing their control margins, selected by HardwareVersion. Pure data, no solver deps."
 
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
+# holds every package of the tree to that.
+[workspace]
+
 [features]
 # Embed the collision meshes and expose `write_meshes_to` (and the `emit_meshes`
 # binary). Off by default so consumers that only need the URDF (e.g. the per-arm
