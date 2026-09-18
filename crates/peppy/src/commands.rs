@@ -114,8 +114,20 @@ impl DomainLabels {
 /// with the label column padded to the longest label of the block and the
 /// URLs under it in the order the daemon expanded them. Empty input renders
 /// nothing.
-pub fn render_endpoints(entries: &[InstanceEndpoints]) -> String {
+///
+/// With `colorize` set, every field carries the tint its kind has in the
+/// tables (instance ids magenta, node labels cyan, core nodes blue, endpoint
+/// labels yellow) so one instance's lines read as a group at a glance, and
+/// the headings turn bold. The URLs stay in the terminal's plain foreground:
+/// they are what an operator reads off the block, so they keep the highest
+/// contrast. Coloring is purely additive, the padding is measured on the
+/// plain labels, so a colored block lines up exactly like its plain form.
+pub fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String {
     use std::fmt::Write as _;
+
+    use colors::{
+        CORE_NODE_COLOR, ENDPOINT_LABEL_COLOR, HEADING_STYLE, INSTANCE_COLOR, NODE_COLOR, paint,
+    };
 
     let mut out = String::new();
     let mut ordered: Vec<&InstanceEndpoints> = entries.iter().collect();
@@ -146,12 +158,14 @@ pub fn render_endpoints(entries: &[InstanceEndpoints]) -> String {
             .flat_map(|(_, endpoints)| endpoints.iter().map(|endpoint| endpoint.label.len()))
             .max()
             .unwrap_or(0);
-        let _ = writeln!(&mut out, "{heading}");
+        let _ = writeln!(&mut out, "{}", paint(colorize, HEADING_STYLE, heading));
         for (entry, endpoints) in block {
             let _ = writeln!(
                 &mut out,
                 "  {} ({}) @{}",
-                entry.instance_id, entry.node_label, entry.core_node
+                paint(colorize, INSTANCE_COLOR, &entry.instance_id),
+                paint(colorize, NODE_COLOR, &entry.node_label),
+                paint(colorize, CORE_NODE_COLOR, &entry.core_node)
             );
             for endpoint in endpoints {
                 // The label heads its first URL; the rest sit under it in a
@@ -163,7 +177,16 @@ pub fn render_endpoints(entries: &[InstanceEndpoints]) -> String {
                     } else {
                         ""
                     };
-                    let _ = writeln!(&mut out, "    {label:<label_width$}  {url}");
+                    // The column is padded on the plain label and the tint
+                    // applied to it alone: padding a painted label would count
+                    // its zero-width escapes as columns and pull the URLs out
+                    // of line.
+                    let padding = " ".repeat(label_width - label.len());
+                    let _ = writeln!(
+                        &mut out,
+                        "    {}{padding}  {url}",
+                        paint(colorize, ENDPOINT_LABEL_COLOR, label)
+                    );
                 }
             }
         }
@@ -173,9 +196,12 @@ pub fn render_endpoints(entries: &[InstanceEndpoints]) -> String {
 
 /// The blocks [`render_endpoints`] produces, on the node log, for the
 /// commands that start instances. The one place the rendered block reaches
-/// an operator, so a change to how it is delivered is made once.
+/// an operator, so a change to how it is delivered is made once. Colored
+/// under the CLI's shared color gate, the same one the log formatter and the
+/// tables read, so a `NO_COLOR` or non-interactive run prints the plain
+/// block.
 pub fn log_endpoints(entries: &[InstanceEndpoints]) {
-    for line in render_endpoints(entries).lines() {
+    for line in render_endpoints(entries, crate::terminal::colors_enabled()).lines() {
         tracing::info!("{line}");
     }
 }
@@ -324,33 +350,36 @@ mod tests {
     /// with per-block label padding and every URL under its label.
     #[test]
     fn render_endpoints_groups_kinds_under_their_headings_in_order() {
-        let out = render_endpoints(&[
-            instance(
-                "alpha_commander_inst",
-                "mcp_openarm_v2_v1_scene_lighting_v1:builtin",
-                vec![
-                    endpoint(
-                        "scene_lighting_v1",
-                        EndpointKind::Mcp,
-                        &["http://127.0.0.1:8900/scene_lighting/v1/mcp"],
-                    ),
-                    endpoint(
-                        "openarm_v2_v1",
-                        EndpointKind::Mcp,
-                        &["http://127.0.0.1:8900/openarm_v2/v1/mcp"],
-                    ),
-                ],
-            ),
-            instance(
-                "simulation_inst",
-                "waldo:v1",
-                vec![endpoint(
-                    "viewer",
-                    EndpointKind::Page,
-                    &["https://127.0.0.1:8080/", "https://100.123.58.116:8080/"],
-                )],
-            ),
-        ]);
+        let out = render_endpoints(
+            &[
+                instance(
+                    "alpha_commander_inst",
+                    "mcp_openarm_v2_v1_scene_lighting_v1:builtin",
+                    vec![
+                        endpoint(
+                            "scene_lighting_v1",
+                            EndpointKind::Mcp,
+                            &["http://127.0.0.1:8900/scene_lighting/v1/mcp"],
+                        ),
+                        endpoint(
+                            "openarm_v2_v1",
+                            EndpointKind::Mcp,
+                            &["http://127.0.0.1:8900/openarm_v2/v1/mcp"],
+                        ),
+                    ],
+                ),
+                instance(
+                    "simulation_inst",
+                    "waldo:v1",
+                    vec![endpoint(
+                        "viewer",
+                        EndpointKind::Page,
+                        &["https://127.0.0.1:8080/", "https://100.123.58.116:8080/"],
+                    )],
+                ),
+            ],
+            false,
+        );
         assert_eq!(
             out,
             "\
@@ -370,26 +399,29 @@ MCP endpoints:
     /// come in instance id order whatever order they arrived in.
     #[test]
     fn render_endpoints_prints_one_heading_for_one_kind_and_orders_instances() {
-        let out = render_endpoints(&[
-            instance(
-                "simulation_inst",
-                "waldo:v1",
-                vec![endpoint(
-                    "viewer",
-                    EndpointKind::Page,
-                    &["https://127.0.0.1:8080/"],
-                )],
-            ),
-            instance(
-                "alpha_commander_inst",
-                "openarm_web_commander:v1",
-                vec![endpoint(
-                    "panel",
-                    EndpointKind::Page,
-                    &["http://127.0.0.1:8765", "http://100.123.58.116:8765"],
-                )],
-            ),
-        ]);
+        let out = render_endpoints(
+            &[
+                instance(
+                    "simulation_inst",
+                    "waldo:v1",
+                    vec![endpoint(
+                        "viewer",
+                        EndpointKind::Page,
+                        &["https://127.0.0.1:8080/"],
+                    )],
+                ),
+                instance(
+                    "alpha_commander_inst",
+                    "openarm_web_commander:v1",
+                    vec![endpoint(
+                        "panel",
+                        EndpointKind::Page,
+                        &["http://127.0.0.1:8765", "http://100.123.58.116:8765"],
+                    )],
+                ),
+            ],
+            false,
+        );
         assert_eq!(
             out,
             "\
@@ -408,18 +440,21 @@ Web pages:
     /// and an instance serving both kinds appears in both blocks.
     #[test]
     fn render_endpoints_pads_labels_per_block() {
-        let out = render_endpoints(&[instance(
-            "hybrid_inst",
-            "hybrid:v1",
-            vec![
-                endpoint("ui", EndpointKind::Page, &["http://127.0.0.1:8000"]),
-                endpoint(
-                    "a_very_long_exposure_label_v1",
-                    EndpointKind::Mcp,
-                    &["http://127.0.0.1:8900/a/v1/mcp"],
-                ),
-            ],
-        )]);
+        let out = render_endpoints(
+            &[instance(
+                "hybrid_inst",
+                "hybrid:v1",
+                vec![
+                    endpoint("ui", EndpointKind::Page, &["http://127.0.0.1:8000"]),
+                    endpoint(
+                        "a_very_long_exposure_label_v1",
+                        EndpointKind::Mcp,
+                        &["http://127.0.0.1:8900/a/v1/mcp"],
+                    ),
+                ],
+            )],
+            false,
+        );
         assert_eq!(
             out,
             "\
@@ -433,11 +468,78 @@ MCP endpoints:
         );
     }
 
+    /// Colorizing tints each field with its kind's color and nothing else:
+    /// stripping the codes back out has to reproduce the plain block byte for
+    /// byte, which is what keeps the URL column aligned under a padded label.
+    #[test]
+    fn render_endpoints_colorize_is_purely_additive() {
+        use crate::commands::colors::{
+            CORE_NODE_COLOR, ENDPOINT_LABEL_COLOR, HEADING_STYLE, INSTANCE_COLOR, NODE_COLOR, RESET,
+        };
+        use crate::commands::table::strip_ansi;
+
+        let entries = [instance(
+            "simulation_inst",
+            "waldo:v1",
+            vec![
+                endpoint(
+                    "viewer",
+                    EndpointKind::Page,
+                    &["https://127.0.0.1:8080/", "https://100.123.58.116:8080/"],
+                ),
+                endpoint(
+                    "a_much_longer_label",
+                    EndpointKind::Page,
+                    &["https://127.0.0.1:8081/"],
+                ),
+            ],
+        )];
+        let plain = render_endpoints(&entries, false);
+        let colored = render_endpoints(&entries, true);
+
+        assert!(
+            !plain.contains('\x1b'),
+            "plain output must stay free of ANSI codes:\n{plain:?}"
+        );
+        assert_eq!(
+            strip_ansi(&colored),
+            plain,
+            "stripping colors must reproduce the plain block exactly"
+        );
+        for (code, field) in [
+            (HEADING_STYLE, "Web pages:"),
+            (INSTANCE_COLOR, "simulation_inst"),
+            (NODE_COLOR, "waldo:v1"),
+            (CORE_NODE_COLOR, "cn-sweet-edison"),
+            (ENDPOINT_LABEL_COLOR, "viewer"),
+        ] {
+            assert!(
+                colored.contains(&format!("{code}{field}{RESET}")),
+                "{field} should carry its own color:\n{colored:?}"
+            );
+        }
+        // The URLs are the block's payload and stay in the plain foreground,
+        // and a continuation line's empty label column carries no codes.
+        let continuation = colored
+            .lines()
+            .find(|line| line.contains("100.123.58.116"))
+            .expect("the second URL sits on a continuation line");
+        assert!(
+            !continuation.contains('\x1b'),
+            "a continuation URL and its blank label column stay plain:\n{continuation:?}"
+        );
+        assert_eq!(
+            continuation.trim_start(),
+            "https://100.123.58.116:8080/",
+            "the continuation line carries the URL alone"
+        );
+    }
+
     #[test]
     fn render_endpoints_renders_nothing_for_empty_input() {
-        assert_eq!(render_endpoints(&[]), "");
+        assert_eq!(render_endpoints(&[], false), "");
         assert_eq!(
-            render_endpoints(&[instance("silent_inst", "silent:v1", Vec::new())]),
+            render_endpoints(&[instance("silent_inst", "silent:v1", Vec::new())], false),
             ""
         );
     }
