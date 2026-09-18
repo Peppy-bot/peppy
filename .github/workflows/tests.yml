@@ -223,12 +223,19 @@ jobs:
       contents: read
 
     steps:
+      # The root .gitignore is git plumbing for the path down to the tree, not
+      # code: cargo fingerprints a build script by listing its package's files
+      # through git, which evaluates the ignore rules of every directory from
+      # the repository root down. A sparse checkout is a partial clone, so a
+      # .gitignore left out of it has no blob to read and the listing fails
+      # ("Failed to update the excludes stack").
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /.github/
+            /.gitignore
             /public-peppy-libs/
 
       # Rust toolchain, plus the pixi and uv the Python suites run under.
