@@ -1,0 +1,253 @@
+{
+  "bundle_format": 1,
+  "schema_mapping_version": 1,
+  "exposure": {
+    "name": "camera_and_recording",
+    "tag": "v1"
+  },
+  "server": {
+    "title": "OpenArm camera and recording",
+    "instructions": "Observe the front camera and record teleoperation episodes on this robot."
+  },
+  "contracts": [
+    {
+      "name": "rgb_camera",
+      "tag": "v1",
+      "sha256": "c4db5cee269b64fa3da3618748b71b7d92211c1813978b220b3c09720895c607",
+      "link_id": "front_camera"
+    },
+    {
+      "name": "episode_recording",
+      "tag": "v1",
+      "sha256": "86f972761e3ea31ee918071b11bcd68440210f1ecc20a9c445e5a7486cb110be",
+      "link_id": "recorder"
+    }
+  ],
+  "resources": [
+    {
+      "name": "front_camera.latest_frame",
+      "uri": "peppy://resource/front_camera.latest_frame",
+      "description": "Latest frame from the front-facing camera, JPEG encoded.",
+      "target": "front_camera",
+      "member": "video_stream",
+      "policies": {
+        "freshness": {
+          "max_age_ms": 2000
+        },
+        "update": {
+          "max_hz": 2.0
+        },
+        "representation": {
+          "image": "jpeg",
+          "quality": 80,
+          "fields": {
+            "data": "frame",
+            "encoding": "encoding",
+            "width": "width",
+            "height": "height"
+          }
+        },
+        "max_result_bytes": 524288,
+        "on_oversize": "downscale"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "header": {
+            "type": "object",
+            "properties": {
+              "stamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "frame_id": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              }
+            },
+            "required": [
+              "stamp",
+              "frame_id"
+            ],
+            "additionalProperties": false
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "frame": {
+            "type": "string",
+            "contentEncoding": "base64"
+          }
+        },
+        "required": [
+          "header",
+          "encoding",
+          "width",
+          "height",
+          "frame"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "front_camera.info",
+      "description": "Report the camera's resolution, frame rate, and encoding.",
+      "target": "front_camera",
+      "member": "video_stream_info",
+      "operation": "read_only",
+      "deadline_ms": 2000,
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "frames_per_second": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "encoding": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "width",
+          "height",
+          "frames_per_second",
+          "encoding"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "front_camera.set_brightness",
+      "description": "Set the camera brightness in device units.",
+      "target": "front_camera",
+      "member": "set_brightness",
+      "operation": "mutating",
+      "deadline_ms": 2000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer",
+            "minimum": -64,
+            "maximum": 64
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "current_value": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "success",
+          "message",
+          "current_value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "name": "recorder.record_episode",
+      "description": "Record one teleoperation episode to the local dataset. Long-running; returns a task handle.",
+      "target": "recorder",
+      "member": "record_episode",
+      "operation": "long_running",
+      "safety_sensitive": true,
+      "confirmation_required": true,
+      "deadline_ms": 900000,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_name": {
+            "type": "string"
+          },
+          "episode_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "required": [
+          "task_name",
+          "episode_index"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "frames_recorded": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$"
+          }
+        },
+        "required": [
+          "success",
+          "frames_recorded"
+        ],
+        "additionalProperties": false
+      },
+      "feedback_schema": {
+        "type": "object",
+        "properties": {
+          "frames_recorded": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$"
+          }
+        },
+        "required": [
+          "frames_recorded"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

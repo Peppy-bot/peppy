@@ -226,10 +226,10 @@ mod peppylib_build {
     /// Directory served as `PIXI_HOME` to every pixi invocation: holds a
     /// `config.toml` that detaches pixi environments into the peppy cache dir.
     /// Without it pixi materializes `.pixi/envs` (hundreds of MB) inside
-    /// peppylib-py's directory, which for release builds is the immutable,
-    /// machine-shared cargo checkout of public-peppy-libs. Detached
-    /// environments are keyed by manifest path, so distinct checkouts still
-    /// get distinct environments.
+    /// peppylib-py's directory, once per checkout of this repository, and a
+    /// build must leave the source tree as it found it. Detached environments
+    /// are keyed by manifest path, so distinct checkouts still get distinct
+    /// environments.
     fn pixi_home_with_detached_envs() -> PathBuf {
         let cache = build_helpers::cache_dir("peppylib-py");
         let pixi_home = cache.join("pixi-home");
@@ -246,10 +246,10 @@ mod peppylib_build {
     /// Runs a pixi task and panics on failure.
     ///
     /// Runs with `--frozen` so pixi installs exactly the committed `pixi.lock`
-    /// and never rewrites it. peppylib-py is usually read from an immutable
-    /// cargo checkout that the Lima VM build resolves independently; an
-    /// in-place re-lock (for example from a pixi too old for the lock format)
-    /// would make the host and VM disagree about the sources and poison the
+    /// and never rewrites it. `pixi.lock` is one of the hashed `.so` inputs and
+    /// a tracked file: an in-place re-lock (for example from a pixi too old for
+    /// the lock format) would dirty the source tree and change the hash between
+    /// the host build and the Lima VM build that verifies it, poisoning the
     /// recorded `.so` hash.
     fn run_pixi_task(peppylib_py_dir: &Path, task: &str, target_dir: &Path) {
         let output = Command::new("sh")
@@ -399,7 +399,7 @@ mod peppylib_build {
         // Serialize concurrent pixi invocations to avoid "Text file busy" races
         // when multiple build scripts run pixi on the same environment. Lives in
         // the peppy cache dir next to the detached environments, never inside
-        // the (possibly immutable) peppylib-py checkout.
+        // the peppylib-py source tree.
         let lock_path = build_helpers::cache_dir("peppylib-py").join("pixi-build.lock");
         let _pixi_lock = build_helpers::acquire_file_lock(&lock_path);
 
@@ -414,12 +414,8 @@ mod peppylib_build {
 
         let host_suffix = host_platform_suffix();
         let native_so_path = so_dir.join(format!("_peppylib.abi3.{host_suffix}.so"));
-        std::fs::rename(so_path, &native_so_path).unwrap_or_else(|e| {
-            panic!(
-                "failed to rename {:?} to {:?}: {e}",
-                so_path, native_so_path
-            )
-        });
+        // The source tree and the cache dir need not share a filesystem.
+        build_helpers::move_file(so_path, &native_so_path);
 
         // Strip debug info from the embedded native extension. This `.so` is a
         // pure runtime artifact; it is baked into the generator binary and
@@ -519,8 +515,8 @@ mod peppylib_build {
     ];
 
     /// Every source file of the `.so` dependency crates. Resolved against
-    /// `peppy-shared`, located via build-helpers so it works in the superproject
-    /// and from a cargo git checkout of public-peppy-libs alike.
+    /// `peppy-shared`, located via build-helpers, which knows where its own tree
+    /// sits.
     fn dep_crate_source_files() -> Vec<PathBuf> {
         let crates_root = build_helpers::peppy_shared_dir();
         let mut files = Vec::new();
@@ -592,7 +588,7 @@ mod peppylib_build {
     /// excluded. Keys the isolated maturin target directory: when the dependency
     /// crates change, the build moves to a fresh target tree so it can never link
     /// a stale rlib that cargo's mtime fingerprint failed to invalidate across a
-    /// git-checkout swap. Keeping it separate from the full source hash means
+    /// branch switch. Keeping it separate from the full source hash means
     /// iterating on peppylib-py's own bindings reuses the same warm target.
     fn compute_dep_hash() -> String {
         let mut files = dep_crate_source_files();
@@ -820,20 +816,19 @@ mod peppylib_build {
                 "prebuilt peppylib .so {name} in {so_dir:?} was built from stale \
                  sources (recorded {recorded:?}, current {current_hash}); rebuild \
                  the host artifacts before cross-building. If a rebuild does not \
-                 fix this, the host and VM copies of peppy-shared differ for \
-                 the same pinned revision: run `git status` in the cargo checkout \
-                 of public-peppy-libs on both sides to find local modifications"
+                 fix this, public-peppy-libs/peppy-shared changed between the \
+                 host build and this one: run `git status` in the repository to \
+                 find what is being modified while the build runs"
             );
         }
     }
 
     pub fn run() {
         // peppylib-py and its `.so` dependency crates live in the shared
-        // workspace (peppy-shared), located via build-helpers so every path
-        // resolves in the superproject and from a cargo git checkout of
-        // public-peppy-libs alike. Only the Python wrappers are read from here;
-        // the compiled `.so` are produced into a peppy-owned cache dir, never
-        // written back into the immutable, cross-run cargo checkout.
+        // workspace (public-peppy-libs/peppy-shared), located via build-helpers.
+        // Only the Python wrappers are read from here; the compiled `.so` are
+        // produced into a peppy-owned cache dir, never written back into the
+        // source tree.
         let peppylib_py_dir = build_helpers::peppy_shared_dir().join("peppylib-py");
         let peppylib_dir = peppylib_py_dir.join("peppylib");
 
@@ -857,7 +852,7 @@ mod peppylib_build {
         );
 
         // Release cross-builds run inside the Lima VM, which has no pixi and must
-        // not touch the cargo checkout. They consume the host-built `.so` from an
+        // not touch the source tree. They consume the host-built `.so` from an
         // explicit directory (mounted from the host) instead of building.
         if let Some(prebuilt) = std::env::var_os(PREBUILT_SO_DIR_ENV) {
             let so_dir = PathBuf::from(prebuilt);
@@ -870,9 +865,9 @@ mod peppylib_build {
         }
 
         // Persistent, peppy-owned home for the built `.so` and their
-        // `.so-build-state` marker, rooted outside the cargo checkout so release
-        // staging never depends on cargo's git-cache layout (checkout dir names,
-        // leftover checkouts from prior runs).
+        // `.so-build-state` marker, rooted outside the source tree so every
+        // checkout of this repository shares one set of artifacts and release
+        // staging reads them from one known place.
         let so_dir = build_helpers::cache_dir("peppylib-py").join("so");
         std::fs::create_dir_all(&so_dir)
             .unwrap_or_else(|e| panic!("failed to create peppylib .so dir {so_dir:?}: {e}"));
@@ -1061,9 +1056,9 @@ fn embed_ruff_binary() {
 
 fn main() {
     // Single source of truth for the shared crate sources generator embeds: the
-    // `peppy-shared` dir located via build-helpers (works in-tree or from a
-    // cargo git checkout). The rust-embed `#[folder = "$PEPPY_SHARED_DIR/…"]`
-    // attributes in src/ expand this at compile time.
+    // `public-peppy-libs/peppy-shared` dir located via build-helpers. The
+    // rust-embed `#[folder = "$PEPPY_SHARED_DIR/…"]` attributes in src/ expand
+    // this at compile time.
     println!(
         "cargo:rustc-env=PEPPY_SHARED_DIR={}",
         build_helpers::peppy_shared_dir().display()

@@ -2,6 +2,15 @@
 
 [workspace]
 members = ["crates/*", "docs/tests/integration"]
+# `public-peppy-libs` is a sealed tree, not part of this workspace: it holds
+# its own workspace (`peppy-shared`) and standalone packages, each resolving
+# and locking on its own. The crates here depend on it by path (see
+# `[workspace.dependencies]`); nothing inside it may depend on anything outside
+# it, which is what lets `platform-backend` and the hub nodes consume it from
+# this repository without pulling in a line of `crates/`. The tree polices that
+# itself (`public-peppy-libs/peppy-shared/build-helpers/tests/sealed_tree.rs`),
+# and CI runs its suites from a copy holding nothing but the tree.
+exclude = ["public-peppy-libs"]
 resolver = "3"
 
 # Only build/test the main crates by default (integration tests are slow).
@@ -30,24 +39,22 @@ rstest = "0.27"
 # capability builder is needed).
 rmcp = { version = "3.1.2", default-features = false }
 
-# Shared, public-facing crates consumed from the `public-peppy-libs` repo (the
-# `peppy-shared` virtual workspace) as git dependencies, so `peppy` holds no
-# path references outside its own tree. No `branch`/`tag`/`rev` is given, so each
-# crate follows the repo's default branch (`main`); the resolved revision is
-# recorded in Cargo.lock and moved forward with `cargo update`. `config` and
-# `peppylib` are renamed via `package` (their crate names are `peppy-config-model`
-# and `peppylib-rs`), and `pmi` is the package name of the `peppy-messaging-interface`
-# directory. Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`,
-# `git_fixtures`) are added at each use site with `{ workspace = true, features = [...] }`.
-config = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppy-config-model" }
-peppylib = { git = "https://github.com/Peppy-bot/public-peppy-libs", package = "peppylib-rs" }
-pmi = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-core-node-api = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-json5-pretty = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-config-test-support = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-build-helpers = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-peppy-mcp-catalog = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
-peppy-mcp-runtime = { git = "https://github.com/Peppy-bot/public-peppy-libs" }
+# Shared, public-facing crates from the sealed `public-peppy-libs` tree (its
+# `peppy-shared` workspace), consumed by path. The dependency runs one way only:
+# these crates know nothing of `crates/`. `config` and `peppylib` are renamed via
+# `package` (their crate names are `peppy-config-model` and `peppylib-rs`), and
+# `pmi` is the package name of the `peppy-messaging-interface` directory.
+# Per-crate features (e.g. `zenoh`, `fingerprint_test_helpers`, `git_fixtures`)
+# are added at each use site with `{ workspace = true, features = [...] }`.
+config = { path = "public-peppy-libs/peppy-shared/peppy-config-model", package = "peppy-config-model" }
+peppylib = { path = "public-peppy-libs/peppy-shared/peppylib-rs", package = "peppylib-rs" }
+pmi = { path = "public-peppy-libs/peppy-shared/peppy-messaging-interface" }
+core-node-api = { path = "public-peppy-libs/peppy-shared/core-node-api" }
+json5-pretty = { path = "public-peppy-libs/peppy-shared/json5-pretty" }
+config-test-support = { path = "public-peppy-libs/peppy-shared/config-test-support" }
+build-helpers = { path = "public-peppy-libs/peppy-shared/build-helpers" }
+peppy-mcp-catalog = { path = "public-peppy-libs/peppy-shared/peppy-mcp-catalog" }
+peppy-mcp-runtime = { path = "public-peppy-libs/peppy-shared/peppy-mcp-runtime" }
 
 # Internal workspace crates (members under `crates/`). Centralized here so each
 # member references them with `{ workspace = true }` instead of repeating a
@@ -66,13 +73,6 @@ mcp-server = { path = "crates/mcp-server-internal" }
 latency-report = { path = "crates/latency-report" }
 node-stack = { path = "crates/node-stack-internal" }
 peppylib-build-policy = { path = "crates/peppylib-build-policy" }
-
-# NOTE: there is intentionally no [patch] here. These git deps are the source of truth
-# for everyone: standalone clones and CI build the pinned revision with no edits, and
-# Cargo.lock stays git-resolved. For LOCAL co-development of public-peppy-libs, the
-# superproject can opt in to redirecting them to the in-tree checkout via
-# `<superproject-root>/scripts/local-libs.sh on` (a gitignored [patch] in the
-# superproject's .cargo/config.toml, one level above this repo); off by default.
 
 # Optionally define workspace-wide lints or profiles.
 # [workspace.lints.rust]

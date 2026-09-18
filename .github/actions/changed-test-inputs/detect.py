@@ -41,6 +41,9 @@ SUITES = {
 TREE_SUITES = {
     # ./scripts/run_tests.sh --all
     "scripts": ["scripts/**"],
+    # The suites of the sealed public-peppy-libs tree. The tree depends on
+    # nothing outside itself, so nothing outside it can change their outcome.
+    "public_libs": ["public-peppy-libs/**"],
 }
 
 # The tests.yml job each gate guards, so a skip reason names what CI did
@@ -49,6 +52,7 @@ JOB_NAMES = {
     "container_e2e": "container-e2e",
     "docs_integration": "docs-integration",
     "scripts": "release-scripts",
+    "public_libs": "public-libs",
 }
 
 # Build and tooling inputs shared by every suite. These track CI and build

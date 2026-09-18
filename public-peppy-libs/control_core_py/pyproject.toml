@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "control_core_py"
+version = "0.1.0"
+description = "Shared primitives for Python peppy control nodes: asyncio stream plumbing (paced ticks, gated wire-input consumption, service serving, capture-time wire stamps), parameter validators, and the hardware device-thread skeleton. Pure Python, no hardware or messaging deps; control_core's Python sibling."
+requires-python = ">=3.12,<3.14"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/control_core_py"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

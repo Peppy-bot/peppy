@@ -1,0 +1,13 @@
+[package]
+name = "chain_kinematics"
+version = "0.1.0"
+edition = "2024"
+description = "Forward kinematics, the geometric Jacobian, and damped resolved-rate inverse kinematics for any serial chain read from a URDF. Robot-agnostic and generic over the number of joints. Pure Rust, no hardware or messaging deps."
+
+[dependencies]
+nalgebra = "0.35"
+thiserror = "2"
+urdf-rs = "0.9"
+
+[dev-dependencies]
+approx = "0.5"

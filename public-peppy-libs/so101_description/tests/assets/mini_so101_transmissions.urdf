@@ -1,0 +1,119 @@
+<?xml version="1.0"?>
+<!-- Minimal SO-101-shaped chain for tests: the real joint names and the
+     gripper_frame_link EE frame, with placeholder geometry. Link lengths are
+     arbitrary but nonzero so FK varies with every joint. -->
+<robot name="mini_so101">
+  <link name="base_link">
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="1e-3" ixy="0" ixz="0" iyy="1e-3" iyz="0" izz="1e-3"/>
+    </inertial>
+  </link>
+
+  <joint name="shoulder_pan" type="revolute">
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1" upper="3.1" effort="10" velocity="10"/>
+  </joint>
+  <link name="shoulder_link">
+    <inertial>
+      <mass value="0.2"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+
+  <joint name="shoulder_lift" type="revolute">
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+    <origin xyz="0 0 0.03" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.1" upper="3.1" effort="10" velocity="10"/>
+  </joint>
+  <link name="upper_arm_link">
+    <inertial>
+      <mass value="0.2"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+
+  <joint name="elbow_flex" type="revolute">
+    <parent link="upper_arm_link"/>
+    <child link="forearm_link"/>
+    <origin xyz="0 0 0.11" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.1" upper="3.1" effort="10" velocity="10"/>
+  </joint>
+  <link name="forearm_link">
+    <inertial>
+      <mass value="0.15"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+
+  <joint name="wrist_flex" type="revolute">
+    <parent link="forearm_link"/>
+    <child link="wrist_link"/>
+    <origin xyz="0 0 0.10" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-3.1" upper="3.1" effort="10" velocity="10"/>
+  </joint>
+  <link name="wrist_link">
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+
+  <joint name="wrist_roll" type="revolute">
+    <parent link="wrist_link"/>
+    <child link="gripper_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1" upper="3.1" effort="10" velocity="10"/>
+  </joint>
+  <link name="gripper_link">
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+
+  <joint name="gripper_frame_joint" type="fixed">
+    <parent link="gripper_link"/>
+    <child link="gripper_frame_link"/>
+    <origin xyz="0 0 0.08" rpy="0 0 0"/>
+  </joint>
+  <link name="gripper_frame_link">
+    <inertial>
+      <mass value="0.01"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
+  <transmission name="shoulder_pan_transmission">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="shoulder_pan"/>
+    <actuator name="shoulder_pan_motor"/>
+  </transmission>
+  <transmission name="shoulder_lift_transmission">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="shoulder_lift"/>
+    <actuator name="shoulder_lift_motor"/>
+  </transmission>
+  <transmission name="elbow_flex_transmission">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="elbow_flex"/>
+    <actuator name="elbow_flex_motor"/>
+  </transmission>
+  <transmission name="wrist_flex_transmission">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="wrist_flex"/>
+    <actuator name="wrist_flex_motor"/>
+  </transmission>
+  <transmission name="wrist_roll_transmission">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="wrist_roll"/>
+    <actuator name="wrist_roll_motor"/>
+  </transmission>
+</robot>
