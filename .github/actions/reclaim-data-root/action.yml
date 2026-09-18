@@ -8,8 +8,12 @@ description: >-
 inputs:
   path:
     description: >-
-      The data root to reclaim, as a concrete path. Pass `${{ runner.temp }}/…`
-      rather than a string naming a shell variable.
+      The data root to reclaim, resolved to a concrete path by the caller.
+      Pass it from the runner.temp context, not as a string naming a shell
+      variable: this runs in a shell of its own, so a caller's $RUNNER_TEMP
+      would arrive unexpanded. (Spelling that context here as an expression
+      would not document it -- action metadata is itself a template, and the
+      expression would be evaluated where no such context exists.)
     required: true
 
 runs:
