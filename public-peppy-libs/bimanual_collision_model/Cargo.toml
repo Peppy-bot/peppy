@@ -1,0 +1,19 @@
+[package]
+name = "bimanual_collision_model"
+version = "0.1.0"
+edition = "2024"
+description = "Runtime self-collision detection for a bimanual arm: URDF-fitted convex hulls, GJK/EPA minimum distance, and the analytic distance gradient. Pure Rust, no hardware or messaging deps."
+
+[dependencies]
+srs_model = { path = "../srs_model" }
+thiserror = "2"
+urdf-rs = "0.9"
+
+[dev-dependencies]
+rand = "0.10"
+serde_json = "1"
+
+# Construction hulls and decomposes the meshes; those numeric loops crawl
+# unoptimized, so tests build this crate with light optimization.
+[profile.dev]
+opt-level = 1

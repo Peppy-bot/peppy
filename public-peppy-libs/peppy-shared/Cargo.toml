@@ -1,0 +1,44 @@
+# Virtual workspace for Peppy shared, public-facing crates.
+#
+# Crates are migrated here from the `peppy` workspace PR by PR. Earlier PRs moved
+# `peppylib-py` and `peppylib` (the Rust lib, now the `peppylib-rs` package);
+# `core-node-api` follows. Crates that have not been moved yet are referenced from
+# `peppy` via relative reverse paths (`../../../peppy/crates/<crate>`), which only
+# resolve inside the superproject checkout where `peppy` and `public-peppy-libs` are
+# sibling submodules.
+#
+# `build-helpers` holds the generic build-script
+# helpers shared by both workspaces. It lives here, at the bottom of the dependency
+# graph, so the `peppy` crates depend on it rather than the reverse; only the
+# peppy-specific native-extension rebuild policy stays in `peppy`
+# (`crates/peppylib-build-policy`).
+
+[workspace]
+members = [
+    "peppylib-py",
+    "peppylib-rs",
+    "core-node-api",
+    "build-helpers",
+    "json5-pretty",
+    "config-test-support",
+    "peppy-mcp-catalog",
+    "peppy-mcp-runtime",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Tuatini Godard <tuatini@peppy.bot>"]
+edition = "2024"
+
+[workspace.dependencies]
+parking_lot = "0.12"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Strip symbols + debuginfo from release artifacts. The peppylib Python extension
+# (_peppylib.abi3.so) is built in release via maturin/PEP517; unstripped it is
+# hundreds of MB and balloons uv's append-only wheel cache. Stripping cuts the
+# cdylib ~10-40x and shrinks the wheels shipped to PyPI.
+strip = true

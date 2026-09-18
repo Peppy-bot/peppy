@@ -1,0 +1,91 @@
+[package]
+name = "peppylib-rs"
+version.workspace = true
+edition.workspace = true
+homepage = "https://dev.peppy.bot"
+description = "The Peppy control library"
+license = "MIT OR Apache-2.0"
+readme = "Readme.md"
+
+# The package is named `peppylib-rs` (to sit alongside `peppylib-py` in the
+# peppy-shared workspace), but the library target stays `peppylib` so this
+# crate's own tests/doctests and every consumer keep `use peppylib::...`.
+# Consumers depend on it as `peppylib = { package = "peppylib-rs", path = ... }`.
+[lib]
+name = "peppylib"
+
+[dependencies]
+# Reverse path deps into the peppy submodule: these crates have not been moved
+# to peppy-shared yet. Valid only inside the superproject checkout (peppy and
+# public-peppy-libs are sibling submodules). Tightens as crates migrate per PR.
+pmi = { path = "../peppy-messaging-interface" }
+config = { package = "peppy-config-model", path = "../peppy-config-model" }
+# core-node-api now lives here in peppy-shared; local sibling path.
+core-node-api = { path = "../core-node-api" }
+thiserror = "2.0"                                  # Avoid Anyhow in this crate
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+bytes = "1"
+futures = "0.3"
+sha2 = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json5 = "0.2"
+serde_json = "1.0"
+schemars = "1.2"
+jsonschema = "0.56"
+tokio-util = "0.7"
+tempfile = { version = "3.10", optional = true }
+# `unaligned`: messages are decoded in place from the transport's buffer,
+# which carries no alignment guarantee.
+capnp = { version = "0.27", features = ["unaligned"] }
+# `testing`-only: the pre-main ZENOH_RUNTIME ctor and the fd-limit FFI in
+# `src/testing.rs`. Never resolved by a production build (see the `testing`
+# feature note below).
+ctor = { version = "1.0", optional = true }
+libc = { version = "0.2", optional = true }
+# `Subscription::rx` is a `flume::Receiver` (see the type doc in pmi);
+# peppylib's `TryRecvError` converts from flume's matching error.
+flume = "0.12"
+
+[build-dependencies]
+build-helpers = { path = "../build-helpers" }
+capnpc = "0.27"
+
+[dev-dependencies]
+# Cyclic self-dependency: the standard way to enable a crate's own feature for
+# its test targets. `cargo build` ignores it; `cargo test` builds this library
+# once with `testing` on, so both the unit tests (via `crate::testing`) and the
+# integration tests (via `peppylib::testing`) use the shipped helpers instead
+# of a private copy.
+peppylib-rs = { path = ".", features = ["testing"] }
+tempfile = "3.10"
+askama = "0.16"
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-util = "0.7"
+tracing-subscriber = "0.3"
+rand = "0.10"
+regex = "1"
+config = { package = "peppy-config-model", path = "../peppy-config-model", features = [
+    "fingerprint_test_helpers",
+] }
+pmi = { path = "../peppy-messaging-interface", features = [
+    "zenoh",
+    "build_zenoh",
+] }
+ctor = "1.0"
+# Raw zenoh session for wire-level observation in messaging tests (probe
+# accounting). Pinned to the exact version pmi pins so the test binary
+# shares pmi's zenoh build instead of compiling a second one.
+zenoh = "=1.10.1"
+
+[features]
+default = ["zenoh"]
+zenoh = ["pmi/zenoh"]
+# Node-invariant test machinery (`peppylib::testing`: ephemeral router, mock
+# cores, harness core) plus the test-only `GoalContext::disarm_close_on_drop`
+# hook. Off by default and meant to be enabled from a node crate's
+# `[dev-dependencies]` (via peppygen's own `testing` feature), which
+# `cargo build` never resolves — so nothing here can leak into a production
+# binary. `pmi/router` is already a pmi default; named explicitly because the
+# ephemeral router depends on it, not on the default staying put.
+testing = ["dep:ctor", "dep:libc", "pmi/router"]

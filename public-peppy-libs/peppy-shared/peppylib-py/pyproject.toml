@@ -1,0 +1,29 @@
+[project]
+name = "peppylib"
+dynamic = ["version"]
+license = { text = "Apache-2.0" }
+authors = [{ name = "GODARD Tuatini", email = "tuatini@peppy.bot" }]
+requires-python = ">=3.11,<3.15"
+description = "The Peppy control library"
+classifiers = [
+  "Programming Language :: Python",
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://dev.peppy.bot"
+
+[build-system]
+# Same maturin floor as pixi.toml; its comment explains why the floor is needed.
+requires = ["maturin>=1.15.0,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "peppylib._peppylib"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

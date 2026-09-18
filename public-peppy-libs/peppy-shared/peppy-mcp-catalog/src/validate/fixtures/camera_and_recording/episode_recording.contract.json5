@@ -1,0 +1,33 @@
+{
+    peppy_schema: "contract/v1",
+    manifest: { name: "episode_recording", tag: "v1" },
+    interfaces: {
+        actions: [
+            {
+                name: "record_episode",
+                goal_service: {
+                    request_message_format: {
+                        task_name: "string",
+                        episode_index: "u32",
+                    },
+                    response_message_format: { accepted: "bool" },
+                },
+                feedback_topic: {
+                    message_format: { frames_recorded: "u64" },
+                },
+                result_service: {
+                    response_message_format: {
+                        success: "bool",
+                        frames_recorded: "u64",
+                    },
+                },
+            },
+            {
+                name: "finish_session",
+                result_service: {
+                    response_message_format: { success: "bool" },
+                },
+            },
+        ],
+    },
+}

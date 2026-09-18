@@ -1,0 +1,40 @@
+[workspace]
+name = "peppylib"
+version = "0.0.1"
+description = "The Peppy control library"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "linux-aarch64"]
+# pixi.lock uses format v7, which pixi < 0.68 cannot parse and, without
+# --frozen, would silently re-resolve and rewrite. 0.72 is the version this
+# workspace is developed and tested with; keep runners and dev machines on it.
+requires-pixi = ">=0.72"
+
+[dependencies]
+python = ">=3.11,<3.15"
+pip = ">=26.2.1,<27"
+
+[target.osx-arm64.dependencies]
+zig = ">=0.16.0,<0.17"
+
+[pypi-dependencies]
+# rustc >= 1.98 passes `-Wl,--fix-cortex-a53-843419` when linking for
+# aarch64-unknown-linux-gnu, and zig's linker rejects it. maturin 1.14.1 is the
+# first release whose bundled cargo-zigbuild (0.23) strips the flag, so older
+# versions fail `cross-linux-aarch64-release`.
+maturin = ">=1.15.0, <2"
+pytest = ">=9.1.1, <10"
+pytest-asyncio = ">=1.4.0, <2"
+
+[target.linux-64.pypi-dependencies]
+patchelf = ">=0.19.1.0, <0.20"
+
+# Every maturin task passes --locked so cargo builds the committed Cargo.lock
+# exactly (CI enforces the lock stays in sync); the .so embedded in releases
+# must not depend on when it was compiled.
+[tasks]
+dev = "maturin develop --locked"
+release = "maturin develop --release --locked"
+cross-linux-aarch64-release = "maturin build --zig --release --target aarch64-unknown-linux-gnu --locked"
+cross-linux-x86_64-release = "maturin build --zig --release --target x86_64-unknown-linux-gnu --locked"
+release-pypi = "python release_pypi.py"
+test = "maturin develop --locked && pytest tests/ -v"

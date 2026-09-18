@@ -1,0 +1,45 @@
+[package]
+name = "peppy-mcp-runtime"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "The shared MCP server runtime that generated Peppy MCP server nodes compose"
+
+[dependencies]
+peppy-mcp-catalog = { path = "../peppy-mcp-catalog" }
+# The official MCP SDK: protocol model, 2026-07-28 lifecycle, and the
+# Streamable HTTP server transport. Default features are dropped to leave the
+# proc macros out; tools and resources here are built dynamically from the
+# exposure bundle.
+rmcp = { version = "3.1.2", default-features = false, features = [
+    "server",
+    "transport-streamable-http-server",
+] }
+# rmcp's StreamableHttpService is a tower Service; axum mounts it and drives
+# the listener. http1 + tokio is the minimal serving surface.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+tokio-util = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+# Validates tool inputs against the bundle's derived schemas before anything
+# touches the Peppy graph. Default features are dropped so no HTTP resolver or
+# TLS stack rides along; bundle schemas are self-contained.
+jsonschema = { version = "0.56", default-features = false }
+# JPEG transcoding for image-representation topic snapshots; jpeg is the only
+# codec the representation policy emits.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+base64 = "0.23"
+tracing = "0.1"
+
+[dev-dependencies]
+rmcp = { version = "3.1.2", default-features = false, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+tokio = { version = "1", features = ["full", "test-util"] }
+anyhow = "1"
+# Plain HTTP requests for the paths a set must refuse (a bare `/mcp`, `/`,
+# unknown exposures); the version rmcp's client transport already builds.
+reqwest = { version = "0.13", default-features = false }

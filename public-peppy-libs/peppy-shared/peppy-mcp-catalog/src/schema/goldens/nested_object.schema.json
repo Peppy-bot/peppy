@@ -1,0 +1,51 @@
+{
+  "type": "object",
+  "properties": {
+    "header": {
+      "type": "object",
+      "properties": {
+        "stamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "frame_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "origin": {
+          "type": "object",
+          "properties": {
+            "x_m": {
+              "type": "number"
+            },
+            "y_m": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x_m",
+            "y_m"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "stamp",
+        "frame_id",
+        "origin"
+      ],
+      "additionalProperties": false
+    },
+    "status_code": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    }
+  },
+  "required": [
+    "header",
+    "status_code"
+  ],
+  "additionalProperties": false
+}

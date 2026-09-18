@@ -1,0 +1,55 @@
+{
+    peppy_schema: "contract/v1",
+    manifest: { name: "rgb_camera", tag: "v1" },
+    interfaces: {
+        topics: [
+            {
+                name: "video_stream",
+                qos_profile: "sensor_data",
+                message_format: {
+                    header: { $type: "object", stamp: "time", frame_id: "u32" },
+                    encoding: "string",
+                    width: "u32",
+                    height: "u32",
+                    frame: { $type: "array", $items: "u8" },
+                },
+            },
+            {
+                name: "camera_status",
+                message_format: {
+                    temperature_c: "i16",
+                    recording: "bool",
+                },
+            },
+        ],
+        services: [
+            {
+                name: "video_stream_info",
+                response_message_format: {
+                    width: "u32",
+                    height: "u32",
+                    frames_per_second: "u8",
+                    encoding: "string",
+                },
+            },
+            {
+                name: "set_brightness",
+                request_message_format: { value: "i32" },
+                response_message_format: {
+                    success: "bool",
+                    message: "string",
+                    current_value: "i32",
+                },
+            },
+            {
+                name: "seek",
+                request_message_format: {
+                    position: "u64",
+                    label: "string",
+                    speed: "f32",
+                },
+                response_message_format: { success: "bool" },
+            },
+        ],
+    },
+}

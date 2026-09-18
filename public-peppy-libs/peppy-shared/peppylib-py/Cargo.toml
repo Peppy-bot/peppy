@@ -1,0 +1,36 @@
+[package]
+name = "peppylib-py"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "_peppylib"
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = "1"
+# Reverse path deps into the peppy submodule: these crates have not been moved
+# to peppy-shared yet. Valid only inside the superproject checkout (peppy and
+# public-peppy-libs are sibling submodules). Tightens as crates migrate per PR.
+config = { package = "peppy-config-model", path = "../peppy-config-model" }
+# core-node-api now lives here in peppy-shared; local sibling path.
+core-node-api = { path = "../core-node-api" }
+pmi = { path = "../peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }
+# peppylib lives here in peppy-shared now (package `peppylib-rs`, lib `peppylib`).
+# `testing` is on so the wheel can bind the test-only hooks
+# (`GoalContext.disarm_close_on_drop`) that `peppylib/testing.py` builds on —
+# the wheel always shipping them is the same accepted trade-off as shipping
+# the inert generated mock subpackages.
+peppylib = { package = "peppylib-rs", path = "../peppylib-rs", features = ["testing"] }
+pythonize = { version = "0.29" }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
+pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
+rand = "0.10"
+names-generator2 = "0.3.0"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+parking_lot = { workspace = true }
+
+[build-dependencies]
+build-helpers = { path = "../build-helpers" }
+pyo3-build-config = "0.29"

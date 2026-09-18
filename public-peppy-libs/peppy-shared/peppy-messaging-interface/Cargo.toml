@@ -1,0 +1,93 @@
+[package]
+name = "pmi"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+config = { package = "peppy-config-model", path = "../peppy-config-model" }
+bytes = "1"
+serde_json = "1.0"
+# `sync` + `rt` are what pmi's own code names directly. The MockAdapter also uses
+# tokio `time` and the multi-thread runtime; those arrive transitively via zenoh,
+# so the mock is not built as a standalone zenoh-less backend (see lib.rs).
+tokio = { version = "1", features = ["sync", "rt"] }
+# Used for Subscription / ServiceQueryable channels: a flume bounded
+# channel lets the zenoh reception callback `send` synchronously (with
+# backpressure) from any thread, including zenoh's runtime worker where
+# `tokio::sync::mpsc::Sender::blocking_send` would panic.
+flume = "0.12"
+tracing = "0.1"
+derive_more = { version = "2", features = ["from"] }
+tempfile = "3"
+# Mints the 128-bit router identity `RouterId::generate` pins into every rendered
+# router config. Same version the rest of the workspace already resolves
+# (peppylib-rs, peppylib-py), so this adds no new crate to the tree.
+rand = "0.10"
+
+# Optional deps
+# Exact-pinned; peppylib pins the same `=1.10.1` in its [dev-dependencies] so
+# its test binaries share this build — bump the two together.
+zenoh = { version = "=1.10.1", optional = true }
+# Raw-TLS reachability probe (`probe_tls_reachable`): a real rustls handshake to
+# verify a federation link validates (zenoh client-mode `open` is not a usable
+# signal). Versions match what zenoh 1.10 already resolves (rustls 0.23.44,
+# tokio-rustls 0.26.5, rustls-pemfile 2.2.0, rustls-native-certs 0.8.4) so no
+# duplicate `rustls` enters the tree. tokio-rustls's default `ring` feature
+# provides the crypto provider, so `ClientConfig::builder()` works without
+# installing a process-default provider. rustls types are reached through
+# tokio-rustls's re-export (no direct `rustls` dependency).
+tokio-rustls = { version = "0.26", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+
+# `PR_SET_PDEATHSIG` for the ephemeral router's kernel-enforced reaping (see
+# `ZenohdFacade::set_kill_on_parent_death`). Linux-only by construction.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+# Used only by the `build_zenoh` feature's build.rs step (compiling zenohd from
+# source); a no-op dependency otherwise. Left non-optional on purpose: it is
+# already a build-dep of the sibling crates every pmi consumer builds
+# (peppylib-rs, peppy, …), so making it optional removes it from pmi's manifest
+# but not from any real build — not worth the extra optional-dependency wiring.
+build-helpers = { path = "../build-helpers" }
+
+[dev-dependencies]
+tokio = { version = "1", features = [
+    "sync",
+    "rt",
+    "macros",
+    "time",
+    "test-util",
+] }
+serde_json5 = "0.2"
+# Used by the FIFO-noise regression test in `tests/fifo_noise.rs` to install a
+# process-wide tracing subscriber that counts `zenoh::api::handlers::fifo`
+# ERROR events. Already in the dependency tree transitively via zenoh.
+tracing-subscriber = "0.3"
+
+[features]
+# `router` is on by default so the daemon build is unchanged; a client-only
+# build (publish/subscribe/services against an existing router, no process
+# supervision) is `default-features = false, features = ["zenoh"]`.
+default = ["zenoh", "router"]
+# Zenoh client transport: publish/subscribe/services against an existing router.
+# Also pulls the raw-TLS probe deps and the tokio features it needs (`net`/`time`
+# for the bounded TCP connect + handshake) used by `probe_tls_reachable`.
+zenoh = [
+    "dep:zenoh",
+    "tokio/net",
+    "tokio/time",
+    "dep:tokio-rustls",
+    "dep:rustls-pemfile",
+    "dep:rustls-native-certs",
+]
+# Router management: spawn and supervise the external zenohd daemon process
+# (ZenohdFacade, ZenohdInstance, RouterHealthChecker, ZenohAdapter::with_router).
+router = ["zenoh"]
+# Also compile the external zenohd daemon from source at build time (pinned to
+# the workspace-resolved zenoh version) and cache it via build.rs. Off in the
+# default build so ordinary consumers skip the (multi-minute) compile.
+build_zenoh = ["router"]

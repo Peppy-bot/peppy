@@ -1,0 +1,17 @@
+// Every primitive token of the message_format DSL as a root field.
+{
+  flag: "bool",
+  label: "string",
+  blob: "bytes",
+  stamp: "time",
+  tiny: "u8",
+  small: "u16",
+  medium: "u32",
+  big: "u64",
+  tiny_signed: "i8",
+  small_signed: "i16",
+  medium_signed: "i32",
+  big_signed: "i64",
+  ratio: "f32",
+  precise: "f64",
+}
