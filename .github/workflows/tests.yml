@@ -27,10 +27,12 @@ env:
 # committed run left them, so it compiles only what the change touched. The
 # gated suites wait only for the changes job, never for another suite.
 jobs:
-  # Which of the gated suites have had their inputs touched. The per-suite
-  # source sets are derived from cargo metadata's resolve graph at run time
-  # (see the action), so added or rewired crates are picked up with nothing
-  # to maintain here. A suite whose inputs are untouched has its job skipped,
+  # What the change set requires each gated job to run: a boolean for the jobs
+  # that are all or nothing, and a selection of packages or directories for the
+  # jobs that split into units testable on their own. The dependency graph
+  # behind the selection is read from the manifests at run time (see the
+  # action), so added or rewired crates and libraries are picked up with
+  # nothing to maintain here. A job whose whole selection is empty is skipped,
   # and the action reports the reason in this job's annotations and summary.
   changes:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -40,7 +42,10 @@ jobs:
       container_e2e: ${{ steps.changes.outputs.container_e2e }}
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
       scripts: ${{ steps.changes.outputs.scripts }}
-      public_libs: ${{ steps.changes.outputs.public_libs }}
+      public_libs_shared_packages: ${{ steps.changes.outputs.public_libs_shared_packages }}
+      public_libs_peppylib_py: ${{ steps.changes.outputs.public_libs_peppylib_py }}
+      public_libs_crates: ${{ steps.changes.outputs.public_libs_crates }}
+      public_libs_python: ${{ steps.changes.outputs.public_libs_python }}
 
     steps:
       - uses: actions/checkout@v7
@@ -53,8 +58,18 @@ jobs:
           persist-credentials: false
 
       # The detection queries cargo metadata, and the action is where the
-      # toolchain pin lives.
-      - uses: ./.github/actions/rust-build-env
+      # toolchain pin lives. The query reads manifests alone, so this job
+      # needs no build environment beyond a cargo that understands them.
+      - uses: ./.github/actions/rust-toolchain
+
+      # What this job decides is which suites run at all, so the decision is
+      # tested before it is trusted. The cases read this repository's real
+      # manifests and need nothing installed beyond the toolchain above.
+      - name: Test the detection
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/actions/changed-test-inputs \
+            --pattern 'test_*.py' --verbose
 
       - name: Detect changed test inputs
         id: changes
@@ -206,29 +221,34 @@ jobs:
           fi
           ./scripts/run_tests.sh --all
 
-  # The suites of the sealed public-peppy-libs tree: its peppy-shared workspace,
-  # the peppylib Python bindings, and the standalone Python libraries.
+  # Three jobs test the sealed public-peppy-libs tree: the cargo packages of
+  # its peppy-shared workspace together with the peppylib Python bindings
+  # built from them, its standalone crates, and its standalone Python
+  # libraries. Each runs the units the change set reached and no others, named
+  # by the changes job, so a change to one crate of the tree costs one crate's
+  # build rather than the tree's.
   #
-  # The tree may depend on nothing outside itself, and this job is where that
-  # is a fact rather than a convention: the checkout materializes the tree and
-  # the CI plumbing and nothing else. With `crates/` and the root manifest
+  # All three check out the tree and the CI plumbing and nothing else. The
+  # tree may depend on nothing outside itself, and this checkout is where that
+  # is a fact rather than a convention: with `crates/` and the root manifest
   # absent, a dependency, `#[path]` or `include!` reaching out of the tree has
   # nothing to resolve to and fails the build. The manifest-level rule has a
   # test of its own with a readable failure (build-helpers' sealed_tree).
-  public-libs:
+  #
+  # The root .gitignore is in the checkout because it is git plumbing for the
+  # path down to the tree, not code: cargo fingerprints a build script by
+  # listing its package's files through git, which evaluates the ignore rules
+  # of every directory from the repository root down. A sparse checkout is a
+  # partial clone, so a .gitignore left out of it has no blob to read and the
+  # listing fails ("Failed to update the excludes stack").
+  public-libs-shared:
     needs: changes
-    if: needs.changes.outputs.public_libs == 'true'
+    if: needs.changes.outputs.public_libs_shared_packages != '' || needs.changes.outputs.public_libs_peppylib_py == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     permissions:
       contents: read
 
     steps:
-      # The root .gitignore is git plumbing for the path down to the tree, not
-      # code: cargo fingerprints a build script by listing its package's files
-      # through git, which evaluates the ignore rules of every directory from
-      # the repository root down. A sparse checkout is a partial clone, so a
-      # .gitignore left out of it has no blob to read and the listing fails
-      # ("Failed to update the excludes stack").
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -238,30 +258,35 @@ jobs:
             /.gitignore
             /public-peppy-libs/
 
-      # Rust toolchain, plus the pixi and uv the Python suites run under.
-      - uses: ./.github/actions/rust-build-env
+      # The workspace is pure Rust plus the peppylib extension: nothing in it
+      # builds apptainer or runs a container, so the toolchain and the Python
+      # tooling peppylib-py's build script and suite reach for are the whole
+      # environment.
+      - uses: ./.github/actions/rust-toolchain
+      - uses: ./.github/actions/python-tools
 
       - uses: ./.github/actions/cargo-cache
         with:
-          suite: public-libs
+          suite: public-libs-shared
           target-dir: public-peppy-libs/peppy-shared/target
 
-      # peppylib-py is excluded: its cdylib build and tests/python_tests.rs
-      # only wrap `pixi run test`, which the step below runs directly. The
-      # lockfile is workspace-global, so `--locked` still validates it against
-      # peppylib-py's manifest.
+      # peppylib-py is never in the selection: its cdylib build and
+      # tests/python_tests.rs only wrap `pixi run test`, which the step below
+      # runs directly. The lockfile is workspace-global, so `--locked` still
+      # validates it against every member's manifest, peppylib-py included.
       - uses: ./.github/actions/cargo-suite
+        if: needs.changes.outputs.public_libs_shared_packages != ''
         with:
           working-directory: public-peppy-libs/peppy-shared
-          command: cargo test --workspace --exclude peppylib-py --locked
+          command: cargo test --locked ${{ needs.changes.outputs.public_libs_shared_packages }}
 
       # `pixi run test` builds the native module with `maturin develop` and
       # runs the pytest suite. The install goes first and `--locked`, so a
       # stale pixi.lock fails here instead of being re-resolved by the run.
-      # The later suites run whatever the earlier ones did, so one red suite
-      # never hides another.
+      # This suite runs whatever the one above did, so one red suite never
+      # hides another.
       - name: Run the peppylib-py Python tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && needs.changes.outputs.public_libs_peppylib_py == 'true' }}
         working-directory: public-peppy-libs/peppy-shared/peppylib-py
         run: |
           peppy_home="$RUNNER_TEMP/peppy-home-py"
@@ -270,21 +295,127 @@ jobs:
           pixi install --locked
           pixi run test
 
-      # Every directory holding a pyproject.toml and a tests/ tree is
-      # discovered from the filesystem and runs its suite from its own uv
-      # environment, resolved --frozen against its committed uv.lock. The
-      # suites are self-contained unit tests: no peppy daemon, no container
-      # runtime, no hardware. Every discovered library runs even after one
-      # fails, so a red run names every failing library instead of the first.
-      - name: Run every standalone Python library's suite
-        if: ${{ !cancelled() }}
+      # The locked install above must have consumed the committed manifest and
+      # lockfile, not rewritten them.
+      - name: Prove the peppylib-py suite tested the committed manifest and lockfile
+        if: ${{ !cancelled() && needs.changes.outputs.public_libs_peppylib_py == 'true' }}
+        run: git diff --exit-code -- 'public-peppy-libs/*pixi.toml' 'public-peppy-libs/*pixi.lock'
+
+      - name: Clean up the Python suite's peppy data root
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/peppy-home-py"
+
+  # The standalone crates of the tree: every directory of it outside
+  # peppy-shared holding a Cargo.toml, each its own workspace with its own
+  # lockfile. They build into one target directory, so a dependency two of
+  # them share is compiled once, and the sticky disk carries it between runs.
+  #
+  # openarm_can's bus tests read OPENARM_CAN_TEST_IFACE for a CAN interface to
+  # drive and skip themselves when it names none, which is what they do here:
+  # the interface would be a virtual CAN link, and the runner kernel carries
+  # no vcan module to create one with. What this job holds that crate to is
+  # therefore that it compiles and its host-only tests pass; the bus tests are
+  # run against a vcan link on a development machine, as their module
+  # documentation describes.
+  public-libs-crates:
+    needs: changes
+    if: needs.changes.outputs.public_libs_crates != ''
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/public-peppy-libs/target
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /.gitignore
+            /public-peppy-libs/
+
+      # These crates are pure Rust: no apptainer, no containers, no Python
+      # tooling, so the toolchain alone is the environment they need.
+      - uses: ./.github/actions/rust-toolchain
+
+      - uses: ./.github/actions/cargo-cache
+        with:
+          suite: public-libs-crates
+          target-dir: public-peppy-libs/target
+
+      # Every selected crate runs even after one fails, so a red run names
+      # every failing crate instead of the first. `--all-features` because a
+      # feature of a library crate is an interface a consumer compiles (the
+      # openarm nodes take openarm_description's `meshes`), and one no suite
+      # builds is one nothing holds to compiling.
+      - name: Run every selected crate's suite
         working-directory: public-peppy-libs
+        env:
+          # Through the environment rather than an expression expanded into
+          # the script: the selection is a list of directory names, and a
+          # directory is free to be named anything a filesystem accepts.
+          CRATES: ${{ needs.changes.outputs.public_libs_crates }}
         run: |
           set -euo pipefail
           failed=()
-          for manifest in */pyproject.toml; do
-            lib=$(dirname "$manifest")
-            [ -d "$lib/tests" ] || continue
+          for crate in $CRATES; do
+            echo "::group::cargo test: $crate"
+            if (cd "$crate" && cargo test --locked --all-features); then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::cargo test failed in $crate"
+              failed+=("$crate")
+            fi
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "failing crates: ${failed[*]}" >&2
+            exit 1
+          fi
+
+      # The locked builds above must have consumed the committed lockfiles,
+      # not rewritten them, so the tested dependency graph is the shipped one.
+      - name: Prove CI did not rewrite the shipping lockfiles
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code -- 'public-peppy-libs/*/Cargo.lock'
+
+  # The standalone Python libraries of the tree: every directory of it holding
+  # a pyproject.toml beside a tests/ tree, each running its suite from its own
+  # uv environment, resolved --frozen against its committed uv.lock. The
+  # suites are self-contained unit tests: no peppy daemon, no container
+  # runtime, no hardware, and no cargo, so this job compiles nothing.
+  public-libs-python:
+    needs: changes
+    if: needs.changes.outputs.public_libs_python != ''
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /.gitignore
+            /public-peppy-libs/
+
+      - uses: ./.github/actions/python-tools
+
+      # Every selected library runs even after one fails, so a red run names
+      # every failing library instead of the first.
+      - name: Run every selected Python library's suite
+        working-directory: public-peppy-libs
+        env:
+          # Through the environment, as in public-libs-crates.
+          LIBRARIES: ${{ needs.changes.outputs.public_libs_python }}
+        run: |
+          set -euo pipefail
+          failed=()
+          for lib in $LIBRARIES; do
             echo "::group::pytest: $lib"
             if (cd "$lib" && uv sync --frozen --quiet && uv run --frozen pytest); then
               echo "::endgroup::"
@@ -299,15 +430,11 @@ jobs:
             exit 1
           fi
 
-      # The frozen and locked installs above must have consumed the committed
-      # manifests and lockfiles, not rewritten them.
+      # The frozen installs above must have consumed the committed manifests
+      # and lockfiles, not rewritten them.
       - name: Prove the Python suites tested the committed manifests and lockfiles
         if: ${{ !cancelled() }}
-        run: git diff --exit-code -- 'public-peppy-libs/*pyproject.toml' 'public-peppy-libs/*uv.lock' 'public-peppy-libs/*pixi.toml' 'public-peppy-libs/*pixi.lock'
-
-      - name: Clean up the Python suite's peppy data root
-        if: always()
-        run: rm -rf "$RUNNER_TEMP/peppy-home-py"
+        run: git diff --exit-code -- 'public-peppy-libs/*pyproject.toml' 'public-peppy-libs/*uv.lock'
 
   # Build scripts execute on the build host even when cargo compiles for
   # another target, so a build script that runs a binary selected by the
@@ -365,7 +492,9 @@ jobs:
       - multi-daemon-e2e
       - docs-integration
       - release-scripts
-      - public-libs
+      - public-libs-shared
+      - public-libs-crates
+      - public-libs-python
       - cross-check
     # Runs whatever happened above: on the default condition a failed or
     # cancelled suite would leave this check unreported instead of red.

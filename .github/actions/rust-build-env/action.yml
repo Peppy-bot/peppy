@@ -8,16 +8,8 @@ description: >-
 runs:
   using: composite
   steps:
-    # The runner image's default toolchain trails the workspace's dependency
-    # graph (sysinfo already requires a newer rustc than the image ships), so
-    # the job pins itself to current stable instead of inheriting the image
-    # default. Must stay ahead of every cargo step.
-    - name: Install Rust toolchain
-      shell: bash
-      run: |
-        rustup toolchain install stable --profile minimal
-        rustup default stable
-        rustc --version
+    # Must stay ahead of every cargo step.
+    - uses: ./.github/actions/rust-toolchain
 
     # containers-internal's build script compiles apptainer and its bundled
     # squashfuse from source, and refuses to start unless every package in
@@ -89,20 +81,4 @@ runs:
           [ -e "/dev/loop$i" ] || sudo mknod -m 660 "/dev/loop$i" b 7 "$i"
         done
 
-    # The runner image ships neither pixi nor uv. generator-internal's build
-    # script builds the embedded peppylib .so through a bare `pixi run` and,
-    # when pixi is absent, refuses to serve a stale .so instead, which is
-    # fatal on an ephemeral runner whose ~/.peppy cache starts empty. The
-    # Python generator tests and latency scenarios likewise exec bare `uv` on
-    # the host. Both are installed exactly as scripts/setup_machine.sh
-    # installs them, pixi pinned to a version that satisfies every
-    # `requires-pixi` (scripts/pixi.toml, peppylib-py's pixi.toml);
-    # $GITHUB_PATH exports them to every later step of the calling job (the
-    # installers' own profile edits are never sourced there).
-    - name: Install pixi and uv
-      shell: bash
-      run: |
-        curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.80.0 sh
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+    - uses: ./.github/actions/python-tools

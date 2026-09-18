@@ -3,8 +3,8 @@ description: >-
   Mounts the suite's Blacksmith sticky disk and links the cargo target
   directory, the cargo registry and git checkouts, and the build scripts' tool
   cache into it, so a job compiles only what changed since the disk was last
-  committed. Expects the checkout and the rust-build-env action to have run
-  first, and must precede every cargo step.
+  committed. Expects the checkout and the Rust toolchain to be in place, and
+  must precede every cargo step.
 
 inputs:
   suite:
