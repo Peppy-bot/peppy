@@ -642,17 +642,28 @@ mod tests {
     /// build goal carries decisive: a goal with no PATH of its own resolves
     /// programs against the daemon's environment, and one that carries a
     /// PATH resolves against that PATH alone.
+    ///
+    /// The stub is a symlink to a system tool rather than a script this test
+    /// writes. A file this process has just written is still open for writing
+    /// in every child a sibling test forked, until that child reaches its own
+    /// `execve`, and executing it inside that window fails with `ETXTBSY`.
+    /// Pointing the name at a binary nothing writes keeps the lookup under
+    /// test and takes the race out of it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn run_build_cmd_resolves_the_program_via_the_child_path() {
+        // `echo` lives in /bin on both Linux and macOS, ignores the argument
+        // the command carries, and exits 0.
+        const SYSTEM_TOOL: &str = "/bin/echo";
+        assert!(
+            std::path::Path::new(SYSTEM_TOOL).exists(),
+            "the fixture stands on {SYSTEM_TOOL}, which every host it runs on ships"
+        );
         let tool_dir = tempfile::tempdir().expect("tempdir should succeed");
+        // Reachable under this name nowhere but this directory, so only the
+        // PATH the test hands the child can resolve it.
         let tool = tool_dir.path().join("peppy-test-stub-tool");
-        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").expect("write stub tool");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod stub tool");
-        }
+        std::os::unix::fs::symlink(SYSTEM_TOOL, &tool).expect("symlink stub tool");
 
         let working_dir = tempfile::tempdir().expect("tempdir should succeed");
         let (feedback_tx, _feedback_rx) = mpsc::unbounded_channel();
