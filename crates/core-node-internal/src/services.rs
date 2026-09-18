@@ -14,6 +14,7 @@ mod stack;
 use clock::{ClockSource, WallClockSource};
 
 pub use node::cache::git::{checkout_dir_for, materialized_checkout};
+pub use node::endpoints::{HostAddressSource, test_host_addresses};
 pub use node::{
     HealthMonitorPolicy, TEARDOWN_REAP_BUDGET, force_kill_deadline, teardown_all_instances,
 };
@@ -152,6 +153,10 @@ pub struct CoreNodeConfig {
     /// they do not spin against a closed session logging a failed publish on
     /// every tick.
     pub shutdown_token: CancellationToken,
+    /// Where the daemon reads the addresses of its machine, which the
+    /// endpoints of every instance it starts expand against: the system's
+    /// interfaces in production, a fixed list under test.
+    pub host_addresses: node::endpoints::HostAddressSource,
 }
 
 pub struct CoreNode {
@@ -175,6 +180,9 @@ pub struct CoreNode {
     /// The daemon's workspace namespace for this generation, stamped onto
     /// every spawned node so it opens its session under the daemon's namespace.
     namespace: config::namespace::Namespace,
+    /// Where this daemon reads its machine's addresses, which every started
+    /// instance's endpoints expand against.
+    host_addresses: node::endpoints::HostAddressSource,
     /// Cancelled on shutdown to stop the clock + heartbeat publishers cleanly.
     /// Cloned into each publisher task in [`CoreNode::start_with_ready`].
     shutdown_token: CancellationToken,
@@ -306,6 +314,7 @@ impl CoreNode {
             peppy_config,
             namespace,
             shutdown_token,
+            host_addresses,
         } = config;
 
         let manifest_name = match node_name {
@@ -335,6 +344,7 @@ impl CoreNode {
                 build_cmd: None,
                 run_cmd: None,
                 container: None,
+                endpoints: Default::default(),
             },
             interfaces: Default::default(),
         };
@@ -365,6 +375,7 @@ impl CoreNode {
             name_claim_settle,
             peppy_config,
             namespace,
+            host_addresses,
             shutdown_token,
             presence_token: std::sync::Mutex::new(None),
             slice_ownership,
@@ -683,6 +694,7 @@ impl CoreNode {
                         daemon_defaults: node::DaemonDefaults::from_peppy_config(
                             &self.peppy_config,
                             self.namespace.clone(),
+                            self.host_addresses.clone(),
                         ),
                         shutdown_token: self.shutdown_token.clone(),
                         slice_ownership: Arc::clone(&self.slice_ownership),
@@ -736,6 +748,7 @@ impl CoreNode {
                     daemon_defaults: node::DaemonDefaults::from_peppy_config(
                         &self.peppy_config,
                         self.namespace.clone(),
+                        self.host_addresses.clone(),
                     ),
                     shutdown_token: self.shutdown_token.clone(),
                     relationships: ctx.relationships.clone(),

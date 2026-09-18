@@ -17,8 +17,10 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use config::node::EndpointKind;
 use config::runtime::{ClockDomainId, ClockIncarnation};
-use core_node_api::{InstanceState, SerializedNodeGraph};
+use core_node_api::encoding::InstanceEndpoints;
+use core_node_api::{InstanceEndpoint, InstanceState, SerializedNodeGraph};
 
 use crate::{
     context::{AppContext, DaemonConnection},
@@ -101,6 +103,80 @@ impl DomainLabels {
         }
         let digits = format!("{:016x}", domain.incarnation.get());
         format!("{rendered}#{}", &digits[..INCARNATION_LABEL_DIGITS])
+    }
+}
+
+/// Renders the endpoints of started instances the way every command that
+/// starts or inspects instances prints them: one block per declared kind,
+/// `Web pages:` before `MCP endpoints:`, each printed only when it has an
+/// entry. Within a block the instances come in instance id order, each as
+/// `instance_id (node_label) @core_node`, their endpoints in label order
+/// with the label column padded to the longest label of the block and the
+/// URLs under it in the order the daemon expanded them. Empty input renders
+/// nothing.
+pub fn render_endpoints(entries: &[InstanceEndpoints]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let mut ordered: Vec<&InstanceEndpoints> = entries.iter().collect();
+    ordered.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+
+    for (kind, heading) in [
+        (EndpointKind::Page, "Web pages:"),
+        (EndpointKind::Mcp, "MCP endpoints:"),
+    ] {
+        let block: Vec<(&InstanceEndpoints, Vec<&InstanceEndpoint>)> = ordered
+            .iter()
+            .map(|entry| {
+                let mut endpoints: Vec<&InstanceEndpoint> = entry
+                    .endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.kind == kind)
+                    .collect();
+                endpoints.sort_by(|a, b| a.label.cmp(&b.label));
+                (*entry, endpoints)
+            })
+            .filter(|(_, endpoints)| !endpoints.is_empty())
+            .collect();
+        if block.is_empty() {
+            continue;
+        }
+        let label_width = block
+            .iter()
+            .flat_map(|(_, endpoints)| endpoints.iter().map(|endpoint| endpoint.label.len()))
+            .max()
+            .unwrap_or(0);
+        let _ = writeln!(&mut out, "{heading}");
+        for (entry, endpoints) in block {
+            let _ = writeln!(
+                &mut out,
+                "  {} ({}) @{}",
+                entry.instance_id, entry.node_label, entry.core_node
+            );
+            for endpoint in endpoints {
+                // The label heads its first URL; the rest sit under it in a
+                // blank column. An endpoint the daemon expanded to no URL at
+                // all contributes no line.
+                for (index, url) in endpoint.urls.iter().enumerate() {
+                    let label = if index == 0 {
+                        endpoint.label.as_str()
+                    } else {
+                        ""
+                    };
+                    let _ = writeln!(&mut out, "    {label:<label_width$}  {url}");
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The blocks [`render_endpoints`] produces, on the node log, for the
+/// commands that start instances. The one place the rendered block reaches
+/// an operator, so a change to how it is delivered is made once.
+pub fn log_endpoints(entries: &[InstanceEndpoints]) {
+    for line in render_endpoints(entries).lines() {
+        tracing::info!("{line}");
     }
 }
 
@@ -221,6 +297,149 @@ mod tests {
         assert_eq!(instance_health_label(InstanceState::Finished, false), "-");
         assert_eq!(instance_health_label(InstanceState::Failed, true), "-");
         assert_eq!(instance_health_label(InstanceState::Failed, false), "-");
+    }
+
+    fn endpoint(label: &str, kind: EndpointKind, urls: &[&str]) -> InstanceEndpoint {
+        InstanceEndpoint {
+            label: label.to_string(),
+            kind,
+            urls: urls.iter().map(|url| url.to_string()).collect(),
+        }
+    }
+
+    fn instance(
+        instance_id: &str,
+        node_label: &str,
+        endpoints: Vec<InstanceEndpoint>,
+    ) -> InstanceEndpoints {
+        InstanceEndpoints {
+            instance_id: instance_id.to_string(),
+            node_label: node_label.to_string(),
+            core_node: "cn-sweet-edison".to_string(),
+            endpoints,
+        }
+    }
+
+    /// Pages and MCP endpoints land under their own headings, pages first,
+    /// with per-block label padding and every URL under its label.
+    #[test]
+    fn render_endpoints_groups_kinds_under_their_headings_in_order() {
+        let out = render_endpoints(&[
+            instance(
+                "alpha_commander_inst",
+                "mcp_openarm_v2_v1_scene_lighting_v1:builtin",
+                vec![
+                    endpoint(
+                        "scene_lighting_v1",
+                        EndpointKind::Mcp,
+                        &["http://127.0.0.1:8900/scene_lighting/v1/mcp"],
+                    ),
+                    endpoint(
+                        "openarm_v2_v1",
+                        EndpointKind::Mcp,
+                        &["http://127.0.0.1:8900/openarm_v2/v1/mcp"],
+                    ),
+                ],
+            ),
+            instance(
+                "simulation_inst",
+                "waldo:v1",
+                vec![endpoint(
+                    "viewer",
+                    EndpointKind::Page,
+                    &["https://127.0.0.1:8080/", "https://100.123.58.116:8080/"],
+                )],
+            ),
+        ]);
+        assert_eq!(
+            out,
+            "\
+Web pages:
+  simulation_inst (waldo:v1) @cn-sweet-edison
+    viewer  https://127.0.0.1:8080/
+            https://100.123.58.116:8080/
+MCP endpoints:
+  alpha_commander_inst (mcp_openarm_v2_v1_scene_lighting_v1:builtin) @cn-sweet-edison
+    openarm_v2_v1      http://127.0.0.1:8900/openarm_v2/v1/mcp
+    scene_lighting_v1  http://127.0.0.1:8900/scene_lighting/v1/mcp
+"
+        );
+    }
+
+    /// An input with one kind prints one heading, and instances of that kind
+    /// come in instance id order whatever order they arrived in.
+    #[test]
+    fn render_endpoints_prints_one_heading_for_one_kind_and_orders_instances() {
+        let out = render_endpoints(&[
+            instance(
+                "simulation_inst",
+                "waldo:v1",
+                vec![endpoint(
+                    "viewer",
+                    EndpointKind::Page,
+                    &["https://127.0.0.1:8080/"],
+                )],
+            ),
+            instance(
+                "alpha_commander_inst",
+                "openarm_web_commander:v1",
+                vec![endpoint(
+                    "panel",
+                    EndpointKind::Page,
+                    &["http://127.0.0.1:8765", "http://100.123.58.116:8765"],
+                )],
+            ),
+        ]);
+        assert_eq!(
+            out,
+            "\
+Web pages:
+  alpha_commander_inst (openarm_web_commander:v1) @cn-sweet-edison
+    panel   http://127.0.0.1:8765
+            http://100.123.58.116:8765
+  simulation_inst (waldo:v1) @cn-sweet-edison
+    viewer  https://127.0.0.1:8080/
+"
+        );
+        assert!(!out.contains("MCP endpoints:"));
+    }
+
+    /// Padding is per block: a long MCP label does not widen the page block,
+    /// and an instance serving both kinds appears in both blocks.
+    #[test]
+    fn render_endpoints_pads_labels_per_block() {
+        let out = render_endpoints(&[instance(
+            "hybrid_inst",
+            "hybrid:v1",
+            vec![
+                endpoint("ui", EndpointKind::Page, &["http://127.0.0.1:8000"]),
+                endpoint(
+                    "a_very_long_exposure_label_v1",
+                    EndpointKind::Mcp,
+                    &["http://127.0.0.1:8900/a/v1/mcp"],
+                ),
+            ],
+        )]);
+        assert_eq!(
+            out,
+            "\
+Web pages:
+  hybrid_inst (hybrid:v1) @cn-sweet-edison
+    ui  http://127.0.0.1:8000
+MCP endpoints:
+  hybrid_inst (hybrid:v1) @cn-sweet-edison
+    a_very_long_exposure_label_v1  http://127.0.0.1:8900/a/v1/mcp
+"
+        );
+    }
+
+    #[test]
+    fn render_endpoints_renders_nothing_for_empty_input() {
+        assert_eq!(render_endpoints(&[]), "");
+        assert_eq!(
+            render_endpoints(&[instance("silent_inst", "silent:v1", Vec::new())]),
+            ""
+        );
     }
 
     #[test]

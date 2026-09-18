@@ -989,7 +989,7 @@ async fn prepare_and_spawn_marks_instance_starting_then_commit_marks_running() {
     assert!(pid > 0, "spawned child should have a valid pid");
 
     let mut returned_child =
-        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
             .await
             .expect("commit_started should succeed");
     assert_eq!(
@@ -1149,7 +1149,7 @@ async fn prepare_and_spawn_starts_additional_instance_alongside_existing() {
 
     let new_pid = child.id().expect("child has pid");
     let mut returned_child =
-        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
             .await
             .expect("commit_started should succeed");
     assert_eq!(

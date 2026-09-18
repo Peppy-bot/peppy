@@ -1,6 +1,8 @@
 use config::consts::PEPPYGEN_OUTPUT_PATH;
-use config::node::NodeConfigParser;
-use core_node::{CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy};
+use config::node::{EndpointDeclaration, EndpointKind, EndpointLabel, NodeConfigParser};
+use core_node::{
+    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, test_host_addresses,
+};
 use daemon::state::DaemonState;
 use daemon_config::consts::PeppyDirs;
 use pmi::{Messenger, MessengerBackend, MockAdapter, MockInstance, ZenohAdapter, ZenohdInstance};
@@ -142,6 +144,23 @@ pub fn override_run_cmd_while(peppy_json5: &Path, sentinel: &Path) {
     modify_node_config(peppy_json5, |cfg| {
         cfg.execution.run_cmd = Some(keep_alive_argv(sentinel));
         cfg.execution.build_cmd = None;
+    });
+}
+
+/// Declares `endpoints` under a node's `execution.endpoints`, each as
+/// `(label, kind, description)`, and regenerates the codegen fingerprint, so
+/// a test can make an emulated node one the daemon asks for its endpoints.
+pub fn declare_endpoints(peppy_json5: &Path, endpoints: &[(&str, EndpointKind, &str)]) {
+    modify_node_config(peppy_json5, |cfg| {
+        for (label, kind, description) in endpoints {
+            cfg.execution.endpoints.insert(
+                EndpointLabel::new(*label).expect("a valid endpoint label"),
+                EndpointDeclaration {
+                    kind: *kind,
+                    description: (*description).to_string(),
+                },
+            );
+        }
     });
 }
 
@@ -350,6 +369,7 @@ impl ServeCommandEmulation {
         let core_node = CoreNode::new(CoreNodeConfig {
             messenger: Arc::clone(&shared_messenger),
             node_name: Some(core_node_name.to_string()),
+            host_addresses: Some(test_host_addresses()),
             arguments: CoreNodeArguments {
                 node_startup_timeout: Duration::from_secs(120),
                 node_start_health_timeout: Duration::from_secs(30),

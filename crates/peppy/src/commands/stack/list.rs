@@ -456,8 +456,8 @@ fn format_stack_body(
     }
 
     // Per-instance endpoints. Only rendered when some tracked instance serves
-    // one: the built-in MCP server's instances, one URL per exposure, so an
-    // operator finds them here rather than in the launcher.
+    // one: one row per URL, under the label and kind the node's manifest
+    // declares, so an operator finds them here rather than in the node.
     let endpoint_nodes: Vec<&SerializedNode> = nodes
         .iter()
         .filter(|n| n.instances.iter().any(|i| !i.endpoints.is_empty()))
@@ -626,11 +626,13 @@ fn format_instance_clock(
 
 /// Headers for the per-instance endpoints table; grouped like the bindings
 /// table (node label on the first row of its group, instance id on the first
-/// of its endpoint rows).
-const ENDPOINT_HEADERS: [&str; 3] = ["NODE", "INSTANCE", "ENDPOINT"];
+/// of its endpoint rows, kind and label on the first of an endpoint's URL
+/// rows).
+const ENDPOINT_HEADERS: [&str; 5] = ["NODE", "INSTANCE", "KIND", "LABEL", "ENDPOINT"];
 
-/// Renders the per-instance endpoints table. `nodes` must already be
-/// filtered to entries with at least one instance serving an endpoint.
+/// Renders the per-instance endpoints table, one row per URL. `nodes` must
+/// already be filtered to entries with at least one instance serving an
+/// endpoint.
 fn render_endpoints_table(
     out: &mut String,
     nodes: &[&SerializedNode],
@@ -648,11 +650,17 @@ fn render_endpoints_table(
                 }
                 let mut instance_cell = paint(colorize, INSTANCE_COLOR, &instance.instance_id);
                 for endpoint in &instance.endpoints {
-                    rows.push(vec![
-                        std::mem::take(&mut node_cell),
-                        std::mem::take(&mut instance_cell),
-                        endpoint.clone(),
-                    ]);
+                    let mut kind_cell = endpoint.kind.to_string();
+                    let mut label_cell = endpoint.label.clone();
+                    for url in &endpoint.urls {
+                        rows.push(vec![
+                            std::mem::take(&mut node_cell),
+                            std::mem::take(&mut instance_cell),
+                            std::mem::take(&mut kind_cell),
+                            std::mem::take(&mut label_cell),
+                            url.clone(),
+                        ]);
+                    }
                 }
             }
             rows
@@ -1001,7 +1009,8 @@ mod tests {
     }
 
     /// The endpoints table appears only when an instance serves one, with
-    /// one row per endpoint URL under the instance that serves it.
+    /// one row per endpoint URL under the kind and label of the endpoint
+    /// and the instance that serves it.
     #[test]
     fn endpoints_are_listed_per_instance_and_only_when_served() {
         let mut server = node(
@@ -1011,25 +1020,67 @@ mod tests {
             vec![("mcp", InstanceState::Running)],
         );
         server.instances[0].endpoints = vec![
-            "http://127.0.0.1:8900/camera_and_recording/v1/mcp".to_string(),
-            "http://127.0.0.1:8900/camera_only/v1/mcp".to_string(),
+            core_node_api::InstanceEndpoint {
+                label: "camera_and_recording_v1".to_string(),
+                kind: config::node::EndpointKind::Mcp,
+                urls: vec!["http://127.0.0.1:8900/camera_and_recording/v1/mcp".to_string()],
+            },
+            core_node_api::InstanceEndpoint {
+                label: "camera_only_v1".to_string(),
+                kind: config::node::EndpointKind::Mcp,
+                urls: vec!["http://127.0.0.1:8900/camera_only/v1/mcp".to_string()],
+            },
         ];
+        let mut panel = node(
+            "openarm_web_commander",
+            "v1",
+            NodeStage::Ready,
+            vec![("panel_inst", InstanceState::Running)],
+        );
+        panel.instances[0].endpoints = vec![core_node_api::InstanceEndpoint {
+            label: "panel".to_string(),
+            kind: config::node::EndpointKind::Page,
+            urls: vec![
+                "http://127.0.0.1:8765".to_string(),
+                "http://192.168.1.5:8765".to_string(),
+            ],
+        }];
         let camera = node(
             "uvc_camera",
             "v1",
             NodeStage::Ready,
             vec![("the_camera", InstanceState::Running)],
         );
-        let out = format_stack_body(&[camera.clone(), server], &[], false, None);
+        let out = format_stack_body(&[camera.clone(), server, panel], &[], false, None);
         assert!(out.contains("Instance endpoints"), "{out}");
-        assert!(out.contains("ENDPOINT"), "{out}");
+        for header in ["KIND", "LABEL", "ENDPOINT"] {
+            assert!(
+                out.contains(header),
+                "the `{header}` column is present: {out}"
+            );
+        }
+        let row = |needle: &str| {
+            out.lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("a row for {needle}: {out}"))
+                .to_string()
+        };
+        let first_mcp = row("http://127.0.0.1:8900/camera_and_recording/v1/mcp");
         assert!(
-            out.contains("http://127.0.0.1:8900/camera_and_recording/v1/mcp"),
-            "{out}"
+            first_mcp.contains("mcp") && first_mcp.contains("camera_and_recording_v1"),
+            "the row carries the kind and label: {first_mcp}"
         );
+        let second_mcp = row("http://127.0.0.1:8900/camera_only/v1/mcp");
+        assert!(second_mcp.contains("camera_only_v1"), "{second_mcp}");
+        let first_url = row("http://127.0.0.1:8765");
         assert!(
-            out.contains("http://127.0.0.1:8900/camera_only/v1/mcp"),
-            "{out}"
+            first_url.contains("page") && first_url.contains("panel"),
+            "the first URL row of an endpoint carries its kind and label: {first_url}"
+        );
+        let second_url = row("http://192.168.1.5:8765");
+        assert!(
+            !second_url.contains("page") && !second_url.contains("panel_inst"),
+            "a further URL of the same endpoint has its own row under blank cells: {second_url}"
         );
         let endpoints_section = out
             .split("Instance endpoints")

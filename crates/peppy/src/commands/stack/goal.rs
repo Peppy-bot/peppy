@@ -313,6 +313,7 @@ pub(super) async fn drive_stack_goal<G: StackGoal>(
                 &result.node_build_logs,
                 &result.node_run_logs,
             );
+            crate::commands::log_endpoints(&result.instance_endpoints);
 
             if !result.success {
                 let error_msg = result

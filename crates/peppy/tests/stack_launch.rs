@@ -283,6 +283,18 @@ async fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("launch command should succeed");
 
+    // Nothing in this stack declares an endpoint, so the launch prints no
+    // endpoint block.
+    let launch_logs = log_capture.logs();
+    assert!(
+        launch_logs.contains("Launch completed successfully"),
+        "{launch_logs}"
+    );
+    assert!(
+        !launch_logs.contains("Web pages:") && !launch_logs.contains("MCP endpoints:"),
+        "a stack whose nodes declare no endpoint prints no block:\n{launch_logs}"
+    );
+
     let response = poll(
         &StackListRequest::new(),
         messenger_handle,
@@ -5443,4 +5455,183 @@ async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
     );
     assert_eq!(launch.artifacts(), artifacts);
     assert_eq!(launch.instance_count().await, 1);
+}
+
+/// A launch prints the endpoints of the instances it started after the log
+/// files and before the completion line: pages and MCP endpoints under their
+/// own headings, each URL expanded by the daemon that hosts the instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let node_tag = "v1";
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let instances = InstanceLifetime::new();
+    let keep_alive = instances.keep_alive_argv();
+    let keep_alive: Vec<&str> = keep_alive.iter().map(String::as_str).collect();
+
+    let page_node = "launch_page_node";
+    let page_path = write_node_config(
+        nodes_dir.path(),
+        page_node,
+        node_tag,
+        &git_hash,
+        &keep_alive,
+    );
+    peppy::test_support::declare_endpoints(
+        &page_path.join(NODE_CONFIG_FILE),
+        &[(
+            "panel",
+            config::node::EndpointKind::Page,
+            "The operator panel.",
+        )],
+    );
+    let mcp_node = "launch_mcp_node";
+    let mcp_path = write_node_config(nodes_dir.path(), mcp_node, node_tag, &git_hash, &keep_alive);
+    peppy::test_support::declare_endpoints(
+        &mcp_path.join(NODE_CONFIG_FILE),
+        &[(
+            "camera_v1",
+            config::node::EndpointKind::Mcp,
+            "The camera exposure.",
+        )],
+    );
+
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // The emulated nodes: ready, health, and the sockets each bound.
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    let page_instance = "page_inst";
+    let mcp_instance = "mcp_inst";
+    emulate_startup_services(&node_messenger, &core_node_name, page_node, page_instance).await;
+    emulate_startup_services(&node_messenger, &core_node_name, mcp_node, mcp_instance).await;
+    let _page_endpoints = peppylib::services::endpoints::listen_for_node_endpoints(
+        &node_messenger,
+        &core_node_name,
+        page_instance,
+        test_node_target(page_node),
+        vec![peppylib::runtime::AnnouncedEndpoint {
+            label: "panel".to_string(),
+            binding: peppylib::runtime::EndpointBinding {
+                scheme: "http".to_string(),
+                address: "0.0.0.0:8765".parse().expect("a socket address"),
+                path: String::new(),
+            },
+        }],
+    )
+    .await
+    .expect("page endpoints service should start");
+    let _mcp_endpoints = peppylib::services::endpoints::listen_for_node_endpoints(
+        &node_messenger,
+        &core_node_name,
+        mcp_instance,
+        test_node_target(mcp_node),
+        vec![peppylib::runtime::AnnouncedEndpoint {
+            label: "camera_v1".to_string(),
+            binding: peppylib::runtime::EndpointBinding {
+                scheme: "http".to_string(),
+                address: "127.0.0.1:8900".parse().expect("a socket address"),
+                path: "/camera/v1/mcp".to_string(),
+            },
+        }],
+    )
+    .await
+    .expect("mcp endpoints service should start");
+
+    let launcher_path = nodes_dir.path().join("peppy_launcher.json5");
+    fs::write(
+        &launcher_path,
+        format!(
+            r#"{{
+                peppy_schema: "launcher/v1",
+                deployments: [
+                    {{
+                        source: {{ name: "{page_node}:{node_tag}" }},
+                        instances: [{{ instance_id: "{page_instance}" }}]
+                    }},
+                    {{
+                        source: {{ name: "{mcp_node}:{node_tag}" }},
+                        instances: [{{ instance_id: "{mcp_instance}" }}]
+                    }}
+                ]
+            }}"#
+        ),
+    )
+    .expect("launcher config should be writable");
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            (page_node, node_tag, &page_path),
+            (mcp_node, node_tag, &mcp_path),
+        ],
+    );
+
+    StackCommand {
+        command: StackCommands::Launch {
+            rebuild: false,
+            place: Vec::new(),
+            local: false,
+            with: Default::default(),
+            launcher_config_path: launcher_path,
+            timeouts: StackTimeouts {
+                node_add_idle_timeout_secs: 60,
+                node_build_idle_timeout_secs: 60,
+                node_run_idle_timeout_secs: 60,
+                max_timeout_secs: Some(3600),
+            },
+        },
+    }
+    .execute(&ctx)
+    .expect("launch command should succeed");
+
+    let logs = log_capture.logs();
+    let position = |needle: &str| {
+        logs.find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is printed:\n{logs}"))
+    };
+    let log_files = position("Node log files:");
+    let pages = position("Web pages:");
+    let mcp = position("MCP endpoints:");
+    let completed = position("Launch completed successfully");
+    assert!(
+        log_files < pages && pages < mcp && mcp < completed,
+        "the blocks come after the log files and before the completion line:\n{logs}"
+    );
+    for line in [
+        format!("  {page_instance} ({page_node}:{node_tag}) @{core_node_name}"),
+        "    panel  http://127.0.0.1:8765".to_string(),
+        "           http://192.168.1.5:8765".to_string(),
+        "           http://100.123.58.116:8765".to_string(),
+    ] {
+        let at = position(&line);
+        assert!(
+            pages < at && at < mcp,
+            "`{line}` sits in the page block:\n{logs}"
+        );
+    }
+    for line in [
+        format!("  {mcp_instance} ({mcp_node}:{node_tag}) @{core_node_name}"),
+        "    camera_v1  http://127.0.0.1:8900/camera/v1/mcp".to_string(),
+    ] {
+        let at = position(&line);
+        assert!(
+            mcp < at && at < completed,
+            "`{line}` sits in the MCP block:\n{logs}"
+        );
+    }
 }

@@ -9,7 +9,8 @@ use config::node::{ContainerConfig, NodeConfig, PeppygenLanguage};
 use config::runtime::Name;
 use core_node_api::encoding::LaunchIdentity;
 use core_node_api::{
-    InstanceState, NodeStage as SerializedNodeStage, SerializedInstance, SerializedNode,
+    InstanceEndpoint, InstanceState, NodeStage as SerializedNodeStage, SerializedInstance,
+    SerializedNode,
 };
 use daemon_config::consts::PeppyDirs;
 use tokio::process::Child;
@@ -59,34 +60,6 @@ pub(super) fn serialize_node_entity(entity: &NodeEntity, core_node: &str) -> Ser
     }
 }
 
-/// The endpoint URLs a built-in instance serves, from the recipe's paths and
-/// the `port` argument of the runtime config the instance boots with.
-fn built_in_endpoints(
-    launch: &BuiltInLaunch,
-    runtime_config_json5: &str,
-) -> std::result::Result<Vec<String>, String> {
-    let runtime_config: config::runtime::RuntimeConfig =
-        serde_json5::from_str(runtime_config_json5)
-            .map_err(|error| format!("the runtime config does not parse: {error}"))?;
-    let port = match runtime_config
-        .node_instance
-        .arguments
-        .get(daemon_config::mcp_deployment::PORT_PARAMETER)
-        .cloned()
-    {
-        Some(config::AnyType::Int(port)) => u16::try_from(port).ok(),
-        Some(config::AnyType::UInt(port)) => u16::try_from(port).ok(),
-        _ => None,
-    }
-    .ok_or_else(|| {
-        format!(
-            "a built-in node's runtime config carries no `{}` argument",
-            daemon_config::mcp_deployment::PORT_PARAMETER
-        )
-    })?;
-    Ok(launch.endpoint_urls(port))
-}
-
 /// How a built-in node starts: the daemon's own executable with a
 /// subcommand, plus the environment that hands the process what it serves.
 ///
@@ -102,19 +75,6 @@ pub struct BuiltInLaunch {
     pub args: Vec<String>,
     /// Environment entries the process needs beyond the instance's own.
     pub env: Vec<(String, String)>,
-    /// The HTTP paths the process serves on its `port` argument, used to
-    /// report each instance's endpoint URLs.
-    pub http_paths: Vec<String>,
-}
-
-impl BuiltInLaunch {
-    /// The URLs an instance bound to `port` serves.
-    pub fn endpoint_urls(&self, port: u16) -> Vec<String> {
-        self.http_paths
-            .iter()
-            .map(|path| format!("http://127.0.0.1:{port}{path}"))
-            .collect()
-    }
 }
 
 /// What a `Ready` entity spawns from.
@@ -912,25 +872,6 @@ impl NodeEntity {
         handle: &Arc<RwLock<NodeEntity>>,
         ctx: StartContext<'_>,
     ) -> Result<(Child, StartedInstanceCtx)> {
-        // A built-in instance's endpoints follow from the recipe and the
-        // port the runtime config carries; derived before the lock so a
-        // malformed config is refused without touching the entity.
-        let built_in_endpoints = {
-            let guard = handle.read();
-            match guard.built_in_launch() {
-                Some(launch) => Some(
-                    built_in_endpoints(launch, ctx.runtime_config_json5).map_err(|reason| {
-                        Error::StartFailed {
-                            node_name: guard.config.manifest.name.as_str().to_owned(),
-                            node_tag: guard.config.manifest.tag.clone(),
-                            reason,
-                        }
-                    })?,
-                ),
-                None => None,
-            }
-        };
-
         // ---- Phase 1: register the Starting instance under a brief write lock ----
         let (node_name, node_tag, node_config, artifact, start_generation) = {
             let mut guard = handle.write();
@@ -966,18 +907,16 @@ impl NodeEntity {
             }
 
             let snapshot_artifact = artifact.clone();
-            let mut instance = TrackedNodeInstance::new(
-                ctx.instance_id.clone(),
-                InstanceState::Starting,
-                ctx.slot_bindings.clone(),
-            )
-            .with_clock(ctx.clock.clone())
-            .with_launch(ctx.launch.clone())
-            .with_copy(ctx.copy.clone());
-            if let Some(endpoints) = built_in_endpoints {
-                instance = instance.with_endpoints(endpoints);
-            }
-            instances.push(instance);
+            instances.push(
+                TrackedNodeInstance::new(
+                    ctx.instance_id.clone(),
+                    InstanceState::Starting,
+                    ctx.slot_bindings.clone(),
+                )
+                .with_clock(ctx.clock.clone())
+                .with_launch(ctx.launch.clone())
+                .with_copy(ctx.copy.clone()),
+            );
 
             (
                 guard.config.manifest.name.as_str().to_owned(),
@@ -1168,11 +1107,16 @@ impl NodeEntity {
     /// caller owns it from here, holding it in the exit watcher and reaping it on
     /// exit, while the stop paths and the stack's drop still drive termination
     /// by the pid `prepare_and_spawn` recorded at the fork.
+    ///
+    /// `endpoints` is what the start sequence read from the node and expanded
+    /// once it was healthy; the commit records it on the instance, the one
+    /// place the set is written.
     pub async fn commit_started(
         handle: &Arc<RwLock<NodeEntity>>,
         mut child: Child,
         started_ctx: StartedInstanceCtx,
         instance_id: Name,
+        endpoints: Vec<InstanceEndpoint>,
     ) -> Result<Child> {
         // Helper: on every error path we must kill the still-running child
         // before returning, otherwise we leak an untracked OS process. tokio
@@ -1224,6 +1168,7 @@ impl NodeEntity {
                                 })
                             } else {
                                 inst.set_running(instance_dir.clone(), runtime_config_path.clone());
+                                inst.set_endpoints(endpoints);
                                 Ok(())
                             }
                         } else {
@@ -1501,9 +1446,10 @@ pub struct TrackedNodeInstance {
     /// `Arc<AtomicBool>` for the same reason as `healthy`: it is flipped through
     /// the clone the stop path resolves, without an entity write lock.
     stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// The endpoint URLs the instance serves; empty for every node that is
-    /// not a built-in server.
-    endpoints: Vec<String>,
+    /// The endpoints the instance serves, as the daemon expanded the sockets
+    /// it announced at start; empty for a node whose manifest declares none
+    /// and until the instance commits to `Running`.
+    endpoints: Vec<InstanceEndpoint>,
 }
 
 impl TrackedNodeInstance {
@@ -1584,16 +1530,17 @@ impl TrackedNodeInstance {
         self
     }
 
-    /// The endpoint URLs the instance serves, for `stack list`; empty for
-    /// every node that is not a built-in server.
-    pub fn endpoints(&self) -> &[String] {
+    /// The endpoints the instance serves, in label order, for `stack list`
+    /// and `node info`; empty for a node whose manifest declares none.
+    pub fn endpoints(&self) -> &[InstanceEndpoint] {
         &self.endpoints
     }
 
-    /// Records the endpoint URLs a built-in instance serves.
-    pub fn with_endpoints(mut self, endpoints: Vec<String>) -> Self {
+    /// Same-module mutator used by `NodeEntity::commit_started` to record the
+    /// endpoints the start sequence read from the node and expanded, the one
+    /// writer of the set. Not exported.
+    fn set_endpoints(&mut self, endpoints: Vec<InstanceEndpoint>) {
         self.endpoints = endpoints;
-        self
     }
 
     pub fn instance_id(&self) -> &Name {
@@ -1706,10 +1653,6 @@ mod tests {
                 "PEPPY_MCP_SERVE_SPEC".to_owned(),
                 "/tmp/spec.json5".to_owned(),
             )],
-            http_paths: vec![
-                "/camera_and_recording/v1/mcp".to_owned(),
-                "/arm_control/v1/mcp".to_owned(),
-            ],
         }
     }
 
@@ -1825,69 +1768,75 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_built_in_instance_reports_the_endpoints_of_its_port() {
-        let launch = built_in_launch();
-        assert_eq!(
-            launch.endpoint_urls(9000),
-            [
-                "http://127.0.0.1:9000/camera_and_recording/v1/mcp",
-                "http://127.0.0.1:9000/arm_control/v1/mcp"
-            ]
-        );
-        let runtime_config = config::runtime::RuntimeConfig::new(
-            "127.0.0.1",
-            7448,
-            config::runtime::NodeInstanceConfig {
-                arguments: BTreeMap::from([("port".to_string(), config::AnyType::Int(9001))]),
-                ..config::runtime::NodeInstanceConfig::new(Name::new("mcp").unwrap())
-            },
-            "sensor",
-            "v1",
-            "core_a",
-        )
-        .expect("runtime config builds");
-        let json5 = serde_json5::to_string(&runtime_config).expect("serializes");
-        assert_eq!(
-            built_in_endpoints(&launch, &json5).expect("the port is read"),
-            [
-                "http://127.0.0.1:9001/camera_and_recording/v1/mcp",
-                "http://127.0.0.1:9001/arm_control/v1/mcp"
-            ]
-        );
-
-        let portless = config::runtime::RuntimeConfig::new(
-            "127.0.0.1",
-            7448,
-            config::runtime::NodeInstanceConfig::new(Name::new("mcp").unwrap()),
-            "sensor",
-            "v1",
-            "core_a",
-        )
-        .expect("runtime config builds");
-        let error = built_in_endpoints(&launch, &serde_json5::to_string(&portless).unwrap())
-            .expect_err("no port argument");
-        assert!(error.contains("`port`"), "{error}");
-    }
-
-    #[test]
-    fn serialized_instances_carry_their_endpoints() {
-        let served = TrackedNodeInstance::new(
-            Name::new("mcp").unwrap(),
-            InstanceState::Running,
-            BTreeMap::new(),
-        )
-        .with_endpoints(vec!["http://127.0.0.1:8900/camera/v1/mcp".to_owned()]);
-        let entity = NodeEntity::from_snapshot(
+    /// The endpoints the start sequence records at commit reach the
+    /// serialized instance with their kind and every URL.
+    #[tokio::test]
+    async fn serialized_instances_carry_the_endpoints_committed_at_start() {
+        let handle = Arc::new(RwLock::new(NodeEntity::from_snapshot(
             sensor_config(),
             PathBuf::from("/tmp/sensor/peppy.json5"),
             Some(PathBuf::from("/opt/peppy/bin/peppy")),
-            vec![served],
-        );
-        let serialized = serialize_node_entity(&entity, "core_a");
+            Vec::new(),
+        )));
+        let instance_id = Name::new("panel_inst").unwrap();
+        let peppy_root = tempfile::tempdir().expect("peppy_root tempdir");
+        let peppy_dirs = PeppyDirs::new(peppy_root.path());
+        let instance_dir = peppy_dirs.instances_dir().join("panel_inst");
+        std::fs::create_dir_all(&instance_dir).expect("instance dir");
+        let (child, started_ctx) = {
+            let generation = handle.read().generation;
+            let child = tokio::process::Command::new("sleep")
+                .arg("5")
+                .spawn()
+                .expect("spawn sleep");
+            let mut guard = handle.write();
+            let NodeStage::Ready { instances, .. } = &mut guard.stage else {
+                panic!("from_snapshot builds a Ready entity")
+            };
+            instances.push(TrackedNodeInstance::new(
+                instance_id.clone(),
+                InstanceState::Starting,
+                BTreeMap::new(),
+            ));
+            (
+                child,
+                StartedInstanceCtx {
+                    instance_dir: instance_dir.clone(),
+                    runtime_config_path: instance_dir.join("peppy_runtime.json5"),
+                    stderr_buffer: Arc::new(StdMutex::new(VecDeque::new())),
+                    output_reader_handles: Vec::new(),
+                    log_file: Arc::new(StdMutex::new(
+                        tempfile::tempfile().expect("tempfile should succeed"),
+                    )),
+                    generation,
+                },
+            )
+        };
+        let endpoints = vec![InstanceEndpoint {
+            label: "panel".to_owned(),
+            kind: config::node::EndpointKind::Page,
+            urls: vec![
+                "http://127.0.0.1:8765".to_owned(),
+                "http://192.168.1.5:8765".to_owned(),
+            ],
+        }];
+        let mut child = NodeEntity::commit_started(
+            &handle,
+            child,
+            started_ctx,
+            instance_id.clone(),
+            endpoints.clone(),
+        )
+        .await
+        .expect("commit_started should succeed");
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+
+        let serialized = serialize_node_entity(&handle.read(), "core_a");
+        assert_eq!(serialized.instances[0].endpoints, endpoints);
         assert_eq!(
-            serialized.instances[0].endpoints,
-            ["http://127.0.0.1:8900/camera/v1/mcp"]
+            handle.read().instances()[0].endpoints(),
+            endpoints.as_slice()
         );
     }
 

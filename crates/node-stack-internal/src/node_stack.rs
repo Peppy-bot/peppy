@@ -1849,7 +1849,6 @@ mod built_in_tests {
             executable: PathBuf::from("/opt/peppy/bin/peppy"),
             args: vec!["mcp".to_owned(), "serve".to_owned()],
             env: Vec::new(),
-            http_paths: vec!["/camera/v1/mcp".to_owned()],
         };
         stack
             .push_built_in(
@@ -1869,7 +1868,10 @@ mod built_in_tests {
 
         // Re-registering while idle replaces the recipe in place.
         let relaunch = BuiltInLaunch {
-            http_paths: vec!["/camera/v2/mcp".to_owned()],
+            env: vec![(
+                "PEPPY_MCP_SERVE_SPEC".to_owned(),
+                "/tmp/v2.json5".to_owned(),
+            )],
             ..launch
         };
         stack

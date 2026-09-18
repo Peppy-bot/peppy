@@ -142,8 +142,8 @@ impl_remote_goal!(
     NodeRunGoalResponse,
     NodeRunFeedback,
     NodeRunResult,
-    (),
-    drop
+    NodeRunResult,
+    std::convert::identity
 );
 
 /// What one accepted goal produced, as the coordinator records it.

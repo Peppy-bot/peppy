@@ -122,6 +122,7 @@ impl CoreNodeRunner {
             messenger: Arc::clone(&messenger),
             node_name: core_node_name,
             arguments: node_arguments,
+            host_addresses: None,
             root_dir,
             peppy_dirs,
             peppy_config,

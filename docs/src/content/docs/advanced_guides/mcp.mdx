@@ -260,6 +260,15 @@ http://127.0.0.1:8900/<exposure name>/<exposure tag>/mcp
 
 Every other path returns 404, a bare `/mcp` included. Point a client at `http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
 
+The derived manifest declares one entry under `execution.endpoints` per exposure, labelled `<name>_<tag>` (the tag spelled as generated code spells it, `-` becoming `_`), of kind `mcp`, described by the exposure's title. The server announces each one when it binds, and the daemon reports the URL under that label. The launch ends with them under `MCP endpoints:`; the server binds loopback only, so each exposure has exactly one URL:
+
+```text
+MCP endpoints:
+  mcp_server (mcp_camera_and_recording_v1:builtin) @cn-sweet-edison
+    camera_and_recording_v1  http://127.0.0.1:8900/camera_and_recording/v1/mcp
+Launch completed successfully
+```
+
 ### Several exposures on one endpoint
 
 One deployment can list several exposures, two tags of the same exposure included. They share one process and one port, and nothing else: each endpoint keeps its own catalog, snapshots, subscriptions, and task handles, so a public name, a subscription, or a task handle on one endpoint is unknown to the others.
@@ -294,17 +303,19 @@ Two instances on one machine need distinct ports. A process whose port is taken 
 
 ### Seeing what is served
 
-`peppy stack list` adds an **`Instance endpoints`** table when any instance serves an endpoint: one row per endpoint URL, under the node and instance serving it.
+`peppy stack list` adds an **`Instance endpoints`** table when any instance serves an endpoint: one row per endpoint URL, under the node and instance serving it, with the endpoint's kind and label.
 
 ```text
 Instance endpoints
 
-┌──────────────────────────────────────┬────────────┬───────────────────────────────────────────────────┐
-│ NODE                                 │ INSTANCE   │ ENDPOINT                                          │
-├──────────────────────────────────────┼────────────┼───────────────────────────────────────────────────┤
-│ mcp_camera_and_recording_v1:builtin  │ mcp_server │ http://127.0.0.1:8900/camera_and_recording/v1/mcp │
-└──────────────────────────────────────┴────────────┴───────────────────────────────────────────────────┘
+┌──────────────────────────────────────┬────────────┬──────┬─────────────────────────┬───────────────────────────────────────────────────┐
+│ NODE                                 │ INSTANCE   │ KIND │ LABEL                   │ ENDPOINT                                          │
+├──────────────────────────────────────┼────────────┼──────┼─────────────────────────┼───────────────────────────────────────────────────┤
+│ mcp_camera_and_recording_v1:builtin  │ mcp_server │ mcp  │ camera_and_recording_v1 │ http://127.0.0.1:8900/camera_and_recording/v1/mcp │
+└──────────────────────────────────────┴────────────┴──────┴─────────────────────────┴───────────────────────────────────────────────────┘
 ```
+
+`peppy node info mcp_camera_and_recording_v1:builtin` lists the same endpoint under the instance as `camera_and_recording_v1 (mcp)  http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
 
 `peppy stack resolve` derives the same node from the same caches and holds the deployment's `links` to its slots, so a launcher can be checked before it is launched. See [Auditing a composed launch](/guides/launch_files/#auditing-a-composed-launch).
 

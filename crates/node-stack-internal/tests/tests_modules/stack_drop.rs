@@ -80,9 +80,10 @@ async fn dropping_the_last_stack_handle_kills_a_running_instance() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let instance_id = Name::new("dropped-running").unwrap();
     let (handle, child, started_ctx) = spawn_starting(&stack, &harness, &instance_id).await;
-    let mut child = NodeEntity::commit_started(&handle, child, started_ctx, instance_id)
-        .await
-        .expect("commit_started should succeed");
+    let mut child =
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id, Vec::new())
+            .await
+            .expect("commit_started should succeed");
 
     drop(stack);
 
@@ -118,9 +119,10 @@ async fn a_surviving_stack_handle_keeps_its_instances_alive() {
     let stack = NodeStack::new(core_node_config(), None, PathBuf::from("/tmp"));
     let instance_id = Name::new("kept-by-clone").unwrap();
     let (handle, child, started_ctx) = spawn_starting(&stack, &harness, &instance_id).await;
-    let mut child = NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone())
-        .await
-        .expect("commit_started should succeed");
+    let mut child =
+        NodeEntity::commit_started(&handle, child, started_ctx, instance_id.clone(), Vec::new())
+            .await
+            .expect("commit_started should succeed");
     let pid = child.id().expect("the child is still running");
 
     let survivor = stack.clone();

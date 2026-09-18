@@ -28,9 +28,9 @@ pub use services::repo::{
     ensure_default_repos, search_repo_items, show_repo_items,
 };
 pub use services::{
-    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, NAME_CLAIM_LINKED_SETTLE,
-    TEARDOWN_REAP_BUDGET, check_runtime_prerequisites, checkout_dir_for, copy_removal_budget,
-    force_kill_deadline, idle_timeout_flag, materialized_checkout, slow_connection_hint,
-    stack_reset_timeout, teardown_all_instances,
+    CoreNode, CoreNodeArguments, CoreNodeConfig, HealthMonitorPolicy, HostAddressSource,
+    NAME_CLAIM_LINKED_SETTLE, TEARDOWN_REAP_BUDGET, check_runtime_prerequisites, checkout_dir_for,
+    copy_removal_budget, force_kill_deadline, idle_timeout_flag, materialized_checkout,
+    slow_connection_hint, stack_reset_timeout, teardown_all_instances, test_host_addresses,
 };
 pub use ssh_config::{IdentityAgent, SshHostConfig, SshTarget, resolve_host_config};
