@@ -16,16 +16,17 @@
 //! one peer pin, so its set is empty while unpaired and holds one member once
 //! paired. An observer slot follows one pin per member of its set, keyed on
 //! `(source generation, source pin)` so a reused instance_id under an identical
-//! wire triple is still told apart. [`FollowedSlot`] captures that difference;
-//! the set convergence, the one-subscription-per-pin invariant, the fair merge
-//! across members, the stale filter, and teardown live here once.
+//! wire triple is still told apart. [`FollowedSlot`] captures what each kind
+//! follows and how it subscribes one pin; the set convergence, the
+//! one-subscription-per-pin invariant, the fair merge across members, the stale
+//! filter, and teardown live here once.
 
 use crate::error::Result;
-use crate::messaging::{MessengerHandle, ProducerRef, SenderTarget, Subscription, TopicMessenger};
+use crate::messaging::{MessengerHandle, ProducerRef, Subscription};
 use crate::runtime::TaskHandle;
 use crate::types::Message;
 use config::node::QoSProfile;
-use pmi::PairingRecipient;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::warn;
@@ -41,6 +42,10 @@ pub(crate) trait FollowedSlot: Send + Sync + 'static {
     /// buffered message is dropped at delivery once its pin is no longer in the
     /// followed set.
     type Pin: Clone + PartialEq + Send + Sync + 'static;
+    /// What every pin of one stream subscribes against, fixed for the stream's
+    /// lifetime: the pairing's target and the recipient the subscriber stands
+    /// for.
+    type Wire: Send + Sync + 'static;
 
     /// The pins to follow now, in the slot's own order, without duplicates.
     /// Empty when the slot follows nothing. Called only when the slot's state
@@ -52,14 +57,21 @@ pub(crate) trait FollowedSlot: Send + Sync + 'static {
     fn is_followed(state: &Self::State, pin: &Self::Pin) -> bool;
     /// The producer whose publishes this pin subscribes to.
     fn producer(pin: &Self::Pin) -> &ProducerRef;
-    /// The producer-side link_id segment of that producer's publishes.
-    fn producer_link_id(pin: &Self::Pin) -> &str;
-    /// The recipient this pin's subscription stands for: the slot-wide
-    /// `slot_recipient` for a participant pin and for an observation of a
-    /// whole slot, or the one peer an observation is pinned to.
-    fn recipient(_pin: &Self::Pin, slot_recipient: &PairingRecipient) -> Result<PairingRecipient> {
-        Ok(slot_recipient.clone())
-    }
+    /// Declares the one wire subscription that follows `pin`, pinned to its
+    /// producer.
+    fn subscribe(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        wire: &Self::Wire,
+        pin: &Self::Pin,
+        topic: &str,
+        qos: QoSProfile,
+    ) -> impl Future<Output = Result<Subscription>> + Send;
+    /// Whether `message`, received on `pin`'s subscription, was published by
+    /// the producer `pin` follows: the defensive second guard behind the
+    /// pinned keyexpr.
+    fn published_by(pin: &Self::Pin, message: &Message) -> bool;
 }
 
 /// One slot's live message stream. Owns the forwarding task (aborted on drop)
@@ -114,8 +126,7 @@ pub(crate) fn spawn_slot_stream<S: FollowedSlot>(
     as_core_node: String,
     as_instance_id: String,
     watch_rx: watch::Receiver<S::State>,
-    pairing_target: SenderTarget,
-    recipient: PairingRecipient,
+    wire: S::Wire,
     topic: String,
     qos: QoSProfile,
 ) -> SlotStream<S> {
@@ -125,8 +136,7 @@ pub(crate) fn spawn_slot_stream<S: FollowedSlot>(
         as_core_node,
         as_instance_id,
         watch_rx.clone(),
-        pairing_target,
-        recipient,
+        wire,
         topic,
         qos,
         tx,
@@ -148,8 +158,7 @@ async fn forward_messages<S: FollowedSlot>(
     as_core_node: String,
     as_instance_id: String,
     mut watch_rx: watch::Receiver<S::State>,
-    pairing_target: SenderTarget,
-    recipient: PairingRecipient,
+    wire: S::Wire,
     topic: String,
     qos: QoSProfile,
     tx: mpsc::Sender<(Arc<S::Pin>, Message)>,
@@ -175,8 +184,7 @@ async fn forward_messages<S: FollowedSlot>(
                 &messenger,
                 &as_core_node,
                 &as_instance_id,
-                &pairing_target,
-                &recipient,
+                &wire,
                 &topic,
                 &qos,
             )
@@ -219,13 +227,11 @@ async fn forward_messages<S: FollowedSlot>(
             Some((idx, Ok(raw))) => {
                 let message = Message::from(raw);
                 let (pin, _) = &current[idx];
-                // The triple pin makes a foreign producer unmatchable at the
-                // keyexpr level; this re-check is the defensive second guard.
-                let producer = S::producer(pin);
-                let matches_pin = message.core_node() == producer.core_node
-                    && message.instance_id() == producer.instance_id
-                    && message.link_id() == S::producer_link_id(pin);
-                if matches_pin && tx.send((Arc::clone(pin), message)).await.is_err() {
+                // The pinned keyexpr makes a foreign producer unmatchable; this
+                // re-check is the defensive second guard.
+                if S::published_by(pin, &message)
+                    && tx.send((Arc::clone(pin), message)).await.is_err()
+                {
                     return; // stream dropped
                 }
             }
@@ -271,8 +277,7 @@ async fn converge_subscriptions<S: FollowedSlot>(
     messenger: &MessengerHandle,
     as_core_node: &str,
     as_instance_id: &str,
-    pairing_target: &SenderTarget,
-    slot_recipient: &PairingRecipient,
+    wire: &S::Wire,
     topic: &str,
     qos: &QoSProfile,
 ) -> Vec<(Arc<S::Pin>, Subscription)> {
@@ -296,19 +301,16 @@ async fn converge_subscriptions<S: FollowedSlot>(
     // The owed declarations are mutually independent, so a multi-member slot
     // waits out one declare round-trip rather than N in series. Each result is
     // filed by its `desired` position, never by completion order.
-    let declared = futures::future::join_all(pending.iter().map(|(_, pin)| async move {
-        TopicMessenger::subscribe_peer_pinned(
+    let declared = futures::future::join_all(pending.iter().map(|(_, pin)| {
+        S::subscribe(
             messenger,
             as_core_node,
             as_instance_id,
-            pairing_target.clone(),
-            S::producer(pin),
-            S::producer_link_id(pin),
-            S::recipient(pin, slot_recipient)?,
+            wire,
+            pin,
             topic,
             qos.clone(),
         )
-        .await
     }))
     .await;
 

@@ -18,9 +18,10 @@
 use crate::error::{Error, Result};
 use crate::messaging::{
     MessengerHandle, NonEmptyObservedSources, ObservationState, ObservedSource, ProducerRef,
-    SenderTarget,
+    SenderTarget, Subscription, TopicMessenger,
 };
 use crate::runtime::NodeRunner;
+use crate::runtime::pairing::{PairingWire, published_on_slot};
 use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
 use crate::types::Message;
 use config::node::QoSProfile;
@@ -202,9 +203,25 @@ pub(crate) struct ObservedPin {
 
 pub(crate) struct ObservedFollow;
 
+impl ObservedFollow {
+    /// A member pinned to one pair subscribes to the source's publishes to
+    /// that peer alone; every other member takes the slot's open recipient.
+    fn recipient(pin: &ObservedPin, slot_recipient: &PairingRecipient) -> Result<PairingRecipient> {
+        match &pin.source.peer {
+            Some(peer) => Ok(PairingRecipient::Peer(WirePeer::new(
+                &peer.producer.core_node,
+                &peer.producer.instance_id,
+                &peer.peer_link_id,
+            )?)),
+            None => Ok(slot_recipient.clone()),
+        }
+    }
+}
+
 impl FollowedSlot for ObservedFollow {
     type State = ObservationState;
     type Pin = ObservedPin;
+    type Wire = PairingWire;
 
     fn desired(state: &ObservationState) -> Vec<ObservedPin> {
         state
@@ -228,21 +245,31 @@ impl FollowedSlot for ObservedFollow {
         &pin.source.producer
     }
 
-    fn producer_link_id(pin: &ObservedPin) -> &str {
-        &pin.source.source_link_id
+    async fn subscribe(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        wire: &PairingWire,
+        pin: &ObservedPin,
+        topic: &str,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
+        TopicMessenger::subscribe_peer_pinned(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            wire.target.clone(),
+            &pin.source.producer,
+            &pin.source.source_link_id,
+            Self::recipient(pin, &wire.recipient)?,
+            topic,
+            qos,
+        )
+        .await
     }
 
-    /// A member pinned to one pair subscribes to the source's publishes to
-    /// that peer alone; every other member takes the slot's open recipient.
-    fn recipient(pin: &ObservedPin, slot_recipient: &PairingRecipient) -> Result<PairingRecipient> {
-        match &pin.source.peer {
-            Some(peer) => Ok(PairingRecipient::Peer(WirePeer::new(
-                &peer.producer.core_node,
-                &peer.producer.instance_id,
-                &peer.peer_link_id,
-            )?)),
-            None => Ok(slot_recipient.clone()),
-        }
+    fn published_by(pin: &ObservedPin, message: &Message) -> bool {
+        published_on_slot(&pin.source.producer, &pin.source.source_link_id, message)
     }
 }
 
@@ -324,8 +351,10 @@ pub fn subscribe_observed_with_watch(
             as_core_node,
             as_instance_id,
             watch_rx,
-            pairing_target,
-            pmi::PairingRecipient::Any,
+            PairingWire {
+                target: pairing_target,
+                recipient: PairingRecipient::Any,
+            },
             topic,
             qos,
         ),

@@ -11,8 +11,8 @@
 
 use crate::error::{Error, Result};
 use crate::messaging::{
-    MessengerHandle, PeerInfo, PeerMember, PeerSetState, ProducerRef, SenderTarget, TopicMessenger,
-    TopicPublisher,
+    MessengerHandle, PeerInfo, PeerMember, PeerSetState, ProducerRef, SenderTarget, Subscription,
+    TopicMessenger, TopicPublisher,
 };
 use crate::runtime::NodeRunner;
 use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
@@ -126,9 +126,25 @@ impl PeerSlotSet {
 /// [`slot_stream`]: crate::runtime::slot_stream
 pub(crate) struct PeerFollow;
 
+/// What every pin of a pairing or observer slot's stream subscribes against:
+/// the pairing's target and the recipient the subscriber stands for.
+pub(crate) struct PairingWire {
+    pub(crate) target: SenderTarget,
+    pub(crate) recipient: PairingRecipient,
+}
+
+/// Whether `message` carries the wire triple of `producer` publishing on its
+/// `link_id` slot.
+pub(crate) fn published_on_slot(producer: &ProducerRef, link_id: &str, message: &Message) -> bool {
+    message.core_node() == producer.core_node
+        && message.instance_id() == producer.instance_id
+        && message.link_id() == link_id
+}
+
 impl FollowedSlot for PeerFollow {
     type State = PeerSetState;
     type Pin = PeerInfo;
+    type Wire = PairingWire;
 
     fn desired(state: &PeerSetState) -> Vec<PeerInfo> {
         state.peers().cloned().collect()
@@ -142,8 +158,31 @@ impl FollowedSlot for PeerFollow {
         &pin.producer
     }
 
-    fn producer_link_id(pin: &PeerInfo) -> &str {
-        &pin.peer_link_id
+    async fn subscribe(
+        messenger: &MessengerHandle,
+        as_core_node: &str,
+        as_instance_id: &str,
+        wire: &PairingWire,
+        pin: &PeerInfo,
+        topic: &str,
+        qos: QoSProfile,
+    ) -> Result<Subscription> {
+        TopicMessenger::subscribe_peer_pinned(
+            messenger,
+            as_core_node,
+            as_instance_id,
+            wire.target.clone(),
+            &pin.producer,
+            &pin.peer_link_id,
+            wire.recipient.clone(),
+            topic,
+            qos,
+        )
+        .await
+    }
+
+    fn published_by(pin: &PeerInfo, message: &Message) -> bool {
+        published_on_slot(&pin.producer, &pin.peer_link_id, message)
     }
 }
 
@@ -227,8 +266,10 @@ pub fn subscribe_peer_with_watch(
             as_core_node,
             as_instance_id,
             watch_rx,
-            pairing_target,
-            recipient,
+            PairingWire {
+                target: pairing_target,
+                recipient,
+            },
             topic,
             qos,
         ),
