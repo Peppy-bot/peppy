@@ -116,6 +116,17 @@ fn format_node_info(out: &mut String, response: &NodeInfo) {
                 "           - {}  [{}]  {}",
                 instance.instance_id, instance.state, health
             );
+            // The endpoints the instance serves, one line per URL under the
+            // label and kind its manifest declares.
+            for endpoint in &instance.endpoints {
+                for url in &endpoint.urls {
+                    let _ = writeln!(
+                        out,
+                        "               {} ({})  {url}",
+                        endpoint.label, endpoint.kind
+                    );
+                }
+            }
         }
     }
 
@@ -483,6 +494,21 @@ mod tests {
                     healthy: true,
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
+                    endpoints: vec![
+                        core_node_api::InstanceEndpoint {
+                            label: "panel".to_string(),
+                            kind: config::node::EndpointKind::Page,
+                            urls: vec![
+                                "http://127.0.0.1:8765".to_string(),
+                                "http://192.168.1.5:8765".to_string(),
+                            ],
+                        },
+                        core_node_api::InstanceEndpoint {
+                            label: "sensor_v1".to_string(),
+                            kind: config::node::EndpointKind::Mcp,
+                            urls: vec!["http://127.0.0.1:8900/sensor/v1/mcp".to_string()],
+                        },
+                    ],
                 },
                 NodeInstanceInfo {
                     clock: Default::default(),
@@ -491,6 +517,7 @@ mod tests {
                     healthy: false,
                     slot_bindings: std::collections::BTreeMap::new(),
                     pairing_slots: std::collections::BTreeMap::new(),
+                    endpoints: Vec::new(),
                 },
             ],
             add_log_path: Some(PathBuf::from("/tmp/peppy/logs/add/sensor_node.log")),
@@ -499,6 +526,39 @@ mod tests {
                 PathBuf::from("/tmp/peppy/logs/run/inst-def.log"),
             ],
         }
+    }
+
+    /// Each endpoint of an instance is listed under its instance line as
+    /// `label (kind)  url`, one line per URL; an instance serving nothing
+    /// gets no such line.
+    #[test]
+    fn print_node_info_lists_endpoints_under_their_instance() {
+        let response = sample_response();
+        let mut out = String::new();
+        format_node_info(&mut out, &response);
+
+        let lines: Vec<&str> = out.lines().collect();
+        let instance_line = lines
+            .iter()
+            .position(|line| line.contains("- inst-abc  [running]  healthy"))
+            .expect("the running instance line");
+        assert_eq!(
+            &lines[instance_line + 1..instance_line + 4],
+            [
+                "               panel (page)  http://127.0.0.1:8765",
+                "               panel (page)  http://192.168.1.5:8765",
+                "               sensor_v1 (mcp)  http://127.0.0.1:8900/sensor/v1/mcp",
+            ]
+        );
+        let starting_line = lines
+            .iter()
+            .position(|line| line.contains("- inst-def  [starting]  unhealthy"))
+            .expect("the starting instance line");
+        assert!(
+            !lines[starting_line + 1].contains("http"),
+            "an instance serving nothing lists no endpoint: {}",
+            lines[starting_line + 1]
+        );
     }
 
     #[test]

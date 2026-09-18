@@ -4,6 +4,7 @@ mod archive;
 mod builder;
 pub(crate) mod cache;
 pub(crate) mod common;
+pub mod endpoints;
 mod env;
 mod feedback;
 pub(crate) mod gate;

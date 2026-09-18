@@ -25,8 +25,8 @@ use super::state::{ActiveLaunch, StackCopy};
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::LaunchIdentity;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, LaunchGoal, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
-    NodeRunLogEntry,
+    InstanceEndpoints, LaunchFeedbackStep, LaunchGoal, LaunchResult, NodeAddLogEntry,
+    NodeBuildLogEntry, NodeRunLogEntry,
 };
 use daemon_config::launcher::{ClockIncarnations, Deployment, Placements};
 use std::collections::{HashMap, HashSet};
@@ -376,6 +376,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     let mut add_log_paths: Vec<NodeAddLogEntry> = Vec::new();
     let mut build_log_paths: Vec<NodeBuildLogEntry> = Vec::new();
     let mut run_log_paths: Vec<NodeRunLogEntry> = Vec::new();
+    let mut instance_endpoints: Vec<InstanceEndpoints> = Vec::new();
 
     // Step 6: Add and build, one group per machine. The groups run
     // concurrently because nothing orders one machine's add against another's,
@@ -429,6 +430,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &ordered,
             &planned_by_key,
             &mut run_log_paths,
+            &mut instance_endpoints,
             &resolved_slot_bindings,
             &planned_pairings,
             &planned_observations,
@@ -441,11 +443,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
 
     if let Err(reason) = outcome {
         let reason = fail_and_clear_stack(&ctx, reason, &participants).await;
-        let launch_result = LaunchResult::failure(&ctx.log_path, reason).with_node_logs(
-            add_log_paths,
-            build_log_paths,
-            run_log_paths,
-        );
+        let launch_result = LaunchResult::failure(&ctx.log_path, reason)
+            .with_node_logs(add_log_paths, build_log_paths, run_log_paths)
+            .with_instance_endpoints(instance_endpoints);
         return release_and_fail(change.reserved, launch_result).await;
     }
 
@@ -455,11 +455,9 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // stays: the reservation guards the launch, the slice describes its result,
     // and rediscovery needs the latter long after the former is gone.
     change.reserved.release().await;
-    LaunchResult::success(&ctx.log_path).with_node_logs(
-        add_log_paths,
-        build_log_paths,
-        run_log_paths,
-    )
+    LaunchResult::success(&ctx.log_path)
+        .with_node_logs(add_log_paths, build_log_paths, run_log_paths)
+        .with_instance_endpoints(instance_endpoints)
 }
 
 /// Releases every participant and returns the failure.

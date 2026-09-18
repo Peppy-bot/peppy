@@ -104,6 +104,16 @@ peppy node run waldo:v1 -i simulation_inst --publish-clock simulation
 peppy node run openarm_sim_arm:v1 -i arm_inst --clock simulation
 ```
 
+A node whose manifest declares [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint) ends `node run` with the URLs its instance serves, one per address of the machine hosting it, loopback first:
+
+```
+Started node instance 'panel_inst' (pid: 12345)
+Web pages:
+  panel_inst (openarm_web_commander:v1) @cn-sweet-edison
+    panel  http://127.0.0.1:8765
+           http://100.123.58.116:8765
+```
+
 The `node run` command outputs the path to a log file where you can inspect the node's output.
 For example:
 ```sh
@@ -282,6 +292,15 @@ Config SHA256: 67505086f8ac099d0861cb5dfa539b1c8c3c9354ad90ed7713a5147c7cb43342
 This is usually the fastest way to answer "is my node built yet?" and "where is the log for this specific instance?". The `Add log` path is what `peppy node add` writes to; per-instance run logs are what `peppy node run` writes to. Build logs live under `~/.peppy/logs/build/` and are surfaced by `peppy node build` directly when it runs.
 
 `Exposed Interfaces` summarizes the topics, services, and actions the node publishes per its `peppy.json5`; consumed interfaces get their own `Consumed Interfaces` section, and a node with dependencies, parameters, labels, or a container block gets matching sections too (each is omitted when empty, as in the listing above). `Config SHA256` is the fingerprint of the config that was fed through peppygen; it's what `peppy node add` checks against to refuse a stale snapshot and tell you to run `peppy node sync`.
+
+An instance of a node that declares [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint) lists each endpoint under its instance line as `label (kind)  url`, one line per URL:
+
+```
+Instances: 1 tracked
+           - panel_inst  [running]  healthy
+               panel (page)  http://127.0.0.1:8765
+               panel (page)  http://100.123.58.116:8765
+```
 
 ## Stopping your node
 

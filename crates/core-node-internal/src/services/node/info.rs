@@ -167,6 +167,7 @@ async fn handle_node_info_request_inner(
                     pairing_deps,
                     &live_pairs,
                 ),
+                endpoints: instance.endpoints().to_vec(),
             });
             run_log_paths.push(run_log_dir.join(format!("{}.log", id)));
         }

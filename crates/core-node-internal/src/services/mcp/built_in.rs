@@ -104,12 +104,7 @@ fn own_executable(current_exe: &Path, expected: &str) -> Option<PeppyExecutable>
 }
 
 /// The spawn recipe of a built-in node whose documents live in `dir`.
-fn built_in_launch(
-    executable: PathBuf,
-    peppy_dirs: &PeppyDirs,
-    spec_path: &Path,
-    http_paths: Vec<String>,
-) -> BuiltInLaunch {
+fn built_in_launch(executable: PathBuf, peppy_dirs: &PeppyDirs, spec_path: &Path) -> BuiltInLaunch {
     BuiltInLaunch {
         executable,
         args: RUN_COMMAND[1..]
@@ -126,7 +121,6 @@ fn built_in_launch(
                 peppy_dirs.root().display().to_string(),
             ),
         ],
-        http_paths,
     }
 }
 
@@ -222,12 +216,15 @@ pub(crate) async fn run_built_in_add(
         return fail(e);
     }
 
+    // The paths the server serves, one per exposure, named in the add log so
+    // an operator reading it knows what the deployment exposes; the URLs an
+    // instance answers on are reported when it starts.
     let http_paths: Vec<String> = plan
         .exposures
         .iter()
         .map(|exposure| exposure.bundle.exposure.endpoint_path())
         .collect();
-    let launch = built_in_launch(executable.path, &peppy_dirs, &spec_path, http_paths.clone());
+    let launch = built_in_launch(executable.path, &peppy_dirs, &spec_path);
     let name = plan.name.as_str().to_owned();
     let tag = plan.tag.clone();
     if let Err(e) = action_context
@@ -312,7 +309,6 @@ mod tests {
             PathBuf::from("/home/robot/.peppy/bin/peppy"),
             &dirs,
             Path::new("/home/robot/.peppy/built_in/mcp_camera_v1/mcp_serve.json5"),
-            vec!["/camera/v1/mcp".to_owned()],
         );
         assert_eq!(launch.args, ["mcp", "serve"]);
         assert_eq!(
@@ -324,10 +320,6 @@ mod tests {
                 ),
                 ("PEPPY_HOME".to_owned(), "/home/robot/.peppy".to_owned()),
             ]
-        );
-        assert_eq!(
-            launch.endpoint_urls(8900),
-            ["http://127.0.0.1:8900/camera/v1/mcp"]
         );
     }
 }

@@ -134,6 +134,25 @@ If the name resolves neither to a file nor to a cached launcher, the launch fail
 Running the `peppy stack launch` command clears the existing node stack and stops all running instances
 :::
 
+A launch ends with the log file of every node it added, built and started, then the URLs the started instances serve, and the completion line. The URLs come from the nodes that declare [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint): the daemon hosting each instance expands the socket the node announced into one URL per address of its machine, loopback first, and the core node name after the `@` says which machine that is. Pages an operator opens in a browser and endpoints an MCP client attaches to are printed under separate headings, `Web pages:` before `MCP endpoints:`, and a heading appears only when it has an entry. `peppy stack join` prints the same blocks for the instances the copy started.
+
+```
+Node log files:
+  ...
+Web pages:
+  alpha_commander_inst (openarm_web_commander:v1) @cn-sweet-edison
+    panel   http://127.0.0.1:8765
+            http://100.123.58.116:8765
+  simulation_inst (waldo:v1) @cn-sweet-edison
+    viewer  https://127.0.0.1:8080/
+            https://100.123.58.116:8080/
+MCP endpoints:
+  alpha_commander_inst (mcp_openarm_v2_v1_scene_lighting_v1:builtin) @cn-sweet-edison
+    openarm_v2_v1      http://127.0.0.1:8900/openarm_v2/v1/mcp
+    scene_lighting_v1  http://127.0.0.1:8900/scene_lighting/v1/mcp
+Launch completed successfully
+```
+
 Verify that the node stack was configured correctly:
 ```
 $ peppy stack list
@@ -179,7 +198,7 @@ $ peppy stack list
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The output confirms that all nodes have been added to the stack along with their dependency relationships. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and an empty slot, whether a `zero_or_more` slot bound to nothing or a `zero_or_one` slot declared vacant, shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) is either bound or, where its manifest declares `cardinality: "zero_or_one"`, declared [`vacant`](#links-optional); only a `zero_or_more` slot may be left out entirely, and a launcher that leaves any other one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow the same shape: a participant slot is paired and an observer slot is linked, or, where its manifest declares it `cardinality: "zero_or_one"`, declared vacant, unless its cardinality is `zero_or_more`, where omitting it IS its empty set. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
+The output confirms that all nodes have been added to the stack along with their dependency relationships. When an instance serves an endpoint, an `Instance endpoints` table follows the bindings, one row per URL with the endpoint's `KIND` and `LABEL`. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and an empty slot, whether a `zero_or_more` slot bound to nothing or a `zero_or_one` slot declared vacant, shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) is either bound or, where its manifest declares `cardinality: "zero_or_one"`, declared [`vacant`](#links-optional); only a `zero_or_more` slot may be left out entirely, and a launcher that leaves any other one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow the same shape: a participant slot is paired and an observer slot is linked, or, where its manifest declares it `cardinality: "zero_or_one"`, declared vacant, unless its cardinality is `zero_or_more`, where omitting it IS its empty set. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
 
 ## Instance attributes
 

@@ -666,3 +666,186 @@ async fn stack_list_keeps_healthy_sections_when_an_enumerated_daemon_cannot_answ
         "the failed daemon must drive the CLI's non-zero exit"
     );
 }
+
+/// The `Instance endpoints` table lists a running instance's endpoints one
+/// row per URL under the kind and label its manifest declares, and the JSON
+/// report carries the same endpoints with their kind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_list_renders_instance_endpoints_with_kind_and_label() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let shared_messenger = serve.messenger();
+    let core_node_name = serve.core_node_name().to_string();
+
+    let node_dir = tempfile::tempdir().expect("failed to create temp dir for nodes");
+    let node_name = "listed_page_node";
+    let instance_id = "listed_page_instance";
+    let node_ctx = Arc::new(
+        AppContext::with_messenger(node_dir.path(), Arc::clone(&shared_messenger))
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let log_capture = LogCapture::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(log_capture.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    NodeCommand {
+        command: NodeCommands::Init {
+            node_name: NodeName::new(node_name).expect("valid node name"),
+            to_dir: None,
+            toolchain: Toolchain::Cargo,
+            with_container: false,
+        },
+    }
+    .execute(&node_ctx)
+    .expect("node init command should succeed");
+    let node_path = node_dir.path().join(node_name);
+    let peppy_json5 = node_path.join("peppy.json5");
+    let instances = peppy::test_support::InstanceLifetime::new();
+    peppy::test_support::override_run_cmd_while(&peppy_json5, &instances.sentinel());
+    peppy::test_support::declare_endpoints(
+        &peppy_json5,
+        &[
+            (
+                "panel",
+                config::node::EndpointKind::Page,
+                "The operator panel.",
+            ),
+            (
+                "camera_v1",
+                config::node::EndpointKind::Mcp,
+                "The camera exposure.",
+            ),
+        ],
+    );
+    add_ready_node(&node_ctx, &node_path);
+
+    let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
+    install_node_services(&node_messenger, &core_node_name, node_name, instance_id).await;
+    let _endpoints = peppylib::services::endpoints::listen_for_node_endpoints(
+        &node_messenger,
+        &core_node_name,
+        instance_id,
+        test_node_target(node_name),
+        vec![
+            peppylib::runtime::AnnouncedEndpoint {
+                label: "panel".to_string(),
+                binding: peppylib::runtime::EndpointBinding {
+                    scheme: "http".to_string(),
+                    address: "0.0.0.0:8765".parse().expect("a socket address"),
+                    path: String::new(),
+                },
+            },
+            peppylib::runtime::AnnouncedEndpoint {
+                label: "camera_v1".to_string(),
+                binding: peppylib::runtime::EndpointBinding {
+                    scheme: "http".to_string(),
+                    address: "127.0.0.1:8900".parse().expect("a socket address"),
+                    path: "/camera/v1/mcp".to_string(),
+                },
+            },
+        ],
+    )
+    .await
+    .expect("node endpoints service should start");
+
+    run_instance_async(
+        &node_messenger,
+        &core_node_name,
+        node_name,
+        "v1",
+        &[],
+        Some(instance_id.to_string()),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        ClockBinding::Wall,
+        &TimeoutConfig {
+            idle_secs: 30,
+            max_secs: 60,
+        },
+    )
+    .await
+    .expect("node run should succeed");
+
+    let output = peppy::commands::stack::list_nodes_collecting(&node_ctx, false, None)
+        .await
+        .expect("stack list should succeed")
+        .output;
+    assert!(output.contains("Instance endpoints"), "{output}");
+    for header in ["KIND", "LABEL", "ENDPOINT"] {
+        assert!(output.contains(header), "the `{header}` column: {output}");
+    }
+    let row = |url: &str| {
+        output
+            .lines()
+            .find(|line| line.contains(url))
+            .unwrap_or_else(|| panic!("a row for {url}:\n{output}"))
+            .to_string()
+    };
+    // Endpoints come in label order, so the instance's first row is the MCP
+    // one and carries the node and instance cells.
+    let mcp = row("http://127.0.0.1:8900/camera/v1/mcp");
+    assert!(
+        mcp.contains(instance_id) && mcp.contains("mcp") && mcp.contains("camera_v1"),
+        "{mcp}"
+    );
+    let loopback = row("http://127.0.0.1:8765");
+    assert!(
+        loopback.contains("page") && loopback.contains("panel") && !loopback.contains(instance_id),
+        "{loopback}"
+    );
+    let second = row("http://192.168.1.5:8765");
+    assert!(
+        !second.contains("page") && !second.contains("panel"),
+        "a further URL of one endpoint has its own row under blank cells: {second}"
+    );
+    row("http://100.123.58.116:8765");
+
+    let json_report = peppy::commands::stack::list_nodes_json_collecting(&node_ctx)
+        .await
+        .expect("stack list --json should succeed");
+    let doc: serde_json::Value =
+        serde_json::from_str(&json_report.output).expect("the output is one JSON document");
+    let entry = doc["core_nodes"]
+        .as_array()
+        .expect("core_nodes is a list")
+        .iter()
+        .find(|entry| entry["core_node"] == core_node_name.as_str())
+        .expect("this daemon's entry is present")
+        .clone();
+    let node = entry["stack"]["nodes"]
+        .as_array()
+        .expect("the stack carries its nodes")
+        .iter()
+        .find(|node| node["name"] == node_name)
+        .expect("the node is listed")
+        .clone();
+    assert_eq!(
+        node["instances"][0]["endpoints"],
+        serde_json::json!([
+            {
+                "label": "camera_v1",
+                "kind": "mcp",
+                "urls": ["http://127.0.0.1:8900/camera/v1/mcp"],
+            },
+            {
+                "label": "panel",
+                "kind": "page",
+                "urls": [
+                    "http://127.0.0.1:8765",
+                    "http://192.168.1.5:8765",
+                    "http://100.123.58.116:8765",
+                ],
+            },
+        ]),
+        "{}",
+        node["instances"][0]
+    );
+    let _ = log_capture;
+}

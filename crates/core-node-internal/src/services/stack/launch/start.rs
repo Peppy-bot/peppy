@@ -8,8 +8,8 @@ use super::{NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, federated};
 use crate::services::node::create_action_log_file;
 use crate::services::stack::action::StackChangeContext;
 use core_node_api::encoding::{
-    LaunchFeedbackStep, NodeRunGoal, NodeRunLogEntry, ObservationTarget, ObservationTargets,
-    PairTarget, RemotePeerPairing,
+    InstanceEndpoints, LaunchFeedbackStep, NodeRunGoal, NodeRunLogEntry, NodeRunResult,
+    ObservationTarget, ObservationTargets, PairTarget, RemotePeerPairing,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -55,6 +55,9 @@ pub(in crate::services::stack) async fn start_node_instances(
     ordered: &[NodeKey],
     planned_by_key: &HashMap<NodeKey, PlannedDeployment>,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
+    // The endpoints of every started instance that serves one, appended in
+    // start order beside its run log entry.
+    instance_endpoints: &mut Vec<InstanceEndpoints>,
     resolved_slot_bindings: &BTreeMap<String, config::runtime::SlotBindings>,
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
     planned_observations: &[daemon_config::launcher::PlannedObservation],
@@ -313,11 +316,25 @@ pub(in crate::services::stack) async fn start_node_instances(
                 .await
             };
 
-            if let Err(reason) = outcome {
-                return Err(format!(
-                    "failed to start node {} instance {instance_id} on `{core_node}`: {reason}",
-                    key.label()
-                ));
+            let result = match outcome {
+                Ok(result) => result,
+                Err(reason) => {
+                    return Err(format!(
+                        "failed to start node {} instance {instance_id} on `{core_node}`: {reason}",
+                        key.label()
+                    ));
+                }
+            };
+            // The daemon hosting the instance expanded the URLs against its
+            // own interfaces; the coordinator only forwards them with that
+            // daemon's name.
+            if !result.endpoints.is_empty() {
+                instance_endpoints.push(InstanceEndpoints {
+                    instance_id: instance_id.to_string(),
+                    node_label: key.label(),
+                    core_node: core_node.clone(),
+                    endpoints: result.endpoints,
+                });
             }
         }
     }
@@ -325,14 +342,15 @@ pub(in crate::services::stack) async fn start_node_instances(
     Ok(())
 }
 
-/// Starts one instance on this daemon, in process, recording its log entry.
+/// Starts one instance on this daemon, in process, recording its log entry
+/// and answering with what the start produced.
 async fn start_locally(
     ctx: &StackChangeContext,
     key: &NodeKey,
     instance_id: &str,
     node_run_goal: NodeRunGoal,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<NodeRunResult, String> {
     let log_dir = ctx.peppy_dirs.logs_dir_run();
     let log_filename = format!("{}.log", instance_id);
     let (log_file, log_path) = create_action_log_file(&log_dir, &log_filename)?;
@@ -351,7 +369,7 @@ async fn start_locally(
     }
 
     match result {
-        Ok(result) if result.success => Ok(()),
+        Ok(result) if result.success => Ok(result),
         Ok(result) => Err(result
             .error_message
             .unwrap_or_else(|| "node_run failed".to_string())),
@@ -360,8 +378,8 @@ async fn start_locally(
 }
 
 /// Starts one instance on a peer, pinning the manifest this coordinator
-/// resolved for its deployment, and recording its log entry stamped with the
-/// peer's core node.
+/// resolved for its deployment, recording its log entry stamped with the
+/// peer's core node, and answering with what the peer's start produced.
 ///
 /// The hash closes the window between add and start: the peer compares it
 /// against the entity now in its stack and refuses if the two no longer
@@ -378,7 +396,7 @@ async fn start_remotely(
     node_run_goal: NodeRunGoal,
     config_sha256: &str,
     run_log_paths: &mut Vec<NodeRunLogEntry>,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<NodeRunResult, String> {
     let node_run_goal = node_run_goal.with_manifest_sha256(config_sha256);
     match federated::run_remote_goal(ctx, core_node, &node_run_goal, ctx.idle_timeouts.run).await {
         Ok(run) => {
