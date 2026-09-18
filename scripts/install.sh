@@ -368,6 +368,21 @@ EOF
         command -v fuse2fs >/dev/null 2>&1
     }
 
+    # Every apt-get this script runs goes through this rather than the bare
+    # command. apt-get gives up the moment another process holds the dpkg lock
+    # ("Could not get lock /var/lib/dpkg/lock-frontend. It is held by process
+    # N (apt-get)"), and on a machine that has just booted that is the normal
+    # state for a minute or two, because cloud-init and unattended-upgrades run
+    # their own apt first. An installer that happens to land in that window
+    # fails for no reason of its own, which is what CI kept hitting on freshly
+    # booted VMs. Ubuntu already concedes the point for the `apt` binary, whose
+    # config ships binary::apt::DPkg::Lock::Timeout "120"; the per-binary
+    # scoping is exactly what leaves apt-get with no wait at all, so it is set
+    # here explicitly. Bounded rather than -1 (wait forever) so a genuinely
+    # stuck lock stays a failure rather than becoming a hang. An older apt that
+    # does not know the option stores it and behaves as before.
+    APT_GET="apt-get -o DPkg::Lock::Timeout=300"
+
     # ---- Linux system dependency checks (pre-download) -------------------------
     # Checks and installs pre-download dependencies (dbus, linger, curl, fuse2fs).
     # Apptainer setup is handled post-install by `peppy container setup`.
@@ -440,7 +455,7 @@ EOF
             if ! $IN_CONTAINER; then
                 if ! check_dbus_session; then
                     if command -v apt-get >/dev/null 2>&1; then
-                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq dbus-user-session && "
+                        PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}${APT_GET} update -qq && ${APT_GET} install -y -qq dbus-user-session && "
                     elif command -v dnf >/dev/null 2>&1; then
                         PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y dbus-daemon && "
                     elif command -v pacman >/dev/null 2>&1; then
@@ -463,7 +478,7 @@ EOF
                 if ! check_fuse2fs; then
                     FUSE2FS_FIX=""
                     if command -v apt-get >/dev/null 2>&1; then
-                        FUSE2FS_FIX="apt-get update -qq && apt-get install -y -qq fuse2fs"
+                        FUSE2FS_FIX="${APT_GET} update -qq && ${APT_GET} install -y -qq fuse2fs"
                     elif command -v dnf >/dev/null 2>&1; then
                         FUSE2FS_FIX="dnf install -y fuse2fs"
                     elif command -v pacman >/dev/null 2>&1; then
@@ -483,7 +498,7 @@ EOF
             # Check: curl or wget (required to download the release archive)
             if [ -z "${ARCHIVE_PATH-}" ] && ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
                 if command -v apt-get >/dev/null 2>&1; then
-                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}apt-get update -qq && apt-get install -y -qq curl && "
+                    PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}${APT_GET} update -qq && ${APT_GET} install -y -qq curl && "
                 elif command -v dnf >/dev/null 2>&1; then
                     PREDOWNLOAD_FIXES="${PREDOWNLOAD_FIXES}dnf install -y curl && "
                 elif command -v pacman >/dev/null 2>&1; then

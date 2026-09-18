@@ -3,6 +3,11 @@ name = "sim_bridge_core"
 version = "0.1.0"
 edition = "2024"
 
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
+# holds every package of the tree to that.
+[workspace]
+
 [dependencies]
 # No peppylib here — it is generated per node by `peppy node sync` and ships
 # with peppy nodes. Nodes implement the RawTransport trait with their own

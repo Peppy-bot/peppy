@@ -1,17 +1,18 @@
 name: Cargo build cache
 description: >-
-  Mounts the suite's Blacksmith sticky disk and links the cargo target
-  directory, the cargo registry and git checkouts, and the build scripts' tool
-  cache into it, so a job compiles only what changed since the disk was last
-  committed. Expects the checkout and the Rust toolchain to be in place, and
-  must precede every cargo step.
+  Points the cargo target directory at a directory that persists on the
+  self-hosted runner between jobs, so a job compiles only what changed since the
+  suite last ran. The cargo registry and the build scripts' tool cache are left
+  to the runner, which keeps them across jobs of its own accord. Expects the
+  checkout and the Rust toolchain to be in place, and must precede every cargo
+  step.
 
 inputs:
   suite:
     description: >-
-      The suite the job runs, one disk per suite: the suites compile different
-      feature sets and test targets, and a disk per suite holds a snapshot that
-      is warm for exactly the build reading it.
+      The suite the job runs, one cache directory per suite: the suites compile
+      different feature sets and test targets, and a directory per suite stays
+      warm for exactly the build reading it.
     required: true
   target-dir:
     description: >-
@@ -22,65 +23,85 @@ inputs:
 runs:
   using: composite
   steps:
-    # Cargo never removes an artifact a dependency bump or a profile change
-    # superseded, so a target directory only grows. The key carries the
-    # month: the first run of a month starts from an empty disk and pays one
-    # cold build per suite, the previous month's disk falls out of
-    # Blacksmith's retention after seven idle days, and a disk is never
-    # older than a month of leftovers.
-    - name: Name the month's disk
-      id: month
-      shell: bash
-      run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
-
-    # Every run mounts a clone of the disk's last committed snapshot, so
-    # nothing stored on it may be state one run depends on another having
-    # written: only what cargo and the build scripts rebuild from scratch.
-    # The key carries the architecture because every artifact on the disk is
-    # built for the host that built it. A job commits only when it changed
-    # the disk, and never from a fork's pull request: what every later run
-    # builds on is written by this repository alone. A commit replaces the
-    # snapshot whole, so of two pull requests running the same suite at once
-    # one job's clone becomes the snapshot; both are warm builds of the same
-    # workspace, so either serves the runs after them.
-    - name: Mount the suite's build cache
-      uses: useblacksmith/stickydisk@35ba2e331a80056a42af053ee54968511de2b7c7 # v1.5.0
-      with:
-        key: ${{ github.repository }}-cargo-${{ inputs.suite }}-${{ runner.arch }}-${{ steps.month.outputs.month }}
-        path: ~/.cache/peppy-ci
-        commit: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'on-change' || 'false' }}
-
-    # Symlinks rather than CARGO_TARGET_DIR and CARGO_HOME: the docs snippet
-    # runner builds its nodes under the workspace's own `target/`, and the
-    # rustup proxies live in ~/.cargo/bin beside the registry. Linking the
-    # directories leaves every path where each tool expects it. The build
-    # scripts' tool cache (`~/.peppy/tmp`: the apptainer and squashfuse
-    # sources they compile, the zenohd and Lima downloads, the peppylib
-    # cross-build outputs) is keyed by version and content in
-    # build_helpers::cache_dir, so a snapshot is either a hit or a miss for
-    # every entry. Incremental compilation is off: its caches are most of a
-    # debug target directory and the disk is billed per gigabyte, while all
-    # it would save is the seconds a warm rebuild of a crate's own code takes.
-    # Debug info is held to line tables for the same reason: with full debug
-    # info every test binary of this workspace exceeds a gigabyte and one
-    # suite's target directory reached 39 GB, while all CI reads of it are
-    # the file and line in a panic backtrace, which line tables keep. The
-    # test profile inherits the dev profile's setting.
+    # The runner is self-hosted and reused, so a directory under $HOME outlives
+    # the job; nothing mounts or uploads it. The name carries the architecture
+    # because every artifact in it is built for the host that built it, and
+    # the month because cargo never removes an artifact a dependency bump or a
+    # profile change superseded, so a target directory only grows. The first
+    # run of a month starts empty and pays one cold build per suite, the prune
+    # below drops the previous month, and a directory is never older than a
+    # month of leftovers.
     #
-    # One subtree of `target/` stays off the disk: the workspace's
+    # The directory is live: a run reads what the previous run left, and every
+    # pull request scheduled here, a fork's included, writes into what later
+    # runs build on. So nothing stored here may be state one run depends on
+    # another having written, only what cargo and the build scripts rebuild
+    # from scratch. Each runner is its own machine with its own $HOME, so a
+    # job is warm or cold depending on which box it lands on. A box runs one
+    # job at a time, so nothing races inside the directory.
+    - name: Name the suite's cache directory
+      id: cache
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "dir=$HOME/.cache/peppy-ci/${{ inputs.suite }}-${{ runner.arch }}-$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+
+    # Drops this suite's directories from every other month. Scoped to the
+    # suite so a prune never deletes a directory a concurrently queued job of
+    # another suite is building in.
+    - name: Prune the previous months' caches
+      shell: bash
+      run: |
+        set -euo pipefail
+        keep="${{ steps.cache.outputs.dir }}"
+        root="$HOME/.cache/peppy-ci"
+        prefix="${{ inputs.suite }}-${{ runner.arch }}-"
+        mkdir -p "$root"
+        for d in "$root/$prefix"*; do
+          [ -d "$d" ] || continue
+          if [ "$d" != "$keep" ]; then
+            echo "Pruning stale cache $d"
+            rm -rf "$d"
+          fi
+        done
+
+    # Only the suite's target directory is redirected, and through a symlink
+    # rather than CARGO_TARGET_DIR: the docs snippet runner builds its nodes
+    # under the workspace's own `target/`, so linking the directory leaves the
+    # path where every tool expects it.
+    #
+    # Nothing under $HOME is touched. The cargo registry, the git checkouts
+    # and the build scripts' tool cache (`~/.peppy/tmp`) are the box's own
+    # directories, shared with every other repository's jobs running as the
+    # same user. They persist by themselves and are keyed by content (the
+    # registry by crate and checksum, the tool cache by version and content in
+    # build_helpers::cache_dir), so each entry is a hit or a miss and needs no
+    # management from here. They fall outside the monthly prune above; the
+    # registry grows slowly, where `target/` is what reaches tens of gigabytes
+    # in one suite.
+    #
+    # Incremental compilation is off: its caches are most of a debug target
+    # directory and all it would save is the seconds a warm rebuild of a
+    # crate's own code takes. Debug info is held to line tables for the same
+    # reason: with full debug info every test binary of this workspace exceeds
+    # a gigabyte, while all CI reads of it are the file and line in a panic
+    # backtrace, which line tables keep. The test profile inherits the dev
+    # profile's setting.
+    #
+    # One subtree of `target/` stays out of the cache: the workspace's
     # .cargo/config.toml routes uv's cache to `target/uv-cache`, and the
     # Python generator tests fill it with a freshly built peppylib wheel per
     # test, each under a new hash in an append-only cache. Tens of gigabytes
     # per run that no later run reads, so that directory lives in the
     # runner's temp dir and dies with the job.
-    - name: Link cargo and the build scripts to the disk
+    - name: Link the target directory to the cache
       shell: bash
       run: |
         set -euo pipefail
-        disk="$HOME/.cache/peppy-ci"
+        disk="${{ steps.cache.outputs.dir }}"
         # link <path> <store>: the path becomes a symlink to the store. A
-        # real directory already at the path is a job that ran cargo before
-        # this action, which this refuses to hide.
+        # real directory already at the path is a cargo step that ran before
+        # this action, an ordering mistake this refuses to hide.
         link() {
           local path=$1 store=$2
           mkdir -p "$store" "$(dirname "$path")"
@@ -91,14 +112,6 @@ runs:
           ln -sfn "$store" "$path"
         }
         link "$GITHUB_WORKSPACE/${{ inputs.target-dir }}" "$disk/target"
-        link "$HOME/.cargo/registry" "$disk/cargo-registry"
-        link "$HOME/.cargo/git" "$disk/cargo-git"
-        link "$HOME/.peppy/tmp" "$disk/peppy-tmp"
-        # A snapshot committed while uv's cache still lived on the disk holds
-        # it as a real directory; it goes before the link takes its place.
-        if [ -d "$disk/target/uv-cache" ] && [ ! -L "$disk/target/uv-cache" ]; then
-          rm -rf "$disk/target/uv-cache"
-        fi
         link "$disk/target/uv-cache" "$RUNNER_TEMP/uv-cache"
         {
           echo "CARGO_INCREMENTAL=0"
@@ -106,6 +119,6 @@ runs:
         } >> "$GITHUB_ENV"
         # Two invocations: du counts a directory once per invocation, so the
         # target subtrees would print nothing after target itself.
-        echo "Disk contents at mount:"
+        echo "Cache contents at start:"
         du -sh "$disk"/* 2>/dev/null || true
         du -sh "$disk"/target/* 2>/dev/null || true

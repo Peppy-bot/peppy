@@ -3,6 +3,11 @@ name = "openarm_can"
 version = "0.2.0"
 edition = "2024"
 
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
+# holds every package of the tree to that.
+[workspace]
+
 [dependencies]
 control_core = { path = "../control_core" }
 nix = { version = "0.29", features = ["poll", "signal", "time"] }

@@ -21,10 +21,11 @@ jobs:
   # at all, and a required check that never reports leaves the pull request
   # blocked just the same.
   main-from-dev:
-    # A GitHub-hosted runner, where the rest of the repository runs on the
-    # Blacksmith pool. This job is the gate on `main`, so it keeps its
-    # availability tied to GitHub alone, and it is free on a public repository.
-    runs-on: ubuntu-latest
+    # The self-hosted runner, as everywhere else here. This job is the gate on
+    # `main` and does nothing but read the event payload, but it still queues
+    # behind whatever else the box is building, so a release pull request can
+    # wait on it.
+    runs-on: self-hosted
     # The head branch comes off the event payload. Nothing here reads the
     # repository, so the job runs with no token.
     permissions: {}

@@ -13,6 +13,11 @@
 //! instead, which runs the tree's suites from a copy holding nothing but the
 //! tree, where such a path has nothing to resolve to.
 //!
+//! A manifest can also reach outside without writing a path: a package that
+//! neither is a workspace root nor names one sends cargo looking for a root in
+//! every directory above it, past the tree's own. The suite holds every package
+//! to a root inside the tree, so the tree builds the same under any parent.
+//!
 //! The test lives in `build-helpers` because this is the crate that already
 //! knows the tree's layout (`peppy_shared_dir`) and sits at the bottom of its
 //! dependency graph.
@@ -150,12 +155,16 @@ fn walk_table(
     }
 }
 
+fn parse_manifest(manifest_dir: &Path, manifest: &str) -> DocumentMut {
+    manifest
+        .parse()
+        .unwrap_or_else(|error| panic!("manifest in {manifest_dir:?} is not valid TOML: {error}"))
+}
+
 /// Every filesystem reference in `manifest` that leaves `root`, given the
 /// manifest sits in `manifest_dir`.
 fn escapes_in(root: &Path, manifest_dir: &Path, manifest: &str) -> Vec<Escape> {
-    let document: DocumentMut = manifest
-        .parse()
-        .unwrap_or_else(|error| panic!("manifest in {manifest_dir:?} is not valid TOML: {error}"));
+    let document = parse_manifest(manifest_dir, manifest);
     let mut escapes = Vec::new();
     walk_table(
         root,
@@ -199,10 +208,62 @@ fn manifests_and_symlinks(root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     (manifests, symlinks)
 }
 
-#[test]
-fn no_manifest_reaches_outside_the_tree() {
-    let root = tree_root();
-    let (manifests, _) = manifests_and_symlinks(&root);
+/// Whether `document` is a workspace root (`[workspace]`).
+fn is_workspace_root(document: &DocumentMut) -> bool {
+    document.get("workspace").is_some()
+}
+
+/// Whether `document` names its workspace root (`package.workspace`), which
+/// spares cargo the search. Where the key points is a filesystem reference,
+/// held inside the tree with the rest of them.
+fn names_its_workspace_root(document: &DocumentMut) -> bool {
+    document
+        .get("package")
+        .and_then(|package| package.get("workspace"))
+        .is_some()
+}
+
+/// The directories, among `manifests` (each a directory and the contents of
+/// the manifest in it), of the packages whose workspace root cargo looks for
+/// outside `root`. Cargo takes the root a package names, else the package
+/// itself when it is one, else the nearest one in the directories above. A
+/// package is adrift when none of those is found from its directory up to
+/// `root`: what it builds against is then whatever manifest sits above the
+/// tree, and under a workspace that does not list it, it does not build.
+fn packages_adrift(root: &Path, manifests: &[(PathBuf, String)]) -> Vec<PathBuf> {
+    let documents: Vec<(&Path, DocumentMut)> = manifests
+        .iter()
+        .map(|(manifest_dir, contents)| {
+            (
+                manifest_dir.as_path(),
+                parse_manifest(manifest_dir, contents),
+            )
+        })
+        .collect();
+    let workspace_roots: Vec<&Path> = documents
+        .iter()
+        .filter(|(_, document)| is_workspace_root(document))
+        .map(|(manifest_dir, _)| *manifest_dir)
+        .collect();
+    let has_a_root_above_it_inside_the_tree = |manifest_dir: &Path| {
+        manifest_dir
+            .ancestors()
+            .take_while(|dir| dir.starts_with(root))
+            .any(|dir| workspace_roots.contains(&dir))
+    };
+
+    documents
+        .iter()
+        .filter(|(_, document)| !names_its_workspace_root(document))
+        .filter(|(_, document)| !is_workspace_root(document))
+        .filter(|(manifest_dir, _)| !has_a_root_above_it_inside_the_tree(manifest_dir))
+        .map(|(manifest_dir, _)| manifest_dir.to_path_buf())
+        .collect()
+}
+
+/// Every manifest of the tree, as the directory it sits in and its contents.
+fn tree_manifests(root: &Path) -> Vec<(PathBuf, String)> {
+    let (manifests, _) = manifests_and_symlinks(root);
 
     // The walk must have covered the tree for a clean result to mean anything.
     let own_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
@@ -211,17 +272,41 @@ fn no_manifest_reaches_outside_the_tree() {
         "the walk from {root:?} did not reach {own_manifest:?}"
     );
 
+    manifests
+        .iter()
+        .map(|manifest| {
+            let manifest_dir = manifest
+                .parent()
+                .expect("a manifest has a parent directory")
+                .to_path_buf();
+            let contents = std::fs::read_to_string(manifest)
+                .unwrap_or_else(|error| panic!("cannot read {manifest:?}: {error}"));
+            (manifest_dir, contents)
+        })
+        .collect()
+}
+
+/// `manifest_dir`'s manifest as the failure messages name it: from the tree's
+/// root down.
+fn display_manifest(root: &Path, manifest_dir: &Path) -> String {
+    let manifest = manifest_dir.join("Cargo.toml");
+    manifest
+        .strip_prefix(root)
+        .unwrap_or(&manifest)
+        .display()
+        .to_string()
+}
+
+#[test]
+fn no_manifest_reaches_outside_the_tree() {
+    let root = tree_root();
+
     let mut violations = Vec::new();
-    for manifest in &manifests {
-        let manifest_dir = manifest
-            .parent()
-            .expect("a manifest has a parent directory");
-        let contents = std::fs::read_to_string(manifest)
-            .unwrap_or_else(|error| panic!("cannot read {manifest:?}: {error}"));
-        for escape in escapes_in(&root, manifest_dir, &contents) {
+    for (manifest_dir, contents) in &tree_manifests(&root) {
+        for escape in escapes_in(&root, manifest_dir, contents) {
             violations.push(format!(
                 "  {}: `{}` = \"{}\"",
-                manifest.strip_prefix(&root).unwrap_or(manifest).display(),
+                display_manifest(&root, manifest_dir),
                 escape.key,
                 escape.reference
             ));
@@ -235,6 +320,29 @@ fn no_manifest_reaches_outside_the_tree() {
          crates depend on these, not the other way around; move what is needed \
          into the tree instead. Offending manifest entries:\n{}",
         violations.join("\n")
+    );
+}
+
+#[test]
+fn every_package_finds_its_workspace_root_inside_the_tree() {
+    let root = tree_root();
+
+    let adrift: Vec<String> = packages_adrift(&root, &tree_manifests(&root))
+        .iter()
+        .map(|manifest_dir| format!("  {}", display_manifest(&root, manifest_dir)))
+        .collect();
+
+    assert!(
+        adrift.is_empty(),
+        "public-peppy-libs is a sealed tree: a package here finds its workspace \
+         root inside {root:?}, so that it builds the same whatever sits above \
+         the tree. Cargo looks for a root in every directory above a package \
+         that neither is one nor names one, and under a workspace that does not \
+         list the package it stops with \"current package believes it's in a \
+         workspace when it's not\". Give each of these manifests an empty \
+         `[workspace]` table, or make the package a member of a workspace \
+         inside the tree:\n{}",
+        adrift.join("\n")
     );
 }
 
@@ -398,6 +506,61 @@ fn outside_sources_workspaces_and_members_are_caught() {
                 "../../../crates/daemon-internal/tests/daemon.rs"
             ),
             escape("workspace.members", "../../../crates/auth-internal"),
+        ]
+    );
+}
+
+fn manifest_in(dir: &str, contents: &str) -> (PathBuf, String) {
+    (PathBuf::from(dir), contents.to_string())
+}
+
+#[test]
+fn a_root_a_member_and_a_package_naming_its_root_are_not_adrift() {
+    let manifests = [
+        manifest_in(
+            "/repo/public-peppy-libs/peppy-shared",
+            "[workspace]\nmembers = [\"peppylib-rs\"]\n",
+        ),
+        manifest_in(CRATE_DIR, "[package]\nname = \"peppylib-rs\"\n"),
+        manifest_in(
+            "/repo/public-peppy-libs/srs_model",
+            "[package]\nname = \"srs_model\"\n\n[workspace]\n",
+        ),
+        manifest_in(
+            "/repo/public-peppy-libs/chain_kinematics",
+            "[package]\nname = \"chain_kinematics\"\nworkspace = \"../peppy-shared\"\n",
+        ),
+    ];
+    assert_eq!(
+        packages_adrift(Path::new(ROOT), &manifests),
+        Vec::<PathBuf>::new()
+    );
+}
+
+#[test]
+fn a_package_with_no_root_inside_the_tree_is_adrift() {
+    let manifests = [
+        // A root above the tree is the one cargo must not be left to find.
+        manifest_in("/repo", "[workspace]\nexclude = [\"public-peppy-libs\"]\n"),
+        manifest_in(
+            "/repo/public-peppy-libs/peppy-shared",
+            "[workspace]\nmembers = [\"peppylib-rs\"]\n",
+        ),
+        manifest_in(
+            "/repo/public-peppy-libs/srs_model",
+            "[package]\nname = \"srs_model\"\n",
+        ),
+        // Beside a workspace root is not under it.
+        manifest_in(
+            "/repo/public-peppy-libs/peppy-shared-tools/lint",
+            "[package]\nname = \"lint\"\n",
+        ),
+    ];
+    assert_eq!(
+        packages_adrift(Path::new(ROOT), &manifests),
+        vec![
+            PathBuf::from("/repo/public-peppy-libs/srs_model"),
+            PathBuf::from("/repo/public-peppy-libs/peppy-shared-tools/lint"),
         ]
     );
 }

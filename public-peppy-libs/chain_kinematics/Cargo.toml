@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Forward kinematics, the geometric Jacobian, and damped resolved-rate inverse kinematics for any serial chain read from a URDF. Robot-agnostic and generic over the number of joints. Pure Rust, no hardware or messaging deps."
 
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
+# holds every package of the tree to that.
+[workspace]
+
 [dependencies]
 nalgebra = "0.35"
 thiserror = "2"

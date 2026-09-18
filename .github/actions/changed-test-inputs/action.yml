@@ -51,7 +51,7 @@ runs:
   steps:
     - id: detect
       # Needs cargo on PATH for the metadata query, so tests.yml runs this
-      # after the rust-toolchain action.
+      # after the rust-build-env action.
       shell: bash
       run: python3 "$GITHUB_ACTION_PATH/detect.py"
       env:

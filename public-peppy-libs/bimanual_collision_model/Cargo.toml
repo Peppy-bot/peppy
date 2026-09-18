@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Runtime self-collision detection for a bimanual arm: URDF-fitted convex hulls, GJK/EPA minimum distance, and the analytic distance gradient. Pure Rust, no hardware or messaging deps."
 
+# A workspace root of its own, so cargo's search for one ends at this manifest
+# whatever sits above the tree. `peppy-shared/build-helpers/tests/sealed_tree.rs`
+# holds every package of the tree to that.
+[workspace]
+
 [dependencies]
 srs_model = { path = "../srs_model" }
 thiserror = "2"

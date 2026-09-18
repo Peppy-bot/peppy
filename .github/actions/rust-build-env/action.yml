@@ -1,62 +1,112 @@
 name: Rust build environment
 description: >-
-  Installs the Rust toolchain, the system packages every cargo step in this
-  repository builds against, and the pixi and uv tools the build scripts and
-  Python test scenarios execute, then clears the kernel restriction that would
-  stop apptainer from creating unprivileged user namespaces.
+  Puts the toolchain the host is provisioned with on PATH and checks it is
+  there, then prepares the two pieces of host state apptainer needs: permission
+  to create unprivileged user namespaces, and enough loop devices to mount
+  several images at once.
 
 runs:
   using: composite
   steps:
-    # Must stay ahead of every cargo step.
-    - uses: ./.github/actions/rust-toolchain
-
-    # containers-internal's build script compiles apptainer and its bundled
-    # squashfuse from source, and refuses to start unless every package in
-    # APPTAINER_BUILD_DEPS (crates/containers-internal/build.rs) is present: a
-    # header it cannot find is silently dropped from the build rather than
-    # reported. The list below mirrors that constant and must be kept in step
-    # with it. fuse2fs is separate: apptainer needs it at run time to mount EXT3
-    # images, so the container tests need it even though its absence is only a
-    # warning at build time. Go is absent: the build script compiles with the
-    # `go` on PATH, which the x64 runner image provides, and the release's
-    # apptainer stage (scripts/functions/parallel_release.py) installs the
-    # pinned toolchain itself.
+    # A job that checks out sparsely leaves this workspace sparse for the job
+    # after it. actions/checkout writes core.sparseCheckout into the
+    # repository's local config, `git sparse-checkout disable` clears it in the
+    # worktree config, and checkout then unsets extensions.worktreeConfig — so
+    # git reads the local `true` again, with .git/info/sparse-checkout still
+    # beside it. On a runner discarded with the job none of that survives; on
+    # these boxes one workspace serves every job of this repository, and the
+    # next one is handed a partial tree while git calls it clean.
     #
-    # The install pulls newer libc, libcurl and ca-certificates into the runner
-    # image, and needrestart's automatic mode then restarts every service linked
-    # against them, systemd-journald, systemd-networkd, systemd-resolved and
-    # systemd-udevd among them, underneath the running job. Restarting the
-    # logging, networking and device stack out from under the Actions runner is
-    # one of the causes GitHub names for "the runner lost communication with the
-    # server", so the drop-in holds needrestart to listing what it would restart
-    # and the runner keeps the services it booted with.
-    - name: Install apptainer build and runtime dependencies
+    # That cost a run on 2026-09-18: release-scripts stopped at
+    # "./scripts/run_tests.sh: No such file or directory" and container-e2e at
+    # "could not find `Cargo.toml`", each on a box whose checkout had just
+    # reported success, and each blaming the file it could not see rather than
+    # the job before it.
+    #
+    # Only the workspace checkout is repaired. A job that wants a partial tree
+    # takes it in a directory of its own (see public-libs), which this leaves
+    # alone.
+    - name: Repair a workspace an earlier job left sparse
       shell: bash
-      env:
-        DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo mkdir -p /etc/needrestart/conf.d
-        printf '$nrconf{restart} = "l";\n' \
-          | sudo tee /etc/needrestart/conf.d/90-no-service-restarts.conf > /dev/null
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq \
-          make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates \
-          libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev \
-          liblzma-dev libzstd-dev fuse2fs
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        git rev-parse --git-dir > /dev/null 2>&1 || exit 0
+        # Exits 128 with "this worktree is not sparse", which is the ordinary
+        # case and says nothing.
+        git sparse-checkout list > /dev/null 2>&1 || exit 0
+        echo "::warning::${RUNNER_NAME:-this runner} handed this job a sparse" \
+          "workspace left by an earlier one; restoring the full checkout."
+        git sparse-checkout disable || true
+        git config --unset-all core.sparseCheckout || true
+        rm -f "$(git rev-parse --git-dir)/info/sparse-checkout"
+        git checkout --force HEAD
+
+    # Nothing here installs a toolchain. A box that runs these suites is
+    # provisioned before it takes a job, by the Peppy superproject's
+    # scripts/setup_machine.sh --ci-runner, and a box missing any of it is a
+    # provisioning failure to fix once on that box. The one caller whose host
+    # is a fresh image each run is release-host-env, which installs what a
+    # release stage needs before this action.
+    #
+    # What a job does have to do is PATH. The runner executes steps in a shell
+    # that is neither a login nor an interactive one, so the profile edits the
+    # installers make are never sourced, and the tools under $HOME and
+    # /usr/local/go have to be named on $GITHUB_PATH to be reachable from the
+    # calling job's later steps.
+    #
+    # The check is there to name a gap in one line instead of letting it become
+    # an error minutes later inside a build script, where it reads as something
+    # else entirely: no `pixi` is generator-internal refusing to serve a stale
+    # peppylib .so, no `go` is apptainer's mconfig stopping at "host Go
+    # compiler ... not found!", and no clippy is the generator suites failing
+    # rather than skipping a lint (their test helpers run `cargo clippy
+    # --all-targets -- -D warnings` over the crate they generate). Must stay
+    # ahead of every cargo step.
+    - name: Check the host's toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        for dir in "$HOME/.cargo/bin" /usr/local/go/bin "$HOME/.pixi/bin" "$HOME/.local/bin"; do
+          if [ -d "$dir" ]; then
+            echo "$dir" >> "$GITHUB_PATH"
+          fi
+        done
+        # $GITHUB_PATH reaches the next step, not this one, so the checks below
+        # need the same directories on PATH here.
+        export PATH="$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.pixi/bin:$HOME/.local/bin:$PATH"
+        missing=()
+        for tool in rustc cargo go pixi uv; do
+          command -v "$tool" > /dev/null || missing+=("$tool")
+        done
+        cargo clippy --version > /dev/null 2>&1 || missing+=("clippy")
+        if [ ${#missing[@]} -gt 0 ]; then
+          list=$(printf '%s, ' "${missing[@]}")
+          echo "::error::${RUNNER_NAME:-this host} is missing ${list%, }." \
+            "Self-hosted boxes are provisioned with the Peppy superproject's" \
+            "scripts/setup_machine.sh --ci-runner."
+          exit 1
+        fi
+        rustc --version
+        go version
+        pixi --version
+        uv --version
 
     # Apptainer is built without setuid and creates its user namespaces
-    # unprivileged, through fakeroot. Ubuntu 24.04 images ship
+    # unprivileged, through fakeroot. Ubuntu 24.04 ships
     # kernel.apparmor_restrict_unprivileged_userns=1, which denies that to any
     # binary without a matching AppArmor profile, so every test that builds or
     # runs a container fails with "Apptainer's user namespace prerequisites are
     # not met" and a fix script naming the starter binary. Clearing the knob is
     # what peppy itself does inside the Lima guest it provisions (see
-    # apptainer/lima.rs), and on a runner discarded at the end of the job it
-    # costs nothing, whereas installing the per-installation AppArmor profile
-    # would have to be redone for every apptainer version the build cache
-    # holds. Images predating the restriction (Ubuntu 22.04) never expose the
-    # knob, hence the existence check.
+    # apptainer/lima.rs); the alternative, the per-installation AppArmor
+    # profile, is keyed to the path of the install's starter binary and would
+    # have to be rewritten for every apptainer version the build cache holds.
+    #
+    # Set per job rather than in the host's provisioning because it does not
+    # survive a reboot, and a box that came back up without it fails every
+    # container suite on it. A kernel that never had the restriction (Ubuntu
+    # 22.04) has no knob to clear, hence the existence check.
     - name: Allow unprivileged user namespaces
       shell: bash
       run: |
@@ -67,18 +117,18 @@ runs:
         fi
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-    # Apptainer mounts every SIF image through a /dev/loopN node, and the
-    # runner image materializes only loop0 through loop7. The container tests
-    # and the multi-daemon e2e run several containers at once, and the ninth
+    # Apptainer mounts every SIF image through a /dev/loopN node, and a host
+    # materializes only loop0 through loop7 by default. The container tests and
+    # the multi-daemon e2e run several containers at once, and the ninth
     # concurrent mount dies with "could not open /dev/loop8: no such file or
     # directory". Create the remaining nodes up front; the loop major is 7 and
-    # the kernel accepts device nodes whether or not udev would have made
-    # them.
+    # the kernel accepts device nodes whether or not udev would have made them.
+    # Like the knob above these are lost on reboot, so they are made here; on a
+    # box that has already run a container suite since booting, every one of
+    # them exists and the loop does nothing.
     - name: Create loop devices for parallel container mounts
       shell: bash
       run: |
         for i in $(seq 8 63); do
           [ -e "/dev/loop$i" ] || sudo mknod -m 660 "/dev/loop$i" b 7 "$i"
         done
-
-    - uses: ./.github/actions/python-tools

@@ -6,7 +6,7 @@ Peppy nodes live in separate repositories under the nodes hub. Shared code that 
 
 ## A sealed tree
 
-This directory lives inside the [`peppy`](https://github.com/Peppy-bot/peppy) repository but is not part of the `peppy` workspace, whose root manifest excludes it. `peppy-shared` is a workspace of its own with its own `Cargo.lock`, and every other library here is a standalone package.
+This directory lives inside the [`peppy`](https://github.com/Peppy-bot/peppy) repository but is not part of the `peppy` workspace, whose root manifest excludes it. `peppy-shared` is a workspace of its own with its own `Cargo.lock`, and every other library here is a standalone package: its manifest carries an empty `[workspace]` table, which makes the package its own workspace root, so it builds the same whatever directory the tree is checked out under.
 
 The dependency between the two runs one way only:
 
@@ -15,7 +15,7 @@ The dependency between the two runs one way only:
 
 That is what lets `platform-backend` and the hub nodes consume these libraries from the repository without building a line of `peppy` itself. Two checks hold the line:
 
-- [`peppy-shared/build-helpers/tests/sealed_tree.rs`](./peppy-shared/build-helpers/tests/sealed_tree.rs) reads every manifest in the tree and fails, naming the manifest and key, when a `path` (a dependency of any kind, a `[patch]`, a target's source file, a workspace root or member) or a symlink resolves outside it.
+- [`peppy-shared/build-helpers/tests/sealed_tree.rs`](./peppy-shared/build-helpers/tests/sealed_tree.rs) reads every manifest in the tree and fails, naming the manifest and key, when a `path` (a dependency of any kind, a `[patch]`, a target's source file, a workspace root or member) or a symlink resolves outside it, and when a package would send cargo looking for its workspace root above the tree.
 - CI runs this tree's suites from a copy that holds nothing but the tree, so a reach the manifests cannot show (`#[path]`, `include!`) has nothing to resolve to.
 
 If a library here needs something that lives in `crates/`, move that code into the tree.
