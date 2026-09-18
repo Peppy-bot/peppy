@@ -185,9 +185,16 @@ runs:
           echo "::error::could not read $const from $build_rs"
           exit 1
         fi
+        # `command -v` decides this rather than running `go version` and
+        # discarding its error: under `set -e` with `pipefail` a missing `go`
+        # makes the whole pipeline exit 127 and takes the step with it, which
+        # would fail exactly the boxes this step exists to provision.
+        have=""
+        if command -v go > /dev/null; then
+          have=$(go version | awk '{print $3}' | sed 's/^go//')
+        fi
         # sort -V puts the lower version first, so the box's Go is good enough
         # exactly when the pin sorts ahead of it.
-        have=$(go version 2>/dev/null | awk '{print $3}' | sed 's/^go//')
         if [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$pin" "$have" | sort -V | head -1)" = "$pin" ]; then
           echo "go $have already satisfies the pinned $pin"
           exit 0
