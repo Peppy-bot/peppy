@@ -39,6 +39,27 @@ def selected(selection):
     }
 
 
+def declared_outputs():
+    """The output names action.yml declares, read without a yaml parser.
+
+    The changes job runs these cases with the system python3 and nothing
+    installed, so this walks the indentation rather than importing PyYAML.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "action.yml")
+    names, inside = [], False
+    for line in open(path):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            inside = line.startswith("outputs:")
+            continue
+        if inside and line.startswith("  ") and not line.startswith("   "):
+            key = line.strip()
+            if key.endswith(":"):
+                names.append(key[:-1])
+    return names
+
+
 def peppy_shared_directories():
     """Directory of every package of the peppy-shared workspace, by name."""
     manifest = os.path.join(detect.ROOT, detect.PEPPY_SHARED, "Cargo.toml")
@@ -221,6 +242,14 @@ class Detection(unittest.TestCase):
         emitted = set(select("Readme.md"))
         for gates in detect.JOBS.values():
             self.assertLessEqual(set(gates), emitted)
+
+    def test_the_action_declares_every_output_the_detection_emits(self):
+        # A composite action forwards only what it declares. An output the
+        # detection emits and action.yml does not reaches the workflow as the
+        # empty string, which is how a skipped job is spelled -- so the suite
+        # is silently gated off and nothing anywhere is red. That is exactly
+        # what adding scripts_vm did until this case existed.
+        self.assertEqual(sorted(declared_outputs()), sorted(select("Readme.md")))
 
 
 if __name__ == "__main__":

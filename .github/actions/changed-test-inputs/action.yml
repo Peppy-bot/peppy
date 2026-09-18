@@ -21,8 +21,14 @@ outputs:
     description: Whether the docs integration suite's inputs changed.
     value: ${{ steps.detect.outputs.docs_integration }}
   scripts:
-    description: Whether the release scripts suite's inputs changed.
+    description: Whether the mocked release scripts suite's inputs changed.
     value: ${{ steps.detect.outputs.scripts }}
+  scripts_vm:
+    description: >-
+      Whether the inputs of the release scripts suite's Lima half changed --
+      what decides what a guest installs and how, which is a much narrower set
+      than the tree the mocked half is gated on.
+    value: ${{ steps.detect.outputs.scripts_vm }}
   public_libs_shared_packages:
     description: >-
       The cargo package selection flags for the peppy-shared workspace, naming
