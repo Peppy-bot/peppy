@@ -28,12 +28,13 @@ env:
 # and shared with every repository on it. The gated suites wait only for the
 # changes job, never for another suite.
 #
-# Every job runs on the self-hosted runner; no job uses a GitHub-hosted one.
-# The runner executes one job at a time, so the suites below queue rather than
-# run in parallel, and the workflow's wall clock is the sum of what it runs.
-# A pull request from a fork lands on the same box, so what keeps fork code
-# away from it is the repository's fork-PR approval gate, not the runner it is
-# scheduled on.
+# Every job runs on a self-hosted runner; no job uses a GitHub-hosted one. Each
+# runner is its own machine taking one job at a time, so as many suites run in
+# parallel as there are boxes and the rest queue; a suite is warm or cold
+# depending on which box it lands on, since the caches below are per-box. A
+# pull request from a fork lands on those same boxes, so what keeps fork code
+# away from them is the repository's fork-PR approval gate, not the runner it
+# is scheduled on.
 jobs:
   # Which of the gated suites have had their inputs touched. The per-suite
   # source sets are derived from cargo metadata's resolve graph at run time

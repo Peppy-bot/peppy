@@ -33,10 +33,12 @@ runs:
     # included, since every job runs on this runner — writes into what later
     # runs build on. So nothing stored here may be state one run depends on
     # another having written, only what cargo and the build scripts rebuild
-    # from scratch. The single self-hosted runner executes one
-    # job at a time, so concurrent writers are not a concern today; a second
-    # runner would make the target directories shared mutable state and is a
-    # reason to revisit this.
+    # from scratch. Each self-hosted runner is its own machine with its own
+    # $HOME, so these directories are per-box rather than shared: every box
+    # pays its own cold build per suite, and a job is warm or cold depending on
+    # which one it lands on. A box runs one job at a time, so nothing races
+    # inside them; two runner agents on a single box would, and is the thing to
+    # revisit.
     - name: Name the suite's cache directory
       id: cache
       shell: bash

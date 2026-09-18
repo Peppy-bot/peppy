@@ -8,15 +8,15 @@ description: >-
 runs:
   using: composite
   steps:
-    # The self-hosted runner is provisioned outside this repository and ships no
-    # Rust at all, where the hosted images shipped rustup with a default
-    # toolchain that trails the workspace's dependency graph (sysinfo already
-    # requires a newer rustc than those images shipped). So: install rustup if
-    # it is absent, then pin to current stable rather than inheriting whatever
-    # default is there. Both halves are skipped when they are already satisfied,
-    # so a warm box pays nothing here — the runner takes one job at a time, and
-    # re-resolving a toolchain in every job would be pure queue time. Must stay
-    # ahead of every cargo step.
+    # The self-hosted runners are provisioned outside this repository, and what
+    # they carry differs from box to box: the first one shipped no Rust at all,
+    # the ones added since ship rustup, pixi and uv but no Go. The hosted images
+    # this replaced shipped rustup with a default toolchain that trailed the
+    # workspace's dependency graph (sysinfo already required a newer rustc than
+    # those images shipped). So nothing here is assumed: install rustup if it is
+    # absent, then pin to current stable rather than inheriting whatever default
+    # is there. Both halves are skipped when they are already satisfied, so a
+    # box that has them pays nothing. Must stay ahead of every cargo step.
     - name: Install Rust toolchain
       shell: bash
       run: |
@@ -89,12 +89,17 @@ runs:
     # APPTAINER_BUILD_DEPS (crates/containers-internal/build.rs) is present: a
     # header it cannot find is silently dropped from the build rather than
     # reported. The list below mirrors that constant and must be kept in step
-    # with it. fuse2fs is separate: apptainer needs it at run time to mount EXT3
-    # images, so the container tests need it even though its absence is only a
-    # warning at build time. Go is absent: the build script compiles with the
-    # `go` on PATH, which the x64 runner image provides, and the release's
-    # apptainer stage (scripts/functions/parallel_release.py) installs the
-    # pinned toolchain itself.
+    # with it, with two additions it does not carry. fuse2fs: apptainer needs it
+    # at run time to mount EXT3 images, so the container tests need it even
+    # though its absence is only a warning at build time. g++: apptainer's
+    # `mconfig` probes a host C++ compiler among its base checks and stops with
+    # `could not complete configuration` when there is none, and Ubuntu's `gcc`
+    # package does not pull one in. The build script's own pre-flight does not
+    # look for it, so a box without it gets no early diagnosis — the failure
+    # arrives as `checking: host C++ compiler... not found!` from deep inside
+    # the build script. Worth adding to APPTAINER_BUILD_DEPS so the pre-flight
+    # names it, which would want the matching entry in
+    # scripts/functions/lima.py too. Go is handled by the step below.
     #
     # The install pulls newer libc, libcurl and ca-certificates into the runner
     # image, and needrestart's automatic mode then restarts every service linked
@@ -106,10 +111,9 @@ runs:
     # and the runner keeps the services it booted with.
     #
     # The whole step is skipped when every package is already installed, which
-    # on the reused self-hosted runner is every job after the first: `apt-get
-    # update` alone is tens of seconds, and the runner takes one job at a time,
-    # so it would be queue time paid by every suite to learn there is nothing
-    # to do.
+    # on a reused box is every job after the first on it: `apt-get update` alone
+    # is tens of seconds, and it would otherwise be paid by every suite to learn
+    # there is nothing to do.
     - name: Install apptainer build and runtime dependencies
       shell: bash
       env:
@@ -117,7 +121,7 @@ runs:
       run: |
         set -euo pipefail
         packages=(
-          make gcc pkg-config squashfs-tools cryptsetup curl ca-certificates
+          make gcc g++ pkg-config squashfs-tools cryptsetup curl ca-certificates
           libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev
           liblzma-dev libzstd-dev fuse2fs
         )
@@ -136,6 +140,79 @@ runs:
           | sudo tee /etc/needrestart/conf.d/90-no-service-restarts.conf > /dev/null
         sudo apt-get update -qq
         sudo apt-get install -y -qq "${missing[@]}"
+
+    # containers-internal's build script compiles apptainer with the `go` it
+    # finds on PATH and never installs one: only its Lima and chroot paths
+    # bootstrap the pinned toolchain (apptainer_compile_steps). Apptainer's
+    # `mconfig` enforces a minimum Go of its own, so a box with no Go — or with
+    # Ubuntu's `golang-go`, which is older than that minimum — fails the build
+    # with `checking: host Go compiler ... go not found!`. The runner this
+    # migration first ran on happened to carry a Go new enough, as the
+    # Blacksmith images had; the boxes added since do not, so the toolchain is
+    # installed here rather than assumed.
+    #
+    # The version and its checksum are read out of build.rs instead of pinned
+    # again here: that constant is what the build has to satisfy, so a second
+    # copy would be one more thing to bump in step. The pin is stricter than
+    # mconfig's floor by design — one toolchain whose bytes are verified beats
+    # trusting whatever a box happens to carry — so a box with an adequate but
+    # older Go still installs it, once, since the directory outlives the job.
+    - name: Install the Go that apptainer's mconfig requires
+      shell: bash
+      run: |
+        set -euo pipefail
+        build_rs="$GITHUB_WORKSPACE/crates/containers-internal/build.rs"
+        pin=$(sed -n 's/^[[:space:]]*const GO_VERSION: &str = "\([^"]*\)".*/\1/p' "$build_rs" | head -1)
+        if [ -z "$pin" ]; then
+          echo "::error::could not read GO_VERSION from $build_rs"
+          exit 1
+        fi
+        case "$RUNNER_ARCH" in
+          X64) go_arch=amd64; const=GO_LINUX_AMD64_SHA256 ;;
+          ARM64) go_arch=arm64; const=GO_LINUX_ARM64_SHA256 ;;
+          *) echo "::error::no pinned Go checksum for $RUNNER_ARCH"; exit 1 ;;
+        esac
+        # The constant's value sits on the line after its name, so the scan
+        # starts at the name and takes the first 64-hex string it then sees.
+        sha=$(awk -v const="$const" '
+          index($0, "const " const ": &str =") { found = 1 }
+          found && match($0, /"[0-9a-f]+"/) {
+            candidate = substr($0, RSTART + 1, RLENGTH - 2)
+            if (length(candidate) == 64) { print candidate; exit }
+          }
+        ' "$build_rs")
+        if [ -z "$sha" ]; then
+          echo "::error::could not read $const from $build_rs"
+          exit 1
+        fi
+        # sort -V puts the lower version first, so the box's Go is good enough
+        # exactly when the pin sorts ahead of it.
+        have=$(go version 2>/dev/null | awk '{print $3}' | sed 's/^go//')
+        if [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$pin" "$have" | sort -V | head -1)" = "$pin" ]; then
+          echo "go $have already satisfies the pinned $pin"
+          exit 0
+        fi
+        # Keyed by version, so a bump lands beside the old tree rather than
+        # having to overwrite it, and a half-extracted tree is never mistaken
+        # for a whole one: the move is what publishes it.
+        root="$HOME/.local/peppy-ci-go-$pin"
+        if [ ! -x "$root/bin/go" ]; then
+          echo "installing Go $pin (box has ${have:-none})"
+          mkdir -p "$HOME/.local"
+          tarball="$RUNNER_TEMP/go-$pin-$go_arch.tar.gz"
+          curl -fsSL --connect-timeout 10 --max-time 300 \
+            "https://go.dev/dl/go$pin.linux-$go_arch.tar.gz" -o "$tarball"
+          echo "$sha  $tarball" | sha256sum -c -
+          staging=$(mktemp -d "$HOME/.local/peppy-ci-go-$pin.XXXXXX")
+          tar -C "$staging" --strip-components=1 -xzf "$tarball"
+          # An earlier attempt that died between extract and publish leaves a
+          # directory with no bin/go; it goes, or the move would nest inside it.
+          rm -rf "$root"
+          mv "$staging" "$root"
+          rm -f "$tarball"
+        fi
+        echo "$root/bin" >> "$GITHUB_PATH"
+        "$root/bin/go" version
 
     # Apptainer is built without setuid and creates its user namespaces
     # unprivileged, through fakeroot. Ubuntu 24.04 images ship
