@@ -379,7 +379,9 @@ jobs:
 
       - name: Clean up the Python suite's peppy data root
         if: always()
-        run: rm -rf "$RUNNER_TEMP/peppy-home-py"
+        uses: ./.github/actions/reclaim-data-root
+        with:
+          path: ${{ runner.temp }}/peppy-home-py
 
   # The standalone crates of the tree: every directory of it outside
   # peppy-shared holding a Cargo.toml, each its own workspace with its own
