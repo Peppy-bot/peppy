@@ -107,7 +107,7 @@ curl -fsSL https://raw.githubusercontent.com/Peppy-bot/peppy/dev/scripts/setup_m
 bash /tmp/setup_machine.sh --ci-runner
 ```
 
-`--ci-runner` grants that user passwordless sudo, which the container suites need: each job installs a peppy release under its own directory and runs `peppy container setup`, which writes an AppArmor profile keyed to that install's path, and a job has no terminal for `sudo` to prompt at. The grant is skipped when it is already in place. It is full root on a host that also runs pull request code, so it sits behind the flag rather than happening by default.
+`--ci-runner` adds the aarch64 cross toolchain (the Rust target and `gcc-aarch64-linux-gnu`) that the cross-check job builds with, and grants that user passwordless sudo, which the container suites need: each job installs a peppy release under its own directory and runs `peppy container setup`, which writes an AppArmor profile keyed to that install's path, and a job has no terminal for `sudo` to prompt at. The grant is skipped when it is already in place. It is full root on a host that also runs pull request code, so it sits behind the flag rather than happening by default.
 
 Two steps afterwards, both needed:
 
@@ -120,7 +120,7 @@ sudo systemctl restart 'actions.runner.*'
 PATH=$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.pixi/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ```
 
-Without the second, jobs cannot see the toolchains the script installed, and the workflow re-installs them per job instead.
+The second is what puts the toolchains in the runner's own environment. The workflows install nothing — they use what this script left on the box — so a job that cannot see a tool stops at once, naming the runner and this script, rather than quietly provisioning itself.
 
 A box that has not had this run is not a neutral member of the pool: every job targets a bare `self-hosted` label, so an unprepared runner takes work it cannot complete and fails it. Provision first, then register.
 

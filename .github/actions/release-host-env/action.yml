@@ -20,13 +20,27 @@ inputs:
 runs:
   using: composite
   steps:
+    # The release is the one workflow left on hosted runners, because it builds
+    # for macOS and arm64 and the self-hosted box is a single Linux x86 one. A
+    # hosted runner is a fresh image on every run and carries none of what
+    # scripts/setup_machine.sh installs, whereas the self-hosted boxes have run
+    # that script already — so this stage runs it on itself, and rust-build-env
+    # below can then assume a provisioned host wherever it is used. The script
+    # skips anything the image already ships, and being the single definition
+    # of what a host needs, it keeps the release runners and the CI boxes from
+    # drifting apart.
+    - name: Provision the hosted runner
+      if: inputs.rust == 'true' && runner.os == 'Linux'
+      shell: bash
+      run: "$GITHUB_WORKSPACE/scripts/setup_machine.sh"
+
     # Linux builds in the same environment as every cargo job of this
-    # repository, which installs pixi too.
+    # repository.
     - if: inputs.rust == 'true' && runner.os == 'Linux'
       uses: ./.github/actions/rust-build-env
 
     # Pinned to current stable rather than the runner image's default, as
-    # rust-build-env does on Linux.
+    # scripts/setup_machine.sh does on the Linux hosts.
     - name: Install the Rust toolchain
       if: inputs.rust == 'true' && runner.os == 'macOS'
       shell: bash
@@ -35,7 +49,8 @@ runs:
         rustup default stable
         rustc --version
 
-    # Pinned to the version rust-build-env installs on Linux.
+    # Pinned to the version scripts/setup_machine.sh installs, which is the one
+    # that satisfies every `requires-pixi` in the workspace.
     - name: Install pixi
       if: inputs.rust != 'true' || runner.os != 'Linux'
       shell: bash
@@ -45,7 +60,7 @@ runs:
 
     # The bindings stage builds peppylib-py, whose build script refuses to
     # start without uv on PATH, and the macOS image ships none. Installed as
-    # rust-build-env installs it on Linux.
+    # scripts/setup_machine.sh installs it on the Linux hosts.
     - name: Install uv
       if: inputs.rust == 'true' && runner.os == 'macOS'
       shell: bash

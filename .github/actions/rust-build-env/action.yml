@@ -1,238 +1,80 @@
 name: Rust build environment
 description: >-
-  Installs the Rust toolchain, the system packages every cargo step in this
-  repository builds against, and the pixi and uv tools the build scripts and
-  Python test scenarios execute, then clears the kernel restriction that would
-  stop apptainer from creating unprivileged user namespaces.
+  Puts the toolchain the host is provisioned with on PATH and checks it is
+  there, then prepares the two pieces of host state apptainer needs: permission
+  to create unprivileged user namespaces, and enough loop devices to mount
+  several images at once.
 
 runs:
   using: composite
   steps:
-    # The self-hosted runners are provisioned outside this repository, and what
-    # they carry differs from box to box: the first one shipped no Rust at all,
-    # the ones added since ship rustup, pixi and uv but no Go. The hosted images
-    # this replaced shipped rustup with a default toolchain that trailed the
-    # workspace's dependency graph (sysinfo already required a newer rustc than
-    # those images shipped). So nothing here is assumed: install rustup if it is
-    # absent, then pin to current stable rather than inheriting whatever default
-    # is there. Both halves are skipped when they are already satisfied, so a
-    # box that has them pays nothing. Must stay ahead of every cargo step.
-    - name: Install Rust toolchain
+    # Nothing here installs a toolchain. scripts/setup_machine.sh is what
+    # provisions a host for this repository — the apptainer build dependencies,
+    # rustup with stable and clippy, Go, qemu, pixi, uv and Docker — and the
+    # self-hosted runners have run it (`--ci-runner`, per the Readme), so a box
+    # taking a job already carries all of it. A box that does not is a
+    # provisioning failure to fix once on that box, not something for every job
+    # on every runner to re-check and paper over. The one caller whose host is
+    # not provisioned ahead of time is release-host-env, which runs that same
+    # script itself before this action; see the note there.
+    #
+    # What a job does still have to do is PATH. The runner executes steps in a
+    # shell that is neither a login nor an interactive one, so the profile
+    # edits those installers make are never sourced, and the tools under $HOME
+    # and /usr/local/go have to be named on $GITHUB_PATH to be reachable from
+    # the calling job's later steps. The directories are exactly the install
+    # locations setup_machine.sh uses.
+    #
+    # The check is there to name a gap in one line instead of letting it become
+    # an error minutes later inside a build script, where it reads as something
+    # else entirely: no `pixi` is generator-internal refusing to serve a stale
+    # peppylib .so, no `go` is apptainer's mconfig stopping at "host Go
+    # compiler ... not found!", and no clippy is the generator suites failing
+    # rather than skipping a lint (their test helpers run `cargo clippy
+    # --all-targets -- -D warnings` over the crate they generate). Must stay
+    # ahead of every cargo step.
+    - name: Check the host's toolchain
       shell: bash
       run: |
         set -euo pipefail
-        if ! command -v rustup > /dev/null; then
-          echo "rustup absent; installing"
-          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.cargo/bin:$PATH"
-        fi
-        # `rustup default` prints the active toolchain; pin only when it is not
-        # already stable, so the common path makes no network call.
-        if ! rustup default 2>/dev/null | grep -q '^stable-'; then
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+        for dir in "$HOME/.cargo/bin" /usr/local/go/bin "$HOME/.pixi/bin" "$HOME/.local/bin"; do
+          if [ -d "$dir" ]; then
+            echo "$dir" >> "$GITHUB_PATH"
+          fi
+        done
+        # $GITHUB_PATH reaches the next step, not this one, so the checks below
+        # need the same directories on PATH here.
+        export PATH="$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.pixi/bin:$HOME/.local/bin:$PATH"
+        missing=()
+        for tool in rustc cargo go pixi uv; do
+          command -v "$tool" > /dev/null || missing+=("$tool")
+        done
+        cargo clippy --version > /dev/null 2>&1 || missing+=("clippy")
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "::error::${RUNNER_NAME:-this host} is missing ${missing[*]}." \
+            "Provision it with scripts/setup_machine.sh --ci-runner."
+          exit 1
         fi
         rustc --version
-
-    # The box's own cargo configuration sets a `rustc-wrapper` of sccache
-    # (nothing in this repository does), and cargo fails outright when the
-    # wrapper it is told to use is not on disk: `could not execute process
-    # .../sccache .../rustc -vV (never executed)`. So install it when it is
-    # missing, skip when it is already there, and fall back to disabling the
-    # wrapper for this job if the download fails — a slower build beats a red
-    # suite over a compiler cache. The musl build is static, so it needs no
-    # runtime libraries.
-    - name: Install sccache when the runner's cargo config expects one
-      shell: bash
-      env:
-        SCCACHE_VERSION: v0.18.0
-      run: |
-        set -uo pipefail
-        # `cargo config get` would answer this directly but is nightly-only, so
-        # read the two places the setting can reach a stable cargo: the
-        # environment, and the user-global cargo config where the box's own
-        # setting lives. A workspace .cargo/config.toml could set it too; none in
-        # this repository does.
-        cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-        wrapper="${RUSTC_WRAPPER:-${CARGO_BUILD_RUSTC_WRAPPER:-}}"
-        if [ -z "$wrapper" ]; then
-          for config in "$cargo_home/config.toml" "$cargo_home/config"; do
-            [ -f "$config" ] || continue
-            wrapper=$(sed -n 's/^[[:space:]]*rustc-wrapper[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$config" | head -1)
-            [ -n "$wrapper" ] && break
-          done
-        fi
-        if [ -z "$wrapper" ]; then
-          echo "no rustc-wrapper configured; nothing to install"
-          exit 0
-        fi
-        if [ -x "$wrapper" ] || command -v "$(basename "$wrapper")" > /dev/null; then
-          echo "rustc-wrapper $wrapper is already available"
-          exit 0
-        fi
-        echo "rustc-wrapper $wrapper is configured but absent; installing sccache $SCCACHE_VERSION"
-        tarball="sccache-$SCCACHE_VERSION-x86_64-unknown-linux-musl"
-        url="https://github.com/mozilla/sccache/releases/download/$SCCACHE_VERSION/$tarball.tar.gz"
-        if curl -fsSL --connect-timeout 10 --max-time 180 "$url" | tar -xzf - -C "$RUNNER_TEMP"; then
-          mkdir -p "$HOME/.cargo/bin"
-          install -m 0755 "$RUNNER_TEMP/$tarball/sccache" "$HOME/.cargo/bin/sccache"
-          "$HOME/.cargo/bin/sccache" --version
-        else
-          echo "::warning::could not install sccache; building without the wrapper"
-          echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
-        fi
-
-    # containers-internal's build script compiles apptainer and its bundled
-    # squashfuse from source, and refuses to start unless every package in
-    # APPTAINER_BUILD_DEPS (crates/containers-internal/build.rs) is present: a
-    # header it cannot find is silently dropped from the build rather than
-    # reported. The list below mirrors that constant and must be kept in step
-    # with it, with two additions it does not carry. fuse2fs: apptainer needs it
-    # at run time to mount EXT3 images, so the container tests need it even
-    # though its absence is only a warning at build time. g++: apptainer's
-    # `mconfig` probes a host C++ compiler among its base checks and stops with
-    # `could not complete configuration` when there is none, and Ubuntu's `gcc`
-    # package does not pull one in. The build script's own pre-flight does not
-    # look for it, so a box without it gets no early diagnosis — the failure
-    # arrives as `checking: host C++ compiler... not found!` from deep inside
-    # the build script. Worth adding to APPTAINER_BUILD_DEPS so the pre-flight
-    # names it, which would want the matching entry in
-    # scripts/functions/lima.py too. Go is handled by the step below.
-    #
-    # The install pulls newer libc, libcurl and ca-certificates into the runner
-    # image, and needrestart's automatic mode then restarts every service linked
-    # against them, systemd-journald, systemd-networkd, systemd-resolved and
-    # systemd-udevd among them, underneath the running job. Restarting the
-    # logging, networking and device stack out from under the Actions runner is
-    # one of the causes GitHub names for "the runner lost communication with the
-    # server", so the drop-in holds needrestart to listing what it would restart
-    # and the runner keeps the services it booted with.
-    #
-    # The whole step is skipped when every package is already installed, which
-    # on a reused box is every job after the first on it: `apt-get update` alone
-    # is tens of seconds, and it would otherwise be paid by every suite to learn
-    # there is nothing to do.
-    - name: Install apptainer build and runtime dependencies
-      shell: bash
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        set -euo pipefail
-        packages=(
-          make gcc g++ pkg-config squashfs-tools cryptsetup curl ca-certificates
-          libseccomp-dev libfuse3-dev zlib1g-dev liblzo2-dev liblz4-dev
-          liblzma-dev libzstd-dev fuse2fs
-        )
-        missing=()
-        for package in "${packages[@]}"; do
-          dpkg-query -W -f='${Status}' "$package" 2>/dev/null \
-            | grep -q '^install ok installed$' || missing+=("$package")
-        done
-        if [ ${#missing[@]} -eq 0 ]; then
-          echo "every apptainer build dependency is already installed"
-          exit 0
-        fi
-        echo "installing: ${missing[*]}"
-        sudo mkdir -p /etc/needrestart/conf.d
-        printf '$nrconf{restart} = "l";\n' \
-          | sudo tee /etc/needrestart/conf.d/90-no-service-restarts.conf > /dev/null
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq "${missing[@]}"
-
-    # containers-internal's build script compiles apptainer with the `go` it
-    # finds on PATH and never installs one: only its Lima and chroot paths
-    # bootstrap the pinned toolchain (apptainer_compile_steps). Apptainer's
-    # `mconfig` enforces a minimum Go of its own, so a box with no Go — or with
-    # Ubuntu's `golang-go`, which is older than that minimum — fails the build
-    # with `checking: host Go compiler ... go not found!`. The runner this
-    # migration first ran on happened to carry a Go new enough, as the
-    # Blacksmith images had; the boxes added since do not, so the toolchain is
-    # installed here rather than assumed.
-    #
-    # The version and its checksum are read out of build.rs instead of pinned
-    # again here: that constant is what the build has to satisfy, so a second
-    # copy would be one more thing to bump in step. The pin is stricter than
-    # mconfig's floor by design — one toolchain whose bytes are verified beats
-    # trusting whatever a box happens to carry — so a box with an adequate but
-    # older Go still installs it, once, since the directory outlives the job.
-    - name: Install the Go that apptainer's mconfig requires
-      shell: bash
-      run: |
-        set -euo pipefail
-        build_rs="$GITHUB_WORKSPACE/crates/containers-internal/build.rs"
-        pin=$(sed -n 's/^[[:space:]]*const GO_VERSION: &str = "\([^"]*\)".*/\1/p' "$build_rs" | head -1)
-        if [ -z "$pin" ]; then
-          echo "::error::could not read GO_VERSION from $build_rs"
-          exit 1
-        fi
-        case "$RUNNER_ARCH" in
-          X64) go_arch=amd64; const=GO_LINUX_AMD64_SHA256 ;;
-          ARM64) go_arch=arm64; const=GO_LINUX_ARM64_SHA256 ;;
-          *) echo "::error::no pinned Go checksum for $RUNNER_ARCH"; exit 1 ;;
-        esac
-        # The constant's value sits on the line after its name, so the scan
-        # starts at the name and takes the first 64-hex string it then sees.
-        sha=$(awk -v const="$const" '
-          index($0, "const " const ": &str =") { found = 1 }
-          found && match($0, /"[0-9a-f]+"/) {
-            candidate = substr($0, RSTART + 1, RLENGTH - 2)
-            if (length(candidate) == 64) { print candidate; exit }
-          }
-        ' "$build_rs")
-        if [ -z "$sha" ]; then
-          echo "::error::could not read $const from $build_rs"
-          exit 1
-        fi
-        # `command -v` decides this rather than running `go version` and
-        # discarding its error: under `set -e` with `pipefail` a missing `go`
-        # makes the whole pipeline exit 127 and takes the step with it, which
-        # would fail exactly the boxes this step exists to provision.
-        have=""
-        if command -v go > /dev/null; then
-          have=$(go version | awk '{print $3}' | sed 's/^go//')
-        fi
-        # sort -V puts the lower version first, so the box's Go is good enough
-        # exactly when the pin sorts ahead of it.
-        if [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$pin" "$have" | sort -V | head -1)" = "$pin" ]; then
-          echo "go $have already satisfies the pinned $pin"
-          exit 0
-        fi
-        # Keyed by version, so a bump lands beside the old tree rather than
-        # having to overwrite it, and a half-extracted tree is never mistaken
-        # for a whole one: the move is what publishes it.
-        root="$HOME/.local/peppy-ci-go-$pin"
-        if [ ! -x "$root/bin/go" ]; then
-          echo "installing Go $pin (box has ${have:-none})"
-          mkdir -p "$HOME/.local"
-          tarball="$RUNNER_TEMP/go-$pin-$go_arch.tar.gz"
-          curl -fsSL --connect-timeout 10 --max-time 300 \
-            "https://go.dev/dl/go$pin.linux-$go_arch.tar.gz" -o "$tarball"
-          echo "$sha  $tarball" | sha256sum -c -
-          staging=$(mktemp -d "$HOME/.local/peppy-ci-go-$pin.XXXXXX")
-          tar -C "$staging" --strip-components=1 -xzf "$tarball"
-          # An earlier attempt that died between extract and publish leaves a
-          # directory with no bin/go; it goes, or the move would nest inside it.
-          rm -rf "$root"
-          mv "$staging" "$root"
-          rm -f "$tarball"
-        fi
-        echo "$root/bin" >> "$GITHUB_PATH"
-        "$root/bin/go" version
+        go version
+        pixi --version
+        uv --version
 
     # Apptainer is built without setuid and creates its user namespaces
-    # unprivileged, through fakeroot. Ubuntu 24.04 images ship
+    # unprivileged, through fakeroot. Ubuntu 24.04 ships
     # kernel.apparmor_restrict_unprivileged_userns=1, which denies that to any
     # binary without a matching AppArmor profile, so every test that builds or
     # runs a container fails with "Apptainer's user namespace prerequisites are
     # not met" and a fix script naming the starter binary. Clearing the knob is
     # what peppy itself does inside the Lima guest it provisions (see
-    # apptainer/lima.rs), and on a runner discarded at the end of the job it
-    # costs nothing, whereas installing the per-installation AppArmor profile
-    # would have to be redone for every apptainer version the build cache
-    # holds. Images predating the restriction (Ubuntu 22.04) never expose the
-    # knob, hence the existence check.
+    # apptainer/lima.rs); the alternative, the per-installation AppArmor
+    # profile, is keyed to the path of the install's starter binary and would
+    # have to be rewritten for every apptainer version the build cache holds.
+    #
+    # Set per job rather than in the host's provisioning because it does not
+    # survive a reboot, and a box that came back up without it fails every
+    # container suite on it. A kernel that never had the restriction (Ubuntu
+    # 22.04) has no knob to clear, hence the existence check.
     - name: Allow unprivileged user namespaces
       shell: bash
       run: |
@@ -243,55 +85,18 @@ runs:
         fi
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-    # Apptainer mounts every SIF image through a /dev/loopN node, and the
-    # runner image materializes only loop0 through loop7. The container tests
-    # and the multi-daemon e2e run several containers at once, and the ninth
+    # Apptainer mounts every SIF image through a /dev/loopN node, and a host
+    # materializes only loop0 through loop7 by default. The container tests and
+    # the multi-daemon e2e run several containers at once, and the ninth
     # concurrent mount dies with "could not open /dev/loop8: no such file or
     # directory". Create the remaining nodes up front; the loop major is 7 and
-    # the kernel accepts device nodes whether or not udev would have made
-    # them.
+    # the kernel accepts device nodes whether or not udev would have made them.
+    # Like the knob above these are lost on reboot, so they are made here; on a
+    # box that has already run a container suite since booting, every one of
+    # them exists and the loop does nothing.
     - name: Create loop devices for parallel container mounts
       shell: bash
       run: |
         for i in $(seq 8 63); do
           [ -e "/dev/loop$i" ] || sudo mknod -m 660 "/dev/loop$i" b 7 "$i"
         done
-
-    # The runner image ships neither pixi nor uv. generator-internal's build
-    # script builds the embedded peppylib .so through a bare `pixi run` and,
-    # when pixi is absent, refuses to serve a stale .so instead, which is
-    # fatal on an ephemeral runner whose ~/.peppy cache starts empty. The
-    # Python generator tests and latency scenarios likewise exec bare `uv` on
-    # the host. Both are installed exactly as scripts/setup_machine.sh
-    # installs them, pixi pinned to a version that satisfies every
-    # `requires-pixi` (scripts/pixi.toml, peppylib-py's pixi.toml);
-    # $GITHUB_PATH exports them to every later step of the calling job (the
-    # installers' own profile edits are never sourced there).
-    #
-    # Each installer runs only when its tool is absent, so the reused runner
-    # pays for them once rather than in every job. The $GITHUB_PATH exports are
-    # unconditional: they cost nothing and a tool already on the box still has
-    # to be reachable from the calling job's later steps.
-    - name: Install pixi and uv
-      shell: bash
-      run: |
-        set -euo pipefail
-        export PATH="$HOME/.pixi/bin:$HOME/.local/bin:$PATH"
-        # pixi is checked by version, not mere presence: the pin is what
-        # satisfies every `requires-pixi` in the workspace, so a box carrying
-        # some other pixi must be brought to this one rather than trusted.
-        pixi_pin=0.80.0
-        if [ "$(pixi --version 2>/dev/null || true)" = "pixi $pixi_pin" ]; then
-          echo "pixi $pixi_pin already installed"
-        else
-          curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION="v$pixi_pin" sh
-        fi
-        # uv carries no pin here (the suites call it through their own
-        # lockfiles), so presence is the whole test.
-        if command -v uv > /dev/null; then
-          echo "uv already installed: $(uv --version)"
-        else
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-        fi
-        echo "$HOME/.pixi/bin" >> "$GITHUB_PATH"
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"

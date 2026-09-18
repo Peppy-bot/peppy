@@ -46,12 +46,14 @@ qemu, Go, pixi, uv, Docker, and (on macOS) Lima, skipping anything already
 present. Supported platforms: Ubuntu and macOS.
 
   --ci-runner   Additionally prepare the host to run this repository's CI as a
-                self-hosted GitHub Actions runner: grant the invoking user
-                passwordless sudo. The container suites re-install peppy under
-                a fresh directory on every job and then run `peppy container
-                setup`, which writes an AppArmor profile keyed to that install
-                and so needs root without a terminal to prompt at. This grants
-                real privilege; read the note it prints before using it.
+                self-hosted GitHub Actions runner: install the aarch64 cross
+                toolchain the cross-check job builds with, and grant the
+                invoking user passwordless sudo. The container suites
+                re-install peppy under a fresh directory on every job and then
+                run `peppy container setup`, which writes an AppArmor profile
+                keyed to that install and so needs root without a terminal to
+                prompt at. This grants real privilege; read the note it prints
+                before using it.
 EOF
 }
 
@@ -152,6 +154,16 @@ Install it from https://brew.sh, then re-run this script:
   /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
 fi
 
+# Installs run without a prompt and with needrestart held to listing what it
+# would restart rather than restarting it. The packages below pull in newer
+# libc, libcurl and ca-certificates, and needrestart's automatic mode then
+# restarts every service linked against them — systemd-journald,
+# systemd-networkd, systemd-resolved and systemd-udevd among them. That matters
+# when a CI runner provisions itself mid-job, as the release stages do
+# (.github/actions/release-host-env): restarting the logging, networking and
+# device stack underneath the job is one of the causes GitHub names for "the
+# runner lost communication with the server". Both settings are per invocation,
+# so the machine's own needrestart policy is left as its owner set it.
 APT_UPDATED=false
 apt_install() {
     if ! $APT_UPDATED; then
@@ -159,7 +171,8 @@ apt_install() {
         $SUDO apt-get update -y
         APT_UPDATED=true
     fi
-    $SUDO apt-get install -y "$@"
+    $SUDO env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l \
+        apt-get install -y "$@"
 }
 
 # Append a PATH line to a profile file, but only once.
@@ -227,13 +240,18 @@ install_rust() {
     fi
     export PATH="$HOME/.cargo/bin:$PATH"
     have rustup || die "rustup is still not on PATH after installing it"
-    # `--profile minimal` above omits clippy, so it is asked for by name. Both
-    # calls are no-ops when they are already satisfied.
-    if ! rustup default 2>/dev/null | grep -q '^stable-'; then
-        log "Pinning the default toolchain to stable"
-        rustup toolchain install stable --profile minimal
-        rustup default stable
-    fi
+    # Installed rather than merely checked for, because "the default is some
+    # stable" is not the question: a machine that has sat for a while, or a CI
+    # image built months ago, carries a stable that trails the workspace's
+    # dependency graph, and what that produces is an error naming a dependency
+    # rather than the toolchain. `rustup toolchain install` reports "unchanged"
+    # and stops when stable is already current, so the cost is one version
+    # check. CI installs no toolchain of its own and builds with whatever this
+    # leaves behind, so this is the only place that keeps stable current.
+    log "Bringing the stable toolchain up to date"
+    rustup toolchain install stable --profile minimal
+    rustup default stable
+    # `--profile minimal` omits clippy, so it is asked for by name.
     if cargo clippy --version >/dev/null 2>&1; then
         skip "clippy" "$(cargo clippy --version)"
     else
@@ -316,9 +334,9 @@ install_pixi() {
         return
     fi
     log "Installing pixi"
-    # Pinned to the version CI installs (.github/actions/rust-build-env), which
-    # satisfies requires-pixi in scripts/pixi.toml and peppylib-py/pixi.toml;
-    # bump them together.
+    # This pin is the one CI runs under: the workflows install nothing and use
+    # the pixi the host was provisioned with. It satisfies requires-pixi in
+    # scripts/pixi.toml and peppylib-py/pixi.toml; bump them together.
     curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.80.0 sh
 }
 
@@ -341,6 +359,31 @@ install_lima() {
     fi
     log "Installing Lima"
     brew install lima
+}
+
+# The cross-check job builds the release dependency tree for aarch64 on an
+# x86_64 host (.github/workflows/tests.yml), which needs the target's standard
+# library and a linker driver for it: pmi's build script cargo-installs zenohd
+# for the target, and that build links for real. Asked for by --ci-runner
+# rather than installed for everyone, because nothing a developer runs locally
+# cross-compiles — the release's cross build happens inside a Lima guest that
+# provisions itself.
+install_cross_toolchain() {
+    if [ "$PLATFORM" != "ubuntu" ]; then
+        die "--ci-runner targets the Ubuntu self-hosted runners; this host is ${PLATFORM}"
+    fi
+    if rustup target list --installed | grep -qx aarch64-unknown-linux-gnu; then
+        skip "the aarch64 Rust target" "rustup target list --installed"
+    else
+        log "Adding the aarch64-unknown-linux-gnu Rust target"
+        rustup target add aarch64-unknown-linux-gnu
+    fi
+    if have aarch64-linux-gnu-gcc; then
+        skip "the aarch64 cross compiler" "$(command -v aarch64-linux-gnu-gcc)"
+    else
+        log "Installing the aarch64 cross compiler"
+        apt_install gcc-aarch64-linux-gnu
+    fi
 }
 
 # Prepare the host to run this repository's CI as a self-hosted runner.
@@ -401,6 +444,7 @@ install_uv
 install_docker
 install_lima
 if $CI_RUNNER; then
+    install_cross_toolchain
     configure_ci_runner
 fi
 log "Done. Open a new shell (or source your profile) so freshly installed tools are on PATH."
