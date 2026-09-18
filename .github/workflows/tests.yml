@@ -33,8 +33,8 @@ env:
 # parallel as there are boxes and the rest queue; a suite is warm or cold
 # depending on which box it lands on, since the caches below are per-box. A
 # pull request from a fork lands on those same boxes, so what keeps fork code
-# away from them is the repository's fork-PR approval gate, not the runner it
-# is scheduled on.
+# away from them is the repository's fork-PR approval policy, which holds every
+# outside contributor's run until a maintainer approves it.
 jobs:
   # Which of the gated suites have had their inputs touched. The per-suite
   # source sets are derived from cargo metadata's resolve graph at run time
@@ -60,8 +60,8 @@ jobs:
           # credential sitting in .git/config for every later step to inherit.
           persist-credentials: false
 
-      # The detection queries cargo metadata, and the action is where the
-      # toolchain pin lives.
+      # The detection queries cargo metadata, and the action is what puts the
+      # box's cargo on PATH.
       - uses: ./.github/actions/rust-build-env
 
       - name: Detect changed test inputs
@@ -81,8 +81,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Rust toolchain plus the system libraries the container build script
-      # compiles apptainer against. Must precede every cargo step.
+      # Puts the box's toolchain on PATH and prepares the host state apptainer
+      # needs. Must precede every cargo step.
       - uses: ./.github/actions/rust-build-env
 
       - uses: ./.github/actions/cargo-cache
@@ -133,14 +133,11 @@ jobs:
         with:
           suite: multi-daemon-e2e
 
-      # No builder setup step: the suite builds its daemon image through
-      # `docker buildx build` (see build_e2e_daemon_image), which resolves the
-      # default builder of the runner's own Docker daemon, and on a self-hosted
-      # runner that buildkit instance and its layer cache outlive the job. So
-      # the apt and uv-python layers are built once and reused across runs with
-      # nothing to hydrate or commit. Where no buildx client is installed at
-      # all the test falls back to the testcontainers build, building the
-      # identical image body.
+      # The suite builds its daemon image through `docker buildx build` (see
+      # build_e2e_daemon_image), which resolves the default builder of the
+      # runner's own Docker daemon. That buildkit instance and its layer cache
+      # outlive the job, so the apt and uv-python layers are built once and
+      # reused across runs with no builder to set up here.
       - uses: ./.github/actions/cargo-suite
         with:
           command: cargo test --locked -p peppy --features multi_daemon_e2e --test multi_daemon_e2e
@@ -199,13 +196,10 @@ jobs:
         run: |
           # The install tests boot Lima VMs (limactl itself comes from the pixi
           # environment) on the runner's QEMU, which comes from the box's
-          # provisioning along with everything else these suites build against.
-          #
-          # KVM is the exception this step still handles: it opens when present
-          # but group-inaccessible, and a reboot resets the permission, so it
-          # cannot be provisioned once and left. Without it Lima falls back to
-          # software emulation, which only costs time. Needs passwordless sudo
-          # on the box.
+          # provisioning. KVM access is set here because a reboot resets the
+          # permission: it opens when present but group-inaccessible, and
+          # without it Lima falls back to software emulation, which only costs
+          # time. Needs passwordless sudo on the box.
           if [ -e /dev/kvm ] && ! [ -r /dev/kvm -a -w /dev/kvm ]; then
             sudo chmod 666 /dev/kvm
           fi
@@ -235,13 +229,35 @@ jobs:
 
       - uses: ./.github/actions/rust-build-env
 
+      # The aarch64 target and the cross gcc come from the box's provisioning,
+      # as the rest of what this job builds with does, and this is the one job
+      # that needs them. A box without them fails from inside cargo, which
+      # reports a dependency that cannot find `core` rather than a runner that
+      # was never given the target, so the gap is named here instead. The
+      # target list is captured before grep reads it: `grep -q` returns on the
+      # first match and would leave rustup writing into a closed pipe.
+      - name: Check the host's cross toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          targets=$(rustup target list --installed 2>/dev/null || true)
+          grep -qx aarch64-unknown-linux-gnu <<< "$targets" ||
+            missing+=("the aarch64 Rust target")
+          command -v aarch64-linux-gnu-gcc > /dev/null ||
+            missing+=("aarch64-linux-gnu-gcc")
+          if [ ${#missing[@]} -gt 0 ]; then
+            list=$(printf '%s, ' "${missing[@]}")
+            echo "::error::${RUNNER_NAME:-this host} is missing ${list%, }." \
+              "Self-hosted boxes are provisioned with the Peppy superproject's" \
+              "scripts/setup_machine.sh --ci-runner."
+            exit 1
+          fi
+
       - uses: ./.github/actions/cargo-cache
         with:
           suite: cross-check
 
-      # No toolchain step: the aarch64 target and the cross gcc come from the
-      # box's provisioning, as the rest of what this job builds with does.
-      #
       # The linker matters even though `cargo check` itself never links:
       # pmi's build script cargo-installs zenohd for the target, a real
       # release build that links. Without the cross gcc as the target's

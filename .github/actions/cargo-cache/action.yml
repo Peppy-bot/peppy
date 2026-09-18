@@ -18,27 +18,22 @@ inputs:
 runs:
   using: composite
   steps:
-    # The runner is self-hosted and reused, so a directory under $HOME simply
-    # outlives the job; nothing mounts or uploads it. The name carries the
-    # architecture because every artifact in it is built for the host that
-    # built it, and the month because cargo never removes an artifact a
-    # dependency bump or a profile change superseded, so a target directory
-    # only grows. The first run of a month starts empty and pays one cold
-    # build per suite, the prune below drops the previous month, and a
-    # directory is never older than a month of leftovers.
+    # The runner is self-hosted and reused, so a directory under $HOME outlives
+    # the job; nothing mounts or uploads it. The name carries the architecture
+    # because every artifact in it is built for the host that built it, and
+    # the month because cargo never removes an artifact a dependency bump or a
+    # profile change superseded, so a target directory only grows. The first
+    # run of a month starts empty and pays one cold build per suite, the prune
+    # below drops the previous month, and a directory is never older than a
+    # month of leftovers.
     #
-    # Unlike the Blacksmith sticky disk this replaces, the directory is live
-    # rather than a clone of a committed snapshot: a run reads what the
-    # previous run left, and any pull request scheduled here — a fork's
-    # included, since every job runs on this runner — writes into what later
+    # The directory is live: a run reads what the previous run left, and every
+    # pull request scheduled here, a fork's included, writes into what later
     # runs build on. So nothing stored here may be state one run depends on
     # another having written, only what cargo and the build scripts rebuild
-    # from scratch. Each self-hosted runner is its own machine with its own
-    # $HOME, so these directories are per-box rather than shared: every box
-    # pays its own cold build per suite, and a job is warm or cold depending on
-    # which one it lands on. A box runs one job at a time, so nothing races
-    # inside them; two runner agents on a single box would, and is the thing to
-    # revisit.
+    # from scratch. Each runner is its own machine with its own $HOME, so a
+    # job is warm or cold depending on which box it lands on. A box runs one
+    # job at a time, so nothing races inside the directory.
     - name: Name the suite's cache directory
       id: cache
       shell: bash
@@ -65,26 +60,20 @@ runs:
           fi
         done
 
-    # Only `target/` is redirected, and only through a symlink rather than
+    # Only `target/` is redirected, and through a symlink rather than
     # CARGO_TARGET_DIR: the docs snippet runner builds its nodes under the
     # workspace's own `target/`, so linking the directory leaves the path
     # where every tool expects it.
     #
-    # What this deliberately does NOT touch is anything under $HOME. The
-    # cargo registry, the git checkouts and the build scripts' tool cache
-    # (`~/.peppy/tmp`) used to be linked in here too, which made sense when
-    # the runner was discarded with the job: nothing else would ever be in
-    # those paths. On the reused self-hosted runner they are the box's own
-    # directories, shared with every other repository's jobs — public-peppy-libs
-    # runs `cargo test` as the same user — so a real directory sitting there is
-    # the normal state rather than the ordering mistake the old guard took it
-    # for, and linking them away both failed that guard and fought the other
-    # repositories for $HOME. They persist on the box by themselves and are
-    # keyed by content (the registry by crate and checksum, the tool cache by
-    # version and content in build_helpers::cache_dir), so they are a hit or a
-    # miss per entry and need no management from here. The trade is that they
-    # fall outside the monthly prune below; the registry grows slowly, where
-    # `target/` is what reached 39 GB in one suite.
+    # Nothing under $HOME is touched. The cargo registry, the git checkouts
+    # and the build scripts' tool cache (`~/.peppy/tmp`) are the box's own
+    # directories, shared with every other repository's jobs running as the
+    # same user. They persist by themselves and are keyed by content (the
+    # registry by crate and checksum, the tool cache by version and content in
+    # build_helpers::cache_dir), so each entry is a hit or a miss and needs no
+    # management from here. They fall outside the monthly prune above; the
+    # registry grows slowly, where `target/` is what reaches tens of gigabytes
+    # in one suite.
     #
     # Incremental compilation is off: its caches are most of a debug target
     # directory and all it would save is the seconds a warm rebuild of a
@@ -105,10 +94,9 @@ runs:
       run: |
         set -euo pipefail
         disk="${{ steps.cache.outputs.dir }}"
-        # link <path> <store>: the path becomes a symlink to the store. These
-        # are per-job paths inside the checkout, which `actions/checkout`
-        # cleans, so a real directory at one is a cargo step that ran before
-        # this action — an ordering mistake this refuses to hide.
+        # link <path> <store>: the path becomes a symlink to the store. A
+        # real directory already at the path is a cargo step that ran before
+        # this action, an ordering mistake this refuses to hide.
         link() {
           local path=$1 store=$2
           mkdir -p "$store" "$(dirname "$path")"
@@ -119,11 +107,6 @@ runs:
           ln -sfn "$store" "$path"
         }
         link "$GITHUB_WORKSPACE/target" "$disk/target"
-        # A cache directory written while uv's cache still lived in it holds
-        # it as a real directory; it goes before the link takes its place.
-        if [ -d "$disk/target/uv-cache" ] && [ ! -L "$disk/target/uv-cache" ]; then
-          rm -rf "$disk/target/uv-cache"
-        fi
         link "$disk/target/uv-cache" "$RUNNER_TEMP/uv-cache"
         {
           echo "CARGO_INCREMENTAL=0"

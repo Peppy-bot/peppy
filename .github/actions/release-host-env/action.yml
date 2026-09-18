@@ -20,11 +20,11 @@ inputs:
 runs:
   using: composite
   steps:
-    # The release is the one workflow left on hosted runners, because it builds
-    # for macOS and arm64 while the rest of CI runs on self-hosted Linux x86
-    # boxes. Those boxes are provisioned before they take a job and every other
-    # workflow installs nothing; a hosted runner is a fresh image each run, so
-    # this is where a Linux release stage installs what it builds with.
+    # The release is the one workflow on hosted runners, because it builds for
+    # macOS and arm64 while the rest of CI runs on self-hosted Linux x86 boxes
+    # that are provisioned before they take a job. A hosted runner is a fresh
+    # image each run, so this is where a Linux release stage installs what it
+    # builds with.
     #
     # The packages are the ones containers-internal's build script asserts
     # before it compiles apptainer and its bundled squashfuse
@@ -73,12 +73,8 @@ runs:
 
     # Linux builds in the same environment as every cargo job of this
     # repository, which is also what checks the step above left a complete one.
-    # Short of the cross toolchain: a release stage builds for the host it runs
-    # on, and each of the two Linux architectures has a runner of its own.
     - if: inputs.rust == 'true' && runner.os == 'Linux'
       uses: ./.github/actions/rust-build-env
-      with:
-        cross-toolchain: "false"
 
     # Pinned to current stable rather than the runner image's default, as the
     # Linux step above does.
