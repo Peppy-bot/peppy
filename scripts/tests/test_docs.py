@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,6 @@ from functions.cli import ReleaseError
 from functions.docs import (
     _CHECK_PROMPT,
     _CHECK_SCHEMA,
-    _MAX_DIFF_CHARS,
     _PART_SCOPE,
     _REWORD_PROMPT,
     _UPDATE_PROMPT,
@@ -70,14 +70,44 @@ def _gap(file: str, change: str, severity: str) -> dict:
         ("crates/peppy/src/main.rs", True),
         ("scripts/functions/cli.py", True),
         ("Cargo.toml", True),
-        ("Cargo.lock", False),
         ("docs/src/content/docs/guides/installation.mdx", False),
         ("docs/astro.config.mjs", False),
         ("target/debug/foo", False),
         (".github/workflows/tests.yml", False),
         ("scripts/docs/is_doc_up_to_date.py", False),
         ("scripts/functions/docs.py", False),
+        # Lock files, wherever they sit.
+        ("Cargo.lock", False),
+        ("public-peppy-libs/peppy-shared/Cargo.lock", False),
+        ("public-peppy-libs/so101_description/uv.lock", False),
+        ("scripts/pixi.lock", False),
+        ("tools/package-lock.json", False),
+        # peppy's own test suite.
         ("scripts/tests/test_docs.py", False),
+        ("crates/peppy/tests/cli.rs", False),
+        ("crates/generator-internal/src/generator/python/tests/golden.rs", False),
+        ("public-peppy-libs/srs_model/tests/fixtures/parity_v10_left.txt", False),
+        ("crates/core-node-internal/src/services/tests.rs", False),
+        (
+            "public-peppy-libs/peppy-shared/peppylib-rs/src/messaging/deadline_tests.rs",
+            False,
+        ),
+        # Templates land in users' projects, their tests included.
+        (
+            "crates/core-node-internal/templates/node_init/python/tests/test_smoke.py.j2",
+            True,
+        ),
+        ("crates/core-node-internal/templates/node_init/rust/tests/smoke.rs.j2", True),
+        # The test surfaces users write their tests against.
+        ("public-peppy-libs/peppy-shared/peppylib-rs/src/testing.rs", True),
+        (
+            "public-peppy-libs/peppy-shared/peppy-messaging-interface/src/adapters/mock.rs",
+            True,
+        ),
+        ("crates/generator-internal/src/generator/rust/testing.rs", True),
+        # Only whole names count.
+        ("crates/peppy/src/contests.rs", True),
+        ("crates/peppy/src/latests/mod.rs", True),
     ],
 )
 def test_is_code_path(path: str, expected: bool) -> None:
@@ -122,9 +152,12 @@ def _mock_git_diff(names: str, diff: str = "DIFF", returncode: int = 0) -> Magic
 _CHANGED = (
     "Cargo.lock\n"
     "crates/peppy/src/main.rs\n"
+    "crates/peppy/tests/cli.rs\n"
     "crates/generator-internal/templates/peppygen/python/peppygen/clock.py\n"
+    "public-peppy-libs/peppy-shared/Cargo.lock\n"
     "docs/astro.config.mjs\n"
     "docs/src/content/docs/advanced_guides/testing.mdx\n"
+    "docs/src/content/docs/guides/snippets/python/hello_world/uv.lock\n"
     "docs/src/content/docs/guides/snippets/rust/hello_receiver/src/lib.rs\n"
     "docs/src/content/releases/v0.25.1.html\n"
     ".github/workflows/ci.yml\n"
@@ -157,8 +190,9 @@ def test_get_docs_diff_keeps_user_documentation_only(tmp_path: Path) -> None:
     with patch("functions.docs.subprocess.run", run):
         diff, paths = get_docs_diff("v0.1.0", "HEAD", tmp_path)
     assert diff == "DIFF"
-    # Embedded snippets are part of the rendered pages; release notes and the
-    # site configuration are not user documentation.
+    # Embedded snippets are part of the rendered pages, but not their lock
+    # files; release notes and the site configuration are not user
+    # documentation.
     assert paths == [
         "docs/src/content/docs/advanced_guides/testing.mdx",
         "docs/src/content/docs/guides/snippets/rust/hello_receiver/src/lib.rs",
@@ -475,12 +509,28 @@ def test_split_diff_refuses_text_outside_a_file_section() -> None:
 # --- check_docs / update_docs (mocked claude) ---
 
 
+def _claude_answer(structured: object) -> MagicMock:
+    """A successful claude run whose envelope carries *structured*."""
+    mock = MagicMock()
+    mock.returncode = 0
+    mock.stdout = json.dumps(
+        {
+            "type": "result",
+            "result": json.dumps(structured),
+            "structured_output": structured,
+        }
+    )
+    mock.stderr = ""
+    return mock
+
+
 class _ClaudeCalls:
     """A subprocess.run stand-in answering each claude call in turn.
 
-    The prompt of every call is appended to ``prompts``; the em-dash scan of
-    ``docs/`` (the one git call left once get_code_diff is patched) finds
-    nothing.
+    For runs made one after another (the updater's, or a check of a single
+    part); the check's parts are answered by `_ClaudeByPath`. The prompt of
+    every call is appended to ``prompts``; the em-dash scan of ``docs/`` (the
+    one git call left once get_code_diff is patched) finds nothing.
     """
 
     def __init__(self, *answers: object) -> None:
@@ -488,26 +538,70 @@ class _ClaudeCalls:
         self.prompts: list[str] = []
 
     def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
-        mock = MagicMock()
-        mock.stderr = ""
         if cmd[:2] == ["git", "grep"]:
+            mock = MagicMock()
             mock.returncode = 1
             mock.stdout = ""
+            mock.stderr = ""
             return mock
         if cmd and cmd[0] == "claude":
             self.prompts.append(str(kwargs.get("input")))
             structured = next(self._answers, None)
             assert structured is not None, "claude called more often than answered"
-            mock.returncode = 0
-            mock.stdout = json.dumps(
-                {
-                    "type": "result",
-                    "result": json.dumps(structured),
-                    "structured_output": structured,
-                }
-            )
-            return mock
+            return _claude_answer(structured)
         raise AssertionError(f"unexpected command: {cmd}")
+
+
+# The longest a fake claude run waits at a rendezvous for the other runs. Only
+# a check that stops running parts at once ever waits this long: the guard
+# turns that hang into a failure and never decides a passing run.
+_HANG_GUARD_SECONDS = 30.0
+
+
+class _ClaudeByPath:
+    """A subprocess.run stand-in answering each check run by the file it judges.
+
+    The check judges parts concurrently, so its runs arrive in no set order;
+    answering by the file a part shows keeps every verdict with its part.
+    Every part must show exactly one file of *answers*. A run judging a file
+    in *failing* exits non-zero, naming the file. When *rendezvous* is given,
+    every run waits there before answering, so none answers until that many
+    runs are in flight at once.
+
+    ``prompts`` maps each judged file to its prompt; ``judged`` lists the
+    files in the order their runs started.
+    """
+
+    def __init__(
+        self,
+        answers: dict[str, object],
+        *,
+        failing: frozenset[str] = frozenset(),
+        rendezvous: threading.Barrier | None = None,
+    ) -> None:
+        self._answers = answers
+        self._failing = failing
+        self._rendezvous = rendezvous
+        self.prompts: dict[str, str] = {}
+        self.judged: list[str] = []
+
+    def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+        assert cmd and cmd[0] == "claude", f"unexpected command: {cmd}"
+        prompt = str(kwargs.get("input"))
+        files = [f for f in self._answers if f"diff --git a/{f} b/{f}\n" in prompt]
+        assert len(files) == 1, f"a part must show one answered file: {files}"
+        (file,) = files
+        self.prompts[file] = prompt
+        self.judged.append(file)
+        if self._rendezvous is not None:
+            self._rendezvous.wait(timeout=_HANG_GUARD_SECONDS)
+        if file in self._failing:
+            mock = MagicMock()
+            mock.returncode = 2
+            mock.stdout = ""
+            mock.stderr = f"{file} broke"
+            return mock
+        return _claude_answer(self._answers[file])
 
 
 def _mock_subprocess_run_for_claude(
@@ -533,17 +627,7 @@ def _mock_subprocess_run_for_claude(
             if capture is not None:
                 capture["cmd"] = cmd
                 capture["input"] = kwargs.get("input")
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = json.dumps(
-                {
-                    "type": "result",
-                    "result": json.dumps(structured),
-                    "structured_output": structured,
-                }
-            )
-            mock.stderr = ""
-            return mock
+            return _claude_answer(structured)
         raise AssertionError(f"unexpected command: {cmd}")
 
     return MagicMock(side_effect=_run)
@@ -624,39 +708,51 @@ def test_check_docs_keeps_the_whole_diff_in_one_run_when_it_fits(
     assert "part 1 of" not in prompt
 
 
-def _two_part_diff() -> tuple[str, list[str]]:
-    """A diff of two files that split_diff cuts in two under _MAX_DIFF_CHARS."""
-    return _diff_of("crates/a.rs", "crates/b.rs"), ["crates/a.rs", "crates/b.rs"]
+def _patched_parts(
+    tmp_path: Path,
+    claude: Callable[..., MagicMock],
+    paths: tuple[str, ...] = ("crates/a.rs", "crates/b.rs"),
+):
+    """Patch the repo, the diff and claude so each of *paths* is a part of its own.
 
-
-def _patched_two_part_diff(tmp_path: Path, calls: _ClaudeCalls):
-    """Patch the repo, the diff and claude so the diff is handled in two parts."""
-    diff, paths = _two_part_diff()
+    The paths are the same length, so their diff sections are too, and a cap
+    of one section cuts the diff into one part per path, in order.
+    """
     return (
         patch("functions.docs.get_repo_root", return_value=tmp_path),
-        patch("functions.docs.get_code_diff", return_value=(diff, paths)),
-        patch("functions.docs._MAX_DIFF_CHARS", len(diff) - 1),
-        patch("functions.claude.subprocess.run", calls),
+        patch(
+            "functions.docs.get_code_diff",
+            return_value=(_diff_of(*paths), list(paths)),
+        ),
+        patch("functions.docs._MAX_DIFF_CHARS", len(_diff_of(paths[0]))),
+        patch("functions.claude.subprocess.run", claude),
     )
+
+
+_NO_GAP: dict = {"required_changes": []}
 
 
 def test_check_docs_judges_a_large_diff_in_parts(
     tmp_path: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    calls = _ClaudeCalls(
-        {"required_changes": [_gap("docs/a.mdx", "say a", "blocking")]},
-        {"required_changes": [_gap("docs/b.mdx", "say b", "minor")]},
+    calls = _ClaudeByPath(
+        {
+            "crates/a.rs": {"required_changes": [_gap("docs/a.mdx", "say a", "blocking")]},
+            "crates/b.rs": {"required_changes": [_gap("docs/b.mdx", "say b", "minor")]},
+        }
     )
-    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
     with repo, diff, cap, claude:
         result = check_docs("BASE", "HEAD")
 
-    # Every verdict comes back, stamped with the part it was judged on.
+    # Every verdict comes back in part order, stamped with the part it was
+    # judged on.
     assert result.changes == (
         RequiredChange("docs/a.mdx", "say a", "blocking", diff_part=1),
         RequiredChange("docs/b.mdx", "say b", "minor", diff_part=2),
     )
-    first, second = calls.prompts
+    first = calls.prompts["crates/a.rs"]
+    second = calls.prompts["crates/b.rs"]
     # Each run sees one part, told it is one, listing that part's paths only.
     assert "part 1 of 2 of the whole change set" in first
     assert _diff_of("crates/a.rs") in first
@@ -668,6 +764,56 @@ def test_check_docs_judges_a_large_diff_in_parts(
     assert "judged in 2 part(s)." in err
     assert "Asking Claude to judge part 1 of 2 of the diff (1 path(s)," in err
     assert "Asking Claude to judge part 2 of 2 of the diff (1 path(s)," in err
+    assert "Judged part 1 of 2 of the diff: 1 gap(s)." in err
+    assert "Judged part 2 of 2 of the diff: 1 gap(s)." in err
+
+
+def test_check_docs_judges_the_parts_at_once(tmp_path: Path) -> None:
+    # Neither run answers until both are in flight, so the check passes only
+    # when it runs them at the same time.
+    calls = _ClaudeByPath(
+        {"crates/a.rs": _NO_GAP, "crates/b.rs": _NO_GAP},
+        rendezvous=threading.Barrier(2),
+    )
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
+    with repo, diff, cap, claude:
+        result = check_docs("BASE", "HEAD")
+
+    assert result == CheckResult(changes=())
+    assert sorted(calls.judged) == ["crates/a.rs", "crates/b.rs"]
+
+
+def test_check_docs_starts_no_part_once_one_fails(tmp_path: Path) -> None:
+    paths = ("crates/a.rs", "crates/b.rs", "crates/c.rs")
+    calls = _ClaudeByPath(
+        {path: _NO_GAP for path in paths}, failing=frozenset({"crates/a.rs"})
+    )
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls, paths)
+    # One run at a time: the run judging part 1 fails before any other starts.
+    one_at_a_time = patch("functions.docs._CHECK_CONCURRENCY", 1)
+    with repo, diff, cap, claude, one_at_a_time:
+        with pytest.raises(ReleaseError, match="crates/a.rs broke"):
+            check_docs("BASE", "HEAD")
+
+    assert calls.judged == ["crates/a.rs"]
+
+
+def test_check_docs_raises_the_failure_of_the_first_failing_part(
+    tmp_path: Path,
+) -> None:
+    # Both runs are in flight before either fails, so both failures are in
+    # hand whichever ends first; the one of the lower part is raised.
+    calls = _ClaudeByPath(
+        {"crates/a.rs": _NO_GAP, "crates/b.rs": _NO_GAP},
+        failing=frozenset({"crates/a.rs", "crates/b.rs"}),
+        rendezvous=threading.Barrier(2),
+    )
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
+    with repo, diff, cap, claude:
+        with pytest.raises(ReleaseError, match="crates/a.rs broke"):
+            check_docs("BASE", "HEAD")
+
+    assert sorted(calls.judged) == ["crates/a.rs", "crates/b.rs"]
 
 
 def test_update_docs_hands_each_part_its_own_gaps(tmp_path: Path) -> None:
@@ -689,7 +835,7 @@ def test_update_docs_hands_each_part_its_own_gaps(tmp_path: Path) -> None:
         RequiredChange("docs/a.mdx", "say a", "blocking", diff_part=1),
         RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=2),
     )
-    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
     with repo, diff, cap, claude:
         result = update_docs("BASE", "HEAD", changes)
 
@@ -721,7 +867,7 @@ def test_update_docs_skips_the_parts_with_no_gap(tmp_path: Path) -> None:
         }
     )
     changes = (RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=2),)
-    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
     with repo, diff, cap, claude:
         result = update_docs("BASE", "HEAD", changes)
 
@@ -735,7 +881,7 @@ def test_update_docs_refuses_a_gap_naming_a_part_the_diff_lacks(
 ) -> None:
     calls = _ClaudeCalls()
     changes = (RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=3),)
-    repo, diff, cap, claude = _patched_two_part_diff(tmp_path, calls)
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
     with repo, diff, cap, claude:
         with pytest.raises(ReleaseError, match="has 2 part\\(s\\), but these changes"):
             update_docs("BASE", "HEAD", changes)
