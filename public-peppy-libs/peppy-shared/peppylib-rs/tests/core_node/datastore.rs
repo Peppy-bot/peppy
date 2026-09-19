@@ -228,9 +228,9 @@ async fn store_then_get_round_trips_binary_value() {
 async fn store_rejects_invalid_key() {
     let (_router, _temp_dir, node_runner) = setup_datastore_stub().await;
 
-    // Datastore keys are now arbitrary non-empty strings, so the only key the
-    // wrapper still rejects locally — before any request reaches the core node
-    // — is the empty string. (Slashes, dots, spaces and Unicode are all valid.)
+    // Datastore keys are arbitrary non-empty strings (slashes, dots, spaces and
+    // Unicode are all valid), so the only key the wrapper rejects locally,
+    // before any request reaches the core node, is the empty string.
     let err = datastore::store(
         &node_runner,
         "",

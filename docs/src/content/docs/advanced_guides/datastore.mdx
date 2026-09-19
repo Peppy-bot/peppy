@@ -51,7 +51,7 @@ The final argument is a response timeout. Rust accepts anything that converts to
     async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
         await store(
             node_runner,
-            "calibration_wrist_offset",
+            "calibration/wrist_offset",
             b'{"x": 0.1, "y": -0.4}',
             Encoding.APPLICATION_JSON,
             3.0,
@@ -78,7 +78,7 @@ The final argument is a response timeout. Rust accepts anything that converts to
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
             store(
                 &node_runner,
-                "calibration_wrist_offset",
+                "calibration/wrist_offset",
                 br#"{"x": 0.1, "y": -0.4}"#.to_vec(),
                 Encoding::APPLICATION_JSON,
                 Duration::from_secs(3),
@@ -113,7 +113,7 @@ The second argument is the same response timeout as above.
 
 
     async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
-        stored = await get(node_runner, "calibration_wrist_offset", 3.0)
+        stored = await get(node_runner, "calibration/wrist_offset", 3.0)
         if stored is None:
             print("no wrist offset stored yet")
         else:
@@ -137,7 +137,7 @@ The second argument is the same response timeout as above.
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-            let key = "calibration_wrist_offset";
+            let key = "calibration/wrist_offset";
             match get(&node_runner, key, Duration::from_secs(3)).await? {
                 Some(stored) => println!("wrist offset ({}): {:?}", stored.encoding, stored.value),
                 None => println!("no wrist offset stored yet"),
@@ -214,7 +214,7 @@ The second argument is the same response timeout as above.
 
 
     async def setup(_params: Parameters, node_runner: NodeRunner) -> None:
-        removed = await remove(node_runner, "calibration_wrist_offset", 3.0)
+        removed = await remove(node_runner, "calibration/wrist_offset", 3.0)
         print("removed" if removed else "key was already absent")
 
 
@@ -235,7 +235,7 @@ The second argument is the same response timeout as above.
 
     fn main() -> Result<()> {
         NodeBuilder::new().run(|_args: Parameters, node_runner| async move {
-            let key = "calibration_wrist_offset";
+            let key = "calibration/wrist_offset";
             if remove(&node_runner, key, Duration::from_secs(3)).await? {
                 println!("removed {key}");
             } else {
@@ -251,8 +251,8 @@ The second argument is the same response timeout as above.
 ## Behavior notes
 
 - **In-memory, never written to disk.** The store lives inside the core node process. Values last exactly as long as the core node does; restarting the core node starts from an empty store. Treat it as fast shared scratch space, not durable storage.
-- **Shared across the whole stack, with no namespacing.** Every node bound to the same core node reads and writes one flat keyspace. Coordinate on key names (a prefix convention like `calibration_...` works well) so two nodes do not clobber each other by accident.
-- **Keys use the node-name character set.** `store`, `get`, and `remove` accept keys made of ASCII letters, digits, underscores (`_`), and hyphens (`-`). A key with any other character (a slash, a space, a dot, a wildcard such as `*` or `{}`, or any Unicode letter) is rejected with an error before any request is sent. So `robot_state_1` and `wrist-offset-v2` are valid keys, while `robot/state.last?v=2`, `日本語`, and `""` are not.
+- **Shared across the whole stack, with no namespacing.** Every node bound to the same core node reads and writes one flat keyspace. Coordinate on key names (a prefix convention like `calibration/...` works well) so two nodes do not clobber each other by accident.
+- **Keys are arbitrary non-empty strings.** A key rides inside the request payload, not as a Zenoh keyexpr, so any character is allowed: slashes, spaces, `*`, `{}`, anything. `"robot/state**{1}"` is a perfectly valid key; only the empty string is rejected, before any request is sent.
 - **Store is an upsert; last writer wins.** A later store under an existing key overwrites the value, the encoding, and the recorded writer. The store records the storing node's `instance_id` on every write and surfaces it as `last_modified_by` on `get` and `list`. There is no atomic read-modify-write, so two nodes that both do get-then-store on the same key can race; design keys so a single writer owns each one when that matters.
 - **`list` is a metadata snapshot.** It returns every key's `encoding` and `last_modified_by` but never the value bytes (fetch those with `get`), in unspecified order, reflecting the store at the moment it was answered.
 - **The encoding tag is yours to interpret.** The store treats it as an opaque label and returns it unchanged. Reach for the `Encoding` constants for the common tags and pass any string for the rest (the Zenoh-style MIME-like tags are a good default), then have readers branch on it when you store more than one value type. A tag read back from `StoredValue.encoding` compares equal to its `Encoding` member, so `stored.encoding == Encoding.APPLICATION_JSON` (Python) / `stored.encoding == Encoding::APPLICATION_JSON` (Rust) works.
