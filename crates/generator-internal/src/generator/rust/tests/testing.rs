@@ -2,13 +2,14 @@
 //! slot gets a `<link>_vacant` knob guarding only the peer-pin seeding (the
 //! mock still starts, its pinned subscription resolves the readiness
 //! barrier); a `one` slot gets none; a multi slot gets a member count and an
-//! explicit member list, one mock per member.
+//! explicit member list, one mock per member. The generated harness lints
+//! clean whether or not the node emits anything.
 
 use super::*;
 use crate::generator::testgen::{
     DepLinkSpec, DepTopicSpec, PairingLinkSpec, TargetSpec, TestGenRegistry,
 };
-use config::node::{Cardinality, MessageFormat};
+use config::node::{Cardinality, MessageFormat, NativeEmittedTopic};
 
 fn registry_with_pairing(cardinality: Cardinality) -> TestGenRegistry {
     let mut registry = TestGenRegistry::default();
@@ -184,4 +185,48 @@ fn a_member_shadowing_one_of_the_mock_s_own_bindings_is_a_hard_error() {
         ),
         "expected a collision against the mock's own `session`, got: {error}"
     );
+}
+
+/// Generates the crate of a node under the stub manifest's identity, with
+/// whatever surface `declare_surface` adds, and lints it the way a node's
+/// test build compiles it (the `testing`-gated harness and mocks included).
+fn assert_generated_node_lints_clean(declare_surface: impl FnOnce(&mut RustGenerator)) {
+    let temp_dir = TempDir::new().unwrap();
+    let (mut generator, output_dir, user_node, _) = init_test_env::<RustGenerator>(&temp_dir);
+    generator.set_node_identity("generated_node", "v1");
+    declare_surface(&mut generator);
+    let output_config = copy_config_to_output(&user_node, &output_dir);
+    generator
+        .build(
+            &output_dir,
+            &daemon_config::consts::PeppyDirs::default(),
+            Default::default(),
+        )
+        .unwrap();
+    fs::remove_file(output_config).unwrap();
+
+    run_clippy(&output_dir);
+}
+
+/// This is a long running test that verifies the generated code passes clippy.
+/// A node emitting nothing has no publisher readiness to push and an empty
+/// `Emitted`, so its harness declares the readiness list without `mut` and
+/// leaves `Emitted` out of the shutdown teardown.
+#[test]
+fn harness_of_a_node_emitting_nothing_lints_clean() {
+    assert_generated_node_lints_clean(|_| {});
+}
+
+/// This is a long running test that verifies the generated code passes clippy.
+/// Every emitted topic pushes one publisher readiness entry into the list and
+/// adds a subscription to `Emitted`, which shutdown drops ahead of the session.
+#[test]
+fn harness_of_a_node_emitting_a_topic_lints_clean() {
+    assert_generated_node_lints_clean(|generator| {
+        let status: NativeEmittedTopic = serde_json5::from_str(
+            r#"{ name: "status", qos_profile: "reliable", message_format: { outcome: "string" } }"#,
+        )
+        .unwrap();
+        generator.add_emitted_topic(&status, None).unwrap();
+    });
 }

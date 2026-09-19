@@ -1066,6 +1066,25 @@ fn render_harness(
         });
     }
 
+    // Every publisher readiness statement pushes onto the list, so a node
+    // with none (it emits nothing, on its own surface or a pairing slot)
+    // declares the list immutable.
+    let publisher_readiness_binding = if publisher_readiness.is_empty() {
+        quote!(publisher_readiness)
+    } else {
+        quote!(mut publisher_readiness)
+    };
+
+    // `shutdown` drops the emitted subscriptions ahead of the session they
+    // live on. A node emitting nothing has an empty `Emitted` with nothing to
+    // tear down (dropping it trips `clippy::drop_non_drop`), so the field is
+    // left to `..` instead.
+    let (emitted_binding, emitted_teardown) = if emitted_members.is_empty() {
+        (quote!(), quote!())
+    } else {
+        (quote!(emitted,), quote!(drop(emitted);))
+    };
+
     let parameters_seed = quote! {
         if let Some(parameters) = &config.parameters {
             standalone = standalone.with_parameters(parameters);
@@ -1239,7 +1258,6 @@ fn render_harness(
                 )
                 .await?;
 
-                #[allow(unused_mut)]
                 let mut standalone = peppylib::runtime::StandaloneConfig::new()
                     .with_messaging(router.host(), router.port())
                     .with_instance_id(instance_id.clone())
@@ -1247,7 +1265,7 @@ fn render_harness(
                 #parameters_seed
                 #( #seeding )*
 
-                let mut publisher_readiness: Vec<peppylib::testing::PublisherReadiness> =
+                let #publisher_readiness_binding: Vec<peppylib::testing::PublisherReadiness> =
                     Vec::new();
                 #( #publisher_readiness )*
                 let mut service_readiness: Vec<peppylib::testing::ServiceReadiness> =
@@ -1323,7 +1341,7 @@ fn render_harness(
             pub async fn shutdown(self) -> crate::Result<()> {
                 let Harness {
                     core,
-                    emitted,
+                    #emitted_binding
                     clock,
                     session,
                     router,
@@ -1331,7 +1349,7 @@ fn render_harness(
                 } = self;
                 let result = core.shutdown().await;
                 drop(clock);
-                drop(emitted);
+                #emitted_teardown
                 drop(session);
                 if let Some(router) = router {
                     router.shutdown().await?;
