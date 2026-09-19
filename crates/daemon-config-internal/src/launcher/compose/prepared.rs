@@ -1,7 +1,7 @@
 //! A launcher held ready to compose: its fragments read once, and the
 //! launch, join and removal it answers.
 
-use super::super::composition::{Adjustment, ArgumentOverrides};
+use super::super::composition::{Adjustment, ArgumentOverrides, CopySettings, OptionDeployment};
 use super::super::types::{LauncherFramework, PeppyLauncher};
 use super::constraints::{self, ConstraintScope};
 use super::copy::{
@@ -53,7 +53,8 @@ pub struct ComposedJoin {
 
 /// What `peppy stack join` asks for: the option to copy, the copy's name,
 /// the `--with` words over the option's own axes, and its
-/// `--set-arguments` overrides.
+/// `--set-arguments` overrides. The words and the overrides are laid over
+/// the settings of the launcher's entry for the option.
 #[derive(Debug, Clone, Copy)]
 pub struct JoinRequest<'a> {
     pub option: &'a str,
@@ -182,7 +183,10 @@ impl PreparedLauncher {
         })
     }
 
-    /// Composes one more copy over the running stack.
+    /// Composes one more copy over the running stack. The copy starts from
+    /// the settings of the launcher's entry for the option, as a copy the
+    /// entry lists does; the join's words win per axis and its
+    /// `--set-arguments` per argument.
     pub fn join(
         &self,
         request: JoinRequest<'_>,
@@ -199,8 +203,11 @@ impl PreparedLauncher {
             });
         };
         let loaded = self.loaded.option(&axis.name, request.option);
-        let with = select::copy_words(loaded, request.words)?;
-        let arguments = argument_overrides(request.arguments)?;
+        let settings = self.entry_settings(&axis.name, request.option).overlaid(
+            &select::copy_words(loaded, request.words)?,
+            &argument_overrides(request.arguments)?,
+            [],
+        );
         let bare = self.compose_stack(stack.selection)?;
         let copy = compose_copy(
             self,
@@ -210,9 +217,9 @@ impl PreparedLauncher {
                 axis: &axis.name,
                 loaded,
                 name: request.name,
-                with: &with,
-                arguments: &arguments,
-                adjustments: &[],
+                with: &settings.with,
+                arguments: &settings.arguments,
+                adjustments: &settings.adjustments,
                 origin: CopyOrigin::Join,
             },
             &stack.launcher.core_nodes,
@@ -358,6 +365,18 @@ impl PreparedLauncher {
         });
         expanded.skipped.extend(in_copies);
         Ok(expanded)
+    }
+
+    /// What every copy of `option` starts from: the settings of the entry
+    /// the launcher deploys the option with, or none when it deploys no
+    /// copy of it.
+    pub(super) fn entry_settings(&self, axis: &str, option: &str) -> CopySettings<'_> {
+        self.launcher
+            .option_deployments
+            .iter()
+            .find(|entry| entry.axis == axis && entry.option == option)
+            .map(OptionDeployment::entry_settings)
+            .unwrap_or_default()
     }
 
     /// How the report and the refusals name the launcher's own entries.

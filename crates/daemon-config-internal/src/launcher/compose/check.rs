@@ -331,7 +331,8 @@ fn check_file_copies_over(
 }
 
 /// Every copy every legal stack can run: as a launch of one copy, and as a
-/// join onto the bare stack. A copy that writes to a stack instance is
+/// join onto the bare stack, each starting from the settings of its
+/// option's entry as a join does. A copy that writes to a stack instance is
 /// launch-only, which the join refuses by name at the time. Returns the
 /// copy selections some stack admits, by option.
 fn check_copies_over(
@@ -346,6 +347,17 @@ fn check_copies_over(
     let mut legal_copies: Vec<(String, UnitSelection)> = Vec::new();
     for item in repeatable {
         for copy_selection in enumerate_copy(item.loaded, &item.axis.name) {
+            let with: BTreeMap<String, String> = copy_selection
+                .own_axes(&item.axis.name)
+                .filter_map(|entry| Some((entry.axis.clone(), entry.option.clone()?)))
+                .collect();
+            // Every copy of the option starts from its entry's settings. The
+            // entry's `with` fills the axes it names, so a selection leaving
+            // one of them unfilled is no copy of this launcher, and the
+            // selection filling it is composed in its own turn.
+            let entry = prepared.entry_settings(&item.axis.name, item.option);
+            let runs_here = entry.with.keys().all(|axis| with.contains_key(axis));
+            let settings = entry.overlaid(&with, &BTreeMap::new(), []);
             let mut legal_somewhere = false;
             for stack in stacks {
                 let over = copy_over_stack(
@@ -359,16 +371,15 @@ fn check_copies_over(
                     continue;
                 }
                 legal_somewhere = true;
+                if !runs_here {
+                    continue;
+                }
                 let (existing, bare) = match prepared.flat_stack(stack) {
                     Ok(result) => result,
                     // Reported once, by the stack pass.
                     Err(_) => continue,
                 };
                 let name = check_copy_name(&bare);
-                let with: BTreeMap<String, String> = copy_selection
-                    .own_axes(&item.axis.name)
-                    .filter_map(|entry| Some((entry.axis.clone(), entry.option.clone()?)))
-                    .collect();
                 let echo = format!(
                     "{} + copy of {}: {}",
                     stack.echo(),
@@ -383,9 +394,9 @@ fn check_copies_over(
                         axis: &item.axis.name,
                         loaded: item.loaded,
                         name: &name,
-                        with: &with,
-                        arguments: &BTreeMap::new(),
-                        adjustments: &[],
+                        with: &settings.with,
+                        arguments: &settings.arguments,
+                        adjustments: &settings.adjustments,
                         origin: CopyOrigin::Join,
                     },
                     &bare.core_nodes,

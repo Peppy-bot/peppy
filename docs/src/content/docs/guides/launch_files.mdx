@@ -609,7 +609,7 @@ deployments: [
 ],
 ```
 
-A copy entry has four fields: `instance_id`, the copy's name; `with`, the selection of the option's own axes, an axis left out taking what the fragment deploys; `arguments`, overrides of the copy's instances' arguments, keyed by the id written in the fragment and then by argument; and `adjustments`, the fragment verbs over the copy's instances. The option entry itself takes `with` and `arguments` too, shared by every copy it lists, and a copy's own values win per axis and per argument:
+A copy entry has four fields: `instance_id`, the copy's name; `with`, the selection of the option's own axes, an axis left out taking what the fragment deploys; `arguments`, overrides of the copy's instances' arguments, keyed by the id written in the fragment and then by argument; and `adjustments`, the fragment verbs over the copy's instances. The option entry itself takes `with` and `arguments` too, shared by every copy of the option, listed or joined, and a copy's own values win per axis and per argument:
 
 ```json5
 { robot: "openarm_v2_sim", with: { robot_commander: "xr_commander" }, instances: [
@@ -617,6 +617,8 @@ A copy entry has four fields: `instance_id`, the copy's name; `with`, the select
     { instance_id: "bravo", arguments: { commander_inst: { https_port: 4444 } } },
 ] },
 ```
+
+An option has one entry: its copies are listed together under that entry's `instances`, and a copy that differs from the others says so in its own fields.
 
 An entry and a copy also take `adjustments`, the same verbs a fragment's adjustments use (`set_arguments`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch`, a `--with` word `NAME.axis=option` or `NAME.option` selects one file copy's own axis for that launch, over the file's `with`:
 
@@ -645,9 +647,13 @@ peppy stack join openarm_v2 -i alpha --place jetson-1
 peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
 ```
 
-`stack join` names the option to copy and, with `-i`, the copy's name, the way `node run` names a node and an instance. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
+`stack join` names the option to copy and, with `-i`, the copy's name, the way `node run` names a node and an instance. Its `--with` words select the copied option's own axes.
 
-`--set-arguments INSTANCE.ARGUMENT=JSON5` on `stack join` overrides one argument of one of the copy's instances, named as the fragment writes it, the way a copy entry's `arguments` does in the file. It applies after every adjustment, once per argument. Numbers must be finite; quote string values:
+A joined copy starts from the launcher's entry for its option, exactly as a copy the entry lists does, so a launcher states what its robots are once and every join brings up one of them. From weakest to strongest: what the option's fragment deploys, then the entry's `with`, `arguments` and `adjustments`, then the join's `--with` words, which win per axis, and its `--set-arguments`, which win per argument. An option the launcher writes no entry for joins as its fragment deploys it. Removing a copy the file lists and joining its name again brings back the copy the entry describes. A word cannot switch off an axis the entry selects, so a word the entry's other axes refuse is refused at join as the same scoped word is at launch, naming the constraint.
+
+Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
+
+`--set-arguments INSTANCE.ARGUMENT=JSON5` on `stack join` overrides one argument of one of the copy's instances, named as the fragment writes it, the way a copy entry's `arguments` does in the file. It applies after every adjustment and over the entry's `arguments`, once per argument on the command line. Numbers must be finite; quote string values:
 
 ```sh
 peppy stack join openarm_v2 -i charlie --with xr_commander \
@@ -670,7 +676,7 @@ peppy stack resolve fleet --join openarm_v1 --join-name bravo --join-with xr_com
 
 Join and remove run on the coordinator (`--core-node NAME` reaches it from another machine), serialize with launches and with each other, and reserve only the machines they touch: an unrelated host that is offline blocks neither. A reset cancels the operation in flight, waits for its cleanup, and empties the stack. A restarted coordinator has no launcher to compose against; launch again before joining.
 
-`peppy repo index --check` composes every legal selection the way a launch does: the stack under every selection of its axes, then every copy a `zero_or_more` axis can add, as a launch beside the stack and as a join onto it.
+`peppy repo index --check` composes every legal selection the way a launch does: the stack under every selection of its axes, then every copy a `zero_or_more` axis can add, as a launch beside the stack and as a join onto it, each join starting from its option's entry as a real one does.
 
 ## Auditing a composed launch
 

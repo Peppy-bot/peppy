@@ -2274,3 +2274,303 @@ fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
         "{error}"
     );
 }
+
+/// A robot the way the hub's robot fragments are shaped: the fragment
+/// deploys the browser commander and leaves the camera rig off, and the rig
+/// needs a commander that consumes its cameras. `entry` is the body of the
+/// launcher's `robot: "arm"` entry after its option.
+fn robots_document(entry: &str) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{ name: "robot", cardinality: "zero_or_more", options: {{ arm: {{
+                deployments: [
+                    {{ source: {{ name: "arm", tag: "v1" }}, instances: [
+                        {{ instance_id: "arm_inst", arguments: {{ speed: 0.25 }} }}
+                    ] }},
+                    {{ commander: "web" }},
+                ],
+                components: [
+                    {{ name: "commander", provides: ["commander_inst"], options: {{
+                        web: {{ deployments: [{{ source: {{ name: "panel", tag: "v1" }}, instances: [
+                            {{ instance_id: "commander_inst" }}
+                        ] }}] }},
+                        mcp: {{ deployments: [{{ source: {{ name: "mcp", tag: "v1" }}, instances: [
+                            {{ instance_id: "commander_inst", arguments: {{ port: 8900 }} }}
+                        ] }}] }},
+                        xr: {{ deployments: [{{ source: {{ name: "headset", tag: "v1" }}, instances: [
+                            {{ instance_id: "commander_inst" }}
+                        ] }}] }},
+                    }} }},
+                    {{ name: "camera_rig", cardinality: "zero_or_one", options: {{
+                        cameras: {{ deployments: [{{ source: {{ name: "camera", tag: "v1" }}, instances: [
+                            {{ instance_id: "camera_inst" }}
+                        ] }}] }},
+                    }} }},
+                ],
+                constraints: [
+                    {{ when: {{ camera_rig: "cameras" }},
+                      requires: [{{ commander: ["mcp", "xr"] }}],
+                      reason: "the rig's cameras need a commander that consumes them" }}
+                ],
+            }} }} }}
+        ],
+        deployments: [{{ robot: "arm"{entry} }}]
+    }}"#
+    )
+}
+
+/// What the MCP launcher writes on its robot entry: the commander and the
+/// rig every robot of the stack runs with, a port, and an adjustment.
+const MCP_ROBOTS: &str = r#",
+    with: { commander: "mcp", camera_rig: "cameras" },
+    arguments: { commander_inst: { port: 8900, title: "robot" } },
+    adjustments: [{ target: "arm_inst", set_arguments: { speed: 0.6 } }],
+    instances: [{ instance_id: "alpha" }]"#;
+
+fn join_with(
+    prepared: &PreparedLauncher,
+    copy: &str,
+    join_words: &[&str],
+    arguments: &[ArgumentOverride],
+    launch: &ComposedLaunch,
+    existing: &PeppyLauncher,
+) -> Result<daemon_config::launcher::ComposedJoin, CompositionError> {
+    prepared.join(
+        JoinRequest {
+            option: "arm",
+            name: &name(copy),
+            words: &words(join_words),
+            arguments,
+        },
+        RunningStack {
+            selection: &launch.selection,
+            launcher: existing,
+        },
+    )
+}
+
+fn set_argument(flag: &str) -> ArgumentOverride {
+    flag.parse().expect("an INSTANCE.ARGUMENT=JSON5 flag")
+}
+
+/// A join with no words is the robot the launcher's entry describes: its
+/// `with`, its `arguments` and its adjustments, as the copy the entry lists
+/// has them.
+#[test]
+fn a_join_starts_from_the_settings_of_its_options_entry() {
+    let prepared = load(&robots_document(MCP_ROBOTS));
+    let launch = prepared.launch(&[]).unwrap();
+    let joined = join_with(&prepared, "bravo", &[], &[], &launch, &launch.launcher).unwrap();
+
+    assert_eq!(
+        joined.copy.selection.echo(),
+        "robot=arm  commander=mcp  camera_rig=cameras"
+    );
+    assert_eq!(
+        joined.copy.selection.echo(),
+        launch.copies()[0].selection.echo()
+    );
+    for id in ["arm_inst", "commander_inst", "camera_inst"] {
+        let listed = instance(&joined.launcher, &format!("alpha_{id}"));
+        let added = instance(&joined.launcher, &format!("bravo_{id}"));
+        assert_eq!(added.arguments, listed.arguments, "{id}");
+    }
+    let commander = instance(&joined.launcher, "bravo_commander_inst");
+    assert_eq!(commander.arguments["port"], AnyType::Int(8900));
+    assert_eq!(
+        instance(&joined.launcher, "bravo_arm_inst").arguments["speed"],
+        AnyType::Float(0.6)
+    );
+    let origins: Vec<&str> = joined
+        .report
+        .applied
+        .iter()
+        .filter(|entry| entry.target == "bravo_arm_inst")
+        .map(|entry| entry.origin.as_str())
+        .collect();
+    assert_eq!(origins, ["adjustments of `robot: arm`"]);
+}
+
+/// A join word wins on the axis it names and leaves the entry's other axes
+/// selected; a word the entry's other axes refuse is refused as the same
+/// word on the listed copy is at launch.
+#[test]
+fn a_join_word_overrides_one_axis_of_the_entry_and_keeps_the_others() {
+    let prepared = load(&robots_document(MCP_ROBOTS));
+    let launch = prepared.launch(&[]).unwrap();
+    let joined = join_with(&prepared, "bravo", &["xr"], &[], &launch, &launch.launcher).unwrap();
+    assert_eq!(
+        joined.copy.selection.echo(),
+        "robot=arm  commander=xr  camera_rig=cameras"
+    );
+    assert_eq!(
+        instance(&joined.launcher, "bravo_commander_inst").arguments["title"],
+        AnyType::String("robot".into()),
+        "the entry's arguments reach the commander the word selected"
+    );
+
+    let at_join = join_with(
+        &prepared,
+        "charlie",
+        &["web"],
+        &[],
+        &launch,
+        &launch.launcher,
+    )
+    .unwrap_err();
+    let at_launch = prepared.launch(&words(&["alpha.web"])).unwrap_err();
+    for error in [&at_join, &at_launch] {
+        assert!(
+            matches!(error, CompositionError::ConstraintUnsatisfied { selection, reason, .. }
+                if selection.contains("commander=web") && selection.contains("camera_rig=cameras")
+                    && reason.contains("consumes them")),
+            "{error}"
+        );
+    }
+}
+
+/// `--set-arguments` wins per argument over the entry's `arguments`, the
+/// entry's other arguments standing. An entry value overridden once is not
+/// a duplicate; the same argument set twice on the command line is.
+#[test]
+fn a_join_argument_overrides_one_argument_of_the_entry() {
+    let prepared = load(&robots_document(MCP_ROBOTS));
+    let launch = prepared.launch(&[]).unwrap();
+    let joined = join_with(
+        &prepared,
+        "bravo",
+        &[],
+        &[set_argument("commander_inst.port=8910")],
+        &launch,
+        &launch.launcher,
+    )
+    .unwrap();
+    let commander = instance(&joined.launcher, "bravo_commander_inst");
+    assert_eq!(commander.arguments["port"], AnyType::Int(8910));
+    assert_eq!(
+        commander.arguments["title"],
+        AnyType::String("robot".into())
+    );
+    assert_eq!(
+        instance(&joined.launcher, "alpha_commander_inst").arguments["port"],
+        AnyType::Int(8900),
+        "the listed copy keeps the entry's port"
+    );
+
+    let error = join_with(
+        &prepared,
+        "charlie",
+        &[],
+        &[
+            set_argument("commander_inst.port=8910"),
+            set_argument("commander_inst.port=8911"),
+        ],
+        &launch,
+        &launch.launcher,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::DuplicateArgumentOverride { target, argument }
+            if target == "commander_inst" && argument == "port"),
+        "{error}"
+    );
+}
+
+/// An entry that carries no settings leaves a join to what the fragment
+/// deploys, and a listed copy's own settings are its own: no join takes
+/// them.
+#[test]
+fn a_join_under_an_entry_without_settings_takes_what_the_fragment_deploys() {
+    let prepared = load(&robots_document(
+        r#", instances: [{ instance_id: "alpha",
+            with: { commander: "xr" }, arguments: { arm_inst: { speed: 0.9 } } }]"#,
+    ));
+    let launch = prepared.launch(&[]).unwrap();
+    assert_eq!(
+        launch.copies()[0].selection.echo(),
+        "robot=arm  commander=xr  camera_rig=(off)"
+    );
+    let joined = join_with(&prepared, "bravo", &[], &[], &launch, &launch.launcher).unwrap();
+    assert_eq!(
+        joined.copy.selection.echo(),
+        "robot=arm  commander=web (from file)  camera_rig=(off)"
+    );
+    assert_eq!(
+        instance(&joined.launcher, "bravo_arm_inst").arguments["speed"],
+        AnyType::Float(0.25)
+    );
+    assert!(
+        joined.report.applied.is_empty(),
+        "{:?}",
+        joined.report.applied
+    );
+}
+
+/// Removing a copy the file lists and joining its name again brings back
+/// the copy the file deployed, when the file states it on the entry.
+#[test]
+fn removing_a_listed_copy_and_joining_its_name_brings_the_same_copy_back() {
+    let prepared = load(&robots_document(MCP_ROBOTS));
+    let launch = prepared.launch(&[]).unwrap();
+    let alpha = launch.copies()[0].clone();
+    let without = prepared
+        .remove(&launch.launcher, &alpha, &launch.selection, &[])
+        .unwrap();
+    assert!(ids(&without).is_empty(), "{:?}", ids(&without));
+
+    let rejoined = join_with(&prepared, "alpha", &[], &[], &launch, &without).unwrap();
+    assert_eq!(rejoined.copy.selection.echo(), alpha.selection.echo());
+    assert_eq!(rejoined.copy.instance_ids, alpha.instance_ids);
+    for id in &alpha.instance_ids {
+        let deployed = instance(&launch.launcher, id.as_str());
+        let back = instance(&rejoined.launcher, id.as_str());
+        assert_eq!(back.arguments, deployed.arguments, "{id}");
+        assert_eq!(back.links, deployed.links, "{id}");
+        assert_eq!(back.core_node, deployed.core_node, "{id}");
+    }
+}
+
+/// The repository check composes each join from the entry's settings, so an
+/// entry argument naming an instance some joinable selection lacks is
+/// reported for that selection; a selection the entry's `with` rules out is
+/// no join of this launcher and is not composed.
+#[test]
+fn the_repository_check_joins_from_the_entrys_settings() {
+    let check = |entry: &str| {
+        let parsed = PeppyLauncherParser::from_content(&robots_document(entry)).unwrap();
+        daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"))
+    };
+    let problems = check(MCP_ROBOTS);
+    assert!(problems.is_empty(), "{problems:?}");
+
+    // The entry's argument reaches every copy, the rig only the listed one:
+    // a plain join has no `camera_inst` to override.
+    let problems = check(
+        r#", with: { commander: "mcp" }, arguments: { camera_inst: { fps: 30 } },
+            instances: [{ instance_id: "alpha", with: { camera_rig: "cameras" } }]"#,
+    );
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("copy of arm")
+                && problem.contains("camera_rig=(off)")
+                && problem.contains("camera_inst")),
+        "{problems:?}"
+    );
+    assert!(
+        problems
+            .iter()
+            .all(|problem| !problem.contains("camera_rig=cameras")),
+        "{problems:?}"
+    );
+
+    // Filling the rig on the entry rules the rig-less joins out.
+    let problems = check(
+        r#", with: { commander: "mcp", camera_rig: "cameras" },
+            arguments: { camera_inst: { fps: 30 } },
+            instances: [{ instance_id: "alpha" }]"#,
+    );
+    assert!(problems.is_empty(), "{problems:?}");
+}

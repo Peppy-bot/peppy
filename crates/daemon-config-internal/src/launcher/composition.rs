@@ -328,9 +328,10 @@ where
 
 /// One option entry of a `deployments` list, `{ <axis>: "<option>" }`: the
 /// option the document deploys on that axis. On a `zero_or_more` axis the
-/// entry lists the copies it runs as under `instances`; its own `with`,
-/// `arguments` and `adjustments` apply to each of them, a copy's own
-/// winning per axis and per argument and running after the entry's.
+/// entry lists the copies a launch starts under `instances`; its own `with`,
+/// `arguments` and `adjustments` apply to every copy of the option, the
+/// ones it lists and the ones a join adds, a copy's own winning per axis
+/// and per argument and running after the entry's.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionDeployment {
     pub axis: String,
@@ -348,13 +349,38 @@ pub(crate) struct OriginatedAdjustment<'a> {
     pub origin: String,
 }
 
-/// What one copy the file deploys selects and writes: the entry's settings
+/// What one copy selects and writes: the settings of its option's entry
 /// with the copy's own on top.
+#[derive(Default)]
 pub(crate) struct CopySettings<'a> {
     pub with: BTreeMap<String, String>,
     pub arguments: ArgumentOverrides,
     /// The entry's adjustments, then the copy's.
     pub adjustments: Vec<OriginatedAdjustment<'a>>,
+}
+
+impl<'a> CopySettings<'a> {
+    /// These settings with a copy's own laid over them: its `with` wins per
+    /// axis, its `arguments` per argument, and its adjustments run after.
+    /// A copy the file lists and a copy a join adds are both laid over
+    /// their entry this way.
+    pub(crate) fn overlaid(
+        mut self,
+        with: &BTreeMap<String, String>,
+        arguments: &ArgumentOverrides,
+        adjustments: impl IntoIterator<Item = OriginatedAdjustment<'a>>,
+    ) -> Self {
+        self.with
+            .extend(with.iter().map(|(k, v)| (k.clone(), v.clone())));
+        for (target, values) in arguments {
+            self.arguments
+                .entry(target.clone())
+                .or_default()
+                .extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        self.adjustments.extend(adjustments);
+        self
+    }
 }
 
 /// The shape of a copy's or an option entry's `with` and `arguments`:
@@ -388,7 +414,7 @@ fn check_copy_settings(
 
 impl OptionDeployment {
     /// Whether the entry carries `with`, `arguments` or `adjustments` for
-    /// the copies it lists.
+    /// the copies of its option.
     fn has_copy_settings(&self) -> bool {
         !self.with.is_empty() || !self.arguments.is_empty() || !self.adjustments.is_empty()
     }
@@ -398,37 +424,35 @@ impl OptionDeployment {
         format!("adjustments of `{}: {}`", self.axis, self.option)
     }
 
-    pub(crate) fn settings_for<'a>(&'a self, copy: &'a CopyEntry) -> CopySettings<'a> {
-        let mut with = self.with.clone();
-        with.extend(copy.with.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let mut arguments = self.arguments.clone();
-        for (target, values) in &copy.arguments {
-            arguments
-                .entry(target.clone())
-                .or_default()
-                .extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
-        }
-        let adjustments = self
-            .adjustments
-            .iter()
-            .map(|adjustment| OriginatedAdjustment {
-                adjustment,
-                origin: self.adjustments_origin(),
-            })
-            .chain(
-                copy.adjustments
-                    .iter()
-                    .map(|adjustment| OriginatedAdjustment {
-                        adjustment,
-                        origin: copy.adjustments_origin(),
-                    }),
-            )
-            .collect();
+    /// What every copy of the option starts from, listed or joined: the
+    /// entry's own `with`, `arguments` and `adjustments`.
+    pub(crate) fn entry_settings(&self) -> CopySettings<'_> {
         CopySettings {
-            with,
-            arguments,
-            adjustments,
+            with: self.with.clone(),
+            arguments: self.arguments.clone(),
+            adjustments: self
+                .adjustments
+                .iter()
+                .map(|adjustment| OriginatedAdjustment {
+                    adjustment,
+                    origin: self.adjustments_origin(),
+                })
+                .collect(),
         }
+    }
+
+    /// What one copy the entry lists selects and writes.
+    pub(crate) fn settings_for<'a>(&'a self, copy: &'a CopyEntry) -> CopySettings<'a> {
+        self.entry_settings().overlaid(
+            &copy.with,
+            &copy.arguments,
+            copy.adjustments
+                .iter()
+                .map(|adjustment| OriginatedAdjustment {
+                    adjustment,
+                    origin: copy.adjustments_origin(),
+                }),
+        )
     }
 }
 
@@ -1103,12 +1127,15 @@ pub(crate) fn validate_axes(axes: &[ComponentAxis], scope: AxisScope) -> Result<
 
 /// The document-local checks on the option entries of a `deployments` list:
 /// each names a declared axis and one of its options, deploys it the way
-/// its cardinality allows, and names its copies once.
+/// its cardinality allows, and names its copies once. A repeatable option
+/// has one entry, since the entry's settings are what every copy of the
+/// option starts from, a joined one included.
 pub(crate) fn validate_option_deployments(
     entries: &[OptionDeployment],
     axes: &[ComponentAxis],
 ) -> Result<(), String> {
     let mut deployed_axes: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut copied_options: HashSet<(&str, &str)> = HashSet::new();
     let mut copies: HashSet<&str> = HashSet::new();
     for entry in entries {
         let Some(axis) = axes.iter().find(|axis| axis.name == entry.axis) else {
@@ -1164,6 +1191,15 @@ pub(crate) fn validate_option_deployments(
                         "axis `{}` runs as named copies: `{{ {}: \"{}\", instances: [{{ \
                          instance_id: \"alpha\" }}] }}`",
                         entry.axis, entry.axis, entry.option
+                    ));
+                }
+                if !copied_options.insert((&entry.axis, &entry.option)) {
+                    return Err(format!(
+                        "`deployments` deploys `{}: \"{}\"` twice; an option has one entry, \
+                         whose `with`, `arguments` and `adjustments` every copy of it starts \
+                         from, so list its copies under one `instances` and give a copy that \
+                         differs its own",
+                        entry.axis, entry.option
                     ));
                 }
                 for copy in &entry.instances {
@@ -1897,7 +1933,23 @@ mod tests {
                { robot: "real", instances: [{ instance_id: "alpha" }] }"#,
         )
         .expect_err("copy names are unique");
-        assert!(error.contains("twice"), "got: {error}");
+        assert!(error.contains("names copy `alpha` twice"), "got: {error}");
+        let error = deployed(
+            ROBOT_AXIS,
+            r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] },
+               { robot: "sim", with: { commander: "xr" }, instances: [{ instance_id: "bravo" }] }"#,
+        )
+        .expect_err("a join could not tell which entry it starts from");
+        assert!(
+            error.contains("deploys `robot: \"sim\"` twice"),
+            "got: {error}"
+        );
+        deployed(
+            ROBOT_AXIS,
+            r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] },
+               { robot: "real", instances: [{ instance_id: "bravo" }] }"#,
+        )
+        .expect("each option has its own entry");
     }
 
     #[test]

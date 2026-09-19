@@ -244,6 +244,102 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
     assert!(error.contains("peppy stack join real -i NAME"), "{error}");
 }
 
+/// `stack resolve --join` previews the join a running stack would make: the
+/// copy starts from the launcher's entry for its option, and the join's own
+/// words and overrides win over the entry per axis and per argument.
+#[test]
+fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("mcp_fleet.json5");
+    std::fs::write(&launcher, r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
+            deployments: [
+                { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                { commander: "web" },
+            ],
+            components: [{ name: "commander", options: {
+                web: { deployments: [{ source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+                mcp: { deployments: [{ source: { name: "mcp", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+            } }],
+        } } }],
+        deployments: [{ robot: "real",
+            with: { commander: "mcp" }, arguments: { commander_inst: { port: 8900 } },
+            instances: [{ instance_id: "alpha" }] }],
+    }"#).unwrap();
+    let resolve = |words: &[&str], arguments: &[&str]| {
+        let join = JoinPreview {
+            option: Some("real".into()),
+            name: Name::new("bravo").unwrap(),
+            words: words.iter().map(|word| (*word).to_owned()).collect(),
+            arguments: arguments.iter().map(|flag| flag.parse().unwrap()).collect(),
+        };
+        let (document, report) = resolve_rendered(
+            &PeppyDirs::new(directory.path()),
+            launcher.clone(),
+            &[],
+            &join,
+        )
+        .unwrap();
+        let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
+        (flat, report)
+    };
+    let commander = |flat: &serde_json::Value, id: &str| -> (String, serde_json::Value) {
+        flat["deployments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|deployment| {
+                let instance = deployment["instances"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|instance| instance["instance_id"] == id)?;
+                Some((
+                    deployment["source"]["name"].as_str().unwrap().to_owned(),
+                    instance["arguments"]["port"].clone(),
+                ))
+            })
+            .unwrap_or_else(|| panic!("{id} is in the plan: {flat}"))
+    };
+
+    // A plain join is the robot the entry describes, as `alpha` is.
+    let (flat, report) = resolve(&[], &[]);
+    assert!(
+        report
+            .iter()
+            .any(|line| line == "copy bravo: robot=real  commander=mcp"),
+        "{report:?}"
+    );
+    assert_eq!(
+        commander(&flat, "bravo_commander_inst"),
+        commander(&flat, "alpha_commander_inst")
+    );
+    assert_eq!(
+        commander(&flat, "bravo_commander_inst"),
+        ("mcp".to_owned(), serde_json::json!(8900))
+    );
+
+    // The join's own flags win, and `alpha` keeps the entry's values.
+    let (flat, _) = resolve(&[], &["commander_inst.port=8910"]);
+    assert_eq!(
+        commander(&flat, "bravo_commander_inst"),
+        ("mcp".to_owned(), serde_json::json!(8910))
+    );
+    assert_eq!(
+        commander(&flat, "alpha_commander_inst"),
+        ("mcp".to_owned(), serde_json::json!(8900))
+    );
+    let (flat, report) = resolve(&["web"], &[]);
+    assert!(
+        report
+            .iter()
+            .any(|line| line == "copy bravo: robot=real  commander=web"),
+        "{report:?}"
+    );
+    assert_eq!(commander(&flat, "bravo_commander_inst").0, "panel");
+}
+
 #[test]
 fn resolve_previews_a_join_with_its_own_name_selection_and_overrides() {
     let cli = StackCli::try_parse_from([

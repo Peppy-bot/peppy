@@ -54,7 +54,10 @@ pub enum StackCommands {
     /// Add a copy of one of the launcher's options to the running stack.
     ///
     /// The copy's instances are minted as NAME_<instance-id>, the way
-    /// `node run` adds an instance of a node.
+    /// `node run` adds an instance of a node. The copy starts from the
+    /// `with`, `arguments` and `adjustments` the launcher writes on its
+    /// entry for the option, as the copies that entry lists do; `--with`
+    /// wins per axis and `--set-arguments` per argument.
     Join {
         /// The option to copy: one of a `zero_or_more` axis of the running
         /// launcher.
