@@ -18,6 +18,14 @@ A code diff larger than one Claude run reads is judged in parts
 gap records the part that shows the change it covers, so the updater hands
 Claude that same part. No part of the diff is ever dropped.
 
+A judge reads one slice of the diff, and a slice can mislead: a comment that
+disagrees with the code it sits on, or a caller shown without the callee that
+decides the behaviour. So a blocking gap only counts once a second run, which
+reads the code in the repository rather than a diff, confirms it
+(``_confirm_blocking``). A gap it refutes is logged with the evidence and
+dropped: it neither fails the check nor reaches the updater, which would
+otherwise write the misreading into the docs.
+
 The diff helpers (``get_code_diff``, ``get_docs_diff``, ``truncate_diff``)
 are shared with the release-notes generator (``release_summary.py``), so the
 notes are drafted from the same changes the docs check judged.
@@ -34,10 +42,12 @@ import subprocess
 import sys
 import threading
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
+from typing import TypeVar
 
 from .claude import run_claude
 from .cli import ReleaseError, console, need_cmd, run_with_error_handling
@@ -86,9 +96,10 @@ USER_DOCS_PREFIX = "docs/src/content/docs/"
 # notes cut their diffs to it (`truncate_diff`).
 _MAX_DIFF_CHARS = 400_000
 
-# How many parts of a code diff the docs check judges at once. The runs only
-# read and none depends on another; four keep a twenty-part diff to a few
-# rounds without bursting past the account's rate limits.
+# How many Claude runs the docs check has going at once, judging parts of a
+# code diff or confirming gaps. The runs only read and none depends on another;
+# four keep a twenty-part diff to a few rounds without bursting past the
+# account's rate limits.
 _CHECK_CONCURRENCY = 4
 
 # The `diff --git` line opening each file's section of a unified diff; the
@@ -108,6 +119,9 @@ SEVERITY_MINOR = "minor"
 
 STATUS_IMPLEMENTED = "implemented"
 STATUS_ALREADY_COVERED = "already_covered"
+
+VERDICT_CONFIRMED = "confirmed"
+VERDICT_REFUTED = "refuted"
 
 # Schema for the check verdict, enforced CLI-side via --json-schema. There is
 # deliberately no up-to-date boolean: pass/fail is derived from the list, so
@@ -131,6 +145,18 @@ _CHECK_SCHEMA: dict = {
         },
     },
     "required": ["required_changes"],
+    "additionalProperties": False,
+}
+
+# Schema for the second opinion on one blocking gap. The evidence is logged
+# with a dropped gap, so a wrong refutation can be argued with.
+_CONFIRM_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "verdict": {"enum": [VERDICT_CONFIRMED, VERDICT_REFUTED]},
+        "evidence": {"type": "string"},
+    },
+    "required": ["verdict", "evidence"],
     "additionalProperties": False,
 }
 
@@ -191,6 +217,14 @@ class CheckResult:
     @property
     def minor(self) -> tuple[RequiredChange, ...]:
         return tuple(c for c in self.changes if c.severity == SEVERITY_MINOR)
+
+
+@dataclass(frozen=True)
+class GapReview:
+    """The second opinion on one blocking gap, from the code in the repository."""
+
+    confirmed: bool
+    evidence: str
 
 
 @dataclass(frozen=True)
@@ -444,6 +478,12 @@ Your task:
      date. When unsure between the two severities, choose "minor".
 3. Ignore purely internal changes: refactors, tests, private APIs, build/CI
    changes, log strings, dependency bumps.
+4. A comment, a docstring or a test name in the diff is not evidence of what
+   the code does, and the diff may not show the code that decides a behaviour.
+   The repository you are in holds the code at the head of the diff: before
+   reporting a "blocking" gap, Read the code that enforces the behaviour and
+   report the gap only when that code agrees with it. When a comment and the
+   code disagree, the code is right and the docs follow the code.
 
 An empty `required_changes` means the docs fully cover the diff.
 
@@ -465,8 +505,10 @@ Gaps to close (implement exactly these, nothing else):
 
 Your task:
 1. For each listed gap, Read the named doc file (and any closely related
-   pages) and make the smallest edit that closes it. The diff below is the
-   source of truth for the facts: never state behaviour it does not show.
+   pages) and make the smallest edit that closes it. The diff below and the
+   code it touches in the repository you are in are the source of truth for
+   the facts: never state behaviour they do not show, and when a comment and
+   the code disagree, document what the code does.
 2. If on inspection the docs already cover a listed gap, skip it and edit
    nothing for it.
 3. Only touch files under `docs/src/content/docs/`. Do not reword,
@@ -485,6 +527,36 @@ Changed paths:
 
 Unified diff:
 {diff}
+"""
+
+
+_CONFIRM_PROMPT = """\
+A reviewer who read one slice of a code diff reported the documentation gap
+below, and a confirmed gap stops a release. The project is "peppy": an Astro
+Starlight documentation site under `docs/src/content/docs/` paired with the
+Rust and Python code around it. The repository you are in holds the code being
+released and its documentation. Establish whether the gap is real.
+
+Reported gap:
+- doc file: `{file}`
+- claim: {change}
+
+The slice the reviewer read changed these files:
+{paths}
+
+Your task:
+1. Read the doc file and check it says, or lacks, what the claim says it does.
+2. Find the code that decides the behaviour the claim is about, starting from
+   the files above and following the calls down to the code that enforces it.
+   A comment, a docstring, a test name or a log string is not evidence of
+   behaviour: when one disagrees with the code, the code is right.
+3. Answer "confirmed" only when both hold: the code behaves as the claim
+   says, and the docs state otherwise or leave a user-facing change entirely
+   undocumented. Answer "refuted" in every other case: the code behaves
+   differently, the docs already cover it, the docs are merely improvable, the
+   evidence is mixed, or you cannot find the code that decides it.
+4. Give in `evidence` the code (file and lines) and the doc passage that
+   decide your answer, in a sentence or two.
 """
 
 
@@ -540,6 +612,19 @@ def _parse_check_response(payload: dict, diff_part: int = 1) -> CheckResult:
             )
         )
     return CheckResult(changes=tuple(changes))
+
+
+def _parse_confirm_response(payload: dict) -> GapReview:
+    """Validate the second opinion on a gap into a GapReview."""
+    verdict = payload.get("verdict")
+    if verdict not in (VERDICT_CONFIRMED, VERDICT_REFUTED):
+        raise ReleaseError(f"claude gap review has unknown verdict: {payload!r}")
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, str):
+        raise ReleaseError(
+            f"claude gap review missing string 'evidence': {payload!r}"
+        )
+    return GapReview(confirmed=verdict == VERDICT_CONFIRMED, evidence=evidence)
 
 
 def _parse_update_response(payload: dict) -> UpdateResult:
@@ -705,41 +790,113 @@ def _judge_part(
     return result
 
 
-def _judge_parts(
-    parts: tuple[DiffPart, ...], repo_root: Path
-) -> list[CheckResult]:
-    """Judge every part, `_CHECK_CONCURRENCY` at a time; verdicts in part order.
+_Result = TypeVar("_Result")
 
-    A failing part stops every part not yet started. The runs already under
-    way finish, then the failure of the lowest-numbered part is raised.
+
+def _run_at_once(jobs: Sequence[Callable[[], _Result]]) -> list[_Result]:
+    """Run *jobs* `_CHECK_CONCURRENCY` at a time; the results in job order.
+
+    A failing job stops every job not yet started. The jobs already under way
+    finish, then the failure of the first failing job is raised.
     """
     failed = threading.Event()
 
-    def judge(number: int, part: DiffPart) -> CheckResult | None:
+    def run(job: Callable[[], _Result]) -> _Result | None:
         if failed.is_set():
             return None
         try:
-            return _judge_part(part, number, len(parts), repo_root)
+            return job()
         except BaseException:
             # Set before the future completes, so a worker taking the next
-            # part already sees it.
+            # job already sees it.
             failed.set()
             raise
 
     with ThreadPoolExecutor(max_workers=_CHECK_CONCURRENCY) as pool:
-        futures = [
-            pool.submit(judge, number, part)
-            for number, part in enumerate(parts, 1)
-        ]
+        futures = [pool.submit(run, job) for job in jobs]
     errors = [
         error for future in futures if (error := future.exception()) is not None
     ]
     if errors:
         raise errors[0]
-    # No part failed, so none was skipped.
+    # No job failed, so none was skipped.
     return [
-        verdict for future in futures if (verdict := future.result()) is not None
+        result for future in futures if (result := future.result()) is not None
     ]
+
+
+def _judge_parts(
+    parts: tuple[DiffPart, ...], repo_root: Path
+) -> list[CheckResult]:
+    """Judge every part, several at once (`_run_at_once`); verdicts in part order."""
+    return _run_at_once(
+        [
+            partial(_judge_part, part, number, len(parts), repo_root)
+            for number, part in enumerate(parts, 1)
+        ]
+    )
+
+
+def _review_gap(change: RequiredChange, part: DiffPart, repo_root: Path) -> GapReview:
+    """Have one Claude run confirm or refute *change* against the repository.
+
+    The run gets no diff: it is pointed at the files *part* changed and reads
+    the code and the docs as they stand, so its answer does not inherit
+    whatever misled the judge of that part.
+    """
+    console.print(f"Asking Claude to confirm the gap in {change.file}...")
+    prompt = _CONFIRM_PROMPT.format(
+        file=change.file,
+        change=change.change,
+        paths="\n".join(part.paths),
+    )
+    # Read-only for the same reason the judging runs are.
+    payload = run_claude(
+        prompt,
+        allowed_tools="Read Grep Glob",
+        permission_mode="bypassPermissions",
+        cwd=repo_root,
+        json_schema=_CONFIRM_SCHEMA,
+        activity=f"confirming the gap in {change.file}",
+        tools="Read Grep Glob",
+    )
+    return _parse_confirm_response(payload)
+
+
+def _confirm_blocking(
+    changes: tuple[RequiredChange, ...],
+    parts: tuple[DiffPart, ...],
+    repo_root: Path,
+) -> tuple[RequiredChange, ...]:
+    """Return *changes* without the blocking gaps a second run refutes.
+
+    Every distinct blocking gap gets a run of its own (`_review_gap`), several
+    at once. Minor suggestions pass through: they gate nothing, so a second
+    opinion on them would only spend Claude's time.
+    """
+    blocking = tuple(
+        dict.fromkeys(c for c in changes if c.severity == SEVERITY_BLOCKING)
+    )
+    if not blocking:
+        return changes
+    reviews = _run_at_once(
+        [
+            partial(_review_gap, change, parts[change.diff_part - 1], repo_root)
+            for change in blocking
+        ]
+    )
+    refuted: set[RequiredChange] = set()
+    for change, review in zip(blocking, reviews, strict=True):
+        if review.confirmed:
+            console.print(f"[dim]Confirmed the gap in {change.file}.[/dim]")
+            continue
+        refuted.add(change)
+        console.print(
+            f"[yellow]Dropped a gap the code does not confirm:[/yellow]\n"
+            f"  [bold]{change.file}[/bold]: {change.change}\n"
+            f"  [dim]{review.evidence}[/dim]"
+        )
+    return tuple(change for change in changes if change not in refuted)
 
 
 def check_docs(base: str, head: str) -> CheckResult:
@@ -747,7 +904,8 @@ def check_docs(base: str, head: str) -> CheckResult:
 
     The code diff is judged in parts of at most `_MAX_DIFF_CHARS`, one Claude
     run each and `_CHECK_CONCURRENCY` runs at a time, and the verdicts are
-    merged in part order; every change names its part.
+    merged in part order; every change names its part. A blocking gap is kept
+    only when a second run confirms it against the code (`_confirm_blocking`).
     """
     repo_root = get_repo_root()
     diff, paths = get_code_diff(base, head, repo_root)
@@ -759,9 +917,8 @@ def check_docs(base: str, head: str) -> CheckResult:
         f"diff, judged in {len(parts)} part(s).[/dim]"
     )
     verdicts = _judge_parts(parts, repo_root)
-    return CheckResult(
-        changes=tuple(change for verdict in verdicts for change in verdict.changes)
-    )
+    reported = tuple(change for verdict in verdicts for change in verdict.changes)
+    return CheckResult(changes=_confirm_blocking(reported, parts, repo_root))
 
 
 def update_docs(

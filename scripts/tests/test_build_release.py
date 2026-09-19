@@ -17,7 +17,11 @@ from functions.build_release import (
     _confirm_release_content,
     _docs_check_base,
     _find_open_docs_sync_pr,
+    _judged_commit_of,
+    _last_judged_commit,
+    _last_shipped_commit,
     _latest_release_tag,
+    JudgedCommit,
     _offer_pending_upload,
     _open_docs_pr,
     _open_editor,
@@ -1246,17 +1250,17 @@ def test_latest_release_tag_is_none_without_a_published_release(
 
 @patch("functions.build_release.is_ancestor")
 @patch("functions.build_release._latest_release_tag", return_value=None)
-def test_docs_check_base_is_origin_main_without_a_published_release(
+def test_last_shipped_commit_is_origin_main_without_a_published_release(
     mock_tag: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
-    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
 
     mock_is_ancestor.assert_not_called()
 
 
 @patch("functions.build_release.is_ancestor")
 @patch("functions.build_release._latest_release_tag", return_value=LATEST_TAG)
-def test_docs_check_base_is_origin_main_once_aligned_to_the_latest_release(
+def test_last_shipped_commit_is_origin_main_once_aligned_to_the_latest_release(
     mock_tag: MagicMock, mock_is_ancestor: MagicMock
 ) -> None:
     # main sits one notes commit past the tag, as a finished release leaves it.
@@ -1264,12 +1268,12 @@ def test_docs_check_base_is_origin_main_once_aligned_to_the_latest_release(
         {(LATEST_TAG, "origin/main"): True}
     )
 
-    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
 
 
 @patch("functions.build_release.is_ancestor")
 @patch("functions.build_release._latest_release_tag", return_value=LATEST_TAG)
-def test_docs_check_base_is_the_latest_release_tag_when_main_lags_it(
+def test_last_shipped_commit_is_the_latest_release_tag_when_main_lags_it(
     mock_tag: MagicMock,
     mock_is_ancestor: MagicMock,
     capfd: pytest.CaptureFixture[str],
@@ -1284,7 +1288,7 @@ def test_docs_check_base_is_the_latest_release_tag_when_main_lags_it(
         }
     )
 
-    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
+    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == LATEST_TAG
 
     err = _unwrapped(capfd.readouterr().err)
     assert f"origin/main is behind the latest release {LATEST_TAG}" in err
@@ -1308,14 +1312,218 @@ def test_docs_check_base_is_the_latest_release_tag_when_main_lags_it(
 )
 @patch("functions.build_release.is_ancestor")
 @patch("functions.build_release._latest_release_tag", return_value=LATEST_TAG)
-def test_docs_check_base_stays_origin_main_when_the_tag_is_off_the_release_line(
+def test_last_shipped_commit_stays_origin_main_when_the_tag_is_off_the_release_line(
     mock_tag: MagicMock,
     mock_is_ancestor: MagicMock,
     ancestry: dict[tuple[str, str], bool],
 ) -> None:
     mock_is_ancestor.side_effect = _ancestry_resolver(ancestry)
 
+    assert _last_shipped_commit(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+
+
+# --- the commit a merged docs pull request settled ---
+
+JUDGED_COMMIT = "4444444444444444444444444444444444444444"
+JUDGED_MERGE = "5555555555555555555555555555555555555555"
+EARLIER_JUDGED_COMMIT = "6666666666666666666666666666666666666666"
+EARLIER_JUDGED_MERGE = "7777777777777777777777777777777777777777"
+JUDGED_PR_URL = "https://github.com/o/r/pull/12"
+
+
+def _docs_sync_pull(
+    judged: str = JUDGED_COMMIT,
+    merge: str | None = JUDGED_MERGE,
+    *,
+    merged: bool = True,
+    branch_prefix: str = "auto/docs-update-",
+    url: str = JUDGED_PR_URL,
+) -> dict:
+    """A closed pull request as the GitHub API lists it."""
+    return {
+        "html_url": url,
+        "merged_at": "2026-09-19T14:30:00Z" if merged else None,
+        "merge_commit_sha": merge,
+        "head": {"ref": f"{branch_prefix}{judged[:12]}"},
+    }
+
+
+def _known_commits(*commits: str):
+    """A find_commit stub resolving full or abbreviated SHAs of *commits*."""
+
+    def _find(rev: str) -> str | None:
+        return next((commit for commit in commits if commit.startswith(rev)), None)
+
+    return _find
+
+
+# The judged commit and its merge both sit between main and the release.
+_ON_THE_RELEASE_LINE = {
+    ("origin/main", JUDGED_COMMIT): True,
+    (JUDGED_COMMIT, DEV_COMMIT): True,
+    (JUDGED_MERGE, DEV_COMMIT): True,
+}
+
+
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+def test_judged_commit_of_a_merged_docs_sync_pull_request(
+    mock_is_ancestor: MagicMock,
+) -> None:
+    mock_is_ancestor.side_effect = _ancestry_resolver(_ON_THE_RELEASE_LINE)
+
+    judged = _judged_commit_of(_docs_sync_pull(), "origin/main", DEV_COMMIT)
+
+    # The branch names the commit by its first characters: the full SHA is read back.
+    assert judged == JudgedCommit(commit=JUDGED_COMMIT, pr_url=JUDGED_PR_URL)
+
+
+@pytest.mark.parametrize(
+    "pull",
+    [
+        # Closed without being merged: its gaps were never closed.
+        _docs_sync_pull(merged=False, merge=None),
+        # A polish pull request never closes a blocking gap.
+        _docs_sync_pull(branch_prefix="auto/docs-polish-"),
+        # Any other pull request into dev.
+        _docs_sync_pull(branch_prefix="fix-the-router-"),
+        # Not the shape the API answers with.
+        "not a pull request",
+        {"merged_at": "2026-09-19T14:30:00Z", "head": None},
+    ],
+)
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+def test_judged_commit_of_is_none_for_a_pull_request_that_settles_nothing(
+    mock_is_ancestor: MagicMock, pull: object
+) -> None:
+    assert _judged_commit_of(pull, "origin/main", DEV_COMMIT) is None
+
+    mock_is_ancestor.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "ancestry",
+    [
+        # Judged before the last release shipped: that release's check covers it.
+        {("origin/main", JUDGED_COMMIT): False},
+        # Judged on a line the release does not descend from.
+        {("origin/main", JUDGED_COMMIT): True, (JUDGED_COMMIT, DEV_COMMIT): False},
+        # Merged, but past the commit being released: its docs are not in it.
+        {
+            ("origin/main", JUDGED_COMMIT): True,
+            (JUDGED_COMMIT, DEV_COMMIT): True,
+            (JUDGED_MERGE, DEV_COMMIT): False,
+        },
+    ],
+)
+@patch("functions.build_release.is_ancestor")
+@patch("functions.build_release.find_commit", _known_commits(JUDGED_COMMIT, JUDGED_MERGE))
+def test_judged_commit_of_is_none_off_the_way_to_the_release(
+    mock_is_ancestor: MagicMock, ancestry: dict[tuple[str, str], bool]
+) -> None:
+    mock_is_ancestor.side_effect = _ancestry_resolver(ancestry)
+
+    assert _judged_commit_of(_docs_sync_pull(), "origin/main", DEV_COMMIT) is None
+
+
+@pytest.mark.parametrize(
+    "known",
+    [
+        # The branch names a commit this clone does not hold.
+        (JUDGED_MERGE,),
+        # So does the merge.
+        (JUDGED_COMMIT,),
+    ],
+)
+@patch("functions.build_release.is_ancestor")
+def test_judged_commit_of_is_none_when_a_commit_is_unknown_locally(
+    mock_is_ancestor: MagicMock, known: tuple[str, ...]
+) -> None:
+    with patch("functions.build_release.find_commit", _known_commits(*known)):
+        assert _judged_commit_of(_docs_sync_pull(), "origin/main", DEV_COMMIT) is None
+
+    mock_is_ancestor.assert_not_called()
+
+
+@patch("functions.build_release.is_ancestor")
+@patch(
+    "functions.build_release.find_commit",
+    _known_commits(
+        JUDGED_COMMIT, JUDGED_MERGE, EARLIER_JUDGED_COMMIT, EARLIER_JUDGED_MERGE
+    ),
+)
+@patch("functions.build_release.github_api")
+def test_last_judged_commit_is_the_latest_one_on_the_way_to_the_release(
+    mock_api: MagicMock, mock_is_ancestor: MagicMock
+) -> None:
+    earlier_url = "https://github.com/o/r/pull/11"
+    # The API lists by last update, which is not the order of the commits.
+    mock_api.return_value = [
+        _docs_sync_pull(EARLIER_JUDGED_COMMIT, EARLIER_JUDGED_MERGE, url=earlier_url),
+        _docs_sync_pull(),
+        _docs_sync_pull(branch_prefix="fix-the-router-"),
+    ]
+    mock_is_ancestor.side_effect = _ancestry_resolver(
+        {
+            **_ON_THE_RELEASE_LINE,
+            ("origin/main", EARLIER_JUDGED_COMMIT): True,
+            (EARLIER_JUDGED_COMMIT, DEV_COMMIT): True,
+            (EARLIER_JUDGED_MERGE, DEV_COMMIT): True,
+            (EARLIER_JUDGED_COMMIT, JUDGED_COMMIT): True,
+        }
+    )
+
+    judged = _last_judged_commit(
+        MagicMock(), RepoSlug("test-owner", "test-repo"), "origin/main", DEV_COMMIT
+    )
+
+    assert judged == JudgedCommit(commit=JUDGED_COMMIT, pr_url=JUDGED_PR_URL)
+    query = mock_api.call_args.args[2]
+    assert "/repos/test-owner/test-repo/pulls?" in query
+    assert "base=dev" in query
+    assert "state=closed" in query
+    assert "sort=updated&direction=desc" in query
+    assert "per_page=100" in query
+
+
+@patch("functions.build_release.github_api", return_value=[])
+def test_last_judged_commit_is_none_without_a_merged_docs_pull_request(
+    mock_api: MagicMock,
+) -> None:
+    assert (
+        _last_judged_commit(MagicMock(), RepoSlug("o", "r"), "origin/main", DEV_COMMIT)
+        is None
+    )
+
+
+@patch("functions.build_release._last_judged_commit", return_value=None)
+@patch("functions.build_release._last_shipped_commit", return_value="origin/main")
+def test_docs_check_base_is_the_last_shipped_commit_when_nothing_was_judged_since(
+    mock_shipped: MagicMock, mock_judged: MagicMock
+) -> None:
     assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == "origin/main"
+
+    assert mock_judged.call_args.args[2:] == ("origin/main", DEV_COMMIT)
+
+
+@patch(
+    "functions.build_release._last_judged_commit",
+    return_value=JudgedCommit(commit=JUDGED_COMMIT, pr_url=JUDGED_PR_URL),
+)
+@patch("functions.build_release._last_shipped_commit", return_value="origin/main")
+def test_docs_check_base_is_the_commit_a_merged_docs_pull_request_settled(
+    mock_shipped: MagicMock,
+    mock_judged: MagicMock,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # The rerun after the merge: the code up to the judged commit is settled,
+    # so the check starts there instead of drawing new gaps from the same code.
+    assert _docs_check_base(MagicMock(), RepoSlug("o", "r"), DEV_COMMIT) == JUDGED_COMMIT
+
+    err = _unwrapped(capfd.readouterr().err)
+    assert f"was already judged up to {JUDGED_COMMIT[:12]}" in err
+    assert f"its gaps closed by {JUDGED_PR_URL}" in err
 
 
 # --- the docs gate ---

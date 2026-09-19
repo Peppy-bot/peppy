@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -101,6 +102,7 @@ from .repo import (
     commit_paths,
     fetch_remote_branches,
     fetch_tag,
+    find_commit,
     get_commit,
     get_current_branch,
     get_repo_root,
@@ -468,10 +470,10 @@ def _latest_release_tag(client: httpx.Client, slug: RepoSlug) -> str | None:
     return tag
 
 
-def _docs_check_base(
+def _last_shipped_commit(
     client: httpx.Client, slug: RepoSlug, release_commit: str
 ) -> str:
-    """The last shipped commit, which the docs check diffs the release from.
+    """The last shipped commit, which a release's docs are checked from.
 
     `origin/main` names it whenever the previous release ran to the end: the
     last step of a release fast-forwards `main` to the commit carrying the
@@ -504,6 +506,104 @@ def _docs_check_base(
         f"release publishes.[/yellow]"
     )
     return tag
+
+
+# How many closed pull requests `_last_judged_commit` reads, most recently
+# updated first. A docs pull request merged since the last release is among
+# them; one that is not only costs the check it would have saved.
+_JUDGED_LOOKUP_PAGE_SIZE = 100
+
+
+@dataclass(frozen=True)
+class JudgedCommit:
+    """A commit the docs check judged, whose gaps a merged pull request closed."""
+
+    commit: str
+    pr_url: str
+
+
+def _judged_commit_of(
+    pull: object, shipped: str, release_commit: str
+) -> JudgedCommit | None:
+    """The commit *pull* vouches for on the way to *release_commit*, or None.
+
+    A docs-sync pull request vouches for the commit its branch is named after
+    once it is merged and that merge is part of the release: the check judged
+    the code up to that commit and the merge closed every gap it found.
+    """
+    if not isinstance(pull, dict) or not pull.get("merged_at"):
+        return None
+    head = pull.get("head")
+    branch = head.get("ref") if isinstance(head, dict) else None
+    if not isinstance(branch, str) or not branch.startswith(DOCS_SYNC_BRANCH_PREFIX):
+        return None
+    merge_commit = pull.get("merge_commit_sha")
+    pr_url = pull.get("html_url")
+    if not isinstance(merge_commit, str) or not isinstance(pr_url, str):
+        return None
+    commit = find_commit(branch.removeprefix(DOCS_SYNC_BRANCH_PREFIX))
+    if commit is None or find_commit(merge_commit) is None:
+        return None
+    if not is_ancestor(shipped, commit):
+        return None
+    if not is_ancestor(commit, release_commit):
+        return None
+    if not is_ancestor(merge_commit, release_commit):
+        return None
+    return JudgedCommit(commit=commit, pr_url=pr_url)
+
+
+def _last_judged_commit(
+    client: httpx.Client, slug: RepoSlug, shipped: str, release_commit: str
+) -> JudgedCommit | None:
+    """The latest commit since *shipped* the docs check already judged, or None.
+
+    The check is not reproducible: two runs over the same code report
+    different gaps. Judging from the last shipped commit again once a docs
+    pull request is merged would spend the same runs on the same code only to
+    draw again, and a release would stop on a fresh pull request for as long
+    as the draws differ. A merged docs-sync pull request settles the code up
+    to the commit it was cut for (`_judged_commit_of`).
+    """
+    response = github_api(
+        client,
+        "GET",
+        f"https://api.github.com/repos/{slug.full}/pulls"
+        f"?base={RELEASE_BRANCH}&state=closed&sort=updated&direction=desc"
+        f"&per_page={_JUDGED_LOOKUP_PAGE_SIZE}",
+    )
+    if not isinstance(response, list):
+        return None
+    latest: JudgedCommit | None = None
+    for pull in response:
+        judged = _judged_commit_of(pull, shipped, release_commit)
+        if judged is None:
+            continue
+        if latest is None or is_ancestor(latest.commit, judged.commit):
+            latest = judged
+    return latest
+
+
+def _docs_check_base(
+    client: httpx.Client, slug: RepoSlug, release_commit: str
+) -> str:
+    """The commit the docs check diffs the release from.
+
+    The last shipped commit (`_last_shipped_commit`), or past it the latest
+    commit the check already judged and whose gaps a merged pull request
+    closed (`_last_judged_commit`): only the code changed since is left to
+    judge, which is none at all on the rerun that follows such a merge.
+    """
+    shipped = _last_shipped_commit(client, slug, release_commit)
+    judged = _last_judged_commit(client, slug, shipped, release_commit)
+    if judged is None:
+        return shipped
+    console.print(
+        f"[yellow]'{DOCS_DIR}/' was already judged up to {judged.commit[:12]} "
+        f"and its gaps closed by {judged.pr_url}: only the code changed since "
+        f"is checked.[/yellow]"
+    )
+    return judged.commit
 
 
 def _docs_sync_pr_body(
@@ -711,8 +811,9 @@ def _verify_docs_up_to_date(
     notes: everything past this point is slow or publishes something, and a
     release must not ship documentation for behaviour that changed.
 
-    The diff base is the last shipped commit: `origin/main` as a rule, or the
-    latest release's tag when `main` was left behind it (`_docs_check_base`).
+    The diff base is the last shipped commit (`origin/main` as a rule, or the
+    latest release's tag when `main` was left behind it), or past it the
+    commit a merged docs pull request already settled (`_docs_check_base`).
 
     Only blocking gaps stop the release: docs that now state something false,
     or a user-facing change with no documentation at all. Minor suggestions
@@ -726,9 +827,11 @@ def _verify_docs_up_to_date(
     request against `dev` is opened, and the release stops: the docs land
     through review like any other change rather than being folded into a
     release nobody reads. A retry on the same commit finds that pull request
-    and stops on it, so nothing published is ever rewritten. When the updater
-    instead verifies every reported gap is already documented, the check's
-    findings were noise and the release continues.
+    and stops on it, so nothing published is ever rewritten. Once it is merged,
+    the rerun checks from the commit it was cut for, so the code it settled is
+    not judged a second time. When the updater instead verifies every reported
+    gap is already documented, the check's findings were noise and the release
+    continues.
     """
     docs_dir = repo_root / DOCS_DIR
     if has_changes_in_paths([docs_dir]):
