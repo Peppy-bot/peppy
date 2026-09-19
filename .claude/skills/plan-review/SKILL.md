@@ -7,7 +7,7 @@ description: Staged review of a plan, architecture, design, or set of code chang
 
 Review this plan thoroughly before making any code changes. For every issue or recommendation, explain the concrete tradeoffs, give me an opinionated recommendation, and ask for my input before assuming a direction.
 
-The engineering preferences in `Claude.md` govern every recommendation below.
+The engineering preferences in `AGENTS.md` govern every recommendation below.
 
 ---
 
