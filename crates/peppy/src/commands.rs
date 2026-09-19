@@ -199,7 +199,9 @@ pub fn render_endpoints(entries: &[InstanceEndpoints], colorize: bool) -> String
 /// an operator, so a change to how it is delivered is made once. Colored
 /// under the CLI's shared color gate, the same one the log formatter and the
 /// tables read, so a `NO_COLOR` or non-interactive run prints the plain
-/// block.
+/// block. That one gate is also what tells the log formatter to write a
+/// message's control characters through rather than escape them, so the
+/// tints painted here are the tints an operator sees.
 pub fn log_endpoints(entries: &[InstanceEndpoints]) {
     for line in render_endpoints(entries, crate::terminal::colors_enabled()).lines() {
         tracing::info!("{line}");
