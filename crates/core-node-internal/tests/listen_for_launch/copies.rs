@@ -571,6 +571,119 @@ async fn a_copy_the_file_deploys_launches_with_the_stack_and_removal_keeps_the_s
     assert_eq!(names, ["alpha", "bravo"]);
 }
 
+/// A fleet whose robot carries a tool axis of its own, the gripper unless
+/// selected otherwise, with `entry` written on the robot's option entry
+/// beside the copy `alpha` it lists.
+fn fleet_with_a_tool_axis(started: &StartedCoreNode, entry: &str) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempdir().unwrap();
+    let robot = write_node_config(
+        directory.path(),
+        "named_robot",
+        "v1",
+        "test-hash",
+        &["sleep", "300"],
+        false,
+        false,
+    );
+    TestPackagesCache::new()
+        .fs_entry("named_robot", "v1", &robot)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    fs::write(&launcher, format!(r#"{{
+        peppy_schema: "launcher/v1",
+        components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
+            real: {{
+                deployments: [{{ tool: "gripper" }}],
+                components: [{{ name: "tool", options: {{
+                    gripper: {{ deployments: [{{ source: {{ name: "named_robot", tag: "v1" }}, instances: [{{ instance_id: "gripper_inst" }}] }}] }},
+                    camera: {{ deployments: [{{ source: {{ name: "named_robot", tag: "v1" }}, instances: [{{ instance_id: "camera_inst" }}] }}] }},
+                }} }}],
+            }}
+        }} }}],
+        deployments: [{{ robot: "real", {entry} instances: [{{ instance_id: "alpha" }}] }}],
+    }}"#)).unwrap();
+    (directory, launcher)
+}
+
+/// The selection a launcher writes on an option's entry reaches the copies
+/// a join adds: a join with no words runs what the listed copy runs, and a
+/// word wins over the entry on its axis.
+#[tokio::test]
+async fn a_joined_copy_starts_from_the_launchers_entry_for_its_option() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_with_a_tool_axis(&started, r#"with: { tool: "camera" },"#);
+    let mut responders = Vec::new();
+    for instance_id in [
+        "alpha_camera_inst",
+        "bravo_camera_inst",
+        "charlie_gripper_inst",
+    ] {
+        responders.extend(answer_readiness(&started, "named_robot", instance_id).await);
+    }
+
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "entry-settings-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+
+    let result = execute(&started, &robot_goal("bravo", "real")).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let mut with_a_word = robot_goal("charlie", "real");
+    with_a_word.selections = vec![String::from("gripper")];
+    let result = execute(&started, &with_a_word).await;
+    assert!(result.success, "{:?}", result.error_message);
+
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    let copies: Vec<_> = list
+        .copies
+        .iter()
+        .map(|copy| {
+            (
+                copy.name.as_str(),
+                copy.instance_ids
+                    .iter()
+                    .map(Name::as_str)
+                    .collect::<Vec<_>>(),
+                copy.selections.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        copies,
+        [
+            (
+                "alpha",
+                vec!["alpha_camera_inst"],
+                vec![String::from("tool=camera")]
+            ),
+            (
+                "bravo",
+                vec!["bravo_camera_inst"],
+                vec![String::from("tool=camera")]
+            ),
+            (
+                "charlie",
+                vec!["charlie_gripper_inst"],
+                vec![String::from("tool=gripper")]
+            ),
+        ]
+    );
+    for instance_id in [
+        "alpha_camera_inst",
+        "bravo_camera_inst",
+        "charlie_gripper_inst",
+    ] {
+        assert!(is_process_running(instance_pid(
+            &started,
+            "named_robot",
+            instance_id
+        )));
+    }
+}
+
 /// A join whose new instance id already runs on the host, under a node
 /// outside the launcher, is refused by name.
 #[tokio::test]

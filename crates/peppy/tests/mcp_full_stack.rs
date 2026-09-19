@@ -1699,26 +1699,82 @@ async fn a_generated_mcp_node_name_fails_through_ordinary_resolution() {
     assert!(error.contains("cache"), "{error}");
 }
 
+/// The loopback port `stack list` reports for the endpoint labelled `label`.
+fn listed_port(listing: &str, label: &str) -> u16 {
+    const LOOPBACK: &str = "http://127.0.0.1:";
+    listing
+        .lines()
+        .filter(|line| line.contains(label))
+        .find_map(|line| {
+            let after = &line[line.find(LOOPBACK)? + LOOPBACK.len()..];
+            after.split('/').next()?.parse().ok()
+        })
+        .unwrap_or_else(|| panic!("a loopback URL labelled {label}:\n{listing}"))
+}
+
+/// A launcher's port is a preference: of two servers preferring one port,
+/// one holds it and the other serves on a port the operating system picked,
+/// which is the port the daemon reports and a client reaches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_mcp_deployments_on_one_port_fail_the_second_by_name() {
+async fn two_mcp_deployments_on_one_port_give_the_second_another_port() {
     let stack = Stack::boot(true).await;
-    let port = ephemeral_port();
-    let error = stack.launch_error(&format!(
+    let preferred = ephemeral_port();
+    stack.launch_or_panic(&format!(
         "{PROVIDERS}{}, {}",
-        mcp_deployment(&["camera_endpoint:v1"], "mcp_first", port),
-        mcp_deployment(&["camera_endpoint:v2"], "mcp_second", port)
+        mcp_deployment(&["camera_endpoint:v1"], "mcp_first", preferred),
+        mcp_deployment(&["camera_endpoint:v2"], "mcp_second", preferred)
     ));
-    assert!(error.contains("instance mcp_second"), "{error}");
-    assert!(!error.contains("instance mcp_first"), "{error}");
-    assert!(
-        error.contains("exited"),
-        "the second process refused to start: {error}"
+
+    let listing = stack.stack_list().await;
+    assert_eq!(
+        listing.matches("Instance endpoints").count(),
+        1,
+        "one endpoints section: {listing}"
     );
+    for instance_id in ["mcp_first", "mcp_second"] {
+        assert!(listing.contains(instance_id), "{listing}");
+    }
+    let v1_port = listed_port(&listing, "camera_endpoint_v1");
+    let v2_port = listed_port(&listing, "camera_endpoint_v2");
+    assert_ne!(
+        v1_port, v2_port,
+        "each server holds its own port:\n{listing}"
+    );
+    // Which of the two reached the port first is theirs to settle.
+    let fallback = match (v1_port == preferred, v2_port == preferred) {
+        (true, false) => v2_port,
+        (false, true) => v1_port,
+        _ => panic!("one of the two holds the preferred port {preferred}:\n{listing}"),
+    };
+
+    // The launch printed the ports taken, the fallback included.
+    let launch_output = stack.log_capture.logs();
+    // Each reported URL reaches the server it is reported for.
+    for (port, tag) in [(v1_port, "v1"), (v2_port, "v2")] {
+        let url = endpoint(port, &format!("/camera_endpoint/{tag}/mcp"));
+        assert!(launch_output.contains(&url), "{url}:\n{launch_output}");
+        wait_for_port(port, || stack.run_logs()).await;
+        let client = connect(&url).await;
+        let discovered = client
+            .discover(RequestMetaObject(Default::default()))
+            .await
+            .expect("server/discover answers");
+        let implementation = discovered
+            .server_info()
+            .expect("the server identity rides in the result _meta");
+        assert_eq!(implementation.version, tag, "{url}");
+        client.cancel().await.expect("client disconnects");
+    }
+
     let logs = stack.run_logs();
-    assert!(
-        logs.contains(&format!("cannot bind 127.0.0.1:{port}")),
-        "{logs}"
+    let warning =
+        format!("port {preferred} is held by another process; serving on port {fallback} instead");
+    assert_eq!(
+        logs.matches(&warning).count(),
+        1,
+        "the server that fell back says so once: `{warning}`\n{logs}"
     );
+    stack.reset();
 }
 
 /// `peppy mcp serve` alone: refused without the daemon's spec, and refused

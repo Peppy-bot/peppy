@@ -8,11 +8,11 @@ use daemon_config::mcp_deployment::{
 };
 use message_codec::consumer::ConsumerIdentity;
 use peppy_mcp_runtime::{Clock, ExposureServer, ExposureSet};
-use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner};
+use peppylib::runtime::{EndpointBinding, NodeBuilder, NodeRunner, bind_preferred};
 use serde::Deserialize;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::net::TcpListener;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
@@ -151,12 +151,22 @@ async fn run(
     let set = ExposureSet::new(servers)?;
     let endpoints = set.endpoint_paths();
 
-    let listener = TcpListener::bind(("127.0.0.1", port))
+    // The launcher's port is a preference: a server that finds it held takes
+    // a port from the operating system, so any number of servers preferring
+    // one port start side by side, each announcing the socket it holds.
+    let preferred = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let (listener, fell_back) = bind_preferred(preferred)
         .await
         .map_err(|source| ServeError::Bind { port, source })?;
     let bound = listener
         .local_addr()
         .map_err(|source| ServeError::Bind { port, source })?;
+    if fell_back {
+        tracing::warn!(
+            "port {port} is held by another process; serving on port {} instead",
+            bound.port()
+        );
+    }
     // The daemon learns the URLs the same way it does for every node: each
     // exposure is announced under the label its synthesized manifest
     // declares, with the loopback socket the listener bound and its path.
@@ -171,7 +181,7 @@ async fn run(
         )?;
     }
     tracing::info!(
-        port,
+        port = bound.port(),
         endpoints = endpoints.join(", "),
         "serving {} exposure(s)",
         endpoints.len()
