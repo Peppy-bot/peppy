@@ -43,11 +43,11 @@ runs:
         git checkout --force HEAD
 
     # Nothing here installs a toolchain. A box that runs these suites is
-    # provisioned before it takes a job, by the Peppy superproject's
-    # scripts/setup_machine.sh --ci-runner, and a box missing any of it is a
-    # provisioning failure to fix once on that box. The one caller whose host
-    # is a fresh image each run is release-host-env, which installs what a
-    # release stage needs before this action.
+    # provisioned before it takes a job, by setup_machine.sh --ci-runner, and
+    # a box missing any of it is a provisioning failure to fix once on that
+    # box. The one caller whose host is a fresh image each run is
+    # release-host-env, which runs the same script with --build-only before
+    # this action, so what it leaves behind is what is checked below.
     #
     # What a job does have to do is PATH. The runner executes steps in a shell
     # that is neither a login nor an interactive one, so the profile edits the
@@ -83,8 +83,9 @@ runs:
         if [ ${#missing[@]} -gt 0 ]; then
           list=$(printf '%s, ' "${missing[@]}")
           echo "::error::${RUNNER_NAME:-this host} is missing ${list%, }." \
-            "Self-hosted boxes are provisioned with the Peppy superproject's" \
-            "scripts/setup_machine.sh --ci-runner."
+            "Hosts are provisioned with setup_machine.sh:" \
+            "https://gist.github.com/godardt/b20a8817e2991eba0bd0d613855627e0" \
+            "(--ci-runner on a self-hosted box, --build-only on a release runner)."
           exit 1
         fi
         rustc --version
