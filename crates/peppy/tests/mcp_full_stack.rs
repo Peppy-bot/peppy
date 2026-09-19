@@ -1699,26 +1699,80 @@ async fn a_generated_mcp_node_name_fails_through_ordinary_resolution() {
     assert!(error.contains("cache"), "{error}");
 }
 
+/// Two servers preferring one port both start: one holds it, the other
+/// takes a port from the operating system, and each is reported where it
+/// listens.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_mcp_deployments_on_one_port_fail_the_second_by_name() {
+async fn two_mcp_deployments_on_one_port_give_the_second_another_port() {
     let stack = Stack::boot(true).await;
     let port = ephemeral_port();
-    let error = stack.launch_error(&format!(
+    stack.launch_or_panic(&format!(
         "{PROVIDERS}{}, {}",
         mcp_deployment(&["camera_endpoint:v1"], "mcp_first", port),
         mcp_deployment(&["camera_endpoint:v2"], "mcp_second", port)
     ));
-    assert!(error.contains("instance mcp_second"), "{error}");
-    assert!(!error.contains("instance mcp_first"), "{error}");
-    assert!(
-        error.contains("exited"),
-        "the second process refused to start: {error}"
+
+    // `stack list` names the port each server holds.
+    let listing = stack.stack_list().await;
+    assert_eq!(
+        listing.matches("Instance endpoints").count(),
+        1,
+        "one endpoints section: {listing}"
     );
+    let listed_port = |path: &str| -> u16 {
+        let row = listing
+            .lines()
+            .find(|line| line.contains(path))
+            .unwrap_or_else(|| panic!("a row for {path}:\n{listing}"));
+        let (_, after_host) = row
+            .split_once("http://127.0.0.1:")
+            .unwrap_or_else(|| panic!("the row carries a loopback URL: {row}"));
+        let (listed, _) = after_host
+            .split_once('/')
+            .unwrap_or_else(|| panic!("the URL carries a path: {row}"));
+        listed
+            .parse()
+            .unwrap_or_else(|_| panic!("the URL carries a port: {row}"))
+    };
+    let first = ("/camera_endpoint/v1/mcp", "v1");
+    let second = ("/camera_endpoint/v2/mcp", "v2");
+    let first_port = listed_port(first.0);
+    let second_port = listed_port(second.0);
+    assert_ne!(first_port, second_port, "{listing}");
+    let moved = match (first_port == port, second_port == port) {
+        (true, false) => second_port,
+        (false, true) => first_port,
+        _ => panic!("one server holds the preferred port {port}:\n{listing}"),
+    };
+
+    // The launch printed both URLs, and a client reaches each server where
+    // it was reported.
+    let launch_output = stack.log_capture.logs();
+    for ((path, tag), served_port) in [(first, first_port), (second, second_port)] {
+        let url = endpoint(served_port, path);
+        assert!(launch_output.contains(&url), "{url}:\n{launch_output}");
+        let client = connect(&url).await;
+        let discovered = client
+            .discover(RequestMetaObject(Default::default()))
+            .await
+            .expect("server/discover answers");
+        let implementation = discovered
+            .server_info()
+            .expect("the server identity rides in the result _meta");
+        assert_eq!(implementation.version, tag, "{url}");
+        client.cancel().await.expect("client disconnects");
+    }
+
+    // The server that moved says which port it left and which it took.
     let logs = stack.run_logs();
     assert!(
-        logs.contains(&format!("cannot bind 127.0.0.1:{port}")),
+        logs.contains(&format!(
+            "port {port} is held by another process; serving on port {moved} instead"
+        )),
         "{logs}"
     );
+    assert!(!logs.contains("cannot bind"), "{logs}");
+    stack.reset();
 }
 
 /// `peppy mcp serve` alone: refused without the daemon's spec, and refused

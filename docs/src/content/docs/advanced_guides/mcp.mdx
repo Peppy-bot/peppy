@@ -240,7 +240,7 @@ peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint 
 
 ## Deploy it
 
-A launcher deploys exposures with `source: { exposures: [...] }`, listing each as `"<name>:<tag>"`. The deployment takes one argument, `port`, and one `links` entry per target of every exposure it lists. Each link connects a logical role to a running instance.
+A launcher deploys exposures with `source: { exposures: [...] }`, listing each as `"<name>:<tag>"`. The deployment takes one argument, `port`, the loopback port the server [prefers](#several-servers-on-one-machine), and one `links` entry per target of every exposure it lists. Each link connects a logical role to a running instance.
 
 <Code code={mcpLauncher} lang="json5" title="launchers/mcp_camera_and_recording.json5" />
 
@@ -252,7 +252,7 @@ The daemon resolves each exposure through the machine's [repository caches](/adv
 
 The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `mcp` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
 
-The instance binds `127.0.0.1:<port>` (default `8900`) and serves each exposure at its own path:
+The instance binds `127.0.0.1:<port>` (default `8900`) when that port is free, and serves each exposure at its own path:
 
 ```text
 http://127.0.0.1:8900/<exposure name>/<exposure tag>/mcp
@@ -299,7 +299,9 @@ The launch refuses, before anything starts, when:
 - two deployments list the same set of exposures. They would derive the same node identity, so the error names the set and points at the remedy: to serve one set on several hosts, declare one deployment with one instance per host;
 - a `links` entry names no target of the listed exposures, or a target is left without a link, as for any node's slot.
 
-Two instances on one machine need distinct ports. A process whose port is taken exits before becoming healthy, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. Read the log with [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) on the node's identity.
+### Several servers on one machine
+
+`port` is a preference, not a reservation. A server that finds its port held by another process takes a port from the operating system instead, warns in its run log naming both ports, and announces the port it holds, so the `MCP endpoints:` block of the launch or the join and the `Instance endpoints` table of `peppy stack list` always carry the URL to connect to. That is what lets several copies of one robot fragment, each deploying the same exposures with the same `port`, run on one machine: the first holds the port the launcher names, and each of the others is reported where it listens. Servers starting together race for the port, one winning it, so a launcher that needs to know which URL is whose names a different `port` for each copy, and `--set-arguments <instance>.port=<n>` fixes one joined copy's. Only a held port falls back: any other bind failure stops the process before it becomes healthy, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. Read the log with [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) on the node's identity.
 
 ### Seeing what is served
 
