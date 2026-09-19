@@ -66,12 +66,14 @@ PEPPY_CONFIG="$(cat ./deploy/peppy_config.json5)" peppy service serve
     managed: {
       // How the nodes on this machine exchange data with each other. Traffic to
       // and from other machines always relays through the local zenohd router and
-      // its federation, regardless of this setting (node sessions only accept
-      // direct links over loopback).
+      // its federation, regardless of this setting (each node seeds gossip from
+      // the local router, so direct peer links form only between co-located nodes).
       //   "peer"   - Zenoh peer sessions with gossip: local nodes form direct
       //              peer-to-peer links and data stops relaying through the router.
+      //              Each session binds a wildcard listener on an ephemeral port,
+      //              reachable from the network.
       //   "router" - gossip off: all traffic relays through the central zenohd
-      //              router.
+      //              router, and a session binds no listener of its own.
       // Container nodes in a separate network namespace (Lima on macOS) always use
       // the router path regardless of this setting.
       local_nodes_topology: "peer",
@@ -170,7 +172,9 @@ The managed knobs exist only because Peppy controls that router process. Under `
 - **`"peer"`** (default): nodes run Zenoh peer sessions with gossip discovery enabled. After discovery, nodes form direct peer-to-peer links and data stops relaying through the central router, which removes a network hop from every message.
 - **`"router"`**: gossip is off and all traffic relays through the central `zenohd` router. Use this when direct node-to-node connectivity is unreliable or undesirable, or to simplify debugging by funneling all traffic through one process.
 
-The setting is local by construction, which is why it carries the `local_nodes_` prefix: a node session only accepts direct links on a loopback listener, so gossip can only ever form direct links between sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohmanagedfederation-cloud-router-timeout), whichever topology you pick.
+The setting is local by construction, which is why it carries the `local_nodes_` prefix: each node seeds gossip discovery from the local router, so a peer session only ever discovers, and forms direct links with, sessions co-located on this machine. Traffic to and from nodes on other machines always relays through the local router and its [federation](#zenohmanagedfederation-cloud-router-timeout), whichever topology you pick.
+
+In `"peer"` mode a session binds a wildcard listener (`0.0.0.0` on an ephemeral port) so Zenoh can advertise the host's routable interface addresses for those direct links; that listener is therefore reachable from the network, not confined to loopback. This widens an existing exposure class rather than opening a new one: the Zenoh transport is unauthenticated, and the managed router's own listener already binds `0.0.0.0`. Only `"router"` mode leaves a session with no listener at all, because with gossip off nothing needs to advertise a dialable address, so pick it for a deployment that must not accept inbound peer links.
 
 [Container nodes](/advanced_guides/containers/) that live in a separate network namespace (such as the Lima VM peppy uses on macOS) always take the router path, regardless of this setting: gossip cannot establish direct links across the namespace boundary.
 
