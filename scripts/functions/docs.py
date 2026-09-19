@@ -14,9 +14,9 @@ updater: tooling must not generate wording churn, and a release must not
 hinge on how the model would phrase a sentence today.
 
 A code diff larger than one Claude run reads is judged in parts
-(``split_diff``), each in a run of its own, and every gap records the part
-that shows the change it covers, so the updater hands Claude that same part.
-No part of the diff is ever dropped.
+(``split_diff``), each in a run of its own and several runs at once, and every
+gap records the part that shows the change it covers, so the updater hands
+Claude that same part. No part of the diff is ever dropped.
 
 The diff helpers (``get_code_diff``, ``get_docs_diff``, ``truncate_diff``)
 are shared with the release-notes generator (``release_summary.py``), so the
@@ -32,10 +32,12 @@ import argparse
 import re
 import subprocess
 import sys
+import threading
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .claude import run_claude
 from .cli import ReleaseError, console, need_cmd, run_with_error_handling
@@ -54,14 +56,25 @@ _EXCLUDE_PREFIXES: tuple[str, ...] = (
     ".github/",
     "scripts/docs/",
     "scripts/functions/docs.py",
-    "scripts/tests/test_docs.py",
 )
 
-# Files excluded from the code diff outright. The lock file only records
-# dependency versions, which neither the docs nor the release notes report, and
-# it sorts first in `git diff` output, so a large bump would spend the diff
-# budget before any code is reached.
-_EXCLUDE_PATHS: tuple[str, ...] = ("Cargo.lock",)
+# Lock files, excluded from both diffs wherever they sit. They only record
+# dependency versions, which neither the docs nor the release notes report,
+# and a large bump would spend the diff budget before any code is reached.
+_LOCK_FILE_NAMES: frozenset[str] = frozenset(
+    {"Cargo.lock", "uv.lock", "pixi.lock", "package-lock.json"}
+)
+
+# peppy's own test suite, excluded from the code diff: both the docs check and
+# the release notes are told to ignore it, so reading it only spends Claude's
+# time. A test lives in a `tests/` directory, a `tests.rs` module, or a
+# `*_tests.rs` module. Anything under a `templates/` directory is kept even
+# when it matches, since templates are scaffolded or generated into users'
+# projects (the `tests/` of a new node, for one).
+_TEST_DIR_NAME = "tests"
+_TEST_MODULE_NAME = "tests.rs"
+_TEST_MODULE_SUFFIX = "_tests.rs"
+_TEMPLATES_DIR_NAME = "templates"
 
 # The user documentation: the pages the docs site renders, including the
 # snippets they embed. Release notes under `docs/src/content/releases/` and the
@@ -72,6 +85,11 @@ USER_DOCS_PREFIX = "docs/src/content/docs/"
 # larger code diff in parts of at most this size (`split_diff`); the release
 # notes cut their diffs to it (`truncate_diff`).
 _MAX_DIFF_CHARS = 400_000
+
+# How many parts of a code diff the docs check judges at once. The runs only
+# read and none depends on another; four keep a twenty-part diff to a few
+# rounds without bursting past the account's rate limits.
+_CHECK_CONCURRENCY = 4
 
 # The `diff --git` line opening each file's section of a unified diff; the
 # group is the file's path on the new side, quoted by git when it holds
@@ -230,14 +248,30 @@ def _run_git(args: list[str], cwd: Path) -> str:
     return result.stdout
 
 
+def _is_lock_file(path: str) -> bool:
+    return PurePosixPath(path).name in _LOCK_FILE_NAMES
+
+
+def _is_own_test_path(path: str) -> bool:
+    """True for a file of peppy's own test suite (see `_TEST_DIR_NAME`)."""
+    *directories, name = PurePosixPath(path).parts
+    if _TEMPLATES_DIR_NAME in directories:
+        return False
+    return (
+        _TEST_DIR_NAME in directories
+        or name == _TEST_MODULE_NAME
+        or name.endswith(_TEST_MODULE_SUFFIX)
+    )
+
+
 def _is_code_path(path: str) -> bool:
-    if path in _EXCLUDE_PATHS:
+    if _is_lock_file(path) or _is_own_test_path(path):
         return False
     return not any(path.startswith(p) for p in _EXCLUDE_PREFIXES)
 
 
 def _is_user_docs_path(path: str) -> bool:
-    return path.startswith(USER_DOCS_PREFIX)
+    return path.startswith(USER_DOCS_PREFIX) and not _is_lock_file(path)
 
 
 def _diff_matching(
@@ -640,11 +674,80 @@ def _reword_added_em_dashes(
         )
 
 
+def _judge_part(
+    part: DiffPart, number: int, total: int, repo_root: Path
+) -> CheckResult:
+    """Have one Claude run judge *part*, the *number*-th of *total* parts."""
+    name = _part_name(number, total)
+    console.print(
+        f"Asking Claude to judge {name} ({len(part.paths)} path(s), "
+        f"{len(part.text) // 1024} KB)..."
+    )
+    prompt = _CHECK_PROMPT.format(
+        scope=_part_scope(number, total),
+        paths="\n".join(part.paths),
+        diff=part.text,
+    )
+    # tools (not just allowed_tools) is restricted: under bypassPermissions
+    # the allowlist approves rather than limits, and the check must stay
+    # read-only.
+    payload = run_claude(
+        prompt,
+        allowed_tools="Read Grep Glob",
+        permission_mode="bypassPermissions",
+        cwd=repo_root,
+        json_schema=_CHECK_SCHEMA,
+        activity=f"judging {name}",
+        tools="Read Grep Glob",
+    )
+    result = _parse_check_response(payload, diff_part=number)
+    console.print(f"[dim]Judged {name}: {len(result.changes)} gap(s).[/dim]")
+    return result
+
+
+def _judge_parts(
+    parts: tuple[DiffPart, ...], repo_root: Path
+) -> list[CheckResult]:
+    """Judge every part, `_CHECK_CONCURRENCY` at a time; verdicts in part order.
+
+    A failing part stops every part not yet started. The runs already under
+    way finish, then the failure of the lowest-numbered part is raised.
+    """
+    failed = threading.Event()
+
+    def judge(number: int, part: DiffPart) -> CheckResult | None:
+        if failed.is_set():
+            return None
+        try:
+            return _judge_part(part, number, len(parts), repo_root)
+        except BaseException:
+            # Set before the future completes, so a worker taking the next
+            # part already sees it.
+            failed.set()
+            raise
+
+    with ThreadPoolExecutor(max_workers=_CHECK_CONCURRENCY) as pool:
+        futures = [
+            pool.submit(judge, number, part)
+            for number, part in enumerate(parts, 1)
+        ]
+    errors = [
+        error for future in futures if (error := future.exception()) is not None
+    ]
+    if errors:
+        raise errors[0]
+    # No part failed, so none was skipped.
+    return [
+        verdict for future in futures if (verdict := future.result()) is not None
+    ]
+
+
 def check_docs(base: str, head: str) -> CheckResult:
     """Check whether ``docs/`` reflects code changes between base and head.
 
     The code diff is judged in parts of at most `_MAX_DIFF_CHARS`, one Claude
-    run each, and the verdicts are merged; every change names its part.
+    run each and `_CHECK_CONCURRENCY` runs at a time, and the verdicts are
+    merged in part order; every change names its part.
     """
     repo_root = get_repo_root()
     diff, paths = get_code_diff(base, head, repo_root)
@@ -655,32 +758,10 @@ def check_docs(base: str, head: str) -> CheckResult:
         f"[dim]{len(paths)} changed code path(s), {len(diff) // 1024} KB of "
         f"diff, judged in {len(parts)} part(s).[/dim]"
     )
-    changes: list[RequiredChange] = []
-    for number, part in enumerate(parts, 1):
-        name = _part_name(number, len(parts))
-        console.print(
-            f"Asking Claude to judge {name} ({len(part.paths)} path(s), "
-            f"{len(part.text) // 1024} KB)..."
-        )
-        prompt = _CHECK_PROMPT.format(
-            scope=_part_scope(number, len(parts)),
-            paths="\n".join(part.paths),
-            diff=part.text,
-        )
-        # tools (not just allowed_tools) is restricted: under bypassPermissions
-        # the allowlist approves rather than limits, and the check must stay
-        # read-only.
-        payload = run_claude(
-            prompt,
-            allowed_tools="Read Grep Glob",
-            permission_mode="bypassPermissions",
-            cwd=repo_root,
-            json_schema=_CHECK_SCHEMA,
-            activity=f"judging {name}",
-            tools="Read Grep Glob",
-        )
-        changes.extend(_parse_check_response(payload, diff_part=number).changes)
-    return CheckResult(changes=tuple(changes))
+    verdicts = _judge_parts(parts, repo_root)
+    return CheckResult(
+        changes=tuple(change for verdict in verdicts for change in verdict.changes)
+    )
 
 
 def update_docs(
