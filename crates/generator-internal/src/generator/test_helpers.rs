@@ -160,6 +160,10 @@ fn rename_peppygen_package(peppygen_dir: &Path) {
 
 /// Runs `cargo clippy` on a generated crate.
 ///
+/// Lints with every feature enabled, so the `testing`-gated `mock` and
+/// `fixtures` modules every node compiles into its test builds face the same
+/// `-D warnings` gate as the production surface.
+///
 /// Uses a shared target directory so heavy dependencies are compiled once and
 /// reused across all checks. Two protections cover its two distinct hazards:
 /// `rename_peppygen_package` gives this test's peppygen a distinct cargo unit so a
@@ -180,6 +184,7 @@ pub fn run_clippy(output_dir: &Path) {
     let clippy_output = Command::new("cargo")
         .arg("clippy")
         .arg("--all-targets")
+        .arg("--all-features")
         .arg("--color")
         .arg("always")
         .arg("--")
