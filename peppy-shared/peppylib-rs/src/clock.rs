@@ -249,7 +249,7 @@ impl PeppyClock {
     /// [`Error::ClockNotReady`] before the first one.
     pub fn now_ns(&self) -> Result<u64> {
         let source = match &self.inner {
-            PeppyClockInner::Wall => return Ok(wall_now_ns()?),
+            PeppyClockInner::Wall => return wall_now_ns(),
             PeppyClockInner::Consumer { source, .. } | PeppyClockInner::Publisher { source } => {
                 source
             }

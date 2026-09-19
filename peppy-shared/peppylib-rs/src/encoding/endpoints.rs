@@ -35,7 +35,7 @@ impl NodeEndpointsResponse {
                 let mut wire = wire_endpoints.reborrow().get(idx as u32);
                 wire.set_label(&endpoint.label);
                 wire.set_scheme(&endpoint.binding.scheme);
-                wire.set_host(&endpoint.binding.address.ip().to_string());
+                wire.set_host(endpoint.binding.address.ip().to_string());
                 wire.set_port(endpoint.binding.address.port());
                 wire.set_path(&endpoint.binding.path);
             }

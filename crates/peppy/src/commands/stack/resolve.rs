@@ -270,7 +270,7 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
         config::runtime::CoreNodeName::new(PREVIEW_CORE_NODE)
             .expect("the preview machine name is a valid core node name"),
     );
-    let clocks = match resolve_clocks(&flat, &placements, &ClockIncarnations::new()) {
+    let clocks = match resolve_clocks(flat, &placements, &ClockIncarnations::new()) {
         Ok(clocks) => clocks,
         Err(errors) => {
             let rendered: Vec<String> = errors.iter().map(ToString::to_string).collect();

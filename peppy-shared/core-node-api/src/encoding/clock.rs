@@ -227,7 +227,7 @@ pub struct ClockConsumerInfo {
     pub domain: config::runtime::ClockDomainId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClockListRequest;
 
 impl ClockListRequest {
