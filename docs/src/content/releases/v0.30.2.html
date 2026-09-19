@@ -1,0 +1,39 @@
+<entry>
+  <title>v0.30.2</title>
+  <id>https://docs.peppy.bot/releases/v0-30-2/</id>
+  <updated>2026-09-19T00:00:00Z</updated>
+
+  <summary>MCP and node servers take a free port when theirs is held, and a joined stack copy inherits its option's settings.</summary>
+
+  <content type="html">&lt;article&gt;
+  &lt;header&gt;
+    &lt;h1&gt;v0.30.2&lt;/h1&gt;
+    &lt;p&gt;&lt;em&gt;MCP and node servers take a free port when theirs is held, and a joined stack copy inherits its option's settings.&lt;/em&gt;&lt;/p&gt;
+    &lt;p&gt;&lt;small&gt;
+      Released on September 19, 2026
+    &lt;/small&gt;&lt;/p&gt;
+  &lt;/header&gt;
+&lt;h3&gt;Breaking changes&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A &lt;code&gt;zero_or_more&lt;/code&gt; axis option may be named in only one &lt;code&gt;deployments&lt;/code&gt; entry now; a launcher that lists the same option twice is refused, so merge those entries into one.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Ports and endpoints&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;The built-in MCP server treats its &lt;code&gt;port&lt;/code&gt; as a preference and takes an OS-assigned loopback port when another process holds it, so any number of MCP instances run on one machine.&lt;/li&gt;
+&lt;li&gt;Rust nodes can bind with &lt;code&gt;peppylib::runtime::bind_preferred&lt;/code&gt; to take their chosen port, or an OS-assigned fallback on the same host when it is held, and learn which happened.&lt;/li&gt;
+&lt;li&gt;Endpoint blocks that &lt;code&gt;stack launch&lt;/code&gt; and &lt;code&gt;node run&lt;/code&gt; print are now tinted by field when color is enabled.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Launch files&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;A &lt;code&gt;stack join&lt;/code&gt; copy inherits its option's &lt;code&gt;deployments&lt;/code&gt; entry, taking that entry's &lt;code&gt;with&lt;/code&gt;, &lt;code&gt;arguments&lt;/code&gt;, and &lt;code&gt;adjustments&lt;/code&gt; with the join's own &lt;code&gt;--with&lt;/code&gt; and &lt;code&gt;--set-arguments&lt;/code&gt; on top.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Networking&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;In the default &lt;code&gt;"peer"&lt;/code&gt; topology a node session binds a network-reachable &lt;code&gt;0.0.0.0&lt;/code&gt; listener on an ephemeral port; use &lt;code&gt;"router"&lt;/code&gt; for a deployment that must not accept inbound peer links.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3&gt;Core-node functions&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;stack.list&lt;/code&gt; now returns two more fields, &lt;code&gt;copies&lt;/code&gt; and &lt;code&gt;shutdown_grace_secs&lt;/code&gt;, beside its node graph and daemon identity.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/article&gt;</content>
+</entry>
