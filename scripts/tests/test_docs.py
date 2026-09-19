@@ -18,6 +18,8 @@ from functions.cli import ReleaseError
 from functions.docs import (
     _CHECK_PROMPT,
     _CHECK_SCHEMA,
+    _CONFIRM_PROMPT,
+    _CONFIRM_SCHEMA,
     _PART_SCOPE,
     _REWORD_PROMPT,
     _UPDATE_PROMPT,
@@ -26,12 +28,14 @@ from functions.docs import (
     CheckResult,
     DiffPart,
     EmDashLine,
+    GapReview,
     RequiredChange,
     UpdateOutcome,
     UpdateResult,
     _em_dash_lines,
     _is_code_path,
     _parse_check_response,
+    _parse_confirm_response,
     _parse_update_response,
     check_docs,
     get_code_diff,
@@ -59,6 +63,16 @@ def _minor(file: str = "docs/y.mdx", change: str = "reword") -> RequiredChange:
 def _gap(file: str, change: str, severity: str) -> dict:
     """One entry of a check verdict, as claude returns it."""
     return {"file": file, "change": change, "severity": severity}
+
+
+# The second opinions on a blocking gap, as claude returns them.
+_CONFIRMED: dict = {"verdict": "confirmed", "evidence": "the code agrees"}
+_REFUTED: dict = {"verdict": "refuted", "evidence": "foo.rs:12 accepts any key"}
+
+
+def _is_gap_review(cmd: list[str]) -> bool:
+    """True when *cmd* is the claude run confirming a gap, not one judging a diff."""
+    return json.loads(_flag_value(cmd, "--json-schema")) == _CONFIRM_SCHEMA
 
 
 # --- _is_code_path ---
@@ -247,8 +261,17 @@ def test_check_schema_forbids_an_em_dash_in_a_gap_description() -> None:
     assert re.fullmatch(pattern, f"add the flag {EM_DASH} then its default") is None
 
 
+def test_confirm_schema_pins_required_fields_and_verdict_enum() -> None:
+    assert _CONFIRM_SCHEMA["required"] == ["verdict", "evidence"]
+    assert _CONFIRM_SCHEMA["properties"]["verdict"]["enum"] == [
+        "confirmed",
+        "refuted",
+    ]
+
+
 @pytest.mark.parametrize(
-    "prompt", [_CHECK_PROMPT, _UPDATE_PROMPT, _REWORD_PROMPT, _PART_SCOPE]
+    "prompt",
+    [_CHECK_PROMPT, _CONFIRM_PROMPT, _UPDATE_PROMPT, _REWORD_PROMPT, _PART_SCOPE],
 )
 def test_prompts_hold_no_em_dash(prompt: str) -> None:
     # Claude mirrors the style of what it reads.
@@ -369,6 +392,28 @@ def test_parse_check_response_unknown_severity() -> None:
                 ]
             }
         )
+
+
+# --- _parse_confirm_response ---
+
+
+def test_parse_confirm_response_reads_both_verdicts() -> None:
+    assert _parse_confirm_response(_CONFIRMED) == GapReview(
+        confirmed=True, evidence="the code agrees"
+    )
+    assert _parse_confirm_response(_REFUTED) == GapReview(
+        confirmed=False, evidence="foo.rs:12 accepts any key"
+    )
+
+
+def test_parse_confirm_response_unknown_verdict() -> None:
+    with pytest.raises(ReleaseError, match="unknown verdict"):
+        _parse_confirm_response({"verdict": "maybe", "evidence": "x"})
+
+
+def test_parse_confirm_response_missing_evidence() -> None:
+    with pytest.raises(ReleaseError, match="missing string 'evidence'"):
+        _parse_confirm_response({"verdict": "confirmed"})
 
 
 # --- _parse_update_response ---
@@ -570,6 +615,11 @@ class _ClaudeByPath:
 
     ``prompts`` maps each judged file to its prompt; ``judged`` lists the
     files in the order their runs started.
+
+    The run confirming a blocking gap is answered by the doc file the gap
+    names: *reviews* maps a doc file to its second opinion, and a gap in any
+    other doc file is confirmed. ``review_prompts`` lists the prompts of those
+    runs.
     """
 
     def __init__(
@@ -578,16 +628,27 @@ class _ClaudeByPath:
         *,
         failing: frozenset[str] = frozenset(),
         rendezvous: threading.Barrier | None = None,
+        reviews: dict[str, object] | None = None,
     ) -> None:
         self._answers = answers
         self._failing = failing
         self._rendezvous = rendezvous
+        self._reviews = reviews or {}
         self.prompts: dict[str, str] = {}
         self.judged: list[str] = []
+        self.review_prompts: list[str] = []
+
+    def _review(self, prompt: str) -> MagicMock:
+        self.review_prompts.append(prompt)
+        named = [file for file in self._reviews if f"`{file}`" in prompt]
+        assert len(named) <= 1, f"a review must name one doc file: {named}"
+        return _claude_answer(self._reviews[named[0]] if named else _CONFIRMED)
 
     def __call__(self, cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
         assert cmd and cmd[0] == "claude", f"unexpected command: {cmd}"
         prompt = str(kwargs.get("input"))
+        if _is_gap_review(cmd):
+            return self._review(prompt)
         files = [f for f in self._answers if f"diff --git a/{f} b/{f}\n" in prompt]
         assert len(files) == 1, f"a part must show one answered file: {files}"
         (file,) = files
@@ -612,8 +673,9 @@ def _mock_subprocess_run_for_claude(
     """Build a MagicMock replacement for subprocess.run.
 
     Returns the provided object as the envelope's structured output for
-    claude calls. get_code_diff is patched, so the only git call is the
-    em-dash scan of ``docs/``, which finds nothing.
+    claude calls, and confirms every blocking gap the check asks a second
+    opinion on. get_code_diff is patched, so the only git call is the em-dash
+    scan of ``docs/``, which finds nothing.
     """
 
     def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
@@ -624,6 +686,8 @@ def _mock_subprocess_run_for_claude(
             mock.stderr = ""
             return mock
         if cmd and cmd[0] == "claude":
+            if _is_gap_review(cmd):
+                return _claude_answer(_CONFIRMED)
             if capture is not None:
                 capture["cmd"] = cmd
                 capture["input"] = kwargs.get("input")
@@ -814,6 +878,129 @@ def test_check_docs_raises_the_failure_of_the_first_failing_part(
             check_docs("BASE", "HEAD")
 
     assert sorted(calls.judged) == ["crates/a.rs", "crates/b.rs"]
+
+
+def test_check_docs_drops_a_blocking_gap_the_code_refutes(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # Two parts disagree about one behaviour, as when a stale comment sits in
+    # one and the code deciding it in the other: only the gap the code
+    # confirms survives, so the docs are never rewritten back and forth.
+    calls = _ClaudeByPath(
+        {
+            "crates/a.rs": {
+                "required_changes": [
+                    _gap("docs/a.mdx", "keys are restricted", "blocking"),
+                    _gap("docs/a.mdx", "reword the intro", "minor"),
+                ]
+            },
+            "crates/b.rs": {
+                "required_changes": [_gap("docs/b.mdx", "say b", "blocking")]
+            },
+        },
+        reviews={"docs/a.mdx": _REFUTED},
+    )
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
+    with repo, diff, cap, claude:
+        result = check_docs("BASE", "HEAD")
+
+    assert result.blocking == (
+        RequiredChange("docs/b.mdx", "say b", "blocking", diff_part=2),
+    )
+    # A refuted gap is dropped, not demoted: as a minor suggestion it would
+    # still reach the updater of the polish pull request.
+    assert result.minor == (
+        RequiredChange("docs/a.mdx", "reword the intro", "minor", diff_part=1),
+    )
+    err = " ".join(capfd.readouterr().err.split())
+    assert "Dropped a gap the code does not confirm:" in err
+    assert "docs/a.mdx: keys are restricted" in err
+    assert "foo.rs:12 accepts any key" in err
+    assert "Confirmed the gap in docs/b.mdx." in err
+
+
+def test_check_docs_confirms_a_gap_from_the_repository_not_the_diff(
+    tmp_path: Path,
+) -> None:
+    calls = _ClaudeByPath(
+        {
+            "crates/a.rs": _NO_GAP,
+            "crates/b.rs": {
+                "required_changes": [_gap("docs/b.mdx", "say b", "blocking")]
+            },
+        }
+    )
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
+    with repo, diff, cap, claude:
+        check_docs("BASE", "HEAD")
+
+    (prompt,) = calls.review_prompts
+    assert "- doc file: `docs/b.mdx`" in prompt
+    assert "- claim: say b" in prompt
+    # The run is pointed at the files of the part that showed the gap, and
+    # reads them as they stand: a diff would hand it the judge's blind spot.
+    assert "crates/b.rs" in prompt
+    assert "crates/a.rs" not in prompt
+    assert "diff --git" not in prompt
+
+
+def test_check_docs_asks_no_second_opinion_on_minor_gaps(tmp_path: Path) -> None:
+    calls = _ClaudeByPath(
+        {
+            "crates/a.rs": {"required_changes": [_gap("docs/a.mdx", "reword", "minor")]},
+            "crates/b.rs": _NO_GAP,
+        }
+    )
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
+    with repo, diff, cap, claude:
+        result = check_docs("BASE", "HEAD")
+
+    assert result.minor == (RequiredChange("docs/a.mdx", "reword", "minor", diff_part=1),)
+    assert calls.review_prompts == []
+
+
+def test_check_docs_confirms_a_gap_reported_twice_once(tmp_path: Path) -> None:
+    twice = [_gap("docs/a.mdx", "say a", "blocking")] * 2
+    calls = _ClaudeByPath(
+        {"crates/a.rs": {"required_changes": twice}, "crates/b.rs": _NO_GAP},
+        reviews={"docs/a.mdx": _REFUTED},
+    )
+    repo, diff, cap, claude = _patched_parts(tmp_path, calls)
+    with repo, diff, cap, claude:
+        result = check_docs("BASE", "HEAD")
+
+    # Equal gaps are one gap: one second opinion, which decides both.
+    assert len(calls.review_prompts) == 1
+    assert result == CheckResult(changes=())
+
+
+def test_check_docs_confirms_gaps_with_the_schema_and_readonly_tools(
+    tmp_path: Path,
+) -> None:
+    reviews: list[list[str]] = []
+
+    def _run(cmd: list[str], *args: object, **kwargs: object) -> MagicMock:
+        if not _is_gap_review(cmd):
+            return _claude_answer(
+                {"required_changes": [_gap("docs/x.mdx", "add flag", "blocking")]}
+            )
+        reviews.append(cmd)
+        return _claude_answer(_CONFIRMED)
+
+    with patch("functions.docs.get_repo_root", return_value=tmp_path), \
+         patch(
+             "functions.docs.get_code_diff",
+             return_value=(_diff_of("crates/foo.rs"), ["crates/foo.rs"]),
+         ), \
+         patch("functions.claude.subprocess.run", MagicMock(side_effect=_run)):
+        check_docs("BASE", "HEAD")
+
+    (cmd,) = reviews
+    # Read-only for the same reason the judging runs are.
+    assert _flag_value(cmd, "--tools") == "Read Grep Glob"
+    assert _flag_value(cmd, "--allowed-tools") == "Read Grep Glob"
+    assert _flag_value(cmd, "--model") == CLAUDE_MODEL
+    assert _flag_value(cmd, "--effort") == CLAUDE_EFFORT
 
 
 def test_update_docs_hands_each_part_its_own_gaps(tmp_path: Path) -> None:

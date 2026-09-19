@@ -72,6 +72,23 @@ def get_commit(rev: str) -> str:
     return result.stdout.strip()
 
 
+def find_commit(rev: str) -> str | None:
+    """Resolve *rev* to its commit SHA, or None when it names no commit locally.
+
+    For a revision that may be absent: an abbreviated SHA read off a branch
+    name, whose commit this clone never fetched or no longer tells apart from
+    another. `get_commit` is for a revision that has to exist.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
 def is_ancestor(ancestor: str, descendant: str) -> bool:
     """Return True if *ancestor* is reachable from *descendant*.
 

@@ -12,6 +12,7 @@ from functions.repo import (
     commit_paths,
     fetch_remote_branches,
     fetch_tag,
+    find_commit,
     get_commit,
     get_commit_subjects,
     has_changes_in_paths,
@@ -89,6 +90,30 @@ def test_get_commit_raises_on_unknown_revision() -> None:
     ):
         with pytest.raises(ReleaseError, match="could not resolve 'origin/nope'"):
             get_commit("origin/nope")
+
+
+def test_find_commit_resolves_an_abbreviated_sha() -> None:
+    with patch(
+        "functions.repo.subprocess.run", return_value=_mock_git("abc123def456\n")
+    ) as run:
+        assert find_commit("abc123") == "abc123def456"
+    assert run.call_args.args[0] == [
+        "git",
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "abc123^{commit}",
+    ]
+
+
+@pytest.mark.parametrize("returncode", [1, 128])
+def test_find_commit_is_none_for_a_revision_naming_no_commit(returncode: int) -> None:
+    # Unknown to this clone, or an abbreviation it cannot tell apart.
+    with patch(
+        "functions.repo.subprocess.run",
+        return_value=_mock_git("", returncode=returncode),
+    ):
+        assert find_commit("abc123") is None
 
 
 def test_is_ancestor_reads_exit_code() -> None:
