@@ -90,9 +90,11 @@ The second argument is a timeout. Rust accepts anything that converts to `Option
 
 ## `stack.list`
 
-`stack.list` returns a `StackList` with four fields:
+`stack.list` returns a `StackList` with six fields:
 
 - `graph`: the node graph, with every node's metadata and its tracked instances.
+- `copies`: the copies the serving daemon runs.
+- `shutdown_grace_secs`: the serving daemon's cooperative shutdown grace.
 - `core_node`: the core-node name of the daemon that served this stack snapshot.
 - `instance_id`: the serving daemon's own generation instance id.
 - `host_name`: the hostname of the daemon that served this stack snapshot.
