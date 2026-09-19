@@ -609,7 +609,7 @@ deployments: [
 ],
 ```
 
-A copy entry has four fields: `instance_id`, the copy's name; `with`, the selection of the option's own axes, an axis left out taking what the fragment deploys; `arguments`, overrides of the copy's instances' arguments, keyed by the id written in the fragment and then by argument; and `adjustments`, the fragment verbs over the copy's instances. The option entry itself takes `with` and `arguments` too, shared by every copy it lists, and a copy's own values win per axis and per argument:
+A copy entry has four fields: `instance_id`, the copy's name; `with`, the selection of the option's own axes, an axis left out taking what the fragment deploys; `arguments`, overrides of the copy's instances' arguments, keyed by the id written in the fragment and then by argument; and `adjustments`, the fragment verbs over the copy's instances. The option entry itself takes `with` and `arguments` too, shared by every copy of the option, listed or joined, and a copy's own values win per axis and per argument:
 
 ```json5
 { robot: "openarm_v2_sim", with: { robot_commander: "xr_commander" }, instances: [
@@ -647,7 +647,9 @@ peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
 
 `stack join` names the option to copy and, with `-i`, the copy's name, the way `node run` names a node and an instance. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
 
-`--set-arguments INSTANCE.ARGUMENT=JSON5` on `stack join` overrides one argument of one of the copy's instances, named as the fragment writes it, the way a copy entry's `arguments` does in the file. It applies after every adjustment, once per argument. Numbers must be finite; quote string values:
+A joined copy starts from the same settings as a copy the file lists. Weakest first: what the option's fragment deploys, then the `with`, `arguments` and `adjustments` of the launcher's entry for that option, then the join's `--with` words and `--set-arguments`. A word wins on its own axis and the entry's other axes stay selected, so the option's constraints judge the two together, as they do for a launch word `NAME.option`. Under the `xr_commander` entry above, a plain `peppy stack join openarm_v2_sim -i charlie` is another headset robot, and `peppy stack remove alpha` followed by `peppy stack join openarm_v2_sim -i alpha` brings back the copy the file deployed. One entry speaks for every copy of its option, so a launcher deploys each option of a `zero_or_more` axis in one entry, and a second entry naming the same option is refused.
+
+`--set-arguments INSTANCE.ARGUMENT=JSON5` on `stack join` overrides one argument of one of the copy's instances, named as the fragment writes it, the way a copy entry's `arguments` does in the file. It applies after every adjustment, over the option entry's `arguments`, once per argument on the command line. Numbers must be finite; quote string values:
 
 ```sh
 peppy stack join openarm_v2 -i charlie --with xr_commander \

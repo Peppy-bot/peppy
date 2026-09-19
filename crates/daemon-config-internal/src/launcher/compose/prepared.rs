@@ -1,7 +1,7 @@
 //! A launcher held ready to compose: its fragments read once, and the
 //! launch, join and removal it answers.
 
-use super::super::composition::{Adjustment, ArgumentOverrides};
+use super::super::composition::{Adjustment, ArgumentOverrides, CopySettings, OptionDeployment};
 use super::super::types::{LauncherFramework, PeppyLauncher};
 use super::constraints::{self, ConstraintScope};
 use super::copy::{
@@ -182,7 +182,9 @@ impl PreparedLauncher {
         })
     }
 
-    /// Composes one more copy over the running stack.
+    /// Composes one more copy over the running stack. The copy starts from
+    /// the launcher's entry for its option, as the copies the entry lists
+    /// do, with the request's words and arguments on top.
     pub fn join(
         &self,
         request: JoinRequest<'_>,
@@ -199,8 +201,12 @@ impl PreparedLauncher {
             });
         };
         let loaded = self.loaded.option(&axis.name, request.option);
-        let with = select::copy_words(loaded, request.words)?;
-        let arguments = argument_overrides(request.arguments)?;
+        let settings = self.joined_copy_settings(
+            &axis.name,
+            request.option,
+            &select::copy_words(loaded, request.words)?,
+            &argument_overrides(request.arguments)?,
+        );
         let bare = self.compose_stack(stack.selection)?;
         let copy = compose_copy(
             self,
@@ -210,9 +216,9 @@ impl PreparedLauncher {
                 axis: &axis.name,
                 loaded,
                 name: request.name,
-                with: &with,
-                arguments: &arguments,
-                adjustments: &[],
+                with: &settings.with,
+                arguments: &settings.arguments,
+                adjustments: &settings.adjustments,
                 origin: CopyOrigin::Join,
             },
             &stack.launcher.core_nodes,
@@ -230,6 +236,26 @@ impl PreparedLauncher {
             copy: record,
             report,
         })
+    }
+
+    /// What a joined copy of `option` selects and writes: the settings of
+    /// the launcher's entry for the option, when it deploys one, with the
+    /// join's own `with` and `arguments` on top, as a copy the file lists
+    /// lays its own over the same entry.
+    pub(super) fn joined_copy_settings(
+        &self,
+        axis: &str,
+        option: &str,
+        with: &BTreeMap<String, String>,
+        arguments: &ArgumentOverrides,
+    ) -> CopySettings<'_> {
+        self.launcher
+            .option_deployments
+            .iter()
+            .find(|entry| entry.axis == axis && entry.option == option)
+            .map(OptionDeployment::entry_settings)
+            .unwrap_or_default()
+            .overlaid_by(with, arguments, [])
     }
 
     /// The running stack without one of its copies: its instances gone, and

@@ -244,6 +244,109 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
     assert!(error.contains("peppy stack join real -i NAME"), "{error}");
 }
 
+/// `stack resolve --join` previews what `stack join` composes: the copy
+/// starts from the launcher's entry for the option, a `--join-with` word
+/// wins on its axis, and `--join-set-arguments` wins per argument.
+#[test]
+fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("fleet.json5");
+    std::fs::write(&launcher, r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
+            deployments: [
+                { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst", arguments: { speed: 0.1 } }] },
+                { commander: "web" },
+            ],
+            components: [{ name: "commander", options: {
+                web: { deployments: [{ source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "commander_inst", arguments: { port: 8765 } }] }] },
+                mcp: { deployments: [{ source: { name: "mcp", tag: "v1" }, instances: [{ instance_id: "commander_inst", arguments: { port: 8900 } }] }] },
+            } }],
+        } } }],
+        deployments: [{ robot: "real",
+            with: { commander: "mcp" },
+            arguments: { arm_inst: { speed: 0.5 }, commander_inst: { port: 9000 } },
+            instances: [{ instance_id: "alpha" }] }],
+    }"#).unwrap();
+    let resolve = |words: &[&str], arguments: &[&str]| {
+        let join = JoinPreview {
+            option: Some("real".into()),
+            name: Name::new("bravo").unwrap(),
+            words: words.iter().map(|word| word.to_string()).collect(),
+            arguments: arguments
+                .iter()
+                .map(|argument| argument.parse().unwrap())
+                .collect(),
+        };
+        let (document, report) = resolve_rendered(
+            &PeppyDirs::new(directory.path()),
+            launcher.clone(),
+            &[],
+            &join,
+        )
+        .unwrap();
+        let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
+        (flat, report)
+    };
+    let instance = |flat: &serde_json::Value, id: &str| -> serde_json::Value {
+        flat["deployments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|deployment| deployment["instances"].as_array().unwrap())
+            .find(|instance| instance["instance_id"] == id)
+            .unwrap_or_else(|| panic!("{id} is in the plan: {flat}"))
+            .clone()
+    };
+    let source_of = |flat: &serde_json::Value, id: &str| -> String {
+        flat["deployments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|deployment| {
+                deployment["instances"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|instance| instance["instance_id"] == id)
+            })
+            .unwrap_or_else(|| panic!("{id} is in the plan: {flat}"))["source"]["name"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    let (flat, report) = resolve(&[], &[]);
+    assert!(
+        report
+            .iter()
+            .any(|line| line == "copy bravo: robot=real  commander=mcp"),
+        "{report:?}"
+    );
+    assert_eq!(source_of(&flat, "bravo_commander_inst"), "mcp");
+    assert_eq!(
+        instance(&flat, "bravo_commander_inst")["arguments"],
+        instance(&flat, "alpha_commander_inst")["arguments"]
+    );
+    assert_eq!(instance(&flat, "bravo_arm_inst")["arguments"]["speed"], 0.5);
+
+    let (flat, _) = resolve(&["web"], &["commander_inst.port=8910"]);
+    assert_eq!(source_of(&flat, "bravo_commander_inst"), "panel");
+    assert_eq!(
+        instance(&flat, "bravo_commander_inst")["arguments"]["port"],
+        8910
+    );
+    assert_eq!(
+        instance(&flat, "bravo_arm_inst")["arguments"]["speed"],
+        0.5,
+        "the entry's other arguments stand"
+    );
+    assert_eq!(
+        instance(&flat, "alpha_commander_inst")["arguments"]["port"],
+        9000
+    );
+}
+
 #[test]
 fn resolve_previews_a_join_with_its_own_name_selection_and_overrides() {
     let cli = StackCli::try_parse_from([

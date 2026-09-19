@@ -331,7 +331,8 @@ fn check_file_copies_over(
 }
 
 /// Every copy every legal stack can run: as a launch of one copy, and as a
-/// join onto the bare stack. A copy that writes to a stack instance is
+/// join onto the bare stack, each under the settings of the launcher's
+/// entry for its option. A copy that writes to a stack instance is
 /// launch-only, which the join refuses by name at the time. Returns the
 /// copy selections some stack admits, by option.
 fn check_copies_over(
@@ -365,10 +366,28 @@ fn check_copies_over(
                     Err(_) => continue,
                 };
                 let name = check_copy_name(&bare);
-                let with: BTreeMap<String, String> = copy_selection
+                let chosen: BTreeMap<String, String> = copy_selection
                     .own_axes(&item.axis.name)
                     .filter_map(|entry| Some((entry.axis.clone(), entry.option.clone()?)))
                     .collect();
+                // The copy as a join composes it: the option entry's
+                // settings under the selection's own choices.
+                let settings = prepared.joined_copy_settings(
+                    &item.axis.name,
+                    item.option,
+                    &chosen,
+                    &BTreeMap::new(),
+                );
+                // An axis the entry fills is filled in every copy of the
+                // option, so no copy runs under a selection that leaves it
+                // unfilled and there is nothing to compose.
+                let runs_under_the_entry = settings
+                    .with
+                    .keys()
+                    .all(|axis| copy_selection.option_of(axis).is_some());
+                if !runs_under_the_entry {
+                    continue;
+                }
                 let echo = format!(
                     "{} + copy of {}: {}",
                     stack.echo(),
@@ -383,9 +402,9 @@ fn check_copies_over(
                         axis: &item.axis.name,
                         loaded: item.loaded,
                         name: &name,
-                        with: &with,
-                        arguments: &BTreeMap::new(),
-                        adjustments: &[],
+                        with: &settings.with,
+                        arguments: &settings.arguments,
+                        adjustments: &settings.adjustments,
                         origin: CopyOrigin::Join,
                     },
                     &bare.core_nodes,
