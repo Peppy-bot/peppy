@@ -575,8 +575,8 @@ jobs:
           if [ ${#missing[@]} -gt 0 ]; then
             list=$(printf '%s, ' "${missing[@]}")
             echo "::error::${RUNNER_NAME:-this host} is missing ${list%, }." \
-              "Self-hosted boxes are provisioned with the Peppy superproject's" \
-              "scripts/setup_machine.sh --ci-runner."
+              "Self-hosted boxes are provisioned with setup_machine.sh --ci-runner:" \
+              "https://gist.github.com/godardt/b20a8817e2991eba0bd0d613855627e0"
             exit 1
           fi
 

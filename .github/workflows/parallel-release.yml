@@ -76,7 +76,6 @@ jobs:
 
       - uses: ./.github/actions/release-host-env
         with:
-          rust: "false"
           claude: "true"
           git-author: "true"
 
@@ -211,7 +210,6 @@ jobs:
 
       - uses: ./.github/actions/release-host-env
         with:
-          rust: "false"
           git-author: "true"
 
       - uses: actions/download-artifact@v8
