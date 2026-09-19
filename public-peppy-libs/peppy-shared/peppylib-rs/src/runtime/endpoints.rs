@@ -9,9 +9,11 @@
 //! what the daemon expands into the URLs it reports.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 
 use config::node::EndpointLabel;
+use tokio::net::TcpListener;
 
 use crate::error::{Error, Result};
 
@@ -52,6 +54,28 @@ fn is_scheme_token(scheme: &str) -> bool {
     chars.next().is_some_and(|first| first.is_ascii_lowercase())
         && chars
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'))
+}
+
+/// The port that asks the operating system to pick one.
+const ANY_PORT: u16 = 0;
+
+/// Takes `preferred`, or a port the operating system picks on the same host
+/// address when another socket already holds `preferred`. Answers the
+/// listener and whether it fell back; the address taken is the listener's
+/// `local_addr`, which is what an [`EndpointBinding`] announces.
+///
+/// Only a port conflict falls back. A host address the machine does not
+/// have, a privileged port, or any other bind failure is returned, so it
+/// reaches the operator as a refusal naming what to fix.
+pub async fn bind_preferred(preferred: SocketAddr) -> std::io::Result<(TcpListener, bool)> {
+    match TcpListener::bind(preferred).await {
+        Ok(listener) => Ok((listener, false)),
+        Err(source) if source.kind() == ErrorKind::AddrInUse => {
+            let listener = TcpListener::bind(SocketAddr::new(preferred.ip(), ANY_PORT)).await?;
+            Ok((listener, true))
+        }
+        Err(source) => Err(source),
+    }
 }
 
 /// One announced endpoint: the declared label and the socket bound for it.
@@ -296,6 +320,70 @@ mod tests {
         let error = endpoints.seal().expect_err("viewer is missing");
         assert!(matches!(error, Error::EndpointNotAnnounced { ref label } if label == "viewer"));
         assert!(error.to_string().contains("`viewer`"), "{error}");
+    }
+
+    /// A listener on a port the operating system picked, standing in for
+    /// whatever else on the host holds the port a launcher asked for.
+    async fn holder() -> (TcpListener, SocketAddr) {
+        let listener = TcpListener::bind(loopback(ANY_PORT))
+            .await
+            .expect("an operating-system port is always available");
+        let address = listener
+            .local_addr()
+            .expect("a bound listener has an address");
+        (listener, address)
+    }
+
+    fn loopback(port: u16) -> SocketAddr {
+        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port)
+    }
+
+    #[tokio::test]
+    async fn a_free_preferred_port_is_taken_as_asked() {
+        // A port known to be free: the holder took it and let it go.
+        let (held, preferred) = holder().await;
+        drop(held);
+        let (listener, fell_back) = bind_preferred(preferred).await.expect("the port is free");
+        assert!(!fell_back);
+        assert_eq!(listener.local_addr().expect("bound"), preferred);
+    }
+
+    #[tokio::test]
+    async fn a_held_preferred_port_yields_another_on_the_same_host_address() {
+        let (_held, preferred) = holder().await;
+        let (listener, fell_back) = bind_preferred(preferred)
+            .await
+            .expect("a held port falls back");
+        assert!(fell_back);
+        let taken = listener.local_addr().expect("bound");
+        assert_eq!(taken.ip(), preferred.ip());
+        assert_ne!(taken.port(), preferred.port());
+        assert_ne!(taken.port(), ANY_PORT, "the system's pick is a real port");
+    }
+
+    #[tokio::test]
+    async fn two_binds_preferring_one_port_both_hold_a_socket() {
+        let (held, preferred) = holder().await;
+        drop(held);
+        let (first, first_fell_back) = bind_preferred(preferred).await.expect("first");
+        let (second, second_fell_back) = bind_preferred(preferred).await.expect("second");
+        assert!(!first_fell_back);
+        assert!(second_fell_back);
+        assert_ne!(
+            first.local_addr().expect("bound").port(),
+            second.local_addr().expect("bound").port()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_other_than_a_held_port_is_returned() {
+        // 192.0.2.0/24 is reserved for documentation, so no interface of the
+        // host carries it and the bind is refused for the address itself.
+        let foreign: SocketAddr = "192.0.2.1:0".parse().expect("a socket address");
+        let error = bind_preferred(foreign)
+            .await
+            .expect_err("the host has no such address");
+        assert_ne!(error.kind(), ErrorKind::AddrInUse, "{error}");
     }
 
     #[test]

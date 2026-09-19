@@ -26,7 +26,7 @@ pub const BUILT_IN_TAG: &str = "builtin";
 /// The one argument the built-in server takes.
 pub const PORT_PARAMETER: &str = "port";
 
-/// The port the server binds when a launcher gives none.
+/// The port the server prefers when a launcher gives none.
 pub const DEFAULT_PORT: u16 = 8900;
 
 /// How the synthesized manifest says the server runs: the installed `peppy`

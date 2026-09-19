@@ -7,7 +7,7 @@ mod processor;
 mod slot_stream;
 
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
-pub use endpoints::{AnnouncedEndpoint, EndpointBinding};
+pub use endpoints::{AnnouncedEndpoint, EndpointBinding, bind_preferred};
 pub use node_runner::NodeRunner;
 pub use observation::{
     ObservationSlot, ObservationSlotSet, ObservedTopicSubscription, subscribe_observed,

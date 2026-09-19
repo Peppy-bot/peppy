@@ -252,13 +252,15 @@ The daemon resolves each exposure through the machine's [repository caches](/adv
 
 The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `mcp` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
 
-The instance binds `127.0.0.1:<port>` (default `8900`) and serves each exposure at its own path:
+The instance prefers `127.0.0.1:<port>` (default `8900`) and serves each exposure at its own path:
 
 ```text
 http://127.0.0.1:8900/<exposure name>/<exposure tag>/mcp
 ```
 
 Every other path returns 404, a bare `/mcp` included. Point a client at `http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
+
+`port` is a preference. A server that finds the port free takes it. A server that finds it held by another process takes a port the operating system picks on the same loopback address, says so in its run log with a warning naming both ports, and announces the port it holds. Only a held port falls back: any other bind failure stops the process, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. The URL the server ended up on is never a guess: the launch or the join that started it prints it under `MCP endpoints:`, and [`peppy stack list`](#seeing-what-is-served) shows it for as long as the instance runs.
 
 The derived manifest declares one entry under `execution.endpoints` per exposure, labelled `<name>_<tag>` (the tag spelled as generated code spells it, `-` becoming `_`), of kind `mcp`, described by the exposure's title. The server announces each one when it binds, and the daemon reports the URL under that label. The launch ends with them under `MCP endpoints:`; the server binds loopback only, so each exposure has exactly one URL:
 
@@ -299,7 +301,7 @@ The launch refuses, before anything starts, when:
 - two deployments list the same set of exposures. They would derive the same node identity, so the error names the set and points at the remedy: to serve one set on several hosts, declare one deployment with one instance per host;
 - a `links` entry names no target of the listed exposures, or a target is left without a link, as for any node's slot.
 
-Two instances on one machine need distinct ports. A process whose port is taken exits before becoming healthy, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. Read the log with [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) on the node's identity.
+Any number of instances run on one machine, whatever port each prefers. The first to reach a port holds it and the others take another, so a launcher that needs a known URL for each server names a different `port` for each, and a joined copy gets one with `--set-arguments <instance>.port=<n>`. Two servers that start together and prefer one port settle between themselves which of them holds it. Read a server's run log with [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) on the node's identity.
 
 ### Seeing what is served
 

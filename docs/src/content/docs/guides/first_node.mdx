@@ -277,4 +277,6 @@ Inside `setup`, right after the bind, the node announces the socket under its la
   </TabItem>
 </Tabs>
 
+A Rust node that treats its port as a preference binds with `peppylib::runtime::bind_preferred(address)` in place of `TcpListener::bind`: it takes the address asked for, or a port the operating system picks on the same host address when another process holds that one, and answers the listener with whether it fell back. Any other bind failure is returned as it is. Announcing `listener.local_addr()` reports the port taken either way, which is how several copies of one node run side by side on one machine.
+
 The daemon that hosts the instance reads the announced sockets once the node is healthy and turns each one into the URLs an operator opens, one per address of that machine (a socket bound on `0.0.0.0` answers on every interface, so loopback comes first, then the others). Every command that starts or inspects instances prints them: `peppy node run` and `peppy stack launch` end with a `Web pages:` block and an `MCP endpoints:` block, `peppy stack list` has an `Instance endpoints` table, and `peppy node info` lists them under each instance.
