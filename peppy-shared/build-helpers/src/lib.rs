@@ -1,7 +1,7 @@
 //! Generic build-script helpers shared across peppy crates.
 //!
-//! This crate lives in `public-peppy-libs/peppy-shared` so it sits at the
-//! bottom of the dependency graph: both the `peppy` workspace crates and the
+//! This crate lives in `peppy-shared` so it sits at the bottom of the
+//! dependency graph: both the `peppy` workspace crates and the
 //! `peppy-shared` crates depend on it, never the other way around. Helpers
 //! that are specific to a single `peppy` crate (for example the peppylib
 //! native-extension rebuild policy) live in their own crate next to that

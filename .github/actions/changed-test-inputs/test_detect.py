@@ -13,20 +13,16 @@ import unittest
 
 import detect
 
-CRATES, LIBRARIES = detect.tree_members()
-
 
 def select(*files):
     """The selection for a change set naming `files`."""
-    return detect.select(list(files), CRATES, LIBRARIES)
+    return detect.select(list(files))
 
 
 def cargo_packages(selection):
     """The peppy-shared packages a selection names, without the `-p` flags."""
     return [
-        word
-        for word in selection["public_libs_shared_packages"].split()
-        if word != "-p"
+        word for word in selection["peppy_shared_packages"].split() if word != "-p"
     ]
 
 
@@ -71,63 +67,40 @@ def peppy_shared_directories():
     }
 
 
-def path_dependencies():
-    """(crate directory, dependency directory) for every path dependency
-    between two standalone crates of the tree."""
-    manifests = [
-        os.path.join(detect.ROOT, detect.TREE, crate, "Cargo.toml") for crate in CRATES
-    ]
-    directories, dependencies, _ = detect.crate_graph(manifests)
-    return [
-        (directories[manifest], directories[dependency])
-        for manifest in manifests
-        for dependency in dependencies[manifest]
-        if dependency in directories
-    ]
-
-
 class Detection(unittest.TestCase):
+    def assert_every_peppy_shared_package_runs(self, selection):
+        """The whole workspace selected: every cargo package by name, and
+        peppylib-py through the gate of its own."""
+        self.assertEqual(selection["peppy_shared_peppylib_py"], "true")
+        self.assertEqual(
+            sorted(cargo_packages(selection)),
+            sorted(
+                name
+                for name in peppy_shared_directories()
+                if name != detect.PEPPYLIB_PY
+            ),
+        )
+
     def test_a_change_outside_every_suite_runs_nothing(self):
         self.assertEqual(selected(select("Readme.md")), {})
-
-    def test_every_standalone_crate_is_selected_by_its_own_change(self):
-        for crate in CRATES:
-            with self.subTest(crate=crate):
-                selection = select("%s/%s/src/lib.rs" % (detect.TREE, crate))
-                self.assertIn(crate, selection["public_libs_crates"].split())
-
-    def test_every_python_library_is_selected_by_its_own_change(self):
-        for library in LIBRARIES:
-            with self.subTest(library=library):
-                selection = select("%s/%s/src/thing.py" % (detect.TREE, library))
-                self.assertIn(library, selection["public_libs_python"].split())
 
     def test_every_peppy_shared_package_is_selected_by_its_own_change(self):
         for name, directory in peppy_shared_directories().items():
             with self.subTest(package=name):
                 selection = select(directory + "/src/lib.rs")
                 if name == detect.PEPPYLIB_PY:
-                    self.assertEqual(selection["public_libs_peppylib_py"], "true")
+                    self.assertEqual(selection["peppy_shared_peppylib_py"], "true")
                     self.assertEqual(cargo_packages(selection), [])
                 else:
                     self.assertIn(name, cargo_packages(selection))
 
-    def test_a_crate_is_selected_by_a_change_to_what_it_depends_on(self):
-        for crate, dependency in path_dependencies():
-            with self.subTest(crate=crate, dependency=dependency):
-                selection = select(dependency + "/src/lib.rs")
-                self.assertIn(
-                    os.path.basename(crate), selection["public_libs_crates"].split()
-                )
-
-    def test_a_python_library_is_selected_by_a_change_to_its_path_dependency(self):
-        # so101_description takes control_core_py through tool.uv.sources, so
-        # its suite is one of the two a change to control_core_py has to run.
-        selection = select("%s/control_core_py/src/thing.py" % detect.TREE)
-        self.assertEqual(
-            selection["public_libs_python"].split(),
-            ["control_core_py", "so101_description"],
+    def test_a_package_is_selected_by_a_change_to_what_it_depends_on(self):
+        # peppylib-rs takes peppy-messaging-interface by path, so a change to
+        # the latter has to run the former's suite too.
+        selection = select(
+            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED
         )
+        self.assertIn("peppylib-rs", cargo_packages(selection))
 
     def test_the_peppy_workspace_cannot_reach_the_sealed_tree(self):
         selection = select(
@@ -136,10 +109,8 @@ class Detection(unittest.TestCase):
             ".cargo/config.toml",
             "crates/daemon-internal/src/lib.rs",
         )
-        self.assertEqual(selection["public_libs_shared_packages"], "")
-        self.assertEqual(selection["public_libs_peppylib_py"], "false")
-        self.assertEqual(selection["public_libs_crates"], "")
-        self.assertEqual(selection["public_libs_python"], "")
+        self.assertEqual(selection["peppy_shared_packages"], "")
+        self.assertEqual(selection["peppy_shared_peppylib_py"], "false")
 
     def test_the_sealed_tree_reaches_the_peppy_workspace(self):
         # The peppy crates take the tree by path, so a change to one of its
@@ -150,24 +121,18 @@ class Detection(unittest.TestCase):
         self.assertEqual(selection["container_e2e"], "true")
 
     def test_the_workspace_lockfile_selects_every_package_of_it(self):
-        selection = select(detect.PEPPY_SHARED + "/Cargo.lock")
-        self.assertEqual(selection["public_libs_peppylib_py"], "true")
-        self.assertEqual(
-            sorted(cargo_packages(selection)),
-            sorted(
-                name
-                for name in peppy_shared_directories()
-                if name != detect.PEPPYLIB_PY
-            ),
+        self.assert_every_peppy_shared_package_runs(
+            select(detect.PEPPY_SHARED + "/Cargo.lock")
         )
 
     def test_a_change_to_the_ci_plumbing_runs_everything(self):
-        for path in (".github/workflows/tests.yml", ".github/actions/cargo-cache/action.yml"):
+        for path in (
+            ".github/workflows/tests.yml",
+            ".github/actions/cargo-cache/action.yml",
+        ):
             with self.subTest(path=path):
                 selection = select(path)
-                self.assertEqual(selection["public_libs_crates"], " ".join(CRATES))
-                self.assertEqual(selection["public_libs_python"], " ".join(LIBRARIES))
-                self.assertEqual(selection["public_libs_peppylib_py"], "true")
+                self.assert_every_peppy_shared_package_runs(selection)
                 self.assertEqual(selection["container_e2e"], "true")
                 self.assertEqual(selection["docs_integration"], "true")
                 self.assertEqual(selection["scripts"], "true")
@@ -219,9 +184,9 @@ class Detection(unittest.TestCase):
                 self.assertEqual(selection["scripts"], "true")
 
     def test_an_unknowable_change_set_runs_everything(self):
-        selection = detect.select_everything(CRATES, LIBRARIES)
+        selection = detect.select_everything()
         self.assertEqual(
-            selection["public_libs_shared_packages"],
+            selection["peppy_shared_packages"],
             "--workspace --exclude " + detect.PEPPYLIB_PY,
         )
         self.assertEqual(selected(selection).keys(), selection.keys())
@@ -231,7 +196,7 @@ class Detection(unittest.TestCase):
         # in the workflow, which is how a skipped job is spelled: the path
         # that exists to run everything would skip a suite instead.
         self.assertEqual(
-            set(detect.select_everything(CRATES, LIBRARIES)),
+            set(detect.select_everything()),
             set(select("Readme.md")),
         )
 

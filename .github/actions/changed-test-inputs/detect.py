@@ -2,21 +2,17 @@
 """Gate the conditionally-run suites of tests.yml on their real inputs.
 
 Emits one output per gated suite naming what the change set requires it to
-run: a boolean for the suites that are all or nothing, and a selection of
-packages or directories for the ones that split into units testable on their
-own (the `peppy-shared` workspace, the standalone crates of
-`public-peppy-libs`, its standalone Python libraries). A suite whose whole
-selection comes out empty has its job skipped, and the reason is reported to
-the job's annotations and step summary.
+run: a boolean for the suites that are all or nothing, and a package selection
+for the `peppy-shared` workspace, which splits into units testable on their
+own. A suite whose whole selection comes out empty has its job skipped, and
+the reason is reported to the job's annotations and step summary.
 
-No crate or library is listed here. A cargo package's inputs are its own
-directory plus the directory of every crate it reaches through a path
-dependency, read from `cargo metadata`; a Python library's are its own
-directory plus those of its `tool.uv.sources` path dependencies. Both walks
-cross workspace boundaries, so a `crates/` member depending on the sealed
-tree, or a standalone crate depending on a sibling, is a fact of the
-manifests rather than a list kept in step by hand, and a crate added to the
-tree is picked up the moment its manifest lands.
+No crate is listed here. A cargo package's inputs are its own directory plus
+the directory of every crate it reaches through a path dependency, read from
+`cargo metadata`. The walk crosses workspace boundaries, so a `crates/` member
+depending on the sealed tree is a fact of the manifests rather than a list kept
+in step by hand, and a crate added to the tree is picked up the moment its
+manifest lands.
 
 Detection fails open: when the change set is unknowable or the walk fails,
 every suite runs with everything selected, so a bug here can never silently
@@ -26,7 +22,6 @@ skip tests.
 import json
 import os
 import subprocess
-import tomllib
 from fnmatch import fnmatch
 
 # Suites driven by a cargo package of the `peppy` workspace: the package name
@@ -79,13 +74,11 @@ TREE_SUITES = {
     ],
 }
 
-# The sealed tree, its cargo workspace, and the one member of that workspace
-# whose suite is not a cargo test: peppylib-py's cdylib build and
-# tests/python_tests.rs only wrap `pixi run test`, which the workflow runs
-# directly, so it is selected on a gate of its own and never joins the cargo
-# package selection.
-TREE = "public-peppy-libs"
-PEPPY_SHARED = TREE + "/peppy-shared"
+# The sealed tree, and the one member of it whose suite is not a cargo test:
+# peppylib-py's cdylib build and tests/python_tests.rs only wrap `pixi run
+# test`, which the workflow runs directly, so it is selected on a gate of its
+# own and never joins the cargo package selection.
+PEPPY_SHARED = "peppy-shared"
 PEPPYLIB_PY = "peppylib-py"
 
 # The outputs each conditionally-run job of tests.yml reads. A job all of
@@ -95,9 +88,7 @@ JOBS = {
     "docs-integration": ["docs_integration"],
     "release-scripts": ["scripts"],
     "release-scripts-vm": ["scripts_vm"],
-    "public-libs-shared": ["public_libs_shared_packages", "public_libs_peppylib_py"],
-    "public-libs-crates": ["public_libs_crates"],
-    "public-libs-python": ["public_libs_python"],
+    "peppy-shared": ["peppy_shared_packages", "peppy_shared_peppylib_py"],
 }
 
 # CI plumbing every suite is built and run by. This tracks the workflow and
@@ -224,49 +215,6 @@ def crate_dirs(manifest, graph):
     return {directories[reached] for reached in seen if reached in directories}
 
 
-def python_dirs(library):
-    """Directories of the Python library at `library` and of every library it
-    depends on by path, at any depth. `tool.uv.sources` is where a path
-    dependency is spelled: the dependency itself is a bare name under
-    `project.dependencies`, and the source is what points it at a sibling."""
-    directories = {library}
-    todo = [library]
-    while todo:
-        current = todo.pop()
-        with open(os.path.join(ROOT, current, "pyproject.toml"), "rb") as handle:
-            manifest = tomllib.load(handle)
-        sources = manifest.get("tool", {}).get("uv", {}).get("sources", {})
-        for source in sources.values():
-            if not isinstance(source, dict) or "path" not in source:
-                continue
-            dependency = os.path.normpath(os.path.join(current, source["path"]))
-            if dependency in directories:
-                continue
-            directories.add(dependency)
-            todo.append(dependency)
-    return directories
-
-
-def tree_members():
-    """The standalone crates and Python libraries of the sealed tree, read
-    from the filesystem: a directory holding a Cargo.toml is a crate, and one
-    holding a pyproject.toml beside a tests/ directory is a library whose
-    suite CI runs. peppy-shared is neither; it is the cargo workspace the
-    public-libs-shared job tests package by package."""
-    crates, libraries = [], []
-    for entry in sorted(os.listdir(os.path.join(ROOT, TREE))):
-        directory = os.path.join(ROOT, TREE, entry)
-        if directory == os.path.join(ROOT, PEPPY_SHARED):
-            continue
-        if os.path.isfile(os.path.join(directory, "Cargo.toml")):
-            crates.append(entry)
-        if os.path.isfile(os.path.join(directory, "pyproject.toml")) and os.path.isdir(
-            os.path.join(directory, "tests")
-        ):
-            libraries.append(entry)
-    return crates, libraries
-
-
 def gate(selected):
     """A boolean as a workflow output reads it."""
     return "true" if selected else "false"
@@ -281,27 +229,27 @@ def touches(files, globs, dirs):
     return False
 
 
-def select_everything(crates, libraries):
+def select_everything():
     """What runs when the change set is unknowable or detection failed: all of
     it. The cargo selection is spelled `--workspace` because the package names
     are exactly what a failed graph walk could not produce."""
     selection = {suite: "true" for suite in list(SUITES) + list(TREE_SUITES)}
     selection.update(
         {
-            "public_libs_shared_packages": "--workspace --exclude " + PEPPYLIB_PY,
-            "public_libs_peppylib_py": "true",
-            "public_libs_crates": " ".join(crates),
-            "public_libs_python": " ".join(libraries),
+            "peppy_shared_packages": "--workspace --exclude " + PEPPYLIB_PY,
+            "peppy_shared_peppylib_py": "true",
         }
     )
     return selection
 
 
-def select(files, crates, libraries):
+def select(files):
     """What each gated suite must run for the change set `files`."""
     graph = crate_graph(
-        [os.path.join(ROOT, "Cargo.toml"), os.path.join(ROOT, PEPPY_SHARED, "Cargo.toml")]
-        + [os.path.join(ROOT, TREE, crate, "Cargo.toml") for crate in crates]
+        [
+            os.path.join(ROOT, "Cargo.toml"),
+            os.path.join(ROOT, PEPPY_SHARED, "Cargo.toml"),
+        ]
     )
     _, _, manifests = graph
 
@@ -324,19 +272,9 @@ def select(files, crates, libraries):
         if repo_path(os.path.dirname(os.path.dirname(manifest))) == PEPPY_SHARED
         and crate_touched(manifest, CI_INPUTS + PEPPY_SHARED_INPUTS)
     )
-    selection["public_libs_peppylib_py"] = gate(PEPPYLIB_PY in shared)
-    selection["public_libs_shared_packages"] = " ".join(
+    selection["peppy_shared_peppylib_py"] = gate(PEPPYLIB_PY in shared)
+    selection["peppy_shared_packages"] = " ".join(
         "-p " + name for name in shared if name != PEPPYLIB_PY
-    )
-    selection["public_libs_crates"] = " ".join(
-        crate
-        for crate in crates
-        if crate_touched(os.path.join(ROOT, TREE, crate, "Cargo.toml"), CI_INPUTS)
-    )
-    selection["public_libs_python"] = " ".join(
-        library
-        for library in libraries
-        if touches(files, CI_INPUTS, python_dirs(TREE + "/" + library))
     )
     return selection
 
@@ -375,20 +313,19 @@ def report(selection, base):
 
 def main():
     base = os.environ.get("INPUT_BASE", "")
-    crates, libraries = tree_members()
     try:
         files = changed_files(base)
         if files is None:
             print("changed file set unknowable; running every suite")
-            selection = select_everything(crates, libraries)
+            selection = select_everything()
         else:
             print("changed files (%d):" % len(files))
             for path in files:
                 print("  " + path)
-            selection = select(files, crates, libraries)
+            selection = select(files)
     except Exception as exc:  # noqa: BLE001 - fail open by design
         print("::warning::change detection failed (%s); running every suite" % exc)
-        selection = select_everything(crates, libraries)
+        selection = select_everything()
     print("suite selection: " + json.dumps(selection, sort_keys=True))
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:

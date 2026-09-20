@@ -1,10 +1,10 @@
 # Virtual workspace for Peppy shared, public-facing crates.
 #
-# This workspace is part of the sealed `public-peppy-libs` tree. It sits inside
-# the `peppy` repository but outside the `peppy` workspace (whose root excludes
-# the tree), resolves and locks on its own, and depends on nothing beyond the
-# tree. The `peppy` crates depend on these by path, `platform-backend` by git;
-# the dependency never runs the other way (build-helpers/tests/sealed_tree.rs).
+# This workspace is a sealed tree. It sits inside the `peppy` repository but
+# outside the `peppy` workspace (whose root excludes it), resolves and locks on
+# its own, and depends on nothing beyond itself. The `peppy` crates depend on
+# these by path, `platform-backend` by git; the dependency never runs the other
+# way (build-helpers/tests/sealed_tree.rs).
 #
 # `build-helpers` holds the generic build-script
 # helpers shared by both workspaces. It lives here, at the bottom of the dependency

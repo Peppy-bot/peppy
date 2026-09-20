@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 bytes = "1"
 # Siblings in the peppy-shared workspace. Path dependencies never leave the
-# public-peppy-libs tree (build-helpers/tests/sealed_tree.rs).
+# sealed tree (build-helpers/tests/sealed_tree.rs).
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
 core-node-api = { path = "../core-node-api" }
 pmi = { path = "../peppy-messaging-interface", features = ["zenoh", "build_zenoh"] }

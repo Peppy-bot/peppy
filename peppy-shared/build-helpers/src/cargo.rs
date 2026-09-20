@@ -195,7 +195,7 @@ fn existing_bundled_capnp(platform: CapnpPlatform) -> PathBuf {
 const CONFIG_MODEL_CRATE: &str = "peppy-config-model";
 
 /// Where the `peppy` workspace keeps `peppy-shared`, relative to its root.
-const PEPPY_SHARED_IN_WORKSPACE: &str = "public-peppy-libs/peppy-shared";
+const PEPPY_SHARED_IN_WORKSPACE: &str = "peppy-shared";
 
 /// Locate the `peppy-shared` directory: the one holding every shared crate
 /// (`peppylib-rs`, `peppy-config-model`, `core-node-api`,
@@ -237,8 +237,8 @@ pub fn peppy_shared_dir() -> PathBuf {
 ///     `core-node-api`), and deployed flat-cache layouts that copy each crate
 ///     next to `peppy-config-model` under a directory of any name.
 ///   - It is the `peppy` workspace root, which keeps the tree at
-///     `public-peppy-libs/peppy-shared`. This covers the workspace crates
-///     outside the tree, such as `crates/encoding-internal`.
+///     `peppy-shared`. This covers the workspace crates outside the tree, such
+///     as `crates/encoding-internal`.
 fn find_peppy_shared_dir(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|ancestor| {
         [
@@ -399,8 +399,8 @@ mod tests {
             root,
             &[
                 "crates/encoding-internal",
-                "public-peppy-libs/peppy-shared/peppy-config-model",
-                "public-peppy-libs/peppy-shared/core-node-api",
+                "peppy-shared/peppy-config-model",
+                "peppy-shared/core-node-api",
             ],
         );
     }
@@ -409,7 +409,7 @@ mod tests {
     fn find_peppy_shared_dir_resolves_a_crate_inside_the_tree() {
         let root = tempfile::tempdir().expect("temp dir");
         create_workspace(root.path());
-        let shared = root.path().join("public-peppy-libs/peppy-shared");
+        let shared = root.path().join("peppy-shared");
         assert_eq!(
             find_peppy_shared_dir(&shared.join("core-node-api")),
             Some(shared)
@@ -422,7 +422,7 @@ mod tests {
         create_workspace(root.path());
         assert_eq!(
             find_peppy_shared_dir(&root.path().join("crates/encoding-internal")),
-            Some(root.path().join("public-peppy-libs/peppy-shared"))
+            Some(root.path().join("peppy-shared"))
         );
     }
 
@@ -450,7 +450,7 @@ mod tests {
         for checkout in [first.path(), second.path()] {
             assert_eq!(
                 find_peppy_shared_dir(&checkout.join("crates/encoding-internal")),
-                Some(checkout.join("public-peppy-libs/peppy-shared"))
+                Some(checkout.join("peppy-shared"))
             );
         }
     }

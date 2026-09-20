@@ -16,7 +16,7 @@ name = "peppylib"
 
 [dependencies]
 # Siblings in the peppy-shared workspace. Path dependencies never leave the
-# public-peppy-libs tree (build-helpers/tests/sealed_tree.rs).
+# sealed tree (build-helpers/tests/sealed_tree.rs).
 pmi = { path = "../peppy-messaging-interface" }
 config = { package = "peppy-config-model", path = "../peppy-config-model" }
 core-node-api = { path = "../core-node-api" }

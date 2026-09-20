@@ -13,7 +13,7 @@ inert, and only test code ever imports ``peppylib.testing``.
 
 Semantics mirror ``peppylib-rs/src/testing.rs`` — mirror, not re-design; a
 behavior difference between the two is a bug here, and both sides carry
-equivalent test suites in public-peppy-libs to surface one early.
+equivalent test suites in peppy-shared to surface one early.
 
 Two members are deliberately Python-only, because the Rust harness gets the
 same guarantee from a language affordance rather than from a helper:
