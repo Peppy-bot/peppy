@@ -186,14 +186,12 @@ For a **node**, the report reads the same cache the other way: one section per p
 
 Slot engine (sim_rgb_camera_link:v1 as viewer, one) can pair with 2 indexed nodes
   https://github.com/Peppy-bot/nodes-hub.git (ref: main):
-    ┌────────────────────┬─────┬────────┬───────────────────────────┬──────────┬────────────────────────────────┐
-    │ NODE               │ TAG │ ROLE   │ SLOT                      │ PIN      │ PATH                           │
-    ├────────────────────┼─────┼────────┼───────────────────────────┼──────────┼────────────────────────────────┤
-    │ openarm_sim_isaac  │ v1  │ camera │ wrist_left (zero_or_one)  │ unpinned │ openarm/sim_isaac/peppy.json5  │
-    │ openarm_sim_isaac  │ v1  │ camera │ wrist_right (zero_or_one) │ unpinned │ openarm/sim_isaac/peppy.json5  │
-    │ openarm_sim_mujoco │ v1  │ camera │ wrist_left (zero_or_one)  │ unpinned │ openarm/sim_mujoco/peppy.json5 │
-    │ openarm_sim_mujoco │ v1  │ camera │ wrist_right (zero_or_one) │ unpinned │ openarm/sim_mujoco/peppy.json5 │
-    └────────────────────┴─────┴────────┴───────────────────────────┴──────────┴────────────────────────────────┘
+    ┌────────────┬─────┬────────┬────────────────────────────┬──────────┬────────────────────────┐
+    │ NODE       │ TAG │ ROLE   │ SLOT                       │ PIN      │ PATH                   │
+    ├────────────┼─────┼────────┼────────────────────────────┼──────────┼────────────────────────┤
+    │ sim_isaac  │ v1  │ camera │ rgb_cameras (zero_or_more) │ unpinned │ sim_isaac/peppy.json5  │
+    │ sim_mujoco │ v1  │ camera │ rgb_cameras (zero_or_more) │ unpinned │ sim_mujoco/peppy.json5 │
+    └────────────┴─────┴────────┴────────────────────────────┴──────────┴────────────────────────┘
 ```
 
 A slot nothing complements keeps its line and says so, which on a slot whose cardinality has a floor of one means no indexed node completes a launch of this one:

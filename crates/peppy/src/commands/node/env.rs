@@ -96,7 +96,7 @@ mod tests {
     /// node's. Forwarding them is not merely useless: an `APPTAINERENV_`
     /// variable outranks the image's `%environment`, so a forwarded `PYTHONPATH`
     /// replaces the vendored peppylib/peppygen path a Python container node
-    /// imports from (this is how `openarm_sim_mujoco` died with
+    /// imports from (this is how `sim_mujoco` died with
     /// `No module named 'peppylib'` on a machine whose shell exported a ROS
     /// `PYTHONPATH`), and a forwarded `PYTHONHOME` points the interpreter at
     /// a prefix the guest does not have. Both filters accept the values

@@ -92,14 +92,14 @@ peppy stack reset
 **The viewer or the panel won't load.** The simulation keeps initializing for a moment after `Launch complete`. Give it a few seconds, then run `peppy stack list`: every instance should read `running` under `STATUS` and `healthy` under `HEALTH`. To dig into one of them:
 
 ```sh
-peppy node info openarm_sim_mujoco:v1
+peppy node info sim_mujoco:v1
 ```
 
 It prints the instance's state and health plus the path to its run log, which is the file to read when the state alone doesn't explain the problem.
 
 **The panel won't load and `alpha_commander_inst` is not running.** Port 8765 is taken, usually by an earlier instance that is still up. Find it with `peppy stack list` and stop it with `peppy node stop <instance_id>`, then launch again.
 
-**The viewer isn't on 8080.** Something else holds that port, so the sim took the next free one. Read the port off the sim's run log (`peppy node info openarm_sim_mujoco:v1` prints its path), or pin one by setting `viewer_port` in the sim instance's `arguments` (flatten the launcher to a file with `peppy stack resolve openarm_simulation --with mujoco`, edit it, and launch the file).
+**The viewer isn't on 8080.** Something else holds that port, so the sim took the next free one. Read the port off the sim's run log (`peppy node info sim_mujoco:v1` prints its path), or pin one by setting `viewer_port` in the sim instance's `arguments` (flatten the launcher to a file with `peppy stack resolve openarm_simulation --with mujoco`, edit it, and launch the file).
 
 **A build fails on Linux.** Apptainer needs unprivileged user namespaces, which the installer normally configures. Check with `peppy container status`, and repair it with `peppy container setup` (see [Containers](/advanced_guides/containers/)).
 

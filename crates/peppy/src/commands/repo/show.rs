@@ -581,18 +581,18 @@ mod tests {
                     cardinality: Cardinality::One,
                     peers: vec![
                         Participant {
-                            node: node("openarm_sim_isaac", "openarm/sim_isaac/peppy.json5"),
+                            node: node("sim_isaac", "sim_isaac/peppy.json5"),
                             role: "camera".to_owned(),
-                            link_id: "wrist_left".to_owned(),
-                            cardinality: Cardinality::ZeroOrOne,
+                            link_id: "rgb_cameras".to_owned(),
+                            cardinality: Cardinality::ZeroOrMore,
                             sha256: None,
                             pin: PinStatus::Unpinned,
                         },
                         Participant {
-                            node: node("openarm_sim_mujoco", "openarm/sim_mujoco/peppy.json5"),
+                            node: node("sim_mujoco", "sim_mujoco/peppy.json5"),
                             role: "camera".to_owned(),
-                            link_id: "wrist_left".to_owned(),
-                            cardinality: Cardinality::ZeroOrOne,
+                            link_id: "rgb_cameras".to_owned(),
+                            cardinality: Cardinality::ZeroOrMore,
                             sha256: Some(sha('a')),
                             pin: PinStatus::Current,
                         },
@@ -640,12 +640,12 @@ mod tests {
             "",
             "Slot engine (sim_rgb_camera_link:v1 as viewer, one) can pair with 2 indexed nodes",
             "  https://github.com/Peppy-bot/nodes-hub.git (ref: main):",
-            "    ┌────────────────────┬─────┬────────┬──────────────────────────┬────────────────────────┬────────────────────────────────┐",
-            "    │ NODE               │ TAG │ ROLE   │ SLOT                     │ PIN                    │ PATH                           │",
-            "    ├────────────────────┼─────┼────────┼──────────────────────────┼────────────────────────┼────────────────────────────────┤",
-            "    │ openarm_sim_isaac  │ v1  │ camera │ wrist_left (zero_or_one) │ unpinned               │ openarm/sim_isaac/peppy.json5  │",
-            "    │ openarm_sim_mujoco │ v1  │ camera │ wrist_left (zero_or_one) │ pin aaaaaaaa (current) │ openarm/sim_mujoco/peppy.json5 │",
-            "    └────────────────────┴─────┴────────┴──────────────────────────┴────────────────────────┴────────────────────────────────┘",
+            "    ┌────────────┬─────┬────────┬────────────────────────────┬────────────────────────┬────────────────────────┐",
+            "    │ NODE       │ TAG │ ROLE   │ SLOT                       │ PIN                    │ PATH                   │",
+            "    ├────────────┼─────┼────────┼────────────────────────────┼────────────────────────┼────────────────────────┤",
+            "    │ sim_isaac  │ v1  │ camera │ rgb_cameras (zero_or_more) │ unpinned               │ sim_isaac/peppy.json5  │",
+            "    │ sim_mujoco │ v1  │ camera │ rgb_cameras (zero_or_more) │ pin aaaaaaaa (current) │ sim_mujoco/peppy.json5 │",
+            "    └────────────┴─────┴────────┴────────────────────────────┴────────────────────────┴────────────────────────┘",
             "",
             "Slot clock (sim_clock_link:v1 as follower, zero_or_one): no indexed node plays the other role",
             "",
@@ -1129,10 +1129,10 @@ mod tests {
         assert_eq!(slots[0]["cardinality"], "one");
         let peers = slots[0]["peers"].as_array().expect("array");
         assert_eq!(peers.len(), 2);
-        assert_eq!(peers[0]["node"]["node_name"], "openarm_sim_isaac");
+        assert_eq!(peers[0]["node"]["node_name"], "sim_isaac");
         assert_eq!(peers[0]["role"], "camera");
-        assert_eq!(peers[0]["link_id"], "wrist_left");
-        assert_eq!(peers[0]["cardinality"], "zero_or_one");
+        assert_eq!(peers[0]["link_id"], "rgb_cameras");
+        assert_eq!(peers[0]["cardinality"], "zero_or_more");
         assert!(peers[0]["sha256"].is_null());
         assert_eq!(peers[0]["pin"]["status"], "unpinned");
         assert_eq!(peers[1]["pin"], serde_json::json!({ "status": "current" }));
