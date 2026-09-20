@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use config::consts::{PEPPY_CONFIG_ENV, PEPPY_HOME_ENV};
+use core_node::{TEARDOWN_REAP_BUDGET, force_kill_deadline};
 use daemon_config::peppy_config::{
     ExternalZenohConfig, ManagedZenohConfig, PeppyConfig, ZenohConfig,
 };
@@ -18,6 +19,7 @@ use testcontainers::{ContainerAsync, GenericBuildableImage, GenericImage, ImageE
 use tokio::sync::OnceCell;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+
 const IMAGE_OVERRIDE_ENV: &str = "PEPPY_MULTI_DAEMON_E2E_IMAGE";
 const MANAGED_ROUTER_PORT: u16 = 7447;
 const CONTAINER_ROUTER_CONFIG: &str = "/etc/peppy/router.json5";
@@ -27,6 +29,35 @@ const CONTAINER_PEPPY_BINARY: &str = "/usr/local/bin/peppy";
 /// so a run log is `$CONTAINER_PEPPY_HOME/logs/run/<instance>.log` with no
 /// `.peppy` segment in between.
 const CONTAINER_PEPPY_HOME: &str = "/data";
+
+/// How long the engine waits for a daemon to stop before it kills it.
+///
+/// A daemon catches the stop signal and tears its node stack down first:
+/// every node is asked to stop cooperatively, a straggler is force-killed at
+/// [`force_kill_deadline`], and the group is reaped inside
+/// [`TEARDOWN_REAP_BUDGET`]. A shorter window kills the daemon partway
+/// through, so what its container still has to unwind depends on where the
+/// teardown had reached. Derived from the daemon's own deadline the way the
+/// messaging router sizes its teardown budget, plus the same second of margin
+/// so the kill cannot land exactly as the teardown ends.
+fn stop_grace_secs() -> i32 {
+    let grace = Duration::from_secs(PeppyConfig::default().lifecycle.shutdown_grace_secs);
+    let budget = force_kill_deadline(grace) + TEARDOWN_REAP_BUDGET + Duration::from_secs(1);
+    i32::try_from(budget.as_secs()).expect("the daemon's teardown budget fits a stop timeout")
+}
+
+/// The grace the engine gives a daemon has to outlast the daemon's own
+/// teardown, or the kill lands on one that is still stopping its nodes.
+#[test]
+fn the_stop_grace_outlasts_the_daemons_own_teardown() {
+    let grace = Duration::from_secs(PeppyConfig::default().lifecycle.shutdown_grace_secs);
+    let teardown = force_kill_deadline(grace) + TEARDOWN_REAP_BUDGET;
+    let engine = Duration::from_secs(stop_grace_secs().try_into().expect("a positive grace"));
+    assert!(
+        engine > teardown,
+        "the engine kills a daemon after {engine:?}, and the daemon's own teardown runs to {teardown:?}"
+    );
+}
 
 /// Name of the image this test builds for its daemon containers.
 const E2E_IMAGE_NAME: &str = "peppy-multi-daemon-e2e";
@@ -622,11 +653,28 @@ impl Daemon {
         }
     }
 
+    /// Stops the daemon and settles once its container has exited.
+    ///
+    /// The request runs under a client timeout of the Docker client
+    /// testcontainers builds, two minutes that nothing here can configure,
+    /// and an engine that answers late is not the same fact as a container
+    /// that would not stop: the engine goes on stopping it after the client
+    /// has given up waiting for the answer. The exit is the fact this waits
+    /// on, so an unanswered request is carried into that wait instead of
+    /// failing here. A container that really does not stop still fails, in
+    /// [`Daemon::wait_for_exit`], with its logs attached.
     async fn stop(&self) {
-        self.container
-            .stop_with_timeout(Some(10))
+        if let Err(error) = self
+            .container
+            .stop_with_timeout(Some(stop_grace_secs()))
             .await
-            .unwrap_or_else(|error| panic!("stopping {}: {error}", self.name));
+        {
+            eprintln!(
+                "the stop request for {} went unanswered ({error}); waiting for its container to exit",
+                self.name
+            );
+        }
+        self.wait_for_exit().await;
     }
 
     /// Populates this daemon's node cache from the fixture repository.
@@ -659,7 +707,6 @@ impl Daemon {
     /// image does not run.
     async fn restart(&self) {
         self.stop().await;
-        self.wait_for_exit().await;
         self.container
             .start()
             .await
