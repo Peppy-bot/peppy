@@ -1,0 +1,12 @@
+{
+  "start_posture": "home",
+  "front_camera": {
+    "name": "front",
+    "parent_link": "base_link",
+    "pos": [0.6, 0.0, 0.32],
+    "quat_wxyz": [0.607512, 0.3618414, 0.3618414, 0.607512],
+    "fovy_deg": 60.0,
+    "color": { "width": 1280, "height": 720 },
+    "fps": 30
+  }
+}

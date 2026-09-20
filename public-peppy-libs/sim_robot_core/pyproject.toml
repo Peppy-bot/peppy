@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sim_robot_core"
+version = "0.1.0"
+description = "What a simulation engine node knows about the robots it stands, whatever its physics: the registry of standing robots, the four pairing slots and what each pair names, one entry per robot model with its checks, and the camera configuration. Pure Python; the engine supplies its gains, its model files and its transport."
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "pyjson5>=1.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sim_robot_core"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# so101_description is read from its source tree beside this package: the
+# SO-101 entry is held to it, and that package asks for a newer interpreter
+# than the engines' images run.
+pythonpath = ["src", "../so101_description/src"]

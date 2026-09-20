@@ -1,0 +1,34 @@
+// An OpenArm v1: two seven-joint arms, each carrying a two-finger gripper.
+// The limbs are named as the robot answers to them in limb_motion and
+// limb_state, which is also the link each one's pair comes from on the
+// backbone. It carries no camera rig.
+{
+  // Per-arm joints, j1..j7, in the order the arm's pair carries them.
+  arms: [
+    {
+      name: "left_arm",
+      joints: [
+        "openarm_left_joint1", "openarm_left_joint2", "openarm_left_joint3",
+        "openarm_left_joint4", "openarm_left_joint5", "openarm_left_joint6",
+        "openarm_left_joint7",
+      ],
+    },
+    {
+      name: "right_arm",
+      joints: [
+        "openarm_right_joint1", "openarm_right_joint2", "openarm_right_joint3",
+        "openarm_right_joint4", "openarm_right_joint5", "openarm_right_joint6",
+        "openarm_right_joint7",
+      ],
+    },
+  ],
+
+  // Per-gripper finger joints. The fingers close at their joints' zero and
+  // open toward the far end of their travel; an engine maps the commanded
+  // opening fraction onto each finger's own travel and averages the travel
+  // fractions back into the measured opening.
+  grippers: [
+    { name: "left_gripper", fingers: ["openarm_left_finger_joint1", "openarm_left_finger_joint2"], closed_at: "zero" },
+    { name: "right_gripper", fingers: ["openarm_right_finger_joint1", "openarm_right_finger_joint2"], closed_at: "zero" },
+  ],
+}
