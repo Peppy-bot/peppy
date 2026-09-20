@@ -35,6 +35,7 @@ Everything in this directory is licensed under the [Apache License, Version 2.0]
 | [openarm_description](./openarm_description) | Rust | The OpenArm v1.0 robot description as a single embedded source of truth: the URDF, the collision meshes (behind the `meshes` feature), and the elbow singularity control-margin constants. Pure data: no kinematics or solver deps, so any consumer (`srs_model`, a viz tool, a sim bridge) builds from `urdf()` itself |
 | [sim_bridge_core](./sim_bridge_core) | Rust | raw-to-peppygen pipelines for Isaac Sim and MuJoCo bridge nodes; the node supplies the peppylib transport |
 | [sim_ext_core](./sim_ext_core) | Python | Plugin lifecycle, config loading, and sensor bridge plugins for the in-sim extensions; the node supplies the IO transport |
+| [sim_robot_core](./sim_robot_core) | Python | What a simulation engine node knows about the robots it stands, whatever its physics: the registry of standing robots, the four pairing slots and what each pair names, one entry per robot model with its checks, and the camera configuration. The MuJoCo and Isaac Sim nodes install it in their base image |
 | [control_core](./control_core) | Rust | Shared control-loop primitives for the openarm control nodes: a fixed-rate `Pacer` with overrun accounting |
 | [peppy-shared](./peppy-shared) | Rust + Python | Cargo workspace of public-facing Peppy crates: the `peppylib` control library and its Python bindings, plus the messaging, config, and core-node API crates they build on (see [below](#peppy-shared-crates)) |
 

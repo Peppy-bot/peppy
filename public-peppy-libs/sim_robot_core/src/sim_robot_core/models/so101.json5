@@ -1,0 +1,50 @@
+// An SO-101: one five-joint arm carrying a single-jaw gripper, and a front
+// camera. The limbs are named as the robot answers to them in limb_motion and
+// limb_state, which is also the link each one's pair comes from on the
+// backbone. Joint names, the start posture and the front camera are
+// so101_description's, and tests/test_so101_entry.py holds this entry to it.
+{
+  // The five arm joints, base to wrist, in the order the arm's pair carries
+  // them.
+  arms: [
+    {
+      name: "arm",
+      joints: ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"],
+    },
+  ],
+
+  // The single moving jaw. It closes at its joint's lower limit and opens at
+  // the upper one, the whole range being its travel, as the follower maps
+  // 0..100 percent of the calibrated travel on hardware.
+  grippers: [
+    { name: "gripper", fingers: ["gripper"], closed_at: "lower_limit" },
+  ],
+
+  // The front camera, in the base link's frame: in front of the arm and above
+  // the table, looking back at the workspace. The camera looks along its own
+  // -Z with +Y as image-up. On hardware it is a webcam the user places, so the
+  // simulated one stands at one fixed spot and streams the hardware camera's
+  // 720p at 30 frames per second.
+  cameras: [
+    {
+      name: "front",
+      parent_link: "base_link",
+      pos: [0.6, 0.0, 0.32],
+      quat_wxyz: [0.607512, 0.3618414, 0.3618414, 0.607512],
+      fovy_deg: 60.0,
+      color: { width: 1280, height: 720 },
+      fps: 30,
+    },
+  ],
+
+  // Home: the collapsed park pose, folded onto the base, with the jaw closed
+  // at its joint's lower limit.
+  start_posture: {
+    shoulder_pan: -0.05,
+    shoulder_lift: -1.72,
+    elbow_flex: 1.68,
+    wrist_flex: 1.24,
+    wrist_roll: 0.32,
+    gripper: -0.174533,
+  },
+}

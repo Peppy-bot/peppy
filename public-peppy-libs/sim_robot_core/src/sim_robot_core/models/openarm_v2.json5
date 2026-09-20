@@ -1,0 +1,106 @@
+// An OpenArm v2: two seven-joint arms, each carrying a two-finger gripper,
+// two wrist cameras and the head camera's rgbd stream. The limbs are named as
+// the robot answers to them in limb_motion and limb_state, which is also the
+// link each one's pair comes from on the backbone.
+{
+  // Per-arm joints, j1..j7, in the order the arm's pair carries them.
+  arms: [
+    {
+      name: "left_arm",
+      joints: [
+        "openarm_left_joint1", "openarm_left_joint2", "openarm_left_joint3",
+        "openarm_left_joint4", "openarm_left_joint5", "openarm_left_joint6",
+        "openarm_left_joint7",
+      ],
+    },
+    {
+      name: "right_arm",
+      joints: [
+        "openarm_right_joint1", "openarm_right_joint2", "openarm_right_joint3",
+        "openarm_right_joint4", "openarm_right_joint5", "openarm_right_joint6",
+        "openarm_right_joint7",
+      ],
+    },
+  ],
+
+  // Per-gripper finger joints. The fingers close at their joints' zero and
+  // open toward the far end of their travel; an engine maps the commanded
+  // opening fraction onto each finger's own travel and averages the travel
+  // fractions back into the measured opening.
+  grippers: [
+    { name: "left_gripper", fingers: ["openarm_left_finger_joint1", "openarm_left_finger_joint2"], closed_at: "zero" },
+    { name: "right_gripper", fingers: ["openarm_right_finger_joint1", "openarm_right_finger_joint2"], closed_at: "zero" },
+  ],
+
+  // The robot-mounted cameras. name is the camera's name on the robot, which is
+  // its relay's name in the copy and the dataset's image key. Placement is in
+  // the parent link's frame; parent_link is the URDF link name, and each engine
+  // resolves it against its own scene (a link welded into the world by the MJCF
+  // compiler carries no body of its own, so the MuJoCo engine maps it to the
+  // world body).
+  //
+  // Camera frame convention: the camera looks along its own -Z with +Y as
+  // image-up, so an identity quat_wxyz looks along the parent's -Z axis. MJCF
+  // <camera> and UsdGeom.Camera agree on this, so one pose serves both.
+  //
+  // Geometry comes from Enactic's published OpenArm v2 sources:
+  // - Wrist cameras: openarm_mujoco v2/openarm_bimanual.xml, whose cameras are
+  //   children of the same openarm_{side}_ee_base_link this config parents to,
+  //   so position and orientation carry over verbatim (their euler of
+  //   -+21deg, 13deg, -90deg as the equivalent quaternion). The pair mirrors
+  //   about Y, image-up pointing back toward the arm on both sides.
+  // - Chest camera: the OpenArm_2.0_w_Head_Camera CAD assembly in
+  //   openarm_hardware (Google Drive file 1mP0gDFgGaX6Ufobr8ocyg71ccsYgfBDw,
+  //   listed by dev/google-drive-files/file-ids.tsv at commit eefc9fa), read
+  //   by Waldo's tools/openarm_head_camera: the pinhole sits at the centre of
+  //   the ZED Mini's lens front, on a lens axis tilted 28deg off vertical,
+  //   with the two lens barrels 63.0mm apart. The same numbers place the
+  //   camera_head_left camera of Waldo's openarm_v2 pedestal wrapper. The
+  //   tilt matches openarm_mujoco v2/cell.xml exactly, though that file's head
+  //   camera belongs to the Cell's separate world-mounted lifter rig, so only
+  //   its orientation corroborates.
+  //
+  // Neither source publishes an optical-frame calibration: the lens front is
+  // the CAD's simplified barrel, and Enactic's own commented-out description
+  // example says to tune from CAD or calibration before trusting a pose on
+  // hardware. Stream geometry mirrors the real v2 record rig (960x600 wrists,
+  // hd720 chest with depth at downscale 2, all at 15fps).
+  cameras: [
+    {
+      name: "wrist_left",
+      parent_link: "openarm_left_ee_base_link",
+      pos: [0.023, 0.0182, -0.10236],
+      quat_wxyz: [0.6762086, -0.2067369, -0.0493266, -0.7053855],
+      fovy_deg: 66.0,
+      color: { width: 960, height: 600 },
+      fps: 15,
+    },
+    {
+      name: "wrist_right",
+      parent_link: "openarm_right_ee_base_link",
+      pos: [0.023, -0.0182, -0.10236],
+      quat_wxyz: [0.7053830, 0.0493258, 0.2067371, -0.6762112],
+      fovy_deg: 66.0,
+      color: { width: 960, height: 600 },
+      fps: 15,
+    },
+    {
+      name: "chest",
+      parent_link: "openarm_body_link0",
+      // The centre of the ZED Mini's left lens front (+Y by half the 63.0mm
+      // baseline): the rgbd stream is the rectified left eye.
+      pos: [0.0792, 0.0315, 0.7941],
+      // Faces the robot's front (world +X, where j1 pitches the arms) 62deg
+      // below the horizon, image-up leaning forward.
+      quat_wxyz: [0.6861027, 0.1710647, -0.1710647, -0.6861027],
+      fovy_deg: 52.0,
+      color: { width: 1280, height: 720 },
+      // The ZED Mini's hardware near limit (0.1 m), not the real node's 0.4:
+      // that floor is an SGM stereo-quality bound, and rendered depth has no
+      // matching cost, so inheriting it would zero the arms whenever they
+      // come near the camera.
+      depth: { width: 640, height: 360, min_depth_m: 0.1, max_range_m: 10.0 },
+      fps: 15,
+    },
+  ],
+}
