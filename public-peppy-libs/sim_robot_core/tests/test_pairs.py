@@ -57,13 +57,19 @@ class TestWhatAPairNames:
     def test_a_relay_outside_a_copy_runs_under_the_name_the_launcher_wrote(self):
         assert camera_of(member("front", "simulation", copy=None)) == "front"
 
-    def test_a_relay_that_does_not_carry_its_copys_prefix_is_refused(self):
-        with pytest.raises(ValueError, match="does not carry its prefix 'alpha_'"):
-            camera_of(member("bravo_front", "simulation", copy="alpha"))
+    def test_a_relay_that_does_not_carry_its_copys_prefix_keeps_its_whole_id(self):
+        """Such an id names no camera of any model, so the match refuses it."""
+        assert camera_of(member("bravo_front", "simulation", copy="alpha")) == "bravo_front"
+        assert camera_of(member("alpha_", "simulation", copy="alpha")) == "alpha_"
 
-    def test_a_relay_named_by_the_prefix_alone_is_refused(self):
-        with pytest.raises(ValueError, match="does not carry its prefix"):
-            camera_of(member("alpha_", "simulation", copy="alpha"))
+    def test_one_misnamed_relay_does_not_stop_the_reading_of_the_other_pairs(self):
+        pairs = table(
+            arms=[member("alpha_backbone_inst", "left_arm")],
+            rgb_cameras=[member("stray", "simulation", copy="alpha")],
+        )
+        assert pairs.held_by("alpha") == Held(
+            arms=frozenset({"left_arm"}), rgb_cameras=frozenset({"stray"})
+        )
 
 
 class TestPairTable:

@@ -40,17 +40,15 @@ def camera_of(member) -> str:
     """The camera a camera pair streams: its relay's name in the copy. A
     launch mints a copy's instance ids as `<copy>_<id>`, so the name is the
     id the launcher wrote; a relay outside a copy runs under that id as it
-    is."""
+    is. An id that does not carry its copy's prefix is read as it is too:
+    it names no camera of any model, so the match refuses the robot naming
+    it, where raising here would stop the reading of every other pair."""
     instance_id = member.info.producer.instance_id
     if member.copy is None:
         return instance_id
     prefix = f"{member.copy}_"
-    if not instance_id.startswith(prefix) or instance_id == prefix:
-        raise ValueError(
-            f"camera relay '{instance_id}' runs in the copy '{member.copy}' and does not "
-            f"carry its prefix '{prefix}'"
-        )
-    return instance_id[len(prefix):]
+    name = instance_id[len(prefix):] if instance_id.startswith(prefix) else ""
+    return name or instance_id
 
 
 _NAME_OF = {
