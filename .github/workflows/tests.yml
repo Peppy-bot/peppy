@@ -80,6 +80,15 @@ jobs:
             --start-directory .github/actions/changed-test-inputs \
             --pattern 'test_*.py' --verbose
 
+      # The other piece of this workflow's own Python, tested in the one job
+      # that runs on every event: it deletes caches off the box, so what it
+      # takes and what it leaves is held to cases rather than to a reading.
+      - name: Test the disk reclaim
+        run: |
+          python3 -m unittest discover \
+            --start-directory .github/actions/reclaim-cache-disk \
+            --pattern 'test_*.py' --verbose
+
       - name: Detect changed test inputs
         id: changes
         uses: ./.github/actions/changed-test-inputs
@@ -498,6 +507,12 @@ jobs:
       # This job compiles nothing, but the uv these suites run under is on the
       # box rather than on PATH, and this action is what names it.
       - uses: ./.github/actions/rust-build-env
+
+      # The one suite of this workflow that keeps no cache directory of its
+      # own and still fills the box: `uv sync` below writes to the user-global
+      # ~/.cache/uv, whose built-wheel half never evicts anything. Nothing
+      # here rotates it, so what holds it is the floor this leaves free.
+      - uses: ./.github/actions/reclaim-cache-disk
 
       # Every selected library runs even after one fails, so a red run names
       # every failing library instead of the first.

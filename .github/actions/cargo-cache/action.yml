@@ -2,10 +2,10 @@ name: Cargo build cache
 description: >-
   Points the cargo target directory at a directory that persists on the
   self-hosted runner between jobs, so a job compiles only what changed since the
-  suite last ran. The cargo registry and the build scripts' tool cache are left
-  to the runner, which keeps them across jobs of its own accord. Expects the
-  checkout and the Rust toolchain to be in place, and must precede every cargo
-  step.
+  suite last ran, and keeps the box it lands on in enough disk to hold it. The
+  cargo registry and the build scripts' tool cache are left to the runner, which
+  keeps them across jobs of its own accord. Expects the checkout and the Rust
+  toolchain to be in place, and must precede every cargo step.
 
 inputs:
   suite:
@@ -29,7 +29,7 @@ runs:
     # the month because cargo never removes an artifact a dependency bump or a
     # profile change superseded, so a target directory only grows. The first
     # run of a month starts empty and pays one cold build per suite, the prune
-    # below drops the previous month, and a directory is never older than a
+    # below drops every earlier month, and a directory is never older than a
     # month of leftovers.
     #
     # The directory is live: a run reads what the previous run left, and every
@@ -44,26 +44,42 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        echo "dir=$HOME/.cache/peppy-ci/${{ inputs.suite }}-${{ runner.arch }}-$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+        month=$(date -u +%Y-%m)
+        {
+          echo "month=$month"
+          echo "dir=$HOME/.cache/peppy-ci/${{ inputs.suite }}-${{ runner.arch }}-$month"
+        } >> "$GITHUB_OUTPUT"
 
-    # Drops this suite's directories from every other month. Scoped to the
-    # suite so a prune never deletes a directory a concurrently queued job of
-    # another suite is building in.
-    - name: Prune the previous months' caches
+    # Drops every directory here that an earlier month left, whichever suite
+    # and architecture named it. A box runs one job at a time and a job's
+    # directory carries the month it started in, so nothing pruned here can
+    # belong to a job that is still running. Going wider than the suite is
+    # what clears a retired suite's directory: it is named after a suite that
+    # never runs again, so a prune scoped to the running suite would leave it
+    # on the disk forever.
+    - name: Prune every suite's caches from earlier months
       shell: bash
+      env:
+        MONTH: ${{ steps.cache.outputs.month }}
       run: |
         set -euo pipefail
-        keep="${{ steps.cache.outputs.dir }}"
         root="$HOME/.cache/peppy-ci"
-        prefix="${{ inputs.suite }}-${{ runner.arch }}-"
         mkdir -p "$root"
-        for d in "$root/$prefix"*; do
-          [ -d "$d" ] || continue
-          if [ "$d" != "$keep" ]; then
-            echo "Pruning stale cache $d"
-            rm -rf "$d"
-          fi
+        for directory in "$root"/*; do
+          [ -d "$directory" ] || continue
+          case "$directory" in
+          *"-$MONTH") continue ;;
+          esac
+          echo "Pruning $directory, which an earlier month left behind"
+          rm -rf "$directory"
         done
+
+    # The prune above drops what is stale; this drops what is merely cold,
+    # and only when the box is short of disk. A suite's directory reaches
+    # tens of gigabytes within its month, several repositories keep caches of
+    # their own on the same box, and the suite below is about to write into
+    # one of them.
+    - uses: ./.github/actions/reclaim-cache-disk
 
     # Only the suite's target directory is redirected, and through a symlink
     # rather than CARGO_TARGET_DIR: the docs snippet runner builds its nodes

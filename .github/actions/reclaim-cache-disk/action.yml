@@ -1,0 +1,31 @@
+name: Reclaim disk from the runner's caches
+description: >-
+  Evicts the least recently used entries under the runner's ~/.cache until a
+  share of its filesystem is free, so the job that follows finds room for what
+  it writes. The boxes are reused and every repository's jobs share them, and
+  since the move off ephemeral runners nothing evicts what a job leaves
+  behind. Reclaiming disk is housekeeping, so this never fails the job: a
+  floor it could not reach is a warning naming the box, which is a box to look
+  at rather than a run to rerun.
+
+inputs:
+  min-free-percent:
+    description: >-
+      The share of the cache filesystem to leave free. It has to exceed what
+      one job writes, the largest measured here being a 40 GiB cargo target
+      directory, or the job this makes room for fills the disk again.
+    default: '25'
+
+runs:
+  using: composite
+  steps:
+    - name: Reclaim disk from the runner's caches
+      shell: bash
+      # Through the environment rather than an expression inside the script,
+      # so the share is data and not shell source.
+      env:
+        MIN_FREE_PERCENT: ${{ inputs.min-free-percent }}
+      run: |
+        set -uo pipefail
+        python3 "$GITHUB_ACTION_PATH/prune_ci_cache.py" \
+          --min-free-percent "$MIN_FREE_PERCENT"
