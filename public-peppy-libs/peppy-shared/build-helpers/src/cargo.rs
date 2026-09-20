@@ -127,53 +127,10 @@ impl TryFrom<&str> for CapnpPlatform {
     }
 }
 
-/// The tools dir that ships next to this crate, in
-/// `peppy-shared/peppy-config-model/tools/`.
-///
-/// The path is resolved relative to *this crate's own* source directory,
-/// baked in at compile time via `CARGO_MANIFEST_DIR`. That makes it the single
-/// source of truth for every consumer, regardless of how `build-helpers` is
-/// pulled in:
-///   - As a path dependency (inside the `peppy-shared` workspace, or from the
-///     `peppy` workspace next to this tree), the tools dir is the real sibling
-///     on disk.
-///   - As a cargo **git** dependency (for example from `platform-backend`),
-///     cargo checks out the whole repository, so the sibling tools dir rides
-///     along in that checkout with no duplicated copy required.
+/// The tools dir holding the bundled Cap'n Proto compilers:
+/// `peppy-config-model/tools` inside [`peppy_shared_dir`].
 fn bundled_tools_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("peppy-config-model")
-        .join("tools")
-}
-
-/// The calling build script's own `../peppy-config-model/tools` sibling,
-/// resolved from the `CARGO_MANIFEST_DIR` environment variable cargo sets at
-/// build-script run time.
-///
-/// Deployed flat-cache layouts copy each crate next to `peppy-config-model`
-/// without a reachable `build-helpers` checkout, so [`bundled_tools_dir`]
-/// points at nothing there and this sibling is where the binaries live. The
-/// manifest dir is canonicalized because such layouts reach crates through
-/// symlinks.
-fn caller_sibling_tools_dir() -> Option<PathBuf> {
-    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?);
-    let manifest_dir = manifest_dir.canonicalize().unwrap_or(manifest_dir);
-    Some(
-        manifest_dir
-            .parent()?
-            .join("peppy-config-model")
-            .join("tools"),
-    )
-}
-
-/// Finds the capnp binary for `platform` in the first of `tools_dirs` that
-/// holds it.
-fn find_capnp_in(tools_dirs: &[PathBuf], platform: CapnpPlatform) -> Option<PathBuf> {
-    tools_dirs
-        .iter()
-        .map(|tools_dir| tools_dir.join(platform.binary_name()))
-        .find(|binary_path| binary_path.exists())
+    peppy_shared_dir().join(CONFIG_MODEL_CRATE).join("tools")
 }
 
 /// Path to the bundled Cap'n Proto compiler that runs on the machine
@@ -186,11 +143,10 @@ fn find_capnp_in(tools_dirs: &[PathBuf], platform: CapnpPlatform) -> Option<Path
 /// serves the one consumer that ships the target's binary inside the
 /// artifact instead of running it.
 ///
-/// The binary is searched for in [`bundled_tools_dir`] and then in
-/// [`caller_sibling_tools_dir`]. Emits a `cargo:rerun-if-changed` directive
-/// for the found binary so a compiler update triggers fresh code generation.
-/// Panics when the host platform has no bundled compiler or no search dir
-/// holds it, because a build script cannot recover from either.
+/// Emits a `cargo:rerun-if-changed` directive for the binary so a compiler
+/// update triggers fresh code generation. Panics when the host platform has no
+/// bundled compiler or [`bundled_tools_dir`] does not hold it, because a build
+/// script cannot recover from either.
 pub fn host_capnp_for_execution() -> PathBuf {
     let platform = CapnpPlatform::current_host().unwrap_or_else(|| {
         panic!(
@@ -200,19 +156,7 @@ pub fn host_capnp_for_execution() -> PathBuf {
             std::env::consts::ARCH
         )
     });
-    let mut tools_dirs = vec![bundled_tools_dir()];
-    tools_dirs.extend(caller_sibling_tools_dir());
-    let binary_path = find_capnp_in(&tools_dirs, platform).unwrap_or_else(|| {
-        panic!(
-            "bundled capnp binary {} not found in any of: {}",
-            platform.binary_name(),
-            tools_dirs
-                .iter()
-                .map(|dir| dir.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    });
+    let binary_path = existing_bundled_capnp(platform);
     println!("cargo:rerun-if-changed={}", binary_path.display());
     binary_path
 }
@@ -228,6 +172,13 @@ pub fn host_capnp_for_execution() -> PathBuf {
 /// [`bundled_tools_dir`], because that means the checkout itself is broken.
 pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedCapnpTarget> {
     let platform = CapnpPlatform::try_from(target)?;
+    Ok(existing_bundled_capnp(platform))
+}
+
+/// Path to the bundled compiler for `platform`, which must exist: every
+/// supported platform ships its binary in [`bundled_tools_dir`], so a missing
+/// file means the tree itself is broken.
+fn existing_bundled_capnp(platform: CapnpPlatform) -> PathBuf {
     let binary_path = bundled_tools_dir().join(platform.binary_name());
     if !binary_path.exists() {
         panic!(
@@ -236,32 +187,67 @@ pub fn bundled_capnp_for_embedding(target: &str) -> Result<PathBuf, UnsupportedC
             binary_path.display()
         );
     }
-    Ok(binary_path)
+    binary_path
 }
 
-/// Locate the `peppy-shared` directory that this crate lives inside.
+/// Crate whose presence marks a directory as `peppy-shared`: every layout of
+/// the shared crates keeps it, because it carries the bundled tools.
+const CONFIG_MODEL_CRATE: &str = "peppy-config-model";
+
+/// Where the `peppy` workspace keeps `peppy-shared`, relative to its root.
+const PEPPY_SHARED_IN_WORKSPACE: &str = "public-peppy-libs/peppy-shared";
+
+/// Locate the `peppy-shared` directory: the one holding every shared crate
+/// (`peppylib-rs`, `peppy-config-model`, `core-node-api`,
+/// `peppy-messaging-interface`, `peppylib-py`, ...).
 ///
-/// `build-helpers` always sits at `peppy-shared/build-helpers`, so the parent
-/// of its own manifest dir is `peppy-shared` — the directory that holds every
-/// sibling crate (`peppylib-rs`, `peppy-config-model`, `core-node-api`,
-/// `peppy-messaging-interface`, `peppylib-py`, …). The path is baked in at
-/// compile time via `CARGO_MANIFEST_DIR`, the same single-source approach as
-/// [`bundled_capnp_path`], so it resolves correctly regardless of how
-/// `build-helpers` is pulled in:
-///   - As a path dependency (inside `peppy-shared`, or from the `peppy`
-///     workspace next to this tree), it is the real dir on disk.
-///   - As a cargo **git** dependency (for example from `platform-backend`),
-///     cargo checks out the whole repository, so every sibling rides along in
-///     that checkout, with no fragile `../../../` reaches from each consumer.
+/// The directory is found when the calling build script or test runs, by
+/// walking up from the `CARGO_MANIFEST_DIR` cargo sets for that run (see
+/// [`find_peppy_shared_dir`]). It is never baked in at compile time: cargo
+/// reuses a compiled `build-helpers` across every checkout that shares a
+/// target directory, so a compile-time path would name whichever checkout
+/// compiled the crate instead of the one being built.
 ///
 /// Consumers such as `generator`'s build script use this to find the shared
 /// crate source trees they embed, giving one source of truth instead of a
-/// relative path duplicated at every call site.
+/// relative path duplicated at every call site. Panics when
+/// `CARGO_MANIFEST_DIR` is unset or no `peppy-shared` directory is reachable
+/// from it, because a build script cannot recover from either.
 pub fn peppy_shared_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("build-helpers' manifest dir always has a peppy-shared parent")
-        .to_path_buf()
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect(
+        "CARGO_MANIFEST_DIR not set; peppy_shared_dir must be called from a build script or test",
+    ));
+    // Deployed flat-cache layouts reach crates through symlinks, so the walk
+    // starts from the real location of the manifest dir.
+    let manifest_dir = manifest_dir.canonicalize().unwrap_or(manifest_dir);
+    find_peppy_shared_dir(&manifest_dir).unwrap_or_else(|| {
+        panic!(
+            "no peppy-shared directory reachable from {}: no ancestor holds \
+             {CONFIG_MODEL_CRATE} or {PEPPY_SHARED_IN_WORKSPACE}/{CONFIG_MODEL_CRATE}",
+            manifest_dir.display()
+        )
+    })
+}
+
+/// Finds the `peppy-shared` directory nearest to `start`, walking up through
+/// its ancestors. Each ancestor is checked two ways:
+///   - It holds the shared crates itself. This covers a crate inside
+///     `peppy-shared`, whether in a working checkout or in the whole-repository
+///     checkout cargo makes for a git dependency (as `platform-backend` pulls
+///     `core-node-api`), and deployed flat-cache layouts that copy each crate
+///     next to `peppy-config-model` under a directory of any name.
+///   - It is the `peppy` workspace root, which keeps the tree at
+///     `public-peppy-libs/peppy-shared`. This covers the workspace crates
+///     outside the tree, such as `crates/encoding-internal`.
+fn find_peppy_shared_dir(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|ancestor| {
+        [
+            ancestor.to_path_buf(),
+            ancestor.join(PEPPY_SHARED_IN_WORKSPACE),
+        ]
+        .into_iter()
+        .find(|candidate| candidate.join(CONFIG_MODEL_CRATE).is_dir())
+    })
 }
 
 /// Compile a Rust binary from crates.io using `cargo install` with cross-compilation support.
@@ -399,64 +385,109 @@ mod tests {
         assert_eq!(git_tag_directives(Some("")), [RERUN_DIRECTIVE]);
     }
 
-    #[test]
-    fn find_capnp_in_returns_none_when_no_dir_holds_the_binary() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        assert_eq!(
-            find_capnp_in(&[dir.path().to_path_buf()], CapnpPlatform::LinuxX86_64),
-            None
+    /// Creates every directory of `relative_dirs` under `root`.
+    fn create_dirs(root: &Path, relative_dirs: &[&str]) {
+        for relative_dir in relative_dirs {
+            std::fs::create_dir_all(root.join(relative_dir)).expect("create layout dir");
+        }
+    }
+
+    /// Lays out a `peppy` workspace under `root`: the shared tree plus one
+    /// workspace crate outside it.
+    fn create_workspace(root: &Path) {
+        create_dirs(
+            root,
+            &[
+                "crates/encoding-internal",
+                "public-peppy-libs/peppy-shared/peppy-config-model",
+                "public-peppy-libs/peppy-shared/core-node-api",
+            ],
         );
     }
 
     #[test]
-    fn find_capnp_in_finds_requested_platform() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let expected = dir.path().join("capnp_linux_aarch64");
-        std::fs::write(&expected, b"").expect("create fake capnp");
+    fn find_peppy_shared_dir_resolves_a_crate_inside_the_tree() {
+        let root = tempfile::tempdir().expect("temp dir");
+        create_workspace(root.path());
+        let shared = root.path().join("public-peppy-libs/peppy-shared");
         assert_eq!(
-            find_capnp_in(&[dir.path().to_path_buf()], CapnpPlatform::LinuxAarch64),
-            Some(expected)
+            find_peppy_shared_dir(&shared.join("core-node-api")),
+            Some(shared)
         );
     }
 
     #[test]
-    fn find_capnp_in_ignores_wrongly_named_binary() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(dir.path().join("capnp_wrong_name"), b"").expect("create file");
+    fn find_peppy_shared_dir_resolves_a_workspace_crate_outside_the_tree() {
+        let root = tempfile::tempdir().expect("temp dir");
+        create_workspace(root.path());
         assert_eq!(
-            find_capnp_in(&[dir.path().to_path_buf()], CapnpPlatform::MacosAarch64),
-            None
+            find_peppy_shared_dir(&root.path().join("crates/encoding-internal")),
+            Some(root.path().join("public-peppy-libs/peppy-shared"))
         );
     }
 
     #[test]
-    fn find_capnp_in_prefers_the_first_dir_that_holds_the_binary() {
+    fn find_peppy_shared_dir_resolves_a_flat_cache_under_any_dir_name() {
+        let root = tempfile::tempdir().expect("temp dir");
+        create_dirs(
+            root.path(),
+            &["libs-cache/peppy-config-model", "libs-cache/core-node-api"],
+        );
+        assert_eq!(
+            find_peppy_shared_dir(&root.path().join("libs-cache/core-node-api")),
+            Some(root.path().join("libs-cache"))
+        );
+    }
+
+    #[test]
+    fn find_peppy_shared_dir_keeps_each_checkout_on_its_own_tree() {
+        // Two checkouts of the same workspace share one compiled build-helpers
+        // when they share a target dir, so the answer must follow the start dir.
         let first = tempfile::tempdir().expect("temp dir");
         let second = tempfile::tempdir().expect("temp dir");
-        let expected = first.path().join("capnp_macos_aarch64");
-        std::fs::write(&expected, b"").expect("create fake capnp");
-        std::fs::write(second.path().join("capnp_macos_aarch64"), b"").expect("create fake capnp");
+        create_workspace(first.path());
+        create_workspace(second.path());
+        for checkout in [first.path(), second.path()] {
+            assert_eq!(
+                find_peppy_shared_dir(&checkout.join("crates/encoding-internal")),
+                Some(checkout.join("public-peppy-libs/peppy-shared"))
+            );
+        }
+    }
+
+    #[test]
+    fn find_peppy_shared_dir_prefers_the_nearest_tree() {
+        let root = tempfile::tempdir().expect("temp dir");
+        create_workspace(root.path());
+        create_dirs(
+            root.path(),
+            &["libs-cache/peppy-config-model", "libs-cache/core-node-api"],
+        );
         assert_eq!(
-            find_capnp_in(
-                &[first.path().to_path_buf(), second.path().to_path_buf()],
-                CapnpPlatform::MacosAarch64
-            ),
-            Some(expected)
+            find_peppy_shared_dir(&root.path().join("libs-cache/core-node-api")),
+            Some(root.path().join("libs-cache"))
         );
     }
 
     #[test]
-    fn find_capnp_in_falls_through_to_a_later_dir() {
-        let empty = tempfile::tempdir().expect("temp dir");
-        let holding = tempfile::tempdir().expect("temp dir");
-        let expected = holding.path().join("capnp_linux_x86_64");
-        std::fs::write(&expected, b"").expect("create fake capnp");
+    fn find_peppy_shared_dir_ignores_a_marker_that_is_not_a_directory() {
+        let root = tempfile::tempdir().expect("temp dir");
+        create_dirs(root.path(), &["libs-cache/core-node-api"]);
+        std::fs::write(root.path().join("libs-cache/peppy-config-model"), b"")
+            .expect("create marker file");
         assert_eq!(
-            find_capnp_in(
-                &[empty.path().to_path_buf(), holding.path().to_path_buf()],
-                CapnpPlatform::LinuxX86_64
-            ),
-            Some(expected)
+            find_peppy_shared_dir(&root.path().join("libs-cache/core-node-api")),
+            None
+        );
+    }
+
+    #[test]
+    fn find_peppy_shared_dir_returns_none_when_no_tree_is_reachable() {
+        let root = tempfile::tempdir().expect("temp dir");
+        create_dirs(root.path(), &["crates/encoding-internal"]);
+        assert_eq!(
+            find_peppy_shared_dir(&root.path().join("crates/encoding-internal")),
+            None
         );
     }
 
