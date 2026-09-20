@@ -1,37 +1,30 @@
 ---
 /*
- * Animated node graph of the stack `peppy stack launch simulation --with mujoco`
- * brings up, laid out as the bimanual robot. The eight circles are the eight
- * instances that launch declares, the copy `alpha` and the simulation, and
- * the arrows are the links between them:
+ * Animated node graph of the stack `peppy stack launch openarm_simulation
+ * --with mujoco` brings up, laid out as the bimanual robot. The four circles
+ * are the four instances that launch declares, the copy `alpha` and the
+ * simulation, and the arrows are the links between them:
  *
  *   alpha_commander_inst (the browser panel) streams targets down to alpha_backbone_inst,
- *   alpha_backbone_inst streams governed setpoints out to the four limb relays
- *   (alpha_left_arm_inst, alpha_right_arm_inst, alpha_left_gripper_inst,
- *   alpha_right_gripper_inst), each relay leads its matching limb inside simulation_inst
- *   (the MuJoCo simulation, a stack instance), and alpha_init_inst gathers the
- *   four relays' readiness and reports it back up to the backbone.
+ *   alpha_backbone_inst holds four limb pairs with simulation_inst (the MuJoCo
+ *   simulation, a stack instance), an arm and a gripper per side, on the
+ *   simulation's arms and grippers slots, and alpha_init_inst joins the robot
+ *   into simulation_inst with its model and reports it ready up to the
+ *   backbone once the simulation stands every limb.
  *
- * Node positions form a T-pose: panel on top, backbone as the torso, the arm
- * relays on the shoulder beam with their gripper relays below them, the
- * readiness aggregator on the spine between them, and the engine at the base. A
- * faint chassis (head housing, spine, torso plate, shoulder beam, forearms)
- * sits behind the nodes to sell the silhouette.
- *
- * The graph cannot be drawn without crossings: four relays each linking to the
- * same three hubs (backbone, aggregator, engine) contains K3,3, and the floor
- * for K3,4 is two crossings. This drawing sits at that floor. Getting there
- * costs the two backbone to gripper links their straight line: each curves out
- * around its arm, down the corridor between the arm and its label, and into the
- * gripper, which also reads as the command running down the arm to the hand.
- * The two crossings left are gripper readiness against arm engine link, one per
- * side. Moving a node without re-checking those routes puts crossings back.
+ * Node positions form a T-pose: panel on top, backbone as the torso, the
+ * initializer on the spine, and the engine at the base. The four pairs are the
+ * limbs: each side's arm pair runs out along the shoulder beam and down the
+ * forearm into the engine, with its gripper pair inside it. A faint chassis
+ * (head housing, spine, torso plate, shoulder beam, forearms) sits behind the
+ * nodes to sell the silhouette. The drawing has no crossings.
  *
  * Deliberately not drawn: the commander's four observed_* links (it watches
- * each relay's measured state directly). They span the full height of the
- * graph and would bury the command path; the caption covers them instead. Keep
- * the node and link set in step with launchers-hub/simulation.json5, its mujoco
- * option and the web_commander option of the copy it deploys, if those change.
+ * each limb pair's measured state on the backbone). They would run beside the
+ * command path and bury it; the caption covers them instead. Keep the node and
+ * link set in step with launchers-hub/openarm/openarm_simulation.json5, its
+ * mujoco option and the openarm_v2_sim fragment's web_commander option, if
+ * those change.
  */
 ---
 
@@ -39,7 +32,7 @@
 	class="stack-graph"
 	viewBox="0 -12 660 518"
 	role="img"
-	aria-label="Node graph of the simulation launcher with the mujoco option, drawn as a bimanual robot. alpha_commander_inst, the browser control panel, sits at the top and streams commands down to alpha_backbone_inst, the coordinator. The backbone streams governed setpoints out to four limb relays: alpha_left_arm_inst and alpha_right_arm_inst on the shoulders, alpha_left_gripper_inst and alpha_right_gripper_inst below them. Each of the four relays leads its matching limb inside simulation_inst, the MuJoCo simulation at the base, and reports readiness to alpha_init_inst on the spine, which reports back up to the backbone. Each pairing streams measured state back the other way, and the panel also observes the four relays."
+	aria-label="Node graph of the openarm_simulation launcher with the mujoco option, drawn as a bimanual robot. alpha_commander_inst, the browser control panel, sits at the top and streams commands down to alpha_backbone_inst, the coordinator. The backbone holds four limb pairs with simulation_inst, the MuJoCo simulation at the base: an arm pair and a gripper pair per side, drawn as the arms running out along the shoulders and down into the simulation. alpha_init_inst on the spine joins the robot into the simulation and reports it ready up to the backbone. Each pair streams measured state back the other way, and the panel observes the four pairs on the backbone."
 >
 	<defs>
 		<radialGradient id="sgHaloViolet" cx="50%" cy="50%" r="50%">
@@ -49,14 +42,6 @@
 		<radialGradient id="sgHaloOrange" cx="50%" cy="50%" r="50%">
 			<stop offset="0%" style="stop-color: var(--graph-orange); stop-opacity: 0.32"></stop>
 			<stop offset="100%" style="stop-color: var(--graph-orange); stop-opacity: 0"></stop>
-		</radialGradient>
-		<radialGradient id="sgHaloCyan" cx="50%" cy="50%" r="50%">
-			<stop offset="0%" style="stop-color: var(--graph-cyan); stop-opacity: 0.32"></stop>
-			<stop offset="100%" style="stop-color: var(--graph-cyan); stop-opacity: 0"></stop>
-		</radialGradient>
-		<radialGradient id="sgHaloTeal" cx="50%" cy="50%" r="50%">
-			<stop offset="0%" style="stop-color: var(--graph-teal); stop-opacity: 0.32"></stop>
-			<stop offset="100%" style="stop-color: var(--graph-teal); stop-opacity: 0"></stop>
 		</radialGradient>
 		<radialGradient id="sgHaloGreen" cx="50%" cy="50%" r="50%">
 			<stop offset="0%" style="stop-color: var(--graph-green); stop-opacity: 0.32"></stop>
@@ -79,42 +64,37 @@
 	</defs>
 
 	<!-- Faint chassis behind the nodes: head housing, spine, torso plate,
-	     shoulder beam, and a forearm down to each gripper. -->
+	     shoulder beam, and a forearm on each side between its two pairs. The
+	     limbs stand wide enough for alpha_init_inst's label to clear the inner
+	     pair on its side. -->
 	<g class="stack-graph__chassis" fill="none">
 		<rect x="276" y="2" width="108" height="108" rx="26" stroke-width="2"></rect>
 		<line x1="330" y1="112" x2="330" y2="424" stroke-width="14" stroke-linecap="round"></line>
-		<line x1="200" y1="250" x2="460" y2="250" stroke-width="16" stroke-linecap="round"></line>
-		<line x1="200" y1="250" x2="200" y2="358" stroke-width="13" stroke-linecap="round"></line>
-		<line x1="460" y1="250" x2="460" y2="358" stroke-width="13" stroke-linecap="round"></line>
+		<line x1="156" y1="250" x2="504" y2="250" stroke-width="16" stroke-linecap="round"></line>
+		<line x1="172" y1="250" x2="172" y2="352" stroke-width="13" stroke-linecap="round"></line>
+		<line x1="488" y1="250" x2="488" y2="352" stroke-width="13" stroke-linecap="round"></line>
 		<rect x="294" y="124" width="72" height="72" rx="16" stroke-width="2"></rect>
 	</g>
 
-	<!-- Command path: the panel's targets, then the backbone's governed setpoints.
-	     The gripper links take the long way round their arm to keep the drawing
-	     at the minimum two crossings. -->
+	<!-- Command path: the panel's targets down to the backbone. -->
 	<g class="stack-graph__links stack-graph__links--command">
 		<line x1="330" y1="88" x2="330" y2="124"></line>
-		<line x1="304" y1="178" x2="230" y2="230"></line>
-		<line x1="356" y1="178" x2="430" y2="230"></line>
-		<path d="M303,175 C240,205 140,200 134,268 C131,298 146,304 174,332"></path>
-		<path d="M357,175 C420,205 520,200 526,268 C529,298 514,304 486,332"></path>
 	</g>
 
-	<!-- Readiness: every relay reports its limb, the aggregator reports the robot. -->
+	<!-- Readiness: the initializer reports the robot ready up to the backbone. -->
 	<g class="stack-graph__links stack-graph__links--ready">
-		<line x1="230" y1="261" x2="296" y2="287"></line>
-		<line x1="229" y1="345" x2="297" y2="315"></line>
-		<line x1="430" y1="261" x2="364" y2="287"></line>
-		<line x1="431" y1="345" x2="363" y2="315"></line>
 		<line x1="330" y1="268" x2="330" y2="196"></line>
 	</g>
 
-	<!-- Engine links: each relay leads its own limb inside the MuJoCo engine. -->
+	<!-- Engine links: the initializer's join straight down the spine, and the
+	     backbone's four limb pairs out along the shoulders and down into the
+	     engine, the arm pair outside its side's gripper pair. -->
 	<g class="stack-graph__links stack-graph__links--engine">
-		<line x1="219" y1="276" x2="308" y2="395"></line>
-		<line x1="229" y1="372" x2="298" y2="408"></line>
-		<line x1="441" y1="276" x2="352" y2="395"></line>
-		<line x1="431" y1="372" x2="362" y2="408"></line>
+		<line x1="330" y1="332" x2="330" y2="392"></line>
+		<path d="M306,175 C248,195 162,205 162,250 L162,352 C162,396 232,418 302,419"></path>
+		<path d="M314,184 C266,204 182,212 182,256 L182,346 C182,380 262,382 314,401"></path>
+		<path d="M354,175 C412,195 498,205 498,250 L498,352 C498,396 428,418 358,419"></path>
+		<path d="M346,184 C394,204 478,212 478,256 L478,346 C478,380 398,382 346,401"></path>
 	</g>
 
 	<!-- alpha_commander_inst: the browser control panel -->
@@ -155,83 +135,7 @@
 		<text class="stack-graph__label" x="42" y="4" text-anchor="start">alpha_backbone_inst</text>
 	</g>
 
-	<!-- alpha_left_arm_inst: engine-agnostic arm relay -->
-	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(200 250)">
-		<g class="stack-graph__float" style="--bob-dur: 2.3s; --bob-delay: 0.9s">
-			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloCyan)" style="--halo-delay: 0.9s"
-			></circle>
-			<circle class="stack-graph__disc" r="28"></circle>
-			<g class="stack-graph__icon" transform="translate(-2 -1)">
-				<path d="M-8,11 H8" stroke-width="2"></path>
-				<path d="M-5,11 L-3,7 L3,7 L5,11 Z" stroke-width="1.3" stroke-linejoin="round"></path>
-				<circle cx="0" cy="7" r="2.4"></circle>
-				<path d="M0,7 V-2" stroke-width="2.6"></path>
-				<circle cx="0" cy="-2" r="2.1"></circle>
-				<path d="M0,-2 L8,-4" stroke-width="2.4"></path>
-				<circle cx="8" cy="-4" r="1.6" stroke-width="1.3"></circle>
-				<path d="M8,-4 L11,-5.5 L11.6,-7.6 M8,-4 L11,-2.5 L11.6,-0.4" stroke-width="1.3"></path>
-			</g>
-		</g>
-		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">alpha_left_arm_inst</text>
-	</g>
-
-	<!-- alpha_right_arm_inst: the same relay for the other arm -->
-	<g class="stack-graph__node stack-graph__node--cyan" transform="translate(460 250)">
-		<g class="stack-graph__float" style="--bob-dur: 2.7s; --bob-delay: 0.2s">
-			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloCyan)" style="--halo-delay: 0.3s"
-			></circle>
-			<circle class="stack-graph__disc" r="28"></circle>
-			<g class="stack-graph__icon" transform="translate(2 -1) scale(-1 1)">
-				<path d="M-8,11 H8" stroke-width="2"></path>
-				<path d="M-5,11 L-3,7 L3,7 L5,11 Z" stroke-width="1.3" stroke-linejoin="round"></path>
-				<circle cx="0" cy="7" r="2.4"></circle>
-				<path d="M0,7 V-2" stroke-width="2.6"></path>
-				<circle cx="0" cy="-2" r="2.1"></circle>
-				<path d="M0,-2 L8,-4" stroke-width="2.4"></path>
-				<circle cx="8" cy="-4" r="1.6" stroke-width="1.3"></circle>
-				<path d="M8,-4 L11,-5.5 L11.6,-7.6 M8,-4 L11,-2.5 L11.6,-0.4" stroke-width="1.3"></path>
-			</g>
-		</g>
-		<text class="stack-graph__label" x="88" y="5" text-anchor="start">alpha_right_arm_inst</text>
-	</g>
-
-	<!-- alpha_left_gripper_inst: gripper relay, mirroring the arm relay over gripper_link -->
-	<g class="stack-graph__node stack-graph__node--teal" transform="translate(200 358)">
-		<g class="stack-graph__float" style="--bob-dur: 2.6s; --bob-delay: 1.2s">
-			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloTeal)" style="--halo-delay: 1.2s"
-			></circle>
-			<circle class="stack-graph__disc" r="28"></circle>
-			<g class="stack-graph__icon">
-				<path d="M0,10 V3" stroke-width="2.4"></path>
-				<circle cx="0" cy="2" r="2.2"></circle>
-				<path
-					d="M-1.6,0.6 L-5.5,-3 L-6.4,-9 M1.6,0.6 L5.5,-3 L6.4,-9"
-					stroke-width="1.8"
-					stroke-linejoin="round"></path>
-			</g>
-		</g>
-		<text class="stack-graph__label" x="-88" y="5" text-anchor="end">alpha_left_gripper_inst</text>
-	</g>
-
-	<!-- alpha_right_gripper_inst: the same relay for the other gripper -->
-	<g class="stack-graph__node stack-graph__node--teal" transform="translate(460 358)">
-		<g class="stack-graph__float" style="--bob-dur: 2.4s; --bob-delay: 0.6s">
-			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloTeal)" style="--halo-delay: 0.7s"
-			></circle>
-			<circle class="stack-graph__disc" r="28"></circle>
-			<g class="stack-graph__icon">
-				<path d="M0,10 V3" stroke-width="2.4"></path>
-				<circle cx="0" cy="2" r="2.2"></circle>
-				<path
-					d="M-1.6,0.6 L-5.5,-3 L-6.4,-9 M1.6,0.6 L5.5,-3 L6.4,-9"
-					stroke-width="1.8"
-					stroke-linejoin="round"></path>
-			</g>
-		</g>
-		<text class="stack-graph__label" x="88" y="5" text-anchor="start">alpha_right_gripper_inst</text>
-	</g>
-
-	<!-- alpha_init_inst: ready once every limb's physics is live -->
+	<!-- alpha_init_inst: joins the robot into the simulation, ready once every limb stands -->
 	<g class="stack-graph__node stack-graph__node--green" transform="translate(330 300)">
 		<g class="stack-graph__float" style="--bob-dur: 3.1s; --bob-delay: 0.8s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloGreen)" style="--halo-delay: 1.4s"
@@ -261,10 +165,10 @@
 					style="--tick-delay: 1.05s"></circle>
 			</g>
 		</g>
-		<text class="stack-graph__label" y="48" text-anchor="middle">alpha_init_inst</text>
+		<text class="stack-graph__label" x="42" y="4" text-anchor="start">alpha_init_inst</text>
 	</g>
 
-	<!-- simulation_inst: the MuJoCo simulation every relay leads -->
+	<!-- simulation_inst: the MuJoCo simulation the robot stands in -->
 	<g class="stack-graph__node stack-graph__node--blue" transform="translate(330 424)">
 		<g class="stack-graph__float" style="--bob-dur: 3.4s; --bob-delay: 0.3s">
 			<circle class="stack-graph__halo" r="36" fill="url(#sgHaloBlue)" style="--halo-delay: 0.2s"
@@ -299,8 +203,8 @@
 	</g>
 
 	<text class="stack-graph__caption" x="330" y="492" text-anchor="middle"
-		>Each pairing streams measured state back the other way; the panel also observes the four
-		relays.</text
+		>Each limb pair streams measured state back the other way; the panel observes the four
+		pairs on the backbone.</text
 	>
 </svg>
 
@@ -317,10 +221,6 @@
 		--graph-violet-soft: #a78bfa;
 		--graph-orange: #f97316;
 		--graph-orange-soft: #fb923c;
-		--graph-cyan: #06b6d4;
-		--graph-cyan-soft: #22d3ee;
-		--graph-teal: #14b8a6;
-		--graph-teal-soft: #2dd4bf;
 		--graph-green: #22c55e;
 		--graph-green-soft: #4ade80;
 		--graph-blue: #3b82f6;
@@ -339,10 +239,6 @@
 		--graph-violet-soft: #6d28d9;
 		--graph-orange: #ea580c;
 		--graph-orange-soft: #c2410c;
-		--graph-cyan: #0891b2;
-		--graph-cyan-soft: #0e7490;
-		--graph-teal: #0d9488;
-		--graph-teal-soft: #0f766e;
 		--graph-green: #16a34a;
 		--graph-green-soft: #15803d;
 		--graph-blue: #2563eb;
@@ -433,26 +329,6 @@
 	}
 	.stack-graph__node--orange .stack-graph__icon-fill {
 		fill: var(--graph-orange-soft);
-	}
-
-	.stack-graph__node--cyan .stack-graph__disc {
-		stroke: var(--graph-cyan);
-	}
-	.stack-graph__node--cyan .stack-graph__icon {
-		stroke: var(--graph-cyan-soft);
-	}
-	.stack-graph__node--cyan .stack-graph__icon-fill {
-		fill: var(--graph-cyan-soft);
-	}
-
-	.stack-graph__node--teal .stack-graph__disc {
-		stroke: var(--graph-teal);
-	}
-	.stack-graph__node--teal .stack-graph__icon {
-		stroke: var(--graph-teal-soft);
-	}
-	.stack-graph__node--teal .stack-graph__icon-fill {
-		fill: var(--graph-teal-soft);
 	}
 
 	.stack-graph__node--green .stack-graph__disc {
@@ -562,7 +438,7 @@
 		}
 	}
 
-	/* One tick per limb, lighting up in turn: the aggregator waiting on all four. */
+	/* One tick per limb, lighting up in turn: the initializer waiting on the simulation to stand all four. */
 	.stack-graph__tick {
 		animation: sg-tick 1.4s ease-in-out infinite;
 		animation-delay: var(--tick-delay, 0s);
