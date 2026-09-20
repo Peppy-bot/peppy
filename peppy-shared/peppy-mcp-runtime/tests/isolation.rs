@@ -13,12 +13,11 @@ use rmcp::model::{
     ReadResourceRequestParams, ServerNotification, SubscriptionFilter, TaskStatus, object,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use support::{
     FRAME_URI, GUARD, STATUS_URI, connect, connect_with_tasks, fixture_bundle, fixture_exposures,
     fixture_server, poll_task_until, protocol_error, sample_rgb8_frame, serve_set, start_set,
 };
+use tokio::sync::mpsc::{UnboundedSender, error::TryRecvError, unbounded_channel};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identical_public_names_resolve_to_their_own_endpoint() {
@@ -278,29 +277,32 @@ async fn only_the_exposures_endpoints_are_served() {
     set.stop().await;
 }
 
-/// Sets its flag when dropped, which is how a parked goal reports that the
-/// runtime aborted it.
-struct DropFlag(Arc<AtomicBool>);
+/// Sends when dropped, which is how a parked goal reports that the runtime
+/// tore it down.
+struct TeardownSignal(UnboundedSender<()>);
 
-impl Drop for DropFlag {
+impl Drop for TeardownSignal {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        // An unbounded send never waits, which is what makes it usable from a
+        // drop; the only error it can return is a receiver the test has
+        // already finished reading.
+        let _ = self.0.send(());
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
     let mut servers = Vec::new();
-    let mut aborted = Vec::new();
+    let mut teardowns = Vec::new();
     for expected in fixture_exposures() {
-        let flag = Arc::new(AtomicBool::new(false));
-        aborted.push(Arc::clone(&flag));
+        let (signal, teardown) = unbounded_channel();
+        teardowns.push(teardown);
         let (builder, nanos) = fixture_server(&expected, fixture_bundle(&expected));
         let server = builder
             .with_task(
                 "recorder.record_episode",
                 move |_input: Value, _context: peppy_mcp_runtime::ActionContext| {
-                    let guard = DropFlag(Arc::clone(&flag));
+                    let guard = TeardownSignal(signal.clone());
                     async move {
                         let _guard = guard;
                         std::future::pending::<Result<Value, ActionExit>>().await
@@ -343,18 +345,28 @@ async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
         .await;
         clients.push(client);
     }
-    for flag in &aborted {
-        assert!(!flag.load(Ordering::SeqCst), "the goals are still running");
+    for (index, teardown) in teardowns.iter_mut().enumerate() {
+        assert_eq!(
+            teardown.try_recv(),
+            Err(TryRecvError::Empty),
+            "the goal on endpoint {index} is still running"
+        );
     }
 
     for client in clients {
         client.cancel().await.expect("client disconnects");
     }
     set.stop().await;
-    for (index, flag) in aborted.iter().enumerate() {
-        assert!(
-            flag.load(Ordering::SeqCst),
-            "stopping the set aborts the goal parked on endpoint {index}"
-        );
+    // Stopping the set aborts each operation, and an abort hands the future
+    // to the runtime to drop on a worker of its own. So the reports are
+    // awaited, bounded by [`GUARD`]: reading them the instant `stop` returns
+    // would be asserting on which worker got there first.
+    for (index, teardown) in teardowns.iter_mut().enumerate() {
+        tokio::time::timeout(GUARD, teardown.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!("stopping the set aborts the goal parked on endpoint {index}")
+            })
+            .unwrap_or_else(|| panic!("endpoint {index} never parked a goal to abort"));
     }
 }
