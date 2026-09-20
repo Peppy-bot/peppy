@@ -1,5 +1,6 @@
 {
   "start_posture": "home",
+  "start_gripper_opening": 0.0,
   "front_camera": {
     "name": "front",
     "parent_link": "base_link",

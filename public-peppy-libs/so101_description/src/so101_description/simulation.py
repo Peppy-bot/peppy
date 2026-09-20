@@ -1,5 +1,6 @@
 """What every simulation of the SO-101 agrees on and no URDF says: the posture
-a simulated arm starts in, and where its front camera sits.
+a simulated arm starts in, how far its jaw is open then, and where its front
+camera sits.
 
 On hardware the front camera is a webcam the user places over the front of
 the workspace, so there is no measured pose to copy. The simulated one stands
@@ -20,8 +21,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import xml.etree.ElementTree as ET
+
 from so101_description import postures
-from so101_description.units import JOINT_NAMES
+from so101_description.model import KINEMATICS_URDF_PATH
+from so101_description.units import GRIPPER_NAME, JOINT_NAMES
 
 SIMULATION_FACTS_PATH = str(Path(__file__).parent / "simulation.json")
 
@@ -61,9 +65,34 @@ def start_posture_name() -> str:
     return name
 
 
+def start_gripper_opening() -> float:
+    """How far the jaw is open when a simulated arm starts: a gripper_link
+    opening fraction, 0 closed."""
+    opening = float(_read()["start_gripper_opening"])
+    if not 0.0 <= opening <= 1.0:
+        raise ValueError(f"simulation.json opens the jaw to {opening}, outside 0..1")
+    return opening
+
+
+def gripper_range_rad(urdf_path: str = KINEMATICS_URDF_PATH) -> tuple[float, float]:
+    """The jaw joint's limits: its closed position and its fully open one."""
+    # Direct children only: transmission blocks nest limitless <joint> stubs
+    # under the same names.
+    for joint in ET.parse(urdf_path).getroot().findall("joint"):
+        if joint.get("name") != GRIPPER_NAME:
+            continue
+        limit = joint.find("limit")
+        return float(limit.get("lower")), float(limit.get("upper"))
+    raise ValueError(f"URDF has no joint named {GRIPPER_NAME}")
+
+
 def start_positions_rad() -> dict[str, float]:
-    """The start posture, joint name to radians, in wire order."""
-    return dict(zip(JOINT_NAMES, _POSTURES_RAD[start_posture_name()], strict=True))
+    """Where every joint starts, joint name to radians: the arm in the start
+    posture, in wire order, then the jaw at its start opening."""
+    closed, fully_open = gripper_range_rad()
+    jaw = closed + start_gripper_opening() * (fully_open - closed)
+    arm = zip(JOINT_NAMES, _POSTURES_RAD[start_posture_name()], strict=True)
+    return {**dict(arm), GRIPPER_NAME: jaw}
 
 
 def front_camera() -> FrontCamera:

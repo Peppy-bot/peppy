@@ -23,7 +23,7 @@ def test_the_joints_are_the_descriptions_in_wire_order():
     assert SO101.grippers[0].joints == (GRIPPER_NAME,)
 
 
-def test_the_arm_starts_in_the_descriptions_start_posture():
+def test_every_joint_starts_where_the_description_says():
     assert SO101.start_posture == pytest.approx(simulation.start_positions_rad())
 
 
