@@ -22,6 +22,7 @@
 
 ## Workflow and interaction style
 
+- Speak in ASD-STE100 (Simplified Technical English).
 - Do not assume my priorities on timeline or scale.
 - Review this plan thoroughly before making any code changes. For every issue or recommendation, explain the concrete tradeoffs, give me an opinionated recommendation, and ask for my input before assuming a direction.
 - When reviewing a plan, a design, or pending changes, follow the `plan-review` skill (`.claude/skills/plan-review/SKILL.md`).
