@@ -14,12 +14,23 @@ inputs:
       base sha, or the previously pushed sha for push events).
     required: true
 outputs:
+  workspace:
+    description: >-
+      Whether the inputs of the workspace suite changed: any default member of
+      the `peppy` workspace, or a crate one of them reaches.
+    value: ${{ steps.detect.outputs.workspace }}
   container_e2e:
     description: Whether the container e2e suite's inputs changed.
     value: ${{ steps.detect.outputs.container_e2e }}
+  multi_daemon_e2e:
+    description: Whether the multi-daemon e2e suite's inputs changed.
+    value: ${{ steps.detect.outputs.multi_daemon_e2e }}
   docs_integration:
     description: Whether the docs integration suite's inputs changed.
     value: ${{ steps.detect.outputs.docs_integration }}
+  cross_check:
+    description: Whether the inputs of the cross-compilation check changed.
+    value: ${{ steps.detect.outputs.cross_check }}
   scripts:
     description: Whether the mocked release scripts suite's inputs changed.
     value: ${{ steps.detect.outputs.scripts }}

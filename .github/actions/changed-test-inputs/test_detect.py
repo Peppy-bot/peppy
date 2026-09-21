@@ -67,6 +67,14 @@ def peppy_shared_directories():
     }
 
 
+def workspace_member_directories(members):
+    """Directory of every named package of the peppy workspace, by name."""
+    directories, _, manifests = detect.crate_graph(
+        [os.path.join(detect.ROOT, "Cargo.toml")]
+    )
+    return {name: directories[manifests[name]] for name in members}
+
+
 class Detection(unittest.TestCase):
     def assert_every_peppy_shared_package_runs(self, selection):
         """The whole workspace selected: every cargo package by name, and
@@ -125,18 +133,90 @@ class Detection(unittest.TestCase):
             select(detect.PEPPY_SHARED + "/Cargo.lock")
         )
 
-    def test_a_change_to_the_ci_plumbing_runs_everything(self):
+    def test_a_change_to_what_every_job_runs_through_runs_everything(self):
         for path in (
             ".github/workflows/tests.yml",
-            ".github/actions/cargo-cache/action.yml",
+            ".github/actions/rust-build-env/action.yml",
         ):
             with self.subTest(path=path):
                 selection = select(path)
                 self.assert_every_peppy_shared_package_runs(selection)
+                everything = detect.select_everything()
+                self.assertEqual(selected(selection).keys(), everything.keys())
+
+    def test_a_change_to_the_cargo_plumbing_runs_the_cargo_suites_alone(self):
+        for path in (
+            ".github/actions/cargo-cache/action.yml",
+            ".github/actions/cargo-suite/action.yml",
+            ".github/actions/reclaim-data-root/action.yml",
+        ):
+            with self.subTest(path=path):
+                selection = select(path)
+                self.assert_every_peppy_shared_package_runs(selection)
+                self.assertEqual(selection["workspace"], "true")
                 self.assertEqual(selection["container_e2e"], "true")
+                self.assertEqual(selection["multi_daemon_e2e"], "true")
                 self.assertEqual(selection["docs_integration"], "true")
-                self.assertEqual(selection["scripts"], "true")
-                self.assertEqual(selection["scripts_vm"], "true")
+                self.assertEqual(selection["cross_check"], "true")
+                self.assertEqual(selection["scripts"], "false")
+                self.assertEqual(selection["scripts_vm"], "false")
+
+    def test_the_detection_and_the_release_plumbing_gate_no_suite(self):
+        # The detection decides what runs, never how a suite runs, and the
+        # changes job tests it before trusting it; release-host-env is the
+        # release workflow's.
+        for path in (
+            ".github/actions/changed-test-inputs/detect.py",
+            ".github/actions/changed-test-inputs/test_detect.py",
+            ".github/actions/changed-test-inputs/action.yml",
+            ".github/actions/release-host-env/action.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(selected(select(path)), {})
+
+    def test_the_workspace_manifests_run_the_suites_of_crates_alone(self):
+        for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    selected(select(path)).keys(),
+                    {detect.WORKSPACE_SUITE, *detect.SUITES},
+                )
+
+    def test_the_workspace_suite_runs_for_every_default_member(self):
+        root_manifest = os.path.join(detect.ROOT, "Cargo.toml")
+        members = detect.workspace_default_members(root_manifest)
+        self.assertIn("peppy", members)
+        self.assertNotIn("docs-integration-tests", members)
+        for name, directory in workspace_member_directories(members).items():
+            with self.subTest(package=name):
+                self.assertEqual(select(directory + "/src/lib.rs")["workspace"], "true")
+
+    def test_the_workspace_suite_stays_off_for_what_no_member_compiles(self):
+        for path in (
+            "docs/src/content/docs/guides/quickstart.mdx",
+            "docs/tests/integration/tests/rust_snippets.rs",
+            "scripts/install.sh",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select(path)["workspace"], "false")
+
+    def test_the_multi_daemon_suite_runs_for_the_launcher_it_drives(self):
+        launchers = "docs/src/content/docs/guides/snippets/launchers"
+        selection = select(launchers + "/split_compute_manipulation.json5")
+        self.assertEqual(selection["multi_daemon_e2e"], "true")
+        self.assertEqual(selection["workspace"], "false")
+        self.assertEqual(selection["cross_check"], "false")
+
+    def test_the_peppy_binary_suites_run_for_what_the_binary_compiles(self):
+        # Both build the `peppy` package, which reaches the sealed tree.
+        for path in (
+            "crates/daemon-internal/src/lib.rs",
+            "%s/peppy-messaging-interface/src/lib.rs" % detect.PEPPY_SHARED,
+        ):
+            with self.subTest(path=path):
+                selection = select(path)
+                self.assertEqual(selection["multi_daemon_e2e"], "true")
+                self.assertEqual(selection["cross_check"], "true")
 
     def test_the_mocked_release_scripts_run_for_any_change_under_scripts(self):
         # The cheap half costs about a second, so it is gated on the whole
