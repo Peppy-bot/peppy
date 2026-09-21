@@ -25,8 +25,8 @@ env:
 # directory of its own (the cargo-cache action) holding the target directory as
 # the suite's last run left it, so it compiles only what the change touched; the
 # cargo registry and the build scripts' tool cache are the reused runner's own
-# and shared with every repository on it. The gated suites wait only for the
-# changes job, never for another suite.
+# and shared with every repository on it. Every suite is gated on its inputs by
+# the changes job and waits for that job alone, never for another suite.
 #
 # Every job runs on a self-hosted runner; no job uses a GitHub-hosted one. Each
 # runner is its own machine taking one job at a time, so as many suites run in
@@ -48,8 +48,11 @@ jobs:
     permissions:
       contents: read
     outputs:
+      workspace: ${{ steps.changes.outputs.workspace }}
       container_e2e: ${{ steps.changes.outputs.container_e2e }}
+      multi_daemon_e2e: ${{ steps.changes.outputs.multi_daemon_e2e }}
       docs_integration: ${{ steps.changes.outputs.docs_integration }}
+      cross_check: ${{ steps.changes.outputs.cross_check }}
       scripts: ${{ steps.changes.outputs.scripts }}
       scripts_vm: ${{ steps.changes.outputs.scripts_vm }}
       peppy_shared_packages: ${{ steps.changes.outputs.peppy_shared_packages }}
@@ -84,7 +87,11 @@ jobs:
         with:
           base: ${{ github.event.pull_request.base.sha || github.event.before }}
 
+  # The unit and integration tests of every default member of the workspace:
+  # `crates/*`, with the docs integration tests left to their own job below.
   workspace-tests:
+    needs: changes
+    if: needs.changes.outputs.workspace == 'true'
     runs-on: self-hosted
     permissions:
       contents: read
@@ -131,6 +138,8 @@ jobs:
           command: cargo test --locked -p core-node --features container_e2e --test container_e2e
 
   multi-daemon-e2e:
+    needs: changes
+    if: needs.changes.outputs.multi_daemon_e2e == 'true'
     runs-on: self-hosted
     permissions:
       contents: read
@@ -246,28 +255,29 @@ jobs:
       # permission: it opens when present but group-inaccessible. Needs
       # passwordless sudo on the box.
       #
-      # Without KVM Lima falls back to software emulation. That is not an
-      # error and the suite still passes, which is the problem: it turns a
-      # 15-minute job into an hours-long one and says nothing, so the box
-      # reads as slow rather than as misprovisioned. Say it where it will be
-      # read -- an annotation and the step summary -- rather than leaving it
-      # to whoever next wonders why this job is the slowest thing in CI.
-      - name: Open KVM to the runner, and say so when it is not there
+      # Without KVM Lima falls back to software emulation, under which the
+      # three guests take hours and the job runs into the cap above with
+      # nothing to show for the box it held. So a box with no /dev/kvm fails
+      # here, in seconds, and says why: re-running the job costs seconds until
+      # it lands on a box that has KVM, where the whole run costs the 15
+      # minutes the cap is sized for.
+      - name: Open KVM to the runner, or fail before a guest boots without it
         run: |
-          if [ -e /dev/kvm ]; then
-            if ! [ -r /dev/kvm -a -w /dev/kvm ]; then
-              sudo chmod 666 /dev/kvm
-            fi
-            echo "KVM available: guests run at native speed." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning title=No KVM on ${RUNNER_NAME:-this runner}::/dev/kvm is absent, so Lima falls back to software emulation. This job will take hours instead of ~15 minutes. The box needs KVM (nested virtualisation on a VPS) to run the install tests at a sane speed."
+          if [ ! -e /dev/kvm ]; then
+            echo "::error title=No KVM on ${RUNNER_NAME:-this runner}::/dev/kvm is absent, so Lima would boot every guest under QEMU software emulation and this job would run into its cap. Re-run the job to land on a box with KVM, or give this one KVM (nested virtualisation on a VPS)."
             {
               echo "### No KVM on ${RUNNER_NAME:-this runner}"
               echo
-              echo "\`/dev/kvm\` is absent, so every guest boots under QEMU software"
-              echo "emulation. Expect hours rather than ~15 minutes."
+              echo "\`/dev/kvm\` is absent. The install tests need KVM to finish"
+              echo "inside the job's cap, so nothing was run. Re-run the job to"
+              echo "land on a box that has it."
             } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
+          if ! [ -r /dev/kvm -a -w /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+          fi
+          echo "KVM available: guests run at native speed." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the Lima install tests
         run: ./scripts/run_tests.sh -m vm
@@ -389,6 +399,8 @@ jobs:
   # apptainer needs a Lima VM or a pre-seeded cache and a check build never
   # runs containers.
   cross-check:
+    needs: changes
+    if: needs.changes.outputs.cross_check == 'true'
     runs-on: self-hosted
     permissions:
       contents: read
