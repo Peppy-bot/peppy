@@ -23,9 +23,9 @@ An exposure draws from [contracts](/advanced_guides/contract_implementation/). E
 | --- | --- | --- |
 | [Topic](/advanced_guides/topics/) | **Resource** | Read the latest policy-approved snapshot and subscribe to updates |
 | [Service](/advanced_guides/services/) | **Tool** | Call it and get the answer in the same request |
-| [Action](/advanced_guides/actions/) | **Tool backed by an MCP task** | Get a task handle, watch progress, confirm, cancel, and reconnect |
+| [Action](/advanced_guides/actions/) | **Action-backed tool** | Run the goal inside the call, or as an MCP task: get a task handle, watch progress, confirm, cancel, and reconnect |
 
-The server supports MCP revision `2026-07-28` over Streamable HTTP. It includes the tasks extension (SEP-2663), which action-backed tools need.
+The server supports MCP revision `2026-07-28` over Streamable HTTP. It includes the tasks extension (SEP-2663), which a client opts into per request; an action-backed tool runs as a task for a client that declares it and inside the call for one that does not.
 
 ## The exposure document
 
@@ -177,7 +177,7 @@ Each bound must fit the member's type. For example, validation rejects `min: -20
 | `operation` | yes | `long_running`, the only value; actions are long-running by definition |
 | `deadline_ms` | yes | Whole-goal deadline. The advertised task TTL is this plus a short grace window |
 | `safety_sensitive` | no | Advertises that the call changes the physical world. Defaults to `false` |
-| `confirmation_required` | no | The task waits in `input_required` and sends no goal until the client confirms through `tasks/update`. Defaults to `false` |
+| `confirmation_required` | no | The task waits in `input_required` and sends no goal until the client confirms through `tasks/update`. A client without the tasks extension cannot call the tool. Defaults to `false` |
 
 ## The published schemas
 
@@ -333,7 +333,9 @@ An exposure deployment is placed like any other: `core_node` on the instance nam
 
 **Tools.** The endpoint checks input against the published schema, including `restrict` bounds, before sending anything to the Peppy graph. It rejects invalid input and unknown tool names. If a service does not respond within `deadline_ms`, the client receives a readable tool error.
 
-**Tasks.** An action-backed tool requires a client that advertises the tasks capability. Without that capability, the endpoint rejects the call before creating a task. Otherwise, the call returns a task handle and follows this sequence:
+**Actions.** An action-backed tool runs its goal on whichever surface the calling client can drive. The client's request capabilities decide, per call.
+
+For a client that declares the tasks extension (`io.modelcontextprotocol/tasks` in its `extensions`), the call returns a task handle and follows this sequence:
 
 1. If `confirmation_required`, the task waits in `input_required` until the client confirms through `tasks/update`. No goal is sent before that.
 2. The server sends the goal. Action feedback updates the task's status message.
@@ -341,6 +343,15 @@ An exposure deployment is placed like any other: `core_node` on the instance nam
 4. On success, the task completes with the structured result. A goal that is rejected, abandoned, or expired ends as `failed` with a message saying which event occurred.
 
 Task handles outlive connections. A client that reconnects can continue and observe the same task. They do not outlive the process: stopping the stack ends every task the endpoint was running.
+
+For a client without the extension, the goal runs inside the call:
+
+1. The server sends the goal and the call stays open until the goal settles or `deadline_ms` passes.
+2. Action feedback is sent as `notifications/progress` under the call's progress token, in order, before the result. A call without a progress token gets no feedback.
+3. Closing the call forwards a request to the action's cooperative cancellation path.
+4. On success, the call returns the structured result. A goal that is rejected, abandoned, expired, cancelled, or past the deadline returns a readable tool error saying which event occurred.
+
+A tool with `confirmation_required` cannot run inside a call: the confirmation is an input request only a task can carry. The endpoint refuses it with error `-32021` (Missing Required Client Capability), naming the tool and the extension in the message and the capability in the error data.
 
 ## What validation refuses
 

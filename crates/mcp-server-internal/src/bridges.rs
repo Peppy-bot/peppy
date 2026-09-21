@@ -334,7 +334,8 @@ pub(crate) async fn call_tool(
 }
 
 /// The runtime-side surface a goal drives while it runs: its feedback
-/// becomes the task's status message, and the client's `tasks/cancel`
+/// reaches the client through it (as the task's status message, or as
+/// progress on the call the goal runs in), and the client's cancel request
 /// reaches the provider through it.
 pub(crate) trait TaskSurface: Sync {
     fn report_feedback(&self, message: String);
@@ -354,8 +355,8 @@ impl TaskSurface for ActionContext {
     }
 }
 
-/// Runs the action behind a task on the producer the launcher bound to its
-/// target.
+/// Runs the action behind an action-backed tool on the producer the
+/// launcher bound to its target.
 pub(crate) async fn run_task(
     task: &PreparedTask,
     node_runner: &NodeRunner,
@@ -380,11 +381,11 @@ pub(crate) async fn run_task(
     .await
 }
 
-/// Drives the goal behind a task: fires it at `producer`, settles it on the
-/// provider's terminal result, and maps that result onto the MCP terminal
-/// state. Cancellation is cooperative on both sides: `tasks/cancel` is
-/// forwarded once to the Peppy cancel path, and the terminal result the
-/// provider settles on decides the task's terminal state.
+/// Drives the goal behind an action-backed tool: fires it at `producer`,
+/// settles it on the provider's terminal result, and maps that result onto
+/// the MCP terminal state. Cancellation is cooperative on both sides: the
+/// client's cancel request is forwarded once to the Peppy cancel path, and
+/// the terminal result the provider settles on decides the terminal state.
 ///
 /// The deadline is the whole-goal deadline, so every await after the goal
 /// is fired spends what is left of it rather than restarting it: a
@@ -441,9 +442,9 @@ pub(crate) async fn drive_goal(
     }
 }
 
-/// Settles a goal on an action with feedback: every message is reported as
-/// the task's status until the provider closes the stream at the terminal
-/// result (or disappears), then the result reply decides the outcome.
+/// Settles a goal on an action with feedback: every message is reported to
+/// the surface until the provider closes the stream at the terminal result
+/// (or disappears), then the result reply decides the outcome.
 async fn settle_after_feedback(
     handle: &mut GoalHandle,
     messenger: &MessengerHandle,

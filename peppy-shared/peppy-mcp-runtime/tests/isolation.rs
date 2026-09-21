@@ -42,7 +42,8 @@ async fn identical_public_names_resolve_to_their_own_endpoint() {
             [
                 "front_camera.info",
                 "front_camera.set_brightness",
-                "recorder.record_episode"
+                "recorder.record_episode",
+                "recorder.replay_episode"
             ]
         );
         let called = client
@@ -309,6 +310,7 @@ async fn stopping_the_set_aborts_running_tasks_on_every_endpoint() {
                     }
                 },
             )
+            .with_task("recorder.replay_episode", support::replay_episode)
             .build()
             .expect("bundle and handlers agree");
         servers.push((expected, server, nanos));

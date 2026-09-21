@@ -6,24 +6,25 @@
 use crate::clock::Clock;
 use crate::error::{BuildError, ToolCallError};
 use crate::state::{ReadRefusal, ResourceIngest, ResourceState, ResourceUpdated};
-use crate::tasks::{ActionContext, ActionExit, TaskHandler};
+use crate::tasks::{ActionContext, ActionExit, ActionSurface, TaskHandler};
 use peppy_mcp_catalog::{
     BundleIdentity, BundleServer, ExposureBundle, ServiceOperation, TaskEntry, ToolEntry,
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
     ClientCapabilities, ContentBlock, CreateTaskResult, DiscoverResult, ElicitRequest,
-    ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, GetTaskParams,
-    GetTaskResult, Implementation, InputRequest, JsonObject, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo,
-    SubscriptionFilter, Tool, ToolAnnotations, UpdateTaskParams,
+    ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, ErrorCode,
+    GetTaskParams, GetTaskResult, Implementation, InputRequest, JsonObject, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProgressToken,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ServerCapabilities, ServerInfo, SubscriptionFilter, Tool, ToolAnnotations,
+    UpdateTaskParams,
 };
 use rmcp::service::{RequestContext, SubscriptionContext, SubscriptionSendError};
 use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
+use rmcp::{ErrorData as McpError, Peer, RoleServer, ServerHandler};
 use serde_json::{Value, json};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -31,7 +32,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
+
+/// The id the SEP-2663 tasks extension is declared under in a client's
+/// `extensions` capability map.
+const TASKS_EXTENSION_ID: &str = "io.modelcontextprotocol/tasks";
 
 /// `ttlMs` for the catalog-shaped results: discovery, `tools/list`, and
 /// `resources/list`. The catalog is fixed for the life of the server (a
@@ -86,7 +91,7 @@ struct ToolState {
 struct TaskState {
     entry: TaskEntry,
     /// Compiled from the bundle's derived goal schema; every call is
-    /// validated before a task can be materialized.
+    /// validated before a goal can run.
     validator: jsonschema::Validator,
     handler: Arc<dyn TaskHandler>,
 }
@@ -482,32 +487,39 @@ impl ExposureServer {
         Ok(CallToolResult::structured(result))
     }
 
-    /// Materializes the MCP task behind a task-backed tool call.
-    ///
-    /// A client that did not declare the tasks extension capability is
-    /// refused first: per the design, such a client never receives a task
-    /// handle, and the capability, not its arguments, is what it has to fix.
-    /// The goal fields are validated next, so neither invalid fields nor a
-    /// goal orphaned by a client that could not poll it ever materializes a
-    /// task.
+    /// Runs the action behind a tool call on the surface the client can
+    /// drive: an MCP task for a client that declared the tasks extension,
+    /// the call itself for one that did not.
+    async fn run_action(
+        &self,
+        task: &Arc<TaskState>,
+        arguments: JsonObject,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let client_declared_tasks = context
+            .client_capabilities()
+            .is_some_and(|capabilities| capabilities.supports_tasks());
+        if client_declared_tasks {
+            return self.start_task(task, arguments).map(CallToolResponse::Task);
+        }
+        let progress = context
+            .meta
+            .get_progress_token()
+            .map(|token| ProgressReporter::new(context.peer, token));
+        self.run_action_in_call(task, arguments, context.ct, progress)
+            .await
+            .map(CallToolResponse::Complete)
+    }
+
+    /// Materializes the MCP task behind an action for a client that
+    /// declared the tasks extension. The goal fields are validated first,
+    /// so invalid fields never materialize a task.
     fn start_task(
         &self,
-        name: &str,
+        task: &Arc<TaskState>,
         arguments: JsonObject,
-        client_declared_tasks: bool,
     ) -> Result<CreateTaskResult, McpError> {
-        let Some(task) = self.state.tasks.get(name) else {
-            return Err(McpError::invalid_params(
-                format!("`{name}` is not a task of this exposure"),
-                None,
-            ));
-        };
-        if !client_declared_tasks {
-            return Err(McpError::missing_required_client_capability(
-                ClientCapabilities::builder().enable_tasks().build(),
-            ));
-        }
-        let input = validated_input(name, &task.validator, arguments)?;
+        let input = validated_input(&task.entry.name, &task.validator, arguments)?;
 
         let task = Arc::clone(task);
         // The advertised TTL is the whole-goal deadline plus a grace window:
@@ -524,6 +536,144 @@ impl ExposureServer {
             Box::pin(run_task_operation(task, input, context))
         });
         Ok(CreateTaskResult::new(seed))
+    }
+
+    /// Runs the action inside the `tools/call` that started it, for a
+    /// client without the tasks extension: the call answers with the
+    /// goal's result once it settles, feedback is relayed through
+    /// `progress` when the call carries a progress token, `cancel` firing
+    /// (the client closing the call) cancels the goal, and the whole-goal
+    /// deadline bounds the wait.
+    ///
+    /// A confirmation-gated action is refused: the confirmation is an
+    /// in-task input request, so a task is the only surface that can ask
+    /// for it. The refusal is what such a client has to fix, so it is
+    /// reported ahead of anything its arguments could be told about.
+    async fn run_action_in_call(
+        &self,
+        task: &Arc<TaskState>,
+        arguments: JsonObject,
+        cancel: tokio_util::sync::CancellationToken,
+        progress: Option<ProgressReporter>,
+    ) -> Result<CallToolResult, McpError> {
+        if task.entry.confirmation_required {
+            return Err(confirmation_needs_the_tasks_extension(&task.entry.name));
+        }
+        let input = validated_input(&task.entry.name, &task.validator, arguments)?;
+
+        let (feedback, relay) = mpsc::unbounded_channel();
+        let action_context = ActionContext {
+            surface: ActionSurface::Call { feedback, cancel },
+        };
+        let deadline = Duration::from_millis(task.entry.deadline_ms.get());
+        let operation = task.handler.start(input, action_context);
+        let outcome = tokio::time::timeout(
+            deadline,
+            relay_feedback_until_settled(operation, relay, progress),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(value)) => Ok(CallToolResult::structured(value)),
+            Ok(Err(exit)) => Ok(tool_error(exit.to_string())),
+            Err(_elapsed) => Ok(tool_error(deadline_exceeded(deadline))),
+        }
+    }
+}
+
+/// The refusal for a confirmation-gated action called without the tasks
+/// extension. The message names the tool and the extension: a client that
+/// shows only the message, not the `requiredCapabilities` data, has to
+/// learn what it lacks from there.
+fn confirmation_needs_the_tasks_extension(name: &str) -> McpError {
+    McpError::new(
+        ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY,
+        format!(
+            "`{name}` asks for confirmation before it runs, which only an MCP task can carry: \
+             declare the `{TASKS_EXTENSION_ID}` extension in the request's client capabilities \
+             to call it"
+        ),
+        Some(json!({
+            "requiredCapabilities": ClientCapabilities::builder().enable_tasks().build()
+        })),
+    )
+}
+
+/// The failure message of a goal that overran the exposure's whole-goal
+/// deadline.
+fn deadline_exceeded(deadline: Duration) -> String {
+    format!(
+        "deadline exceeded: the goal did not reach a terminal state within {} ms",
+        deadline.as_millis()
+    )
+}
+
+/// Relays a goal's feedback to `sink`, in the order it was reported, while
+/// the goal runs. Feedback still queued when the goal settles is relayed
+/// before the outcome is returned, so the result never overtakes the
+/// progress that led to it.
+async fn relay_feedback_until_settled(
+    mut operation: Pin<Box<dyn Future<Output = Result<Value, ActionExit>> + Send>>,
+    mut relay: mpsc::UnboundedReceiver<String>,
+    mut sink: impl FeedbackSink,
+) -> Result<Value, ActionExit> {
+    let outcome = loop {
+        tokio::select! {
+            outcome = &mut operation => break outcome,
+            Some(message) = relay.recv() => sink.report(message).await,
+        }
+    };
+    while let Ok(message) = relay.try_recv() {
+        sink.report(message).await;
+    }
+    outcome
+}
+
+/// Where a call relays the goal's feedback to.
+trait FeedbackSink {
+    async fn report(&mut self, message: String);
+}
+
+/// A call that carried no progress token has nowhere to put feedback: it
+/// is dropped.
+impl<S: FeedbackSink> FeedbackSink for Option<S> {
+    async fn report(&mut self, message: String) {
+        if let Some(sink) = self {
+            sink.report(message).await;
+        }
+    }
+}
+
+/// Sends a goal's feedback as `notifications/progress` on the call, under
+/// the call's progress token. `progress` counts the messages sent, which
+/// keeps it increasing as the notification contract asks; the goal has no
+/// total to report.
+struct ProgressReporter {
+    peer: Peer<RoleServer>,
+    token: ProgressToken,
+    reported: u64,
+}
+
+impl ProgressReporter {
+    fn new(peer: Peer<RoleServer>, token: ProgressToken) -> Self {
+        Self {
+            peer,
+            token,
+            reported: 0,
+        }
+    }
+}
+
+impl FeedbackSink for ProgressReporter {
+    async fn report(&mut self, message: String) {
+        self.reported += 1;
+        let notification = ProgressNotificationParam::new(self.token.clone(), self.reported as f64)
+            .with_message(message);
+        if let Err(error) = self.peer.notify_progress(notification).await {
+            // The call's stream is the only route to the client; once it
+            // is gone the goal is being cancelled and feedback has no
+            // reader.
+            tracing::debug!(%error, "dropping feedback the call can no longer deliver");
+        }
     }
 }
 
@@ -617,10 +767,7 @@ async fn run_task_operation(
     match tokio::time::timeout(deadline, drive_task(task, input, context)).await {
         Ok(result) => result,
         Err(_elapsed) => Err(TaskExit::Error(McpError::internal_error(
-            format!(
-                "deadline exceeded: the goal did not reach a terminal state within {} ms",
-                deadline.as_millis()
-            ),
+            deadline_exceeded(deadline),
             None,
         ))),
     }
@@ -659,7 +806,7 @@ async fn drive_task(
     }
 
     let action_context = ActionContext {
-        inner: context.clone(),
+        surface: ActionSurface::Task(context.clone()),
     };
     match task.handler.start(input, action_context).await {
         Ok(value) => Ok(CallToolResult::structured(value)),
@@ -781,15 +928,10 @@ impl ServerHandler for ExposureServer {
     ) -> Result<CallToolResponse, McpError> {
         let name = request.name.as_ref();
         let arguments = request.arguments.unwrap_or_default();
-        if self.state.tasks.contains_key(name) {
-            let client_declared_tasks = context
-                .client_capabilities()
-                .is_some_and(|capabilities| capabilities.supports_tasks());
-            return self
-                .start_task(name, arguments, client_declared_tasks)
-                .map(CallToolResponse::Task);
-        }
-        self.execute_tool(name, arguments).await.map(Into::into)
+        let Some(task) = self.state.tasks.get(name) else {
+            return self.execute_tool(name, arguments).await.map(Into::into);
+        };
+        self.run_action(task, arguments, context).await
     }
 
     async fn get_task(
@@ -1044,6 +1186,57 @@ mod tests {
         .await
     }
 
+    fn task_named(server: &ExposureServer, name: &str) -> Arc<TaskState> {
+        Arc::clone(
+            server
+                .state
+                .tasks
+                .get(name)
+                .expect("the bundle exposes the task"),
+        )
+    }
+
+    fn start_task(
+        server: &ExposureServer,
+        name: &str,
+        arguments: JsonObject,
+    ) -> Result<CreateTaskResult, McpError> {
+        server.start_task(&task_named(server, name), arguments)
+    }
+
+    /// Runs the action in a call that carries no progress token, on a
+    /// cancellation token the test holds.
+    async fn run_in_call(
+        server: &ExposureServer,
+        name: &str,
+        arguments: JsonObject,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<CallToolResult, McpError> {
+        server
+            .run_action_in_call(&task_named(server, name), arguments, cancel, None)
+            .await
+    }
+
+    /// Stands in for the call's progress notifications: every relayed
+    /// message lands on the channel in the order the relay handed it over.
+    impl FeedbackSink for mpsc::UnboundedSender<String> {
+        async fn report(&mut self, message: String) {
+            self.send(message).expect("the test holds the receiver");
+        }
+    }
+
+    fn tool_error_text(result: &CallToolResult) -> &str {
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "expected a tool error, got {result:?}"
+        );
+        match result.content.first() {
+            Some(ContentBlock::Text(text)) => &text.text,
+            other => panic!("expected a text block, got {other:?}"),
+        }
+    }
+
     #[test]
     fn a_task_without_a_handler_is_refused() {
         let error = ExposureServer::builder(task_bundle())
@@ -1105,40 +1298,210 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_client_without_the_tasks_capability_never_materializes_a_task() {
+    async fn without_the_tasks_capability_an_action_runs_inside_the_call() {
         let server = built_task_server();
-        let error = server
-            .start_task("recorder.resume_session", JsonObject::new(), false)
-            .expect_err("the capability is required");
-        assert_eq!(error.code, ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY);
+        let result = run_in_call(
+            &server,
+            "recorder.resume_session",
+            JsonObject::new(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("the call answers with the goal's result");
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.structured_content, Some(json!({ "resumed": true })));
         assert_eq!(
             server.state.manager.running_task_count(),
             0,
-            "no orphaned goal may run for a client that cannot poll it"
+            "no task materializes for a client that cannot poll one"
         );
+    }
 
+    #[tokio::test]
+    async fn a_confirmation_gated_action_without_the_tasks_capability_is_refused_naming_the_extension()
+     {
+        let server = built_task_server();
         // The capability is the client's real blocker, so it is reported
         // ahead of anything its arguments could be told about.
-        let error = server
-            .start_task(
-                "recorder.record_episode",
-                arguments(json!({ "episode_name": 7 })),
-                false,
-            )
-            .expect_err("the capability is required");
+        let error = run_in_call(
+            &server,
+            "recorder.record_episode",
+            arguments(json!({ "episode_name": 7 })),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("the confirmation needs a task");
         assert_eq!(error.code, ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY);
+        assert!(
+            error.message.contains("`recorder.record_episode`")
+                && error.message.contains(TASKS_EXTENSION_ID),
+            "the message names the tool and the extension: {}",
+            error.message
+        );
+        assert_eq!(
+            error.data,
+            Some(json!({
+                "requiredCapabilities": { "extensions": { TASKS_EXTENSION_ID: {} } }
+            })),
+            "the data names the capability the way the protocol asks"
+        );
+        assert_eq!(server.state.manager.running_task_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_goal_arguments_never_run_inside_a_call() {
+        let server = built_task_server();
+        let error = run_in_call(
+            &server,
+            "recorder.resume_session",
+            arguments(json!({ "extra": true })),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("the goal fields fail the derived schema");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn a_bridge_failure_inside_a_call_is_the_calls_tool_error() {
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                    Err::<Value, _>(ActionExit::Failed(
+                        "the provider abandoned the goal".to_string(),
+                    ))
+                },
+            )
+            .build()
+            .expect("builds");
+        let result = run_in_call(
+            &server,
+            "recorder.resume_session",
+            JsonObject::new(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("a failed goal is a tool error, not a protocol error");
+        assert_eq!(
+            tool_error_text(&result),
+            "the action failed: the provider abandoned the goal"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_the_call_cancels_the_goal_and_the_cancelled_exit_is_a_tool_error() {
+        let cancel_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = Arc::clone(&cancel_seen);
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                move |_input: Value, context: crate::tasks::ActionContext| {
+                    let cancel_seen = Arc::clone(&observed);
+                    async move {
+                        context.cancel_requested().await;
+                        assert!(context.is_cancel_requested());
+                        cancel_seen.store(true, Ordering::SeqCst);
+                        Err(ActionExit::Cancelled)
+                    }
+                },
+            )
+            .build()
+            .expect("builds");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // Cancelled up front: the goal observes it on its first look, so
+        // the outcome depends on nothing but the token.
+        cancel.cancel();
+        let result = run_in_call(
+            &server,
+            "recorder.resume_session",
+            JsonObject::new(),
+            cancel,
+        )
+        .await
+        .expect("a cancelled goal is a tool error, not a protocol error");
+        assert!(cancel_seen.load(Ordering::SeqCst));
+        assert_eq!(tool_error_text(&result), "the action was cancelled");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_deadline_fails_a_goal_inside_a_call_with_a_descriptive_error() {
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                |_input: Value, _context: crate::tasks::ActionContext| async move {
+                    std::future::pending::<Result<Value, ActionExit>>().await
+                },
+            )
+            .build()
+            .expect("builds");
+        // Paused time auto-advances past the 2000 ms deadline once the
+        // goal is the only thing pending.
+        let result = run_in_call(
+            &server,
+            "recorder.resume_session",
+            JsonObject::new(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("an overrun is a tool error, not a protocol error");
+        assert_eq!(
+            tool_error_text(&result),
+            "deadline exceeded: the goal did not reach a terminal state within 2000 ms"
+        );
+    }
+
+    #[tokio::test]
+    async fn feedback_inside_a_call_is_relayed_in_order_before_the_result() {
+        let (relayed, mut received) = mpsc::unbounded_channel();
+        let server = ExposureServer::builder(task_bundle())
+            .with_tool("front_camera.set_brightness", brightness_handler)
+            .with_task("recorder.record_episode", record_handler)
+            .with_task(
+                "recorder.resume_session",
+                |_input: Value, context: crate::tasks::ActionContext| async move {
+                    context.report_feedback("frame 1");
+                    context.report_feedback("frame 2");
+                    Ok(json!({ "resumed": true }))
+                },
+            )
+            .build()
+            .expect("builds");
+        let task = task_named(&server, "recorder.resume_session");
+        let (feedback, relay) = mpsc::unbounded_channel();
+        let context = ActionContext {
+            surface: ActionSurface::Call {
+                feedback,
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+        };
+        let operation = task.handler.start(JsonObject::new().into(), context);
+        let outcome = relay_feedback_until_settled(operation, relay, Some(relayed))
+            .await
+            .expect("the goal completes");
+        assert_eq!(outcome, json!({ "resumed": true }));
+        let mut messages = Vec::new();
+        while let Ok(message) = received.try_recv() {
+            messages.push(message);
+        }
+        assert_eq!(messages, ["frame 1", "frame 2"]);
     }
 
     #[tokio::test]
     async fn invalid_goal_arguments_never_materialize_a_task() {
         let server = built_task_server();
-        let error = server
-            .start_task(
-                "recorder.record_episode",
-                arguments(json!({ "episode_name": 7 })),
-                true,
-            )
-            .expect_err("the goal fields fail the derived schema");
+        let error = start_task(
+            &server,
+            "recorder.record_episode",
+            arguments(json!({ "episode_name": 7 })),
+        )
+        .expect_err("the goal fields fail the derived schema");
         assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         assert_eq!(server.state.manager.running_task_count(), 0);
     }
@@ -1146,8 +1509,7 @@ mod tests {
     #[tokio::test]
     async fn a_task_completes_with_the_bridge_result() {
         let server = built_task_server();
-        let created = server
-            .start_task("recorder.resume_session", JsonObject::new(), true)
+        let created = start_task(&server, "recorder.resume_session", JsonObject::new())
             .expect("the task starts");
         assert_eq!(
             created.task.ttl_ms,
@@ -1176,8 +1538,7 @@ mod tests {
             )
             .build()
             .expect("builds");
-        let created = server
-            .start_task("recorder.resume_session", JsonObject::new(), true)
+        let created = start_task(&server, "recorder.resume_session", JsonObject::new())
             .expect("the task starts");
         let task_id = created.task.task_id;
         let task = task_matching(&server, &task_id, "the feedback status message", |task| {
@@ -1206,8 +1567,7 @@ mod tests {
             )
             .build()
             .expect("builds");
-        let created = server
-            .start_task("recorder.resume_session", JsonObject::new(), true)
+        let created = start_task(&server, "recorder.resume_session", JsonObject::new())
             .expect("the task starts");
         let task = settled(&server, &created.task.task_id).await;
         let rmcp::model::TaskPayload::Failed { error } = task.payload else {
@@ -1240,13 +1600,12 @@ mod tests {
             .with_task("recorder.resume_session", resume_handler)
             .build()
             .expect("builds");
-        let created = server
-            .start_task(
-                "recorder.record_episode",
-                arguments(json!({ "episode_name": "pick_and_place" })),
-                true,
-            )
-            .expect("the task starts");
+        let created = start_task(
+            &server,
+            "recorder.record_episode",
+            arguments(json!({ "episode_name": "pick_and_place" })),
+        )
+        .expect("the task starts");
         let task_id = created.task.task_id;
 
         let task = task_matching(&server, &task_id, "input_required", |task| {
@@ -1300,13 +1659,12 @@ mod tests {
             .with_task("recorder.resume_session", resume_handler)
             .build()
             .expect("builds");
-        let created = server
-            .start_task(
-                "recorder.record_episode",
-                arguments(json!({ "episode_name": "pick_and_place" })),
-                true,
-            )
-            .expect("the task starts");
+        let created = start_task(
+            &server,
+            "recorder.record_episode",
+            arguments(json!({ "episode_name": "pick_and_place" })),
+        )
+        .expect("the task starts");
         let task_id = created.task.task_id;
         task_matching(&server, &task_id, "input_required", |task| {
             task.status() == rmcp::model::TaskStatus::InputRequired
@@ -1345,8 +1703,7 @@ mod tests {
             )
             .build()
             .expect("builds");
-        let created = server
-            .start_task("recorder.resume_session", JsonObject::new(), true)
+        let created = start_task(&server, "recorder.resume_session", JsonObject::new())
             .expect("the task starts");
         // Paused time: this yields to the spawned operation (registering
         // its 2000 ms deadline timer), then auto-advances past it.

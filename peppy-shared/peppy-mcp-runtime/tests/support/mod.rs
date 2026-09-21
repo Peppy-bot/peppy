@@ -14,16 +14,18 @@
 use peppy_mcp_catalog::ExposureBundle;
 use peppy_mcp_runtime::{ActionContext, ActionExit, Clock, ExposureServer, ExposureSet};
 use rmcp::model::{
-    ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProtocolVersion, UpdateTaskParams,
+    ClientCapabilities, ClientInfo, DetailedTask, GetTaskParams, ProgressNotificationParam,
+    ProtocolVersion, UpdateTaskParams,
 };
-use rmcp::service::ServiceError;
+use rmcp::service::{NotificationContext, RunningService, ServiceError};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::{ClientLifecycleMode, ClientServiceExt};
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt, RoleClient};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 pub const STATUS_URI: &str = "peppy://resource/front_camera.status";
 pub const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
@@ -32,7 +34,7 @@ pub const FRAME_URI: &str = "peppy://resource/front_camera.latest_frame";
 /// it only fires when something is genuinely broken.
 pub const GUARD: Duration = Duration::from_secs(30);
 
-pub type Client = rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>;
+pub type Client = RunningService<RoleClient, ClientInfo>;
 
 /// What a test expects one endpoint of the fixture set to advertise and
 /// answer, so a suite can run the same assertions against each endpoint.
@@ -193,6 +195,34 @@ const BUNDLE_TEMPLATE: &str = r#"{
         "required": ["frame"],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "recorder.replay_episode",
+      "description": "Replay one recorded episode on the robot.",
+      "target": "recorder",
+      "member": "replay_episode",
+      "operation": "long_running",
+      "safety_sensitive": false,
+      "confirmation_required": false,
+      "deadline_ms": 600000,
+      "input_schema": {
+        "type": "object",
+        "properties": { "episode_name": { "type": "string" } },
+        "required": ["episode_name"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "frames": { "type": "integer" } },
+        "required": ["frames"],
+        "additionalProperties": false
+      },
+      "feedback_schema": {
+        "type": "object",
+        "properties": { "frame": { "type": "integer" } },
+        "required": ["frame"],
+        "additionalProperties": false
+      }
     }
   ]
 }"#;
@@ -252,14 +282,19 @@ pub fn fixture_server(
     (builder, nanos)
 }
 
-/// The `recorder.record_episode` handler: reports the episode as feedback,
-/// parks on cancellation for `wait_for_cancel`, completes otherwise.
-pub async fn record_episode(input: Value, context: ActionContext) -> Result<Value, ActionExit> {
+/// The goal behind both recorder actions: reports `<verb> \`<episode>\``
+/// as feedback, parks on cancellation for `wait_for_cancel`, completes
+/// otherwise.
+async fn episode_goal(
+    verb: &str,
+    input: Value,
+    context: ActionContext,
+) -> Result<Value, ActionExit> {
     let episode = input["episode_name"]
         .as_str()
         .expect("validated string")
         .to_string();
-    context.report_feedback(format!("recording `{episode}`"));
+    context.report_feedback(format!("{verb} `{episode}`"));
     if episode == "wait_for_cancel" {
         context.cancel_requested().await;
         return Err(ActionExit::Cancelled);
@@ -267,14 +302,27 @@ pub async fn record_episode(input: Value, context: ActionContext) -> Result<Valu
     Ok(json!({ "frames": 120 }))
 }
 
+/// The `recorder.record_episode` handler, behind the confirmation-gated
+/// action.
+pub async fn record_episode(input: Value, context: ActionContext) -> Result<Value, ActionExit> {
+    episode_goal("recording", input, context).await
+}
+
+/// The `recorder.replay_episode` handler, behind the action with no
+/// confirmation gate.
+pub async fn replay_episode(input: Value, context: ActionContext) -> Result<Value, ActionExit> {
+    episode_goal("replaying", input, context).await
+}
+
 /// Serves the full fixture set: both exposures with their tool handlers and
-/// the `recorder.record_episode` task handler.
+/// both recorder task handlers.
 pub async fn start_set() -> ServedSet {
     let mut servers = Vec::new();
     for expected in fixture_exposures() {
         let (builder, nanos) = fixture_server(&expected, fixture_bundle(&expected));
         let server = builder
             .with_task("recorder.record_episode", record_episode)
+            .with_task("recorder.replay_episode", replay_episode)
             .build()
             .expect("bundle and handlers agree");
         servers.push((expected, server, nanos));
@@ -363,29 +411,65 @@ pub async fn serve_set(servers: Vec<(Expected, ExposureServer, Arc<AtomicU64>)>)
 }
 
 pub async fn connect(url: &str) -> Client {
-    connect_as(url, ClientCapabilities::default()).await
+    connect_as(url, ClientInfo::default()).await
 }
 
 /// Connects a client that declares the SEP-2663 tasks extension capability;
 /// in discover mode the SDK attaches it to every request's `_meta`.
 pub async fn connect_with_tasks(url: &str) -> Client {
-    connect_as(url, ClientCapabilities::builder().enable_tasks().build()).await
+    let mut info = ClientInfo::default();
+    info.capabilities = ClientCapabilities::builder().enable_tasks().build();
+    connect_as(url, info).await
 }
 
-async fn connect_as(url: &str, capabilities: ClientCapabilities) -> Client {
+/// A client without the tasks extension that keeps every progress
+/// notification the server sends it, in arrival order.
+#[derive(Clone)]
+pub struct ProgressLog {
+    progress: mpsc::UnboundedSender<ProgressNotificationParam>,
+}
+
+impl ClientHandler for ProgressLog {
+    fn get_info(&self) -> ClientInfo {
+        ClientInfo::default()
+    }
+
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        self.progress
+            .send(params)
+            .expect("the test holds the receiver");
+    }
+}
+
+/// Connects a [`ProgressLog`] client; the receiver yields what it logged.
+pub async fn connect_logging_progress(
+    url: &str,
+) -> (
+    RunningService<RoleClient, ProgressLog>,
+    mpsc::UnboundedReceiver<ProgressNotificationParam>,
+) {
+    let (progress, received) = mpsc::unbounded_channel();
+    let client = connect_as(url, ProgressLog { progress }).await;
+    (client, received)
+}
+
+async fn connect_as<H: ClientHandler>(url: &str, handler: H) -> RunningService<RoleClient, H> {
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
-    let mut info = ClientInfo::default();
-    info.capabilities = capabilities;
-    info.serve_with_lifecycle(
-        transport,
-        ClientLifecycleMode::Discover {
-            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-        },
-    )
-    .await
-    .expect("client negotiates 2026-07-28 over loopback")
+    handler
+        .serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await
+        .expect("client negotiates 2026-07-28 over loopback")
 }
 
 pub fn protocol_error(error: ServiceError) -> rmcp::ErrorData {
