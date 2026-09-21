@@ -1,8 +1,0 @@
-# Cargo build artifacts for the peppyos-shared workspace.
-target
-
-# Cargo.lock IS committed for this workspace (deliberately not ignored). It runs
-# its own test suite, which benefits from reproducible dependency resolution, and
-# it builds & ships peppylib-py's native extension (an end artifact embedded and
-# deployed by consumers). A library's lockfile is ignored by downstream consumers,
-# so committing it is safe for reuse. See the root .gitignore for the policy note.

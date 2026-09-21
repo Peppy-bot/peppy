@@ -27,7 +27,7 @@ include!(concat!(env!("OUT_DIR"), "/embedded_peppylib_so.rs"));
 ///
 /// `$PEPPY_SHARED_DIR` is expanded at compile time by rust-embed
 /// (interpolate-folder-path feature); generator's build script sets it to the
-/// `public-peppy-libs/peppy-shared` dir located via build-helpers.
+/// `peppy-shared` dir located via build-helpers.
 #[derive(Embed)]
 #[folder = "$PEPPY_SHARED_DIR/peppylib-py/peppylib/"]
 #[include = "*.py"]
@@ -288,8 +288,8 @@ mod tests {
 
     /// The generated fixtures harness calls into `peppylib.testing` by name,
     /// and the copy a node actually receives is the one embedded here, from
-    /// `public-peppy-libs/peppy-shared/peppylib-py`. The harness templates and
-    /// that module live in separate trees and nothing else in this repo
+    /// `peppy-shared/peppylib-py`. The harness templates and that module
+    /// live in separate trees and nothing else in this repo
     /// executes generated Python, so without this assertion a peppy that
     /// emits a call the embedded peppylib cannot answer builds green and fails
     /// only in a user's node test run, after `peppy node sync`.
@@ -317,7 +317,7 @@ mod tests {
                 source.contains(definition),
                 "the embedded peppylib.testing is missing `{definition}`, which the \
                  generated harness calls; define it in \
-                 public-peppy-libs/peppy-shared/peppylib-py/peppylib/testing.py"
+                 peppy-shared/peppylib-py/peppylib/testing.py"
             );
         }
     }

@@ -7,7 +7,7 @@ mod capnp_build {
     /// Embed the bundled capnp binary for the target platform.
     ///
     /// The binary is the single source of truth shipped with `build-helpers`
-    /// in public-peppy-libs (`peppy-shared/peppy-config-model/tools`).
+    /// in the sealed tree (`peppy-shared/peppy-config-model/tools`).
     /// build-helpers locates the tools dir as its own sibling, so it is always
     /// present wherever the crate is: no cmake required.
     pub fn run() {

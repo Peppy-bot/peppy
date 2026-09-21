@@ -496,7 +496,7 @@ mod peppylib_build {
     /// Dependency crates compiled into the `.so`, paired with whether the crate
     /// is config (which embeds extra `tools/capnp_*` helpers). This list
     /// MUST stay in sync with peppylib-py's path dependencies in
-    /// `public-peppy-libs/peppy-shared/peppylib-py/Cargo.toml`; a crate
+    /// `peppy-shared/peppylib-py/Cargo.toml`; a crate
     /// missing here means edits to it
     /// silently produce a stale `.so`.
     const SO_DEP_CRATES: &[(&str, bool)] = &[
@@ -810,8 +810,8 @@ mod peppylib_build {
                 "prebuilt peppylib .so {name} in {so_dir:?} was built from stale \
                  sources (recorded {recorded:?}, current {current_hash}); rebuild \
                  the host artifacts before cross-building. If a rebuild does not \
-                 fix this, public-peppy-libs/peppy-shared changed between the \
-                 host build and this one: run `git status` in the repository to \
+                 fix this, peppy-shared changed between the host build and \
+                 this one: run `git status` in the repository to \
                  find what is being modified while the build runs"
             );
         }
@@ -819,8 +819,8 @@ mod peppylib_build {
 
     pub fn run() {
         // peppylib-py and its `.so` dependency crates live in the shared
-        // workspace (public-peppy-libs/peppy-shared), located via build-helpers.
-        // Only the Python wrappers are read from here; the compiled `.so` are
+        // workspace (peppy-shared), located via build-helpers. Only the Python
+        // wrappers are read from here; the compiled `.so` are
         // produced into a peppy-owned cache dir, never written back into the
         // source tree.
         let peppylib_py_dir = build_helpers::peppy_shared_dir().join("peppylib-py");
@@ -1050,9 +1050,9 @@ fn embed_ruff_binary() {
 
 fn main() {
     // Single source of truth for the shared crate sources generator embeds: the
-    // `public-peppy-libs/peppy-shared` dir located via build-helpers. The
-    // rust-embed `#[folder = "$PEPPY_SHARED_DIR/…"]` attributes in src/ expand
-    // this at compile time.
+    // `peppy-shared` dir located via build-helpers. The rust-embed
+    // `#[folder = "$PEPPY_SHARED_DIR/…"]` attributes in src/ expand this at
+    // compile time.
     println!(
         "cargo:rustc-env=PEPPY_SHARED_DIR={}",
         build_helpers::peppy_shared_dir().display()

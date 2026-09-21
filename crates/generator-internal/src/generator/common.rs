@@ -142,8 +142,8 @@ fn render_template(template_path: &str, peppylib_path: &str) -> Result<String> {
 // The `$PEPPY_SHARED_DIR` in each `#[folder]` is expanded at compile time by
 // rust-embed (the `interpolate-folder-path` feature). generator's build script
 // sets it to the `peppy-shared` directory located via build-helpers, which
-// knows where its own tree sits (`public-peppy-libs/peppy-shared`), so no
-// `../../../` reach from here is required.
+// knows where its own tree sits, so no `../../../` reach from here is
+// required.
 // ---------------------------------------------------------------------------
 
 #[derive(Embed)]

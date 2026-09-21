@@ -206,7 +206,7 @@ fn localize_cargo_toml(cargo_toml_path: &Path, metadata: &WorkspacePackageMetada
 /// A `path` dependency whose final component is one of these is rewritten to
 /// `../<crate>` so it resolves in the flat cache however the source manifest
 /// spells the way to its sibling. The source crates live in the sealed
-/// `public-peppy-libs` tree, so a sibling is all such a path can name.
+/// `peppy-shared` tree, so a sibling is all such a path can name.
 const VENDORED_SIBLING_CRATES: &[&str] = &[
     "peppylib",
     "peppy-messaging-interface",

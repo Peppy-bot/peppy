@@ -131,7 +131,7 @@ To build Peppy, just type the following:
 cargo build --release --all-targets
 ```
 
-The public-facing crates (`config`, `peppylib`, `pmi`, and friends) live in [`public-peppy-libs/`](public-peppy-libs/), a sealed tree this workspace depends on by path. The tree is not part of the workspace and the dependency runs one way only: nothing in it may depend on `crates/`, which is what lets `platform-backend` and the hub nodes consume it on its own. Its [README](public-peppy-libs/README.md) explains the boundary and how it is checked.
+The public-facing crates (`config`, `peppylib`, `pmi`, and friends) live in [`peppy-shared/`](peppy-shared/), a sealed tree this workspace depends on by path. The tree is a workspace of its own, excluded from this one, and the dependency runs one way only: nothing in it may depend on `crates/`, which is what lets `platform-backend` consume it on its own. [`peppy-shared/build-helpers/tests/sealed_tree.rs`](peppy-shared/build-helpers/tests/sealed_tree.rs) holds every manifest and symlink in the tree to that rule, and CI runs the tree's suites from a checkout holding nothing but the tree, so a reach a manifest cannot show has nothing to resolve to.
 
 ### Test
 
@@ -145,10 +145,10 @@ The workspace's `default-members` covers `crates/*` only, so the slow documentat
 cargo test -p docs-integration-tests
 ```
 
-The `public-peppy-libs` tree holds a workspace of its own, so its suites run from there:
+The `peppy-shared` tree holds a workspace of its own, so its suites run from there:
 
 ```
-cd public-peppy-libs/peppy-shared
+cd peppy-shared
 cargo test --workspace --exclude peppylib-py --locked
 ```
 
@@ -158,4 +158,4 @@ CI runs all of these, plus the feature-gated container and multi-daemon end-to-e
 
 Peppy is licensed under the [Business Source License 1.1](LICENSE). You may make production use of it, provided that use does not include offering a product or service to third parties whose value derives primarily from Peppy. On 2031-01-01 the license converts to Apache License, Version 2.0.
 
-The [`public-peppy-libs/`](public-peppy-libs/) directory is licensed separately, under the [Apache License, Version 2.0](public-peppy-libs/LICENSE).
+The [`peppy-shared/`](peppy-shared/) directory is licensed separately, under the [Apache License, Version 2.0](peppy-shared/LICENSE).

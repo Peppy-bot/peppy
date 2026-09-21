@@ -24,7 +24,7 @@ runs:
     # the job before it.
     #
     # Only the workspace checkout is repaired. A job that wants a partial tree
-    # takes it in a directory of its own (see public-libs), which this leaves
+    # takes it in a directory of its own (see peppy-shared), which this leaves
     # alone.
     - name: Repair a workspace an earlier job left sparse
       shell: bash

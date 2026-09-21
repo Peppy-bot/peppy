@@ -92,20 +92,17 @@ def _is_gap_review(cmd: list[str]) -> bool:
         ("scripts/functions/docs.py", False),
         # Lock files, wherever they sit.
         ("Cargo.lock", False),
-        ("public-peppy-libs/peppy-shared/Cargo.lock", False),
-        ("public-peppy-libs/so101_description/uv.lock", False),
+        ("peppy-shared/Cargo.lock", False),
+        ("peppy-shared/peppylib-py/pixi.lock", False),
         ("scripts/pixi.lock", False),
         ("tools/package-lock.json", False),
         # peppy's own test suite.
         ("scripts/tests/test_docs.py", False),
         ("crates/peppy/tests/cli.rs", False),
         ("crates/generator-internal/src/generator/python/tests/golden.rs", False),
-        ("public-peppy-libs/srs_model/tests/fixtures/parity_v10_left.txt", False),
+        ("peppy-shared/peppy-config-model/tests/example_configurations.rs", False),
         ("crates/core-node-internal/src/services/tests.rs", False),
-        (
-            "public-peppy-libs/peppy-shared/peppylib-rs/src/messaging/deadline_tests.rs",
-            False,
-        ),
+        ("peppy-shared/peppylib-rs/src/messaging/deadline_tests.rs", False),
         # Templates land in users' projects, their tests included.
         (
             "crates/core-node-internal/templates/node_init/python/tests/test_smoke.py.j2",
@@ -113,11 +110,8 @@ def _is_gap_review(cmd: list[str]) -> bool:
         ),
         ("crates/core-node-internal/templates/node_init/rust/tests/smoke.rs.j2", True),
         # The test surfaces users write their tests against.
-        ("public-peppy-libs/peppy-shared/peppylib-rs/src/testing.rs", True),
-        (
-            "public-peppy-libs/peppy-shared/peppy-messaging-interface/src/adapters/mock.rs",
-            True,
-        ),
+        ("peppy-shared/peppylib-rs/src/testing.rs", True),
+        ("peppy-shared/peppy-messaging-interface/src/adapters/mock.rs", True),
         ("crates/generator-internal/src/generator/rust/testing.rs", True),
         # Only whole names count.
         ("crates/peppy/src/contests.rs", True),
@@ -168,7 +162,7 @@ _CHANGED = (
     "crates/peppy/src/main.rs\n"
     "crates/peppy/tests/cli.rs\n"
     "crates/generator-internal/templates/peppygen/python/peppygen/clock.py\n"
-    "public-peppy-libs/peppy-shared/Cargo.lock\n"
+    "peppy-shared/Cargo.lock\n"
     "docs/astro.config.mjs\n"
     "docs/src/content/docs/advanced_guides/testing.mdx\n"
     "docs/src/content/docs/guides/snippets/python/hello_world/uv.lock\n"
