@@ -18,12 +18,14 @@
 use peppy::commands::Command;
 use peppy::commands::mcp::mcp_catalog_rendered;
 use peppy::commands::stack::{
-    LauncherArgs, StackCommand, StackCommands, StackTimeouts, list_nodes_collecting,
+    LaunchJoins, LauncherArgs, StackCommand, StackCommands, StackTimeouts, list_nodes_collecting,
 };
 use peppy::context::AppContext;
 use peppy::test_support::ServeCommandEmulation;
 
 use config::consts::{NODE_CONFIG_FILE, PEPPYGEN_OUTPUT_PATH};
+use config::runtime::Name;
+use core_node_api::encoding::LaunchJoin;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::contract::PeppyContractParser;
 use daemon_config::mcp_deployment::SPEC_ENV_VAR;
@@ -259,7 +261,12 @@ fn main() -> Result<()> {
         tokio::spawn(async move {
             loop {
                 video_stream_info::handle_next_request(&runner, |_request| {
-                    Ok(video_stream_info::Response::new(640, 480, 30.0, "/dev/video0".to_owned()))
+                    Ok(video_stream_info::Response::new(
+                        640,
+                        480,
+                        30.0,
+                        format!("/dev/{}", runner.processor().bound_instance_id()),
+                    ))
                 })
                 .await
                 .expect("handle video_stream_info");
@@ -452,6 +459,88 @@ fn camera_endpoint_exposure(tag: &str, title: &str, sha256: Option<&str>) -> Str
             }},
         }},
     }}"#
+    )
+}
+
+/// A per-robot surface over the camera contract: one `front_camera` target
+/// every robot of the stack fills with its own camera, listed and addressed
+/// by the robot's name.
+fn fleet_cameras_exposure() -> String {
+    format!(
+        r#"{{
+        peppy_schema: "mcp_exposure/v1",
+        manifest: {{ name: "fleet_cameras", tag: "v1" }},
+        server: {{
+            title: "Fleet cameras",
+            instructions: "Call robot.list first; every other tool names a robot it lists.",
+        }},
+        robots: {{
+            argument: "robot",
+            list: {{ tool: "robot.list", description: "The robots of the stack, each with its camera." }},
+        }},
+        targets: {{
+            front_camera: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{}" }},
+                topics: [
+                    {{
+                        member: "video_stream",
+                        resource: "front_camera.latest_frame",
+                        description: "Latest frame from the robot's front camera, JPEG encoded.",
+                        freshness: {{ max_age_ms: 600000 }},
+                        update: {{ max_hz: 100 }},
+                        representation: {{
+                            image: "jpeg",
+                            quality: 80,
+                            fields: {{
+                                data: "frame",
+                                encoding: "encoding",
+                                width: "width",
+                                height: "height",
+                            }},
+                        }},
+                        max_result_bytes: 524288,
+                        on_oversize: "downscale",
+                    }},
+                    {{
+                        member: "camera_status",
+                        resource: "front_camera.status",
+                        description: "Latest status snapshot of the robot's front camera.",
+                        freshness: {{ max_age_ms: 600000 }},
+                        update: {{ max_hz: 100 }},
+                        max_result_bytes: 8192,
+                        on_oversize: "reject",
+                    }},
+                ],
+                services: [
+                    {{
+                        member: "video_stream_info",
+                        tool: "front_camera.info",
+                        description: "Report the robot's camera resolution, frame rate, and encoding.",
+                        operation: "read_only",
+                        deadline_ms: 5000,
+                    }},
+                    {{
+                        member: "set_brightness",
+                        tool: "front_camera.set_brightness",
+                        description: "Set the robot's camera brightness in device units.",
+                        operation: "mutating",
+                        deadline_ms: 5000,
+                        restrict: {{ value: {{ min: -64, max: 64 }} }},
+                    }},
+                ],
+                actions: [
+                    {{
+                        member: "record_clip",
+                        tool: "front_camera.record_clip",
+                        description: "Record a clip on the robot's camera. Long-running; returns a task handle.",
+                        operation: "long_running",
+                        deadline_ms: 600000,
+                    }},
+                ],
+            }},
+        }},
+    }}"#,
+        camera_sha()
     )
 }
 
@@ -736,6 +825,7 @@ impl Stack {
                 "camera_and_recording.json5",
                 camera_and_recording_exposure(),
             ),
+            ("fleet_cameras.json5", fleet_cameras_exposure()),
             ("conflicting.json5", conflicting_exposure()),
             ("mispinned.json5", mispinned_exposure()),
             ("broken.json5", broken_exposure()),
@@ -791,33 +881,63 @@ impl Stack {
 
     /// Launches `deployments` (the launcher's `deployments` array body).
     fn launch(&self, deployments: &str) -> Result<(), peppy::error::Error> {
-        let launcher_path = self.nodes_dir.path().join("peppy_launcher.json5");
-        fs::write(
-            &launcher_path,
-            format!(
+        self.launch_launcher(
+            &format!(
                 r#"{{
                     peppy_schema: "launcher/v1",
                     deployments: [{deployments}]
                 }}"#
             ),
+            Vec::new(),
         )
-        .expect("write launcher");
+    }
+
+    /// Launches a whole launcher document, with the copies `joins` names
+    /// started beside the ones it lists.
+    fn launch_launcher(
+        &self,
+        launcher: &str,
+        joins: Vec<LaunchJoin>,
+    ) -> Result<(), peppy::error::Error> {
+        let launcher_path = self.nodes_dir.path().join("peppy_launcher.json5");
+        fs::write(&launcher_path, launcher).expect("write launcher");
         StackCommand {
             command: StackCommands::Launch(LauncherArgs {
                 rebuild: false,
                 placement: Default::default(),
-                joins: Default::default(),
+                joins: LaunchJoins { joins },
                 with: Default::default(),
                 launcher_config_path: launcher_path,
-                timeouts: StackTimeouts {
-                    node_add_idle_timeout_secs: 120,
-                    node_build_idle_timeout_secs: 120,
-                    node_run_idle_timeout_secs: 120,
-                    max_timeout_secs: Some(900),
-                },
+                timeouts: stack_timeouts(),
             }),
         }
         .execute(&self.ctx)
+    }
+
+    /// Joins a copy of `option` named `name` onto the running stack.
+    fn join(&self, option: &str, name: &str) {
+        StackCommand {
+            command: StackCommands::Join {
+                option: option.to_owned(),
+                name: copy_name(name),
+                with: Default::default(),
+                arguments: Vec::new(),
+                place: None,
+                timeouts: stack_timeouts(),
+            },
+        }
+        .execute(&self.ctx)
+        .unwrap_or_else(|error| panic!("join {name} failed: {error:?}\n{}", self.run_logs()));
+    }
+
+    fn remove(&self, name: &str) {
+        StackCommand {
+            command: StackCommands::Remove {
+                name: copy_name(name),
+            },
+        }
+        .execute(&self.ctx)
+        .unwrap_or_else(|error| panic!("remove {name} failed: {error:?}\n{}", self.run_logs()));
     }
 
     fn launch_or_panic(&self, deployments: &str) {
@@ -862,6 +982,19 @@ impl Stack {
         }
         logs
     }
+}
+
+fn stack_timeouts() -> StackTimeouts {
+    StackTimeouts {
+        node_add_idle_timeout_secs: 120,
+        node_build_idle_timeout_secs: 120,
+        node_run_idle_timeout_secs: 120,
+        max_timeout_secs: Some(900),
+    }
+}
+
+fn copy_name(name: &str) -> Name {
+    Name::try_from(name.to_owned()).expect("a copy name")
 }
 
 /// The two provider deployments every launcher here starts.
@@ -1303,7 +1436,7 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
     assert_ne!(called.is_error, Some(true), "got {:?}", called.content);
     assert_eq!(
         called.structured_content,
-        Some(json!({ "width": 640, "height": 480, "fps": 30.0, "device": "/dev/video0" }))
+        Some(json!({ "width": 640, "height": 480, "fps": 30.0, "device": "/dev/the_camera" }))
     );
     let called = client
         .call_tool(
@@ -1946,4 +2079,334 @@ fn peppy_mcp_serve_refuses_without_a_spec_and_with_an_invalid_one() {
     assert!(printed.contains("broken:v1"), "{printed}");
     assert!(printed.contains("no_such_service"), "{printed}");
     assert!(printed.contains("no_such_topic"), "{printed}");
+}
+
+/// A launcher running the per-robot surface once for the stack and its
+/// robots as copies of `camera_robot`, each a camera enrolled into the
+/// server's `front_camera` target by the copy's own fragment.
+fn fleet_launcher(port: u16, listed: &str) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "launcher/v1",
+        components: [
+            {{
+                name: "robot",
+                cardinality: "zero_or_more",
+                options: {{ camera_robot: "camera_robot.json5" }},
+            }},
+        ],
+        deployments: [
+            {{
+                source: {{ exposures: ["fleet_cameras:v1"] }},
+                instances: [{{ instance_id: "mcp_server", arguments: {{ port: {port} }} }}],
+            }},
+            {{ robot: "camera_robot"{listed} }},
+        ],
+    }}"#
+    )
+}
+
+const CAMERA_ROBOT_FRAGMENT: &str = r#"{
+    peppy_schema: "launcher_fragment/v1",
+    deployments: [
+        {
+            source: { name: "mock_uvc_camera:v1" },
+            instances: [{ instance_id: "cam" }],
+        },
+    ],
+    adjustments: [
+        { target: "mcp_server", add_links: { front_camera: ["cam"] } },
+    ],
+}"#;
+
+fn robot_uri(robot: &str, resource: &str) -> String {
+    format!("peppy://resource/{robot}/{resource}")
+}
+
+/// The robots `robot.list` reports, by name, and the entry of `robot`.
+async fn listed_robots(client: &mcp_test_support::Client, robot: &str) -> (Vec<String>, Value) {
+    let listing = client
+        .call_tool(CallToolRequestParams::new("robot.list"))
+        .await
+        .expect("robot.list answers");
+    assert_ne!(listing.is_error, Some(true), "got {:?}", listing.content);
+    let robots = listing.structured_content.expect("a structured listing")["robots"]
+        .as_array()
+        .expect("robots")
+        .clone();
+    let names = robots
+        .iter()
+        .map(|entry| entry["robot"].as_str().expect("robot").to_owned())
+        .collect();
+    let entry = robots
+        .into_iter()
+        .find(|entry| entry["robot"] == robot)
+        .unwrap_or(Value::Null);
+    (names, entry)
+}
+
+async fn front_camera_info(
+    client: &mcp_test_support::Client,
+    robot: &str,
+) -> Result<rmcp::model::CallToolResult, rmcp::ServiceError> {
+    client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.info")
+                .with_arguments(object(json!({ "robot": robot }))),
+        )
+        .await
+}
+
+/// A call routed to `robot`, which must be there.
+async fn front_camera_info_answers(client: &mcp_test_support::Client, robot: &str) -> Value {
+    let called = front_camera_info(client, robot)
+        .await
+        .expect("front_camera.info answers");
+    assert_ne!(called.is_error, Some(true), "got {:?}", called.content);
+    called.structured_content.expect("a structured answer")
+}
+
+/// A call naming a robot that is not there is refused as invalid
+/// parameters, naming the robots that are.
+async fn front_camera_info_refused(client: &mcp_test_support::Client, robot: &str) -> String {
+    let error = protocol_error(
+        front_camera_info(client, robot)
+            .await
+            .expect_err("a robot that is not there is refused"),
+    );
+    assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+    error.message.to_string()
+}
+
+async fn listed_resource_uris(client: &mcp_test_support::Client) -> Vec<String> {
+    let mut uris: Vec<String> = client
+        .list_resources(None)
+        .await
+        .expect("resources/list answers")
+        .resources
+        .iter()
+        .map(|resource| resource.uri.clone())
+        .collect();
+    uris.sort_unstable();
+    uris
+}
+
+async fn await_resource_list_changed(subscription: &mut Subscription) {
+    let notification = tokio::time::timeout(WAIT, subscription.next())
+        .await
+        .unwrap_or_else(|_| panic!("no resources/list_changed within {WAIT:?}"))
+        .expect("the subscription stream is healthy")
+        .expect("the stream did not end");
+    assert!(
+        matches!(
+            notification,
+            ServerNotification::ResourceListChangedNotification(_)
+        ),
+        "expected resources/list_changed, got {notification:?}"
+    );
+}
+
+/// The per-robot surface end to end. A launch with no robot serves an
+/// empty fleet; the first join is listed when it returns; a second robot
+/// joins while a task runs on the first, which finishes undisturbed; each
+/// call reaches the robot it names; a removal takes a robot and its
+/// resources out; a subscribed client is told of every change; and a
+/// relaunch lists the file's robot beside the one `--join` names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_per_robot_surface_serves_every_robot_of_the_stack_by_name() {
+    let stack = Stack::boot(true).await;
+    let port = ephemeral_port();
+    fs::write(
+        stack.nodes_dir.path().join("camera_robot.json5"),
+        CAMERA_ROBOT_FRAGMENT,
+    )
+    .expect("write the robot fragment");
+
+    // --- No robot yet: the endpoint is up with an empty fleet, and a call
+    // naming a robot says how one is added.
+    stack
+        .launch_launcher(&fleet_launcher(port, ""), Vec::new())
+        .unwrap_or_else(|error| panic!("launch failed: {error:?}\n{}", stack.run_logs()));
+    wait_for_port(port, || stack.run_logs()).await;
+    let listing = stack.stack_list().await;
+    assert!(
+        listing.contains("mcp_fleet_cameras_v1:builtin"),
+        "{listing}"
+    );
+    let client = connect_with_tasks(&endpoint(port, "/fleet_cameras/v1/mcp")).await;
+    let (robots, _) = listed_robots(&client, "alpha").await;
+    assert!(robots.is_empty(), "{robots:?}");
+    assert!(listed_resource_uris(&client).await.is_empty());
+    assert_eq!(
+        front_camera_info_refused(&client, "alpha").await,
+        "`alpha` is not a robot of this stack, which has no robot; `peppy stack join OPTION -i \
+         NAME` adds one"
+    );
+
+    // --- The tool list is the union of the targets' tools plus the
+    // listing tool, each taking the robot by name, whatever the fleet.
+    let tools = client.list_tools(None).await.expect("tools/list answers");
+    let mut tool_names: Vec<_> = tools.tools.iter().map(|tool| tool.name.as_ref()).collect();
+    tool_names.sort_unstable();
+    assert_eq!(
+        tool_names,
+        [
+            "front_camera.info",
+            "front_camera.record_clip",
+            "front_camera.set_brightness",
+            "robot.list"
+        ]
+    );
+    let info_schema = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "front_camera.info")
+        .map(|tool| serde_json::to_value(&tool.input_schema).expect("schema serializes"))
+        .expect("the tool is listed");
+    assert_eq!(info_schema["required"], json!(["robot"]));
+    assert_eq!(info_schema["properties"]["robot"]["type"], "string");
+
+    // --- The first join is listed when it returns, with no wait, and the
+    // listening client is told.
+    let mut subscription = client
+        .listen(
+            SubscriptionFilter::builder()
+                .resources_list_changed()
+                .build(),
+        )
+        .await
+        .expect("subscriptions/listen is accepted");
+    stack.join("camera_robot", "alpha");
+    let (robots, alpha) = listed_robots(&client, "alpha").await;
+    assert_eq!(robots, ["alpha"]);
+    assert_eq!(
+        alpha,
+        json!({ "robot": "alpha", "capabilities": ["front_camera"], "members": {}, "notes": [] })
+    );
+    await_resource_list_changed(&mut subscription).await;
+
+    // --- A task runs on alpha while bravo joins, and finishes undisturbed.
+    let response = client
+        .call_tool_once(
+            CallToolRequestParams::new("front_camera.record_clip")
+                .with_arguments(object(json!({ "robot": "alpha", "duration_frames": 1000 }))),
+        )
+        .await
+        .expect("the task-backed tool answers");
+    let CallToolResponse::Task(created) = response else {
+        panic!("expected a task handle, got {response:?}");
+    };
+    let task_id = created.task.task_id;
+    stack.join("camera_robot", "bravo");
+    await_resource_list_changed(&mut subscription).await;
+    let (robots, _) = listed_robots(&client, "bravo").await;
+    assert_eq!(robots, ["alpha", "bravo"]);
+    let running = client
+        .get_task(GetTaskParams::new(&*task_id))
+        .await
+        .expect("tasks/get answers");
+    assert_eq!(running.task.status(), TaskStatus::Working);
+    client
+        .cancel_task(CancelTaskParams::new(&*task_id))
+        .await
+        .expect("the cancel is delivered");
+    poll_task_until(&client, WAIT, &task_id, "cancelled", |task| {
+        task.status() == TaskStatus::Cancelled
+    })
+    .await;
+
+    // --- Resources are published per robot, a call reaches the robot it
+    // names, and a robot that is not there is refused naming the ones
+    // that are.
+    assert_eq!(
+        listed_resource_uris(&client).await,
+        [
+            robot_uri("alpha", "front_camera.latest_frame"),
+            robot_uri("alpha", "front_camera.status"),
+            robot_uri("bravo", "front_camera.latest_frame"),
+            robot_uri("bravo", "front_camera.status"),
+        ]
+    );
+    for (robot, device) in [("alpha", "/dev/alpha_cam"), ("bravo", "/dev/bravo_cam")] {
+        assert_eq!(
+            front_camera_info_answers(&client, robot).await,
+            json!({ "width": 640, "height": 480, "fps": 30.0, "device": device })
+        );
+    }
+    assert_eq!(
+        front_camera_info_refused(&client, "charlie").await,
+        "`charlie` is not a robot of this stack; the robots are `alpha`, `bravo`"
+    );
+    let bravo_status = robot_uri("bravo", "front_camera.status");
+    let read = tokio::time::timeout(WAIT, async {
+        loop {
+            match client
+                .read_resource(ReadResourceRequestParams::new(bravo_status.clone()))
+                .await
+            {
+                Ok(read) => return read,
+                Err(_unavailable) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    })
+    .await
+    .expect("bravo's status serves once its camera publishes");
+    assert_eq!(
+        text_snapshot(read),
+        json!({ "battery": 87, "note": "operational", "recording": true })
+    );
+
+    // --- A removal takes the robot and its resources out.
+    stack.remove("bravo");
+    await_resource_list_changed(&mut subscription).await;
+    subscription.cancel().await.expect("subscription cancels");
+    let (robots, _) = listed_robots(&client, "alpha").await;
+    assert_eq!(robots, ["alpha"]);
+    assert_eq!(
+        listed_resource_uris(&client).await,
+        [
+            robot_uri("alpha", "front_camera.latest_frame"),
+            robot_uri("alpha", "front_camera.status"),
+        ]
+    );
+    assert_eq!(
+        front_camera_info_refused(&client, "bravo").await,
+        "`bravo` is not a robot of this stack; the robots are `alpha`"
+    );
+    // The status snapshot read above sits in the client's cache for its
+    // TTL, so the server is asked for a resource this client never read.
+    let gone = protocol_error(
+        client
+            .read_resource(ReadResourceRequestParams::new(robot_uri(
+                "bravo",
+                "front_camera.latest_frame",
+            )))
+            .await
+            .expect_err("a removed robot's resource is gone"),
+    );
+    assert_eq!(gone.code, ErrorCode::INVALID_PARAMS);
+    assert!(
+        gone.message.contains("the robots are `alpha`"),
+        "{}",
+        gone.message
+    );
+
+    // --- A relaunch lists the file's robot beside the one `--join` names,
+    // both there when the launch returns.
+    stack.reset();
+    let port = ephemeral_port();
+    stack
+        .launch_launcher(
+            &fleet_launcher(port, r#", instances: [{ instance_id: "alpha" }]"#),
+            vec![LaunchJoin {
+                option: "camera_robot".to_owned(),
+                name: copy_name("charlie"),
+            }],
+        )
+        .unwrap_or_else(|error| panic!("relaunch failed: {error:?}\n{}", stack.run_logs()));
+    wait_for_port(port, || stack.run_logs()).await;
+    let client = connect(&endpoint(port, "/fleet_cameras/v1/mcp")).await;
+    let (robots, _) = listed_robots(&client, "alpha").await;
+    assert_eq!(robots, ["alpha", "charlie"]);
+    stack.reset();
 }
