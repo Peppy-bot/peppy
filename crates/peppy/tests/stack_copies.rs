@@ -2,7 +2,7 @@ use clap::Parser;
 use config::runtime::{CoreNodeName, Name};
 use core_node_api::encoding::JoinPlacement;
 use daemon_config::consts::PeppyDirs;
-use peppy::commands::stack::{JoinPreview, StackCommands, resolve_rendered};
+use peppy::commands::stack::{JoinPreview, LauncherArgs, StackCommands, resolve_rendered};
 
 #[derive(Parser)]
 struct StackCli {
@@ -57,8 +57,13 @@ fn stack_join_cli_names_the_option_and_accepts_placement_overrides_and_timeouts(
         vec!["stack", "join", "-i", "alpha"],
         vec!["stack", "join", "real", "-i", "bad/name"],
         vec!["stack", "join", "real", "-i", "self"],
-        vec!["stack", "resolve", "fleet", "--join-with", "xr"],
-        vec!["stack", "resolve", "fleet", "--join-name", "alpha"],
+        vec!["stack", "resolve", "fleet", "--then-join-with", "xr"],
+        vec!["stack", "resolve", "fleet", "--then-join-name", "alpha"],
+        vec!["stack", "launch", "fleet", "--join", "real"],
+        vec!["stack", "launch", "fleet", "--join", ":alpha"],
+        vec!["stack", "launch", "fleet", "--join", "real:bad/name"],
+        vec!["stack", "launch", "fleet", "--join", "real:self"],
+        vec!["stack", "resolve", "fleet", "--join", "real"],
         vec!["stack", "launch", "fleet", "-i", "alpha"],
         vec![
             "stack",
@@ -111,10 +116,10 @@ fn stack_join_and_preview_reject_nonfinite_overrides() {
         let argument = format!("arm_inst.speed={value}");
         for prefix in [
             vec!["stack", "join", "real", "-i", "alpha"],
-            vec!["stack", "resolve", "fleet", "--join", "real"],
+            vec!["stack", "resolve", "fleet", "--then-join", "real"],
         ] {
             let flag = if prefix.contains(&"resolve") {
-                "--join-set-arguments"
+                "--then-join-set-arguments"
             } else {
                 "--set-arguments"
             };
@@ -160,6 +165,7 @@ fn stack_resolve_applies_a_launch_word_scoped_to_a_file_copy() {
         &PeppyDirs::new(directory.path()),
         launcher,
         &["alpha.commander=xr".into()],
+        &[],
         &no_join,
     )
     .unwrap();
@@ -207,6 +213,7 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
         &PeppyDirs::new(directory.path()),
         launcher.clone(),
         &["sim".into()],
+        &[],
         &join,
     )
     .unwrap();
@@ -237,6 +244,7 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
         &PeppyDirs::new(directory.path()),
         launcher,
         &["real".into()],
+        &[],
         &JoinPreview::default(),
     )
     .unwrap_err()
@@ -244,9 +252,9 @@ fn stack_resolve_join_uses_shared_state_prefixes_and_override_precedence() {
     assert!(error.contains("peppy stack join real -i NAME"), "{error}");
 }
 
-/// `stack resolve --join` previews what `stack join` composes: the copy
-/// starts from the launcher's entry for the option, a `--join-with` word
-/// wins on its axis, and `--join-set-arguments` wins per argument.
+/// `stack resolve --then-join` previews what `stack join` composes: the copy
+/// starts from the launcher's entry for the option, a `--then-join-with` word
+/// wins on its axis, and `--then-join-set-arguments` wins per argument.
 #[test]
 fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
     let directory = tempfile::tempdir().unwrap();
@@ -281,6 +289,7 @@ fn stack_resolve_join_starts_from_the_launchers_entry_for_the_option() {
         let (document, report) = resolve_rendered(
             &PeppyDirs::new(directory.path()),
             launcher.clone(),
+            &[],
             &[],
             &join,
         )
@@ -355,31 +364,216 @@ fn resolve_previews_a_join_with_its_own_name_selection_and_overrides() {
         "fleet",
         "--with",
         "mujoco",
-        "--join",
+        "--then-join",
         "openarm_v2_sim",
-        "--join-name",
+        "--then-join-name",
         "bravo",
-        "--join-with",
+        "--then-join-with",
         "xr_commander",
-        "--join-set-arguments",
+        "--then-join-set-arguments",
         "commander_inst.port=8001",
     ])
     .unwrap();
-    let StackCommands::Resolve { with, join, .. } = cli.command else {
+    let StackCommands::Resolve {
+        with, then_join, ..
+    } = cli.command
+    else {
         unreachable!()
     };
     assert_eq!(with.words, ["mujoco"]);
-    assert_eq!(join.option.as_deref(), Some("openarm_v2_sim"));
-    assert_eq!(join.name.as_str(), "bravo");
-    assert_eq!(join.words, ["xr_commander"]);
+    assert_eq!(then_join.option.as_deref(), Some("openarm_v2_sim"));
+    assert_eq!(then_join.name.as_str(), "bravo");
+    assert_eq!(then_join.words, ["xr_commander"]);
     assert_eq!(
-        join.arguments,
+        then_join.arguments,
         ["commander_inst.port=8001".parse().unwrap()]
     );
-    let cli = StackCli::try_parse_from(["stack", "resolve", "fleet", "--join", "openarm_v2_sim"])
-        .unwrap();
-    let StackCommands::Resolve { join, .. } = cli.command else {
+    let cli =
+        StackCli::try_parse_from(["stack", "resolve", "fleet", "--then-join", "openarm_v2_sim"])
+            .unwrap();
+    let StackCommands::Resolve { then_join, .. } = cli.command else {
         unreachable!()
     };
-    assert_eq!(join.name.as_str(), "preview");
+    assert_eq!(then_join.name.as_str(), "preview");
+}
+
+#[test]
+fn a_launch_time_join_names_an_option_and_a_copy() {
+    let cli = StackCli::try_parse_from([
+        "stack",
+        "launch",
+        "fleet",
+        "--join",
+        "openarm_v2_sim:alpha",
+        "--join",
+        "so101_sim:charlie",
+        "--with",
+        "alpha.xr_commander",
+    ])
+    .unwrap();
+    let StackCommands::Launch(LauncherArgs { joins, with, .. }) = cli.command else {
+        unreachable!()
+    };
+    assert_eq!(
+        joins
+            .joins
+            .iter()
+            .map(|join| (join.option.as_str(), join.name.as_str()))
+            .collect::<Vec<_>>(),
+        [("openarm_v2_sim", "alpha"), ("so101_sim", "charlie")]
+    );
+    assert_eq!(with.words, ["alpha.xr_commander"]);
+    let cli = StackCli::try_parse_from([
+        "stack",
+        "resolve",
+        "fleet",
+        "--join",
+        "openarm_v2_sim:alpha",
+        "--then-join",
+        "so101_sim",
+    ])
+    .unwrap();
+    let StackCommands::Resolve {
+        joins, then_join, ..
+    } = cli.command
+    else {
+        unreachable!()
+    };
+    assert_eq!(joins.joins[0].name.as_str(), "alpha");
+    assert_eq!(then_join.option.as_deref(), Some("so101_sim"));
+    let error = StackCli::try_parse_from(["stack", "launch", "fleet", "--join", "real"])
+        .err()
+        .expect("a launch-time join names a copy")
+        .to_string();
+    assert!(error.contains("`--join OPTION:NAME`"), "{error}");
+}
+
+#[test]
+fn resolve_starts_the_copies_a_launch_time_join_names_from_the_options_entry() {
+    let directory = tempfile::tempdir().unwrap();
+    let launcher = directory.path().join("fleet.json5");
+    std::fs::write(&launcher, r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
+            deployments: [
+                { source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] },
+                { commander: "web" },
+            ],
+            components: [{ name: "commander", provides: ["commander_inst"], options: {
+                web: { deployments: [{ source: { name: "panel", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+                xr: { deployments: [{ source: { name: "headset", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+            } }],
+        } } }],
+        deployments: [{ robot: "real", with: { commander: "xr" } }],
+    }"#).unwrap();
+    let joins = |names: &[&str]| -> Vec<core_node_api::encoding::LaunchJoin> {
+        names
+            .iter()
+            .map(|name| core_node_api::encoding::LaunchJoin {
+                option: "real".into(),
+                name: Name::new(*name).unwrap(),
+            })
+            .collect()
+    };
+    // The entry lists no copy, so a bare launch starts none.
+    let (document, report) = resolve_rendered(
+        &PeppyDirs::new(directory.path()),
+        launcher.clone(),
+        &[],
+        &[],
+        &JoinPreview::default(),
+    )
+    .unwrap();
+    assert!(
+        !report.iter().any(|line| line.starts_with("copy ")),
+        "{report:?}"
+    );
+    let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
+    assert!(
+        flat["deployments"].as_array().is_none_or(Vec::is_empty),
+        "{flat}"
+    );
+
+    // Two joins at launch: each a copy of the entry, under the
+    // entry's `with`, and a scoped word selects one copy's own axis.
+    let (document, report) = resolve_rendered(
+        &PeppyDirs::new(directory.path()),
+        launcher.clone(),
+        &["bravo.commander=web".into()],
+        &joins(&["alpha", "bravo"]),
+        &JoinPreview::default(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .iter()
+            .any(|line| line == "copy alpha: robot=real  commander=xr"),
+        "{report:?}"
+    );
+    assert!(
+        report
+            .iter()
+            .any(|line| line == "copy bravo: robot=real  commander=web"),
+        "{report:?}"
+    );
+    let flat: serde_json::Value = serde_json5::from_str(&document).unwrap();
+    assert_eq!(flat["core_nodes"], serde_json::json!(["alpha", "bravo"]));
+    let sources: Vec<(String, String)> = flat["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|deployment| {
+            let source = deployment["source"]["name"].as_str().unwrap().to_owned();
+            deployment["instances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(move |instance| {
+                    (
+                        source.clone(),
+                        instance["instance_id"].as_str().unwrap().to_owned(),
+                    )
+                })
+        })
+        .collect();
+    assert!(
+        sources.contains(&("headset".into(), "alpha_commander_inst".into())),
+        "{sources:?}"
+    );
+    assert!(
+        sources.contains(&("panel".into(), "bravo_commander_inst".into())),
+        "{sources:?}"
+    );
+
+    // A name the launch already starts is refused, and so is an option no
+    // repeatable axis offers.
+    let error = resolve_rendered(
+        &PeppyDirs::new(directory.path()),
+        launcher.clone(),
+        &[],
+        &joins(&["alpha", "alpha"]),
+        &JoinPreview::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("`--join real:alpha` names a copy the launch already starts"),
+        "{error}"
+    );
+    let error = resolve_rendered(
+        &PeppyDirs::new(directory.path()),
+        launcher,
+        &[],
+        &[core_node_api::encoding::LaunchJoin {
+            option: "ghost".into(),
+            name: Name::new("alpha").unwrap(),
+        }],
+        &JoinPreview::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("`ghost` is not an option of a `zero_or_more` axis"),
+        "{error}"
+    );
 }

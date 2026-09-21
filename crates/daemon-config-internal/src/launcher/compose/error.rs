@@ -134,8 +134,8 @@ pub enum CompositionError {
     },
 
     #[error(
-        "this launcher declares no `zero_or_more` axis, so nothing can be added to its stack \
-         with `stack join`"
+        "this launcher declares no `zero_or_more` axis, so its stack takes no copy, from `stack \
+         join` or from `--join OPTION:NAME`"
     )]
     NoRepeatableAxis,
 
@@ -144,6 +144,13 @@ pub enum CompositionError {
          can add:{menu}"
     )]
     JoinUnknownOption { option: String, menu: String },
+
+    #[error(
+        "`--join {option}:{name}` names a copy the launch already starts as `{name}`, from the \
+         file or from another `--join`; give this one a name of its own, `--join \
+         {option}:<name>`"
+    )]
+    LaunchJoinNameTaken { option: String, name: String },
 
     #[error(
         "copy `{copy}` of `{option}` starts no node; an option that runs as copies deploys at \

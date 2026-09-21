@@ -806,6 +806,7 @@ impl Stack {
             command: StackCommands::Launch(LauncherArgs {
                 rebuild: false,
                 placement: Default::default(),
+                joins: Default::default(),
                 with: Default::default(),
                 launcher_config_path: launcher_path,
                 timeouts: StackTimeouts {
@@ -1770,6 +1771,7 @@ async fn stack_resolve_checks_the_links_of_an_exposure_deployment() {
         &stack.peppy_dirs,
         complete,
         &[],
+        &[],
         &Default::default(),
     )
     .expect("a complete deployment resolves");
@@ -1792,6 +1794,7 @@ async fn stack_resolve_checks_the_links_of_an_exposure_deployment() {
     let error = peppy::commands::stack::resolve_rendered(
         &stack.peppy_dirs,
         unknown_slot,
+        &[],
         &[],
         &Default::default(),
     )

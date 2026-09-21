@@ -6,6 +6,7 @@ use super::super::composition::ComponentAxis;
 use super::super::types::PeppyLauncher;
 use super::error::CompositionError;
 use super::load::{LoadedComposition, LoadedOption};
+use core_node_api::encoding::LaunchJoin;
 use std::collections::BTreeMap;
 
 /// How one axis of a resolved selection came to be filled.
@@ -160,12 +161,14 @@ pub(super) struct LaunchWords {
 pub(super) fn split_scoped_words(
     launcher: &PeppyLauncher,
     words: &[String],
+    joins: &[LaunchJoin],
 ) -> Result<LaunchWords, CompositionError> {
     let copies: Vec<&str> = launcher
         .option_deployments
         .iter()
         .flat_map(|entry| &entry.instances)
         .map(|copy| copy.instance_id.as_str())
+        .chain(joins.iter().map(|join| join.name.as_str()))
         .collect();
     let mut scoped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut stack = Vec::new();
@@ -192,10 +195,13 @@ pub(super) fn split_scoped_words(
                 copies: if launcher.repeatable_axes().next().is_none() {
                     String::from("this launcher declares no axis running as copies")
                 } else if copies.is_empty() {
-                    format!("the file deploys no copies, and {join}")
+                    format!(
+                        "the launch starts no copy; `--join OPTION:{copy}` starts one with it, \
+                         and {join}"
+                    )
                 } else {
                     format!(
-                        "the file deploys {}; a launch word selects a file copy's own axis as \
+                        "the launch starts {}; a launch word selects a copy's own axis as \
                          `NAME.axis=option` or `NAME.option`, and {join}",
                         crate::error::format_quoted_list(copies.iter().copied())
                     )
@@ -366,6 +372,9 @@ fn choose(
 #[derive(Clone, Copy)]
 pub(super) enum CopyOrigin {
     File,
+    /// Named at launch with `--join OPTION:NAME`: the launcher's entry for
+    /// the option is where its settings are written.
+    LaunchJoin,
     Join,
 }
 
@@ -418,6 +427,11 @@ fn fill(
                         CopyOrigin::File => format!(
                             "add `with: {{ {}: \"<option>\" }}` to the copy, or `--with {copy}.{}=<option>` \
                              on `peppy stack launch`",
+                            axis.name, axis.name
+                        ),
+                        CopyOrigin::LaunchJoin => format!(
+                            "add `with: {{ {}: \"<option>\" }}` to the launcher's entry for \
+                             `{option}`, or `--with {copy}.{}=<option>` on `peppy stack launch`",
                             axis.name, axis.name
                         ),
                         CopyOrigin::Join => String::from("`--with <option>` on `peppy stack join`"),

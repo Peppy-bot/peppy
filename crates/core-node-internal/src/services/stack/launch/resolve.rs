@@ -79,7 +79,7 @@ pub(in crate::services::stack) async fn parse_launcher_config(
 
     let prepared = daemon_config::launcher::PreparedLauncher::load(&parsed, &launch_file)
         .map_err(|e| e.to_string())?;
-    let composed = match prepared.launch(&goal.selections) {
+    let composed = match prepared.launch(&goal.selections, &goal.joins) {
         Ok(composed) => {
             if !parsed.components.is_empty() {
                 // The full resolution is echoed before anything runs, so the

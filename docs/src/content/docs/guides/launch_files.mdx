@@ -147,9 +147,10 @@ Web pages:
     viewer  https://127.0.0.1:8080/
             https://100.123.58.116:8080/
 MCP endpoints:
-  alpha_commander_inst (mcp_openarm_v2_v1_scene_lighting_v1:builtin) @cn-sweet-edison
-    openarm_v2_v1      http://127.0.0.1:8900/openarm_v2/v1/mcp
-    scene_lighting_v1  http://127.0.0.1:8900/scene_lighting/v1/mcp
+  robot_control_sim_inst (mcp_robot_control_v1:builtin) @cn-sweet-edison
+    robot_control_v1  http://127.0.0.1:8900/robot_control/v1/mcp
+  scene_mcp_inst (mcp_simulation_v1:builtin) @cn-sweet-edison
+    simulation_v1     http://127.0.0.1:8902/simulation/v1/mcp
 Launch completed successfully
 ```
 
@@ -380,7 +381,7 @@ Reusing cached build of waldo:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/buil
 
 ### Building without starting
 
-`peppy stack build` runs a launch up to its builds. It replaces the node stack as a launch does, then adds and builds each node the launch would run on the machine the launch places it on, and starts no instance. It takes every argument `peppy stack launch` takes, so a later `peppy stack launch` with the same launcher, placement and `--with` words starts from these builds.
+`peppy stack build` runs a launch up to its builds. It replaces the node stack as a launch does, then adds and builds each node the launch would run on the machine the launch places it on, and starts no instance. It takes every argument `peppy stack launch` takes, so a later `peppy stack launch` with the same launcher, placement, `--with` words and `--join` copies starts from these builds.
 
 Build a launcher on a disk, save the disk as an image, and every machine booted from that image launches without building:
 
@@ -457,7 +458,7 @@ A `deployments` entry deploys a node, `{ source, instances }`, or a component's 
 
 - On a `one` axis the entry names the option that runs, ids as written, and `--with` swaps it for another option of that axis. A `one` axis the file does not deploy must be named with `--with`.
 - A `zero_or_one` axis is never deployed by the file, since nothing on the command line could switch it off. `--with` turns it on. A feature that is on by default and switchable is a `one` axis with a `none` option (its body can be empty), deployed by the file and swapped off with `--with none`.
-- On a `zero_or_more` axis the entry lists the copies that run, each under `instances` with a name; see [copies](#copies). `--with` cannot name one, since a copy needs a name.
+- On a `zero_or_more` axis the entry lists the copies that run, each under `instances` with a name, or lists none and says how every copy of the option is set up; see [copies](#copies). `--with` cannot name one, since a copy needs a name; `--join OPTION:NAME` starts one with the launch.
 
 Each `--with` entry is either `option` (looked up across every axis in reach) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. An axis takes one option; repeating it, or naming it once bare and once as `axis=option`, selects it once. On `stack launch` and `stack build`, `NAME.option` or `NAME.axis=option` selects the own axis of a copy the file deploys, over the file's `with`.
 
@@ -596,7 +597,7 @@ An option's fragment can declare `components` of its own: the axes that belong t
       options: { lerobot_recorder: "../../recording/fragments/lerobot_recorder.json5" } },
     { name: "camera_rig", cardinality: "zero_or_one", provides: ["wrist_left", "wrist_right", "chest"],
       options: { cameras_sim: "cameras_sim.json5" } },
-    { name: "brain", cardinality: "zero_or_one", provides: ["brain_inst", "brain_mcp_inst"],
+    { name: "brain", cardinality: "zero_or_one", provides: ["brain_inst"],
       options: { ai_brain: "ai_brain.json5" } },
   ],
 }
@@ -634,11 +635,28 @@ A copy entry has four fields: `instance_id`, the copy's name; `with`, the select
 ] },
 ```
 
-An entry and a copy also take `adjustments`, the same verbs a fragment's adjustments use (`set_arguments`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch` and `stack build`, a `--with` word `NAME.axis=option` or `NAME.option` selects one file copy's own axis for that launch, over the file's `with`:
+An entry and a copy also take `adjustments`, the same verbs a fragment's adjustments use (`set_arguments`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch` and `stack build`, a `--with` word `NAME.axis=option` or `NAME.option` selects one copy's own axis for that launch, over the file's `with`:
 
 ```sh
 peppy stack launch openarm_simulation --with mujoco,alpha.xr_commander
 ```
+
+An entry may list no copy. It then says how every copy of the option is set up, and a launch starts none of them; `--join OPTION:NAME` on `stack launch`, once per copy, starts a copy with the launch: a copy of the entry under that name, composed, validated and started with the launch, and failing with it. The words that address a listed copy address it too, `--with NAME.option` and `--place NAME@CORE_NODE`:
+
+```json5
+deployments: [
+  { simulation: "waldo" },
+  { robot: "openarm_v2_sim", with: { robot_commander: "mcp_commander", camera_rig: "cameras_sim" } },
+],
+```
+
+```sh
+peppy stack launch openarm_simulation_mcp                                                    # the simulation, no robot
+peppy stack launch openarm_simulation_mcp --join openarm_v2_sim:alpha                        # one robot, as the entry sets it up
+peppy stack launch openarm_simulation_mcp --join openarm_v2_sim:alpha --join openarm_v2_sim:bravo --with bravo.xr_commander
+```
+
+A launch-time join and a later `stack join` build the same copy from the same entry. They differ in when it is composed: `--join` composes the copy into the initial configuration, so it may write to the stack's instances as a listed copy does, while `stack join` adds it to a running stack and keeps to what already runs there. A name the launch already starts, listed or joined, is refused.
 
 One robot, two robots, many:
 
@@ -659,6 +677,9 @@ peppy stack remove bravo
 peppy stack launch fleet
 peppy stack join openarm_v2 -i alpha --place jetson-1
 peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
+
+# The same two robots named at launch.
+peppy stack launch fleet --join openarm_v2:alpha --join openarm_v1:bravo --with bravo.xr_commander --place alpha@jetson-1 --place bravo@jetson-2
 ```
 
 `stack join` names the option to copy and, with `-i`, the copy's name, the way `node run` names a node and an instance. Its `--with` words select the copied option's own axes. Every instance the copy's fragments define receives the name as a prefix: `alpha_left_arm_inst`, `alpha_backbone_inst`, `alpha_commander_inst`. Every link naming one of them follows it under the prefix, including array links and pairing targets such as `alpha_backbone_inst/leader_left_arm`; links to stack instances such as `simulation_inst` keep their IDs. The name is also the copy's core node link: `--place alpha@jetson-1` at launch and `--place jetson-1` at join run the whole copy there, and a copy with no placement runs on the coordinator.
@@ -719,19 +740,19 @@ One simulation per stack, and each simulated robot joins it as a copy that bring
 
 ```sh
 peppy stack resolve openarm_simulation --with mujoco
-peppy stack resolve fleet --join openarm_v1 --join-name bravo --join-with xr_commander
+peppy stack resolve fleet --join openarm_v2:alpha --then-join openarm_v1 --then-join-name bravo --then-join-with xr_commander
 ```
 
 Join and remove run on the coordinator (`--core-node NAME` reaches it from another machine), serialize with launches and with each other, and reserve only the machines they touch: an unrelated host that is offline blocks neither. A reset cancels the operation in flight, waits for its cleanup, and empties the stack. A restarted coordinator has no launcher to compose against; launch again before joining.
 
-`peppy repo index --check` composes every legal selection the way a launch does: the stack under every selection of its axes, then every copy a `zero_or_more` axis can add, as a launch beside the stack and as a join onto it.
+`peppy repo index --check` composes every legal selection the way a launch does: the stack under every selection of its axes, then every copy a `zero_or_more` axis can add, as a launch beside the stack and as a join onto it; an entry listing no copy is composed as `--join` composes it at launch.
 
 ## Auditing a composed launch
 
 Composition changes instances from a distance, so it ships with an audit command:
 
 ```sh
-peppy stack resolve fleet --join so101 --join-name alpha --join-with xr_commander,lerobot_recorder
+peppy stack resolve fleet --then-join so101 --then-join-name alpha --then-join-with xr_commander,lerobot_recorder
 ```
 
 `stack resolve` needs no running stack. It prints the flattened `launcher/v1` document to stdout and a resolution report to stderr. An excerpt:
@@ -750,6 +771,6 @@ alpha_recorder_inst: clock `wall`
 link rules hold: slot keys, vacancies, pairing coverage, observation sources and clock agreement checked over 4 node manifest(s)
 ```
 
-Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, and `--join OPTION` previews one more joined onto it, with `--join-name`, `--join-with` and `--join-set-arguments` standing in for the join's own flags. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
+Every applied adjustment is listed with the value it replaced and the fragment it came from, and every skip says why. Because stdout is a plain launcher, it doubles as the escape hatch: flatten, hand-edit, launch the flat file. A launcher that deploys copies resolves with them, one `copy NAME:` line each, `--join OPTION:NAME` starts one with the launch as it does on `stack launch`, and `--then-join OPTION` previews one more joined onto the running stack afterwards, with `--then-join-name`, `--then-join-with` and `--then-join-set-arguments` standing in for the join's own flags. The resulting flat launcher declares each copy's name in `core_nodes`; launch that file with `--place NAME@CORE_NODE` or `--local`.
 
 The report ends by holding the flat plan to the launch-time link rules that need no daemon. `stack resolve` reads this machine's nodes cache at `~/.peppy/cache/nodes.json5`, loads each deployed node's manifest, and checks slot-key legality, vacancies, and pairing coverage across them; the `link rules hold` line names how many manifests it checked. A node published by a git repository is read out of the checkout the caches already hold, `peppy repo refresh` handing every clone it makes to the checkout cache, so the nodes and launchers a hub publishes are checked against each other without the command ever reaching the network. The contract-binding rules stay launch-only, because satisfying them can involve the root node that only a running daemon knows. When the plan breaks a rule a launch would reject, say a `zero_or_one` pairing slot left neither paired nor vacant, `stack resolve` fails with that launch's own error instead of surfacing it minutes later at launch. When a manifest cannot be read locally the check is skipped rather than run on a partial picture: the report says `link rules not checked`, names the missing manifest, and advises `peppy repo refresh`, which is what fills both the nodes cache and the checkouts the git-backed manifests are read from.

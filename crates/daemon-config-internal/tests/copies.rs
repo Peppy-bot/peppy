@@ -137,7 +137,7 @@ fn one_two_and_six_robots_share_the_engine_and_keep_their_own_wiring() {
         launcher: mut flat,
         selection,
         ..
-    } = prepared.launch(&words(&["engine"])).unwrap();
+    } = prepared.launch(&words(&["engine"]), &[]).unwrap();
     assert_eq!(ids(&flat), ["engine_inst"]);
     for (index, robot) in ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
         .iter()
@@ -168,7 +168,7 @@ fn one_two_and_six_robots_share_the_engine_and_keep_their_own_wiring() {
 #[test]
 fn a_copy_selects_its_options_own_axes_at_join() {
     let prepared = fleet("");
-    let launch = prepared.launch(&words(&["engine"])).unwrap();
+    let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
     let joined = prepared
         .join(
             JoinRequest {
@@ -237,7 +237,7 @@ fn a_copy_selects_its_options_own_axes_at_join() {
 #[test]
 fn join_overrides_apply_after_guarded_launcher_adjustments() {
     let prepared = fleet("");
-    let launch = prepared.launch(&words(&["engine"])).unwrap();
+    let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
     let overrides: Vec<ArgumentOverride> = vec!["arm_inst.speed=0.2".parse().unwrap()];
     let joined = prepared
         .join(
@@ -321,7 +321,7 @@ fn join_overrides_apply_after_guarded_launcher_adjustments() {
 #[test]
 fn copies_are_never_selected_by_a_launch_word() {
     let prepared = fleet("");
-    let error = prepared.launch(&words(&["real"])).unwrap_err();
+    let error = prepared.launch(&words(&["real"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::RepeatableAxisAtLaunch { word, axis, option }
             if word == "real" && axis == "robot" && option == "real"),
@@ -331,7 +331,7 @@ fn copies_are_never_selected_by_a_launch_word() {
         error.to_string().contains("peppy stack join real -i NAME"),
         "{error}"
     );
-    let error = prepared.launch(&words(&["xr"])).unwrap_err();
+    let error = prepared.launch(&words(&["xr"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::CopyAxisAtLaunch { word, axis, parent, option }
             if word == "xr" && axis == "commander" && option == "xr" && (parent == "real" || parent == "sim")),
@@ -342,7 +342,7 @@ fn copies_are_never_selected_by_a_launch_word() {
 #[test]
 fn the_constraints_see_the_stack_beside_the_copy() {
     let prepared = fleet("");
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     assert!(ids(&launch.launcher).is_empty());
     assert_eq!(launch.selection.echo(), "simulation=(off)");
     let error = join(
@@ -378,7 +378,7 @@ fn the_copies_a_file_deploys_match_a_launch_followed_by_joins() {
             { instance_id: "bravo", with: { commander: "xr" } },
         ] }"#,
     );
-    let launch = prepared.launch(&words(&["engine"])).unwrap();
+    let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
     let copies = launch.copies();
     assert_eq!(
         copies
@@ -399,7 +399,7 @@ fn the_copies_a_file_deploys_match_a_launch_followed_by_joins() {
     assert_eq!(launch.selection.echo(), "simulation=engine");
 
     let bare = fleet("");
-    let stack = bare.launch(&words(&["engine"])).unwrap();
+    let stack = bare.launch(&words(&["engine"]), &[]).unwrap();
     let overrides: Vec<ArgumentOverride> = vec!["arm_inst.speed=0.2".parse().unwrap()];
     let one = bare
         .join(
@@ -442,14 +442,160 @@ fn the_copies_a_file_deploys_match_a_launch_followed_by_joins() {
     );
 
     // The same copies join a stack with no engine only as real arms.
-    let error = prepared.launch(&[]).unwrap_err();
+    let error = prepared.launch(&[], &[]).unwrap_err();
     assert!(error.to_string().contains("needs the engine"), "{error}");
+}
+
+#[test]
+fn a_launch_time_join_composes_as_a_copy_of_the_entry() {
+    use core_node_api::encoding::LaunchJoin;
+    let join = |option: &str, copy: &str| LaunchJoin {
+        option: option.into(),
+        name: name(copy),
+    };
+    // The entry lists no copy and says how every copy of the option is set
+    // up; a bare launch starts none.
+    let entry = fleet(r#"{ robot: "sim", with: { commander: "xr" } }"#);
+    let bare = entry.launch(&words(&["engine"]), &[]).unwrap();
+    assert!(bare.copies().is_empty());
+
+    // Two joins at launch: each a copy of the entry, a scoped word
+    // selecting one copy's own axis, in the order they were given.
+    let launch = entry
+        .launch(
+            &words(&["engine", "bravo.commander=web"]),
+            &[join("sim", "alpha"), join("sim", "bravo")],
+        )
+        .unwrap();
+    assert_eq!(
+        launch
+            .copies()
+            .iter()
+            .map(|copy| (copy.name.as_str(), copy.selection.echo()))
+            .collect::<Vec<_>>(),
+        [
+            ("alpha", "robot=sim  commander=xr".to_string()),
+            ("bravo", "robot=sim  commander=web".to_string()),
+        ]
+    );
+    let listed = fleet(
+        r#"{ robot: "sim", with: { commander: "xr" }, instances: [
+            { instance_id: "alpha" },
+            { instance_id: "bravo", with: { commander: "web" } },
+        ] }"#,
+    )
+    .launch(&words(&["engine"]), &[])
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&launch.launcher).unwrap(),
+        serde_json::to_value(&listed.launcher).unwrap(),
+        "a launch-time join composes what the entry listing the copy composes"
+    );
+
+    // A join beside the copies the file lists, and the refusals: a name the
+    // launch already starts, and an option no repeatable axis offers.
+    let both = fleet(r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] }"#);
+    let launch = both
+        .launch(&words(&["engine"]), &[join("sim", "bravo")])
+        .unwrap();
+    assert_eq!(
+        launch
+            .copies()
+            .iter()
+            .map(|copy| copy.name.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "bravo"]
+    );
+    let error = both
+        .launch(&words(&["engine"]), &[join("sim", "alpha")])
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("`--join sim:alpha` names a copy the launch already starts as `alpha`"),
+        "{error}"
+    );
+    let error = both
+        .launch(&words(&["engine"]), &[join("ghost", "charlie")])
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("`ghost` is not an option of a `zero_or_more` axis"),
+        "{error}"
+    );
+    // An option with no entry composes as its fragment deploys it.
+    let launch = fleet("")
+        .launch(&words(&["engine"]), &[join("sim", "alpha")])
+        .unwrap();
+    assert_eq!(
+        launch
+            .copies()
+            .iter()
+            .map(|copy| (copy.name.as_str(), copy.selection.echo()))
+            .collect::<Vec<_>>(),
+        [("alpha", "robot=sim  commander=web (from file)".to_string())]
+    );
+    // A launcher with no repeatable axis takes no copy, and says so for
+    // both ways of adding one.
+    let error = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "simulation", cardinality: "zero_or_one", options: { engine: {} } },
+        ],
+    }"#,
+    )
+    .launch(&[], &[join("sim", "alpha")])
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("takes no copy, from `stack join` or from `--join OPTION:NAME`"),
+        "{error}"
+    );
+    // An entry leaving a `one` axis of its option open is where a launch
+    // join's selection is written.
+    let open_commander = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
+            deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+            components: [{ name: "commander", options: {
+                web: { deployments: [{ source: { name: "commander", tag: "v1" }, instances: [{ instance_id: "commander_inst" }] }] },
+                xr: { deployments: [{ source: { name: "headset", tag: "v1" }, instances: [{ instance_id: "headset_inst" }] }] },
+            } }],
+        } } }],
+        deployments: [{ robot: "real" }],
+    }"#,
+    );
+    let error = open_commander
+        .launch(&[], &[join("real", "alpha")])
+        .unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "add `with: { commander: \"<option>\" }` to the launcher's entry for `real`, or \
+             `--with alpha.commander=<option>` on `peppy stack launch`"
+        ),
+        "{error}"
+    );
+    // A scoped word for a name no copy runs under names the launch-time
+    // join as the way to start one.
+    let error = entry
+        .launch(&words(&["engine", "charlie.commander=web"]), &[])
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("`--join OPTION:charlie` starts one with it"),
+        "{error}"
+    );
 }
 
 #[test]
 fn a_copy_starts_something_and_selects_what_its_option_declares() {
     let prepared = fleet("");
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
         "empty",
@@ -481,7 +627,7 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
             ] } } }
         ], deployments: [{ robot: "real" }] }"#,
     );
-    let launch = stack_only.launch(&[]).unwrap();
+    let launch = stack_only.launch(&[], &[]).unwrap();
     assert!(matches!(
         join(
             &stack_only,
@@ -493,7 +639,7 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
         Err(CompositionError::NoRepeatableAxis)
     ));
     let fleet = fleet("");
-    let launch = fleet.launch(&[]).unwrap();
+    let launch = fleet.launch(&[], &[]).unwrap();
     let error = join(
         &fleet,
         "engine",
@@ -512,9 +658,9 @@ fn a_copy_starts_something_and_selects_what_its_option_declares() {
 #[test]
 fn flat_launchers_keep_their_selection_errors() {
     let prepared = load(r#"{peppy_schema: "launcher/v1", deployments: []}"#);
-    assert!(prepared.launch(&[]).is_ok());
+    assert!(prepared.launch(&[], &[]).is_ok());
     assert!(matches!(
-        prepared.launch(&words(&["unknown"])),
+        prepared.launch(&words(&["unknown"]), &[]),
         Err(CompositionError::WithOnFlatLauncher)
     ));
 }
@@ -569,7 +715,7 @@ fn an_adjustment_guarded_on_a_copy_axis_is_skipped_for_the_stack() {
     }}"#
         )
     };
-    let bare = load(&document("")).launch(&[]).unwrap();
+    let bare = load(&document("")).launch(&[], &[]).unwrap();
     assert!(bare.copies().is_empty());
     let lines = bare.report.render_lines();
     assert!(
@@ -587,7 +733,7 @@ fn an_adjustment_guarded_on_a_copy_axis_is_skipped_for_the_stack() {
     let with_copy = load(&document(
         r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] }"#,
     ))
-    .launch(&[])
+    .launch(&[], &[])
     .unwrap();
     assert_eq!(
         instance(&with_copy.launcher, "observer_inst").arguments["rate"],
@@ -619,7 +765,7 @@ fn an_adjustment_on_an_id_only_copies_define_is_skipped_for_the_stack() {
     let skipped = "  arm_inst: axis robot runs as copies; the adjustment runs in each copy  \
                    (fleet.json5 (base))";
 
-    let bare = load(&document("")).launch(&[]).unwrap();
+    let bare = load(&document("")).launch(&[], &[]).unwrap();
     assert_eq!(ids(&bare.launcher), ["observer_inst"]);
     let lines = bare.report.render_lines();
     assert!(lines.iter().any(|line| line == skipped), "{lines:?}");
@@ -627,7 +773,7 @@ fn an_adjustment_on_an_id_only_copies_define_is_skipped_for_the_stack() {
     let with_copy = load(&document(
         r#"{ robot: "sim", instances: [{ instance_id: "alpha" }] }"#,
     ))
-    .launch(&[])
+    .launch(&[], &[])
     .unwrap();
     assert_eq!(
         instance(&with_copy.launcher, "alpha_arm_inst").arguments["speed"],
@@ -649,7 +795,7 @@ fn minted_ids_never_collide_with_the_stack_or_with_each_other() {
         } }]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
         "real",
@@ -690,7 +836,7 @@ fn a_copy_cannot_place_itself() {
         )
     };
     let prepared = load(&document(""));
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
         "real",
@@ -741,7 +887,7 @@ fn fragment_files_are_snapshotted_at_launch() {
     )
     .unwrap();
     let prepared = PreparedLauncher::load(&parsed, &directory.path().join("fleet.json5")).unwrap();
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     std::fs::remove_file(file).unwrap();
     let joined = join(
         &prepared,
@@ -788,7 +934,7 @@ fn every_link_follows_the_prefix_and_a_join_grows_a_stack_set() {
         r#"{ robot: "real", instances: [{ instance_id: "alpha" }] },
            { cameras: "wrist", instances: [{ instance_id: "eye" }] }"#,
     ));
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     assert_eq!(
         ids(&launch.launcher),
         ["observer_inst", "first", "alpha_arm_inst", "eye_wrist"]
@@ -868,7 +1014,7 @@ fn copies_configure_stack_nodes_together_and_later_joins_cannot_change_them() {
     let prepared = load(&document(
         r#"{ robot: "v1", instances: [{ instance_id: "alpha" }] }"#,
     ));
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let engine = instance(&launch.launcher, "engine_inst");
     assert_eq!(engine.arguments["hardware"], AnyType::String("v1".into()));
     assert_eq!(launch.copies()[0].instance_ids, [name("alpha_arm_inst")]);
@@ -921,7 +1067,7 @@ fn copies_configure_stack_nodes_together_and_later_joins_cannot_change_them() {
         r#"{ robot: "v1", instances: [{ instance_id: "alpha" }] },
            { robot: "v2", instances: [{ instance_id: "bravo" }] }"#,
     ));
-    let error = mixed.launch(&[]).unwrap_err();
+    let error = mixed.launch(&[], &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::CopiesConflict { first, second, target, .. }
             if first == "alpha" && second == "bravo" && target == "engine_inst.arguments.hardware"),
@@ -930,7 +1076,7 @@ fn copies_configure_stack_nodes_together_and_later_joins_cannot_change_them() {
     let agreed = load(&document(
         r#"{ robot: "v1", instances: [{ instance_id: "alpha" }, { instance_id: "bravo" }] }"#,
     ));
-    assert_eq!(ids(&agreed.launch(&[]).unwrap().launcher).len(), 3);
+    assert_eq!(ids(&agreed.launch(&[], &[]).unwrap().launcher).len(), 3);
 }
 
 #[test]
@@ -961,7 +1107,7 @@ fn joins_preserve_stack_fragments_additive_adjustments() {
         ]
     }"#,
     );
-    let initial = prepared.launch(&words(&["engine"])).unwrap();
+    let initial = prepared.launch(&words(&["engine"]), &[]).unwrap();
     let joined = join(
         &prepared,
         "real",
@@ -1020,6 +1166,33 @@ fn the_repository_check_composes_every_launch_and_every_join() {
     let sound = PeppyLauncherParser::from_content(&document("")).unwrap();
     let problems = daemon_config::launcher::check_composition(&sound, Path::new("fleet.json5"));
     assert!(problems.is_empty(), "{problems:?}");
+
+    // An entry listing no copy is proved as the launch that names one, the
+    // copy running under the option's name: the entry's `with` selects an
+    // option whose fragment dangles a link.
+    let unlisted = PeppyLauncherParser::from_content(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {
+            deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+            components: [{ name: "commander", cardinality: "zero_or_one", options: {
+                web: { deployments: [{ source: { name: "commander", tag: "v1" }, instances: [
+                    { instance_id: "commander_inst", links: { arm: "missing_inst" } }
+                ] }] },
+            } }],
+        } } }],
+        deployments: [{ robot: "real", with: { commander: "web" } }],
+    }"#,
+    )
+    .unwrap();
+    let problems = daemon_config::launcher::check_composition(&unlisted, Path::new("fleet.json5"));
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("`real_commander_inst`")
+                && problem.contains("missing_inst")),
+        "{problems:?}"
+    );
 }
 
 /// A simulation declares the slot a robot's relay pairs into vacant, for
@@ -1067,7 +1240,7 @@ fn a_join_cannot_release_a_vacancy_it_pairs_nothing_into() {
     let document =
         simulation_with_arm_slot_document(r#"{ vacant: "a simulated robot pairs here" }"#, "");
     let prepared = load(&document);
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let err = join(
         &prepared,
         "sim",
@@ -1094,7 +1267,7 @@ fn a_join_cannot_release_a_vacancy_it_pairs_nothing_into() {
 #[test]
 fn a_join_may_pair_into_a_slot_the_stack_declares_vacant() {
     let prepared = simulation_with_arm_slot(r#"{ vacant: "a simulated robot pairs here" }"#);
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     assert!(
         instance(&launch.launcher, "simulation_inst")
             .links
@@ -1151,7 +1324,7 @@ fn a_join_may_pair_into_a_slot_the_stack_declares_vacant() {
 #[test]
 fn removing_a_copy_puts_back_the_vacancy_it_released() {
     let prepared = simulation_with_arm_slot(r#"{ vacant: "a simulated robot pairs here" }"#);
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let bare = instance(&launch.launcher, "simulation_inst").links["arm"].clone();
     let joined = prepared
         .join(
@@ -1199,7 +1372,7 @@ fn a_watcher_naming_the_instance_does_not_hold_the_vacancy_open() {
         ]"#,
     );
     let prepared = load(&document);
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let bare = instance(&launch.launcher, "simulation_inst").links["arm"].clone();
     let joined = prepared
         .join(
@@ -1233,7 +1406,7 @@ fn removing_a_copy_leaves_a_slot_another_copy_pairs_into() {
         r#"{ vacant: "a simulated robot pairs here" }"#,
         r#", links: { engine: "simulation_inst/arm" }"#,
     ));
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let alpha = prepared
         .join(
             JoinRequest {
@@ -1281,7 +1454,7 @@ fn removing_a_copy_leaves_a_slot_another_copy_pairs_into() {
 #[test]
 fn a_join_cannot_drop_a_slot_the_stack_binds() {
     let prepared = simulation_with_arm_slot(r#""simulation_inst""#);
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let err = join(
         &prepared,
         "sim",
@@ -1324,7 +1497,7 @@ fn copies_writing_different_fields_of_one_stack_instance_agree() {
         ]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let engine = instance(&launch.launcher, "engine_inst");
     assert_eq!(engine.arguments["hardware"], AnyType::String("v1".into()));
     assert_eq!(engine.arguments["rate"], AnyType::Int(10));
@@ -1367,7 +1540,7 @@ fn copies_appending_to_one_stack_slot_union_at_launch_and_at_join() {
         ]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     assert_eq!(
         instance(&launch.launcher, "observer_inst").links["robots"],
         LinkValue::Bound(Selection::Array(
@@ -1418,7 +1591,7 @@ fn a_launcher_constraint_naming_a_copy_axis_speaks_for_its_copies() {
         deployments: []
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     join(
         &prepared,
         "sim",
@@ -1498,7 +1671,7 @@ fn copy_options_are_distinct_across_copy_axes() {
 #[test]
 fn a_copy_name_is_held_to_a_core_node_name() {
     let prepared = fleet("");
-    let launch = prepared.launch(&words(&["engine"])).unwrap();
+    let launch = prepared.launch(&words(&["engine"]), &[]).unwrap();
     for name in ["self", &"x".repeat(64)] {
         let error = join(&prepared, "sim", name, &launch.selection, &launch.launcher).unwrap_err();
         assert!(
@@ -1537,7 +1710,7 @@ fn a_copy_cannot_reuse_an_id_the_stack_defines() {
         ]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
         "sim",
@@ -1605,7 +1778,7 @@ fn removing_a_copy_takes_out_its_members_and_a_stack_link_keeps_it() {
         ]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let record_of = |copy_name: &str| {
         launch
             .copies()
@@ -1815,7 +1988,7 @@ fn a_file_copy_overrides_only_the_instances_it_selects() {
 #[test]
 fn copy_selection_refusals_name_the_copied_option() {
     let prepared = fleet("");
-    let error = prepared.launch(&words(&["robot=nope"])).unwrap_err();
+    let error = prepared.launch(&words(&["robot=nope"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::RepeatableAxisUnknownOption { word, axis, menu }
             if word == "robot=nope" && axis == "robot" && menu.contains("real")),
@@ -1827,7 +2000,7 @@ fn copy_selection_refusals_name_the_copied_option() {
             .contains("peppy stack join OPTION -i NAME"),
         "{error}"
     );
-    let launched = prepared.launch(&[]).unwrap();
+    let launched = prepared.launch(&[], &[]).unwrap();
     let error = prepared
         .join(
             JoinRequest {
@@ -1874,7 +2047,7 @@ fn the_report_files_copy_writes_and_copy_only_adjustments_under_the_copy() {
         ],
     }"#,
     );
-    let launched = prepared.launch(&[]).unwrap();
+    let launched = prepared.launch(&[], &[]).unwrap();
     let report = &launched.report;
     assert!(
         matches!(
@@ -1924,7 +2097,7 @@ fn binding_a_vacant_slot_from_the_stack_side_is_refused_with_the_spelling() {
         deployments: [{ simulation: "engine" }],
     }"#,
     );
-    let launched = prepared.launch(&[]).unwrap();
+    let launched = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
         "sim",
@@ -1952,7 +2125,7 @@ fn an_option_entry_shares_its_settings_with_the_copies_it_lists() {
               { instance_id: "bravo", with: { commander: "web" }, arguments: { arm_inst: { speed: 0.9 } } },
             ] }"#,
     );
-    let launched = prepared.launch(&[]).unwrap();
+    let launched = prepared.launch(&[], &[]).unwrap();
     assert_eq!(
         launched
             .copies()
@@ -1982,16 +2155,17 @@ fn an_option_entry_shares_its_settings_with_the_copies_it_lists() {
             .contains_key("arm")
     );
 
-    let error = PeppyLauncherParser::from_content(
+    // An entry listing no copy is the option's settings alone: a bare launch
+    // starts no copy of it.
+    let unlisted = PeppyLauncherParser::from_content(
         r#"{
         peppy_schema: "launcher/v1",
         components: [{ name: "robot", cardinality: "zero_or_more", options: { real: {} } }],
         deployments: [{ robot: "real", with: { commander: "xr" } }],
     }"#,
     )
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("runs as named copies"), "{error}");
+    .unwrap();
+    assert!(unlisted.option_deployments[0].instances.is_empty());
 }
 
 /// A robot whose option carries two axes of its own, the way the OpenArm
@@ -2077,7 +2251,7 @@ fn join_onto_launch(
     join_words: &[&str],
     arguments: &[&str],
 ) -> Result<daemon_config::launcher::ComposedJoin, CompositionError> {
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let arguments: Vec<ArgumentOverride> = arguments
         .iter()
         .map(|argument| argument.parse().unwrap())
@@ -2161,7 +2335,7 @@ fn a_join_word_overrides_one_axis_and_keeps_the_entrys_others() {
         .to_string();
     assert!(refused.contains("the cameras need a consumer"), "{refused}");
     let at_launch = prepared
-        .launch(&words(&["alpha.web"]))
+        .launch(&words(&["alpha.web"]), &[])
         .unwrap_err()
         .to_string();
     assert!(
@@ -2260,7 +2434,7 @@ fn a_join_takes_nothing_from_an_entry_without_settings_or_of_another_option() {
 #[test]
 fn removing_a_file_copy_and_joining_it_again_reproduces_it() {
     let prepared = load(&rigged_fleet_document(MCP_ROBOTS));
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let alpha = &launch.copies()[0];
     let without = prepared
         .remove(&launch.launcher, alpha, &launch.selection, &[])
@@ -2368,7 +2542,7 @@ fn copy_adjustments_run_after_the_launchers_and_before_the_copys_arguments() {
                 arguments: { arm_inst: { speed: 0.8 } } },
             ] }"#,
     );
-    let launched = prepared.launch(&words(&["engine"])).unwrap();
+    let launched = prepared.launch(&words(&["engine"]), &[]).unwrap();
     // The entry's argument survives beside the copy's own key.
     assert_eq!(
         instance(&launched.launcher, "bravo_arm_inst").arguments["torque"],
@@ -2451,7 +2625,7 @@ fn a_launch_word_selects_a_file_copys_own_axis() {
             { instance_id: "bravo" },
         ] }"#,
     );
-    let launched = prepared.launch(&words(&["alpha.xr"])).unwrap();
+    let launched = prepared.launch(&words(&["alpha.xr"]), &[]).unwrap();
     assert_eq!(
         launched
             .copies()
@@ -2464,7 +2638,7 @@ fn a_launch_word_selects_a_file_copys_own_axis() {
         ]
     );
     let launched = prepared
-        .launch(&words(&["bravo.commander=xr", "engine"]))
+        .launch(&words(&["bravo.commander=xr", "engine"]), &[])
         .unwrap();
     assert_eq!(
         launched
@@ -2476,14 +2650,14 @@ fn a_launch_word_selects_a_file_copys_own_axis() {
     );
     assert!(ids(&launched.launcher).contains(&"engine_inst".to_owned()));
 
-    let error = prepared.launch(&words(&["charlie.xr"])).unwrap_err();
+    let error = prepared.launch(&words(&["charlie.xr"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::ScopedSelectionUnknownCopy { word, copy, copies }
             if word == "charlie.xr" && copy == "charlie"
-                && copies.starts_with("the file deploys `alpha`, `bravo`")),
+                && copies.starts_with("the launch starts `alpha`, `bravo`")),
         "{error}"
     );
-    let error = prepared.launch(&words(&["alpha.nope"])).unwrap_err();
+    let error = prepared.launch(&words(&["alpha.nope"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::UnknownCopySelection { word, option, .. }
             if word == "alpha.nope" && option == "real"),
@@ -2513,7 +2687,7 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
         )
     };
     let prepared = load(&document(""));
-    let error = prepared.launch(&[]).unwrap_err();
+    let error = prepared.launch(&[], &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::UnresolvedCopyAxis { copy, axis, .. }
             if copy == "alpha" && axis == "commander"),
@@ -2525,7 +2699,9 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
             .contains("--with alpha.commander=<option>"),
         "{error}"
     );
-    let launched = prepared.launch(&words(&["alpha.commander=web"])).unwrap();
+    let launched = prepared
+        .launch(&words(&["alpha.commander=web"]), &[])
+        .unwrap();
     assert_eq!(
         launched.copies()[0].selection.echo(),
         "robot=real  commander=web"
@@ -2581,18 +2757,18 @@ fn a_file_copy_may_leave_an_axis_for_a_launch_word() {
 fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
     let prepared = fleet(r#"{ robot: "real", instances: [{ instance_id: "alpha" }] }"#);
     let error = prepared
-        .launch(&words(&["alpha.xr", "alpha.commander=web"]))
+        .launch(&words(&["alpha.xr", "alpha.commander=web"]), &[])
         .unwrap_err();
     assert!(
         matches!(&error, CompositionError::ConflictingSelection { .. }),
         "{error}"
     );
-    let error = prepared.launch(&words(&[".xr"])).unwrap_err();
+    let error = prepared.launch(&words(&[".xr"]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::ScopedWordNamesNoCopy { word } if word == ".xr"),
         "{error}"
     );
-    let error = prepared.launch(&words(&["alpha."])).unwrap_err();
+    let error = prepared.launch(&words(&["alpha."]), &[]).unwrap_err();
     assert!(
         matches!(&error, CompositionError::ScopedWordNamesNoOption { word, copy }
             if word == "alpha." && copy == "alpha"),
@@ -2662,7 +2838,7 @@ fn a_join_cannot_add_a_stack_instance_to_a_running_set() {
         ]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
         "wrist",
@@ -2707,7 +2883,7 @@ fn a_running_set_follows_joins_and_removals_and_a_rejoin_appears_once() {
         ]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let join_copy = |copy_name: &str, existing: &PeppyLauncher| {
         prepared
             .join(
@@ -2787,7 +2963,7 @@ fn a_join_cannot_add_to_a_slot_holding_a_single_member() {
         ]
     }"#,
     );
-    let launch = prepared.launch(&[]).unwrap();
+    let launch = prepared.launch(&[], &[]).unwrap();
     let error = join(
         &prepared,
         "wrist",

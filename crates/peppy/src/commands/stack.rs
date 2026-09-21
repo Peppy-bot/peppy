@@ -95,7 +95,9 @@ pub enum StackCommands {
         #[command(flatten)]
         with: WithWords,
         #[command(flatten)]
-        join: JoinPreview,
+        joins: LaunchJoins,
+        #[command(flatten)]
+        then_join: JoinPreview,
     },
     /// Tear the node stack down to an empty state.
     ///
@@ -161,6 +163,8 @@ pub struct LauncherArgs {
     #[command(flatten)]
     pub with: WithWords,
     #[command(flatten)]
+    pub joins: LaunchJoins,
+    #[command(flatten)]
     pub timeouts: StackTimeouts,
     /// Build every node from its staged sources even when a cached
     /// artifact built from byte-identical sources exists. Applies to
@@ -201,6 +205,46 @@ impl StackTimeouts {
             self.max_timeout_secs,
         )
     }
+}
+
+/// The copies `--join OPTION:NAME` composes with a launch, shared by
+/// launch, build, and resolve.
+#[derive(clap::Args, Default)]
+pub struct LaunchJoins {
+    /// A copy of OPTION, one of a `zero_or_more` axis, named NAME in the
+    /// launch: composed as a copy of the launcher's entry for the option and
+    /// validated with the launch; `stack launch` starts it and `stack build`
+    /// builds its nodes. Repeatable, once per copy; `NAME.option` words and
+    /// `--place NAME@CORE_NODE` address it as they do a copy the file lists.
+    #[arg(
+        long = "join",
+        value_name = "OPTION:NAME",
+        value_parser = parse_launch_join,
+        action = clap::ArgAction::Append
+    )]
+    pub joins: Vec<core_node_api::encoding::LaunchJoin>,
+}
+
+/// One `--join OPTION:NAME`: the option before the colon, the copy's name
+/// after it, held to a copy name's grammar.
+fn parse_launch_join(raw: &str) -> Result<core_node_api::encoding::LaunchJoin, String> {
+    let Some((option, name)) = raw.split_once(':') else {
+        return Err(format!(
+            "`--join {raw}` names no copy; a launch-time join is `--join OPTION:NAME`, the \
+             option of a `zero_or_more` axis and the name the copy runs under"
+        ));
+    };
+    let option = option.trim();
+    if option.is_empty() {
+        return Err(format!(
+            "`--join {raw}` names no option before the colon; a launch-time join is `--join \
+             OPTION:NAME`"
+        ));
+    }
+    Ok(core_node_api::encoding::LaunchJoin {
+        option: option.to_owned(),
+        name: parse_copy_name(name)?,
+    })
 }
 
 /// The `--with` words, shared by launch, build, join, and resolve.
@@ -262,8 +306,9 @@ impl Command for StackCommand {
             StackCommands::Resolve {
                 launcher_config_path,
                 with,
-                join,
-            } => resolve::resolve(launcher_config_path, with.words, join),
+                joins,
+                then_join,
+            } => resolve::resolve(launcher_config_path, with.words, joins.joins, then_join),
             StackCommands::Launch(args) => {
                 info!("Launching stack...");
                 launch::launch::<LaunchGoal>(ctx, args)

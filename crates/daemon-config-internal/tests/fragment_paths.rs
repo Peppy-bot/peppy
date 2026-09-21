@@ -42,14 +42,14 @@ fn a_robot_launcher_shares_sibling_fragments_inside_its_repository() {
     fragment(&root.path().join("commanders/xr.json5"));
     let launcher = root.path().join("openarm/fleet.json5");
     let prepared = prepare(&launcher, "../commanders/xr.json5").unwrap();
-    let flat = prepared.launch(&[]).unwrap().launcher;
+    let flat = prepared.launch(&[], &[]).unwrap().launcher;
     assert_eq!(
         flat.deployments[0].instances[0].instance_id.as_str(),
         "controller_inst"
     );
     fs::remove_file(root.path().join("commanders/xr.json5")).unwrap();
     assert!(
-        prepared.launch(&[]).is_ok(),
+        prepared.launch(&[], &[]).is_ok(),
         "fragment contents are snapshotted"
     );
 }

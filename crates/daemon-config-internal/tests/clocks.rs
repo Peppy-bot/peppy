@@ -251,7 +251,7 @@ fn two_documents_declaring_one_domain_must_agree() {
     };
 
     let error = prepare(directory.path(), &launcher(r#"{ simulation: "wall" }"#))
-        .launch(&words(&["mujoco"]))
+        .launch(&words(&["mujoco"]), &[])
         .expect_err("one domain declared two ways must be refused");
     let CompositionError::ClockDomainConflict {
         domain,
@@ -275,7 +275,7 @@ fn two_documents_declaring_one_domain_must_agree() {
         directory.path(),
         &launcher(r#"{ simulation: { publisher: "engine_inst" } }"#),
     )
-    .launch(&words(&["mujoco"]))
+    .launch(&words(&["mujoco"]), &[])
     .expect("identical declarations agree");
     assert_eq!(
         composed
@@ -327,7 +327,7 @@ fn an_adjustment_binds_a_clock_and_two_fragments_cannot_both_bind_one() {
     };
 
     let composed = prepare(directory.path(), &launcher(r#"mujoco: "sim.json5""#))
-        .launch(&words(&["mujoco"]))
+        .launch(&words(&["mujoco"]), &[])
         .expect("the adjustment applies");
     let bound = composed
         .report
@@ -360,7 +360,7 @@ fn an_adjustment_binds_a_clock_and_two_fragments_cannot_both_bind_one() {
         directory.path(),
         &launcher(r#"mujoco: ["sim.json5", "bench.json5"]"#),
     )
-    .launch(&words(&["mujoco"]))
+    .launch(&words(&["mujoco"]), &[])
     .expect_err("two fragments cannot both bind one clock");
     let CompositionError::AdjustmentsConflict { target, field, .. } = &error else {
         panic!("expected AdjustmentsConflict, got: {error}");
@@ -412,7 +412,7 @@ fn a_copy_binds_a_launcher_domain_and_declares_none() {
     };
 
     let error = prepare(directory.path(), &launcher("declares.json5"))
-        .launch(&[])
+        .launch(&[], &[])
         .expect_err("a copy cannot declare a domain");
     let CompositionError::CopyFragmentDeclaresClock {
         origin,
@@ -430,7 +430,7 @@ fn a_copy_binds_a_launcher_domain_and_declares_none() {
     );
 
     let composed = prepare(directory.path(), &launcher("binds.json5"))
-        .launch(&[])
+        .launch(&[], &[])
         .expect("a copy binds a domain the launcher declares");
     let clocks = resolve_clocks(&composed.launcher, &placements(), &ClockIncarnations::new())
         .expect("the copy's instance resolves");

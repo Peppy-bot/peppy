@@ -61,7 +61,7 @@ pub use stack::budgets::{DEFAULT_IDLE_TIMEOUT_SECS, StackBudgets};
 pub use stack::join::{ArgumentOverride, ArgumentOverrideError, JoinPlacement, StackJoinGoal};
 pub use stack::launch::{
     InstanceEndpoints, LaunchFeedback, LaunchFeedbackStep, LaunchGoal, LaunchGoalResponse,
-    LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
+    LaunchJoin, LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
     PlacementSpec, StackBuildGoal,
 };
 pub use stack::list::{

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use config::node::{NodeConfig, NodeConfigParser};
 use core_node_api::encoding::ArgumentOverride;
-use core_node_api::encoding::LauncherOrigin;
+use core_node_api::encoding::{LaunchJoin, LauncherOrigin};
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
     AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, DeploymentSource,
@@ -28,27 +28,29 @@ const PREVIEW_COPY_NAME: &str = "preview";
 /// an operator there.
 const PREVIEW_CORE_NODE: &str = "cn-preview";
 
-/// Preview one more copy joined onto the resolved launch.
+/// Preview one more copy joined onto the resolved launch afterwards, under
+/// a join's rules.
 #[derive(clap::Args, Debug)]
 pub struct JoinPreview {
-    /// Include a copy of this option, as `stack join OPTION` would add it.
-    #[arg(long = "join", value_name = "OPTION")]
+    /// Then join a copy of this option, as `stack join OPTION` would add it
+    /// to the running stack.
+    #[arg(long = "then-join", value_name = "OPTION")]
     pub option: Option<String>,
-    /// The previewed copy's name: `-i` on `stack join`.
-    #[arg(long = "join-name", requires = "option", value_name = "NAME",
+    /// The joined copy's name: `-i` on `stack join`.
+    #[arg(long = "then-join-name", requires = "option", value_name = "NAME",
         default_value = PREVIEW_COPY_NAME, value_parser = super::parse_copy_name)]
     pub name: config::runtime::Name,
-    /// Select the copied option's own axes: `--with` on `stack join`.
-    // `resolve` carries both `--with` and `--join-with`, whose fields share a
-    // name, so this one spells its clap id out.
-    #[arg(id = "join_words", long = "join-with", requires = "option",
+    /// Select the joined option's own axes: `--with` on `stack join`.
+    // `resolve` carries both `--with` and `--then-join-with`, whose fields
+    // share a name, so this one spells its clap id out.
+    #[arg(id = "join_words", long = "then-join-with", requires = "option",
         value_name = "option|axis=option", value_delimiter = ',',
         value_parser = super::parse_with_word)]
     pub words: Vec<String>,
     /// Override a joined instance's argument with a JSON5 value:
     /// `--set-arguments` on `stack join`.
     #[arg(
-        long = "join-set-arguments",
+        long = "then-join-set-arguments",
         requires = "option",
         value_name = "INSTANCE.ARGUMENT=JSON5"
     )]
@@ -83,9 +85,19 @@ impl Default for JoinPreview {
 /// of the checkout the caches materialized for it; when one is not readable
 /// locally the check is skipped and says so, because a partial item list
 /// would misreport rules that need both endpoints.
-pub fn resolve(launcher_config_path: PathBuf, words: Vec<String>, join: JoinPreview) -> Result<()> {
-    let (document, report) =
-        resolve_rendered(&PeppyDirs::default(), launcher_config_path, &words, &join)?;
+pub fn resolve(
+    launcher_config_path: PathBuf,
+    words: Vec<String>,
+    joins: Vec<LaunchJoin>,
+    then_join: JoinPreview,
+) -> Result<()> {
+    let (document, report) = resolve_rendered(
+        &PeppyDirs::default(),
+        launcher_config_path,
+        &words,
+        &joins,
+        &then_join,
+    )?;
     for line in report {
         eprintln!("{line}");
     }
@@ -102,7 +114,8 @@ pub fn resolve_rendered(
     dirs: &PeppyDirs,
     launcher_config_path: PathBuf,
     words: &[String],
-    join: &JoinPreview,
+    joins: &[LaunchJoin],
+    then_join: &JoinPreview,
 ) -> Result<(String, Vec<String>)> {
     let path = match infer_launcher_origin(launcher_config_path)? {
         LauncherOrigin::Fs(path) => path,
@@ -116,19 +129,31 @@ pub fn resolve_rendered(
     let prepared = PreparedLauncher::load(&parsed, &path)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     let composed = prepared
-        .launch(words)
+        .launch(words, joins)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
     let mut copies = composed.copies().to_vec();
     let mut flat = composed.launcher;
     let mut lines = composed.report.render_lines();
-    if let Some(option) = &join.option {
+    if let Some(option) = &then_join.option {
+        if composed
+            .report
+            .copies
+            .iter()
+            .any(|copy| copy.name == then_join.name)
+        {
+            return Err(Error::ExecutionFailed(format!(
+                "`--then-join-name {}` names a copy the launch already starts; preview the \
+                 join under a name of its own",
+                then_join.name
+            )));
+        }
         let joined = prepared
             .join(
                 daemon_config::launcher::JoinRequest {
                     option,
-                    name: &join.name,
-                    words: &join.words,
-                    arguments: &join.arguments,
+                    name: &then_join.name,
+                    words: &then_join.words,
+                    arguments: &then_join.arguments,
                 },
                 daemon_config::launcher::RunningStack {
                     selection: &composed.selection,
@@ -139,7 +164,7 @@ pub fn resolve_rendered(
         flat = joined.launcher;
         lines.push(format!(
             "copy `{name}` of `{option}` joined:",
-            name = join.name
+            name = then_join.name
         ));
         lines.extend(joined.report.render_lines());
         copies.push(joined.copy);

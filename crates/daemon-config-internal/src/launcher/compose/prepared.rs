@@ -10,11 +10,11 @@ use super::copy::{
 };
 use super::error::CompositionError;
 use super::expand::{Expanded, OriginatedDeployment, Unit, expand_unit, merge_clocks};
-use super::load::{LoadedComposition, launcher_file_label, load_composition};
+use super::load::{LoadedComposition, LoadedOption, launcher_file_label, load_composition};
 use super::report::{CompositionReport, SkipReason, SkippedAdjustment};
 use super::select::{self, CopyOrigin, LaunchWords, UnitSelection};
 use config::runtime::Name;
-use core_node_api::encoding::ArgumentOverride;
+use core_node_api::encoding::{ArgumentOverride, LaunchJoin};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
@@ -79,11 +79,22 @@ impl PreparedLauncher {
     }
 
     /// Composes a launch: the stack under `words`, then every copy the
-    /// launcher's `deployments` list.
-    pub fn launch(&self, words: &[String]) -> Result<ComposedLaunch, CompositionError> {
+    /// launcher's `deployments` list, then every copy `joins` names, each
+    /// composed as a copy of its option's entry under that name.
+    pub fn launch(
+        &self,
+        words: &[String],
+        joins: &[LaunchJoin],
+    ) -> Result<ComposedLaunch, CompositionError> {
         if self.launcher.components.is_empty() {
             if !words.is_empty() {
                 return Err(CompositionError::WithOnFlatLauncher);
+            }
+            if let Some(join) = joins.first() {
+                return Err(CompositionError::JoinUnknownOption {
+                    option: join.option.clone(),
+                    menu: String::from(" this launcher declares no axis running as copies"),
+                });
             }
             return Ok(ComposedLaunch {
                 launcher: self.launcher.clone(),
@@ -91,39 +102,45 @@ impl PreparedLauncher {
                 report: CompositionReport::default(),
             });
         }
-        let LaunchWords { scoped, stack } = select::split_scoped_words(&self.launcher, words)?;
+        let LaunchWords { scoped, stack } =
+            select::split_scoped_words(&self.launcher, words, joins)?;
         let selection = select::resolve_stack(&self.launcher, &self.loaded, &stack)?;
         let bare = self.compose_stack(&selection)?;
         let framework = self.stack_framework(&selection)?;
         let mut taken = bare.core_nodes.clone();
         let mut copies: Vec<ComposedCopy> = Vec::new();
+        // The words scoped to a copy, `NAME.option`, laid over the copy's
+        // settings; a refusal names the word as typed, copy and all.
+        let scoped_words = |name: &Name,
+                            loaded: &LoadedOption|
+         -> Result<BTreeMap<String, String>, CompositionError> {
+            let Some(rests) = scoped.get(name.as_str()) else {
+                return Ok(BTreeMap::new());
+            };
+            let as_typed = |rest: &str| format!("{name}.{rest}");
+            select::copy_words(loaded, rests).map_err(|error| match error {
+                CompositionError::UnknownCopySelection { word, option, menu } => {
+                    CompositionError::UnknownCopySelection {
+                        word: as_typed(&word),
+                        option,
+                        menu,
+                    }
+                }
+                CompositionError::AmbiguousSelection { word, axes } => {
+                    CompositionError::AmbiguousSelection {
+                        word: as_typed(&word),
+                        axes,
+                    }
+                }
+                other => other,
+            })
+        };
         for entry in &self.launcher.option_deployments {
             let loaded = self.loaded.option(&entry.axis, &entry.option);
             for instance in &entry.instances {
                 let settings = entry.settings_for(instance);
                 let mut with = settings.with;
-                if let Some(rests) = scoped.get(instance.instance_id.as_str()) {
-                    // A refusal names the word as typed, copy and all.
-                    let as_typed = |rest: &str| format!("{}.{rest}", instance.instance_id);
-                    let chosen =
-                        select::copy_words(loaded, rests).map_err(|error| match error {
-                            CompositionError::UnknownCopySelection { word, option, menu } => {
-                                CompositionError::UnknownCopySelection {
-                                    word: as_typed(&word),
-                                    option,
-                                    menu,
-                                }
-                            }
-                            CompositionError::AmbiguousSelection { word, axes } => {
-                                CompositionError::AmbiguousSelection {
-                                    word: as_typed(&word),
-                                    axes,
-                                }
-                            }
-                            other => other,
-                        })?;
-                    with.extend(chosen);
-                }
+                with.extend(scoped_words(&instance.instance_id, loaded)?);
                 let copy = compose_copy(
                     self,
                     &selection,
@@ -142,6 +159,39 @@ impl PreparedLauncher {
                 taken.extend(copy.core_nodes.iter().cloned());
                 copies.push(copy);
             }
+        }
+        for join in joins {
+            if copies.iter().any(|copy| copy.name == join.name) {
+                return Err(CompositionError::LaunchJoinNameTaken {
+                    option: join.option.clone(),
+                    name: join.name.to_string(),
+                });
+            }
+            let axis = self.repeatable_axis_of(&join.option)?;
+            let loaded = self.loaded.option(&axis, &join.option);
+            let settings = self.joined_copy_settings(
+                &axis,
+                &join.option,
+                &scoped_words(&join.name, loaded)?,
+                &ArgumentOverrides::default(),
+            );
+            let copy = compose_copy(
+                self,
+                &selection,
+                &bare,
+                CopyRequest {
+                    axis: &axis,
+                    loaded,
+                    name: &join.name,
+                    with: &settings.with,
+                    arguments: &settings.arguments,
+                    adjustments: &settings.adjustments,
+                    origin: CopyOrigin::LaunchJoin,
+                },
+                &taken,
+            )?;
+            taken.extend(copy.core_nodes.iter().cloned());
+            copies.push(copy);
         }
         let launcher = combine(&self.launcher, &bare, &framework, &copies)?;
         let mut report = CompositionReport {
@@ -190,19 +240,10 @@ impl PreparedLauncher {
         request: JoinRequest<'_>,
         stack: RunningStack<'_>,
     ) -> Result<ComposedJoin, CompositionError> {
-        let mut repeatable = self.launcher.repeatable_axes().peekable();
-        if repeatable.peek().is_none() {
-            return Err(CompositionError::NoRepeatableAxis);
-        }
-        let Some(axis) = repeatable.find(|axis| axis.options.contains_key(request.option)) else {
-            return Err(CompositionError::JoinUnknownOption {
-                option: request.option.to_owned(),
-                menu: select::axes_menu(self.launcher.repeatable_axes()),
-            });
-        };
-        let loaded = self.loaded.option(&axis.name, request.option);
+        let axis = self.repeatable_axis_of(request.option)?;
+        let loaded = self.loaded.option(&axis, request.option);
         let settings = self.joined_copy_settings(
-            &axis.name,
+            &axis,
             request.option,
             &select::copy_words(loaded, request.words)?,
             &argument_overrides(request.arguments)?,
@@ -213,7 +254,7 @@ impl PreparedLauncher {
             stack.selection,
             &bare,
             CopyRequest {
-                axis: &axis.name,
+                axis: &axis,
                 loaded,
                 name: request.name,
                 with: &settings.with,
@@ -236,6 +277,22 @@ impl PreparedLauncher {
             copy: record,
             report,
         })
+    }
+
+    /// The `zero_or_more` axis `option` belongs to, which a join and a
+    /// launch-time join copy it from.
+    fn repeatable_axis_of(&self, option: &str) -> Result<String, CompositionError> {
+        let mut repeatable = self.launcher.repeatable_axes().peekable();
+        if repeatable.peek().is_none() {
+            return Err(CompositionError::NoRepeatableAxis);
+        }
+        repeatable
+            .find(|axis| axis.options.contains_key(option))
+            .map(|axis| axis.name.clone())
+            .ok_or_else(|| CompositionError::JoinUnknownOption {
+                option: option.to_owned(),
+                menu: select::axes_menu(self.launcher.repeatable_axes()),
+            })
     }
 
     /// What a joined copy of `option` selects and writes: the settings of

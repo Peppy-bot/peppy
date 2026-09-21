@@ -31,7 +31,7 @@ fn compose(
     file: &Path,
     words: &[String],
 ) -> Result<(PeppyLauncher, CompositionReport), CompositionError> {
-    let composed = PreparedLauncher::load(launcher, file)?.launch(words)?;
+    let composed = PreparedLauncher::load(launcher, file)?.launch(words, &[])?;
     Ok((composed.launcher, composed.report))
 }
 
@@ -1493,7 +1493,7 @@ fn check_composition_flags_a_refused_bare_launch() {
 #[test]
 fn check_composition_flags_a_refused_bare_launch_above_the_ceiling() {
     // Enough binary axes to exceed the enumeration budget.
-    let count = 2048usize.ilog2() + 1;
+    let count = 4096usize.ilog2() + 1;
     let axes = (0..count)
         .map(|i| {
             format!(

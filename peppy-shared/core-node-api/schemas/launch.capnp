@@ -73,6 +73,17 @@ struct LaunchGoal {
     # Forwarded to each node build the launch performs, on the coordinator
     # and on every peer. Absent decodes as false, which reuses such artifacts.
     rebuild @11 :Bool;
+    # The copies `--join OPTION:NAME` starts with the launch, in the order
+    # they were given: each a copy of the launcher's entry for the option
+    # under that name, composed, validated and started with the launch.
+    joins @12 :List(LaunchJoin);
+}
+
+# One `--join OPTION:NAME` on `stack launch`: the option of a `zero_or_more`
+# axis and the name the copy runs under.
+struct LaunchJoin {
+    option @0 :Text;
+    name @1 :Text;
 }
 
 # One `--place <core-node-link>@<core-node>` wiring: the placeholder the
