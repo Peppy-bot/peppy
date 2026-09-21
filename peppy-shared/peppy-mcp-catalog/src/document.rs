@@ -48,6 +48,9 @@ pub struct McpExposure {
     pub peppy_schema: PeppySchema,
     pub manifest: ExposureManifest,
     pub server: ServerIdentity,
+    /// Present on a per-robot surface: every target is then filled by the
+    /// robots of the stack, and every call names its robot.
+    pub robots: Option<RobotSurface>,
     pub targets: IndexMap<String, ExposureTarget>,
 }
 
@@ -62,6 +65,8 @@ struct RawMcpExposure {
     peppy_schema: PeppySchema,
     manifest: ExposureManifest,
     server: ServerIdentity,
+    #[serde(default)]
+    robots: Option<RobotSurface>,
     #[serde(deserialize_with = "deserialize_targets")]
     targets: IndexMap<String, ExposureTarget>,
 }
@@ -73,22 +78,31 @@ impl TryFrom<RawMcpExposure> for McpExposure {
         if raw.targets.is_empty() {
             return Err("an MCP exposure must select at least one target".to_string());
         }
-        let mut public_names: HashSet<&str> = HashSet::new();
+        let mut public_names: HashSet<String> = HashSet::new();
+        let mut claim = |name: &str| -> Result<(), String> {
+            if !public_names.insert(name.to_owned()) {
+                return Err(format!(
+                    "public name `{name}` is declared more than once; resource and tool \
+                     names share one namespace across the exposure"
+                ));
+            }
+            Ok(())
+        };
+        if let Some(robots) = &raw.robots {
+            robots.check_coherence(&raw.targets)?;
+            claim(robots.list.tool.as_str())?;
+        }
         for (target_name, target) in &raw.targets {
-            target.check_coherence(target_name)?;
+            target.check_coherence(target_name, raw.robots.as_ref())?;
             for name in target.public_names() {
-                if !public_names.insert(name) {
-                    return Err(format!(
-                        "public name `{name}` is declared more than once; resource and tool \
-                         names share one namespace across the exposure"
-                    ));
-                }
+                claim(name)?;
             }
         }
         Ok(Self {
             peppy_schema: raw.peppy_schema,
             manifest: raw.manifest,
             server: raw.server,
+            robots: raw.robots,
             targets: raw.targets,
         })
     }
@@ -228,6 +242,11 @@ pub struct PinnedContractRef {
 #[serde(deny_unknown_fields)]
 pub struct ExposureTarget {
     pub contract: PinnedContractRef,
+    /// On a per-robot surface, the argument that names the member a call
+    /// addresses on a target a robot fills any number of times (a camera).
+    /// A target without one is filled at most once per robot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument: Option<ArgumentName>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub topics: Vec<TopicExposure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -239,12 +258,31 @@ pub struct ExposureTarget {
 impl ExposureTarget {
     /// The document-level rules a single target must satisfy, with
     /// `target_name` naming the target in every error.
-    fn check_coherence(&self, target_name: &str) -> Result<(), String> {
+    fn check_coherence(
+        &self,
+        target_name: &str,
+        robots: Option<&RobotSurface>,
+    ) -> Result<(), String> {
         if self.topics.is_empty() && self.services.is_empty() && self.actions.is_empty() {
             return Err(format!(
                 "target `{target_name}` selects no members; list at least one topic, service, \
                  or action"
             ));
+        }
+        match (&self.argument, robots) {
+            (Some(_), None) => {
+                return Err(format!(
+                    "target `{target_name}` declares `argument`, which names the member a call \
+                     addresses on a per-robot surface; declare `robots` or remove it"
+                ));
+            }
+            (Some(argument), Some(robots)) if argument == &robots.argument => {
+                return Err(format!(
+                    "target `{target_name}` declares `argument: \"{argument}\"`, the name \
+                     `robots.argument` already takes; give the target's argument another name"
+                ));
+            }
+            _ => {}
         }
         check_unique_members(
             target_name,
@@ -349,10 +387,11 @@ impl TopicExposure {
             && !self
                 .representation
                 .as_ref()
-                .is_some_and(|r| r.image == ImageCodec::Jpeg)
+                .is_some_and(|r| r.image.downscales())
         {
             return Err(format!(
-                "{context}: `on_oversize: \"downscale\"` requires a `jpeg` image representation"
+                "{context}: `on_oversize: \"downscale\"` requires a `jpeg` or `png16` image \
+                 representation"
             ));
         }
         Ok(())
@@ -467,6 +506,243 @@ pub struct ActionExposure {
 
 fn is_false(value: &bool) -> bool {
     !value
+}
+
+/// What makes an exposure a per-robot surface: the argument every call names
+/// its robot with, the tool that lists the robots, and what the listing
+/// reports of each robot beyond the targets it fills.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RobotSurface {
+    /// The required argument of every tool: the robot's name, as the listing
+    /// tool reports it.
+    pub argument: ArgumentName,
+    pub list: ListTool,
+    /// What the listing reports of each robot, keyed by the field the report
+    /// carries it under, in document order.
+    #[serde(
+        default,
+        skip_serializing_if = "IndexMap::is_empty",
+        deserialize_with = "deserialize_describe"
+    )]
+    pub describe: IndexMap<String, Describe>,
+}
+
+/// The fields every robot's listing entry carries, which a `describe` key
+/// cannot take.
+pub const LISTING_FIELDS: [&str; 4] = ["robot", "capabilities", "members", "notes"];
+
+impl RobotSurface {
+    fn check_coherence(&self, targets: &IndexMap<String, ExposureTarget>) -> Result<(), String> {
+        for (key, describe) in &self.describe {
+            if LISTING_FIELDS.contains(&key.as_str()) {
+                return Err(format!(
+                    "`robots.describe` key `{key}` is a field every listing entry carries \
+                     (`{}`); choose another key",
+                    LISTING_FIELDS.join("`, `")
+                ));
+            }
+            let Some(target) = targets.get(&describe.target) else {
+                return Err(format!(
+                    "`robots.describe.{key}` names target `{}`, which the exposure does not \
+                     declare",
+                    describe.target
+                ));
+            };
+            if target.argument.is_some() {
+                return Err(format!(
+                    "`robots.describe.{key}` names target `{}`, which a robot fills any number \
+                     of times; the listing describes a robot through a target it fills once",
+                    describe.target
+                ));
+            }
+            match &describe.member {
+                DescribeMember::Service(service) => {
+                    if !target.services.iter().any(|s| &s.member == service) {
+                        return Err(format!(
+                            "`robots.describe.{key}` names service `{service}` of target `{}`, \
+                             which the target does not select as a tool",
+                            describe.target
+                        ));
+                    }
+                }
+                DescribeMember::Topic { topic, .. } => {
+                    if !target.topics.iter().any(|t| &t.member == topic) {
+                        return Err(format!(
+                            "`robots.describe.{key}` names topic `{topic}` of target `{}`, \
+                             which the target does not select as a resource",
+                            describe.target
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The tool that lists the robots of the stack, with what each one fills.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ListTool {
+    pub tool: PublicName,
+    #[serde(deserialize_with = "deserialize_prose")]
+    pub description: String,
+}
+
+/// One thing the listing reports of each robot: a service's response, or
+/// named fields of a topic's latest snapshot, read through a target the
+/// robot fills once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(try_from = "RawDescribe", into = "RawDescribe")]
+pub struct Describe {
+    pub target: String,
+    pub member: DescribeMember,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DescribeMember {
+    /// The response of this service, called when the robot is listed.
+    Service(String),
+    /// These root fields of the topic's latest snapshot.
+    Topic { topic: String, fields: Vec<String> },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDescribe {
+    target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    topic: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fields: Vec<String>,
+}
+
+impl TryFrom<RawDescribe> for Describe {
+    type Error = String;
+
+    fn try_from(raw: RawDescribe) -> Result<Self, String> {
+        check_identifier(&raw.target, "`describe` target")?;
+        let member = match (raw.service, raw.topic) {
+            (Some(service), None) => {
+                if !raw.fields.is_empty() {
+                    return Err(
+                        "a `describe` entry naming a service reports its whole response; \
+                         `fields` applies to a topic"
+                            .to_string(),
+                    );
+                }
+                check_identifier(&service, "`describe` service")?;
+                DescribeMember::Service(service)
+            }
+            (None, Some(topic)) => {
+                check_identifier(&topic, "`describe` topic")?;
+                if raw.fields.is_empty() {
+                    return Err(format!(
+                        "a `describe` entry naming topic `{topic}` lists the snapshot `fields` \
+                         it reports; name at least one"
+                    ));
+                }
+                for field in &raw.fields {
+                    check_identifier(field, "`describe` field")?;
+                }
+                DescribeMember::Topic {
+                    topic,
+                    fields: raw.fields,
+                }
+            }
+            (Some(_), Some(_)) => {
+                return Err(
+                    "a `describe` entry names either a `service` or a `topic`, not both"
+                        .to_string(),
+                );
+            }
+            (None, None) => {
+                return Err("a `describe` entry names a `service` or a `topic`".to_string());
+            }
+        };
+        Ok(Self {
+            target: raw.target,
+            member,
+        })
+    }
+}
+
+impl From<Describe> for RawDescribe {
+    fn from(describe: Describe) -> Self {
+        match describe.member {
+            DescribeMember::Service(service) => Self {
+                target: describe.target,
+                service: Some(service),
+                topic: None,
+                fields: Vec::new(),
+            },
+            DescribeMember::Topic { topic, fields } => Self {
+                target: describe.target,
+                service: None,
+                topic: Some(topic),
+                fields,
+            },
+        }
+    }
+}
+
+/// Deserialize the `describe` map, rejecting duplicate and malformed keys:
+/// a key is a field of the listing's JSON.
+fn deserialize_describe<'de, D>(deserializer: D) -> Result<IndexMap<String, Describe>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_unique_map(
+        deserializer,
+        "a map of listing fields to what each reports",
+        "`describe` key",
+        |key| check_argument_name(key, "`describe` key"),
+    )
+}
+
+/// The name of an argument the server adds to every tool's input: a
+/// `snake_case` identifier, so it is a JSON property name alongside the
+/// contract's own fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(try_from = "String")]
+pub struct ArgumentName(String);
+
+impl ArgumentName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ArgumentName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for ArgumentName {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, String> {
+        check_argument_name(&value, "argument name")?;
+        Ok(Self(value))
+    }
+}
+
+/// `snake_case`: a lowercase ASCII letter, then lowercase letters, digits and
+/// `_`.
+fn check_argument_name(value: &str, label: &str) -> Result<(), String> {
+    let mut chars = value.chars();
+    let starts_well = chars.next().is_some_and(|c| c.is_ascii_lowercase());
+    if !starts_well || !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return Err(format!(
+            "{label} `{value}` is not snake_case: a lowercase ASCII letter, then lowercase \
+             letters, digits and `_`"
+        ));
+    }
+    Ok(())
 }
 
 /// A stable public resource or tool name: 1 to 128 characters drawn from
@@ -1112,6 +1388,185 @@ mod tests {
             exposure.manifest.labels.as_deref(),
             Some(&["camera".to_string(), "demo".to_string()][..])
         );
+    }
+
+    /// A per-robot surface: a target filled once per robot, a camera target
+    /// filled any number of times, and a listing describing each robot.
+    fn per_robot(robots: &str) -> String {
+        format!(
+            r#"{{
+            peppy_schema: "mcp_exposure/v1",
+            manifest: {{ name: "robot_control", tag: "v1" }},
+            server: {{ title: "Robots" }},
+            {robots}
+            targets: {{
+                status: {{
+                    contract: {{ name: "robot_status", tag: "v1" }},
+                    topics: [
+                        {{
+                            member: "status",
+                            resource: "robot.status",
+                            description: "The robot's latest status.",
+                            freshness: {{ max_age_ms: 2000 }},
+                            update: {{ max_hz: 2 }},
+                        }},
+                    ],
+                    services: [
+                        {{
+                            member: "get_identity",
+                            tool: "robot.get_identity",
+                            description: "Who the robot is.",
+                            operation: "read_only",
+                            deadline_ms: 2000,
+                        }},
+                    ],
+                }},
+                camera: {{
+                    contract: {{ name: "rgb_camera", tag: "v1", sha256: "{RGB_SHA}" }},
+                    argument: "camera",
+                    services: [{INFO_SERVICE}],
+                }},
+            }},
+        }}"#
+        )
+    }
+
+    const ROBOTS: &str = r#"robots: {
+        argument: "robot",
+        list: { tool: "robot.list", description: "The robots of the stack." },
+        describe: {
+            identity: { target: "status", service: "get_identity" },
+            state: { target: "status", topic: "status", fields: ["battery"] },
+        },
+    },"#;
+
+    #[test]
+    fn parses_a_per_robot_surface() {
+        let exposure = parse(&per_robot(ROBOTS)).expect("parses");
+        let robots = exposure.robots.as_ref().expect("a per-robot surface");
+        assert_eq!(robots.argument.as_str(), "robot");
+        assert_eq!(robots.list.tool.as_str(), "robot.list");
+        assert_eq!(
+            robots.describe["identity"].member,
+            DescribeMember::Service("get_identity".to_string())
+        );
+        assert_eq!(
+            robots.describe["state"].member,
+            DescribeMember::Topic {
+                topic: "status".to_string(),
+                fields: vec!["battery".to_string()],
+            }
+        );
+        assert_eq!(
+            exposure.targets["camera"]
+                .argument
+                .as_ref()
+                .map(ArgumentName::as_str),
+            Some("camera")
+        );
+        assert_eq!(exposure.targets["status"].argument, None);
+        let serialized = serde_json::to_string(&exposure).expect("serializes");
+        let reparsed: McpExposure = serde_json::from_str(&serialized).expect("reparses");
+        assert_eq!(reparsed, exposure);
+    }
+
+    #[test]
+    fn a_target_argument_needs_a_per_robot_surface() {
+        let err = parse_err(&per_robot(""));
+        assert!(
+            err.contains("target `camera` declares `argument`") && err.contains("declare `robots`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_target_argument_cannot_take_the_robot_arguments_name() {
+        let err =
+            parse_err(&per_robot(ROBOTS).replace(r#"argument: "camera""#, r#"argument: "robot""#));
+        assert!(err.contains("`robots.argument` already takes"), "{err}");
+    }
+
+    #[test]
+    fn the_listing_tool_shares_the_public_namespace() {
+        let err =
+            parse_err(&per_robot(ROBOTS).replace(r#"tool: "robot.list""#, r#"tool: "cam.info""#));
+        assert!(
+            err.contains("`cam.info` is declared more than once"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn argument_names_are_snake_case() {
+        for bad in [r#""Robot""#, r#""robot-name""#, r#""1robot""#, r#""""#] {
+            let err = parse_err(
+                &per_robot(ROBOTS).replace(r#"argument: "robot""#, &format!("argument: {bad}")),
+            );
+            assert!(err.contains("is not snake_case"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn describe_keys_cannot_be_listing_fields() {
+        for field in LISTING_FIELDS {
+            let err = parse_err(&per_robot(ROBOTS).replace("identity: {", &format!("{field}: {{")));
+            assert!(err.contains(&format!("key `{field}`")), "{field}: {err}");
+        }
+    }
+
+    #[test]
+    fn describe_entries_name_a_selected_member_of_a_target_filled_once() {
+        let unknown_target = per_robot(ROBOTS).replace(
+            r#"target: "status", service"#,
+            r#"target: "nothing", service"#,
+        );
+        assert!(parse_err(&unknown_target).contains("names target `nothing`"));
+        let unselected_service =
+            per_robot(ROBOTS).replace(r#"service: "get_identity""#, r#"service: "reboot""#);
+        assert!(parse_err(&unselected_service).contains("does not select as a tool"));
+        let unselected_topic =
+            per_robot(ROBOTS).replace(r#"topic: "status", fields"#, r#"topic: "log", fields"#);
+        assert!(parse_err(&unselected_topic).contains("does not select as a resource"));
+        let per_member = per_robot(ROBOTS).replace(
+            r#"identity: { target: "status", service: "get_identity" }"#,
+            r#"identity: { target: "camera", service: "video_stream_info" }"#,
+        );
+        assert!(parse_err(&per_member).contains("fills any number of times"));
+    }
+
+    #[test]
+    fn a_describe_entry_names_one_member_kind() {
+        let both = per_robot(ROBOTS).replace(
+            r#"service: "get_identity" }"#,
+            r#"service: "get_identity", topic: "status", fields: ["battery"] }"#,
+        );
+        assert!(parse_err(&both).contains("not both"));
+        let neither = per_robot(ROBOTS).replace(r#", service: "get_identity""#, "");
+        assert!(parse_err(&neither).contains("names a `service` or a `topic`"));
+        let no_fields = per_robot(ROBOTS).replace(r#", fields: ["battery"]"#, "");
+        assert!(parse_err(&no_fields).contains("name at least one"));
+        let service_fields = per_robot(ROBOTS).replace(
+            r#"service: "get_identity" }"#,
+            r#"service: "get_identity", fields: ["robot"] }"#,
+        );
+        assert!(parse_err(&service_fields).contains("`fields` applies to a topic"));
+    }
+
+    #[test]
+    fn a_png16_representation_downscales_and_takes_no_quality() {
+        let doc = camera_and_recording()
+            .replace(r#"image: "jpeg""#, r#"image: "png16""#)
+            .replace("quality: 80,", "");
+        let exposure = parse(&doc).expect("png16 downscales");
+        assert_eq!(
+            exposure.targets["front_camera"].topics[0]
+                .representation
+                .as_ref()
+                .map(|r| r.image),
+            Some(ImageCodec::Png16)
+        );
+        let with_quality = camera_and_recording().replace(r#"image: "jpeg""#, r#"image: "png16""#);
+        assert!(parse_err(&with_quality).contains("`quality` applies only to the `jpeg`"));
     }
 
     #[test]

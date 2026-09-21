@@ -26,9 +26,9 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 # touches the Peppy graph. Default features are dropped so no HTTP resolver or
 # TLS stack rides along; bundle schemas are self-contained.
 jsonschema = { version = "0.56", default-features = false }
-# JPEG transcoding for image-representation topic snapshots; jpeg is the only
-# codec the representation policy emits.
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# JPEG and 16-bit PNG transcoding for image-representation topic snapshots,
+# the two codecs the representation policy emits.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 base64 = "0.23"
 tracing = "0.1"
 

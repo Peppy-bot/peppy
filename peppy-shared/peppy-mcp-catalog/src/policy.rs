@@ -64,7 +64,9 @@ pub enum OversizePolicy {
 /// schema and publish it in the declared codec. Frames whose encoding
 /// already matches the codec pass through without transcoding. A `jpeg`
 /// representation renders colour frames (`rgb8`, `bgr8`) as they are and
-/// `z16` depth frames as the greyscale picture its `depth_range` spans.
+/// 16-bit depth frames as the greyscale picture its `depth_range` spans; a
+/// `png16` representation keeps 16-bit single-channel frames losslessly;
+/// `raw` publishes the frame bytes untouched.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(try_from = "RawImageRepresentation")]
 pub struct ImageRepresentation {
@@ -90,9 +92,9 @@ struct RawImageRepresentation {
 impl TryFrom<RawImageRepresentation> for ImageRepresentation {
     type Error = String;
 
-    /// `raw` publishes frame bytes untouched, so there is no encode step a
-    /// quality could apply to and no picture a depth range could span;
-    /// accepting either would silently ignore it.
+    /// `quality` and `depth_range` belong to `jpeg`, the one codec that
+    /// encodes at a quality and renders a picture from a range: `png16` is
+    /// lossless and `raw` has no encode step.
     fn try_from(raw: RawImageRepresentation) -> Result<Self, String> {
         if raw.quality.is_some() && raw.image != ImageCodec::Jpeg {
             return Err("`quality` applies only to the `jpeg` image representation".to_string());
@@ -112,13 +114,23 @@ impl TryFrom<RawImageRepresentation> for ImageRepresentation {
 }
 
 /// The published encoding of an image resource. `jpeg` transcodes
-/// uncompressed frames; `raw` passes frame bytes through untouched and is
-/// the explicit opt-in for uncompressed data.
+/// uncompressed color frames; `png16` transcodes 16-bit single-channel
+/// frames (a depth map) losslessly; `raw` passes frame bytes through
+/// untouched and is the explicit opt-in for uncompressed data.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageCodec {
     Jpeg,
+    Png16,
     Raw,
+}
+
+impl ImageCodec {
+    /// Whether the runtime can re-encode a frame of this codec at a smaller
+    /// size, which `on_oversize: "downscale"` asks for.
+    pub fn downscales(self) -> bool {
+        matches!(self, Self::Jpeg | Self::Png16)
+    }
 }
 
 /// JPEG quality between 1 and 100.
@@ -318,15 +330,17 @@ mod tests {
                 .expect("raw without a quality is the normal raw representation");
         assert_eq!(raw.quality, None);
 
-        let error = serde_json::from_str::<ImageRepresentation>(&format!(
-            r#"{{"image": "raw", "quality": 80, {fields}}}"#
-        ))
-        .expect_err("a raw representation has no encode step to apply a quality to")
-        .to_string();
-        assert!(
-            error.contains("`quality` applies only to the `jpeg`"),
-            "unexpected error: {error}"
-        );
+        for codec in ["raw", "png16"] {
+            let error = serde_json::from_str::<ImageRepresentation>(&format!(
+                r#"{{"image": "{codec}", "quality": 80, {fields}}}"#
+            ))
+            .expect_err("only jpeg encodes at a quality")
+            .to_string();
+            assert!(
+                error.contains("`quality` applies only to the `jpeg`"),
+                "{codec}: unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
@@ -376,15 +390,17 @@ mod tests {
                 .expect("a colour-only representation declares no range");
         assert_eq!(without.depth_range, None);
 
-        let error = serde_json::from_str::<ImageRepresentation>(&format!(
-            r#"{{"image": "raw", {range}, {fields}}}"#
-        ))
-        .expect_err("a raw representation renders no picture a range could span")
-        .to_string();
-        assert!(
-            error.contains("`depth_range` applies only to the `jpeg`"),
-            "unexpected error: {error}"
-        );
+        for codec in ["raw", "png16"] {
+            let error = serde_json::from_str::<ImageRepresentation>(&format!(
+                r#"{{"image": "{codec}", {range}, {fields}}}"#
+            ))
+            .expect_err("only jpeg renders a picture a range could span")
+            .to_string();
+            assert!(
+                error.contains("`depth_range` applies only to the `jpeg`"),
+                "{codec}: unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

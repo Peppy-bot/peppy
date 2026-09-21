@@ -9,10 +9,13 @@
 //! repository machinery is the caller's job.
 
 use crate::bundle::{
-    BundleContractPin, BundleIdentity, BundleServer, EXPOSURE_BUNDLE_FORMAT, ExposureBundle,
-    ResourceEntry, ResourcePolicies, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
+    BundleContractPin, BundleIdentity, BundleServer, DescribeEntry, DescribeSource,
+    EXPOSURE_BUNDLE_FORMAT, ExposureBundle, ListEntry, ResourceEntry, ResourcePolicies,
+    RobotCatalog, SCHEMA_MAPPING_VERSION, TaskEntry, ToolEntry,
 };
-use crate::document::{McpExposure, ServiceExposure, TopicExposure};
+use crate::document::{
+    ArgumentName, DescribeMember, McpExposure, RobotSurface, ServiceExposure, TopicExposure,
+};
 use crate::policy::ImageFieldMap;
 use crate::schema::{
     MaxSerializedSize, empty_object_schema, integer_bounds, max_serialized_json_bytes,
@@ -174,7 +177,17 @@ pub fn build_exposure_bundle(
             tag: reference.tag.clone(),
             sha256: contract.sha256.to_string(),
             link_id: target_name.clone(),
+            argument: target.argument.as_ref().map(ToString::to_string),
         };
+        // The arguments the server adds to every call on this target: the
+        // robot's name on a per-robot surface, and the member's name on a
+        // target a robot fills any number of times.
+        let routing: Vec<&str> = exposure
+            .robots
+            .iter()
+            .map(|robots| robots.argument.as_str())
+            .chain(target.argument.iter().map(ArgumentName::as_str))
+            .collect();
 
         for topic in &target.topics {
             let Some(declared) = find_topic(contract, &topic.member) else {
@@ -204,9 +217,19 @@ pub fn build_exposure_bundle(
                 ));
                 continue;
             };
-            if let Some(entry) = check_service(target_name, service, declared, &mut violations) {
-                tools.push(entry);
-                tool_members.push(BoundMember::new(&slot, declared));
+            if let Some(mut entry) = check_service(target_name, service, declared, &mut violations)
+            {
+                let context = format!("target `{target_name}` service `{}`", service.member);
+                if add_routing_arguments(
+                    &context,
+                    &routing,
+                    declared.request_message_format.as_ref(),
+                    &mut entry.input_schema,
+                    &mut violations,
+                ) {
+                    tools.push(entry);
+                    tool_members.push(BoundMember::new(&slot, declared));
+                }
             }
         }
 
@@ -253,11 +276,23 @@ pub fn build_exposure_bundle(
                 &format!("{context} result"),
                 &mut violations,
             );
-            let (Some(input_schema), Some(_), Some(output_schema)) =
+            let (Some(mut input_schema), Some(_), Some(output_schema)) =
                 (goal_request, goal_response, result)
             else {
                 continue;
             };
+            if !add_routing_arguments(
+                &context,
+                &routing,
+                declared
+                    .goal_service
+                    .as_ref()
+                    .and_then(|g| g.request_message_format.as_ref()),
+                &mut input_schema,
+                &mut violations,
+            ) {
+                continue;
+            }
             let feedback_schema = match feedback {
                 Some(Some(schema)) => Some(schema),
                 Some(None) => continue,
@@ -281,6 +316,11 @@ pub fn build_exposure_bundle(
         pins.push(slot);
     }
 
+    let robots = exposure
+        .robots
+        .as_ref()
+        .map(|robots| robot_catalog(robots, &resources, &tools, &mut violations));
+
     if !violations.is_empty() {
         return Err(ExposureValidationError { violations });
     }
@@ -297,6 +337,7 @@ pub fn build_exposure_bundle(
                 title: exposure.server.title.clone(),
                 instructions: exposure.server.instructions.clone(),
             },
+            robots,
             contracts: pins,
             resources,
             tools,
@@ -306,6 +347,116 @@ pub fn build_exposure_bundle(
         tools: tool_members,
         tasks: task_members,
     })
+}
+
+/// Adds the routing arguments to a tool's derived input schema, as required
+/// string properties. A contract request field of the same name is a
+/// violation: the server could not tell the two apart. Returns whether the
+/// schema is usable.
+fn add_routing_arguments(
+    context: &str,
+    routing: &[&str],
+    request_format: Option<&MessageFormat>,
+    input_schema: &mut Value,
+    violations: &mut Vec<String>,
+) -> bool {
+    if routing.is_empty() {
+        return true;
+    }
+    let mut usable = true;
+    for argument in routing {
+        if request_format.is_some_and(|format| format.0.contains_key(*argument)) {
+            violations.push(format!(
+                "{context}: the request format declares `{argument}`, the name the server \
+                 adds to every call as a routing argument; rename the argument in the exposure"
+            ));
+            usable = false;
+        }
+    }
+    if !usable {
+        return false;
+    }
+    let Some(schema) = input_schema.as_object_mut() else {
+        return true;
+    };
+    let properties = schema
+        .entry("properties")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Some(properties) = properties.as_object_mut() {
+        for argument in routing {
+            properties.insert(
+                (*argument).to_string(),
+                serde_json::json!({ "type": "string" }),
+            );
+        }
+    }
+    let required = schema
+        .entry("required")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(required) = required.as_array_mut() {
+        required.extend(routing.iter().map(|argument| Value::from(*argument)));
+    }
+    true
+}
+
+/// The per-robot surface of the bundle: each `describe` entry resolved to
+/// the resource or tool the listing reads it through, whose snapshot fields
+/// are checked against the topic's format.
+fn robot_catalog(
+    robots: &RobotSurface,
+    resources: &[ResourceEntry],
+    tools: &[ToolEntry],
+    violations: &mut Vec<String>,
+) -> RobotCatalog {
+    let mut describe = Vec::with_capacity(robots.describe.len());
+    for (key, entry) in &robots.describe {
+        let context = format!("`robots.describe.{key}`");
+        let source = match &entry.member {
+            DescribeMember::Service(service) => tools
+                .iter()
+                .find(|tool| tool.target == entry.target && &tool.member == service)
+                .map(|tool| DescribeSource::Tool {
+                    name: tool.name.clone(),
+                }),
+            DescribeMember::Topic { topic, fields } => resources
+                .iter()
+                .find(|resource| resource.target == entry.target && &resource.member == topic)
+                .map(|resource| {
+                    let known = resource.schema.get("properties").and_then(Value::as_object);
+                    for field in fields {
+                        if !known.is_some_and(|properties| properties.contains_key(field)) {
+                            violations.push(format!(
+                                "{context}: field `{field}` is not a root member of topic \
+                                 `{topic}` of target `{}`",
+                                entry.target
+                            ));
+                        }
+                    }
+                    DescribeSource::Resource {
+                        name: resource.name.clone(),
+                        fields: fields.clone(),
+                    }
+                }),
+        };
+        // The document check holds every `describe` entry to a member its
+        // target selects, so an entry without a catalog entry is one whose
+        // member did not validate, already reported under the target.
+        if let Some(source) = source {
+            describe.push(DescribeEntry {
+                key: key.clone(),
+                target: entry.target.clone(),
+                source,
+            });
+        }
+    }
+    RobotCatalog {
+        argument: robots.argument.to_string(),
+        list: ListEntry {
+            name: robots.list.tool.to_string(),
+            description: robots.list.description.clone(),
+        },
+        describe,
+    }
 }
 
 /// The resource entry of a topic that validates; `None` records why it

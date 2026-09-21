@@ -708,3 +708,206 @@ fn the_validation_error_renders_one_bullet_per_violation() {
         "the exposure does not validate against its contracts:\n  - first problem\n  - second problem"
     );
 }
+
+const STATUS_CONTRACT: &str = r#"{
+    peppy_schema: "contract/v1",
+    manifest: { name: "robot_status", tag: "v1" },
+    interfaces: {
+        topics: [
+            {
+                name: "status",
+                qos_profile: "sensor_data",
+                message_format: { battery: "u8", mode: "string" },
+            },
+        ],
+        services: [
+            {
+                name: "get_identity",
+                response_message_format: { robot: "string", model: "string" },
+            },
+            {
+                name: "rename",
+                request_message_format: { robot: "string" },
+                response_message_format: { applied: "bool" },
+            },
+        ],
+    },
+}"#;
+
+/// A per-robot surface over the status contract and the walkthrough camera.
+fn per_robot_exposure(status_sha: &str, extra_status_services: &str) -> String {
+    format!(
+        r#"{{
+        peppy_schema: "mcp_exposure/v1",
+        manifest: {{ name: "robot_control", tag: "v1" }},
+        server: {{ title: "Robots" }},
+        robots: {{
+            argument: "robot",
+            list: {{ tool: "robot.list", description: "The robots of the stack." }},
+            describe: {{
+                identity: {{ target: "status", service: "get_identity" }},
+                state: {{ target: "status", topic: "status", fields: ["battery"] }},
+            }},
+        }},
+        targets: {{
+            status: {{
+                contract: {{ name: "robot_status", tag: "v1", sha256: "{status_sha}" }},
+                topics: [
+                    {{
+                        member: "status",
+                        resource: "robot.status",
+                        description: "The robot's latest status.",
+                        freshness: {{ max_age_ms: 2000 }},
+                        update: {{ max_hz: 2 }},
+                        max_result_bytes: 4096,
+                        on_oversize: "reject",
+                    }},
+                ],
+                services: [
+                    {{
+                        member: "get_identity",
+                        tool: "robot.get_identity",
+                        description: "Who the robot is.",
+                        operation: "read_only",
+                        deadline_ms: 2000,
+                    }},
+                    {extra_status_services}
+                ],
+            }},
+            camera: {{
+                contract: {{ name: "rgb_camera", tag: "v1", sha256: "{}" }},
+                argument: "camera",
+                services: [
+                    {{
+                        member: "set_brightness",
+                        tool: "camera.set_brightness",
+                        description: "Set the camera's brightness.",
+                        operation: "mutating",
+                        deadline_ms: 2000,
+                    }},
+                ],
+            }},
+        }},
+    }}"#,
+        sha_of(CAMERA_CONTRACT)
+    )
+}
+
+#[test]
+fn a_per_robot_bundle_adds_the_routing_arguments_and_resolves_its_listing() {
+    let status = fixture(STATUS_CONTRACT);
+    let camera = fixture(CAMERA_CONTRACT);
+    let bundle = build(
+        &per_robot_exposure(&sha_of(STATUS_CONTRACT), ""),
+        &[&status, &camera],
+    );
+
+    let robots = bundle.robots.as_ref().expect("a per-robot bundle");
+    assert_eq!(robots.argument, "robot");
+    assert_eq!(robots.list.name, "robot.list");
+    assert_eq!(
+        robots.describe,
+        vec![
+            DescribeEntry {
+                key: "identity".to_string(),
+                target: "status".to_string(),
+                source: DescribeSource::Tool {
+                    name: "robot.get_identity".to_string()
+                },
+            },
+            DescribeEntry {
+                key: "state".to_string(),
+                target: "status".to_string(),
+                source: DescribeSource::Resource {
+                    name: "robot.status".to_string(),
+                    fields: vec!["battery".to_string()],
+                },
+            },
+        ]
+    );
+    let by_slot: BTreeMap<&str, Option<&str>> = bundle
+        .contracts
+        .iter()
+        .map(|pin| (pin.link_id.as_str(), pin.argument.as_deref()))
+        .collect();
+    assert_eq!(by_slot["status"], None);
+    assert_eq!(by_slot["camera"], Some("camera"));
+
+    let identity = &bundle.tools[0];
+    assert_eq!(identity.name, "robot.get_identity");
+    assert_eq!(
+        identity.input_schema["required"],
+        serde_json::json!(["robot"])
+    );
+    assert_eq!(
+        identity.input_schema["properties"]["robot"],
+        serde_json::json!({ "type": "string" })
+    );
+    let brightness = &bundle.tools[1];
+    assert_eq!(brightness.name, "camera.set_brightness");
+    assert_eq!(
+        brightness.input_schema["required"],
+        serde_json::json!(["value", "robot", "camera"])
+    );
+    assert_eq!(
+        brightness.input_schema["additionalProperties"],
+        serde_json::json!(false)
+    );
+
+    let reparsed = ExposureBundle::from_json_str(&bundle.to_json_string()).expect("round trips");
+    assert_eq!(reparsed, bundle);
+}
+
+#[test]
+fn a_request_field_named_like_a_routing_argument_is_refused() {
+    let status = fixture(STATUS_CONTRACT);
+    let camera = fixture(CAMERA_CONTRACT);
+    let rename = r#"{
+        member: "rename",
+        tool: "robot.rename",
+        description: "Rename the robot.",
+        operation: "mutating",
+        deadline_ms: 2000,
+    },"#;
+    let violations = violations_of(
+        &per_robot_exposure(&sha_of(STATUS_CONTRACT), rename),
+        &[&status, &camera],
+    );
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("service `rename`")
+            && violations[0].contains("declares `robot`, the name the server adds"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn a_describe_field_must_be_a_root_member_of_its_topic() {
+    let status = fixture(STATUS_CONTRACT);
+    let camera = fixture(CAMERA_CONTRACT);
+    let violations = violations_of(
+        &per_robot_exposure(&sha_of(STATUS_CONTRACT), "")
+            .replace(r#"fields: ["battery"]"#, r#"fields: ["battery", "charge"]"#),
+        &[&status, &camera],
+    );
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(
+        violations[0].contains("`robots.describe.state`")
+            && violations[0].contains("field `charge`"),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn a_fixed_bundle_carries_no_robot_surface() {
+    let bundle = build(
+        WALKTHROUGH_EXPOSURE,
+        &[&fixture(CAMERA_CONTRACT), &fixture(RECORDING_CONTRACT)],
+    );
+    assert_eq!(bundle.robots, None);
+    assert!(bundle.contracts.iter().all(|pin| pin.argument.is_none()));
+    assert!(
+        !bundle.to_json_string().contains("\"robots\""),
+        "an absent surface is not written"
+    );
+}

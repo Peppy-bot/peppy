@@ -2,22 +2,24 @@
 //!
 //! [`apply_topic_policies`] runs after the update-rate gate admitted a
 //! message and the bridge decoded it to canonical JSON. It transcodes
-//! image-carrying snapshots to the declared codec, colour frames as they
-//! are and `z16` depth frames as a greyscale picture, then enforces
-//! `max_result_bytes` on the final serialized content, downscaling or
-//! rejecting oversize snapshots as the exposure declares.
+//! image-carrying snapshots to the declared codec: under `jpeg`, colour
+//! frames as they are and 16-bit depth frames as a greyscale picture; under
+//! `png16`, 16-bit single-channel frames such as a depth map losslessly.
+//! It then enforces `max_result_bytes` on the final serialized content,
+//! downscaling or rejecting oversize snapshots as the exposure declares.
 
 use crate::error::PublishError;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use image::{DynamicImage, ExtendedColorType, GrayImage, ImageFormat, RgbImage};
+use image::{DynamicImage, ExtendedColorType, GrayImage, ImageFormat, Luma, RgbImage};
 use peppy_mcp_catalog::{
     DepthRange, ImageCodec, ImageFieldMap, ImageRepresentation, OversizePolicy, ResourcePolicies,
 };
 use serde_json::Value;
 use std::borrow::Cow;
+use std::io::Cursor;
 
 /// Quality used when an exposure declares a jpeg representation without an
 /// explicit `quality`.
@@ -30,9 +32,23 @@ const MIN_DOWNSCALE_EDGE: u32 = 16;
 /// Encoding labels that already carry JPEG bytes and pass through untouched.
 const JPEG_ENCODINGS: [&str; 2] = ["mjpeg", "jpeg"];
 
-/// The encoding label written after a transcode, matching the label
+/// The encoding label written after a transcode to JPEG, matching the label
 /// pass-through recognizes.
-const TRANSCODED_ENCODING: &str = "mjpeg";
+const TRANSCODED_JPEG_ENCODING: &str = "mjpeg";
+
+/// Encoding labels that already carry PNG bytes and pass through once they
+/// read as 16-bit single-channel.
+const PNG_ENCODINGS: [&str; 1] = ["png"];
+
+/// The encoding label written after a transcode to PNG.
+const TRANSCODED_PNG_ENCODING: &str = "png";
+
+/// Encoding labels of one unsigned 16-bit little-endian sample per pixel: a
+/// depth map in the unit its stream info reports.
+const U16_ENCODINGS: [&str; 3] = ["z16", "mono16", "16UC1"];
+
+/// A 16-bit image in memory, before it is encoded as PNG.
+type Luma16Image = image::ImageBuffer<Luma<u16>, Vec<u16>>;
 
 /// Applies the representation policy and the size policy to a snapshot,
 /// returning the final serialized content a read serves.
@@ -41,7 +57,11 @@ pub(crate) fn apply_topic_policies(
     value: &mut Value,
 ) -> Result<String, PublishError> {
     if let Some(representation) = &policies.representation {
-        transcode(representation, value)?;
+        match representation.image {
+            ImageCodec::Raw => {}
+            ImageCodec::Jpeg => transcode_jpeg(representation, value)?,
+            ImageCodec::Png16 => transcode_png16(&representation.fields, value)?,
+        }
     }
     let serialized = serialize(value);
     let Some(limit) = policies.max_result_bytes else {
@@ -51,20 +71,10 @@ pub(crate) fn apply_topic_policies(
     if serialized.len() as u64 <= limit {
         return Ok(serialized);
     }
-    let downscalable_fields = policies
-        .representation
-        .as_ref()
-        .filter(|representation| representation.image == ImageCodec::Jpeg)
-        .map(|representation| &representation.fields);
-    match (policies.on_oversize, downscalable_fields) {
-        (Some(OversizePolicy::Downscale), Some(fields)) => {
-            let quality = policies
-                .representation
-                .as_ref()
-                .and_then(|representation| representation.quality)
-                .map(|quality| quality.get())
-                .unwrap_or(DEFAULT_JPEG_QUALITY);
-            downscale_to_fit(fields, quality, value, limit, serialized)
+    let downscale = policies.representation.as_ref().and_then(Downscale::of);
+    match (policies.on_oversize, downscale) {
+        (Some(OversizePolicy::Downscale), Some((downscale, fields))) => {
+            downscale_to_fit(&downscale, fields, value, limit, serialized)
         }
         _ => Err(PublishError::Oversize {
             size: serialized.len() as u64,
@@ -79,80 +89,140 @@ fn serialize(value: &Value) -> String {
     serde_json::to_string(value).expect("JSON value serializes")
 }
 
+/// The quality a `jpeg` representation encodes at.
+fn jpeg_quality(representation: &ImageRepresentation) -> u8 {
+    representation
+        .quality
+        .map(|quality| quality.get())
+        .unwrap_or(DEFAULT_JPEG_QUALITY)
+}
+
 /// Rewrites an uncompressed frame into JPEG in place: a colour frame as it
-/// is, a `z16` depth frame as the greyscale picture the representation's
-/// `depth_range` spans. Frames already labelled as JPEG pass through
+/// is, a 16-bit depth frame as the greyscale picture the representation's
+/// `depth_range` spans. A frame already labelled as JPEG passes through
 /// untouched, so no decode cost is paid for producers that compress at the
 /// source.
-fn transcode(representation: &ImageRepresentation, value: &mut Value) -> Result<(), PublishError> {
-    if representation.image == ImageCodec::Raw {
-        return Ok(());
-    }
+fn transcode_jpeg(
+    representation: &ImageRepresentation,
+    value: &mut Value,
+) -> Result<(), PublishError> {
     let fields = &representation.fields;
     let encoding = get_str(value, &fields.encoding, "encoding")?;
     if JPEG_ENCODINGS.contains(&encoding) {
         return Ok(());
     }
-    let width = get_dimension(value, &fields.width, "width")?;
-    let height = get_dimension(value, &fields.height, "height")?;
-    let bytes = BASE64
-        .decode(get_str(value, &fields.data, "data")?.as_bytes())
-        .map_err(|_| PublishError::Field {
-            role: "data",
-            name: fields.data.clone(),
-            problem: "is not valid base64".to_string(),
-        })?;
+    let (width, height, bytes) = read_frame(value, fields)?;
     let picture = decode_frame(encoding, bytes, width, height, representation.depth_range)?;
-    let quality = representation
-        .quality
-        .map(|quality| quality.get())
-        .unwrap_or(DEFAULT_JPEG_QUALITY);
-    let jpeg = encode_jpeg(&picture, quality)?;
-    set_field(value, &fields.data, Value::String(BASE64.encode(&jpeg)));
-    set_field(
-        value,
-        &fields.encoding,
-        Value::String(TRANSCODED_ENCODING.to_string()),
-    );
+    let jpeg = encode_jpeg(&picture, jpeg_quality(representation))?;
+    write_frame(value, fields, &jpeg, TRANSCODED_JPEG_ENCODING);
     Ok(())
 }
 
+/// Rewrites a 16-bit single-channel frame into a 16-bit PNG in place,
+/// losslessly. A frame already labelled `png` passes through once it decodes
+/// as 16-bit single-channel.
+fn transcode_png16(fields: &ImageFieldMap, value: &mut Value) -> Result<(), PublishError> {
+    let encoding = get_str(value, &fields.encoding, "encoding")?;
+    if PNG_ENCODINGS.contains(&encoding) {
+        return ensure_png16(&decode_data(value, fields)?);
+    }
+    let (width, height, bytes) = read_frame(value, fields)?;
+    let png = encode_png16(&pixels_as_luma16(encoding, &bytes, width, height)?)?;
+    write_frame(value, fields, &png, TRANSCODED_PNG_ENCODING);
+    Ok(())
+}
+
+/// The frame's declared width and height, and its bytes.
+fn read_frame(value: &Value, fields: &ImageFieldMap) -> Result<(u32, u32, Vec<u8>), PublishError> {
+    let width = get_dimension(value, &fields.width, "width")?;
+    let height = get_dimension(value, &fields.height, "height")?;
+    Ok((width, height, decode_data(value, fields)?))
+}
+
+/// Writes the encoded frame back into the snapshot under its label.
+fn write_frame(value: &mut Value, fields: &ImageFieldMap, encoded: &[u8], encoding: &str) {
+    set_field(value, &fields.data, Value::String(BASE64.encode(encoded)));
+    set_field(value, &fields.encoding, Value::String(encoding.to_string()));
+}
+
+/// How an oversize snapshot is shrunk under a codec that downscales.
+enum Downscale {
+    /// A JPEG picture, resampled and written at the representation's quality.
+    Jpeg { quality: u8 },
+    /// A 16-bit frame, keeping one source sample per output pixel.
+    Png16,
+}
+
+impl Downscale {
+    /// The downscale of `representation`, with the fields it reads, for a
+    /// codec that downscales.
+    fn of(representation: &ImageRepresentation) -> Option<(Self, &ImageFieldMap)> {
+        let downscale = match representation.image {
+            ImageCodec::Raw => return None,
+            ImageCodec::Jpeg => Self::Jpeg {
+                quality: jpeg_quality(representation),
+            },
+            ImageCodec::Png16 => Self::Png16,
+        };
+        Some((downscale, &representation.fields))
+    }
+
+    /// The container the snapshot's frame is decoded from.
+    fn format(&self) -> ImageFormat {
+        match self {
+            Self::Jpeg { .. } => ImageFormat::Jpeg,
+            Self::Png16 => ImageFormat::Png,
+        }
+    }
+
+    /// The resampling that halves the picture.
+    fn filter(&self) -> FilterType {
+        match self {
+            Self::Jpeg { .. } => FilterType::Triangle,
+            Self::Png16 => FilterType::Nearest,
+        }
+    }
+
+    /// Encodes the halved picture.
+    fn encode(&self, picture: &DynamicImage) -> Result<Vec<u8>, PublishError> {
+        match self {
+            Self::Jpeg { quality } => encode_jpeg(picture, *quality),
+            Self::Png16 => encode_png16(
+                picture
+                    .as_luma16()
+                    .expect("a png16 snapshot holds a 16-bit single-channel PNG"),
+            ),
+        }
+    }
+}
+
 /// Halves the frame's dimensions until the serialized snapshot fits the
-/// limit, rewriting the data, width, and height fields on each step. The
-/// picture keeps its colour type, so a greyscale depth picture stays one
-/// channel.
+/// limit, rewriting the data, width, and height fields on each step. A JPEG
+/// picture is resampled and keeps its colour type, so a greyscale depth
+/// picture stays one channel; a 16-bit frame keeps one source sample per
+/// output pixel.
 fn downscale_to_fit(
+    downscale: &Downscale,
     fields: &ImageFieldMap,
-    quality: u8,
     value: &mut Value,
     limit: u64,
     mut serialized: String,
 ) -> Result<String, PublishError> {
-    let mut decoded = {
-        let bytes = BASE64
-            .decode(get_str(value, &fields.data, "data")?.as_bytes())
-            .map_err(|_| PublishError::Field {
-                role: "data",
-                name: fields.data.clone(),
-                problem: "is not valid base64".to_string(),
-            })?;
-        image::load_from_memory_with_format(&bytes, ImageFormat::Jpeg).map_err(|error| {
-            PublishError::BadFrame {
-                detail: error.to_string(),
-            }
-        })?
-    };
+    let mut picture = load_image(&decode_data(value, fields)?, downscale.format())?;
     loop {
-        let (width, height) = (decoded.width(), decoded.height());
+        let (width, height) = (picture.width(), picture.height());
         if width / 2 < MIN_DOWNSCALE_EDGE || height / 2 < MIN_DOWNSCALE_EDGE {
             return Err(PublishError::Oversize {
                 size: serialized.len() as u64,
                 limit,
             });
         }
-        decoded = decoded.resize_exact(width / 2, height / 2, FilterType::Triangle);
-        let jpeg = encode_jpeg(&decoded, quality)?;
-        set_field(value, &fields.data, Value::String(BASE64.encode(&jpeg)));
+        picture = picture.resize_exact(width / 2, height / 2, downscale.filter());
+        set_field(
+            value,
+            &fields.data,
+            Value::String(BASE64.encode(downscale.encode(&picture)?)),
+        );
         set_field(value, &fields.width, Value::from(width / 2));
         set_field(value, &fields.height, Value::from(height / 2));
         serialized = serialize(value);
@@ -162,9 +232,27 @@ fn downscale_to_fit(
     }
 }
 
+/// The frame bytes the snapshot's data field carries.
+fn decode_data(value: &Value, fields: &ImageFieldMap) -> Result<Vec<u8>, PublishError> {
+    BASE64
+        .decode(get_str(value, &fields.data, "data")?.as_bytes())
+        .map_err(|_| PublishError::Field {
+            role: "data",
+            name: fields.data.clone(),
+            problem: "is not valid base64".to_string(),
+        })
+}
+
+/// Decodes compressed frame bytes in `format`.
+fn load_image(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, PublishError> {
+    image::load_from_memory_with_format(bytes, format).map_err(|error| PublishError::BadFrame {
+        detail: error.to_string(),
+    })
+}
+
 /// Interprets raw frame bytes under their encoding label as the picture a
-/// JPEG carries: `rgb8` and `bgr8` in colour, `z16` as the greyscale
-/// picture `depth_range` spans.
+/// JPEG carries: `rgb8` and `bgr8` in colour, a 16-bit depth frame as the
+/// greyscale picture `depth_range` spans.
 fn decode_frame(
     encoding: &str,
     mut bytes: Vec<u8>,
@@ -182,9 +270,10 @@ fn decode_frame(
                 .for_each(|pixel| pixel.swap(0, 2));
             pixels_as_rgb8(bytes, width, height, encoding).map(DynamicImage::ImageRgb8)
         }
-        "z16" => {
+        depth if U16_ENCODINGS.contains(&depth) => {
             let range = depth_range.ok_or(PublishError::DepthRangeMissing)?;
-            z16_as_gray8(&bytes, width, height, range, encoding).map(DynamicImage::ImageLuma8)
+            let samples = pixels_as_luma16(encoding, &bytes, width, height)?;
+            Ok(DynamicImage::ImageLuma8(depth_as_gray8(&samples, range)))
         }
         other => Err(PublishError::UnsupportedEncoding {
             encoding: other.to_string(),
@@ -233,24 +322,35 @@ fn pixels_as_rgb8(
     })
 }
 
-/// One little-endian `u16` reading per pixel, as the greyscale picture
-/// `range` spans.
-fn z16_as_gray8(
+/// One little-endian `u16` sample per pixel, as a 16-bit single-channel
+/// image.
+fn pixels_as_luma16(
+    encoding: &str,
     bytes: &[u8],
     width: u32,
     height: u32,
-    range: DepthRange,
-    encoding: &str,
-) -> Result<GrayImage, PublishError> {
+) -> Result<Luma16Image, PublishError> {
+    if !U16_ENCODINGS.contains(&encoding) {
+        return Err(PublishError::UnsupportedEncoding {
+            encoding: encoding.to_string(),
+        });
+    }
     check_frame_size(bytes, width, height, 2, encoding)?;
-    let shades = bytes
+    let samples = bytes
         .as_chunks::<2>()
         .0
         .iter()
-        .map(|pair| z16_shade(u16::from_le_bytes(*pair), range))
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect();
-    GrayImage::from_raw(width, height, shades).ok_or_else(|| PublishError::BadFrame {
+    Luma16Image::from_raw(width, height, samples).ok_or_else(|| PublishError::BadFrame {
         detail: format!("{width}x{height} frame does not form an image"),
+    })
+}
+
+/// The greyscale picture `range` spans over 16-bit depth samples.
+fn depth_as_gray8(samples: &Luma16Image, range: DepthRange) -> GrayImage {
+    GrayImage::from_fn(samples.width(), samples.height(), |x, y| {
+        Luma([z16_shade(samples.get_pixel(x, y).0[0], range)])
     })
 }
 
@@ -285,6 +385,32 @@ fn encode_jpeg(picture: &DynamicImage, quality: u8) -> Result<Vec<u8>, PublishEr
             detail: format!("jpeg encoding failed: {error}"),
         })?;
     Ok(jpeg)
+}
+
+/// Encodes a 16-bit single-channel image as PNG.
+fn encode_png16(image: &Luma16Image) -> Result<Vec<u8>, PublishError> {
+    let mut png = Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, ImageFormat::Png)
+        .map_err(|error| PublishError::BadFrame {
+            detail: format!("png encoding failed: {error}"),
+        })?;
+    Ok(png.into_inner())
+}
+
+/// Holds a producer's `png` frame to what `png16` serves: 16-bit
+/// single-channel samples.
+fn ensure_png16(bytes: &[u8]) -> Result<(), PublishError> {
+    match load_image(bytes, ImageFormat::Png)? {
+        DynamicImage::ImageLuma16(_) => Ok(()),
+        other => Err(PublishError::BadFrame {
+            detail: format!(
+                "a `png` frame under `png16` holds 16-bit single-channel samples, and this one \
+                 decodes as {:?}",
+                other.color()
+            ),
+        }),
+    }
 }
 
 fn get_str<'a>(value: &'a Value, name: &str, role: &'static str) -> Result<&'a str, PublishError> {
@@ -452,6 +578,133 @@ mod tests {
         match decode_snapshot_jpeg(value, &frame_fields()) {
             DynamicImage::ImageLuma8(gray) => gray,
             other => panic!("expected a one-channel picture, got {:?}", other.color()),
+        }
+    }
+
+    fn png16_policies(
+        max_result_bytes: Option<u64>,
+        on_oversize: Option<&str>,
+    ) -> ResourcePolicies {
+        let mut raw = json!({
+            "freshness": { "max_age_ms": 2000 },
+            "update": { "max_hz": 2.0 },
+            "representation": {
+                "image": "png16",
+                "fields": { "data": "frame", "encoding": "encoding", "width": "width", "height": "height" }
+            }
+        });
+        if let Some(limit) = max_result_bytes {
+            raw["max_result_bytes"] = json!(limit);
+        }
+        if let Some(policy) = on_oversize {
+            raw["on_oversize"] = json!(policy);
+        }
+        policies(raw)
+    }
+
+    /// A frame of little-endian u16 samples under `encoding`, each pixel a
+    /// multiple of its index.
+    fn depth_frame(encoding: &str, width: u32, height: u32) -> Value {
+        let mut frame = z16_frame(
+            (0..width * height).map(|index| (index * 7919) as u16),
+            width,
+            height,
+        );
+        frame["encoding"] = json!(encoding);
+        frame
+    }
+
+    fn decode_snapshot_png16(value: &Value, fields: &ImageFieldMap) -> Luma16Image {
+        let data = get_str(value, &fields.data, "data").expect("data field present");
+        let bytes = BASE64
+            .decode(data.as_bytes())
+            .expect("data field is base64");
+        match image::load_from_memory_with_format(&bytes, ImageFormat::Png)
+            .expect("data field is a PNG")
+        {
+            DynamicImage::ImageLuma16(samples) => samples,
+            other => panic!(
+                "expected a 16-bit single-channel picture, got {:?}",
+                other.color()
+            ),
+        }
+    }
+
+    #[test]
+    fn png16_transcodes_u16_frames_losslessly() {
+        for encoding in U16_ENCODINGS {
+            let mut value = depth_frame(encoding, 8, 4);
+            let serialized =
+                apply_topic_policies(&png16_policies(None, None), &mut value).expect("transcodes");
+            assert!(serialized.contains("\"encoding\":\"png\""));
+            let decoded = decode_snapshot_png16(&value, &frame_fields());
+            assert_eq!((decoded.width(), decoded.height()), (8, 4));
+            for (index, pixel) in decoded.pixels().enumerate() {
+                assert_eq!(
+                    pixel.0[0],
+                    (index as u32 * 7919) as u16,
+                    "{encoding} pixel {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn png16_passes_png_frames_through_and_refuses_color_frames() {
+        let sixteen = BASE64
+            .encode(encode_png16(&Luma16Image::from_pixel(1, 1, Luma([7u16]))).expect("encodes"));
+        let mut png = json!({ "frame": sixteen, "encoding": "png", "width": 1, "height": 1 });
+        apply_topic_policies(&png16_policies(None, None), &mut png)
+            .expect("a 16-bit single-channel PNG passes through");
+        assert_eq!(png["frame"], sixteen);
+
+        let mut eight = Vec::new();
+        RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]))
+            .write_to(&mut std::io::Cursor::new(&mut eight), ImageFormat::Png)
+            .expect("encodes");
+        let mut png = json!({
+            "frame": BASE64.encode(&eight), "encoding": "png", "width": 1, "height": 1,
+        });
+        let error = apply_topic_policies(&png16_policies(None, None), &mut png)
+            .expect_err("an 8-bit color PNG is not a depth frame");
+        assert!(matches!(error, PublishError::BadFrame { .. }));
+
+        let mut color = solid_frame("rgb8", [1, 2, 3], 2, 2);
+        let error = apply_topic_policies(&png16_policies(None, None), &mut color)
+            .expect_err("a color frame is not a 16-bit frame");
+        assert!(
+            matches!(error, PublishError::UnsupportedEncoding { encoding } if encoding == "rgb8")
+        );
+
+        let mut short = depth_frame("z16", 4, 4);
+        short["frame"] = json!(BASE64.encode([0u8; 6]));
+        let error = apply_topic_policies(&png16_policies(None, None), &mut short)
+            .expect_err("a short buffer is a bad frame");
+        assert!(matches!(error, PublishError::BadFrame { .. }));
+    }
+
+    #[test]
+    fn png16_downscales_by_keeping_samples() {
+        let mut value = depth_frame("z16", 64, 64);
+        let full = apply_topic_policies(&png16_policies(None, None), &mut value.clone())
+            .expect("transcodes");
+        let limit = (full.len() / 2) as u64;
+        let serialized =
+            apply_topic_policies(&png16_policies(Some(limit), Some("downscale")), &mut value)
+                .expect("downscales to fit");
+        assert!(serialized.len() as u64 <= limit);
+        assert_eq!(value["width"], json!(32));
+        assert_eq!(value["height"], json!(32));
+        let decoded = decode_snapshot_png16(&value, &frame_fields());
+        let original = |x: u32, y: u32| ((y * 64 + x) * 7919) as u16;
+        for (x, y, pixel) in decoded.enumerate_pixels() {
+            let block =
+                [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(dx, dy)| original(x * 2 + dx, y * 2 + dy));
+            assert!(
+                block.contains(&pixel.0[0]),
+                "sample {} at ({x}, {y}) is none of the original block {block:?}",
+                pixel.0[0]
+            );
         }
     }
 

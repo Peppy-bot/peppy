@@ -54,6 +54,11 @@ pub struct ExposureBundle {
     pub schema_mapping_version: u32,
     pub exposure: BundleIdentity,
     pub server: BundleServer,
+    /// Present on a per-robot surface: every contract slot is then a
+    /// `zero_or_more` slot the stack's robots fill, and every tool takes the
+    /// robot's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub robots: Option<RobotCatalog>,
     /// The contract slot each logical target becomes: one slot per pin,
     /// with the pin's `link_id` as the slot the launcher fills.
     pub contracts: Vec<BundleContractPin>,
@@ -136,6 +141,55 @@ pub struct BundleContractPin {
     pub tag: String,
     pub sha256: String,
     pub link_id: String,
+    /// On a per-robot surface, the argument naming the member a call
+    /// addresses on a target a robot fills any number of times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument: Option<String>,
+}
+
+/// The per-robot surface of a bundle: what every tool's input carries and
+/// what the listing tool reports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RobotCatalog {
+    /// The required argument of every tool: the robot's name.
+    pub argument: String,
+    pub list: ListEntry,
+    /// What the listing reports of each robot, in document order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub describe: Vec<DescribeEntry>,
+}
+
+/// The listing tool: its public name and prose. Its input takes nothing and
+/// its output is the runtime's, one entry per robot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListEntry {
+    pub name: String,
+    pub description: String,
+}
+
+/// One field of a robot's listing entry and where its value comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DescribeEntry {
+    /// The field of the listing entry.
+    pub key: String,
+    /// The target the value is read through.
+    pub target: String,
+    pub source: DescribeSource,
+}
+
+/// Where a listing field's value comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum DescribeSource {
+    /// The response of the tool published for this service member, called
+    /// when the robot is listed.
+    Tool { name: String },
+    /// The named root fields of the latest snapshot of the resource
+    /// published for this topic member.
+    Resource { name: String, fields: Vec<String> },
 }
 
 /// One exposed topic: an MCP resource serving the latest policy-approved
