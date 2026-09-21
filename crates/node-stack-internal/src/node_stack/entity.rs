@@ -1901,7 +1901,10 @@ mod tests {
         ));
         let bindings = entity.instances()[0].slot_bindings();
         assert_eq!(bindings["robots"], grown);
-        assert_eq!(bindings["main"].as_slice()[0].instance_id, "camera_1");
+        assert_eq!(
+            bindings["main"].as_slice()[0].producer.instance_id,
+            "camera_1"
+        );
         assert!(!entity.set_instance_slot_binding(
             &Name::new("absent_inst").unwrap(),
             "robots",

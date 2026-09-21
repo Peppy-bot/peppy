@@ -3,7 +3,7 @@
 //! contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{ObservedMemberState, ObservedSource, PeerInfo, ProducerRef};
+use crate::messaging::{ObservedMemberState, ObservedSource, PeerInfo};
 use crate::observation_update_capnp;
 use crate::types::Payload;
 
@@ -63,18 +63,12 @@ impl ObservationUpdateRequest {
                     .get_peer()
                     .map_err(|e| Error::Deserialization(e.to_string()))?;
                 Some(PeerInfo {
-                    producer: ProducerRef::new(
-                        super::read_text(
-                            wire_peer.get_core_node(),
-                            "observation_update",
-                            "peer.coreNode",
-                        )?,
-                        super::read_text(
-                            wire_peer.get_instance_id(),
-                            "observation_update",
-                            "peer.instanceId",
-                        )?,
-                    ),
+                    producer: super::read_producer(
+                        wire_peer.get_core_node(),
+                        wire_peer.get_instance_id(),
+                        "observation_update",
+                        ("peer.coreNode", "peer.instanceId"),
+                    )?,
                     peer_link_id: super::read_text(
                         wire_peer.get_link_id(),
                         "observation_update",
@@ -85,18 +79,12 @@ impl ObservationUpdateRequest {
                 None
             };
             let source = ObservedSource {
-                producer: ProducerRef::new(
-                    super::read_text(
-                        wire.get_source_core_node(),
-                        "observation_update",
-                        "sourceCoreNode",
-                    )?,
-                    super::read_text(
-                        wire.get_source_instance_id(),
-                        "observation_update",
-                        "sourceInstanceId",
-                    )?,
-                ),
+                producer: super::read_producer(
+                    wire.get_source_core_node(),
+                    wire.get_source_instance_id(),
+                    "observation_update",
+                    ("sourceCoreNode", "sourceInstanceId"),
+                )?,
                 source_link_id: super::read_text(
                     wire.get_source_link_id(),
                     "observation_update",
@@ -135,6 +123,7 @@ impl ObservationUpdateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messaging::ProducerRef;
 
     fn member(instance: &str, generation: u64, live: bool) -> ObservedMemberState {
         ObservedMemberState {

@@ -34,6 +34,38 @@ pub struct CopyRecord {
     pub set_members: Vec<SetMember>,
 }
 
+/// The copy each instance of a stack belongs to, over the copies the stack
+/// holds; an instance the launcher deploys outside any copy has no entry.
+/// Built from the copy records at launch, at join and at removal, and read
+/// wherever a plan names an instance by its copy: the members the validator
+/// stamps into a bound set, and the copy a spawned instance is told it is in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CopyMembership {
+    by_instance: BTreeMap<String, Name>,
+}
+
+impl CopyMembership {
+    /// The membership `copies` establish.
+    pub fn of<'a>(copies: impl IntoIterator<Item = &'a CopyRecord>) -> Self {
+        Self {
+            by_instance: copies
+                .into_iter()
+                .flat_map(|copy| {
+                    copy.instance_ids
+                        .iter()
+                        .map(move |id| (id.as_str().to_string(), copy.name.clone()))
+                })
+                .collect(),
+        }
+    }
+
+    /// The copy `instance_id` belongs to, or `None` for an instance the
+    /// launcher deploys outside any copy.
+    pub fn copy_of(&self, instance_id: &str) -> Option<&Name> {
+        self.by_instance.get(instance_id)
+    }
+}
+
 /// One write a copy makes to a stack instance: the field and the value the
 /// copy needs there.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +92,22 @@ pub(super) struct ComposedCopy {
     pub core_nodes: Vec<String>,
     pub applied: Vec<AppliedAdjustment>,
     pub skipped: Vec<SkippedAdjustment>,
+}
+
+impl CopyRecord {
+    /// Whether `instance_id` is one of the copy's own instances.
+    pub fn owns_instance(&self, instance_id: &str) -> bool {
+        self.instance_ids
+            .iter()
+            .any(|id| id.as_str() == instance_id)
+    }
+
+    /// Whether `target`, `instance` or `instance/link_id`, names one of the
+    /// copy's own instances.
+    pub fn owns_target(&self, target: &str) -> bool {
+        let (instance, _) = split_link_target(target);
+        self.owns_instance(instance)
+    }
 }
 
 impl ComposedCopy {
@@ -834,8 +882,9 @@ pub(super) fn detach(
     validate_flat(&remaining)
 }
 
-/// Takes one member a copy added out of the set slot it joined. A slot no
-/// longer holding the member leaves nothing to take out.
+/// Takes one member a copy added out of the set slot it joined. Panics when
+/// the slot is not bound as an array; a slot without the member is left as it
+/// is.
 fn drop_member(instance: &mut DeploymentInstance, member: &SetMember) {
     let Some(LinkValue::Bound(Selection::Array(targets))) = instance.links.get(&member.link_id)
     else {
@@ -922,4 +971,43 @@ pub(super) fn validate_flat(flat: &PeppyLauncher) -> Result<PeppyLauncher, Compo
     Ok(super::super::parse::PeppyLauncherParser::from_content(
         &text,
     )?)
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    fn copy(name: &str, instance_ids: &[&str]) -> CopyRecord {
+        CopyRecord {
+            name: Name::new(name).unwrap(),
+            axis: "robot".into(),
+            option: "real".into(),
+            selection: UnitSelection::default(),
+            instance_ids: instance_ids
+                .iter()
+                .map(|id| Name::new(*id).unwrap())
+                .collect(),
+            set_members: Vec::new(),
+        }
+    }
+
+    /// Every instance a copy minted answers that copy; an instance outside
+    /// every copy answers none.
+    #[test]
+    fn each_minted_instance_answers_its_copy() {
+        let membership = CopyMembership::of(&[
+            copy("alpha", &["alpha_arm_inst", "alpha_leader_inst"]),
+            copy("bravo", &["bravo_arm_inst"]),
+        ]);
+        assert_eq!(
+            membership.copy_of("alpha_leader_inst").map(Name::as_str),
+            Some("alpha")
+        );
+        assert_eq!(
+            membership.copy_of("bravo_arm_inst").map(Name::as_str),
+            Some("bravo")
+        );
+        assert_eq!(membership.copy_of("hub_inst"), None);
+        assert_eq!(CopyMembership::default().copy_of("alpha_arm_inst"), None);
+    }
 }

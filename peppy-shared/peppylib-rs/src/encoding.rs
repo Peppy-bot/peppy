@@ -124,6 +124,32 @@ pub(crate) fn decode_message(
 /// Reads a capnp text field into an owned `String`, labeling errors with the
 /// owning codec and schema field name. Crate-internal: shared by the framework
 /// service codecs (`peer_update`, `observation_update`).
+/// A producer address from its two text fields: a non-empty core node and an
+/// instance id that is a valid name, so a delivery naming a producer the wire
+/// cannot address is refused here, where the daemon hears the refusal.
+pub(crate) fn read_producer(
+    core_node: ::capnp::Result<::capnp::text::Reader<'_>>,
+    instance_id: ::capnp::Result<::capnp::text::Reader<'_>>,
+    codec: &str,
+    names: (&str, &str),
+) -> Result<config::runtime::ProducerRef> {
+    let core_node = read_text(core_node, codec, names.0)?;
+    if core_node.is_empty() {
+        return Err(crate::error::Error::Deserialization(format!(
+            "{codec} field `{}` is empty",
+            names.0
+        )));
+    }
+    let instance_id = read_text(instance_id, codec, names.1)?;
+    let instance_id = config::runtime::Name::new(instance_id).map_err(|e| {
+        crate::error::Error::Deserialization(format!("{codec} field `{}`: {e}", names.1))
+    })?;
+    Ok(config::runtime::ProducerRef::new(
+        core_node,
+        instance_id.as_str(),
+    ))
+}
+
 pub(crate) fn read_text(
     field: ::capnp::Result<::capnp::text::Reader<'_>>,
     codec: &str,

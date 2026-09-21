@@ -18,11 +18,13 @@ impl<T> NonEmpty<T> {
     /// Wraps `members` as a non-empty set, or `None` when the list is empty.
     /// Runtime callers go through the `one_or_more` accessors
     /// ([`Processor::non_empty_bound_producers`],
+    /// [`Processor::non_empty_bound_members`],
     /// [`ObservationSlotSet::non_empty_sources`]), which read a slot whose
     /// cardinality admits no empty set; this checked constructor exists so the
     /// invariant cannot be sidestepped elsewhere.
     ///
     /// [`Processor::non_empty_bound_producers`]: crate::runtime::Processor::non_empty_bound_producers
+    /// [`Processor::non_empty_bound_members`]: crate::runtime::Processor::non_empty_bound_members
     /// [`ObservationSlotSet::non_empty_sources`]: crate::runtime::ObservationSlotSet::non_empty_sources
     pub fn new(members: Vec<T>) -> Option<Self> {
         if members.is_empty() {

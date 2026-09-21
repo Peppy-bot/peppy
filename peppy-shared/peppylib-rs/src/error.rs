@@ -257,7 +257,11 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("failed to parse launch config at `{path}`")]
+    #[error(
+        "failed to parse launch config at `{path}`; a node built before its daemon's release \
+         reads a config it cannot parse: run `peppy node sync` then `peppy node build` for this \
+         node and launch again"
+    )]
     LaunchConfigParse {
         path: String,
         #[source]

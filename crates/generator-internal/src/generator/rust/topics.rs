@@ -331,8 +331,9 @@ pub fn build_observed_module_header(
 /// change). There is no publisher: an observer only reads.
 pub fn build_observed_topic_subscription(
     spec: PeerTopicSubscriptionSpec<'_>,
+    cardinality: Cardinality,
 ) -> Result<TokenStream> {
-    build_pair_topic_subscription(spec, PairTopicSubscriptionKind::Observed)
+    build_pair_topic_subscription(spec, PairTopicSubscriptionKind::Observed(cardinality))
 }
 
 /// Publish side of a peer-emitted topic: `build_message` (same shape as
@@ -421,7 +422,7 @@ pub fn build_peer_topic_subscription(spec: PeerTopicSubscriptionSpec<'_>) -> Res
 #[derive(Clone, Copy)]
 enum PairTopicSubscriptionKind {
     Peer,
-    Observed,
+    Observed(Cardinality),
 }
 
 impl SubscriptionTag {
@@ -490,17 +491,26 @@ fn build_pair_topic_subscription(
             },
             quote!(peppylib::runtime::subscribe_peer),
         ),
-        PairTopicSubscriptionKind::Observed => (
-            quote! {
-                /// A held subscription to an observed pairing topic, fanned in
-                /// across every member of the slot's observed set. Yields nothing
-                /// while the set is empty or no member is emitting; only observed
-                /// members' messages surface (triple wire pin +
-                /// generation-tagged delivery check). A pairing is a live stream,
-                /// not a mailbox: messages published before observation are never
-                /// delivered. Where the slot's cardinality admits more than one
-                /// source, the subscription follows the set as a join grows it or
-                /// a removal shrinks it.
+        PairTopicSubscriptionKind::Observed(cardinality) => (
+            {
+                let follows_the_set = if cardinality.is_scalar() {
+                    quote! {}
+                } else {
+                    quote! {
+                        /// The subscription follows the set as a join grows it or a
+                        /// removal shrinks it.
+                    }
+                };
+                quote! {
+                    /// A held subscription to an observed pairing topic, fanned in
+                    /// across every member of the slot's observed set. Yields nothing
+                    /// while the set is empty or no member is emitting; only observed
+                    /// members' messages surface (triple wire pin +
+                    /// generation-tagged delivery check). A pairing is a live stream,
+                    /// not a mailbox: messages published before observation are never
+                    /// delivered.
+                    #follows_the_set
+                }
             },
             quote!(peppylib::runtime::ObservedTopicSubscription),
             quote! {
@@ -794,6 +804,58 @@ pub fn build_bound_producer_accessor_fn(
         ),
     };
     let mut doc_lines: Vec<&str> = dependency.bound_producers_doc().to_vec();
+    if let Some(note) = api_note {
+        doc_lines.push(note);
+    }
+    let doc = super::doc_attrs(&doc_lines);
+    let members_accessor = build_bound_members_accessor_fn(dependency);
+    quote! {
+        #(#doc)*
+        #accessor
+        #members_accessor
+    }
+}
+
+/// The `bound_members()` accessor a set slot carries beside its
+/// `bound_producers()`: the same set with the copy each member belongs to,
+/// typed as the plural accessor is (`NonEmptyMembers` on a `one_or_more` slot,
+/// `Vec<BoundMember>` on a `zero_or_more` one). Empty for a scalar slot. The
+/// docstring prose comes from [`DependencyContext::bound_members_doc`].
+///
+/// [`DependencyContext::bound_members_doc`]: crate::generator::types::DependencyContext::bound_members_doc
+fn build_bound_members_accessor_fn(
+    dependency: &crate::generator::types::DependencyContext,
+) -> TokenStream {
+    let Some(doc_lines) = dependency.bound_members_doc() else {
+        return TokenStream::new();
+    };
+    let link_id_literal = Literal::string(&dependency.link_id);
+    let (api_note, accessor) = match dependency.cardinality {
+        Cardinality::OneOrMore => (
+            Some(crate::generator::types::DocLanguage::Rust.never_empty_tail()),
+            quote! {
+                pub fn bound_members(
+                    node_runner: &crate::NodeRunner,
+                ) -> peppylib::messaging::NonEmptyMembers {
+                    node_runner.processor().non_empty_bound_members(#link_id_literal)
+                }
+            },
+        ),
+        Cardinality::ZeroOrMore => (
+            None,
+            quote! {
+                pub fn bound_members(
+                    node_runner: &crate::NodeRunner,
+                ) -> Vec<peppylib::messaging::BoundMember> {
+                    node_runner.processor().bound_members(#link_id_literal)
+                }
+            },
+        ),
+        Cardinality::One | Cardinality::ZeroOrOne => {
+            unreachable!("a scalar slot has no members doc")
+        }
+    };
+    let mut doc_lines: Vec<&str> = doc_lines.to_vec();
     if let Some(note) = api_note {
         doc_lines.push(note);
     }

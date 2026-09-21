@@ -1,17 +1,19 @@
 """Watches the arms and leaders the copies of a fleet bring.
 
 One slot binds every arm's joint_states and one observes every leader's
-setpoints on its pair with the hub, both `zero_or_more` and both empty until a
-copy joins. The watch logs both member sets whenever either changes, in the
-order the copies joined, and the first message from each member, tagged with
-the member that sent it. A member that leaves is forgotten, so a copy that
-rejoins is heard again. The cross-daemon set test reads these lines.
+setpoints on its pair with the hub, both `zero_or_more`. The watch logs both
+member sets whenever either changes, in the order the slots hold them, each
+arm with the copy its instance belongs to (`none` for one the launcher binds),
+and the first message from each member, tagged with the member that sent it.
+A member that leaves is forgotten, so a copy that rejoins is heard again. The
+cross-daemon set test reads these lines.
 """
 
 import asyncio
 import traceback
 
 from peppygen import NodeBuilder, NodeRunner
+from peppylib import BoundMember
 from peppygen.consumed_topics.arms import joint_states
 from peppygen.paired_topics.leaders import joint_setpoints
 from peppygen.parameters import Parameters
@@ -19,9 +21,10 @@ from peppygen.parameters import Parameters
 LOG = "[set-watch]"
 
 
-def members(node_runner: NodeRunner) -> tuple[list[str], list[str]]:
-    """Both slots' members, by instance, in the order the slots hold them."""
-    arms = [producer.instance_id for producer in joint_states.bound_producers(node_runner)]
+def members(node_runner: NodeRunner) -> tuple[list[BoundMember], list[str]]:
+    """Both slots' members in the order the slots hold them: each arm with its
+    copy, each leader by instance."""
+    arms = joint_states.bound_members(node_runner)
     leaders = [source.producer.instance_id for source in joint_setpoints.sources(node_runner)]
     return arms, leaders
 
@@ -48,8 +51,9 @@ async def report_members(node_runner: NodeRunner, params: Parameters, heard: Hea
     last = None
     while not token.is_cancelled():
         arms, leaders = members(node_runner)
-        heard.keep(arms + leaders)
-        line = f"members arms=[{','.join(arms)}] leaders=[{','.join(leaders)}]"
+        heard.keep([arm.producer.instance_id for arm in arms] + leaders)
+        arm_names = [f"{arm.producer.instance_id}:{arm.copy or 'none'}" for arm in arms]
+        line = f"members arms=[{','.join(arm_names)}] leaders=[{','.join(leaders)}]"
         if line != last:
             print(f"{LOG} {line}", flush=True)
             last = line

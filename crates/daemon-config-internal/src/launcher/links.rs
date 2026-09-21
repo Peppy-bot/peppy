@@ -25,6 +25,7 @@
 //! no extra item type.
 
 use super::clocks::{ResolvedClocks, validate_clock_connections};
+use super::compose::CopyMembership;
 use super::types::Placements;
 use crate::error::{
     BINDING_EMPTIABLE_KEY, LinkUnknownSlot, OBSERVER_EMPTIABLE_KEY, PARTICIPANT_EMPTIABLE_KEY,
@@ -59,6 +60,7 @@ pub fn validate_link_plan(
     already_paired: &AlreadyPairedSlots,
     externally_covered: &ExternallyCoveredSlots,
     placements: &Placements,
+    copies: &CopyMembership,
     clocks: &ResolvedClocks,
 ) -> ValidatedLinkPlan {
     let mut out = ValidatedLinkPlan {
@@ -69,7 +71,7 @@ pub fn validate_link_plan(
         return out;
     }
 
-    let bindings = validate_bindings(binding_items, placements);
+    let bindings = validate_bindings(binding_items, placements, copies);
     if !bindings.errors.is_empty() {
         out.errors = bindings.errors;
         return out;

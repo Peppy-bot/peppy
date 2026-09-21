@@ -92,7 +92,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<bool, String> {
         let target = self.resolve_target(instance_id)?;
         self.send_to(&target, service_name, payload, timeout, rejection_message)
             .await
@@ -105,7 +105,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<bool, String> {
         let reply = ServiceMessenger::poll(
             &self.messenger,
             &self.core_node_name,
@@ -122,7 +122,7 @@ impl SlotUpdateClient {
         let response = SlotUpdateResponse::decode(&reply.payload_bytes())
             .map_err(|error| error.to_string())?;
         if response.accepted || response.stale_sequence {
-            Ok(())
+            Ok(response.accepted)
         } else if response.message.is_empty() {
             Err(rejection_message.to_string())
         } else {

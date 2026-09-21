@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from peppylib import (
+    BoundMember,
     MessengerHandle,
     ObservedSource,
     PeerInfo,
@@ -113,6 +114,24 @@ def test_peer_info_is_structured_and_hashable():
         'PeerInfo(producer=ProducerRef("core_a", "arm_1"), '
         'peer_link_id="controller")'
     )
+
+
+def test_bound_member_carries_the_copy_beside_the_producer():
+    """`BoundMember` is a set member as a slot holds it: the producer plus
+    the copy its instance belongs to, which is `None` outside a copy."""
+    producer = ProducerRef("core_a", "bravo_arm_inst")
+    member = BoundMember(producer, "bravo")
+    assert member.producer == producer
+    assert member.copy == "bravo"
+    assert BoundMember(producer).copy is None
+    assert member == BoundMember(producer, "bravo")
+    assert member != BoundMember(producer)
+    assert repr(member) == (
+        'BoundMember(producer=ProducerRef("core_a", "bravo_arm_inst"), copy="bravo")'
+    )
+    assert repr(BoundMember(producer)).endswith("copy=None)")
+    with pytest.raises(ValueError):
+        BoundMember(producer, "not a name")
 
 
 def test_peer_member_carries_the_copy_beside_the_identity():

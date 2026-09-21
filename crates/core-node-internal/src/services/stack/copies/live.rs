@@ -132,7 +132,7 @@ pub(super) async fn check_live_stack(
             if !matches!(response, core_node_api::encoding::NodeInfoResponse::Found(info) if info.config_integrity == item.config_sha256)
             {
                 return Err(format!(
-                    "{}:{} on `{host}` changed since launch; relaunch before joining another copy",
+                    "{}:{} on `{host}` changed since launch; launch the stack again before joining another copy",
                     item.node_name, item.node_tag
                 ));
             }
@@ -172,8 +172,8 @@ pub(super) async fn check_live_stack(
                 }
                 _ => {
                     return Err(format!(
-                        "joining grows {}, but `{}` is not running on `{host}`; relaunch the \
-                         stack so `{host}` runs it again, or join an option whose fragments do \
+                        "joining grows {}, but `{}` is not running on `{host}`; launch the \
+                         stack again so `{host}` runs it, or join an option whose fragments do \
                          not add to that slot",
                         slot.field(),
                         slot.instance_id
@@ -196,7 +196,7 @@ pub(super) async fn check_live_stack(
                 .any(|live| live.instance_id == instance.instance_id.as_str())
             {
                 return Err(format!(
-                    "required instance `{}` is missing from `{host}`; restore its copy or relaunch the stack before adding this one",
+                    "required instance `{}` is missing from `{host}`; restore its copy or launch the stack again before adding this one",
                     instance.instance_id
                 ));
             }
@@ -208,18 +208,18 @@ pub(super) async fn check_live_stack(
     })
 }
 
-/// The core nodes live on the federation, this daemon included, asked only when
-/// `hosts` names a machine other than this one: a change that touches this
-/// machine alone answers every liveness question from its own name.
-pub(super) async fn live_machines<'a>(
+/// The core nodes live on the federation, this daemon included, asked once per
+/// change and read by every liveness question the change asks: the sets it
+/// grows or shrinks, the copy's own machine, and the machines it reserves. A
+/// stack placed on this machine alone answers from its own name.
+pub(super) async fn live_machines(
     ctx: &StackChangeContext,
-    hosts: impl IntoIterator<Item = &'a str>,
+    placements: &Placements,
 ) -> ChangeResult<BTreeSet<String>> {
     let mut live = BTreeSet::from([ctx.bound_core_node.clone()]);
-    if hosts.into_iter().all(|host| host == ctx.bound_core_node) {
-        return Ok(live);
+    if placements.is_federated() {
+        live.extend(federated::live_core_nodes(&ctx.messenger).await?);
     }
-    live.extend(federated::live_core_nodes(&ctx.messenger).await?);
     Ok(live)
 }
 
@@ -251,8 +251,8 @@ pub(super) fn check_hosts_live(
     Err(format!(
         "joining `{copy}` would add members to {} on `{host}`, which is not live on the \
          federation. Bring `{host}`'s daemon back, logged into this workspace: if it still runs \
-         `{}`, join again; if it does not, relaunch the stack. Or join an option whose fragments \
-         do not add to that slot",
+         `{}`, join again; if it does not, launch the stack again. Or join an option whose \
+         fragments do not add to that slot",
         slot.field(),
         slot.instance_id
     ))
@@ -292,7 +292,7 @@ pub(super) async fn report_offline_sets(
                 "`{host}` is not live on the federation, so removing copy `{copy}` did not \
                  update these sets there: {}. If `{host}` comes back still running their \
                  instances, the next `peppy stack join` or `peppy stack remove` changing one of \
-                 them delivers it whole; if it comes back without them, relaunch the stack",
+                 them delivers it whole; if it comes back without them, launch the stack again",
                 fields.join(", ")
             ),
             LaunchFeedbackStep::LauncherStep,

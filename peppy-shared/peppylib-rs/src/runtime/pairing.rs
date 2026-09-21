@@ -15,7 +15,9 @@ use crate::messaging::{
     TopicMessenger, TopicPublisher,
 };
 use crate::runtime::NodeRunner;
-use crate::runtime::slot_stream::{FollowedSlot, SlotStream, StreamWiring, start_slot_stream};
+use crate::runtime::slot_stream::{
+    FollowedSlot, SlotStream, StreamWiring, published_by_producer, start_slot_stream,
+};
 use crate::types::{Message, Payload};
 use config::node::{Cardinality, QoSProfile};
 use pmi::PairingRecipient;
@@ -135,9 +137,7 @@ pub(crate) struct PairingWire {
 /// Whether `message` carries the wire triple of `producer` publishing on its
 /// `link_id` slot.
 pub(crate) fn published_on_slot(producer: &ProducerRef, link_id: &str, message: &Message) -> bool {
-    message.core_node() == producer.core_node
-        && message.instance_id() == producer.instance_id
-        && message.link_id() == link_id
+    published_by_producer(producer, message) && message.link_id() == link_id
 }
 
 impl FollowedSlot for PeerFollow {
@@ -233,7 +233,7 @@ pub async fn subscribe_peer(
 }
 
 /// Messenger-level core of [`subscribe_peer`]: the same engine driven by an
-/// explicit watch channel instead of a `NodeRunner`'s processor-owned slot.
+/// explicit watch channel; nodes go through [`subscribe_peer`].
 /// `own_link_id` is this node's slot in every pair, the recipient each peer
 /// publishes to. Prefer [`subscribe_peer`] in nodes; this seam exists for
 /// embedders and tests that manage peer state themselves. The stream ends when

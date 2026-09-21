@@ -99,12 +99,12 @@ impl<S> SlotChannel<S> {
     }
 
     /// The cardinality the manifest declares for this slot.
-    pub(crate) fn cardinality(&self) -> Cardinality {
+    pub fn cardinality(&self) -> Cardinality {
         self.cardinality
     }
 
     /// The channel this slot's state is read from and delivered into.
-    pub(crate) fn sender(&self) -> &watch::Sender<S> {
+    pub fn sender(&self) -> &watch::Sender<S> {
         &self.sender
     }
 }
@@ -240,7 +240,7 @@ where
     }
     if conflicting {
         return SlotUpdateResponse::rejected(format!(
-            "{} for {} '{}' repeats sequence {} asserting different state",
+            "{} for {} `{}` repeats sequence {} asserting different state",
             U::SERVICE,
             U::SLOT_NOUN,
             request.link_id(),

@@ -14,11 +14,14 @@ struct BindingUpdateRequest {
     linkId @0 :Text;
     # The receiving node's own consumer-slot link_id being updated.
     sequence @1 :UInt64;
-    producers @2 :List(BoundProducer);
-    # Every producer bound to this slot right now, in plan order.
+    producers @2 :List(BoundMember);
+    # Every member bound to this slot right now, in plan order.
 }
 
-struct BoundProducer {
+struct BoundMember {
     coreNode @0 :Text;
     instanceId @1 :Text;
+    copy @2 :Text;
+    # The copy the producer's instance belongs to; empty for an instance run
+    # outside a copy.
 }

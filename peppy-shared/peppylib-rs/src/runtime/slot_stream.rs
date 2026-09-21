@@ -37,7 +37,7 @@ use config::node::QoSProfile;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tracing::warn;
 
 /// How long the converge task waits before declaring again a pin whose
@@ -121,7 +121,16 @@ pub(crate) struct SlotStream<S: FollowedSlot> {
     members: Members<S>,
     /// Rotating first-poll position, so a busy member cannot starve a quiet one.
     next_start: usize,
+    /// Rung by the reader when a followed member's wire channel closes, so the
+    /// converge task declares it again.
+    closed: Arc<Notify>,
     converge_task: TaskHandle<()>,
+}
+
+/// Whether `message` carries the wire pair of `producer`: the two segments
+/// every pinned subscription is keyed on.
+pub(crate) fn published_by_producer(producer: &ProducerRef, message: &Message) -> bool {
+    message.core_node() == producer.core_node && message.instance_id() == producer.instance_id
 }
 
 impl<S: FollowedSlot> SlotStream<S> {
@@ -183,19 +192,20 @@ impl<S: FollowedSlot> SlotStream<S> {
                 Some((idx, Err(_))) => {
                     // This member's wire channel closed: the converge task
                     // dropped its subscription because the slot moved off the
-                    // pin, or the messenger session is closing. The reader
-                    // stops polling it, and the converge task's next publish
-                    // carries the members it keeps. A pin the slot still
-                    // follows has lost its channel to the session, which is
-                    // worth a line in the log.
+                    // pin, or the session closed it. The reader stops polling
+                    // it, and the converge task's next publish carries the
+                    // members it keeps. A pin the slot still follows is
+                    // declared again: the converge task is rung, and counts a
+                    // closed channel as a declaration it owes.
                     let pin = &self.members[idx].0;
                     if S::is_followed(&self.state_rx.borrow(), pin) {
                         let producer = S::producer(pin);
                         warn!(
                             core_node = %producer.core_node,
                             instance_id = %producer.instance_id,
-                            "a followed member's wire channel closed; no longer polling it"
+                            "a followed member's wire channel closed; declaring it again"
                         );
+                        self.closed.notify_one();
                     }
                     self.members = self
                         .members
@@ -221,7 +231,9 @@ impl<S: FollowedSlot> Drop for SlotStream<S> {
 
 /// Declares the wire subscription of every pin the slot follows now, then
 /// spawns the converge task that keeps them in step with the slot. Fails with
-/// the first declaration that fails, keeping none of them.
+/// the first declaration that fails, keeping none of them and logging each
+/// failure: the caller is there to hear about it. A declaration failing after
+/// the stream runs is retried by the converge task on a backoff.
 pub(crate) async fn start_slot_stream<S: FollowedSlot>(
     wiring: StreamWiring<S>,
     mut state_rx: watch::Receiver<S::State>,
@@ -229,36 +241,50 @@ pub(crate) async fn start_slot_stream<S: FollowedSlot>(
     let desired = S::desired(&state_rx.borrow_and_update());
     let Converged { current, failed } =
         converge_subscriptions::<S>(Vec::new(), desired, &wiring).await;
+    for (pin, error) in &failed {
+        warn!(
+            %error,
+            topic = %wiring.topic,
+            core_node = %S::producer(pin).core_node,
+            instance_id = %S::producer(pin).instance_id,
+            "failed to declare a pinned wire subscription at subscribe time"
+        );
+    }
     if let Some((_, error)) = failed.into_iter().next() {
         return Err(error);
     }
     let (members_tx, members_rx) = watch::channel(members_of::<S>(&current));
     let members = members_rx.borrow().clone();
+    let closed = Arc::new(Notify::new());
     let converge_task = crate::runtime::spawn(follow_the_set::<S>(
         wiring,
         state_rx.clone(),
         current,
         members_tx,
+        Arc::clone(&closed),
     ));
     Ok(SlotStream {
         state_rx,
         members_rx,
         members,
         next_start: 0,
+        closed,
         converge_task,
     })
 }
 
 /// The converge loop: keeps one wire subscription per followed pin as the
 /// slot's set changes, publishing the followed members after each change. A pin
-/// whose declaration failed is declared again after a backoff, until it
-/// succeeds or the slot stops following it. Ends when the slot's state channel
-/// closes (runtime teardown), dropping every subscription it holds.
+/// whose declaration failed, or whose wire channel closed under it, is declared
+/// again after a backoff, until it succeeds or the slot stops following it.
+/// Ends when the slot's state channel closes (runtime teardown), dropping every
+/// subscription it holds.
 async fn follow_the_set<S: FollowedSlot>(
     wiring: StreamWiring<S>,
     mut state_rx: watch::Receiver<S::State>,
     mut current: Vec<(Arc<S::Pin>, Subscription)>,
     members_tx: watch::Sender<Members<S>>,
+    closed: Arc<Notify>,
 ) {
     let mut redeclare_delay = FIRST_REDECLARE_DELAY;
     loop {
@@ -269,6 +295,7 @@ async fn follow_the_set<S: FollowedSlot>(
                     return; // runtime teardown
                 }
             }
+            () = closed.notified() => {}
             () = tokio::time::sleep(redeclare_delay), if owed => {
                 redeclare_delay = (redeclare_delay * 2).min(MAX_REDECLARE_DELAY);
             }
@@ -302,14 +329,22 @@ async fn follow_the_set<S: FollowedSlot>(
     }
 }
 
-/// Whether the slot follows a pin that holds no wire subscription.
+/// Whether the slot follows a pin that holds no open wire subscription.
 fn owes_declarations<S: FollowedSlot>(
     state: &S::State,
     current: &[(Arc<S::Pin>, Subscription)],
 ) -> bool {
-    S::desired(state)
-        .iter()
-        .any(|pin| !current.iter().any(|(followed, _)| **followed == *pin))
+    S::desired(state).iter().any(|pin| {
+        !current
+            .iter()
+            .any(|(followed, subscription)| **followed == *pin && is_open(subscription))
+    })
+}
+
+/// Whether a wire subscription's channel is still open: a closed one delivers
+/// nothing more and is declared again.
+fn is_open(subscription: &Subscription) -> bool {
+    !subscription.wire_receiver().is_disconnected()
 }
 
 /// Whether the published members follow the same pins as `current`, in the
@@ -347,13 +382,14 @@ struct Converged<S: FollowedSlot> {
 /// here BEFORE any newly followed pin's subscription exists, so one pin never
 /// holds two wire subscriptions across a change. A pin that is still followed
 /// keeps the subscription it already had, so an unrelated member's change never
-/// interrupts it. A member whose declaration fails is left out and reported.
+/// interrupts it; one whose channel closed is dropped and declared again. A
+/// member whose declaration fails is left out and reported.
 async fn converge_subscriptions<S: FollowedSlot>(
     mut current: Vec<(Arc<S::Pin>, Subscription)>,
     desired: Vec<S::Pin>,
     wiring: &StreamWiring<S>,
 ) -> Converged<S> {
-    current.retain(|(pin, _)| desired.contains(&**pin));
+    current.retain(|(pin, subscription)| desired.contains(&**pin) && is_open(subscription));
 
     // Claim the still-followed subscriptions first, so every pin the slot moved
     // off is already dropped before any new one is declared. One entry per
@@ -565,7 +601,7 @@ mod tests {
             }
 
             fn published_by(pin: &ProducerRef, message: &Message) -> bool {
-                message.core_node() == pin.core_node && message.instance_id() == pin.instance_id
+                published_by_producer(pin, message)
             }
         }
 
@@ -636,6 +672,43 @@ mod tests {
 
             assert!(outcome.is_err(), "the stream must not start");
             assert_eq!(*declarations.attempts.lock().unwrap(), 1);
+        }
+
+        /// A followed pin whose wire channel closes under it is declared
+        /// again: the reader rings the converge task, which counts the closed
+        /// channel as a declaration it owes.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_followed_pin_whose_wire_channel_closes_is_declared_again() {
+            let shared = shared_messenger().await;
+            let declarations = Arc::new(Declarations::default());
+            let (_state_tx, state_rx) = watch::channel(vec![producer("arm_1")]);
+            let mut stream =
+                start_slot_stream::<TestSlot>(wiring(&shared, Arc::clone(&declarations)), state_rx)
+                    .await
+                    .expect("the pin declares");
+            assert_eq!(*declarations.attempts.lock().unwrap(), 1);
+
+            // Closing the session closes every wire channel it holds.
+            shared
+                .lock()
+                .await
+                .stop_session()
+                .await
+                .expect("the mock session stops");
+            // The reader sees the closed channel on its next poll.
+            let _ = tokio::time::timeout(Duration::from_millis(200), stream.next()).await;
+
+            let redeclared = tokio::time::timeout(FIRST_REDECLARE_DELAY * 6, async {
+                while *declarations.attempts.lock().unwrap() < 2 {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            assert!(
+                redeclared.is_ok(),
+                "the closed pin is declared again; attempts={}",
+                *declarations.attempts.lock().unwrap()
+            );
         }
 
         /// A pin whose declaration fails later is declared again on the

@@ -8,8 +8,8 @@ use core_node_api::encoding::{
 };
 use core_node_api::{ActionId, NodeStage};
 use daemon_config::launcher::{
-    BindingValidationItem, DeploymentInstance, LinkValue, PairingValidationItem, Placements,
-    WALL_CLOCK, split_link_target, validate_link_plan,
+    BindingValidationItem, CopyMembership, DeploymentInstance, LinkValue, PairingValidationItem,
+    Placements, WALL_CLOCK, split_link_target, validate_link_plan,
 };
 use names_generator2::get_random;
 use peppylib::core_node::transport::{poll, send_goal};
@@ -763,6 +763,8 @@ async fn validate_links_against_stack(
                 "the target daemon reports an invalid core node name `{core_node_name}`: {reason}"
             ))
         })?),
+        // `node run` starts one instance outside any copy.
+        &CopyMembership::default(),
         &clocks,
     );
     if !validated.errors.is_empty() {

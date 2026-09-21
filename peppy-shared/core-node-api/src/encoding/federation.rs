@@ -7,7 +7,7 @@
 
 use capnp::message::Builder;
 use config::runtime::{
-    BoundProducers, CoreNodeName, Name, ObservedPeer, ProducerRef, first_duplicate,
+    BoundMember, BoundProducers, CoreNodeName, Name, ObservedPeer, ProducerRef, first_duplicate,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -428,11 +428,8 @@ impl ParticipantSetsUpdateRequest {
                     SlotMembers::Producers(producers) => {
                         let mut list =
                             members.init_producers(capnp_list_len(producers.len(), "producers")?);
-                        for (member_index, producer) in producers.iter().enumerate() {
-                            write_instance_address(
-                                list.reborrow().get(member_index as u32),
-                                producer,
-                            );
+                        for (member_index, member) in producers.iter().enumerate() {
+                            write_bound_member(list.reborrow().get(member_index as u32), member);
                         }
                     }
                     SlotMembers::Observed(targets) => {
@@ -463,11 +460,11 @@ impl ParticipantSetsUpdateRequest {
                 let link_id = required_text(wire.get_link_id()?.to_str()?, "sets.link_id")?;
                 let members = match wire.get_members().which()? {
                     Which::Producers(list) => {
-                        let producers = list?
+                        let members = list?
                             .iter()
-                            .map(|address| read_instance_address(address, "sets.producers"))
+                            .map(read_bound_member)
                             .collect::<Result<Vec<_>>>()?;
-                        SlotMembers::Producers(BoundProducers::try_from(producers).map_err(
+                        SlotMembers::Producers(BoundProducers::try_from(members).map_err(
                             |error| crate::Error::Decoding(format!("slot `{link_id}`: {error}")),
                         )?)
                     }
@@ -576,6 +573,27 @@ fn write_instance_address(
 ) {
     address.set_core_node(&producer.core_node);
     address.set_instance_id(&producer.instance_id);
+}
+
+/// Writes one member of a producer-binding slot into an initialized
+/// `BoundMember` builder; a member outside any copy writes an empty copy.
+fn write_bound_member(
+    mut member: federation_capnp::bound_member::Builder<'_>,
+    bound: &BoundMember,
+) {
+    write_instance_address(member.reborrow().init_producer(), &bound.producer);
+    member.set_copy(bound.copy.as_ref().map(Name::as_str).unwrap_or(""));
+}
+
+/// Inverse of [`write_bound_member`]. An empty copy is a member outside any
+/// copy.
+fn read_bound_member(member: federation_capnp::bound_member::Reader<'_>) -> Result<BoundMember> {
+    Ok(BoundMember {
+        producer: read_instance_address(member.get_producer()?, "sets.producers")?,
+        copy: optional_text(member.get_copy()?.to_str()?)
+            .map(|copy| read_name(&copy, "sets.producers.copy"))
+            .transpose()?,
+    })
 }
 
 /// Writes one observed pairing into an initialized `ObservationMember` builder.
@@ -913,8 +931,15 @@ mod tests {
                     link_id: "robots".into(),
                     members: SlotMembers::Producers(
                         BoundProducers::try_from(vec![
-                            ProducerRef::new("cn-robot", "bravo_arm_inst"),
-                            ProducerRef::new("cn-cloud", "alpha_arm_inst"),
+                            BoundMember {
+                                producer: ProducerRef::new("cn-robot", "bravo_arm_inst"),
+                                copy: Some(Name::new("bravo").unwrap()),
+                            },
+                            BoundMember {
+                                producer: ProducerRef::new("cn-cloud", "alpha_arm_inst"),
+                                copy: Some(Name::new("alpha").unwrap()),
+                            },
+                            BoundMember::from(ProducerRef::new("cn-robot", "fixed_arm_inst")),
                         ])
                         .unwrap(),
                     ),
@@ -966,7 +991,7 @@ mod tests {
                 let count = if repeated { 2 } else { 1 };
                 let mut list = set.init_members().init_producers(count);
                 for index in 0..count {
-                    let mut address = list.reborrow().get(index);
+                    let mut address = list.reborrow().get(index).init_producer();
                     address.set_core_node(core_node);
                     address.set_instance_id("alpha_arm_inst");
                 }

@@ -12,6 +12,7 @@ use config::node::Cardinality;
 use config::runtime::{BoundProducers, Name, SlotBindings};
 use core_node_api::encoding::{
     ObservationTargets, ParticipantSetsUpdateRequest, SetMember, SlotMembers, SlotSet,
+    slots_in_first_added_order,
 };
 use daemon_config::launcher::{CopyRecord, PeppyLauncher, Placements, PlannedObservation};
 use futures::future::join_all;
@@ -33,7 +34,8 @@ pub(super) enum Change {
     /// into one from its own instance's `links`.
     Join,
     /// A removal shrinks each slot; a pairing slot a launch-time copy added to
-    /// loses its pair when the copy's instance stops, with nothing to deliver.
+    /// drops the member from the record, and the pair itself ends when either
+    /// of its instances stops.
     Removal,
 }
 
@@ -65,14 +67,6 @@ pub(super) fn holds_any(slots: &[ChangedSlot], instance: &Name) -> bool {
     slots.iter().any(|slot| slot.instance_id == *instance)
 }
 
-/// The machines the instances of `slots` run on.
-pub(super) fn hosts_of<'a>(
-    slots: &'a [ChangedSlot],
-    placements: &'a Placements,
-) -> impl Iterator<Item = &'a str> {
-    slots.iter().map(|slot| slot.host(placements))
-}
-
 /// The set slots `copy`'s members change, once each in the order it first adds
 /// to them. Each must be a `one_or_more` or `zero_or_more` producer or observer
 /// slot its instance's manifest declares; a refusal names the slot and the fix.
@@ -82,14 +76,13 @@ pub(super) fn changed_slots(
     change: Change,
 ) -> Result<Vec<ChangedSlot>, String> {
     let mut slots: Vec<ChangedSlot> = Vec::new();
-    for member in &copy.set_members {
-        let seen = slots
-            .iter()
-            .any(|slot| slot.instance_id == member.instance_id && slot.link_id == member.link_id);
-        if seen {
-            continue;
-        }
-        if let Some(slot) = changed_slot(copy, planned, member, change)? {
+    for ((instance_id, link_id), targets) in slots_in_first_added_order(&copy.set_members) {
+        let member = SetMember {
+            instance_id: instance_id.clone(),
+            link_id: link_id.to_string(),
+            target: targets[0].to_string(),
+        };
+        if let Some(slot) = changed_slot(copy, planned, &member, change)? {
             slots.push(slot);
         }
     }
@@ -156,7 +149,8 @@ fn changed_slot(
         None if pairing => match change {
             Change::Join => Err(format!(
                 "copy `{copy_name}` adds members to {field}, a pairing slot of `{node}`; a copy \
-                 pairs into it from its own instance's `links`, naming `{instance}/{slot}`"
+                 pairs into it from its own instance's `links`, naming `{instance}/{slot}`, and \
+                 releases the vacancy with `unset_links: [\"{slot}\"]` on `{instance}`"
             )),
             Change::Removal => Ok(None),
         },
@@ -230,10 +224,7 @@ pub(super) fn check_not_emptied(
         emptied
             .iter()
             .any(|slot| slot.instance_id == member.instance_id && slot.link_id == member.link_id)
-            && !copy
-                .instance_ids
-                .iter()
-                .any(|id| id.as_str() == member.target.split('/').next().unwrap_or_default())
+            && !copy.owns_target(&member.target)
     });
     Err(if adds_stack_instances {
         format!(
@@ -298,10 +289,11 @@ pub(super) fn whole_sets(
         .collect()
 }
 
-/// Each of `sets` without the members `copy_instances` run: the whole set it
+/// Each of `sets` without the members `copy`'s instances run, as a producer, an
+/// observed source or the peer an observation is pinned to: the whole set it
 /// held before a join added them, since a join adds only its own instances.
-pub(super) fn without_members_of(sets: &[SlotSet], copy_instances: &[Name]) -> Vec<SlotSet> {
-    let owned = |instance_id: &str| copy_instances.iter().any(|id| id.as_str() == instance_id);
+fn without_members_of(sets: &[SlotSet], copy: &CopyRecord) -> Vec<SlotSet> {
+    let owned = |instance_id: &str| copy.owns_instance(instance_id);
     sets.iter()
         .map(|set| SlotSet {
             instance_id: set.instance_id.clone(),
@@ -311,7 +303,7 @@ pub(super) fn without_members_of(sets: &[SlotSet], copy_instances: &[Name]) -> V
                     BoundProducers::try_from(
                         producers
                             .iter()
-                            .filter(|producer| !owned(&producer.instance_id))
+                            .filter(|member| !owned(&member.producer.instance_id))
                             .cloned()
                             .collect::<Vec<_>>(),
                     )
@@ -323,7 +315,13 @@ pub(super) fn without_members_of(sets: &[SlotSet], copy_instances: &[Name]) -> V
                         targets
                             .as_slice()
                             .iter()
-                            .filter(|target| !owned(&target.source.instance_id))
+                            .filter(|target| {
+                                !owned(&target.source.instance_id)
+                                    && !target
+                                        .peer
+                                        .as_ref()
+                                        .is_some_and(|peer| owned(&peer.peer.instance_id))
+                            })
                             .cloned()
                             .collect(),
                     )
@@ -347,7 +345,7 @@ pub(super) const UNDELIVERED_REMEDY: &str = "An instance that is not running hol
 pub(super) async fn grow_or_restore<D, F>(
     deliver: D,
     grown: Vec<SlotSet>,
-    copy_instances: &[Name],
+    copy: &CopyRecord,
 ) -> Result<(), String>
 where
     D: Fn(Vec<SlotSet>) -> F,
@@ -356,7 +354,7 @@ where
     let Err(failure) = deliver(grown.clone()).await else {
         return Ok(());
     };
-    match deliver(without_members_of(&grown, copy_instances)).await {
+    match deliver(without_members_of(&grown, copy)).await {
         Ok(()) => Err(format!(
             "{failure}\nThe sets that took the copy's members hold what they held before it"
         )),
@@ -410,8 +408,6 @@ pub(super) async fn deliver_sets(
     ))
 }
 
-/// Asks `host` to replace the sets of the instances it runs, returning one line
-/// per set it could not replace.
 /// How long a participant may take to replace `sets`: it tells its observer
 /// instances in turn, each within `OBSERVATION_UPDATE_TIMEOUT`, and its
 /// producer sets at once within `BINDING_UPDATE_TIMEOUT`, and the request
@@ -429,6 +425,8 @@ fn sets_update_budget(sets: &[SlotSet]) -> Duration {
         .saturating_add(STACK_QUERY_TIMEOUT)
 }
 
+/// Asks `host` to replace the sets of the instances it runs, returning one line
+/// per set it could not replace.
 async fn replace_on_participant(
     ctx: &StackChangeContext,
     launch_id: &str,
@@ -455,7 +453,7 @@ async fn replace_on_participant(
             .err()
             .map(|reasons| reasons.lines().map(str::to_owned).collect())
             .unwrap_or_default(),
-        Err(error) => vec![format!("cannot be reached: {error}")],
+        Err(error) => vec![format!("did not take the sets: {error}")],
     }
 }
 
@@ -585,7 +583,8 @@ mod tests {
             error,
             "copy `alpha` adds members to `monitor_inst.links.leader`, a pairing slot of \
              `monitor:v1`; a copy pairs into it from its own instance's `links`, naming \
-             `monitor_inst/leader`"
+             `monitor_inst/leader`, and releases the vacancy with `unset_links: [\"leader\"]` \
+             on `monitor_inst`"
         );
         let slots = slots_of(&[("leader", "alpha_arm_inst")], Change::Removal)
             .expect("a launch-time copy's pairing member leaves with its pair");
@@ -681,11 +680,23 @@ mod tests {
         }
     }
 
+    /// A set's members by instance, a producer set's each with the copy it
+    /// belongs to as `instance:copy`.
     fn members(set: &SlotSet) -> Vec<String> {
         match &set.members {
             SlotMembers::Producers(producers) => producers
                 .iter()
-                .map(|producer| producer.instance_id.clone())
+                .map(|member| {
+                    format!(
+                        "{}:{}",
+                        member.producer.instance_id,
+                        member
+                            .copy
+                            .as_ref()
+                            .map(|copy| copy.as_str())
+                            .unwrap_or("-")
+                    )
+                })
                 .collect(),
             SlotMembers::Observed(targets) => targets
                 .as_slice()
@@ -705,21 +716,39 @@ mod tests {
             Change::Join,
         )
         .unwrap();
+        let in_copy = |core_node: &str, instance: &str, copy: &str| config::runtime::BoundMember {
+            producer: ProducerRef::new(core_node, instance),
+            copy: Some(Name::new(copy).unwrap()),
+        };
         let bindings = BTreeMap::from([(
             "monitor_inst".to_string(),
             SlotBindings::from([(
                 "robots".to_string(),
                 BoundProducers::try_from(vec![
-                    ProducerRef::new("cn-robot", "bravo_arm_inst"),
-                    ProducerRef::new("cn-cloud", "alpha_arm_inst"),
+                    in_copy("cn-robot", "bravo_arm_inst", "bravo"),
+                    in_copy("cn-cloud", "alpha_arm_inst", "alpha"),
                 ])
                 .unwrap(),
             )]),
         )]);
+        // An observation pinned to a pair by the copy's own end names a stack
+        // instance as its source and the copy's instance as the peer.
+        let pinned_by_alpha = PlannedObservation {
+            source: ProducerRef::new("cn-robot", "hub_inst"),
+            peer: Some(config::runtime::ObservedPeer {
+                peer: ProducerRef::new("cn-cloud", "alpha_arm_inst"),
+                peer_link_id: "hub".into(),
+            }),
+            ..observation("hub_inst")
+        };
         let sets = whole_sets(
             &slots,
             &bindings,
-            &[observation("bravo_arm_inst"), observation("alpha_arm_inst")],
+            &[
+                observation("bravo_arm_inst"),
+                observation("alpha_arm_inst"),
+                pinned_by_alpha,
+            ],
         );
         assert_eq!(
             sets.iter()
@@ -728,28 +757,37 @@ mod tests {
             [
                 (
                     "robots",
-                    vec!["bravo_arm_inst".to_string(), "alpha_arm_inst".to_string()]
+                    vec![
+                        "bravo_arm_inst:bravo".to_string(),
+                        "alpha_arm_inst:alpha".to_string()
+                    ]
                 ),
                 (
                     "fleet",
-                    vec!["bravo_arm_inst".to_string(), "alpha_arm_inst".to_string()]
+                    vec![
+                        "bravo_arm_inst".to_string(),
+                        "alpha_arm_inst".to_string(),
+                        "hub_inst".to_string()
+                    ]
                 ),
-            ]
+            ],
+            "each producer member carries the copy the plan stamped on it"
         );
         assert!(matches!(sets[0].members, SlotMembers::Producers(_)));
         assert!(matches!(sets[1].members, SlotMembers::Observed(_)));
 
-        let before = without_members_of(&sets, &[Name::new("alpha_arm_inst").unwrap()]);
+        let before = without_members_of(&sets, &copy_adding(&[("robots", "alpha_arm_inst")]));
         assert_eq!(
             before
                 .iter()
                 .map(|set| (set.link_id.as_str(), members(set)))
                 .collect::<Vec<_>>(),
             [
-                ("robots", vec!["bravo_arm_inst".to_string()]),
+                ("robots", vec!["bravo_arm_inst:bravo".to_string()]),
                 ("fleet", vec!["bravo_arm_inst".to_string()]),
             ],
-            "the sets a join grew, without its members, are what they held before it"
+            "the sets a join grew, without its members as producers, sources or pinned peers, \
+             are what they held before it"
         );
     }
 
@@ -810,7 +848,7 @@ mod tests {
         #[tokio::test]
         async fn a_delivery_that_lands_leaves_the_grown_set_standing() {
             let (deliver, carried) = recording(vec![Ok(())]);
-            let alpha = [Name::new("alpha_arm_inst").unwrap()];
+            let alpha = copy_adding(&[("robots", "alpha_arm_inst")]);
 
             let outcome = grow_or_restore(
                 deliver,
@@ -823,8 +861,8 @@ mod tests {
             assert_eq!(
                 *carried.lock().unwrap(),
                 [vec![
-                    "bravo_arm_inst".to_string(),
-                    "alpha_arm_inst".to_string()
+                    "bravo_arm_inst:-".to_string(),
+                    "alpha_arm_inst:-".to_string()
                 ]],
                 "one delivery, the grown set"
             );
@@ -833,7 +871,7 @@ mod tests {
         #[tokio::test]
         async fn a_failed_delivery_puts_back_what_the_sets_held_before_the_copy() {
             let (deliver, carried) = recording(vec![Err("cannot reach `cn-robot`".into()), Ok(())]);
-            let alpha = [Name::new("alpha_arm_inst").unwrap()];
+            let alpha = copy_adding(&[("robots", "alpha_arm_inst")]);
 
             let outcome = grow_or_restore(
                 deliver,
@@ -855,7 +893,7 @@ mod tests {
             );
             assert_eq!(
                 carried.lock().unwrap()[1],
-                ["bravo_arm_inst".to_string()],
+                ["bravo_arm_inst:-".to_string()],
                 "the restore carries the set without the copy's own members"
             );
         }
@@ -866,7 +904,7 @@ mod tests {
                 Err("cannot reach `cn-robot`".into()),
                 Err("cannot reach `cn-robot`".into()),
             ]);
-            let alpha = [Name::new("alpha_arm_inst").unwrap()];
+            let alpha = copy_adding(&[("robots", "alpha_arm_inst")]);
 
             let outcome = grow_or_restore(deliver, set_of(&["alpha_arm_inst"]), &alpha)
                 .await

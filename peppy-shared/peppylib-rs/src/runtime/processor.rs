@@ -240,7 +240,7 @@ impl Processor {
                     .collect()
             })
             .unwrap_or_default();
-        for (link_id, producers) in &config.bound_producers {
+        for (link_id, pins) in &config.bound_producers {
             if !declared_slots.contains(link_id.as_str()) {
                 tracing::warn!(
                     link_id = %link_id,
@@ -248,7 +248,16 @@ impl Processor {
                 );
                 continue;
             }
-            let bound = config::runtime::BoundProducers::try_from(producers.clone())
+            let members = pins
+                .iter()
+                .map(|pin| {
+                    Ok(config::runtime::BoundMember {
+                        producer: pin.producer.clone(),
+                        copy: seed_copy_name(link_id, pin.copy.as_deref())?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let bound = config::runtime::BoundProducers::try_from(members)
                 .map_err(config::ConfigError::from)?;
             slot_bindings.insert(link_id.clone(), bound);
         }
@@ -308,21 +317,10 @@ impl Processor {
             let pairs = pins
                 .iter()
                 .map(|pin| {
-                    let copy = pin
-                        .copy
-                        .as_deref()
-                        .map(|copy| {
-                            Name::new(copy).map_err(|e| Error::InvalidCopyName {
-                                link_id: link_id.clone(),
-                                copy: copy.to_string(),
-                                reason: e.to_string(),
-                            })
-                        })
-                        .transpose()?;
                     Ok(config::runtime::PairedPeer {
                         peer: pin.info.producer.clone(),
                         peer_link_id: pin.info.peer_link_id.clone(),
-                        copy,
+                        copy: seed_copy_name(link_id, pin.copy.as_deref())?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -475,8 +473,38 @@ impl Processor {
         self.bound_channel(link_id)
             .borrow()
             .producers
+            .producers()
+            .cloned()
+            .collect()
+    }
+
+    /// The members of the set currently bound to the consumer slot declared
+    /// at `link_id`, in plan order: each producer with the copy its instance
+    /// belongs to, `None` for one the launcher deploys outside any copy. The
+    /// same set [`Self::bound_producers`] answers by producer alone, under
+    /// the same rules; a node that groups producers by copy reads this one.
+    ///
+    /// Generated `bound_members()` module functions of `zero_or_more` slots
+    /// splice this directly; `one_or_more` slots go through
+    /// [`Self::non_empty_bound_members`].
+    pub fn bound_members(&self, link_id: &str) -> Vec<crate::messaging::BoundMember> {
+        self.bound_channel(link_id)
+            .borrow()
+            .producers
             .as_slice()
             .to_vec()
+    }
+
+    /// [`Self::bound_members`] for a `cardinality: "one_or_more"` slot, as a
+    /// [`NonEmptyMembers`](crate::messaging::NonEmptyMembers) whose `first()`
+    /// is infallible. An empty set panics on the terms of
+    /// [`Self::non_empty_bound_producers`].
+    ///
+    /// Generated `bound_members()` module functions of `one_or_more` slots
+    /// splice `node_runner.processor().non_empty_bound_members(<link_id>)`.
+    pub fn non_empty_bound_members(&self, link_id: &str) -> crate::messaging::NonEmptyMembers {
+        crate::messaging::NonEmptyMembers::new(self.bound_members(link_id))
+            .unwrap_or_else(|| one_or_more_slot_is_empty(link_id))
     }
 
     /// The sole producer bound to a `cardinality: "one"` consumer slot: the one
@@ -523,15 +551,8 @@ impl Processor {
     /// Generated `bound_producers()` module functions of `one_or_more` slots
     /// splice `node_runner.processor().non_empty_bound_producers(<link_id>)`.
     pub fn non_empty_bound_producers(&self, link_id: &str) -> crate::messaging::NonEmptyProducers {
-        crate::messaging::NonEmptyProducers::new(self.bound_producers(link_id)).unwrap_or_else(
-            || {
-                panic!(
-                    "consumer slot `{link_id}` is bound to an empty set but the generated \
-                     accessor expects cardinality `one_or_more`: {}",
-                    super::RESYNC_REMEDY
-                )
-            },
-        )
+        crate::messaging::NonEmptyProducers::new(self.bound_producers(link_id))
+            .unwrap_or_else(|| one_or_more_slot_is_empty(link_id))
     }
 
     /// Checks that `target` is a member of the set currently bound to the slot
@@ -551,7 +572,6 @@ impl Processor {
             .bound_channel(link_id)
             .borrow()
             .producers
-            .as_slice()
             .contains(target)
         {
             return Ok(());
@@ -910,7 +930,11 @@ fn build_bound_slots(
             }
             let (channel, _rx) = watch::channel(BoundSetState::seeded(bound));
             if cardinality.is_scalar() {
-                let producer = channel.borrow().producers.as_slice().first().cloned();
+                let producer = channel
+                    .borrow()
+                    .producers
+                    .first()
+                    .map(|member| member.producer.clone());
                 scalars.insert(link_id.clone(), ScalarSlot { producer, channel });
             } else {
                 sets.insert(link_id.clone(), SlotChannel::new(cardinality, channel));
@@ -921,6 +945,30 @@ fn build_bound_slots(
         sets: Arc::new(sets),
         scalars: Arc::new(scalars),
     })
+}
+
+/// The panic every `one_or_more` accessor raises on an empty set, which node
+/// startup and the daemon's planning both refuse: the generated code and the
+/// manifest disagree.
+fn one_or_more_slot_is_empty(link_id: &str) -> ! {
+    panic!(
+        "consumer slot `{link_id}` is bound to an empty set but the generated accessor expects \
+         cardinality `one_or_more`: {}",
+        super::RESYNC_REMEDY
+    )
+}
+
+/// The copy a standalone seed names for a member of slot `link_id`, as a
+/// validated name; `None` seeds a member outside any copy.
+fn seed_copy_name(link_id: &str, copy: Option<&str>) -> Result<Option<Name>> {
+    copy.map(|copy| {
+        Name::new(copy).map_err(|e| Error::InvalidCopyName {
+            link_id: link_id.to_string(),
+            copy: copy.to_string(),
+            reason: e.to_string(),
+        })
+    })
+    .transpose()
 }
 
 /// A consumer's producer-binding slots. A set slot (`one_or_more`,
@@ -936,9 +984,9 @@ struct BoundSlots {
 
 /// A scalar producer slot: the producer its deployment bound, if any, and a
 /// channel holding that same binding for the subscriptions that follow the
-/// slot. `producer` is the head of `channel`'s seeded set, kept beside it so
-/// the scalar accessor can lend it. No service holds the sender, so nothing
-/// replaces either.
+/// slot. `producer` is the head of `channel`'s seeded set, held beside it
+/// because the scalar accessors lend a reference to it, which a watch guard
+/// cannot give. Both are written at boot and read from then on.
 struct ScalarSlot {
     producer: Option<crate::messaging::ProducerRef>,
     channel: watch::Sender<BoundSetState>,
@@ -2103,11 +2151,11 @@ mod tests {
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
-                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
-                    wrist_camera: [{ core_node: "core-1234", instance_id: "camera_2" }],
+                    main: [{ producer: { core_node: "core-1234", instance_id: "camera_1" } }],
+                    wrist_camera: [{ producer: { core_node: "core-1234", instance_id: "camera_2" } }],
                     arms: [
-                        { core_node: "core-1234", instance_id: "right_arm" },
-                        { core_node: "core-1234", instance_id: "left_arm" }
+                        { producer: { core_node: "core-1234", instance_id: "right_arm" } },
+                        { producer: { core_node: "core-1234", instance_id: "left_arm" } }
                     ],
                     spare_cameras: []
                 }"#,
@@ -2123,9 +2171,9 @@ mod tests {
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
-                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    main: [{ producer: { core_node: "core-1234", instance_id: "camera_1" } }],
                     wrist_camera: [],
-                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
+                    arms: [{ producer: { core_node: "core-1234", instance_id: "right_arm" } }],
                     spare_cameras: []
                 }"#,
             ),
@@ -2212,8 +2260,7 @@ mod tests {
 
     /// A typed accessor whose guarantee the slot does not meet is codegen /
     /// runtime skew (the accessor and the startup validation come from the
-    /// same manifest), so it panics like an unknown `link_id` rather than
-    /// returning an error the caller could mishandle, and the panic names the
+    /// same manifest), so it panics like an unknown `link_id`, and the panic names the
     /// command that regenerates the code.
     #[test]
     #[should_panic(expected = "bound to no producer but the generated accessor expects \
@@ -2319,30 +2366,26 @@ mod tests {
         );
     }
 
-    /// A boot config carrying the removed pre-cardinality single-producer
-    /// object shape must fail to parse with the version-skew message: the
-    /// daemon, CLI, generated bindings, and node runtime ship together.
+    /// A boot config binding one member in place of a slot's member array
+    /// fails to parse: a slot binds an ordered array of members at every
+    /// cardinality.
     #[test]
-    fn boot_config_with_pre_cardinality_object_binding_fails_to_parse() {
+    fn boot_config_with_a_member_in_place_of_a_set_fails_to_parse() {
         let json5_config = r#"{
             messaging_host: "127.0.0.1",
             messaging_port: 7448,
             node_instance: {
                 instance_id: "consumer_1",
                 slot_bindings: {
-                    main: { core_node: "core-1234", instance_id: "camera_1" }
+                    main: { producer: { producer: { core_node: "core-1234", instance_id: "camera_1" } } }
                 }
             },
             node_name: "consumer_node",
             node_tag: "v1",
             bound_core_node: "core-1234"
         }"#;
-        let err = serde_json5::from_str::<RuntimeConfig>(json5_config)
-            .expect_err("object-valued slot binding must be a hard parse error");
-        assert!(
-            err.to_string().contains("upgraded together"),
-            "parse error should name the version skew, got: {err}"
-        );
+        serde_json5::from_str::<RuntimeConfig>(json5_config)
+            .expect_err("a member in place of a slot's set must be a hard parse error");
     }
 
     /// The cardinality size rules are re-checked at startup: a `one` slot
@@ -2355,11 +2398,11 @@ mod tests {
             Some(
                 r#"{
                     main: [
-                        { core_node: "core-1234", instance_id: "camera_1" },
-                        { core_node: "core-1234", instance_id: "camera_2" }
+                        { producer: { core_node: "core-1234", instance_id: "camera_1" } },
+                        { producer: { core_node: "core-1234", instance_id: "camera_2" } }
                     ],
                     wrist_camera: [],
-                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
+                    arms: [{ producer: { core_node: "core-1234", instance_id: "right_arm" } }],
                     spare_cameras: []
                 }"#,
             ),
@@ -2380,7 +2423,7 @@ mod tests {
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
-                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    main: [{ producer: { core_node: "core-1234", instance_id: "camera_1" } }],
                     wrist_camera: [],
                     arms: [],
                     spare_cameras: []
@@ -2403,12 +2446,12 @@ mod tests {
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
-                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    main: [{ producer: { core_node: "core-1234", instance_id: "camera_1" } }],
                     wrist_camera: [
-                        { core_node: "core-1234", instance_id: "camera_2" },
-                        { core_node: "core-1234", instance_id: "camera_3" }
+                        { producer: { core_node: "core-1234", instance_id: "camera_2" } },
+                        { producer: { core_node: "core-1234", instance_id: "camera_3" } }
                     ],
-                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
+                    arms: [{ producer: { core_node: "core-1234", instance_id: "right_arm" } }],
                     spare_cameras: []
                 }"#,
             ),
@@ -2440,8 +2483,8 @@ mod tests {
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
-                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
-                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }],
+                    main: [{ producer: { core_node: "core-1234", instance_id: "camera_1" } }],
+                    arms: [{ producer: { core_node: "core-1234", instance_id: "right_arm" } }],
                     spare_cameras: []
                 }"#,
             ),
@@ -2466,9 +2509,9 @@ mod tests {
             MULTI_SLOT_PEPPY_CONFIG,
             Some(
                 r#"{
-                    main: [{ core_node: "core-1234", instance_id: "camera_1" }],
+                    main: [{ producer: { core_node: "core-1234", instance_id: "camera_1" } }],
                     wrist_camera: [],
-                    arms: [{ core_node: "core-1234", instance_id: "right_arm" }]
+                    arms: [{ producer: { core_node: "core-1234", instance_id: "right_arm" } }]
                 }"#,
             ),
         )

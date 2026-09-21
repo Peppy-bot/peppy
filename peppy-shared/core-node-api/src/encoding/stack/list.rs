@@ -33,6 +33,21 @@ pub struct SetMember {
     pub target: String,
 }
 
+/// `members` grouped by the slot they were added to, each slot once in the
+/// order the copy first added to it, with its targets in the order they were
+/// added. The order `stack list` prints and a join or removal delivers by.
+pub fn slots_in_first_added_order(members: &[SetMember]) -> Vec<((&Name, &str), Vec<&str>)> {
+    let mut by_slot: Vec<((&Name, &str), Vec<&str>)> = Vec::new();
+    for member in members {
+        let slot = (&member.instance_id, member.link_id.as_str());
+        match by_slot.iter_mut().find(|(held, _)| *held == slot) {
+            Some((_, targets)) => targets.push(member.target.as_str()),
+            None => by_slot.push((slot, vec![member.target.as_str()])),
+        }
+    }
+    by_slot
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StackListRequest;
 

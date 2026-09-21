@@ -2,7 +2,7 @@
 //! delivery). See `schemas/peer_update.capnp` for the wire contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{PeerInfo, PeerMember, ProducerRef};
+use crate::messaging::{PeerInfo, PeerMember};
 use crate::peer_update_capnp;
 use crate::types::Payload;
 
@@ -50,10 +50,12 @@ impl PeerUpdateRequest {
         for idx in 0..wire_members.len() {
             let wire = wire_members.get(idx);
             let info = PeerInfo {
-                producer: ProducerRef::new(
-                    super::read_text(wire.get_peer_core_node(), "peer_update", "peerCoreNode")?,
-                    super::read_text(wire.get_peer_instance_id(), "peer_update", "peerInstanceId")?,
-                ),
+                producer: super::read_producer(
+                    wire.get_peer_core_node(),
+                    wire.get_peer_instance_id(),
+                    "peer_update",
+                    ("peerCoreNode", "peerInstanceId"),
+                )?,
                 peer_link_id: super::read_text(
                     wire.get_peer_link_id(),
                     "peer_update",
@@ -86,6 +88,7 @@ impl PeerUpdateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messaging::ProducerRef;
 
     fn member(instance: &str, copy: Option<&str>) -> PeerMember {
         PeerMember {

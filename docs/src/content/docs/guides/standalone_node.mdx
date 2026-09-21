@@ -126,7 +126,9 @@ Parameters are not the only thing a launch resolves. A node that declares [pairi
 | Builder | Stands in for |
 |---|---|
 | `with_peer_pin` | the daemon's `--pair` delivery for a `depends_on.pairings` slot |
+| `with_peer_pin_in_copy` | the same pair, for a peer whose instance belongs to a copy: it takes the copy's name last, and the member the node reads carries it |
 | `with_bound_producer` | one `--link` occurrence, or one launcher `links:` entry, for a `depends_on.nodes` / `depends_on.contracts` slot |
+| `with_bound_producer_in_copy` | the same binding, for a producer whose instance belongs to a copy: it takes the copy's name last, and the member the node reads carries it |
 | `with_vacant_producer_slot` | a launcher writing a producer-binding slot `{ vacant: "<why>" }` |
 | `with_observed_source` | one member of the set the daemon stamps into an observer slot at spawn |
 

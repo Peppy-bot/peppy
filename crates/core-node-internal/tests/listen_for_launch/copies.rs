@@ -1065,12 +1065,24 @@ impl MonitorSlots {
         }
     }
 
+    /// Each member of `robots` as `instance:copy`, the copy the daemon says
+    /// the member's instance belongs to.
     fn robots(&self) -> Vec<String> {
         self.robots
             .borrow()
             .producers
             .iter()
-            .map(|producer| producer.instance_id.clone())
+            .map(|member| {
+                format!(
+                    "{}:{}",
+                    member.producer.instance_id,
+                    member
+                        .copy
+                        .as_ref()
+                        .map(|copy| copy.as_str())
+                        .unwrap_or("-")
+                )
+            })
             .collect()
     }
 
@@ -1128,10 +1140,13 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
     };
 
     join("alpha").await;
-    assert_eq!(monitor.robots(), ["alpha_arm_inst"]);
+    assert_eq!(monitor.robots(), ["alpha_arm_inst:alpha"]);
     assert_eq!(monitor.fleet(), ["alpha_arm_inst/controller"]);
     join("bravo").await;
-    assert_eq!(monitor.robots(), ["alpha_arm_inst", "bravo_arm_inst"]);
+    assert_eq!(
+        monitor.robots(),
+        ["alpha_arm_inst:alpha", "bravo_arm_inst:bravo"]
+    );
     assert_eq!(
         monitor.fleet(),
         ["alpha_arm_inst/controller", "bravo_arm_inst/controller"]
@@ -1169,11 +1184,14 @@ async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
 
     let result = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
     assert!(result.success, "{:?}", result.error_message);
-    assert_eq!(monitor.robots(), ["bravo_arm_inst"]);
+    assert_eq!(monitor.robots(), ["bravo_arm_inst:bravo"]);
     assert_eq!(monitor.fleet(), ["bravo_arm_inst/controller"]);
 
     join("alpha").await;
-    assert_eq!(monitor.robots(), ["bravo_arm_inst", "alpha_arm_inst"]);
+    assert_eq!(
+        monitor.robots(),
+        ["bravo_arm_inst:bravo", "alpha_arm_inst:alpha"]
+    );
     assert_eq!(
         monitor.fleet(),
         ["bravo_arm_inst/controller", "alpha_arm_inst/controller"]

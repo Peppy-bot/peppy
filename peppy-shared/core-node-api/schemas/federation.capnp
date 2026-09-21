@@ -149,11 +149,18 @@ struct SlotSet {
         # Discriminant zero: a message that never set `members` decodes as
         # `unset`, which the decoder refuses.
         unset @2 :Void;
-        # A producer-binding slot's producers, in plan order.
-        producers @3 :List(InstanceAddress);
+        # A producer-binding slot's members, in plan order.
+        producers @3 :List(BoundMember);
         # An observer slot's observed pairings, in plan order.
         observed @4 :List(ObservationMember);
     }
+}
+
+# One member of a producer-binding slot: the producer instance and the copy
+# its instance belongs to, empty for an instance run outside a copy.
+struct BoundMember {
+    producer @0 :InstanceAddress;
+    copy @1 :Text;
 }
 
 # One pairing an observer slot taps: the source instance and its pairing slot.
@@ -177,9 +184,8 @@ struct ObservedPeer {
 
 # The reply to every federation exchange whose answer is "did you do it, and if
 # not, why". Shared by `pair_commit`, `participant_release`,
-# `participant_instances_remove` and `participant_sets_update` rather than
-# restated per service: they differ only in which verb `ok` reports, and that
-# verb is already the service name.
+# `participant_instances_remove` and `participant_sets_update`: they differ
+# only in which verb `ok` reports, and that verb is already the service name.
 #
 # The refusal reason is load-bearing, not decoration. A `pair_commit` refusal
 # makes the sender revert its own half, so a pair is never left established on

@@ -484,7 +484,7 @@ pub fn build_pair_topic_consumer(
         PairTopicConsumerKind::Peer => {
             emit_peer_module_header(&mut builder, &topic.name, qos, peer);
             (
-                "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired. Each message is tagged with the PeerInfo of the paired peer, the same identity paired() returns.",
+                "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired. Each message is tagged with the PeerInfo of the paired peer, the same identity paired() returns.".to_string(),
                 SubscriptionTag::Peer,
                 "Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.",
                 "subscribe_peer",
@@ -492,8 +492,15 @@ pub fn build_pair_topic_consumer(
         }
         PairTopicConsumerKind::Observed(cardinality) => {
             emit_observer_module_header(&mut builder, &topic.name, qos, peer, cardinality);
+            let follows_the_set = if cardinality.is_scalar() {
+                ""
+            } else {
+                " The subscription follows the set as a join grows it or a removal shrinks it."
+            };
             (
-                "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. Where the slot's cardinality admits more than one source, the subscription follows the set as a join grows it or a removal shrinks it.",
+                format!(
+                    "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance.{follows_the_set}"
+                ),
                 SubscriptionTag::ObservedSource,
                 "Subscribe to this observed pairing topic. Legal before any source is resolved or live: the subscription stays silent until a member emits.",
                 "subscribe_observed",
@@ -501,7 +508,7 @@ pub fn build_pair_topic_consumer(
         }
     };
 
-    emit_subscription_class(&mut builder, subscription_doc, subscription_tag);
+    emit_subscription_class(&mut builder, &subscription_doc, subscription_tag);
 
     builder.blank_line();
     builder.block(

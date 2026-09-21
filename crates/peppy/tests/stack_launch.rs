@@ -3839,7 +3839,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     );
     assert_eq!(
         runtime_config.node_instance.slot_bindings["backbone"]
-            .iter()
+            .producers()
             .map(|producer| producer.instance_id.as_str())
             .collect::<Vec<_>>(),
         ["backbone_inst"]

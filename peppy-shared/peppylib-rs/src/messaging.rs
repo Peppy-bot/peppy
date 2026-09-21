@@ -25,7 +25,7 @@ pub use actions::{
     decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_ack,
     wrap_goal_payload, wrap_result_outcome,
 };
-pub use bound_set::{BoundSetState, NonEmptyProducers};
+pub use bound_set::{BoundSetState, NonEmptyMembers, NonEmptyProducers};
 pub use non_empty::NonEmpty;
 pub use observation::{
     NonEmptyObservedSources, ObservationState, ObservedMemberState, ObservedSource,
@@ -45,7 +45,7 @@ pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 // a removal shrinks it. Wire operations stay per-producer: a bound-set topic
 // subscription opens one pinned subscription per member, and poll / send_goal
 // take the single selected member.
-pub use config::runtime::ProducerRef;
+pub use config::runtime::{BoundMember, ProducerRef};
 
 // Curated pmi re-exports. peppylib is a thin layer over PMI, so these types are
 // the shared vocabulary of its public messaging API rather than hidden

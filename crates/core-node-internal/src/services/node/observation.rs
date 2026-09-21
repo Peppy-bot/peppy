@@ -321,7 +321,7 @@ impl ObservationCoordinator {
                     .map(|observer_link_id| {
                         format!(
                             "`{observer_instance_id}.links.{observer_link_id}`: the instance is \
-                             not running; it takes the set when it next runs"
+                             not running"
                         )
                     })
                     .collect();
@@ -778,6 +778,7 @@ impl ObservationCoordinator {
                 "observation_update rejected",
             )
             .await
+            .map(|_accepted| ())
     }
 }
 

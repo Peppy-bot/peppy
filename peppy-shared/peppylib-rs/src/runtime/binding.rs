@@ -12,7 +12,9 @@ use crate::error::{Error, Result};
 use crate::messaging::{
     BoundSetState, MessengerHandle, ProducerRef, SenderTarget, Subscription, TopicMessenger,
 };
-use crate::runtime::slot_stream::{FollowedSlot, SlotStream, StreamWiring, start_slot_stream};
+use crate::runtime::slot_stream::{
+    FollowedSlot, SlotStream, StreamWiring, published_by_producer, start_slot_stream,
+};
 use crate::runtime::{CancellationToken, NodeRunner};
 use crate::types::Message;
 use config::node::QoSProfile;
@@ -28,11 +30,11 @@ impl FollowedSlot for BoundFollow {
     type Wire = SenderTarget;
 
     fn desired(state: &BoundSetState) -> Vec<ProducerRef> {
-        state.producers.as_slice().to_vec()
+        state.producers.producers().cloned().collect()
     }
 
     fn is_followed(state: &BoundSetState, pin: &ProducerRef) -> bool {
-        state.producers.as_slice().contains(pin)
+        state.producers.contains(pin)
     }
 
     fn producer(pin: &ProducerRef) -> &ProducerRef {
@@ -53,7 +55,7 @@ impl FollowedSlot for BoundFollow {
     }
 
     fn published_by(pin: &ProducerRef, message: &Message) -> bool {
-        message.core_node() == pin.core_node && message.instance_id() == pin.instance_id
+        published_by_producer(pin, message)
     }
 }
 

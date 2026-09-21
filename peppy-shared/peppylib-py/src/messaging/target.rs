@@ -155,7 +155,7 @@ impl PyProducerRef {
         &self.inner.instance_id
     }
 
-    fn __repr__(&self) -> String {
+    pub(crate) fn __repr__(&self) -> String {
         format!(
             "ProducerRef({:?}, {:?})",
             self.inner.core_node, self.inner.instance_id

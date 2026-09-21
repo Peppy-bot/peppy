@@ -270,8 +270,7 @@ async fn binding_update_service_applies_daemon_deliveries_end_to_end() {
         slot_rx
             .borrow()
             .producers
-            .as_slice()
-            .iter()
+            .producers()
             .map(|producer| producer.instance_id.clone())
             .collect::<Vec<_>>()
     };
@@ -301,7 +300,7 @@ async fn binding_update_service_applies_daemon_deliveries_end_to_end() {
     assert!(
         response
             .message
-            .contains("this node holds no producer slot `camera`"),
+            .contains("this node holds no producer set slot `camera`"),
         "{}",
         response.message
     );

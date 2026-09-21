@@ -28,15 +28,15 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchGoal, LaunchResult, NodeAddLogEntry,
     NodeBuildLogEntry, NodeRunLogEntry,
 };
-use daemon_config::launcher::{ClockIncarnations, Deployment, Placements};
+use daemon_config::launcher::{ClockIncarnations, CopyMembership, Deployment, Placements};
 use std::collections::{HashMap, HashSet};
 
 /// Which change the node phases are running for: a whole stack's launch, or
 /// a join adding one copy to it.
 #[derive(Clone, Copy)]
 pub(super) enum PhaseChange<'a> {
-    /// A launch, with the copies its launcher deploys.
-    Launch(&'a [daemon_config::launcher::CopyRecord]),
+    /// A launch, with the copy each instance of its plan belongs to.
+    Launch(&'a CopyMembership),
     Join(&'a JoinScope),
 }
 
@@ -44,18 +44,11 @@ impl PhaseChange<'_> {
     /// The copy `instance_id` belongs to, or `None` for an instance the
     /// launcher deploys outside any copy.
     pub(super) fn copy_of(&self, instance_id: &str) -> Option<config::runtime::Name> {
-        let copies: &[daemon_config::launcher::CopyRecord] = match self {
+        let copies = match self {
             Self::Launch(copies) => copies,
-            Self::Join(scope) => std::slice::from_ref(&scope.copy.record),
+            Self::Join(scope) => &scope.copies,
         };
-        copies
-            .iter()
-            .find(|copy| {
-                copy.instance_ids
-                    .iter()
-                    .any(|id| id.as_str() == instance_id)
-            })
-            .map(|copy| copy.name.clone())
+        copies.copy_of(instance_id).cloned()
     }
 
     /// Whether the phases add to a running stack: a join reuses the nodes
@@ -102,6 +95,9 @@ pub(super) struct UnresolvedAdd {
 pub(super) struct JoinScope {
     pub(super) name: Name,
     pub(super) copy: StackCopy,
+    /// The copy each instance of the joined plan belongs to, the stack's
+    /// copies and this one.
+    pub(super) copies: CopyMembership,
     pub(super) existing_nodes: HashSet<HostedNode>,
     pub(super) planned_nodes: HashSet<HostedNode>,
     pub(super) fresh_hosts: Vec<String>,
@@ -197,6 +193,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     };
 
     let copies = composed.copies().to_vec();
+    let copy_membership = CopyMembership::of(&copies);
     let daemon_config::launcher::ComposedLaunch {
         launcher: flat,
         selection,
@@ -257,8 +254,15 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // machine's caches.
     let root_config = ctx.node_stack.root().read().config().clone();
     let (ordered, resolved_slot_bindings, planned_pairings, planned_observations) =
-        match validate_and_order_dependencies(&ctx, &planned, &root_config, &placements, &clocks)
-            .await
+        match validate_and_order_dependencies(
+            &ctx,
+            &planned,
+            &root_config,
+            &placements,
+            &copy_membership,
+            &clocks,
+        )
+        .await
         {
             Ok(result) => result,
             Err(reason) => return LaunchResult::failure(&ctx.log_path, reason),
@@ -390,7 +394,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         add_nodes_to_stack(
             &ctx,
             &phase,
-            PhaseChange::Launch(&copies),
+            PhaseChange::Launch(&copy_membership),
             &ordered,
             &planned_by_key,
             &placements,
@@ -426,7 +430,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
         start_node_instances(
             &ctx,
             &phase,
-            PhaseChange::Launch(&copies),
+            PhaseChange::Launch(&copy_membership),
             &ordered,
             &planned_by_key,
             &mut run_log_paths,

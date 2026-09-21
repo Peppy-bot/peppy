@@ -323,7 +323,7 @@ pub async fn subscribe_observed(
 }
 
 /// Messenger-level core of [`subscribe_observed`]: the same engine driven by an
-/// explicit watch channel instead of a `NodeRunner`'s processor-owned slot.
+/// explicit watch channel; nodes go through [`subscribe_observed`].
 /// Prefer [`subscribe_observed`] in nodes; this seam exists for embedders and
 /// tests that manage observation state themselves. The stream ends when
 /// `watch_rx`'s sender drops.

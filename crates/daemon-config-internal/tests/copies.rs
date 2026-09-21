@@ -2678,11 +2678,11 @@ fn a_join_cannot_add_a_stack_instance_to_a_running_set() {
     );
     assert_eq!(
         error.to_string(),
-        "joining `lens` would add `first` to `observer_inst.links.robots`, and `observer_inst` \
-         already runs; a join adds only its own instances to a running instance's set. In the \
-         option's `add_links`, name an instance the option's fragments deploy, by the id they \
-         write (the join mints it as `lens_<id>`), or reset and launch the complete \
-         configuration with `lens` in it"
+        "joining `lens` would add `first` to `observer_inst.links.robots`, and `first` is not \
+         one of `lens`'s instances; a join adds only its own. In the option's `add_links` name \
+         an id the option's fragments deploy (the join mints it as `lens_<id>`), or list `lens` \
+         under the option's `instances` in the launcher, then `peppy stack reset` and `peppy \
+         stack launch`"
     );
 }
 

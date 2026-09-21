@@ -238,11 +238,11 @@ pub enum CompositionError {
     },
 
     #[error(
-        "joining `{name}` would add `{target}` to `{instance}.links.{slot}`, and `{instance}` \
-         already runs; a join adds only its own instances to a running instance's set. In the \
-         option's `add_links`, name an instance the option's fragments deploy, by the id they \
-         write (the join mints it as `{name}_<id>`), or reset and launch the complete \
-         configuration with `{name}` in it"
+        "joining `{name}` would add `{target}` to `{instance}.links.{slot}`, and `{target}` is \
+         not one of `{name}`'s instances; a join adds only its own. In the option's `add_links` \
+         name an id the option's fragments deploy (the join mints it as `{name}_<id>`), or list \
+         `{name}` under the option's `instances` in the launcher, then `peppy stack reset` and \
+         `peppy stack launch`"
     )]
     JoinAddsStackMember {
         name: String,

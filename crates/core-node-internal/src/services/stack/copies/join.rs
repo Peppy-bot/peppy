@@ -20,9 +20,7 @@ use super::super::state::{ActiveLaunch, StackCopy, instance_ids_in_start_order};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
 use super::{
     change_active_launch,
-    changed_slots::{
-        Change, changed_slots, deliver_sets, grow_or_restore, holds_any, hosts_of, whole_sets,
-    },
+    changed_slots::{Change, changed_slots, deliver_sets, grow_or_restore, holds_any, whole_sets},
     live::{LiveCheck, check_hosts_live, check_live_stack, live_machines, node_info_on},
     plan::{ResolvedJoin, join_dependencies, selected_instances},
     remove::stop_copy,
@@ -32,7 +30,7 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
     NodeRunLogEntry, StackJoinGoal,
 };
-use daemon_config::launcher::CopyRecord;
+use daemon_config::launcher::{CopyMembership, CopyRecord};
 use futures::FutureExt;
 use std::{
     collections::{HashMap, HashSet},
@@ -121,15 +119,17 @@ async fn join_inner(
         resolved,
     } = ResolvedJoin::resolve(ctx, active, goal).await?;
     let grown_slots = changed_slots(&copy, &planned, Change::Join)?;
-    let live = live_machines(ctx, hosts_of(&grown_slots, &placements)).await?;
+    let live = live_machines(ctx, &placements).await?;
     check_hosts_live(&copy.name, &grown_slots, &placements, &live)?;
     let root = ctx.node_stack.root().read().config().clone();
     // A join follows the domains the stack already publishes: its known
     // lifetimes go in, so a copy binding to a running simulation reads the
     // clock that simulation is already supplying.
     let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
+    let copies = CopyMembership::of(active.copy_records().chain([&copy]));
     let (ordered, bindings, pairings, observations) =
-        validate_and_order_dependencies(ctx, &planned, &root, &placements, &clocks).await?;
+        validate_and_order_dependencies(ctx, &planned, &root, &placements, &copies, &clocks)
+            .await?;
     let grown_sets = whole_sets(&grown_slots, &bindings, &observations);
     let watchers = lifecycle_watchers(&observations, &placements)?;
     // The instances supplying the clocks this join reads take part in it: a
@@ -169,7 +169,6 @@ async fn join_inner(
     };
     // Held past the record's move into the launch: a failed delivery puts the
     // sets this copy's instances joined back the way they were.
-    let copy_instances = record.record.instance_ids.clone();
     let phase = PhaseGoal {
         launch_id: active.launch_id.clone(),
         rebuild: false,
@@ -222,6 +221,7 @@ async fn join_inner(
         let scope: &mut JoinScope = scope.insert(JoinScope {
             name: goal.name.clone(),
             copy: record.clone(),
+            copies: copies.clone(),
             existing_nodes: live.reusable,
             planned_nodes,
             fresh_hosts: live.fresh_hosts,
@@ -301,7 +301,7 @@ async fn join_inner(
         grow_or_restore(
             |sets| deliver_sets(ctx, &phase.launch_id, &placements, sets),
             grown_sets,
-            &copy_instances,
+            &copy,
         )
         .await
     };

@@ -1,4 +1,4 @@
-use config::runtime::{BoundProducers, ProducerRef};
+use config::runtime::{BoundMember, BoundProducers, ProducerRef};
 
 /// The bound producer set of a `cardinality: "one_or_more"` consumer slot, in
 /// plan order and never empty. Generated `bound_producers()` accessors of
@@ -8,6 +8,13 @@ use config::runtime::{BoundProducers, ProducerRef};
 /// `Vec<ProducerRef>`), so flipping a slot's cardinality changes the accessor's
 /// type and surfaces every affected call site at compile time.
 pub type NonEmptyProducers = super::NonEmpty<ProducerRef>;
+
+/// The bound member set of a `cardinality: "one_or_more"` consumer slot: every
+/// producer with the copy its instance belongs to, in plan order and never
+/// empty. Generated `bound_members()` accessors of `one_or_more` slots return
+/// it; those of `zero_or_more` slots return a plain, possibly empty
+/// `Vec<BoundMember>`, the same split as [`NonEmptyProducers`].
+pub type NonEmptyMembers = super::NonEmpty<BoundMember>;
 
 /// Absolute producer-binding state for one consumer slot: the slot's complete
 /// ordered producer set, in the order the plan listed it.

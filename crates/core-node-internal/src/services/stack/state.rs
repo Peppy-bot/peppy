@@ -141,6 +141,11 @@ impl ActiveLaunch {
         }
     }
 
+    /// The record of every copy on the stack.
+    pub(super) fn copy_records(&self) -> impl Iterator<Item = &CopyRecord> {
+        self.copies.values().map(|copy| &copy.record)
+    }
+
     pub(super) fn check_name(&self, name: &Name) -> ChangeResult<()> {
         if self.copies.contains_key(name) {
             return Err(format!("copy `{name}` already exists; choose another name"));

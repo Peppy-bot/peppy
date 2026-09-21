@@ -64,7 +64,10 @@ pub use stack::launch::{
     LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
     PlacementSpec,
 };
-pub use stack::list::{CopyInfo, LaunchIdentity, SetMember, StackListRequest, StackListResponse};
+pub use stack::list::{
+    CopyInfo, LaunchIdentity, SetMember, StackListRequest, StackListResponse,
+    slots_in_first_added_order,
+};
 pub use stack::remove::StackRemoveGoal;
 pub use stack::reset::{StackResetRequest, StackResetResponse};
 

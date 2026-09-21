@@ -479,6 +479,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             ".optional_bound_producer(\"cam_left\")",
             "cardinality `zero_or_one`",
             "pub fn bound_producers(",
+            &[][..],
         ),
         (
             config::node::Cardinality::OneOrMore,
@@ -487,6 +488,11 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             ".non_empty_bound_producers(\"cam_left\")",
             "cardinality `one_or_more`",
             "pub fn bound_producer(",
+            &[
+                "pub fn bound_members(",
+                ") -> peppylib::messaging::NonEmptyMembers",
+                ".non_empty_bound_members(\"cam_left\")",
+            ][..],
         ),
         (
             config::node::Cardinality::ZeroOrMore,
@@ -495,10 +501,22 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             ".bound_producers(\"cam_left\")",
             "cardinality `zero_or_more`",
             "pub fn bound_producer(",
+            &[
+                "pub fn bound_members(",
+                ") -> Vec<peppylib::messaging::BoundMember>",
+                ".bound_members(\"cam_left\")",
+            ][..],
         ),
     ];
-    for (cardinality, expected_fn, expected_signature, expected_splice, expected_doc, absent_fn) in
-        cases
+    for (
+        cardinality,
+        expected_fn,
+        expected_signature,
+        expected_splice,
+        expected_doc,
+        absent_fn,
+        expected_members,
+    ) in cases
     {
         let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
         let format = parse_message_format(SUBSCRIBED_TOPIC_FORMAT_EXAMPLE1);
@@ -527,6 +545,16 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             !rendered.contains(absent_fn),
             "a {cardinality:?} slot must expose only `{expected_fn}`; got: {rendered}"
         );
+        // A set slot's members accessor is typed as its plural accessor is;
+        // a scalar slot has none.
+        if expected_members.is_empty() {
+            assert!(
+                !rendered.contains("pub fn bound_members("),
+                "a {cardinality:?} slot has no members accessor; got: {rendered}"
+            );
+        } else {
+            assert_contains_all(&rendered, expected_members);
+        }
     }
 }
 

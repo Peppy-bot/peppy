@@ -39,7 +39,8 @@ impl BindingCoordinator {
 
     /// Delivers `producers` as the set slot `link_id` of `consumer_instance_id`
     /// holds from now on, and records it on the node stack once the instance
-    /// holds it. Returns the reason when the set is not in place: this daemon
+    /// takes it; an instance answering that it already holds a later set keeps
+    /// its record. Returns the reason when the set is not in place: this daemon
     /// does not track the instance, it refused or missed the delivery, or it
     /// stopped running as it took it.
     pub async fn replace_slot(
@@ -55,7 +56,8 @@ impl BindingCoordinator {
         }
         .encode()
         .map_err(|error| error.to_string())?;
-        self.updates
+        let accepted = self
+            .updates
             .send(
                 consumer_instance_id.as_str(),
                 BINDING_UPDATE_SERVICE,
@@ -64,6 +66,9 @@ impl BindingCoordinator {
                 "binding_update rejected",
             )
             .await?;
+        if !accepted {
+            return Ok(());
+        }
         if self.updates.node_stack().set_instance_slot_binding(
             consumer_instance_id,
             link_id,

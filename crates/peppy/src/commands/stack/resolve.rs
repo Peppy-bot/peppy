@@ -5,7 +5,7 @@ use core_node_api::encoding::ArgumentOverride;
 use core_node_api::encoding::LauncherOrigin;
 use daemon_config::consts::PeppyDirs;
 use daemon_config::launcher::{
-    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, DeploymentSource,
+    AlreadyPairedSlots, BindingValidationItem, ClockIncarnations, CopyMembership, DeploymentSource,
     ExternallyCoveredSlots, PairingValidationItem, PeppyLauncher, Placements, PreparedLauncher,
     resolve_clocks, validate_link_plan,
 };
@@ -118,6 +118,7 @@ pub fn resolve_rendered(
     let composed = prepared
         .launch(words)
         .map_err(|e| Error::ExecutionFailed(e.to_string()))?;
+    let mut copies = composed.copies().to_vec();
     let mut flat = composed.launcher;
     let mut lines = composed.report.render_lines();
     if let Some(option) = &join.option {
@@ -141,8 +142,9 @@ pub fn resolve_rendered(
             name = join.name
         ));
         lines.extend(joined.report.render_lines());
+        copies.push(joined.copy);
     }
-    check_link_plan(&flat, dirs, &mut lines)?;
+    check_link_plan(&flat, &CopyMembership::of(&copies), dirs, &mut lines)?;
 
     let document = json5_pretty::to_string_pretty(&flat)
         .map_err(|e| Error::ExecutionFailed(format!("cannot serialize the flat launcher: {e}")))?;
@@ -163,7 +165,12 @@ pub fn resolve_rendered(
 /// list would trade missed errors for false ones. When something is missing
 /// the report says which check was skipped and why, so a clean exit is never
 /// mistaken for a validated plan.
-fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<String>) -> Result<()> {
+fn check_link_plan(
+    flat: &PeppyLauncher,
+    copies: &CopyMembership,
+    dirs: &PeppyDirs,
+    report: &mut Vec<String>,
+) -> Result<()> {
     let entries = match core_node::load_node_cache(dirs) {
         Ok(entries) if !entries.is_empty() => entries,
         Ok(_) => {
@@ -344,6 +351,7 @@ fn check_link_plan(flat: &PeppyLauncher, dirs: &PeppyDirs, report: &mut Vec<Stri
         &AlreadyPairedSlots::new(),
         &ExternallyCoveredSlots::new(),
         &placements,
+        copies,
         &clocks,
     );
     if validated.errors.is_empty() {

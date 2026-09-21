@@ -1299,13 +1299,25 @@ def _deserialize_payload(payload: bytes) -> Message:
 def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:
     """The producer set currently bound to this module's slot, in plan order.
 
-    A join can grow the set and a removal shrink it, so read it when it is
-    needed; a producer disconnecting never changes it. Every generated module
+    A join can grow the set and a removal shrink it, so call the accessor at the
+    point of use; a producer disconnecting never changes it. Every generated module
     referencing this slot reads the same set.
     This slot declares cardinality `one_or_more`: the set is never empty, so
     `[0]` is always valid.
     """
     return node_runner.bound_producers("camera_bank")
+
+def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:
+    """The members of the set currently bound to this module's slot, in plan order.
+
+    Each member is a producer with the copy its instance belongs to, `None` for
+    one the launcher deploys outside any copy. The same set `bound_producers()`
+    answers by producer alone, read under the same rules; a node that groups
+    producers by copy reads this one.
+    This slot declares cardinality `one_or_more`: the set is never empty, so
+    `[0]` is always valid.
+    """
+    return node_runner.bound_members("camera_bank")
 
 
 class Subscription:
@@ -1394,13 +1406,25 @@ def _deserialize_response(payload: bytes) -> ResponseData:
 def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:
     """The producer set currently bound to this module's slot, in plan order.
 
-    A join can grow the set and a removal shrink it, so read it when it is
-    needed; a producer disconnecting never changes it. Every generated module
+    A join can grow the set and a removal shrink it, so call the accessor at the
+    point of use; a producer disconnecting never changes it. Every generated module
     referencing this slot reads the same set.
     This slot declares cardinality `one_or_more`: the set is never empty, so
     `[0]` is always valid.
     """
     return node_runner.bound_producers("camera_bank")
+
+def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:
+    """The members of the set currently bound to this module's slot, in plan order.
+
+    Each member is a producer with the copy its instance belongs to, `None` for
+    one the launcher deploys outside any copy. The same set `bound_producers()`
+    answers by producer alone, read under the same rules; a node that groups
+    producers by copy reads this one.
+    This slot declares cardinality `one_or_more`: the set is never empty, so
+    `[0]` is always valid.
+    """
+    return node_runner.bound_members("camera_bank")
 
 async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float) -> Response:
     """Polls this service on `target`, a member of the slot's bound set.
@@ -1469,13 +1493,25 @@ def _deserialize_payload(payload: bytes) -> Message:
 def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:
     """The producer set currently bound to this module's slot, in plan order.
 
-    A join can grow the set and a removal shrink it, so read it when it is
-    needed; a producer disconnecting never changes it. Every generated module
+    A join can grow the set and a removal shrink it, so call the accessor at the
+    point of use; a producer disconnecting never changes it. Every generated module
     referencing this slot reads the same set.
     This slot declares cardinality `zero_or_more`: the set may be empty, so
     callers handle the empty case.
     """
     return node_runner.bound_producers("camera_pool")
+
+def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:
+    """The members of the set currently bound to this module's slot, in plan order.
+
+    Each member is a producer with the copy its instance belongs to, `None` for
+    one the launcher deploys outside any copy. The same set `bound_producers()`
+    answers by producer alone, read under the same rules; a node that groups
+    producers by copy reads this one.
+    This slot declares cardinality `zero_or_more`: the set may be empty, so
+    callers handle the empty case.
+    """
+    return node_runner.bound_members("camera_pool")
 
 
 class Subscription:
@@ -1564,13 +1600,25 @@ def _deserialize_response(payload: bytes) -> ResponseData:
 def bound_producers(node_runner: peppylib.NodeRunner) -> List[peppylib.ProducerRef]:
     """The producer set currently bound to this module's slot, in plan order.
 
-    A join can grow the set and a removal shrink it, so read it when it is
-    needed; a producer disconnecting never changes it. Every generated module
+    A join can grow the set and a removal shrink it, so call the accessor at the
+    point of use; a producer disconnecting never changes it. Every generated module
     referencing this slot reads the same set.
     This slot declares cardinality `zero_or_more`: the set may be empty, so
     callers handle the empty case.
     """
     return node_runner.bound_producers("camera_pool")
+
+def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:
+    """The members of the set currently bound to this module's slot, in plan order.
+
+    Each member is a producer with the copy its instance belongs to, `None` for
+    one the launcher deploys outside any copy. The same set `bound_producers()`
+    answers by producer alone, read under the same rules; a node that groups
+    producers by copy reads this one.
+    This slot declares cardinality `zero_or_more`: the set may be empty, so
+    callers handle the empty case.
+    """
+    return node_runner.bound_members("camera_pool")
 
 async def poll(node_runner: peppylib.NodeRunner, target: peppylib.ProducerRef, request: Request, timeout: float) -> Response:
     """Polls this service on `target`, a member of the slot's bound set.
@@ -2003,7 +2051,7 @@ def source(node_runner: peppylib.NodeRunner) -> peppylib.ObservedSource:
     return node_runner.observation_slot(LINK_ID).sole_source()
 
 class Subscription:
-    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. Where the slot's cardinality admits more than one source, the subscription follows the set as a join grows it or a removal shrinks it."""
+    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance."""
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -2085,7 +2133,7 @@ def source(node_runner: peppylib.NodeRunner) -> Optional[peppylib.ObservedSource
     return node_runner.observation_slot(LINK_ID).source()
 
 class Subscription:
-    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. Where the slot's cardinality admits more than one source, the subscription follows the set as a join grows it or a removal shrinks it."""
+    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance."""
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -2169,7 +2217,7 @@ def sources(node_runner: peppylib.NodeRunner) -> List[peppylib.ObservedSource]:
     return node_runner.observation_slot_set(LINK_ID).sources()
 
 class Subscription:
-    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. Where the slot's cardinality admits more than one source, the subscription follows the set as a join grows it or a removal shrinks it."""
+    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. The subscription follows the set as a join grows it or a removal shrinks it."""
 
     def __init__(self, inner) -> None:
         self._inner = inner
@@ -2252,7 +2300,7 @@ def sources(node_runner: peppylib.NodeRunner) -> List[peppylib.ObservedSource]:
     return node_runner.observation_slot_set(LINK_ID).sources()
 
 class Subscription:
-    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. Where the slot's cardinality admits more than one source, the subscription follows the set as a join grows it or a removal shrinks it."""
+    """A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. The subscription follows the set as a join grows it or a removal shrinks it."""
 
     def __init__(self, inner) -> None:
         self._inner = inner

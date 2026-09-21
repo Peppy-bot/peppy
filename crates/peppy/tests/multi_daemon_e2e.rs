@@ -4045,9 +4045,11 @@ fn set_watch_launcher() -> String {
   core_nodes: ["{PEER_LABEL}"],
   deployments: [
     {{ source: {{ name: "pairing_hub", tag: "v1" }}, instances: [{{ instance_id: "hub_inst" }}] }},
+    {{ source: {{ name: "my_python_robot_arm", tag: "v1" }},
+      instances: [{{ instance_id: "fixed_arm_inst" }}] }},
     {{ source: {{ name: "set_watch", tag: "v1" }}, instances: [
-      {{ instance_id: "consumer_inst" }},
-      {{ instance_id: "observer_inst", core_node: "{PEER_LABEL}" }}
+      {{ instance_id: "consumer_inst", links: {{ arms: ["fixed_arm_inst"] }} }},
+      {{ instance_id: "observer_inst", core_node: "{PEER_LABEL}", links: {{ arms: ["fixed_arm_inst"] }} }}
     ] }}
   ],
   components: [{{ name: "fleet", cardinality: "zero_or_more", options: {{
@@ -4083,8 +4085,9 @@ async fn wait_for_log_count(daemon: &Daemon, instance_id: &str, marker: &str, co
     panic!("{instance_id} logged `{marker}` fewer than {count} times");
 }
 
-/// The producers slot `link_id` of `instance_id` is bound to, as a `stack list
-/// --json` section records them, each as `instance@core_node` in plan order.
+/// The members slot `link_id` of `instance_id` holds, as a `stack list --json`
+/// section records them, each as `instance@core_node` in plan order followed
+/// by ` [copy NAME]` for a member a copy brought.
 fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &str) -> Vec<String> {
     let instance = section["stack"]["nodes"]
         .as_array()
@@ -4097,15 +4100,19 @@ fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &s
         .as_array()
         .into_iter()
         .flatten()
-        .map(|producer| {
+        .map(|member| {
+            let copy = member["copy"]
+                .as_str()
+                .map(|copy| format!(" [copy {copy}]"))
+                .unwrap_or_default();
             format!(
-                "{}@{}",
-                producer["instance_id"]
+                "{}@{}{copy}",
+                member["producer"]["instance_id"]
                     .as_str()
-                    .expect("a producer names its instance"),
-                producer["core_node"]
+                    .expect("a member names its producer's instance"),
+                member["producer"]["core_node"]
                     .as_str()
-                    .expect("a producer names its core node")
+                    .expect("a member names its producer's core node")
             )
         })
         .collect()
@@ -4846,8 +4853,8 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         "the grown gates",
     );
     let grown = vec![
-        format!("alpha_commander_inst@{cloud}"),
-        format!("bravo_commander_inst@{robot}"),
+        format!("alpha_commander_inst@{cloud} [copy alpha]"),
+        format!("bravo_commander_inst@{robot} [copy bravo]"),
     ];
     assert_eq!(gates(&listed), (grown.clone(), grown), "{listed}");
     let bravo = coordinator_section(&listed, robot)["copies"]
@@ -4874,7 +4881,7 @@ async fn copies_grow_and_shrink_sets_on_both_machines() {
         federation.robot.peppy(&["stack", "list", "--json"]).await,
         "the shrunken gates",
     );
-    let shrunk = vec![format!("bravo_commander_inst@{robot}")];
+    let shrunk = vec![format!("bravo_commander_inst@{robot} [copy bravo]")];
     assert_eq!(gates(&listed), (shrunk.clone(), shrunk), "{listed}");
 
     require_success(
@@ -4922,7 +4929,10 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     );
     for (daemon, instance) in [(consumer, "consumer_inst"), (observer, "observer_inst")] {
         daemon
-            .wait_for_node_log(instance, "[set-watch] members arms=[] leaders=[]\n")
+            .wait_for_node_log(
+                instance,
+                "[set-watch] members arms=[fixed_arm_inst:none] leaders=[]\n",
+            )
             .await;
     }
 
@@ -4940,17 +4950,19 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
             .await,
         "join bravo on the peer",
     );
+    // Each member names the copy its instance belongs to, on both machines;
+    // the launcher-bound arm belongs to none.
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[alpha_arm_inst,bravo_arm_inst] \
+            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha,bravo_arm_inst:bravo] \
               leaders=[alpha_leader_inst,bravo_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[alpha_arm_inst,bravo_arm_inst] \
+            "members arms=[fixed_arm_inst:none,alpha_arm_inst:alpha,bravo_arm_inst:bravo] \
               leaders=[alpha_leader_inst,bravo_leader_inst]\n",
         )
         .await;
@@ -4971,13 +4983,13 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[bravo_arm_inst] leaders=[bravo_leader_inst]\n",
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo] leaders=[bravo_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[bravo_arm_inst] leaders=[bravo_leader_inst]\n",
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo] leaders=[bravo_leader_inst]\n",
         )
         .await;
 
@@ -4991,14 +5003,14 @@ async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
     consumer
         .wait_for_node_log(
             "consumer_inst",
-            "members arms=[bravo_arm_inst,alpha_arm_inst] \
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo,alpha_arm_inst:alpha] \
               leaders=[bravo_leader_inst,alpha_leader_inst]\n",
         )
         .await;
     observer
         .wait_for_node_log(
             "observer_inst",
-            "members arms=[bravo_arm_inst,alpha_arm_inst] \
+            "members arms=[fixed_arm_inst:none,bravo_arm_inst:bravo,alpha_arm_inst:alpha] \
               leaders=[bravo_leader_inst,alpha_leader_inst]\n",
         )
         .await;
@@ -5141,7 +5153,7 @@ async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
     assert_eq!(copy_names(&coordinator), ["alpha"], "{listed}");
     assert_eq!(
         recorded_bindings(&coordinator, COORDINATOR_GATE, "commander"),
-        [format!("alpha_commander_inst@{robot}")],
+        [format!("alpha_commander_inst@{robot} [copy alpha]")],
         "{listed}"
     );
 

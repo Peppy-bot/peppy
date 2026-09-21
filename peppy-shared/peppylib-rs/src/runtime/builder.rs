@@ -39,6 +39,15 @@ pub struct PeerPin {
     pub copy: Option<String>,
 }
 
+/// One producer a standalone consumer slot binds at boot: the producer and
+/// the copy its instance belongs to, `None` outside a copy. The copy is
+/// checked as a name when the node starts, as [`PeerPin`]'s is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundPin {
+    pub producer: crate::messaging::ProducerRef,
+    pub copy: Option<String>,
+}
+
 /// Configuration for standalone execution.
 ///
 /// All fields are optional with sensible defaults:
@@ -78,7 +87,7 @@ pub struct StandaloneConfig {
     /// development. Each slot's set must satisfy the slot's declared
     /// cardinality at startup, exactly as a daemon launch would have
     /// enforced at plan time.
-    pub bound_producers: std::collections::BTreeMap<String, Vec<crate::messaging::ProducerRef>>,
+    pub bound_producers: std::collections::BTreeMap<String, Vec<BoundPin>>,
     /// Daemon-less observer membership: the ordered pairing set each declared
     /// `pairing_observers` slot observes (keyed by its link_id), standing in
     /// for the member set the daemon stamps into a spawned node's boot config.
@@ -235,18 +244,49 @@ impl StandaloneConfig {
     /// Standalone-mode stand-in for the launcher's validated binding map;
     /// ignored (with a warning) if the manifest declares no such slot.
     pub fn with_bound_producer(
-        mut self,
+        self,
         link_id: impl Into<String>,
         producer_core_node: impl Into<String>,
         producer_instance_id: impl Into<String>,
     ) -> Self {
+        self.push_bound_pin(link_id, producer_core_node, producer_instance_id, None)
+    }
+
+    /// [`with_bound_producer`](Self::with_bound_producer) for a producer whose
+    /// instance belongs to the copy named `copy`, as a `stack join` binds it:
+    /// the member the node reads for this producer carries that copy name.
+    pub fn with_bound_producer_in_copy(
+        self,
+        link_id: impl Into<String>,
+        producer_core_node: impl Into<String>,
+        producer_instance_id: impl Into<String>,
+        copy: impl Into<String>,
+    ) -> Self {
+        self.push_bound_pin(
+            link_id,
+            producer_core_node,
+            producer_instance_id,
+            Some(copy.into()),
+        )
+    }
+
+    fn push_bound_pin(
+        mut self,
+        link_id: impl Into<String>,
+        producer_core_node: impl Into<String>,
+        producer_instance_id: impl Into<String>,
+        copy: Option<String>,
+    ) -> Self {
         self.bound_producers
             .entry(link_id.into())
             .or_default()
-            .push(crate::messaging::ProducerRef::new(
-                producer_core_node.into(),
-                producer_instance_id.into(),
-            ));
+            .push(BoundPin {
+                producer: crate::messaging::ProducerRef::new(
+                    producer_core_node.into(),
+                    producer_instance_id.into(),
+                ),
+                copy,
+            });
         self
     }
 

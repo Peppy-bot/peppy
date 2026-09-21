@@ -485,6 +485,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             "This slot declares cardinality `zero_or_one`:",
             "deployment wrote the slot vacant.",
             "def bound_producers(",
+            false,
         ),
         (
             config::node::Cardinality::OneOrMore,
@@ -494,6 +495,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             "This slot declares cardinality `one_or_more`:",
             "`[0]` is always valid.",
             "def bound_producer(",
+            true,
         ),
         (
             config::node::Cardinality::ZeroOrMore,
@@ -503,6 +505,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             "This slot declares cardinality `zero_or_more`:",
             "handle the empty case.",
             "def bound_producer(",
+            true,
         ),
     ];
     for (
@@ -513,6 +516,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
         expected_cardinality_doc,
         expected_emptiness_doc,
         absent_fn,
+        has_members,
     ) in cases
     {
         let topic = parse_consumed_topic(SUBSCRIBED_TOPIC_EXAMPLE1);
@@ -543,6 +547,25 @@ fn consumed_topic_accessor_is_cardinality_typed() {
             !rendered.contains(absent_fn),
             "a {cardinality:?} slot must expose only `{expected_signature}`; got:\n{rendered}"
         );
+        // A set slot's members accessor reads the same set with each member's
+        // copy; a scalar slot has none.
+        let members_signature =
+            "def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:";
+        if has_members {
+            assert_contains_all(
+                &rendered,
+                &[
+                    members_signature,
+                    "return node_runner.bound_members(\"cam_left\")",
+                    "a producer with the copy its instance belongs to",
+                ],
+            );
+        } else {
+            assert!(
+                !rendered.contains("def bound_members("),
+                "a {cardinality:?} slot has no members accessor; got:\n{rendered}"
+            );
+        }
     }
 }
 

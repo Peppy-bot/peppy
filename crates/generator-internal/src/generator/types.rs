@@ -335,19 +335,49 @@ impl DependencyContext {
             ],
             Cardinality::OneOrMore => &[
                 "The producer set currently bound to this module's slot, in plan order.",
-                "A join can grow the set and a removal shrink it, so read it when it is",
-                "needed; a producer disconnecting never changes it. Every generated module",
+                "A join can grow the set and a removal shrink it, so call the accessor at the",
+                "point of use; a producer disconnecting never changes it. Every generated module",
                 "referencing this slot reads the same set.",
                 "This slot declares cardinality `one_or_more`: the set is never empty, so",
             ],
             Cardinality::ZeroOrMore => &[
                 "The producer set currently bound to this module's slot, in plan order.",
-                "A join can grow the set and a removal shrink it, so read it when it is",
-                "needed; a producer disconnecting never changes it. Every generated module",
+                "A join can grow the set and a removal shrink it, so call the accessor at the",
+                "point of use; a producer disconnecting never changes it. Every generated module",
                 "referencing this slot reads the same set.",
                 "This slot declares cardinality `zero_or_more`: the set may be empty, so",
                 "callers handle the empty case.",
             ],
+        }
+    }
+}
+
+impl DependencyContext {
+    /// Pre-wrapped doc lines for the `bound_members()` accessor a set slot
+    /// carries beside `bound_producers()`: the same set, each member with the
+    /// copy its instance belongs to. `None` for a scalar slot, whose one
+    /// member is what the launch bound. Shared by both language generators;
+    /// each appends its own never-empty tail on a `one_or_more` slot.
+    pub fn bound_members_doc(&self) -> Option<&'static [&'static str]> {
+        match self.cardinality {
+            Cardinality::One | Cardinality::ZeroOrOne => None,
+            Cardinality::OneOrMore => Some(&[
+                "The members of the set currently bound to this module's slot, in plan order.",
+                "Each member is a producer with the copy its instance belongs to, `None` for",
+                "one the launcher deploys outside any copy. The same set `bound_producers()`",
+                "answers by producer alone, read under the same rules; a node that groups",
+                "producers by copy reads this one.",
+                "This slot declares cardinality `one_or_more`: the set is never empty, so",
+            ]),
+            Cardinality::ZeroOrMore => Some(&[
+                "The members of the set currently bound to this module's slot, in plan order.",
+                "Each member is a producer with the copy its instance belongs to, `None` for",
+                "one the launcher deploys outside any copy. The same set `bound_producers()`",
+                "answers by producer alone, read under the same rules; a node that groups",
+                "producers by copy reads this one.",
+                "This slot declares cardinality `zero_or_more`: the set may be empty, so",
+                "callers handle the empty case.",
+            ]),
         }
     }
 }
