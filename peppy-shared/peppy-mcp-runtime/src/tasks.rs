@@ -1,26 +1,30 @@
-//! Action-backed MCP tasks: the handler contract an action bridge
-//! implements and the context the runtime hands it while a goal runs.
+//! Action-backed tools: the handler contract an action bridge implements
+//! and the context the runtime hands it while a goal runs.
 //!
-//! The runtime owns the whole MCP side of a task (creation, confirmation,
-//! polling, cancellation intent, the deadline, terminal mapping); the bridge
-//! owns the whole Peppy side (firing the goal, draining feedback, forwarding
-//! the cancel, awaiting the result). [`ActionContext`] is the seam between
-//! the two.
+//! The runtime owns the whole MCP side of an action (the task or the call
+//! it runs in, confirmation, feedback delivery, cancellation intent, the
+//! deadline, terminal mapping); the bridge owns the whole Peppy side
+//! (firing the goal, draining feedback, forwarding the cancel, awaiting the
+//! result). [`ActionContext`] is the seam between the two, and it hides
+//! which of the two MCP surfaces the goal runs on.
 
 use rmcp::task_manager::TaskContext;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// How an action bridge finished without a completed result. The runtime
-/// maps it onto the MCP task's terminal state.
+/// maps it onto the MCP task's terminal state, or onto the tool error of
+/// the call the goal ran in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionExit {
-    /// The Peppy action ended cancelled; the MCP task settles as
+    /// The Peppy action ended cancelled; an MCP task settles as
     /// `cancelled`.
     Cancelled,
     /// The goal could not run to completion (rejected, abandoned, expired,
-    /// or a transport failure); the MCP task settles as `failed` with this
+    /// or a transport failure); an MCP task settles as `failed` with this
     /// message.
     Failed(String),
 }
@@ -34,31 +38,62 @@ impl std::fmt::Display for ActionExit {
     }
 }
 
+/// The MCP surface a goal runs on, chosen per call by the client's declared
+/// capabilities.
+#[derive(Clone)]
+pub(crate) enum ActionSurface {
+    /// An MCP task, for a client that declared the tasks extension:
+    /// feedback is the task's status message and `tasks/cancel` is the
+    /// cancel signal.
+    Task(TaskContext),
+    /// The `tools/call` that started the goal, for a client without the
+    /// extension: feedback is relayed as progress notifications on that
+    /// call, and the client closing the call is the cancel signal.
+    Call {
+        feedback: mpsc::UnboundedSender<String>,
+        cancel: CancellationToken,
+    },
+}
+
 /// The runtime-side surface an action bridge drives while its goal runs.
 #[derive(Clone)]
 pub struct ActionContext {
-    pub(crate) inner: TaskContext,
+    pub(crate) surface: ActionSurface,
 }
 
 impl ActionContext {
-    /// Publishes a feedback message as the task's status message;
-    /// `tasks/get` reports the latest one.
+    /// Publishes a feedback message to the client: as the task's status
+    /// message, which `tasks/get` reports, or as a progress notification on
+    /// the call the goal runs in.
     pub fn report_feedback(&self, message: impl Into<String>) {
-        self.inner.set_status_message(message);
+        match &self.surface {
+            ActionSurface::Task(task) => task.set_status_message(message),
+            // A closed receiver means the call already settled; feedback
+            // after that has no reader.
+            ActionSurface::Call { feedback, .. } => {
+                let _ = feedback.send(message.into());
+            }
+        }
     }
 
-    /// Resolves once the client has requested cancellation via
-    /// `tasks/cancel` (immediately, if it already has). Cancellation is
-    /// cooperative on both sides: the bridge forwards it to the Peppy
-    /// action's cancel path and keeps awaiting the terminal result, which
-    /// decides the task's terminal state.
+    /// Resolves once the client has requested cancellation (immediately, if
+    /// it already has): through `tasks/cancel` on a task, by closing the
+    /// call otherwise. Cancellation is cooperative on both sides: the bridge
+    /// forwards it to the Peppy action's cancel path and keeps awaiting the
+    /// terminal result, which decides the terminal state.
     pub async fn cancel_requested(&self) {
-        self.inner.cancelled().await;
+        match &self.surface {
+            ActionSurface::Task(task) => task.cancelled().await,
+            ActionSurface::Call { cancel, .. } => cancel.cancelled().await,
+        }
     }
 
-    /// Whether `tasks/cancel` has been received for this task.
+    /// Whether the client has requested cancellation of this goal.
     pub fn is_cancel_requested(&self) -> bool {
-        self.inner.is_cancel_requested()
+        match &self.surface {
+            ActionSurface::Task(task) => task.is_cancel_requested(),
+            ActionSurface::Call { cancel, .. } => cancel.is_cancelled(),
+        }
     }
 }
 

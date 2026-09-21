@@ -8,9 +8,10 @@
 //! `server/discover`, `tools/list`, and `resources/list` with their caching
 //! hints, snapshot freshness on an injected clock, `subscriptions/listen`
 //! notifications, tool-input validation against the bundle's derived
-//! schemas, action-backed MCP tasks (SEP-2663) with confirmation,
-//! cooperative cancellation, and whole-goal deadlines, and the mapping from
-//! bridge failures to MCP errors.
+//! schemas, action-backed tools run as MCP tasks (SEP-2663) for clients
+//! that declare the extension and inside the call for clients that do not,
+//! with confirmation, cooperative cancellation, and whole-goal deadlines,
+//! and the mapping from bridge failures to MCP errors.
 //!
 //! Entry points:
 //!

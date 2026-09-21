@@ -455,7 +455,9 @@ fn camera_endpoint_exposure(tag: &str, title: &str, sha256: Option<&str>) -> Str
 
 /// A second exposure sharing the `front_camera` target (same contract, no
 /// author pin) and adding the recorder, with an `info` tool of its own so
-/// two endpoints publish one public name.
+/// two endpoints publish one public name, and `record_clip` without a
+/// confirmation gate so a client without the tasks extension can run it
+/// inside the call.
 fn camera_and_recording_exposure() -> String {
     format!(
         r#"{{
@@ -475,6 +477,15 @@ fn camera_and_recording_exposure() -> String {
                         description: "Report the camera's resolution, frame rate, and encoding.",
                         operation: "read_only",
                         deadline_ms: 5000,
+                    }},
+                ],
+                actions: [
+                    {{
+                        member: "record_clip",
+                        tool: "front_camera.record_clip",
+                        description: "Record a short clip to local storage.",
+                        operation: "long_running",
+                        deadline_ms: 600000,
                     }},
                 ],
             }},
@@ -935,6 +946,67 @@ async fn raw_status(port: u16, method: &str, path: &str) -> String {
     response.lines().next().unwrap_or("").to_owned()
 }
 
+/// Opens a raw `tools/call` of `front_camera.record_clip` for a goal that
+/// parks until cancelled, from a client that declares no tasks extension,
+/// and returns the connection once the goal's first feedback has arrived
+/// on it as a progress event. Dropping the connection is the client going
+/// away mid-call.
+async fn open_record_clip_until_progress(port: u16, path: &str) -> tokio::net::TcpStream {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "front_camera.record_clip",
+            "arguments": { "duration_frames": 100000 },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": { "name": "raw", "version": "0" },
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "progressToken": "call-1"
+            }
+        }
+    })
+    .to_string();
+    let mut raw = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("raw connect");
+    raw.write_all(
+        format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMcp-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/call\r\nMcp-Name: front_camera.record_clip\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    )
+    .await
+    .expect("send raw call");
+    let mut received = Vec::new();
+    tokio::time::timeout(WAIT, async {
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = raw
+                .read(&mut chunk)
+                .await
+                .expect("the call stream is readable");
+            assert_ne!(read, 0, "the call ended before any progress arrived");
+            received.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&received);
+            if text.contains("\r\n") {
+                assert!(
+                    text.starts_with("HTTP/1.1 200 "),
+                    "the call was refused: {text}"
+                );
+            }
+            if text.contains("notifications/progress") && text.contains("frame") {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the parked goal's feedback arrives as progress on the call");
+    raw
+}
+
 async fn await_resource_updates(subscription: &mut Subscription, expected: &[&str]) {
     let mut pending: Vec<&str> = expected.to_vec();
     while !pending.is_empty() {
@@ -1286,8 +1358,8 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
             .expect_err("absent resources are refused"),
     );
     assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
-    // Without the tasks capability the action tool refuses before any
-    // task or goal exists.
+    // Without the tasks capability a confirmation-gated action refuses
+    // before any task or goal exists, naming the tool and the extension.
     let error = protocol_error(
         client
             .call_tool_once(
@@ -1295,9 +1367,15 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
                     .with_arguments(object(json!({ "duration_frames": 3 }))),
             )
             .await
-            .expect_err("the tasks capability is required"),
+            .expect_err("the confirmation needs a task"),
     );
     assert_eq!(error.code, ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY);
+    assert!(
+        error.message.contains("`front_camera.record_clip`")
+            && error.message.contains("io.modelcontextprotocol/tasks"),
+        "got {}",
+        error.message
+    );
     client.cancel().await.expect("client disconnects");
 
     for path in [
@@ -1331,7 +1409,14 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
         .map(|tool| tool.name.to_string())
         .collect();
     both_tools.sort_unstable();
-    assert_eq!(both_tools, ["front_camera.info", "recorder.record_episode"]);
+    assert_eq!(
+        both_tools,
+        [
+            "front_camera.info",
+            "front_camera.record_clip",
+            "recorder.record_episode"
+        ]
+    );
     let called = both_client
         .call_tool(CallToolRequestParams::new("front_camera.info"))
         .await
@@ -1351,6 +1436,39 @@ async fn a_launcher_deploys_three_exposures_on_one_process_and_a_client_walks_th
             .resources
             .is_empty(),
         "the second exposure selects no resource"
+    );
+
+    // --- In-call actions: without the tasks capability an unconfirmed
+    // action runs inside the call, and the provider's terminal result is
+    // the call's result.
+    let recorded = both_client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.record_clip")
+                .with_arguments(object(json!({ "duration_frames": 3 }))),
+        )
+        .await
+        .expect("the action answers inside the call");
+    assert_eq!(recorded.is_error, Some(false));
+    assert_eq!(
+        recorded.structured_content,
+        Some(json!({ "frames_written": 3 }))
+    );
+    // A parked goal reports its feedback as progress on the call, and the
+    // client going away mid-call cancels it on the provider: the provider
+    // serves one goal at a time, so the next clip completing is the parked
+    // goal having ended.
+    let parked = open_record_clip_until_progress(port, "/camera_and_recording/v1/mcp").await;
+    drop(parked);
+    let recorded = both_client
+        .call_tool(
+            CallToolRequestParams::new("front_camera.record_clip")
+                .with_arguments(object(json!({ "duration_frames": 2 }))),
+        )
+        .await
+        .expect("the provider is free again once the closed call's goal is cancelled");
+    assert_eq!(
+        recorded.structured_content,
+        Some(json!({ "frames_written": 2 }))
     );
     both_client.cancel().await.expect("client disconnects");
 

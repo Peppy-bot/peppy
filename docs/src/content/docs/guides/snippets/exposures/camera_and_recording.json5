@@ -96,9 +96,10 @@
       // evolves, and each launch validates it against the bytes it resolves.
       contract: { name: "episode_recording", tag: "v1" },
 
-      // An action becomes a tool backed by an MCP task: the call returns a
-      // task handle, feedback drives the status message, and `tasks/cancel`
-      // forwards to the action's cancel path.
+      // An action becomes a tool. For a client that declares the MCP tasks
+      // extension the call returns a task handle, feedback drives the
+      // status message, and `tasks/cancel` forwards to the action's cancel
+      // path; for any other client the goal runs inside the call.
       actions: [
         {
           member: "record_episode",
@@ -108,7 +109,8 @@
           // Advertised to the client: this one moves the robot.
           safety_sensitive: true,
           // The task parks in `input_required` until the client confirms
-          // through `tasks/update`. No goal is sent before that.
+          // through `tasks/update`. No goal is sent before that, and only
+          // a client with the tasks extension can call the tool.
           confirmation_required: true,
           deadline_ms: 900000,
         },
