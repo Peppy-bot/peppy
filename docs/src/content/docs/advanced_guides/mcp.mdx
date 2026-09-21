@@ -144,8 +144,8 @@ An image `representation` names members of the topic's own message format by rol
 
 ```json5
 representation: {
-  image: "jpeg",     // or "raw", which passes the frame bytes through untouched
-  quality: 80,       // `jpeg` only; a `raw` representation has no encode step
+  image: "jpeg",     // `png16` for a 16-bit single-channel frame, or `raw`, which passes the frame bytes through untouched
+  quality: 80,       // `jpeg` only; `png16` is lossless and `raw` has no encode step
   fields: {
     data: "frame",       // `bytes` or an array of `u8`
     encoding: "encoding", // `string`
@@ -156,9 +156,9 @@ representation: {
 }
 ```
 
-All four fields must refer to required, non-`$optional` top-level members of the correct type. The runtime needs all four values to interpret a frame. If a frame already uses the requested codec, the server returns it without transcoding. `on_oversize: "downscale"` requires a `jpeg` representation because the server must re-encode the image at a smaller size.
+All four fields must refer to required, non-`$optional` top-level members of the correct type. The runtime needs all four values to interpret a frame. `jpeg` transcodes `rgb8` and `bgr8` frames, and `z16` depth frames under a `depth_range`; `png16` transcodes frames of one unsigned 16-bit little-endian sample per pixel, labeled `z16`, `mono16` or `16UC1`, such as a depth map, and writes the frame as a 16-bit PNG under the encoding `png`. A frame already labeled `jpeg` or `mjpeg` under `jpeg` passes through untouched; a `png` frame under `png16` passes through once it decodes as 16-bit single-channel, and any other PNG is refused. A 16-bit frame keeps one source sample per output pixel.
 
-A `jpeg` representation renders `rgb8` and `bgr8` frames in colour, and `z16` depth frames (one little-endian `u16` reading per pixel, 0 for a pixel with no reading) as a greyscale picture. `depth_range` sets the readings that picture spans, in the frame's own counts, so one shade means one distance on every frame a client reads: a reading at `near` or nearer renders white, one at `far` or farther black, readings between them in linear proportion, and 0 black. `near` must be above 0 and below `far`. A `z16` frame that arrives on a representation without a `depth_range` is refused, and a `depth_range` on a `raw` representation is a parse error.
+A `jpeg` representation renders `rgb8` and `bgr8` frames in color, and 16-bit depth frames, labelled `z16`, `mono16` or `16UC1` (one little-endian `u16` reading per pixel, 0 for a pixel with no reading) as a grayscale picture. `depth_range` sets the readings that picture spans, in the frame's own counts, so one shade means one distance on every frame a client reads: a reading at `near` or nearer renders white, one at `far` or farther black, readings between them in linear proportion, and 0 black. `near` must be above 0 and below `far`. A `z16` frame that arrives on a representation without a `depth_range` is refused, and a `depth_range` on a `raw` representation is a parse error.
 
 ### Service policies
 
@@ -207,7 +207,7 @@ An exposure is checked where it is published, by the repository check, and again
 
 ```sh
 peppy repo index . --check --validate-mcp-exposures   # the index, then every exposure against its contracts
-peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint for the exposure advertises
+peppy robot_control catalog camera_and_recording:v1             # the catalog an endpoint for the exposure advertises
 ```
 
 `peppy repo index --check --validate-mcp-exposures` validates every exposure the repository's index lists against the contracts it references and reports **every** violation of **every** exposure at once, so you fix a document in one pass. A contract the caches cannot resolve is an error naming that contract, never a pass. A file that declares the exposure schema but does not parse as one (a document claiming a public name twice, say) is listed by no index, so the check reports it by path rather than letting it pass unseen. Run the check in the repository's CI, as [mcp-hub](https://github.com/Peppy-bot/mcp-hub) does: a hub cannot then merge an exposure that a launch would refuse.
@@ -220,7 +220,7 @@ peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint 
     - contract `episode_recording:v1` not in contract cache; run `peppy repo refresh`
 ```
 
-`peppy mcp catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, and task with its public name, description, policies, and derived JSON Schemas, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
+`peppy robot_control catalog <name:tag>` prints the catalog the server derives for one exposure: every resource, tool, and task with its public name, description, policies, and derived JSON Schemas, plus the identity the endpoint advertises and the contract slots its targets become. It is what a running endpoint answers through discovery and the list methods, so it is the thing to read when you want to see what a client will see. The catalog is derived on demand and is never committed.
 
 ```json
 {
@@ -243,7 +243,7 @@ peppy mcp catalog camera_and_recording:v1             # the catalog an endpoint 
 
 ## Deploy it
 
-A launcher deploys exposures with `source: { exposures: [...] }`, listing each as `"<name>:<tag>"`. The deployment takes one argument, `port`, and one `links` entry per target of every exposure it lists. Each link connects a logical role to a running instance.
+A launcher deploys exposures with `source: { exposures: [...] }`, listing each as `"<name>:<tag>"`. The deployment takes one argument, `port`, and one `links` entry per target of every exposure it lists. Each link connects a logical role to a running instance. A [per-robot surface](#per-robot-surfaces) takes no `links`: the robots' own fragments fill its targets.
 
 <Code code={mcpLauncher} lang="json5" title="launchers/mcp_camera_and_recording.json5" />
 
@@ -251,9 +251,9 @@ A launcher deploys exposures with `source: { exposures: [...] }`, listing each a
 peppy stack launch mcp_camera_and_recording
 ```
 
-The daemon resolves each exposure through the machine's [repository caches](/advanced_guides/repositories/), then every contract the exposures reference, validates every exposure against those contracts, and derives the server's node from the result: its identity, its manifest (one contract slot per target, consuming exactly the selected members), and the catalog of each endpoint. Nothing is added or built. The node lands in the stack ready to run, with the installed `peppy` binary as its artifact, and its instance runs `peppy mcp serve`. You never run that command yourself: the daemon hands it the pinned documents through the environment, and run by hand it refuses, naming `PEPPY_MCP_SERVE_SPEC`. The derived manifest and the documents the server reads are written under `~/.peppy/built_in/<node name>/`. On Linux, replacing the `peppy` binary on disk while the daemon runs (an upgrade, a rebuild) does not strand it: the daemon keeps serving built-in nodes from its own running image, warns in the add log that the file was replaced, and picks up the new binary when it restarts.
+The daemon resolves each exposure through the machine's [repository caches](/advanced_guides/repositories/), then every contract the exposures reference, validates every exposure against those contracts, and derives the server's node from the result: its identity, its manifest (one contract slot per target, consuming exactly the selected members), and the catalog of each endpoint. Nothing is added or built. The node lands in the stack ready to run, with the installed `peppy` binary as its artifact, and its instance runs `peppy robot_control serve`. You never run that command yourself: the daemon hands it the pinned documents through the environment, and run by hand it refuses, naming `PEPPY_MCP_SERVE_SPEC`. The derived manifest and the documents the server reads are written under `~/.peppy/built_in/<node name>/`. On Linux, replacing the `peppy` binary on disk while the daemon runs (an upgrade, a rebuild) does not strand it: the daemon keeps serving built-in nodes from its own running image, warns in the add log that the file was replaced, and picks up the new binary when it restarts.
 
-The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `mcp` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
+The node's identity is derived from the exposures it serves, so a relaunch, a peer, and a reader of `peppy stack list` all name it the same way: `robot_control` followed by `_<name>_<tag>` for each exposure in name-then-tag order, at the tag `builtin`. The launcher above registers `mcp_camera_and_recording_v1:builtin`.
 
 The instance prefers `127.0.0.1:<port>` (default `8900`) and serves each exposure at its own path:
 
@@ -265,7 +265,7 @@ Every other path returns 404, a bare `/mcp` included. Point a client at `http://
 
 `port` is a preference. A server that finds the port free takes it. A server that finds it held by another process takes a port the operating system picks on the same loopback address, says so in its run log with a warning naming both ports, and announces the port it holds. Only a held port falls back: any other bind failure stops the process, its run log says `cannot bind 127.0.0.1:<port>`, and the launch fails naming that instance. The URL the server ended up on is never a guess: the launch or the join that started it prints it under `MCP endpoints:`, and [`peppy stack list`](#seeing-what-is-served) shows it for as long as the instance runs.
 
-The derived manifest declares one entry under `execution.endpoints` per exposure, labelled `<name>_<tag>` (the tag spelled as generated code spells it, `-` becoming `_`), of kind `mcp`, described by the exposure's title. The server announces each one when it binds, and the daemon reports the URL under that label. The launch ends with them under `MCP endpoints:`; the server binds loopback only, so each exposure has exactly one URL:
+The derived manifest declares one entry under `execution.endpoints` per exposure, labelled `<name>_<tag>` (the tag spelled as generated code spells it, `-` becoming `_`), of kind `robot_control`, described by the exposure's title. The server announces each one when it binds, and the daemon reports the URL under that label. The launch ends with them under `MCP endpoints:`; the server binds loopback only, so each exposure has exactly one URL:
 
 ```text
 MCP endpoints:
@@ -273,6 +273,74 @@ MCP endpoints:
     camera_and_recording_v1  http://127.0.0.1:8900/camera_and_recording/v1/mcp
 Launch completed successfully
 ```
+
+### Per-robot surfaces
+
+An exposure that declares `robots` is a **per-robot surface**: one endpoint for every robot of the stack, whatever their models, where every call names its robot. Its targets are the contracts a robot may bring, and each robot of the stack fills the targets its own instances implement.
+
+```json5
+{
+  peppy_schema: "mcp_exposure/v1",
+  manifest: { name: "robot_control", tag: "v1" },
+  server: { title: "Robots", instructions: "Call robot.list first; every other tool names a robot it lists." },
+  robots: {
+    argument: "robot",
+    list: { tool: "robot.list", description: "The robots of the stack, with what each one fills." },
+    describe: {
+      identity: { target: "identity", service: "get_identity" },
+      limbs: { target: "limb_state", topic: "limb_states", fields: ["arm_names", "gripper_names"] },
+    },
+  },
+  targets: {
+    identity: {
+      contract: { name: "robot_identity", tag: "v1" },
+      services: [
+        { member: "get_identity", tool: "robot.get_identity", description: "Who the robot is.", operation: "read_only", deadline_ms: 2000 },
+      ],
+    },
+    limb_state: {
+      contract: { name: "limb_state", tag: "v1" },
+      topics: [
+        { member: "limb_states", resource: "robot.limb_state", description: "The robot's limbs.", freshness: { max_age_ms: 2000 }, update: { max_hz: 2 }, max_result_bytes: 65536, on_oversize: "reject" },
+      ],
+    },
+    camera: {
+      contract: { name: "rgb_camera", tag: "v1" },
+      argument: "camera",
+      topics: [
+        { member: "video_stream", resource: "camera.latest_frame", description: "The camera's latest frame, JPEG encoded.", freshness: { max_age_ms: 2000 }, update: { max_hz: 2 }, representation: { image: "jpeg", fields: { data: "frame", encoding: "encoding", width: "width", height: "height" } }, max_result_bytes: 524288, on_oversize: "downscale" },
+      ],
+    },
+  },
+}
+```
+
+`robots.argument` names the required argument every tool takes, the robot's name as the listing tool reports it. A target with an `argument` of its own is filled any number of times per robot (a camera), and every call on it names the member with that argument; a target without one is filled at most once per robot. The published input schema of every tool carries the routing arguments as required string properties beside the contract's own fields, and a contract request field of the same name is refused at validation. `robots.describe` says what the listing reports of each robot beyond the targets it fills, keyed by the field of the listing entry: a service's whole response, or named root fields of a topic's latest snapshot, each read through a target the robot fills once and selects as a tool or a resource. A `describe` key cannot be `robot`, `capabilities`, `members` or `notes`, the fields every entry carries.
+
+Every target of a per-robot surface is a `zero_or_more` contract slot the stack's robots fill: the deployment's instance takes no `links`, and a robot's own fragment adds its instances to the targets with `add_links` on the server's instance, at launch as any adjustment and afterwards as a [join](/guides/launch_files/#copies) grows a running set. The robot's name is its copy's name, so only copies fill a per-robot surface: the server refuses to start while an instance outside any copy fills a target, or a robot fills a target with no `argument` twice, naming each. A member the stack binds after the start with either fault is left out of the fleet: the server logs it, and a robot's second member on such a target is named under the robot's `notes`, where its calls are refused.
+
+```json5
+{
+  source: { exposures: ["robot_control:v1"] },
+  instances: [{ instance_id: "robot_control_inst", arguments: { port: 8900 } }],
+}
+```
+
+```json5
+// A robot's fragment: its own instances fill the targets.
+adjustments: [
+  { target: "robot_control_inst",
+    add_links: { identity: ["init_inst"], limb_state: ["backbone_inst"], camera: ["wrist_left", "wrist_right"] } },
+]
+```
+
+The server reads the fleet from the targets' bound sets on every list and call, so a robot is listed the moment the join that starts it returns and gone the moment its removal returns, with no restart and no effect on the calls, tasks and subscriptions of the other robots. With no robot the endpoint serves an empty fleet, and the first join onto it is accepted.
+
+What a client sees on a per-robot surface:
+
+- **The listing tool** takes no arguments and answers `{ robots: [...] }`, one entry per robot, in the order of the document's targets and of the members the stack binds to each: `robot`, its name; `capabilities`, the targets it fills; `members`, for each target with an `argument`, the names a call addresses its members by; `notes`, what could not be read or served for it and why; and one field per `describe` key, `null` when it could not be read, with the reason under `notes`. A tool's `description` is where the model reads what a target answers; the listing is where it reads which robot answers it.
+- **Tools** are the union of every target's tools, fixed for the life of the server and cached as on a fixed surface. A call naming a robot that is not on the stack, a target the robot does not fill, or a member the robot does not have is refused before anything reaches the Peppy graph, naming what is there: the robots, the targets the robot fills, or the members it has.
+- **Resources** are published per robot and member: `alpha/robot.limb_state` at `peppy://resource/alpha/robot.limb_state` for a target filled once, `alpha/wrist_left/camera.latest_frame` for a camera. `resources/list` follows the fleet and carries no cache hint, and the server sends `notifications/resources/list_changed` to listening clients when a robot joins or leaves. A resource of a robot that just joined reads as unavailable until its first snapshot arrives.
 
 ### Several exposures on one endpoint
 
@@ -302,6 +370,7 @@ The launch refuses, before anything starts, when:
 - an exposure's `sha256` disagrees with the contract bytes the launch resolved, or two listed exposures pin one contract at different bytes. One deployment carries one content per contract;
 - an exposure is listed twice in one deployment;
 - two deployments list the same set of exposures. They would derive the same node identity, so the error names the set and points at the remedy: to serve one set on several hosts, declare one deployment with one instance per host;
+- a deployment lists a per-robot surface beside a fixed one, or two surfaces sharing a target name its member by different arguments;
 - a `links` entry names no target of the listed exposures, or a target is left without a link, as for any node's slot.
 
 Any number of instances run on one machine, whatever port each prefers. The first to reach a port holds it and the others take another, so a launcher that needs a known URL for each server names a different `port` for each, and a joined copy gets one with `--set-arguments <instance>.port=<n>`. Two servers that start together and prefer one port settle between themselves which of them holds it. Read a server's run log with [`peppy node info`](/guides/node_stack/#inspecting-a-node-with-peppy-node-info) on the node's identity.
@@ -316,11 +385,11 @@ Instance endpoints
 ┌──────────────────────────────────────┬────────────┬──────┬─────────────────────────┬───────────────────────────────────────────────────┐
 │ NODE                                 │ INSTANCE   │ KIND │ LABEL                   │ ENDPOINT                                          │
 ├──────────────────────────────────────┼────────────┼──────┼─────────────────────────┼───────────────────────────────────────────────────┤
-│ mcp_camera_and_recording_v1:builtin  │ mcp_server │ mcp  │ camera_and_recording_v1 │ http://127.0.0.1:8900/camera_and_recording/v1/mcp │
+│ mcp_camera_and_recording_v1:builtin  │ mcp_server │ robot_control  │ camera_and_recording_v1 │ http://127.0.0.1:8900/camera_and_recording/v1/mcp │
 └──────────────────────────────────────┴────────────┴──────┴─────────────────────────┴───────────────────────────────────────────────────┘
 ```
 
-`peppy node info mcp_camera_and_recording_v1:builtin` lists the same endpoint under the instance as `camera_and_recording_v1 (mcp)  http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
+`peppy node info mcp_camera_and_recording_v1:builtin` lists the same endpoint under the instance as `camera_and_recording_v1 (robot_control)  http://127.0.0.1:8900/camera_and_recording/v1/mcp`.
 
 `peppy stack resolve` derives the same node from the same caches and holds the deployment's `links` to its slots, so a launcher can be checked before it is launched. See [Auditing a composed launch](/guides/launch_files/#auditing-a-composed-launch).
 
@@ -330,7 +399,7 @@ An exposure deployment is placed like any other: `core_node` on the instance nam
 
 ## What a client sees
 
-**Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity (the exposure's name at its tag), and `2026-07-28` as the only supported revision. Discovery, `resources/list`, and `tools/list` include private caching hints with a one-hour TTL. The catalog does not change while the server is running. To change it, change the exposure document, refresh the repositories, and launch again.
+**Discovery.** `server/discover` returns the exposure's `title` and `instructions`, the implementation identity (the exposure's name at its tag), and `2026-07-28` as the only supported revision. Discovery and `tools/list` include private caching hints with a one-hour TTL, and so does `resources/list` on a fixed surface; on a [per-robot surface](#per-robot-surfaces) the resource list follows the robots and carries none. The tools do not change while the server is running. To change them, change the exposure document, refresh the repositories, and launch again.
 
 **Resources.** A read returns the latest snapshot that passed the policies. Its `ttlMs` value says how long the snapshot remains fresh. The resource is unavailable until the first published value arrives. After the stored value is older than `freshness.max_age_ms`, reads report it as stale instead of returning old data as current. If the size policy rejects a new snapshot, the server keeps the previous one until it becomes stale. Each accepted value notifies subscribers.
 
@@ -371,12 +440,13 @@ Parsing catches document-level errors before these checks. Examples include:
 
 - An exposure with no targets or a target that selects no members.
 - A public name claimed twice anywhere in the document, or a member selected twice by one target.
+- A target `argument` on a document without `robots`, a `describe` entry naming a target the robot fills any number of times or a member its target does not select, or an argument name that is not `snake_case`.
 - A blank `title`, `instructions`, or `description` value.
 - A zero deadline or a `max_hz` value that is not positive and finite.
-- A `quality` value on a `raw` representation.
-- A `depth_range` on a `raw` representation, or one whose `near` is 0 or not below `far`.
+- A `quality` value on a `raw` or `png16` representation.
+- A `depth_range` on a `raw` or `png16` representation, or one whose `near` is 0 or not below `far`.
 - `on_oversize` without `max_result_bytes`.
-- `downscale` without a `jpeg` representation.
+- `downscale` without a `jpeg` or `png16` representation.
 - A `restrict` entry with neither bound, or with `min` above `max`.
 
 ## What stays private

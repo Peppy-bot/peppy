@@ -428,7 +428,7 @@ the whole launch.
 A launcher whose `components` include a `zero_or_more` axis runs that axis as copies, added and removed while its other instances keep running. The coordinator snapshots the launcher at launch and composes every join against that snapshot:
 
 ```sh
-peppy stack launch fleet
+peppy stack launch physical
 peppy stack join openarm_v2 -i alpha --place jetson-1
 peppy stack join openarm_v1 -i bravo --with xr_commander --place jetson-2
 peppy stack list
