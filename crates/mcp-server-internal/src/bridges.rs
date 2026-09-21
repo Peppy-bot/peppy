@@ -12,9 +12,11 @@ use message_codec::consumer::{
     ServiceClient, TopicConsumer,
 };
 use peppy_mcp_catalog::{BundleContractPin, ExposureBundle, ValidatedExposure};
-use peppy_mcp_runtime::{ActionContext, ActionExit, ResourceIngest, ToolCallError};
+use peppy_mcp_runtime::{
+    ActionContext, ActionExit, MemberAddress, ResourceIngest, ToolCall, ToolCallError,
+};
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget};
+use peppylib::messaging::{MessengerHandle, ProducerRef, SenderTarget, TopicMessenger};
 use peppylib::runtime::NodeRunner;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -55,6 +57,7 @@ impl Binding {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct PreparedResource {
     pub name: String,
     pub binding: Binding,
@@ -284,42 +287,99 @@ pub(crate) async fn pump_resource(
     };
     let mut subscription = TopicConsumer::new(subscription, resource.codec.clone());
     while let Some((_producer, message)) = subscription.next_message().await {
-        // The update-rate gate runs before any conversion or transcoding.
-        let Some(token) = ingest.admit() else {
-            continue;
-        };
-        match subscription.decode(&message) {
-            Ok(value) => {
-                if let Err(error) = ingest.publish(token, value) {
-                    tracing::debug!(%error, resource = resource.name, "snapshot refused by policy");
-                }
+        feed(&ingest, || subscription.decode(&message));
+    }
+}
+
+/// Offers one message to a resource: the update-rate gate runs before any
+/// conversion or transcoding, then the decoded snapshot meets the
+/// resource's policies.
+fn feed<E: std::fmt::Display>(
+    ingest: &ResourceIngest,
+    decode: impl FnOnce() -> Result<serde_json::Value, E>,
+) {
+    let Some(token) = ingest.admit() else {
+        return;
+    };
+    match decode() {
+        Ok(value) => {
+            if let Err(error) = ingest.publish(token, value) {
+                tracing::debug!(%error, resource = ingest.resource_name(), "snapshot refused by policy");
             }
-            Err(error) => {
-                tracing::debug!(%error, resource = resource.name, "message does not convert")
-            }
+        }
+        Err(error) => {
+            tracing::debug!(%error, resource = ingest.resource_name(), "message does not convert")
         }
     }
 }
 
-/// Calls the service behind a tool on the producer bound to its target.
+/// Feeds a resource of one member of a per-robot surface from that member's
+/// topic alone. The subscription lives as long as the member stays bound;
+/// the host drops it when the member leaves.
+pub(crate) async fn pump_member_resource(
+    node_runner: Arc<NodeRunner>,
+    resource: PreparedResource,
+    producer: ProducerRef,
+    ingest: ResourceIngest,
+) {
+    let processor = node_runner.processor();
+    let mut subscription = match TopicMessenger::subscribe(
+        node_runner.messenger(),
+        processor.bound_core_node(),
+        processor.bound_instance_id(),
+        resource.binding.contract.clone(),
+        &resource.binding.member,
+        &producer,
+        resource.qos.clone(),
+    )
+    .await
+    {
+        Ok(subscription) => subscription,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                resource = ingest.resource_name(),
+                "subscription failed; the resource stays unavailable"
+            );
+            return;
+        }
+    };
+    while let Some(message) = subscription.on_next_message().await {
+        feed(&ingest, || {
+            resource.codec.decode(message.payload_bytes().as_ref())
+        });
+    }
+}
+
+/// The producer a call goes to: the member the runtime routed it to on a
+/// per-robot surface, the producer the launcher bound on a fixed one.
+fn producer_of(
+    node_runner: &NodeRunner,
+    target: &str,
+    member: Option<MemberAddress>,
+) -> ProducerRef {
+    match member {
+        Some(member) => ProducerRef::new(member.core_node, member.instance_id),
+        None => node_runner.processor().sole_bound_producer(target).clone(),
+    }
+}
+
+/// Calls the service behind a tool on the producer the call goes to.
 pub(crate) async fn call_tool(
     tool: &PreparedTool,
     node_runner: &NodeRunner,
     identity: &ConsumerIdentity,
-    input: Value,
+    call: ToolCall,
 ) -> Result<Value, ToolCallError> {
     let binding = tool.binding.member_binding();
-    let producer = node_runner
-        .processor()
-        .sole_bound_producer(&tool.binding.target)
-        .clone();
+    let producer = producer_of(node_runner, &tool.binding.target, call.member);
     tool.client
         .call(
             node_runner.messenger(),
             identity,
             &binding,
             &producer,
-            &input,
+            &call.input,
             tool.deadline,
         )
         .await
@@ -348,27 +408,24 @@ impl TaskSurface for ActionContext {
     }
 }
 
-/// Runs the action behind an action-backed tool on the producer the
-/// launcher bound to its target.
+/// Runs the action behind an action-backed tool on the producer the call
+/// goes to.
 pub(crate) async fn run_task(
     task: &PreparedTask,
     node_runner: &NodeRunner,
     identity: &ConsumerIdentity,
-    input: Value,
+    call: ToolCall,
     context: ActionContext,
 ) -> Result<Value, ActionExit> {
     let binding = task.binding.member_binding();
-    let producer = node_runner
-        .processor()
-        .sole_bound_producer(&task.binding.target)
-        .clone();
+    let producer = producer_of(node_runner, &task.binding.target, call.member);
     drive_goal(
         task,
         node_runner.messenger(),
         identity,
         &binding,
         &producer,
-        input,
+        call.input,
         &context,
     )
     .await

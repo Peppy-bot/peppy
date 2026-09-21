@@ -483,7 +483,8 @@ async fn closing_the_call_cancels_the_goal_running_inside_it() {
             .with_task("recorder.record_episode", support::record_episode)
             .with_task(
                 "recorder.replay_episode",
-                move |_input: Value, context: peppy_mcp_runtime::ActionContext| {
+                move |_call: peppy_mcp_runtime::ToolCall,
+                      context: peppy_mcp_runtime::ActionContext| {
                     signal_on_cancel(signal.clone(), context)
                 },
             )

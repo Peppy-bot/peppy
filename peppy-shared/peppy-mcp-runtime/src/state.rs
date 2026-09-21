@@ -10,12 +10,13 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
 
-/// The resource-updated event the subscription forwarder relays to
-/// listening clients. The catalog is fixed for the life of the server, so
-/// no other event kind can exist.
+/// An event the subscription forwarder relays to listening clients: a
+/// resource took a new snapshot, or the resource list changed because a
+/// robot joined or left a per-robot surface.
 #[derive(Debug, Clone)]
-pub(crate) struct ResourceUpdated {
-    pub(crate) uri: String,
+pub(crate) enum CatalogEvent {
+    ResourceUpdated { uri: String },
+    ResourceListChanged,
 }
 
 /// The latest policy-approved snapshot of one exposed topic.
@@ -120,7 +121,7 @@ pub struct AdmitToken {
 #[derive(Clone)]
 pub struct ResourceIngest {
     pub(crate) state: Arc<ResourceState>,
-    pub(crate) events: broadcast::Sender<ResourceUpdated>,
+    pub(crate) events: broadcast::Sender<CatalogEvent>,
     pub(crate) clock: Clock,
 }
 
@@ -143,7 +144,7 @@ impl ResourceIngest {
             taken_at_nanos: token.taken_at_nanos,
         });
         // Send fails only when nobody listens, which is fine.
-        let _ = self.events.send(ResourceUpdated {
+        let _ = self.events.send(CatalogEvent::ResourceUpdated {
             uri: self.state.entry.uri.clone(),
         });
         Ok(())
@@ -303,7 +304,11 @@ mod tests {
         ingest
             .publish(token, json!({ "battery": 87 }))
             .expect("publishes");
-        let ResourceUpdated { uri } = receiver.try_recv().expect("one event is queued");
+        let CatalogEvent::ResourceUpdated { uri } =
+            receiver.try_recv().expect("one event is queued")
+        else {
+            panic!("a publish is a resource update");
+        };
         assert_eq!(uri, "peppy://resource/front_camera.status");
     }
 }

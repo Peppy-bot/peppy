@@ -415,8 +415,30 @@ fn robot_catalog(
             DescribeMember::Service(service) => tools
                 .iter()
                 .find(|tool| tool.target == entry.target && &tool.member == service)
-                .map(|tool| DescribeSource::Tool {
-                    name: tool.name.clone(),
+                .map(|tool| {
+                    // The listing calls the service with the robot alone.
+                    let routing = robots.argument.to_string();
+                    let takes: Vec<&str> = tool
+                        .input_schema
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .into_iter()
+                        .flat_map(|properties| properties.keys())
+                        .map(String::as_str)
+                        .filter(|name| *name != routing)
+                        .collect();
+                    if !takes.is_empty() {
+                        violations.push(format!(
+                            "{context}: service `{service}` of target `{}` takes `{}`, and the \
+                             listing reads a service that takes no request; describe the robot \
+                             through one that takes none, or through a topic's fields",
+                            entry.target,
+                            takes.join("`, `")
+                        ));
+                    }
+                    DescribeSource::Tool {
+                        name: tool.name.clone(),
+                    }
                 }),
             DescribeMember::Topic { topic, fields } => resources
                 .iter()

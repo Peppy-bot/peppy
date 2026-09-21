@@ -16,7 +16,7 @@ use super::load::{LoadedFragment, LoadedOption};
 use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
-use config::runtime::{CoreNodeName, CoreNodeNameError, Name};
+use config::runtime::{CoreNodeName, CoreNodeNameError, Name, instance_id_in_copy};
 use core_node_api::encoding::{ArgumentOverride, SetMember};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -182,12 +182,6 @@ fn check_copy_name(name: &Name) -> Result<(), CompositionError> {
 pub const SELF_COPY_NAME_REFUSAL: &str =
     "`self` names the daemon a launch or join targets; give the copy another name";
 
-/// One of a copy's ids, minted under its name. Both halves are names and
-/// `_` is a name character, so the join is a name.
-fn prefixed_id(copy: &Name, id: &str) -> Name {
-    Name::try_from(format!("{copy}_{id}")).expect("two names joined by `_` are a name")
-}
-
 /// One copy's selection `own` laid over the stack `stack`: the whole
 /// selection, the fragments the copy pulls in and the constraints that
 /// judge it. A launch, a join and `repo index --check` all derive the
@@ -326,7 +320,7 @@ pub(super) fn compose_copy(
     // Mint the owned ids under the name; every link naming one follows it.
     let mut minted: HashMap<String, Name> = HashMap::new();
     for id in &owned {
-        let name_for = prefixed_id(name, id);
+        let name_for = instance_id_in_copy(name, id);
         if stack_ids.contains(name_for.as_str()) {
             return Err(CompositionError::PrefixedIdCollision {
                 copy: name.to_string(),

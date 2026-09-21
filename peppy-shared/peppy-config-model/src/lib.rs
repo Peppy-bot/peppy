@@ -102,7 +102,7 @@ pub mod runtime {
         LifecycleRuntimeConfig, MAX_CORE_NODE_NAME_LEN, Name, NodeInstanceConfig, NodeInstancePlan,
         ObservationSeedMember, ObservationSeeds, ObservedPeer, PairedPeer, PairingSlots,
         ProducerRef, ResolvedFramework, RuntimeConfig, SELF_CORE_NODE, SlotBindings,
-        first_duplicate,
+        first_duplicate, instance_id_in_copy,
     };
 }
 

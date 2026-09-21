@@ -161,6 +161,31 @@ pub struct BoundMember {
     pub copy: Option<Name>,
 }
 
+impl BoundMember {
+    /// The member's name within its copy: the id the launcher wrote, which a
+    /// launch mints as `<copy>_<id>`. A member of no copy runs under its id
+    /// as written. `None` when the instance id does not carry its copy's
+    /// prefix, which no launch produces.
+    pub fn name_in_copy(&self) -> Option<&str> {
+        let instance_id = self.producer.instance_id.as_str();
+        let Some(copy) = &self.copy else {
+            return Some(instance_id);
+        };
+        instance_id
+            .strip_prefix(copy.as_str())
+            .and_then(|rest| rest.strip_prefix('_'))
+            .filter(|name| !name.is_empty())
+    }
+}
+
+/// The id a launch mints for a copy's instance: the copy's name, `_`, then
+/// the id the launcher wrote. Both halves are names and `_` is a name
+/// character, so the join is a name; [`BoundMember::name_in_copy`] reads
+/// the written id back.
+pub fn instance_id_in_copy(copy: &Name, id: &str) -> Name {
+    Name::try_from(format!("{copy}_{id}")).expect("two names joined by `_` are a name")
+}
+
 /// A member the launcher file binds outside any copy.
 impl From<ProducerRef> for BoundMember {
     fn from(producer: ProducerRef) -> Self {
@@ -1369,5 +1394,35 @@ mod tests {
                 || matches!(err, Error::Parsing(ParsingError::InvalidName(_, _))),
             "expected parsing error about invalid name, got: {err}"
         );
+    }
+
+    #[test]
+    fn a_member_names_itself_within_its_copy() {
+        let alpha = Name::new("alpha").expect("a name");
+        let named = |instance_id: &str, copy: Option<&Name>| BoundMember {
+            producer: ProducerRef::new("cn", instance_id),
+            copy: copy.cloned(),
+        };
+        assert_eq!(
+            named("alpha_wrist_left", Some(&alpha)).name_in_copy(),
+            Some("wrist_left")
+        );
+        assert_eq!(
+            named(
+                instance_id_in_copy(&alpha, "wrist_left").as_str(),
+                Some(&alpha)
+            )
+            .name_in_copy(),
+            Some("wrist_left"),
+            "the minted id reads back as the written one"
+        );
+        assert_eq!(named("wrist_left", None).name_in_copy(), Some("wrist_left"));
+        assert_eq!(
+            named("bravo_wrist_left", Some(&alpha)).name_in_copy(),
+            None,
+            "an id without its copy's prefix names nothing"
+        );
+        assert_eq!(named("alpha_", Some(&alpha)).name_in_copy(), None);
+        assert_eq!(named("alpha", Some(&alpha)).name_in_copy(), None);
     }
 }

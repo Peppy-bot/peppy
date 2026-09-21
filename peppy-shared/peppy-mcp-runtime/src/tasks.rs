@@ -8,6 +8,7 @@
 //! result). [`ActionContext`] is the seam between the two, and it hides
 //! which of the two MCP surfaces the goal runs on.
 
+use crate::server::ToolCall;
 use rmcp::task_manager::TaskContext;
 use serde_json::Value;
 use std::future::Future;
@@ -97,29 +98,30 @@ impl ActionContext {
     }
 }
 
-/// One registered action bridge: validated canonical-JSON goal fields in,
-/// the canonical JSON of the completed result out, or an [`ActionExit`]
+/// One registered action bridge: a validated call (the canonical-JSON goal
+/// fields and, on a per-robot surface, the member the goal goes to) in, the
+/// canonical JSON of the completed result out, or an [`ActionExit`]
 /// describing the non-completed terminal state. Any
-/// `Fn(Value, ActionContext) -> impl Future` with those shapes implements
+/// `Fn(ToolCall, ActionContext) -> impl Future` with those shapes implements
 /// it.
 pub trait TaskHandler: Send + Sync + 'static {
     fn start(
         &self,
-        input: Value,
+        call: ToolCall,
         context: ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<Value, ActionExit>> + Send>>;
 }
 
 impl<F, Fut> TaskHandler for F
 where
-    F: Fn(Value, ActionContext) -> Fut + Send + Sync + 'static,
+    F: Fn(ToolCall, ActionContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Value, ActionExit>> + Send + 'static,
 {
     fn start(
         &self,
-        input: Value,
+        call: ToolCall,
         context: ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<Value, ActionExit>> + Send>> {
-        Box::pin(self(input, context))
+        Box::pin(self(call, context))
     }
 }
