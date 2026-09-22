@@ -3,11 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use config::runtime::CoreNodeName;
-use core_node_api::encoding::{LaunchGoal, LauncherOrigin, PlacementSpec, StackBudgets};
+use core_node_api::encoding::{LaunchGoal, LauncherOrigin, PlacementSpec};
 use daemon_config::launcher::{PeppyLauncher, PeppyLauncherParser, PreparedLauncher};
 use tracing::info;
 
-use super::goal::drive_stack_goal;
+use super::LauncherArgs;
+use super::goal::{StackGoal, drive_stack_goal};
 use crate::commands::node::caller_env_overrides;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -86,10 +87,25 @@ pub(super) fn infer_launcher_origin(input: PathBuf) -> Result<LauncherOrigin> {
 /// Mixing the two is refused: they are two ways of saying where things go, and
 /// a launch that took some placements from one and some from the other would be
 /// legible to nobody.
-#[derive(Debug, Clone, Default)]
-pub(super) struct PlacementArgs {
+#[derive(clap::Args, Default)]
+pub struct PlacementArgs {
+    /// Wire a placement link to a real federated core node:
+    /// `NAME@<core-node>`, with NAME a `core_nodes` placeholder the
+    /// launcher declares or the name of a copy it deploys. Repeatable,
+    /// once per link; `self` names the daemon this command is sent to.
+    #[arg(long = "place", value_name = "NAME@CORE_NODE", value_parser = parse_place)]
     pub places: Vec<(String, String)>,
+    /// Wire every declared core node link to this daemon, so a
+    /// multi-machine launcher runs unmodified on one box. How you develop
+    /// against a federated topology with no second machine.
+    #[arg(long)]
     pub local: bool,
+}
+
+/// `--place NAME@CORE_NODE`: NAME is a core node link the flat launcher
+/// carries, which every copy's name is one of.
+fn parse_place(raw: &str) -> std::result::Result<(String, String), String> {
+    crate::commands::node::parse_key_at_target(raw, "--place", "NAME@CORE_NODE")
 }
 
 impl PlacementArgs {
@@ -141,32 +157,30 @@ impl PlacementArgs {
     }
 }
 
-pub(super) fn launch(
-    ctx: &Arc<AppContext>,
-    launcher_config_path: PathBuf,
-    placement: PlacementArgs,
-    words: Vec<String>,
-    budgets: StackBudgets,
-    rebuild: bool,
-) -> Result<()> {
-    crate::commands::block_on(launch_async(
-        ctx,
-        launcher_config_path,
-        placement,
-        words,
-        budgets,
-        rebuild,
-    ))
+/// Sends the launch `args` describes to the daemon as `G` and follows it to
+/// its result: a [`LaunchGoal`] runs the stack, a
+/// [`core_node_api::encoding::StackBuildGoal`] stops once every node is
+/// built.
+pub(super) fn launch<G>(ctx: &Arc<AppContext>, args: LauncherArgs) -> Result<()>
+where
+    G: StackGoal + From<LaunchGoal>,
+{
+    crate::commands::block_on(launch_async::<G>(ctx, args))
 }
 
-async fn launch_async(
-    ctx: &Arc<AppContext>,
-    launcher_config_path: PathBuf,
-    placement: PlacementArgs,
-    words: Vec<String>,
-    budgets: StackBudgets,
-    rebuild: bool,
-) -> Result<()> {
+async fn launch_async<G>(ctx: &Arc<AppContext>, args: LauncherArgs) -> Result<()>
+where
+    G: StackGoal + From<LaunchGoal>,
+{
+    let LauncherArgs {
+        launcher_config_path,
+        placement,
+        with,
+        timeouts,
+        rebuild,
+    } = args;
+    let words = with.words;
+    let subcommand = G::OPERATION.to_ascii_lowercase();
     let launcher_origin = infer_launcher_origin(launcher_config_path)?;
 
     // Pre-validate the launcher config locally for `Fs` so the user gets a fast, precise parse
@@ -187,24 +201,23 @@ async fn launch_async(
     // daemon would open a different tree or nothing at all. Same guard the
     // other daemon-scoped commands already apply.
     if matches!(launcher_origin, LauncherOrigin::Fs(_)) {
-        crate::commands::reject_remote_target_for_local_path(&conn, "peppy stack launch").map_err(
-            |_| {
-                Error::ExecutionFailed(format!(
-                    "`peppy stack launch` with a launcher file path cannot target the remote \
-                     daemon `{}`: the path names a tree on this machine. Use a repository \
-                     launcher (`peppy stack launch <name>`), or run the command from the \
-                     machine that holds the file.",
-                    conn.target_core_node
-                ))
-            },
-        )?;
+        let command = format!("peppy stack {subcommand}");
+        crate::commands::reject_remote_target_for_local_path(&conn, &command).map_err(|_| {
+            Error::ExecutionFailed(format!(
+                "`{command}` with a launcher file path cannot target the remote daemon `{}`: \
+                 the path names a tree on this machine. Use a repository launcher \
+                 (`{command} <name>`), or run the command from the machine that holds the \
+                 file.",
+                conn.target_core_node
+            ))
+        })?;
     }
 
     let placement = placement.resolve(&conn.target_core_node)?;
 
     // State loudly which remote daemons are about to have their stacks
-    // replaced. A launch is destructive on every machine it touches, and the
-    // operator typed only one command. `--local` names none by construction,
+    // replaced. A launch or a build is destructive on every machine it
+    // touches, and the operator typed only one command. `--local` names none by construction,
     // and a `--place` target the launcher does not declare is the
     // coordinator's refusal to make, so this only reports what was asked for.
     let remote: BTreeSet<&str> = match &placement {
@@ -217,7 +230,7 @@ async fn launch_async(
     };
     if !remote.is_empty() {
         println!(
-            "This launch will REPLACE the node stack on {} remote daemon(s): {}",
+            "This {subcommand} will REPLACE the node stack on {} remote daemon(s): {}",
             remote.len(),
             remote.iter().copied().collect::<Vec<_>>().join(", ")
         );
@@ -241,13 +254,14 @@ async fn launch_async(
         // and recorded by every participant alongside its slice. That is what
         // makes the global stack reconstructible by query afterwards.
         new_launch_id(),
-        budgets.with_env_vars(caller_env_overrides()),
+        timeouts.budgets().with_env_vars(caller_env_overrides()),
     )
     .with_placement(placement)
     .with_selections(words)
     .with_rebuild(rebuild);
+    let budgets = goal.budgets.clone();
 
-    drive_stack_goal(&conn, &goal, &goal.budgets).await
+    drive_stack_goal(&conn, &G::from(goal), &budgets).await
 }
 
 #[cfg(test)]

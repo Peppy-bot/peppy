@@ -1,5 +1,5 @@
 //! The environment and time budgets shared by every goal that adds nodes to
-//! a stack: `stack launch`, `stack join` and `stack remove`.
+//! a stack: `stack launch`, `stack build`, `stack join` and `stack remove`.
 
 use crate::Result;
 use crate::encoding::required_text;

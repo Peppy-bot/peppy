@@ -54,7 +54,7 @@ Non-goals:
 | Command group | What it does |
 |---|---|
 | `peppy node` | Scaffold, add, build, run, inspect, and stop individual nodes |
-| `peppy stack` | Launch a stack from a launcher, list what is running, benchmark interface latency |
+| `peppy stack` | Launch or build a stack from a launcher, list what is running, benchmark interface latency |
 | `peppy repo` | Manage the repositories nodes and launchers are resolved from |
 | `peppy container` | Check and repair the Apptainer container prerequisites |
 | `peppy platform` | Log in, log out, and show the current platform identity |

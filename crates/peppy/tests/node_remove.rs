@@ -1,6 +1,4 @@
 use config::node::Toolchain;
-use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::StackListRequest;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -12,10 +10,7 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 
-use peppylib::core_node::transport::poll;
-
-use super::common::test_node_target;
-const CALLER_INSTANCE_ID: &str = "peppy-test";
+use super::common::{stack_graph, test_node_target};
 
 #[test]
 fn node_remove_command_succeeds() {
@@ -41,12 +36,7 @@ fn node_remove_command_succeeds() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -95,19 +85,7 @@ fn node_remove_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(poll(
-            &StackListRequest::new(),
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        ))
-        .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     assert_eq!(
         graph.nodes.len(),
@@ -137,19 +115,7 @@ fn node_remove_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(poll(
-            &StackListRequest::new(),
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        ))
-        .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     assert_eq!(
         graph.nodes.len(),
@@ -184,12 +150,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -287,19 +248,7 @@ fn node_remove_command_force_bypasses_prompt_and_stops_instances() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(poll(
-            &StackListRequest::new(),
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        ))
-        .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     assert!(
         !graph
@@ -336,12 +285,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -445,19 +389,7 @@ fn node_remove_command_with_stop_instances_succeeds_and_stops_instances() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = rt
-        .block_on(poll(
-            &StackListRequest::new(),
-            messenger_handle,
-            &core_node_name,
-            CALLER_INSTANCE_ID,
-            &core_node_name,
-            Duration::from_secs(5),
-        ))
-        .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = rt.block_on(stack_graph(messenger_handle, &core_node_name));
 
     assert!(
         !graph

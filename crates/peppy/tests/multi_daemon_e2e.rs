@@ -1484,6 +1484,30 @@ fn coordinator_section(listed: &str, core_node: &str) -> serde_json::Value {
         .clone()
 }
 
+/// Every node one daemon's slice holds, keyed `name:tag`, with its stage and
+/// the number of instances it tracks, read from a `stack list --json` report.
+fn slice_nodes(listed: &str, core_node: &str) -> BTreeMap<String, (String, usize)> {
+    coordinator_section(listed, core_node)["stack"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["stage"] != "Root")
+        .map(|node| {
+            (
+                format!(
+                    "{}:{}",
+                    node["name"].as_str().unwrap(),
+                    node["tag"].as_str().unwrap()
+                ),
+                (
+                    node["stage"].as_str().unwrap().to_owned(),
+                    node["instances"].as_array().unwrap().len(),
+                ),
+            )
+        })
+        .collect()
+}
+
 /// The names of the copies a `stack list --json` section lists.
 fn copy_names(section: &serde_json::Value) -> Vec<String> {
     section["copies"]
@@ -2767,31 +2791,9 @@ async fn a_fully_placed_launch_runs_its_publisher_on_a_station_and_both_follow()
 async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
     let federation = start_federation("peppy-fed-peer-fail").await;
 
-    // Make the peer unable to materialize the instance it will be asked to run.
-    // A plain file is the shape that survives the daemon's own cleanup: the
-    // start first clears any leftover working directory of that name, and that
-    // clear refuses on a non-directory, so the name stays occupied and the
-    // directory can never be created. A symlink would not do — clearing a
-    // leftover unlinks it, and the start would sail on. It is planted on the
-    // working directory rather than on a bind source because bind sources are
-    // prepared when the peer takes over its slice, before the phases this test
-    // is about; nothing prepares this one ahead of the start. Planted on the
-    // peer only, so the coordinator's own instance gets through every phase.
-    let instance_dir = format!("{CONTAINER_PEPPY_HOME}/instances/{PEER_RUN_FAILURE_INSTANCE}");
-    require_success(
-        federation
-            .cloud
-            .exec(vec![
-                "sh",
-                "-c",
-                &format!(
-                    "mkdir -p {CONTAINER_PEPPY_HOME}/instances \
-                     && printf '' > {instance_dir}"
-                ),
-            ])
-            .await,
-        &format!("planting an uncreatable {instance_dir} on the peer"),
-    );
+    // Planted on the peer only, so the coordinator's own instance gets through
+    // every phase.
+    plant_uncreatable_instance_dir(&federation.cloud, PEER_RUN_FAILURE_INSTANCE).await;
 
     let launch = federation
         .robot
@@ -2838,6 +2840,227 @@ async fn a_peer_phase_that_fails_still_names_the_peers_log_file() {
         2,
         "the peer's successful Add and Build must still be listed:\n{}",
         launch.text
+    );
+}
+
+/// Makes `instance` impossible to start on `daemon`.
+///
+/// A plain file occupies the name: the start first clears any leftover
+/// working directory of that name, that clear refuses on a non-directory,
+/// and the directory can never be created. It goes on the working directory
+/// because bind sources are prepared when a peer takes over its slice,
+/// before the phases these tests are about; nothing prepares this one ahead
+/// of the start.
+async fn plant_uncreatable_instance_dir(daemon: &Daemon, instance: &str) {
+    let instance_dir = instance_dir(instance);
+    require_success(
+        daemon
+            .exec(vec![
+                "sh",
+                "-c",
+                &format!(
+                    "mkdir -p {CONTAINER_PEPPY_HOME}/instances \
+                     && printf '' > {instance_dir}"
+                ),
+            ])
+            .await,
+        &format!("planting an uncreatable {instance_dir}"),
+    );
+}
+
+/// Frees the name [`plant_uncreatable_instance_dir`] took, so the instance
+/// starts on the next attempt.
+async fn clear_planted_instance_dir(daemon: &Daemon, instance: &str) {
+    let instance_dir = instance_dir(instance);
+    require_success(
+        daemon.exec(vec!["rm", &instance_dir]).await,
+        &format!("clearing the planted {instance_dir}"),
+    );
+}
+
+/// The working directory a daemon materializes for `instance`.
+fn instance_dir(instance: &str) -> String {
+    format!("{CONTAINER_PEPPY_HOME}/instances/{instance}")
+}
+
+/// The newest build log `node:tag` left on `daemon`, which is where a reuse
+/// is recorded whatever the CLI showed.
+async fn newest_build_log(daemon: &Daemon, node: &str, tag: &str) -> String {
+    require_success(
+        daemon
+            .exec(vec![
+                "/bin/sh",
+                "-c",
+                &format!(
+                    "ls {CONTAINER_PEPPY_HOME}/logs/build/{node}_{tag}_*.log \
+                     | sort | tail -n 1 | xargs cat"
+                ),
+            ])
+            .await,
+        &format!("reading the newest {node}:{tag} build log"),
+    )
+}
+
+/// A federated build adds and builds each node on the machine the launch
+/// places it, and starts nothing anywhere: the peer's instance could not
+/// start, and the build succeeds all the same. A launch with the same
+/// arguments then starts the stack from the peer's build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_federated_build_builds_each_node_where_the_launch_places_it() {
+    let federation = start_federation("peppy-fed-build").await;
+    plant_uncreatable_instance_dir(&federation.cloud, PEER_RUN_FAILURE_INSTANCE).await;
+    let place = format!("remote_worker@{}", federation.cloud_core_node);
+    let launcher = container_launcher(PEER_RUN_FAILURE_LAUNCHER_FILE);
+
+    let build = federation
+        .robot
+        .peppy(&["stack", "build", "--place", &place, &launcher])
+        .await;
+    assert!(
+        build.success(),
+        "a build starts no instance, so the peer's unstartable one cannot fail it:\n{}",
+        build.text
+    );
+    assert!(
+        build.text.contains(&format!(
+            "This build will REPLACE the node stack on 1 remote daemon(s): {}",
+            federation.cloud_core_node
+        )),
+        "the build must name the remote daemons it is about to replace:\n{}",
+        build.text
+    );
+    let peer_node = "uvc_camera_video_reconstruction_python:v1";
+    assert_eq!(
+        build
+            .text
+            .matches(&format!("{peer_node}@{}: ", federation.cloud_core_node))
+            .count(),
+        2,
+        "the peer's node has an Add and a Build log and no Run log:\n{}",
+        build.text
+    );
+
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "listing the built federation",
+    );
+    assert_eq!(
+        slice_nodes(&listed, &federation.robot_core_node),
+        BTreeMap::from([(
+            "uvc_camera_python_mock:v1".to_owned(),
+            ("Ready".to_owned(), 0)
+        )]),
+        "{listed}"
+    );
+    assert_eq!(
+        slice_nodes(&listed, &federation.cloud_core_node),
+        BTreeMap::from([(peer_node.to_owned(), ("Ready".to_owned(), 0))]),
+        "{listed}"
+    );
+    // Both machines record the build as the launch their slice came from,
+    // which is how `stack reset --federated` finds them afterwards, and the
+    // finished build holds neither of them.
+    let build_launch =
+        coordinator_section(&listed, &federation.robot_core_node)["launch"]["launch_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the coordinator records the build's launch: {listed}"))
+            .to_owned();
+    let peer_section = coordinator_section(&listed, &federation.cloud_core_node);
+    assert_eq!(
+        peer_section["launch"]["launch_id"].as_str(),
+        Some(build_launch.as_str()),
+        "the peer records the same build: {listed}"
+    );
+    assert!(
+        peer_section["reservation"].is_null(),
+        "a finished build holds no peer: {listed}"
+    );
+
+    clear_planted_instance_dir(&federation.cloud, PEER_RUN_FAILURE_INSTANCE).await;
+    let launch = federation
+        .robot
+        .peppy(&["stack", "launch", "--place", &place, &launcher])
+        .await;
+    assert!(
+        launch.success(),
+        "the launch must start the built stack:\n{}",
+        launch.text
+    );
+    let newest_peer_build_log = newest_build_log(
+        &federation.cloud,
+        "uvc_camera_video_reconstruction_python",
+        "v1",
+    )
+    .await;
+    assert!(
+        newest_peer_build_log.contains(CACHED_BUILD_REUSE_PREFIX),
+        "the launch reused the peer's build:\n{newest_peer_build_log}"
+    );
+}
+
+/// A build that fails on the peer fails the whole build, names the peer's
+/// failed log, and clears the slice the build started there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_build_that_fails_fails_the_build_and_clears_its_slice() {
+    let federation = start_federation("peppy-fed-build-fail").await;
+    // The peer's native node builds with `uv sync`; a `uv` that always fails
+    // makes that build, and nothing on the coordinator, fail.
+    require_success(
+        federation
+            .cloud
+            .exec(vec![
+                "sh",
+                "-c",
+                "printf '#!/bin/sh\nexit 7\n' > /usr/local/bin/uv \
+                 && chmod +x /usr/local/bin/uv \
+                 && ! uv --version",
+            ])
+            .await,
+        "planting a failing uv on the peer",
+    );
+
+    let build = federation
+        .robot
+        .peppy(&[
+            "stack",
+            "build",
+            "--place",
+            &format!("remote_worker@{}", federation.cloud_core_node),
+            &container_launcher(CALLER_ENV_PROBE_LAUNCHER_FILE),
+        ])
+        .await;
+    assert!(
+        !build.success(),
+        "a peer whose build fails must fail the build:\n{}",
+        build.text
+    );
+    assert!(
+        build
+            .text
+            .contains("Build failed: failed to build node my_python_robot_arm")
+            && build.text.contains(&format!(
+                "my_python_robot_arm:v1@{} [FAILED]: ",
+                federation.cloud_core_node
+            )),
+        "the failure names the operation, the node, and the peer's failed build log:\n{}",
+        build.text
+    );
+    assert!(
+        build.text.contains(&format!(
+            "Clearing the slice this build started on: `{}`",
+            federation.cloud_core_node
+        )),
+        "the build clears the slice it started on the peer:\n{}",
+        build.text
+    );
+
+    let listed = require_success(
+        federation.cloud.peppy(&["stack", "list", "--json"]).await,
+        "listing the peer after the failed build",
+    );
+    assert!(
+        slice_nodes(&listed, &federation.cloud_core_node).is_empty(),
+        "the peer's slice is cleared:\n{listed}"
     );
 }
 
@@ -3183,11 +3406,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
             .await,
         "join remote arm",
     );
-    let obstacle = format!("{CONTAINER_PEPPY_HOME}/instances/failed_cam_inst");
-    require_success(
-        federation.cloud.exec(vec!["touch", &obstacle]).await,
-        "prepare run failure",
-    );
+    plant_uncreatable_instance_dir(&federation.cloud, "failed_cam_inst").await;
     let failed = federation
         .robot
         .peppy(&[
@@ -3225,10 +3444,7 @@ async fn a_failed_remote_join_removes_the_node_it_added_from_the_peer() {
         "copy metadata",
     );
     assert!(!listed.contains("\"failed\""), "{listed}");
-    require_success(
-        federation.cloud.exec(vec!["rm", &obstacle]).await,
-        "clear test obstacle",
-    );
+    clear_planted_instance_dir(&federation.cloud, "failed_cam_inst").await;
     require_success(
         federation
             .robot
@@ -3394,11 +3610,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
         "remote process IDs",
     );
     // A file at the instance directory makes run preparation fail on this peer.
-    let obstacle = format!("{CONTAINER_PEPPY_HOME}/instances/failed_arm_inst");
-    require_success(
-        federation.cloud.exec(vec!["touch", &obstacle]).await,
-        "prepare run failure",
-    );
+    plant_uncreatable_instance_dir(&federation.cloud, "failed_arm_inst").await;
     let failed = federation
         .robot
         .peppy(&[
@@ -3446,10 +3658,7 @@ async fn copies_join_and_remove_across_daemons_with_failure_isolation() {
         &["bravo_arm_inst", "charlie_arm_inst"],
         &["failed_arm_inst"],
     );
-    require_success(
-        federation.cloud.exec(vec!["rm", &obstacle]).await,
-        "clear test obstacle",
-    );
+    clear_planted_instance_dir(&federation.cloud, "failed_arm_inst").await;
 
     require_success(
         federation.robot.peppy(&["stack", "remove", "bravo"]).await,

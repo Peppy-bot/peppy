@@ -17,12 +17,7 @@ async fn info_command_succeeds_when_daemon_running() {
     );
 
     let log_capture = peppy::test_support::LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     InfoCommand
         .execute(&ctx)

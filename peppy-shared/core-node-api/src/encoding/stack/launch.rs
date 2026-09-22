@@ -271,6 +271,44 @@ impl LaunchGoal {
     }
 }
 
+/// Goal message for the Build action: the launch `peppy stack build` runs
+/// up to its builds.
+///
+/// It carries a [`LaunchGoal`] and encodes as one: a build IS a launch that
+/// stops once every node is built. Its own action name, `stack_build`, is
+/// what a daemon must serve to accept those bytes.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StackBuildGoal(LaunchGoal);
+
+impl StackBuildGoal {
+    /// The launch this build runs up to its builds.
+    pub fn launch(&self) -> &LaunchGoal {
+        &self.0
+    }
+
+    pub fn into_launch(self) -> LaunchGoal {
+        self.0
+    }
+
+    pub fn encode(&self) -> Result<Payload> {
+        self.0.encode()
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        LaunchGoal::decode(data).map(Self)
+    }
+}
+
+impl From<LaunchGoal> for StackBuildGoal {
+    fn from(launch: LaunchGoal) -> Self {
+        Self(launch)
+    }
+}
+
+impl crate::encoding::Wire for StackBuildGoal {
+    type Root = crate::launch_capnp::launch_goal::Owned;
+}
+
 /// Response to the Launch goal request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchGoalResponse {
@@ -692,6 +730,26 @@ mod tests {
         assert_eq!(goal, decoded);
         assert_eq!(decoded.budgets.max_timeout_secs, None);
         assert!(!decoded.rebuild);
+    }
+
+    /// `peppy stack build` sends the same bytes under its own action, so a
+    /// daemon that does not serve `stack_build` never mistakes one for a
+    /// launch.
+    #[test]
+    fn a_build_goal_carries_the_launch_it_would_run() {
+        let goal = LaunchGoal::new(
+            LauncherOrigin::Repository {
+                name: "openarm_simulation".to_string(),
+            },
+            "launch-abc123",
+            StackBudgets::new(1, 1, 1, None),
+        )
+        .with_selections(vec!["mujoco".to_string()]);
+        let build = StackBuildGoal::from(goal.clone());
+
+        let bytes = build.encode().expect("encode");
+        assert_eq!(StackBuildGoal::decode(&bytes).expect("decode"), build);
+        assert_eq!(build.into_launch(), goal);
     }
 
     /// `--rebuild` travels with the launch so every node build it performs,

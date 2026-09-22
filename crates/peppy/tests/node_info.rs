@@ -1,3 +1,4 @@
+use super::common::CALLER_INSTANCE_ID;
 use core_node_api::NodeStage;
 use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
@@ -10,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peppylib::core_node::transport::poll;
-const CALLER_INSTANCE_ID: &str = "peppy-test";
 const DEFAULTS: TimeoutConfig = TimeoutConfig {
     idle_secs: 60,
     max_secs: 3600,
@@ -66,12 +66,7 @@ fn add_nodes_to_stack(dependencies: &[&str], peppy_json5: &str) -> AddedNode {
     // Capture tracing output so the `info!()` line from the Add command stays
     // out of the test output unless the test explicitly asserts on it.
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let log_guard = tracing::subscriber::set_default(subscriber);
+    let log_guard = log_capture.install();
 
     // Keep the dependency node dirs alive for the lifetime of the test so the
     // daemon can resolve any lazy paths stashed in its NodeEntity copies.
@@ -416,12 +411,7 @@ fn node_info_returns_not_in_stack_when_node_not_in_stack() {
     // service-handler ERROR is emitted for the negative lookup; the
     // original regression pollution came from this path.
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     let response = rt
         .block_on(poll(

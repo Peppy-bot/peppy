@@ -24,12 +24,7 @@ fn serve_command() {
             .with_daemon_state_file(DaemonState::state_file_in(temp_dir.path())),
     );
     let log_capture = peppy::test_support::LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();

@@ -66,6 +66,7 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
 fn pinned_action_name(id: ActionId) -> &'static str {
     match id {
         ActionId::StackLaunch => "stack_launch",
+        ActionId::StackBuild => "stack_build",
         ActionId::StackJoin => "stack_join",
         ActionId::StackRemove => "stack_remove",
         ActionId::StackBenchmark => "stack_benchmark",

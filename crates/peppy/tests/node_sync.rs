@@ -52,12 +52,7 @@ async fn node_sync_rust_command_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Create a node using the init command
     NodeCommand {
@@ -214,12 +209,7 @@ async fn node_sync_python_command_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Create a Python node using NodeInitBuilder with no timeout to avoid CI flakiness
     NodeInitBuilder::new(
@@ -358,12 +348,7 @@ async fn node_sync_with_path_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Create a node using the init command
     NodeCommand {
@@ -456,12 +441,7 @@ async fn node_sync_with_include_repositories_prints_provenance() {
     let shared_messenger = serve.messenger();
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Camera node: written into a temp dir and registered as an `fs`
     // entry in the daemon's packages cache.

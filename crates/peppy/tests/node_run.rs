@@ -4,8 +4,8 @@ use peppy::test_support::{InstanceLifetime, LogCapture, ServeCommandEmulation};
 use std::sync::Arc;
 use std::time::Duration;
 
-use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse, StackListRequest};
-use core_node_api::{NodeStage, SerializedNodeGraph};
+use core_node_api::NodeStage;
+use core_node_api::encoding::{NodeInfoRequest, NodeInfoResponse};
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands, NodeName};
 use peppy::context::AppContext;
@@ -15,8 +15,7 @@ use peppylib::services::ready::listen_for_node_ready;
 
 use peppylib::core_node::transport::poll;
 
-use super::common::test_node_target;
-const CALLER_INSTANCE_ID: &str = "peppy-test";
+use super::common::{CALLER_INSTANCE_ID, stack_graph, test_node_target};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn node_run_command_succeeds() {
@@ -44,12 +43,7 @@ async fn node_run_command_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // First, create a node using the init command
     NodeCommand {
@@ -105,19 +99,7 @@ async fn node_run_command_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -183,21 +165,8 @@ async fn node_run_command_succeeds() {
         logs
     );
 
-    // Query the node stack to verify the node now has an instance
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
     // Verify the node has 1 instance now
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -242,12 +211,7 @@ async fn node_run_command_with_args_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // First, create a node using the init command
     NodeCommand {
@@ -338,19 +302,7 @@ async fn node_run_command_with_args_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -428,19 +380,7 @@ async fn node_run_command_with_args_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -485,12 +425,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
 
     // Set up logging
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // First, create a node using the init command
     NodeCommand {
@@ -546,19 +481,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -631,19 +554,7 @@ async fn node_run_command_with_custom_instance_id_succeeds() {
     );
 
     // Query the node stack to verify the node now has an instance
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph.find_node(node_name, "v1").unwrap_or_else(|| {
         panic!(
             "graph should contain the added node. Got: {:?}",
@@ -685,12 +596,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -822,18 +728,7 @@ async fn node_run_with_build_flag_on_unbuilt_node_builds_then_runs() {
         logs
     );
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph
         .find_node(node_name, "v1")
         .expect("graph should contain the added node");
@@ -866,12 +761,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -997,18 +887,7 @@ async fn node_run_with_build_flag_on_already_built_node_skips_build() {
         logs
     );
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     let node = graph
         .find_node(node_name, "v1")
         .expect("graph should contain the added node");
@@ -1232,12 +1111,7 @@ async fn node_run_rejects_unbound_slots() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     let instances = InstanceLifetime::new();
     add_built_producer(&node_ctx, work_dir.path(), producer_name, &instances).await;
@@ -1460,12 +1334,7 @@ async fn node_run_bind_emits_no_warning_when_all_pinned_deps_have_binds() {
     // warning string is absent without false-positive matches from producer
     // bootstrap output.
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Run {
@@ -2260,12 +2129,7 @@ async fn node_run_prints_the_web_pages_of_a_node_that_declares_a_page() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {

@@ -33,12 +33,7 @@ fn node_cargo_init_command_success() {
 
     // Set up logging for the node command
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Execute the node create command
     NodeCommand {
@@ -139,12 +134,7 @@ fn node_cargo_init_with_container_generates_apptainer_def() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -180,12 +170,7 @@ fn node_cargo_init_without_container_omits_apptainer_def() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Init {
@@ -226,12 +211,7 @@ fn node_uv_init_command_success() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Use NodeInitBuilder directly with no timeout (signal-based waiting)
     // to avoid flakiness from wall-clock dependencies in CI.

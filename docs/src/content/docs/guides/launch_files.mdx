@@ -131,7 +131,7 @@ An argument that contains a path separator or ends in `.json5` is resolved as a 
 If the name resolves neither to a file nor to a cached launcher, the launch fails with an explicit "not found" error. If one repository provides two launcher files with that name, the launch fails with a distinct ambiguity error naming both: launchers are keyed by filename, so two identically named `.json5` files anywhere in one repository contest the same name even in different directories.
 
 :::caution
-Running the `peppy stack launch` command clears the existing node stack and stops all running instances
+Running the `peppy stack launch` or `peppy stack build` command clears the existing node stack and stops all running instances
 :::
 
 A launch ends with the log file of every node it added, built and started, then the URLs the started instances serve, and the completion line. The URLs come from the nodes that declare [`execution.endpoints`](/guides/first_node/#serving-a-page-or-an-mcp-endpoint): the daemon hosting each instance expands the socket the node announced into one URL per address of its machine, loopback first, and the core node name after the `@` says which machine that is. Pages an operator opens in a browser and endpoints an MCP client attaches to are printed under separate headings, `Web pages:` before `MCP endpoints:`, and a heading appears only when it has an entry. `peppy stack join` prints the same blocks for the instances the copy started.
@@ -262,7 +262,7 @@ Entries are checked when the launcher file is read, before the running stack is 
 The name and value rules exist because a container node receives its environment through Apptainer, which forwards each variable under the `APPTAINERENV_` prefix into a script the container sources at startup, where the shell expands the value. A name that is not a shell identifier would not parse as an assignment, and a value carrying `$`, a backtick or a quote would be expanded or run inside the container rather than arriving as written. The same rule applies to process nodes so that adding a `container` block to a node later cannot break the launchers that already deploy it.
 :::
 
-`env_vars` reach the instance when it starts. Fetching and building a node happen once for the node, not once per instance, so a variable your build needs (a registry token, a toolchain path) belongs in the shell you run `peppy stack launch` from, where it is forwarded to build steps on that machine too. A build on another machine sees none of your caller environment: your environment describes your machine, so it stays there.
+`env_vars` reach the instance when it starts. Fetching and building a node happen once for the node, not once per instance, so a variable your build needs (a registry token, a toolchain path) belongs in the shell you run `peppy stack launch` or `peppy stack build` from, where it is forwarded to build steps on that machine too. A build on another machine sees none of your caller environment: your environment describes your machine, so it stays there.
 
 ### `framework` (optional)
 
@@ -376,7 +376,23 @@ Every node build a launch performs goes through the [build artifact cache](/adva
 Reusing cached build of waldo:v1 (fingerprint 3f9a1c2e5d7b8a4f) at ~/.peppy/built_nodes/waldo_v1/3f9a1c2e5d7b8a4f.sif
 ```
 
-`peppy stack launch --rebuild` builds every node of the launch from its staged sources even when a matching artifact exists, on the coordinator and on every peer; use it when something the fingerprint does not cover changed, such as the image behind a floating base image tag.
+`peppy stack launch --rebuild` and `peppy stack build --rebuild` build every node of the launch from its staged sources even when a matching artifact exists, on the coordinator and on every peer; use it when something the fingerprint does not cover changed, such as the image behind a floating base image tag.
+
+### Building without starting
+
+`peppy stack build` runs a launch up to its builds. It replaces the node stack as a launch does, then adds and builds each node the launch would run on the machine the launch places it on, and starts no instance. It takes every argument `peppy stack launch` takes, so a later `peppy stack launch` with the same launcher, placement and `--with` words starts from these builds.
+
+Build a launcher on a disk, save the disk as an image, and every machine booted from that image launches without building:
+
+```sh
+peppy stack build openarm_simulation --with mujoco
+# Save the disk as an image and boot each machine from it, then on each one:
+peppy stack launch openarm_simulation --with mujoco
+```
+
+On Linux the daemon derives its default core node name from the machine id the disk stores, read from `/var/lib/dbus/machine-id`, else `/etc/machine-id`. Machines booted from one image therefore derive the same name, and a daemon whose name is already live on its router or federation refuses to start. Give each machine its own [`core_node_name`](/advanced_guides/daemon_config/#core_node_name-the-daemons-core-node-name); a name set on the imaged disk is shared the same way.
+
+After a build, `peppy stack list` shows each node at stage `Ready` with `0` instances, under a `Slice of launch <id>` line naming the build that replaced this machine's stack. A build records no launcher, so `peppy stack join` is refused until `peppy stack launch` starts the stack. A machine booted from the image starts with an empty stack: its builds wait under `~/.peppy/built_nodes/`, and its launch names each one it reuses with a `Reusing cached build of` line.
 
 ## Launch timeouts
 
@@ -396,7 +412,7 @@ When a budget runs out the launch fails, names the phase and, for an idle budget
 - An interrupted **build** has its `build_cmd` or image build killed.
 - An interrupted **run** has its half-started instance torn down before the failure is reported.
 
-`peppy stack join` takes the same flags and runs its copy's nodes through the same phases, `--max-timeout-secs` bounding the whole join. A join whose budget runs out fails as any [failed join](#copies) does: it stops what it started and removes the nodes it added, leaving the stack it joined running.
+`peppy stack build` takes the same flags and ends after the build phase, so `--node-run-idle-timeout-secs` bounds nothing in a build. `peppy stack join` takes the same flags and runs its copy's nodes through the same phases, `--max-timeout-secs` bounding the whole join. A join whose budget runs out fails as any [failed join](#copies) does: it stops what it started and removes the nodes it added, leaving the stack it joined running.
 
 Only the node's own output resets a phase's clock; the launcher's progress lines do not.
 
@@ -443,7 +459,7 @@ A `deployments` entry deploys a node, `{ source, instances }`, or a component's 
 - A `zero_or_one` axis is never deployed by the file, since nothing on the command line could switch it off. `--with` turns it on. A feature that is on by default and switchable is a `one` axis with a `none` option (its body can be empty), deployed by the file and swapped off with `--with none`.
 - On a `zero_or_more` axis the entry lists the copies that run, each under `instances` with a name; see [copies](#copies). `--with` cannot name one, since a copy needs a name.
 
-Each `--with` entry is either `option` (looked up across every axis in reach) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. An axis takes one option; repeating it, or naming it once bare and once as `axis=option`, selects it once. On `stack launch`, `NAME.option` or `NAME.axis=option` selects the own axis of a copy the file deploys, over the file's `with`.
+Each `--with` entry is either `option` (looked up across every axis in reach) or `axis=option`. A bare word matching options on more than one axis is refused, naming the axes, so `axis=option` says which you mean. An axis takes one option; repeating it, or naming it once bare and once as `axis=option`, selects it once. On `stack launch` and `stack build`, `NAME.option` or `NAME.axis=option` selects the own axis of a copy the file deploys, over the file's `with`.
 
 A launch of a launcher with components echoes the full resolution before anything runs, marking the axes a `deployments` entry filled:
 
@@ -618,7 +634,7 @@ A copy entry has four fields: `instance_id`, the copy's name; `with`, the select
 ] },
 ```
 
-An entry and a copy also take `adjustments`, the same verbs a fragment's adjustments use (`set_arguments`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch`, a `--with` word `NAME.axis=option` or `NAME.option` selects one file copy's own axis for that launch, over the file's `with`:
+An entry and a copy also take `adjustments`, the same verbs a fragment's adjustments use (`set_arguments`, `set_links`, `add_links`, `unset_links`) with an optional `when` over the launcher's axes and the copy's own, targeting the copy's instances by the ids written in the fragment. They run after the launcher's adjustments, the entry's before the copy's, and the copy's `arguments` last. On `stack launch` and `stack build`, a `--with` word `NAME.axis=option` or `NAME.option` selects one file copy's own axis for that launch, over the file's `with`:
 
 ```sh
 peppy stack launch openarm_simulation --with mujoco,alpha.xr_commander

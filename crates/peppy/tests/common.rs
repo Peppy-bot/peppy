@@ -9,6 +9,12 @@ use std::time::{Duration, Instant};
 
 pub const TEST_NODE_TAG: &str = "v1";
 
+/// The caller a test names itself in a request to the daemon.
+pub const CALLER_INSTANCE_ID: &str = "peppy-test";
+
+/// How long a `stack list` request may take before a test gives up on it.
+const STACK_LIST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// SIGKILLs the daemon on drop so a failing/panicking test never leaks it.
 pub struct DaemonGuard(pub Child);
 
@@ -65,6 +71,33 @@ pub fn wait_for_exit(child: &mut Child, timeout: Duration) -> std::process::Exit
         std::thread::sleep(Duration::from_millis(50));
     }
     panic!("daemon did not exit within {timeout:?}");
+}
+
+/// The node graph `stack list` reports for `core_node_name`, as the caller
+/// every test asks with.
+pub async fn stack_graph(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+) -> core_node_api::SerializedNodeGraph {
+    let response = stack_list(messenger, core_node_name).await;
+    serde_json::from_str(&response.graph_json).expect("graph_json should parse")
+}
+
+/// One `stack list` answer from `core_node_name`.
+async fn stack_list(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+) -> core_node_api::encoding::StackListResponse {
+    peppylib::core_node::transport::poll(
+        &core_node_api::encoding::StackListRequest::new(),
+        messenger,
+        core_node_name,
+        CALLER_INSTANCE_ID,
+        core_node_name,
+        STACK_LIST_TIMEOUT,
+    )
+    .await
+    .expect("stack_list request should complete")
 }
 
 /// Builds a node-shaped [`SenderTarget`] with the standard test tag. Panics on

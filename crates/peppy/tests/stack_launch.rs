@@ -10,11 +10,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use config::consts::NODE_CONFIG_FILE;
-use core_node_api::SerializedNodeGraph;
-use core_node_api::encoding::StackListRequest;
+use core_node_api::NodeStage;
 use peppy::commands::Command;
 use peppy::commands::node::{NodeCommand, NodeCommands};
-use peppy::commands::stack::{StackCommand, StackCommands, StackTimeouts, WithWords};
+use peppy::commands::stack::{LauncherArgs, StackCommand, StackCommands, StackTimeouts, WithWords};
 use peppy::context::AppContext;
 use peppylib::MessengerHandle;
 use peppylib::services::health::listen_for_node_health;
@@ -24,11 +23,34 @@ use peppylib::services::shutdown::listen_for_shutdown;
 use super::common::{
     build_count, build_logs_for, built_artifacts_for, counting_build_cmd,
     emulate_cooperative_shutdown, emulate_pairing_node_services, emulate_startup_services,
-    install_node_manifest, read_daemon_git_hash, register_repo_caches, run_cmd_json5,
+    install_node_manifest, read_daemon_git_hash, register_repo_caches, run_cmd_json5, stack_graph,
     test_node_target, write_node_config_for_helper,
 };
-use peppylib::core_node::transport::poll;
-const CALLER_INSTANCE_ID: &str = "peppy-test";
+
+/// The budgets these tests launch and build under: idle windows generous
+/// enough that a slow machine never trips one, and a deadline where the test
+/// wants the whole command bounded.
+fn timeouts(max_timeout_secs: Option<u64>) -> StackTimeouts {
+    StackTimeouts {
+        node_add_idle_timeout_secs: 60,
+        node_build_idle_timeout_secs: 60,
+        node_run_idle_timeout_secs: 60,
+        max_timeout_secs,
+    }
+}
+
+/// What a `stack launch` or `stack build` of `launcher_config_path` takes
+/// here: one machine, the options the launcher defaults to, and a cached
+/// build wherever one fits.
+fn launcher_args(launcher_config_path: PathBuf, max_timeout_secs: Option<u64>) -> LauncherArgs {
+    LauncherArgs {
+        launcher_config_path,
+        placement: Default::default(),
+        with: Default::default(),
+        timeouts: timeouts(max_timeout_secs),
+        rebuild: false,
+    }
+}
 
 fn write_node_config(
     nodes_directory: &Path,
@@ -139,12 +161,7 @@ async fn node_launch_command_succeed() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -190,19 +207,7 @@ async fn node_launch_command_succeed() {
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
 
     assert!(
         graph
@@ -266,19 +271,7 @@ async fn node_launch_command_succeed() {
     register_repo_caches(serve.temp_dir(), &[(node_b_name, node_tag, &node_b_path)]);
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(3600),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(3600))),
     }
     .execute(&ctx)
     .expect("launch command should succeed");
@@ -295,19 +288,7 @@ async fn node_launch_command_succeed() {
         "a stack whose nodes declare no endpoint prints no block:\n{launch_logs}"
     );
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete after launch");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
 
     assert!(
         !graph
@@ -344,19 +325,7 @@ async fn node_launch_command_succeed() {
     .execute(&ctx)
     .expect("node stop command should succeed");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete after stop");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse after stop");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
 
     let node_b = graph.find_node(node_b_name, node_tag).unwrap_or_else(|| {
         panic!(
@@ -414,12 +383,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     NodeCommand {
         command: NodeCommands::Add {
@@ -446,19 +410,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         .messenger_handle()
         .expect("messenger handle should be available");
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
 
     assert!(
         graph
@@ -485,19 +437,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
     register_repo_caches(serve.temp_dir(), &[(node_b_name, node_tag, &node_b_path)]);
 
     let launch_result = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(3600),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(3600))),
     }
     .execute(&ctx);
 
@@ -506,19 +446,7 @@ async fn node_launch_command_fails_when_node_never_becomes_healthy_and_clears_st
         "launch command should fail because the launched node never becomes healthy"
     );
 
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete after launch");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
 
     // New contract: a launch replaces the whole stack, tearing it down at the
     // clear step, so a failed launch leaves a clean stack with only the root
@@ -561,7 +489,7 @@ struct TimeoutTestHarness {
     node_b_path: PathBuf,
     launcher_path: PathBuf,
     node_b_peppy_json5: PathBuf,
-    _serve: ServeCommandEmulation,
+    serve: ServeCommandEmulation,
     // Declared last so it drops last: the nodes dir is removed only after `ctx`
     // and the serve emulation have torn down. Held (not `.keep()`-leaked) so the
     // directory does not survive between test runs.
@@ -617,7 +545,7 @@ async fn setup_timeout_test(node_b_name: &'static str) -> TimeoutTestHarness {
         node_b_path,
         launcher_path,
         node_b_peppy_json5,
-        _serve: serve,
+        serve,
         _nodes_dir: nodes_dir,
     }
 }
@@ -628,7 +556,7 @@ impl TimeoutTestHarness {
     /// bytes the launch materializes.
     fn register_caches(&self) {
         register_repo_caches(
-            self._serve.temp_dir(),
+            self.serve.temp_dir(),
             &[(self.node_b_name, "v1", &self.node_b_path)],
         );
     }
@@ -646,10 +574,9 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
 
     let started = Instant::now();
     let result = StackCommand {
-        command: StackCommands::Launch {
+        command: StackCommands::Launch(LauncherArgs {
             rebuild: false,
-            place: Vec::new(),
-            local: false,
+            placement: Default::default(),
             with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
             timeouts: StackTimeouts {
@@ -658,7 +585,7 @@ async fn node_launch_fails_when_node_build_idle_timeout_is_hit() {
                 node_run_idle_timeout_secs: 60,
                 max_timeout_secs: None,
             },
-        },
+        }),
     }
     .execute(&harness.ctx);
 
@@ -690,10 +617,9 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
 
     let started = Instant::now();
     let result = StackCommand {
-        command: StackCommands::Launch {
+        command: StackCommands::Launch(LauncherArgs {
             rebuild: false,
-            place: Vec::new(),
-            local: false,
+            placement: Default::default(),
             with: Default::default(),
             launcher_config_path: harness.launcher_path.clone(),
             timeouts: StackTimeouts {
@@ -702,7 +628,7 @@ async fn node_launch_fails_when_node_run_idle_timeout_is_hit() {
                 node_run_idle_timeout_secs: 1,
                 max_timeout_secs: None,
             },
-        },
+        }),
     }
     .execute(&harness.ctx);
 
@@ -742,19 +668,7 @@ async fn node_launch_fails_when_max_timeout_is_hit() {
 
     let started = Instant::now();
     let result = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: harness.launcher_path.clone(),
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(2),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(harness.launcher_path.clone(), Some(2))),
     }
     .execute(&harness.ctx);
 
@@ -858,7 +772,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -867,7 +781,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     // instance the launcher will spawn. The daemon's `wait_for_ready_signal`
     // queries via Zenoh with a wildcard `link_id`, so the queryables
     // declared here (with default link_ids) still match.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let _ready_producer = listen_for_node_ready(
         &node_messenger,
         &core_node_name,
@@ -946,19 +860,7 @@ async fn stack_launch_populates_link_ids_from_launcher_bindings() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("launch command should succeed");
@@ -1102,13 +1004,13 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
     // Impersonate the framework services the dummy `sh` subprocesses do
     // not expose, for all three spawned instances.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let mut service_guards = Vec::new();
     for (node_name, instance_id) in [
         (producer_name, front_instance_id),
@@ -1177,19 +1079,7 @@ async fn stack_launch_binds_multi_cardinality_slot_to_ordered_producer_set() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("launch command should succeed");
@@ -1289,7 +1179,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -1322,19 +1212,7 @@ async fn stack_launch_rejects_array_binding_on_a_one_slot() {
     );
 
     let err = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect_err("an array binding on a `one` slot must fail the launch");
@@ -1386,12 +1264,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // Two completely separate node types both claiming `shared_inst`
     // as their instance_id. Under the new spec, this is rejected at
@@ -1423,19 +1296,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     );
 
     let result = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(3600),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(3600))),
     }
     .execute(&ctx);
 
@@ -1455,18 +1316,7 @@ async fn stack_launch_rejects_stack_wide_duplicate_instance_id() {
     let messenger_handle = ctx
         .messenger_handle()
         .expect("messenger handle should be available");
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     assert!(
         !graph
             .nodes
@@ -1634,7 +1484,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -1644,7 +1494,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     .execute(&ctx)
     .expect("repo refresh should populate contract cache");
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let _ready_producer = listen_for_node_ready(
         &node_messenger,
         &core_node_name,
@@ -1725,19 +1575,7 @@ async fn stack_launch_resolves_implements_binding_with_real_contract_doc() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("launch should succeed with implementing producer");
@@ -1846,7 +1684,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -1881,19 +1719,7 @@ async fn stack_launch_rejects_binding_when_producer_omits_implements() {
     );
 
     let result = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx);
 
@@ -1993,7 +1819,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -2028,19 +1854,7 @@ async fn stack_launch_rejects_binding_with_wrong_tag_in_implements() {
     );
 
     let result = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx);
 
@@ -2209,7 +2023,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -2222,7 +2036,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     // The dummy `sh` subprocesses don't expose ready/health/shutdown, so
     // impersonate them from the test process for both instances (the
     // daemon's launch waits for each instance to report ready).
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let _ready_controller = listen_for_node_ready(
         &node_messenger,
         &core_node_name,
@@ -2309,19 +2123,7 @@ async fn stack_launch_binds_contract_slots_in_both_directions() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("launch should succeed with both contract slots bound");
@@ -2416,7 +2218,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
     let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
@@ -2497,7 +2299,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
 
     // The dummy `sh` subprocesses expose none of the framework services, so
     // impersonate them for all three instances.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let mut service_guards = Vec::new();
     for (node_name, instance_id) in [
         (producer_name, producer_instance_id),
@@ -2572,19 +2374,7 @@ async fn stack_launch_binds_one_zero_or_one_instance_and_vacates_another() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("a launch mixing a bound and a vacant zero_or_one slot should succeed");
@@ -2726,19 +2516,7 @@ async fn stack_launch_rejects_unbound_slot() {
     );
 
     let result = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(3600),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(3600))),
     }
     .execute(&ctx);
 
@@ -2760,18 +2538,7 @@ async fn stack_launch_rejects_unbound_slot() {
     let messenger_handle = ctx
         .messenger_handle()
         .expect("messenger handle should be available");
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     assert!(
         !graph
             .nodes
@@ -2796,7 +2563,7 @@ async fn stack_launch_establishes_launcher_pairings() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -2848,7 +2615,7 @@ async fn stack_launch_establishes_launcher_pairings() {
 
     // In-process node services for both instances, including the
     // `peer_update` endpoints whose watches observe the delivered pins.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let mut watches = Vec::new();
     for (node_name, instance_id, link_id) in [
         ("robot_arm", "arm_1", "controller"),
@@ -2898,19 +2665,7 @@ async fn stack_launch_establishes_launcher_pairings() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("launch with pairings should succeed");
@@ -2958,7 +2713,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -3005,7 +2760,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
         ),
     );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let mut watches = Vec::new();
     for (node_name, instance_id, link_id) in [
         ("robot_arm", "arm_governed", "controller"),
@@ -3061,19 +2816,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("one instance paired and one vacant is a valid launch");
@@ -3141,7 +2884,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     let dump_dir = tempfile::tempdir().expect("failed to create temp dump directory");
     let recorder_dump = dump_dir.path().join("recorder.json5");
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -3209,7 +2952,7 @@ async fn stack_launch_delivers_observer_member_sets() {
         ),
     );
 
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     // Source instance services: ready/health/shutdown, no peer_update (its slot
     // is vacant, so it is never paired).
     for (node_name, instance_id) in [("robot_arm", "arm_1"), ("robot_arm", "arm_2")] {
@@ -3314,19 +3057,7 @@ async fn stack_launch_delivers_observer_member_sets() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("launch with an observer should succeed");
@@ -3446,7 +3177,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -3484,19 +3215,7 @@ async fn stack_launch_rejects_uncovered_pairing_slot() {
     register_repo_caches(serve.temp_dir(), &[("robot_arm", "v1", &arm_path)]);
 
     let err = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(60),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(60))),
     }
     .execute(&ctx)
     .expect_err("an uncovered required pairing slot must fail the launch");
@@ -3544,19 +3263,7 @@ async fn stack_launch_rejects_a_path_shaped_deployment_source() {
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
 
     let err = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(60),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(60))),
     }
     .execute(&ctx)
     .expect_err("a path-shaped deployment source must fail the launch");
@@ -3594,7 +3301,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -3664,7 +3371,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
 
     // Every instance's framework services, impersonated from the test process:
     // the fixtures' run_cmd is a keep-alive shell, not a peppylib node.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let mut service_handles = Vec::new();
     for (node_name, instance_id) in [
         ("openarm_backbone", "backbone_inst"),
@@ -3804,19 +3511,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     fs::write(&launcher_path, launcher_json5).expect("launcher config should be writable");
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(180),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(180))),
     }
     .execute(&ctx)
     .expect("launching the commander panel stack should succeed");
@@ -4006,13 +3701,13 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
     // The dummy `sh` consumer does not expose the framework services, so
     // impersonate them from the test process.
-    let node_messenger = MessengerHandle::from_shared(Arc::clone(&serve.messenger()));
+    let node_messenger = MessengerHandle::from_shared(serve.messenger());
     let _ready_consumer = listen_for_node_ready(
         &node_messenger,
         &core_node_name,
@@ -4062,19 +3757,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect("a launch omitting a zero_or_more node dependency should succeed");
@@ -4120,18 +3803,7 @@ async fn stack_launch_allows_absent_node_dependency_on_an_empty_admitting_slot()
     let messenger_handle = ctx
         .messenger_handle()
         .expect("messenger handle should be available");
-    let response = poll(
-        &StackListRequest::new(),
-        messenger_handle,
-        &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("stack_list request should complete after launch");
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse after launch");
+    let graph = stack_graph(messenger_handle, &core_node_name).await;
     assert!(
         graph.find_node(consumer_name, node_tag).is_some(),
         "the consumer should be in the stack. Got: {:?}",
@@ -4195,7 +3867,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
     );
 
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -4222,19 +3894,7 @@ async fn stack_launch_still_requires_vacancy_for_an_absent_zero_or_one_dependenc
     );
 
     let err = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(120))),
     }
     .execute(&ctx)
     .expect_err("an uncovered zero_or_one slot must fail the launch");
@@ -4306,12 +3966,7 @@ async fn stack_launch_flattens_a_composed_launcher() {
     );
 
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     register_repo_caches(serve.temp_dir(), &[(node_name, node_tag, &node_path)]);
 
@@ -4387,21 +4042,12 @@ async fn stack_launch_flattens_a_composed_launcher() {
     .expect("fragment should be writable");
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
+        command: StackCommands::Launch(LauncherArgs {
             with: WithWords {
                 words: vec!["beta".to_owned(), "extras=on".to_owned()],
             },
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(120),
-            },
-        },
+            ..launcher_args(launcher_path, Some(120))
+        }),
     }
     .execute(&ctx)
     .expect("composed launch should succeed");
@@ -4412,20 +4058,12 @@ async fn stack_launch_flattens_a_composed_launcher() {
         "the coordinator's echo of the full resolution should reach the CLI: {logs}"
     );
 
-    let response = poll(
-        &StackListRequest::new(),
+    let graph = stack_graph(
         ctx.messenger_handle()
             .expect("messenger handle should be available"),
         &core_node_name,
-        CALLER_INSTANCE_ID,
-        &core_node_name,
-        Duration::from_secs(5),
     )
-    .await
-    .expect("stack_list request should complete after launch");
-
-    let graph: SerializedNodeGraph =
-        serde_json::from_str(&response.graph_json).expect("graph_json should parse");
+    .await;
     let running: Vec<String> = graph
         .nodes
         .iter()
@@ -4455,7 +4093,7 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
 
     let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
     let ctx = Arc::new(
-        AppContext::with_messenger(nodes_dir.path(), Arc::clone(&serve.messenger()))
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
             .with_daemon_state_file(serve.daemon_state_path()),
     );
 
@@ -4466,21 +4104,12 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
     )
     .expect("flat launcher should be writable");
     let err = StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
+        command: StackCommands::Launch(LauncherArgs {
             with: WithWords {
                 words: vec!["mujoco".to_owned()],
             },
-            launcher_config_path: flat_launcher,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(60),
-            },
-        },
+            ..launcher_args(flat_launcher, Some(60))
+        }),
     }
     .execute(&ctx)
     .expect_err("--with on a flat launcher must be refused");
@@ -4508,19 +4137,10 @@ async fn stack_launch_refuses_broken_selections_before_the_daemon_round_trip() {
 
     let launch_with = |words: Vec<String>, path: PathBuf| {
         StackCommand {
-            command: StackCommands::Launch {
-                rebuild: false,
-                place: Vec::new(),
-                local: false,
+            command: StackCommands::Launch(LauncherArgs {
                 with: WithWords { words },
-                launcher_config_path: path,
-                timeouts: StackTimeouts {
-                    node_add_idle_timeout_secs: 60,
-                    node_build_idle_timeout_secs: 60,
-                    node_run_idle_timeout_secs: 60,
-                    max_timeout_secs: Some(60),
-                },
-            },
+                ..launcher_args(path, Some(60))
+            }),
         }
         .execute(&ctx)
     };
@@ -5311,6 +4931,14 @@ impl CountedLaunch {
         }
     }
 
+    /// What every `stack launch` and `stack build` of this launcher takes.
+    fn launcher_args(&self, rebuild: bool) -> LauncherArgs {
+        LauncherArgs {
+            rebuild,
+            ..launcher_args(self.launcher_path.clone(), Some(3600))
+        }
+    }
+
     /// Launches the stack, then installs the shutdown listener for the
     /// instance this launch started. A listener answers one shutdown request
     /// and goes away with it, so each launch installs its own: the next
@@ -5318,19 +4946,7 @@ impl CountedLaunch {
     /// out the force-kill deadline.
     async fn launch(&self, rebuild: bool) {
         StackCommand {
-            command: StackCommands::Launch {
-                rebuild,
-                place: Vec::new(),
-                local: false,
-                with: Default::default(),
-                launcher_config_path: self.launcher_path.clone(),
-                timeouts: StackTimeouts {
-                    node_add_idle_timeout_secs: 60,
-                    node_build_idle_timeout_secs: 60,
-                    node_run_idle_timeout_secs: 60,
-                    max_timeout_secs: Some(3600),
-                },
-            },
+            command: StackCommands::Launch(self.launcher_args(rebuild)),
         }
         .execute(&self.ctx)
         .expect("launch command should succeed");
@@ -5342,6 +4958,35 @@ impl CountedLaunch {
             self.pidfile.clone(),
         )
         .await;
+    }
+
+    /// Builds the launcher's node and starts no instance of it.
+    fn build(&self, rebuild: bool) {
+        self.run_build(self.launcher_args(rebuild));
+    }
+
+    /// Builds `launcher`, whichever launcher that is.
+    fn build_launcher(&self, launcher: &Path) {
+        self.run_build(LauncherArgs {
+            launcher_config_path: launcher.to_path_buf(),
+            ..self.launcher_args(false)
+        });
+    }
+
+    fn run_build(&self, args: LauncherArgs) {
+        StackCommand {
+            command: StackCommands::Build(args),
+        }
+        .execute(&self.ctx)
+        .expect("build command should succeed");
+    }
+
+    /// A launcher that deploys nothing, beside this one.
+    fn empty_launcher(&self) -> PathBuf {
+        let path = self.launcher_path.with_file_name("empty_launcher.json5");
+        fs::write(&path, r#"{ peppy_schema: "launcher/v1", deployments: [] }"#)
+            .expect("launcher config should be writable");
+        path
     }
 
     fn builds(&self) -> usize {
@@ -5357,24 +5002,38 @@ impl CountedLaunch {
     }
 
     async fn instance_count(&self) -> usize {
-        let response = poll(
-            &StackListRequest::new(),
+        stack_graph(
             self.ctx
                 .messenger_handle()
                 .expect("messenger handle should be available"),
             &self.core_node_name,
-            CALLER_INSTANCE_ID,
-            &self.core_node_name,
-            Duration::from_secs(5),
         )
         .await
-        .expect("stack_list request should complete");
-        let graph: SerializedNodeGraph =
-            serde_json::from_str(&response.graph_json).expect("graph_json should parse");
-        graph
-            .find_node(CACHED_NODE_NAME, "v1")
-            .map(|node| node.instance_count())
-            .unwrap_or(0)
+        .find_node(CACHED_NODE_NAME, "v1")
+        .map(|node| node.instance_count())
+        .unwrap_or(0)
+    }
+
+    /// The node's stage in the stack and the ids of every instance of it the
+    /// stack tracks, starting or running; `None` when the stack holds no such
+    /// node.
+    async fn stack_entry(&self) -> Option<(NodeStage, Vec<String>)> {
+        stack_graph(
+            self.ctx
+                .messenger_handle()
+                .expect("messenger handle should be available"),
+            &self.core_node_name,
+        )
+        .await
+        .find_node(CACHED_NODE_NAME, "v1")
+        .map(|node| {
+            let instances = node
+                .instances
+                .iter()
+                .map(|instance| instance.instance_id.clone())
+                .collect();
+            (node.stage, instances)
+        })
     }
 }
 
@@ -5445,6 +5104,324 @@ async fn stack_launch_rebuild_flag_builds_again_after_a_hit() {
     assert_eq!(launch.instance_count().await, 1);
 }
 
+// ===========================================================================
+// stack build: a launch that stops once every node is built
+// ===========================================================================
+
+/// `stack build` adds and builds the launcher's node and starts nothing; a
+/// launch with the same arguments then starts it from that build without
+/// running `build_cmd` again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_build_starts_nothing_and_a_launch_reuses_its_build() {
+    let launch = CountedLaunch::start().await;
+
+    launch.build(false);
+    assert_eq!(launch.builds(), 1);
+    assert_eq!(launch.artifacts().len(), 1);
+    assert_eq!(
+        launch.stack_entry().await,
+        Some((NodeStage::Ready, Vec::new())),
+        "a build leaves the node built in the stack with no instance"
+    );
+
+    launch.launch(false).await;
+    assert_eq!(
+        launch.builds(),
+        1,
+        "a launch after a build of identical sources must not run build_cmd"
+    );
+    let logs = launch.build_logs();
+    assert_eq!(logs.len(), 2);
+    assert!(
+        logs[1].contains(&format!(
+            "{CACHED_BUILD_REUSE_PREFIX} {CACHED_NODE_NAME}:v1"
+        )),
+        "the launch reports the reuse:\n{}",
+        logs[1]
+    );
+    assert_eq!(launch.instance_count().await, 1);
+}
+
+/// A build replaces the running stack as a launch does: the instance the
+/// launch started is stopped and the node stays, built.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_build_replaces_the_running_stack() {
+    let launch = CountedLaunch::start().await;
+    launch.launch(false).await;
+    assert_eq!(launch.instance_count().await, 1);
+
+    launch.build(false);
+
+    assert_eq!(
+        launch.stack_entry().await,
+        Some((NodeStage::Ready, Vec::new())),
+        "the launched instance is gone and the node stays built"
+    );
+    assert_eq!(launch.builds(), 1, "the build reuses the launch's artifact");
+    let refusal = join_copy(&launch.ctx)
+        .expect_err("the build replaced the launch it found")
+        .to_string();
+    assert!(
+        refusal.contains("no active launcher"),
+        "the launcher the build replaced is gone: {refusal}"
+    );
+}
+
+/// `--rebuild` reaches a build's node builds, so a cached artifact is built
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_build_rebuild_flag_builds_again_after_a_hit() {
+    let launch = CountedLaunch::start().await;
+
+    launch.build(false);
+    launch.build(false);
+    assert_eq!(launch.builds(), 1);
+
+    launch.build(true);
+    assert_eq!(
+        launch.builds(),
+        2,
+        "--rebuild runs build_cmd despite the hit"
+    );
+    let logs = launch.build_logs();
+    assert_eq!(logs.len(), 3);
+    assert!(
+        logs[2].contains(&format!("Rebuilding {CACHED_NODE_NAME}:v1")),
+        "the bypass is announced:\n{}",
+        logs[2]
+    );
+}
+
+/// A build records no launcher, so neither verb that acts on one works until
+/// `stack launch` starts it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_join_and_remove_after_a_build_are_refused() {
+    let launch = CountedLaunch::start().await;
+    launch.build(false);
+
+    let refusal = join_copy(&launch.ctx)
+        .expect_err("a join needs a launched stack")
+        .to_string();
+    assert!(
+        refusal.contains("no active launcher; run peppy stack launch LAUNCHER"),
+        "the refusal names the command to run: {refusal}"
+    );
+
+    let refusal = StackCommand {
+        command: StackCommands::Remove {
+            name: config::runtime::Name::new("alpha").expect("valid copy name"),
+        },
+    }
+    .execute(&launch.ctx)
+    .expect_err("a removal needs a launched stack")
+    .to_string();
+    assert!(
+        refusal.contains("no active launcher"),
+        "the refusal names what is missing: {refusal}"
+    );
+}
+
+/// `stack join arm -i alpha`, under the budgets these tests launch with.
+fn join_copy(ctx: &Arc<AppContext>) -> peppy::error::Result<()> {
+    StackCommand {
+        command: StackCommands::Join {
+            option: "arm".to_owned(),
+            name: config::runtime::Name::new("alpha").expect("valid copy name"),
+            with: Default::default(),
+            arguments: Vec::new(),
+            place: None,
+            timeouts: timeouts(Some(60)),
+        },
+    }
+    .execute(ctx)
+}
+
+/// A failed build fails the command, naming the node, and leaves the stack
+/// empty as a failed launch does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_build_failure_clears_the_stack() {
+    let harness = setup_timeout_test("failing_build_node").await;
+    override_build_cmd(
+        &harness.node_b_peppy_json5,
+        vec!["sh".to_string(), "-c".to_string(), "exit 3".to_string()],
+    );
+    harness.register_caches();
+    let log_capture = LogCapture::new();
+    let _guard = log_capture.install();
+
+    let refusal = StackCommand {
+        command: StackCommands::Build(launcher_args(harness.launcher_path.clone(), None)),
+    }
+    .execute(&harness.ctx)
+    .expect_err("a build whose build_cmd fails must fail")
+    .to_string();
+
+    assert!(
+        refusal.contains("Build failed"),
+        "the failure names the operation: {refusal}"
+    );
+    assert!(
+        refusal.contains("failed to build node failing_build_node:v1"),
+        "the failure names the node: {refusal}"
+    );
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains("Build failed: failed to build node failing_build_node:v1"),
+        "the daemon's own feedback names the failure: {logs}"
+    );
+    assert!(
+        !logs.contains("Launch failed"),
+        "the daemon's own feedback calls it a build, not a launch: {logs}"
+    );
+    let graph = stack_graph(
+        harness
+            .ctx
+            .messenger_handle()
+            .expect("messenger handle should be available"),
+        harness.serve.core_node_name(),
+    )
+    .await;
+    assert!(
+        graph.find_node("failing_build_node", "v1").is_none(),
+        "a failed build clears the stack"
+    );
+}
+
+/// A build takes the launch's `--with` words and builds what that launch
+/// would run: the selected option's node is built and the unselected
+/// option's node is never added.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_build_builds_the_nodes_the_selection_runs() {
+    let serve = ServeCommandEmulation::with_mock()
+        .await
+        .expect("failed to create serve emulation");
+    let core_node_name = serve.core_node_name().to_string();
+    let nodes_dir = tempfile::tempdir().expect("failed to create temp nodes directory");
+    let git_hash = read_daemon_git_hash(serve.daemon_state_path());
+    let run_cmd = ["sh", "-c", "exit 0"];
+    let alpha_path =
+        write_node_config(nodes_dir.path(), "alpha_backend", "v1", &git_hash, &run_cmd);
+    let beta_path = write_node_config(nodes_dir.path(), "beta_backend", "v1", &git_hash, &run_cmd);
+    register_repo_caches(
+        serve.temp_dir(),
+        &[
+            ("alpha_backend", "v1", &alpha_path),
+            ("beta_backend", "v1", &beta_path),
+        ],
+    );
+    let launcher_path = nodes_dir.path().join("composed_launcher.json5");
+    fs::write(
+        &launcher_path,
+        r#"{
+            peppy_schema: "launcher/v1",
+            components: [
+                {
+                    name: "backend",
+                    options: {
+                        alpha: { deployments: [{
+                            source: { name: "alpha_backend:v1" },
+                            instances: [{ instance_id: "alpha_inst" }],
+                        }] },
+                        beta: { deployments: [{
+                            source: { name: "beta_backend:v1" },
+                            instances: [{ instance_id: "beta_inst" }],
+                        }] },
+                    },
+                },
+            ],
+            deployments: [{ backend: "alpha" }],
+        }"#,
+    )
+    .expect("launcher config should be writable");
+    let ctx = Arc::new(
+        AppContext::with_messenger(nodes_dir.path(), serve.messenger())
+            .with_daemon_state_file(serve.daemon_state_path()),
+    );
+    let log_capture = LogCapture::new();
+    let _guard = log_capture.install();
+
+    StackCommand {
+        command: StackCommands::Build(LauncherArgs {
+            with: WithWords {
+                words: vec!["beta".to_owned()],
+            },
+            ..launcher_args(launcher_path, Some(120))
+        }),
+    }
+    .execute(&ctx)
+    .expect("composed build should succeed");
+
+    let graph = stack_graph(
+        ctx.messenger_handle()
+            .expect("messenger handle should be available"),
+        &core_node_name,
+    )
+    .await;
+    let beta = graph
+        .find_node("beta_backend", "v1")
+        .expect("the selected option's node is in the stack");
+    assert_eq!(beta.stage, NodeStage::Ready);
+    assert!(beta.instances.is_empty(), "a build starts no instance");
+    assert!(
+        graph.find_node("alpha_backend", "v1").is_none(),
+        "the unselected option's node is never added"
+    );
+    let logs = log_capture.logs();
+    assert!(
+        logs.contains("Building stack..."),
+        "the CLI opens with what it is doing: {logs}"
+    );
+    assert!(
+        logs.contains("Build complete; no instance started"),
+        "the daemon reports the build complete: {logs}"
+    );
+    assert!(
+        logs.contains("Build completed successfully"),
+        "the CLI reports the build complete: {logs}"
+    );
+    let log_file = logs
+        .lines()
+        .find_map(|line| line.split_once("Build goal accepted, log file: "))
+        .map(|(_, path)| PathBuf::from(path.trim()))
+        .unwrap_or_else(|| panic!("the build names its log file: {logs}"));
+    assert!(
+        log_file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("build_")),
+        "the build's log file is named for the build: {}",
+        log_file.display()
+    );
+}
+
+/// A launcher that deploys nothing builds nothing, and replaces the stack it
+/// finds as any build does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stack_build_of_a_launcher_that_deploys_nothing_builds_nothing() {
+    let launch = CountedLaunch::start().await;
+    launch.launch(false).await;
+    assert_eq!(launch.instance_count().await, 1);
+    let log_capture = LogCapture::new();
+    let _guard = log_capture.install();
+
+    launch.build_launcher(&launch.empty_launcher());
+
+    let logs = log_capture.logs();
+    assert!(logs.contains("Nothing to build"), "{logs}");
+    assert_eq!(
+        launch.stack_entry().await,
+        None,
+        "the launched node is gone with the stack the build replaced"
+    );
+    let refusal = join_copy(&launch.ctx)
+        .expect_err("a build records no launcher")
+        .to_string();
+    assert!(
+        refusal.contains("no active launcher"),
+        "the join is refused: {refusal}"
+    );
+}
+
 /// A launch prints the endpoints of the instances it started after the log
 /// files and before the completion line: pages and MCP endpoints under their
 /// own headings, each URL expanded by the daemon that hosts the instance.
@@ -5495,12 +5472,7 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
             .with_daemon_state_file(serve.daemon_state_path()),
     );
     let log_capture = LogCapture::new();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(log_capture.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let _guard = log_capture.install();
 
     // The emulated nodes: ready, health, and the sockets each bound.
     let node_messenger = MessengerHandle::from_shared(Arc::clone(&shared_messenger));
@@ -5570,19 +5542,7 @@ async fn stack_launch_prints_the_endpoint_blocks_after_the_log_files() {
     );
 
     StackCommand {
-        command: StackCommands::Launch {
-            rebuild: false,
-            place: Vec::new(),
-            local: false,
-            with: Default::default(),
-            launcher_config_path: launcher_path,
-            timeouts: StackTimeouts {
-                node_add_idle_timeout_secs: 60,
-                node_build_idle_timeout_secs: 60,
-                node_run_idle_timeout_secs: 60,
-                max_timeout_secs: Some(3600),
-            },
-        },
+        command: StackCommands::Launch(launcher_args(launcher_path, Some(3600))),
     }
     .execute(&ctx)
     .expect("launch command should succeed");

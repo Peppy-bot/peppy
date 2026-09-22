@@ -12,7 +12,8 @@ use crate::services::node::{DaemonDefaults, HealthMonitorPolicy, RelationshipCoo
 use chrono::Local;
 use core_node_api::ActionId;
 use core_node_api::encoding::{
-    LaunchGoal, LaunchGoalResponse, LaunchResult, StackBudgets, StackJoinGoal, StackRemoveGoal,
+    LaunchGoal, LaunchGoalResponse, LaunchResult, StackBudgets, StackBuildGoal, StackJoinGoal,
+    StackRemoveGoal,
 };
 use core_node_api::names;
 use daemon_config::consts::PeppyDirs;
@@ -33,10 +34,11 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-/// The three actions that change a stack, each answered by one listener.
+/// The actions that change a stack, each answered by one listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::services::stack) enum StackAction {
     Launch,
+    Build,
     Join,
     Remove,
 }
@@ -47,6 +49,7 @@ impl TryFrom<ActionId> for StackAction {
     fn try_from(id: ActionId) -> std::result::Result<Self, String> {
         match id {
             ActionId::StackLaunch => Ok(Self::Launch),
+            ActionId::StackBuild => Ok(Self::Build),
             ActionId::StackJoin => Ok(Self::Join),
             ActionId::StackRemove => Ok(Self::Remove),
             other => Err(format!("`{}` is not a stack action", other.name())),
@@ -58,6 +61,7 @@ impl StackAction {
     fn id(self) -> ActionId {
         match self {
             Self::Launch => ActionId::StackLaunch,
+            Self::Build => ActionId::StackBuild,
             Self::Join => ActionId::StackJoin,
             Self::Remove => ActionId::StackRemove,
         }
@@ -67,15 +71,29 @@ impl StackAction {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Launch => "launch",
+            Self::Build => "build",
             Self::Join => "join",
             Self::Remove => "remove",
         }
     }
 }
 
+/// The action at the start of a sentence: "Build failed".
+impl std::fmt::Display for StackAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Launch => "Launch",
+            Self::Build => "Build",
+            Self::Join => "Join",
+            Self::Remove => "Remove",
+        })
+    }
+}
+
 /// One caller's decoded goal, of whichever action received it.
 enum StackRequest {
     Launch(LaunchGoal),
+    Build(StackBuildGoal),
     Join(StackJoinGoal),
     Remove(StackRemoveGoal),
 }
@@ -84,6 +102,7 @@ impl StackRequest {
     fn decode(action: StackAction, data: &[u8]) -> core_node_api::Result<Self> {
         match action {
             StackAction::Launch => LaunchGoal::decode(data).map(Self::Launch),
+            StackAction::Build => StackBuildGoal::decode(data).map(Self::Build),
             StackAction::Join => StackJoinGoal::decode(data).map(Self::Join),
             StackAction::Remove => StackRemoveGoal::decode(data).map(Self::Remove),
         }
@@ -94,6 +113,7 @@ impl StackRequest {
     fn budgets(&self) -> StackBudgets {
         match self {
             Self::Launch(goal) => goal.budgets.clone(),
+            Self::Build(goal) => goal.launch().budgets.clone(),
             Self::Join(goal) => goal.budgets.clone(),
             Self::Remove(_) => StackBudgets::default(),
         }
@@ -102,6 +122,7 @@ impl StackRequest {
     fn process(self, ctx: StackChangeContext) -> futures::future::BoxFuture<'static, LaunchResult> {
         match self {
             Self::Launch(goal) => process_launch(goal, ctx).boxed(),
+            Self::Build(goal) => process_launch(goal.into_launch(), ctx).boxed(),
             Self::Join(goal) => join(goal, ctx).boxed(),
             Self::Remove(goal) => remove(goal, ctx).boxed(),
         }

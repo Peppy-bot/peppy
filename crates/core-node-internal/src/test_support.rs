@@ -28,6 +28,18 @@ impl LogCapture {
     pub fn logs(&self) -> String {
         String::from_utf8(self.buffer.lock().clone()).expect("captured logs are valid UTF-8")
     }
+
+    /// Captures this thread's events, uncolored and untimed, until the
+    /// returned guard drops.
+    pub fn install(&self) -> tracing::subscriber::DefaultGuard {
+        tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(self.clone())
+                .finish(),
+        )
+    }
 }
 
 // The capture is its own writer: clones share one buffer, so the subscriber

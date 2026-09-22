@@ -325,6 +325,16 @@ methods! {
             result: LaunchResult,
             schema: "launch.capnp",
         }
+        StackBuild {
+            name: "stack_build",
+            summary: "Build every node a launch would run and start none of them, streaming \
+                      per-node progress.",
+            goal: StackBuildGoal,
+            goal_response: LaunchGoalResponse,
+            feedback: LaunchFeedback,
+            result: LaunchResult,
+            schema: "launch.capnp",
+        }
         StackJoin {
             name: "stack_join",
             summary: "Add a copy of one of the running launcher's options to the stack.",
