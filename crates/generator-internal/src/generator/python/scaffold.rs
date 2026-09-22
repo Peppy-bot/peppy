@@ -20,7 +20,39 @@ use std::path::Path;
 // separate from the `.py` wrappers so no build artifact ever lives in the
 // source tree. During deployment the target platform's `.so` is written out
 // as the canonical `_peppylib.abi3.so`.
+//
+// The same file holds the cache's build state and a `const` block that checks
+// every embedded binding against it through [`build_state_records`].
 include!(concat!(env!("OUT_DIR"), "/embedded_peppylib_so.rs"));
+
+/// Whether `build_state` still records `provenance`, one whole
+/// `<platform>\t<source hash>\t<profile>\n` line of the `.so` cache's
+/// build-state marker.
+///
+/// A match must start a line, so one platform's record can never be read out of
+/// the middle of another's. Written as a `const fn` because the bindings the
+/// generator embeds are checked against the marker at compile time.
+const fn build_state_records(build_state: &str, provenance: &str) -> bool {
+    let state = build_state.as_bytes();
+    let line = provenance.as_bytes();
+    if line.is_empty() || line.len() > state.len() {
+        return false;
+    }
+    let mut start = 0;
+    while start + line.len() <= state.len() {
+        if start == 0 || state[start - 1] == b'\n' {
+            let mut offset = 0;
+            while offset < line.len() && state[start + offset] == line[offset] {
+                offset += 1;
+            }
+            if offset == line.len() {
+                return true;
+            }
+        }
+        start += 1;
+    }
+    false
+}
 
 /// Pre-built peppylib Python wrappers (`.py`). The compiled native extensions are
 /// embedded separately via [`PEPPYLIB_PLATFORM_SO`].
@@ -424,6 +456,68 @@ mod tests {
                 .map(|(n, _)| *n)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// Every embedded binding must still be recorded in the cache's build state.
+    /// The `const` block in the generated file asserts this at compile time; this
+    /// covers the same ground at the granularity the assert cannot report, naming
+    /// the binding whose provenance went missing.
+    #[test]
+    fn every_embedded_binding_is_recorded_in_the_build_state() {
+        for provenance in PEPPYLIB_EMBEDDED_PROVENANCE {
+            assert!(
+                build_state_records(PEPPYLIB_SO_BUILD_STATE, provenance),
+                "build state {PEPPYLIB_SO_BUILD_STATE:?} no longer records {provenance:?}"
+            );
+        }
+        assert_eq!(
+            PEPPYLIB_EMBEDDED_PROVENANCE.len(),
+            PEPPYLIB_PLATFORM_SO.len(),
+            "every embedded binding needs a provenance line"
+        );
+    }
+
+    #[test]
+    fn build_state_records_a_line_it_holds() {
+        let state = "linux-x86_64\tabc\tdev\nmacos-aarch64\tdef\trelease\n";
+        assert!(build_state_records(state, "linux-x86_64\tabc\tdev\n"));
+        assert!(build_state_records(state, "macos-aarch64\tdef\trelease\n"));
+    }
+
+    #[test]
+    fn build_state_rejects_a_rebuilt_binding() {
+        // What another checkout rebuilding the shared cache leaves behind: the
+        // platform is still recorded, from different sources.
+        let state = "linux-x86_64\tother-sources\tdev\n";
+        assert!(!build_state_records(state, "linux-x86_64\tabc\tdev\n"));
+    }
+
+    #[test]
+    fn build_state_rejects_a_profile_change() {
+        let state = "linux-x86_64\tabc\trelease\n";
+        assert!(!build_state_records(state, "linux-x86_64\tabc\tdev\n"));
+    }
+
+    #[test]
+    fn build_state_matches_only_at_a_line_start() {
+        // A platform suffix that ends another platform's name must not match
+        // inside that line.
+        let state = "gnu-linux-x86_64\tabc\tdev\n";
+        assert!(!build_state_records(state, "linux-x86_64\tabc\tdev\n"));
+    }
+
+    #[test]
+    fn build_state_rejects_an_unrecorded_platform() {
+        assert!(!build_state_records("", "linux-x86_64\tabc\tdev\n"));
+        assert!(!build_state_records(
+            "macos-aarch64\tabc\tdev\n",
+            "linux-x86_64\tabc\tdev\n"
+        ));
+    }
+
+    #[test]
+    fn build_state_rejects_an_empty_provenance_line() {
+        assert!(!build_state_records("linux-x86_64\tabc\tdev\n", ""));
     }
 
     /// All release platforms must have their `.so` embedded. This test catches
