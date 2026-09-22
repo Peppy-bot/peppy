@@ -364,7 +364,8 @@ mod peppylib_build {
     /// marks the script dirty on every later build, recompiling this crate and
     /// everything downstream of it. The cache reaches cargo through the
     /// `include_bytes!`/`include_str!` of `embedded_peppylib_so.rs` instead, whose
-    /// dep-info check is anchored after the script has run.
+    /// dep-info check is anchored after the script has run. The cache's presence
+    /// marker is the one exception, registered by [`track_so_cache_presence`].
     fn register_rerun_triggers(peppylib_py_dir: &Path) {
         for file in so_rebuild_input_files(peppylib_py_dir) {
             println!("cargo:rerun-if-changed={}", file.display());
@@ -377,6 +378,29 @@ mod peppylib_build {
         // Toggling the cross-build flag must re-run build.rs so the Linux .so are
         // (re)built or skipped to match, instead of replaying a stale decision.
         println!("cargo:rerun-if-env-changed=PEPPY_CROSS_BUILD");
+    }
+
+    /// Registers the shared `.so` cache's presence marker with cargo and writes
+    /// it when it is absent, so that losing the cache re-runs this script instead
+    /// of failing the crate's compile. See [`CACHE_PRESENCE_MARKER`].
+    ///
+    /// The marker's own first write is the one time it moves: the build after it
+    /// re-runs this script once, which then leaves the marker alone.
+    fn track_so_cache_presence(so_dir: &Path) {
+        let marker = so_dir.join(CACHE_PRESENCE_MARKER);
+        println!("cargo:rerun-if-changed={}", marker.display());
+        if marker.exists() {
+            return;
+        }
+        std::fs::write(
+            &marker,
+            "Presence marker for the peppylib .so cache, written by \
+             generator-internal's build script and registered with cargo. \
+             Removing this directory rebuilds the bindings; removing this file \
+             alone rebuilds them too, and removing a .so while leaving this file \
+             fails the build of the generator crate.\n",
+        )
+        .unwrap_or_else(|e| panic!("failed to write {marker:?}: {e}"));
     }
 
     /// Returns true if `pixi` is available on PATH.
@@ -472,6 +496,21 @@ mod peppylib_build {
     /// and Linux `.so` files go stale independently: the host always rebuilds,
     /// while a stale Linux `.so` is left alone on debug builds.
     const BUILD_STATE_MARKER: &str = ".so-build-state";
+
+    /// Marker file whose presence tells cargo the shared `.so` cache is still
+    /// there.
+    ///
+    /// It is written once and never rewritten, so it never lands under the
+    /// build-script job's timestamp anchor and never marks this script dirty,
+    /// unlike the cache contents themselves. Deleting the cache (or all of
+    /// `~/.peppy`) takes the marker with it, which cargo reads as a missing input
+    /// and re-runs this script to rebuild the bindings. Without it a deleted
+    /// cache reaches cargo only through the dep-info of the
+    /// `include_bytes!`/`include_str!` in `embedded_peppylib_so.rs`, and a stale
+    /// dep-info input recompiles this crate without re-running the build script
+    /// that produces those inputs: the compile then fails on the missing file
+    /// with nothing able to repair it.
+    const CACHE_PRESENCE_MARKER: &str = ".so-cache-present";
 
     /// Env var that forces a full rebuild (including the Linux cross-compile) on
     /// a debug build. Set by the release build path and available to developers
@@ -919,6 +958,7 @@ mod peppylib_build {
         let so_dir = build_helpers::cache_dir("peppylib-py").join("so");
         std::fs::create_dir_all(&so_dir)
             .unwrap_or_else(|e| panic!("failed to create peppylib .so dir {so_dir:?}: {e}"));
+        track_so_cache_presence(&so_dir);
 
         let host = host_platform_suffix();
 

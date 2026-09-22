@@ -2503,7 +2503,22 @@ echo "=== Apptainer build complete ==="
         // Step 2: Ensure apptainer is cached (from Lima pre-build, macOS fallback, or local build)
         let cache_dir = ensure_apptainer_cached(use_lima, &arch);
 
-        // Track the cache sentinel so Cargo re-runs build.rs if ~/.peppy is deleted.
+        // Track the cache sentinel so Cargo re-runs build.rs if ~/.peppy is
+        // deleted: cargo counts a registered path that is missing as dirty, and
+        // nothing else would notice the loss, since the runtime resolves the
+        // cache by name (see `APPTAINER_CACHE_DIR_NAME`) out of a home directory
+        // this binary never had compiled into it.
+        //
+        // This is the one path registered here that the script itself writes.
+        // Cargo anchors the check at the instant the build-script job starts, so
+        // the run that provisions the cache ends dirty and the build after it
+        // re-runs the script once. The cost stays bounded because
+        // `ensure_apptainer_cached` writes the sentinel only when it provisions,
+        // never on a cache hit, and the deletion check is worth one rerun per
+        // provisioning. It is also the only mechanism that gives that check:
+        // reaching the cache through a dep-info input instead recompiles this
+        // crate without re-running the script that fills the cache, which repairs
+        // nothing.
         let cache_sentinel = apptainer_cache_sentinel_path(&cache_dir, APPTAINER_VERSION);
         println!("cargo:rerun-if-changed={}", cache_sentinel.display());
 
