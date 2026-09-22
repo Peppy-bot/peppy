@@ -27,8 +27,9 @@ pub use datastore::{
 pub use federation::{
     FederationVerdict, PairCommitRequest, ParticipantInstancesRemoveRequest,
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
-    ParticipantSliceBeginRequest, ParticipantSliceBeginResponse, RelationshipEvent,
-    RelationshipNotification, RelationshipNotificationAck, RemovedInstances, RemovedInstancesError,
+    ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest, ParticipantSliceBeginResponse,
+    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck, RemovedInstances,
+    RemovedInstancesError, SlotMembers, SlotSet,
 };
 pub use health::{HealthRequest, HealthResponse};
 pub use info::{ContainerInfo, InfoRequest, InfoResponse};
@@ -63,7 +64,7 @@ pub use stack::launch::{
     LaunchResult, LauncherOrigin, NodeAddLogEntry, NodeBuildLogEntry, NodeRunLogEntry,
     PlacementSpec,
 };
-pub use stack::list::{CopyInfo, LaunchIdentity, StackListRequest, StackListResponse};
+pub use stack::list::{CopyInfo, LaunchIdentity, SetMember, StackListRequest, StackListResponse};
 pub use stack::remove::StackRemoveGoal;
 pub use stack::reset::{StackResetRequest, StackResetResponse};
 

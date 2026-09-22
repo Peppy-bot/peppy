@@ -327,6 +327,11 @@ pub enum Error {
     #[error("subscription to `{topic_name}` closed without yielding a message")]
     SubscriptionClosed { topic_name: String },
 
+    #[error(
+        "unknown producer slot '{link_id}': the manifest declares no depends_on.nodes or depends_on.contracts entry with that link_id"
+    )]
+    UnknownProducerSlot { link_id: String },
+
     /// Startup backstop for the launch-time rule "every declared
     /// depends_on slot except `zero_or_more` carries a `slot_bindings`
     /// entry": a daemon that validates bindings never ships a boot config
@@ -413,9 +418,8 @@ pub enum Error {
     /// producer bound to a different slot of the same consumer is rejected
     /// all the same.
     #[error(
-        "target `{instance_id}@{core_node}` is not in the bound set of consumer slot \
-         `{link_id}`: pass a producer from this slot's own generated accessor \
-         (`bound_producer()` / `bound_producers()`)"
+        "target `{instance_id}@{core_node}` is not bound to consumer slot `{link_id}` now: pass \
+         a member of what `bound_producer()` / `bound_producers()` returns for this slot"
     )]
     TargetNotBound {
         link_id: String,

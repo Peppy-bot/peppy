@@ -16,7 +16,6 @@
 //! services run in-process on the shared mock messenger, the same seams a real
 //! peppylib node exposes.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -150,8 +149,10 @@ async fn emulate_observer_services(
     observer_link_id: &str,
 ) -> watch::Receiver<ObservationState> {
     emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
-    let (tx, rx) = watch::channel(ObservationState::unregistered());
-    let slots = Arc::new(BTreeMap::from([(observer_link_id.to_string(), tx)]));
+    let (slots, mut receivers) = super::common::observer_slot_channels(&[observer_link_id]);
+    let rx = receivers
+        .remove(observer_link_id)
+        .expect("one watch per observer slot");
     listen_for_observation_update(
         messenger,
         core_node_name,
@@ -804,6 +805,7 @@ async fn an_observer_naming_a_pairs_other_end_is_pinned_to_it() {
         "sim_engine",
         "engine_1",
         "limbs",
+        config::node::Cardinality::ZeroOrMore,
         &engine_pidfile,
     )
     .await;
@@ -817,6 +819,7 @@ async fn an_observer_naming_a_pairs_other_end_is_pinned_to_it() {
             "arm_controller",
             instance_id,
             "arm",
+            config::node::Cardinality::ZeroOrOne,
             &ctrl_pidfile,
         )
         .await;

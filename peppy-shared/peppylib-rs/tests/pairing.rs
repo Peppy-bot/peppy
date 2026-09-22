@@ -80,7 +80,7 @@ async fn declare_peer_publisher(handle: &MessengerHandle, instance_id: &str) -> 
 
 /// Consumer-side pairing subscription driven by a hand-held watch channel
 /// (standing in for the processor-owned slot the daemon mutates).
-fn subscribe(
+async fn subscribe(
     handle: &MessengerHandle,
     watch_rx: watch::Receiver<PeerSetState>,
 ) -> PeerSubscription {
@@ -94,7 +94,8 @@ fn subscribe(
         TOPIC.to_string(),
         QoSProfile::Reliable,
     )
-    .expect("the consumer's slot is a valid link id")
+    .await
+    .expect("the consumer's slot declares its subscription")
 }
 
 /// Waits until the consumer's current wire subscription (pinned to
@@ -164,7 +165,7 @@ async fn unpaired_slot_receives_nothing() {
     let peer_handle = MessengerHandle::from_shared(shared);
 
     let (_tx, watch_rx) = watch::channel(PeerSetState::empty());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
 
     // The peer publishes before any pair exists: publish-unpaired is a legal
     // no-op on the publisher side and MUST NOT reach the unpaired consumer.
@@ -183,7 +184,7 @@ async fn live_pair_starts_delivery_without_resubscribe() {
     let peer_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(PeerSetState::empty());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let publisher = declare_peer_publisher(&peer_handle, "arm_1").await;
 
     // Pair live — the subscription object predates the pair (the lazy story).
@@ -207,7 +208,7 @@ async fn foreign_identity_on_same_keyexpr_shape_is_never_delivered() {
     let intruder_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(PeerSetState::empty());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
 
     tx.send(paired_with(1, &["arm_1"])).expect("watch send");
     wait_for_peer_wire_sub(&peer_handle, "arm_1").await;
@@ -234,7 +235,7 @@ async fn repin_swaps_to_the_new_peer_without_stale_or_duplicate_delivery() {
     let peer_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(PeerSetState::empty());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
 
     let old_peer = declare_peer_publisher(&peer_handle, "arm_1").await;
     let new_peer = declare_peer_publisher(&peer_handle, "arm_2").await;
@@ -271,7 +272,7 @@ async fn clear_silences_the_slot_until_repaired() {
     let peer_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(PeerSetState::empty());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let publisher = declare_peer_publisher(&peer_handle, "arm_1").await;
 
     tx.send(paired_with(1, &["arm_1"])).expect("watch send");
@@ -306,9 +307,11 @@ async fn clear_silences_the_slot_until_repaired() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
+    use config::node::Cardinality;
     use peppylib::encoding::peer_update::PeerUpdateRequest;
     use peppylib::encoding::slot_update::SlotUpdateResponse;
     use peppylib::services::peer_update::listen_for_peer_update;
+    use peppylib::services::slot_update::SlotChannel;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -317,8 +320,10 @@ async fn peer_update_service_applies_daemon_deliveries_end_to_end() {
 
     // The "node": one declared pairing slot 'arm', service listening.
     let (slot_tx, slot_rx) = watch::channel(PeerSetState::empty());
-    let slots: Arc<BTreeMap<String, watch::Sender<PeerSetState>>> =
-        Arc::new(BTreeMap::from([("arm".to_string(), slot_tx)]));
+    let slots = Arc::new(BTreeMap::from([(
+        "arm".to_string(),
+        SlotChannel::new(Cardinality::ZeroOrOne, slot_tx),
+    )]));
     let node_identity = SenderTarget::node("arm_controller", "v1").expect("node target");
     let _listener = listen_for_peer_update(
         &client.caller_handle,
@@ -423,7 +428,7 @@ async fn a_multi_slot_hears_every_peer_it_holds() {
     let peer_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(PeerSetState::empty());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let arm_1 = declare_peer_publisher(&peer_handle, "arm_1").await;
     let arm_2 = declare_peer_publisher(&peer_handle, "arm_2").await;
 

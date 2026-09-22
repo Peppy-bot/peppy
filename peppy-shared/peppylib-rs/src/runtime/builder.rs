@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use crate::runtime::TaskHandle;
 use crate::runtime::node_runner::NodeRunner;
 use crate::runtime::processor::Processor;
+use crate::services::binding_update::listen_for_binding_update;
 use crate::services::clock_offset::listen_for_clock_offset;
 use crate::services::endpoints::listen_for_node_endpoints;
 use crate::services::health::listen_for_node_health;
@@ -754,6 +755,7 @@ struct PreSetupHandles {
     shutdown_handle: TaskHandle<Result<()>>,
     peer_update_handle: TaskHandle<Result<()>>,
     observation_update_handle: TaskHandle<Result<()>>,
+    binding_update_handle: TaskHandle<Result<()>>,
     shutdown_rx: oneshot::Receiver<()>,
 }
 
@@ -778,7 +780,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         processor.bound_core_node(),
         processor.bound_instance_id(),
         as_identity.clone(),
-        processor.pairing_slot_senders(),
+        processor.pairing_slot_channels(),
     )
     .await?;
 
@@ -790,7 +792,18 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         processor.bound_core_node(),
         processor.bound_instance_id(),
         as_identity.clone(),
-        processor.observation_slot_senders(),
+        processor.observation_slot_channels(),
+    )
+    .await?;
+
+    // Binding delivery joins them for the same reason: a join grows a running
+    // consumer's producer set, and that must not wait on user `setup_fn`.
+    let binding_update_handle = listen_for_binding_update(
+        node_runner.messenger(),
+        processor.bound_core_node(),
+        processor.bound_instance_id(),
+        as_identity.clone(),
+        processor.binding_slot_channels(),
     )
     .await?;
 
@@ -807,6 +820,7 @@ async fn start_pre_setup_services(node_runner: Arc<NodeRunner>) -> Result<PreSet
         shutdown_handle,
         peer_update_handle,
         observation_update_handle,
+        binding_update_handle,
         shutdown_rx,
     })
 }
@@ -822,6 +836,7 @@ async fn run_post_setup_services(
         shutdown_handle,
         peer_update_handle,
         observation_update_handle,
+        binding_update_handle,
         mut shutdown_rx,
     } = pre_setup;
     let processor = node_runner.processor();
@@ -886,6 +901,7 @@ async fn run_post_setup_services(
         clock_offset_handle,
         peer_update_handle,
         observation_update_handle,
+        binding_update_handle,
         shutdown_handle,
     ];
     handles.extend(endpoints_handle);

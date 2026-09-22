@@ -163,6 +163,17 @@ methods! {
             response: FederationVerdict,
             schema: "federation.capnp",
         }
+        /// Replaces set slots of instances the receiving daemon runs, after a
+        /// join grew them or a removal shrank them. The receiver delivers each
+        /// slot's whole set to its own instance.
+        ParticipantSetsUpdate {
+            name: "participant_sets_update",
+            host: CoreNodeDaemon,
+            summary: "Replace set slots of instances in a reserved launch's slice.",
+            request: ParticipantSetsUpdateRequest,
+            response: FederationVerdict,
+            schema: "federation.capnp",
+        }
         /// Records the second half of a CROSS-DAEMON pair on the daemon
         /// hosting the other endpoint, and delivers that endpoint its pin.
         /// A same-daemon pair never needs it: one registry holds both

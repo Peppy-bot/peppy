@@ -1,3 +1,4 @@
+mod binding;
 mod builder;
 mod endpoints;
 mod node_runner;
@@ -6,6 +7,7 @@ mod pairing;
 mod processor;
 mod slot_stream;
 
+pub use binding::{BoundSetSubscription, subscribe_bound_set, subscribe_bound_set_with_watch};
 pub use builder::{NodeBuilder, NodeContext, StandaloneConfig};
 pub use endpoints::{AnnouncedEndpoint, EndpointBinding, bind_preferred};
 pub use node_runner::NodeRunner;
@@ -20,11 +22,9 @@ pub use pairing::{
 };
 pub use processor::{Processor, STANDALONE_CORE_NODE};
 
-/// In-flight buffer between a slot's forwarding task and the consuming code,
-/// in messages, shared by the pairing and observer subscriptions. Deliberately
-/// small: slot topics are conversations and taps, not firehoses, and the
-/// wire-side QoS buffers already absorb bursts.
-const SLOT_CHANNEL_CAPACITY: usize = 128;
+/// What every generated accessor's panic tells the operator to do when the
+/// node's generated code predates its manifest.
+pub(crate) const RESYNC_REMEDY: &str = "the generated code and the manifest disagree; run `peppy node sync` then `peppy node build` for this node";
 
 use std::fmt;
 use std::future::Future;

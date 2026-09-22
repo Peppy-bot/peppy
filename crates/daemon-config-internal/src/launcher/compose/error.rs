@@ -238,6 +238,20 @@ pub enum CompositionError {
     },
 
     #[error(
+        "joining `{name}` would add `{target}` to `{instance}.links.{slot}`, and `{instance}` \
+         already runs; a join adds only its own instances to a running instance's set. In the \
+         option's `add_links`, name an instance the option's fragments deploy, by the id they \
+         write (the join mints it as `{name}_<id>`), or reset and launch the complete \
+         configuration with `{name}` in it"
+    )]
+    JoinAddsStackMember {
+        name: String,
+        instance: String,
+        slot: String,
+        target: String,
+    },
+
+    #[error(
         "{origin} declares `core_nodes`, which a copy of `{axis}` cannot use; a copy is placed \
          whole: `--place NAME@CORE_NODE` at launch, `--place CORE_NODE` at join"
     )]
@@ -487,7 +501,9 @@ pub enum CompositionError {
 
     #[error(
         "adjustment in {origin} cannot append to slot `{slot}` on `{target}`: the slot holds \
-         {holds}. Appending is for array bindings; replacing is `set_links`'s job"
+         {holds}, and `add_links` appends only to a slot bound as an array. Bind `{slot}` as an \
+         array in the launcher, or, where its node declares it `one` or `zero_or_one`, declare \
+         it `one_or_more` or `zero_or_more` in the node's `depends_on` and run `peppy node sync`"
     )]
     AddLinksOnNonArray {
         origin: String,

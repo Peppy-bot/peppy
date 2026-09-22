@@ -62,6 +62,19 @@ struct CopyInfo {
     instanceIds @2 :List(Text);
     selections @3 :List(Text);
     option @4 :Text;
+    # The members the copy added to stack instances' set slots, in the order it
+    # added them.
+    setMembers @5 :List(SetMember);
+}
+
+# One member a copy added to a stack instance's set slot.
+struct SetMember {
+    # The stack instance whose slot the member joined.
+    instanceId @0 :Text;
+    linkId @1 :Text;
+    # The instance that joined the set, `instance` or `instance/link_id`, by the
+    # id the stack runs it under.
+    target @2 :Text;
 }
 
 # Which launch a stack slice belongs to, and who drove it.

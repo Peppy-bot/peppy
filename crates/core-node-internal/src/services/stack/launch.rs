@@ -276,7 +276,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
     // bind sources each machine's containers need, all BEFORE anything is
     // torn down. A refusal at this point has cost no machine, including
     // this one, its stack.
-    let change = match preflight_change(&ctx, &goal.launch_id, &planned, &placements).await {
+    let change = match preflight_change(&ctx, &goal.launch_id, &planned, &placements, None).await {
         Ok(change) => change,
         Err(reason) => {
             publish_stderr(&ctx, reason.clone(), LaunchFeedbackStep::LauncherStep).await;
@@ -434,6 +434,7 @@ pub(super) async fn process_launch(goal: LaunchGoal, ctx: StackChangeContext) ->
             &resolved_slot_bindings,
             &planned_pairings,
             &planned_observations,
+            &active.watchers,
             &placements,
             &clocks,
         )

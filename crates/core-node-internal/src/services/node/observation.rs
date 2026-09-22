@@ -24,7 +24,8 @@
 //! when that source's incarnation changes (it reaches Running again) and is the
 //! sole discriminator between old-source and new-source messages on the wire.
 
-use core_node_api::encoding::ObservationTargets;
+use config::runtime::Name;
+use core_node_api::encoding::{ObservationTarget, ObservationTargets};
 use daemon_config::launcher::PlannedObservation;
 use futures::future::join_all;
 use node_stack::NodeStack;
@@ -43,7 +44,7 @@ use super::common::{SlotUpdateClient, SlotUpdateTarget};
 /// How long a single `observation_update` delivery may take before it is
 /// treated as failed. The service is pre-setup (registered before the node's
 /// ready signal), so a healthy observer answers promptly.
-const OBSERVATION_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const OBSERVATION_UPDATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A source instance's full address. Two daemons can host same-named
 /// instances, so the pair is the identity: keying the registry on the instance
@@ -86,6 +87,18 @@ struct ObserverRecord {
 }
 
 impl ObserverRecord {
+    /// The record of slot `observer_link_id` observing `target`.
+    fn observing(observer_link_id: &str, target: &ObservationTarget) -> Self {
+        Self {
+            observer_link_id: observer_link_id.to_string(),
+            pin: ObservedSource {
+                producer: target.source.clone(),
+                source_link_id: target.source_link_id.clone(),
+                peer: target.peer.as_ref().map(PeerInfo::from),
+            },
+        }
+    }
+
     fn source(&self) -> SourceKey {
         SourceKey::from_producer(&self.pin.producer)
     }
@@ -108,15 +121,22 @@ struct Registry {
     /// always local: delivery to an observer node stays on the daemon that owns
     /// it, even when the source is remote.
     by_observer: BTreeMap<String, Vec<ObserverRecord>>,
-    /// source → its current incarnation generation. Advances only on the
-    /// source reaching Running; never decreases (kept across the source's own
-    /// down/up so a restart is a strictly newer generation).
+    /// source → its current incarnation generation, drawn from
+    /// [`Self::last_generation`] each time the source reaches Running. Kept
+    /// across the source's own down/up, and drawn fresh from the daemon-wide
+    /// counter, so every incarnation is strictly newer than any generation the
+    /// source held before, including after a removal forgot it and a join
+    /// brought it back under the same instance id.
     ///
     /// A remote source's transitions arrive as notifications from its own
-    /// daemon and feed exactly this counter, which is what makes an observer
-    /// drop and redeclare across a remote restart the same way it does across
-    /// a local one.
+    /// daemon and feed exactly this map, which is what makes an observer drop
+    /// and redeclare across a remote restart the same way it does across a
+    /// local one.
     source_generation: BTreeMap<SourceKey, u64>,
+    /// The last generation handed to any source; zero before any source ran,
+    /// which is the boot sentinel a member stamped before its source ran
+    /// carries.
+    last_generation: u64,
     /// Sources on OTHER daemons currently reported up.
     ///
     /// Tracked separately from [`Self::source_generation`] because the two
@@ -248,17 +268,83 @@ impl ObservationCoordinator {
                 Self::insert_record(
                     &mut registry,
                     observer_instance_id,
-                    ObserverRecord {
-                        observer_link_id: observer_link_id.clone(),
-                        pin: ObservedSource {
-                            producer: target.source.clone(),
-                            source_link_id: target.source_link_id.clone(),
-                            peer: target.peer.as_ref().map(PeerInfo::from),
-                        },
-                    },
+                    ObserverRecord::observing(observer_link_id, target),
                 );
             }
         }
+    }
+
+    /// Replaces the member sets of the named observer slots of one instance, the
+    /// way a join grows them and a removal shrinks them, then delivers each
+    /// replaced slot whole while the observer is live; an observer that is not
+    /// running takes its whole set when it next reaches Running. Slots the map
+    /// does not name keep their records, and a slot mapped to an empty set
+    /// observes nothing from here on. Source generations are kept, so a member
+    /// whose source already ran is stamped with its current incarnation; a
+    /// source no slot observes any more is forgotten.
+    ///
+    /// Returns one line per slot the observer refused or missed, naming it and
+    /// why.
+    pub async fn replace_slots(
+        &self,
+        observer: &Name,
+        slots: &BTreeMap<String, ObservationTargets>,
+    ) -> Vec<String> {
+        let observer_instance_id = observer.as_str();
+        let _guard = self.op_lock.lock().await;
+        let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
+        let deliveries = {
+            let mut registry = self.registry.lock().unwrap();
+            let records = registry
+                .by_observer
+                .entry(observer_instance_id.to_string())
+                .or_default();
+            let (dropped, kept): (Vec<ObserverRecord>, Vec<ObserverRecord>) = records
+                .drain(..)
+                .partition(|record| slots.contains_key(&record.observer_link_id));
+            *records = kept;
+            for (observer_link_id, targets) in slots {
+                records.extend(
+                    targets
+                        .iter()
+                        .map(|target| ObserverRecord::observing(observer_link_id, target)),
+                );
+            }
+            for record in &dropped {
+                Self::forget_unobserved_source_locked(&mut registry, &record.source());
+            }
+            // The records are the observer's next convergence, so they stand
+            // whether or not it is running to take this delivery.
+            if !live_instances.contains(observer_instance_id) {
+                return slots
+                    .keys()
+                    .map(|observer_link_id| {
+                        format!(
+                            "`{observer_instance_id}.links.{observer_link_id}`: the instance is \
+                             not running; it takes the set when it next runs"
+                        )
+                    })
+                    .collect();
+            }
+            let replaced = slots
+                .keys()
+                .map(|observer_link_id| SlotKey {
+                    observer_instance_id: observer_instance_id.to_string(),
+                    observer_link_id: observer_link_id.clone(),
+                })
+                .collect();
+            self.assemble_deliveries(&registry, replaced, &live_instances, None)
+        };
+        self.deliver_many(deliveries)
+            .await
+            .into_iter()
+            .map(|(slot, reason)| {
+                format!(
+                    "`{}.links.{}`: {reason}",
+                    slot.observer_instance_id, slot.observer_link_id
+                )
+            })
+            .collect()
     }
 
     /// Inserts one resolved observer record. Shared by [`register_planned`]
@@ -383,13 +469,11 @@ impl ObservationCoordinator {
         let live_instances = self.updates.node_stack().live_instance_ids_for_pairing();
         let deliveries = {
             let mut registry = self.registry.lock().unwrap();
-            {
-                let counter = registry
-                    .source_generation
-                    .entry(source.clone())
-                    .or_insert(0);
-                *counter += 1;
-            }
+            registry.last_generation += 1;
+            let generation = registry.last_generation;
+            registry
+                .source_generation
+                .insert(source.clone(), generation);
             // A remote source has no local authority to ask, so its report of
             // reaching Running IS the record that it is up.
             if !is_local_source {
@@ -611,9 +695,14 @@ impl ObservationCoordinator {
         }
     }
 
-    /// Delivers independent absolute-state updates concurrently. Entity labels
-    /// are resolved once per observer, even when it owns several slots.
-    async fn deliver_many(&self, deliveries: impl IntoIterator<Item = Delivery>) {
+    /// Delivers independent absolute-state updates concurrently, returning each
+    /// slot it could not reach with the reason, every one of them logged too.
+    /// Entity labels are resolved once per observer, even when it owns several
+    /// slots.
+    async fn deliver_many(
+        &self,
+        deliveries: impl IntoIterator<Item = Delivery>,
+    ) -> Vec<(SlotKey, String)> {
         let mut by_observer: BTreeMap<String, Vec<Delivery>> = BTreeMap::new();
         for delivery in deliveries {
             by_observer
@@ -623,12 +712,14 @@ impl ObservationCoordinator {
         }
 
         let mut resolved = Vec::new();
+        let mut failed = Vec::new();
         for (observer_id, deliveries) in by_observer {
             match self.updates.resolve_target(&observer_id) {
                 Ok(target) => resolved.push((target, deliveries)),
                 Err(reason) => {
                     for delivery in deliveries {
                         Self::warn_delivery_failure(&delivery, &reason);
+                        failed.push((delivery.slot, reason.clone()));
                     }
                 }
             }
@@ -639,17 +730,22 @@ impl ObservationCoordinator {
                 .iter()
                 .map(move |delivery| self.deliver(target, delivery))
         });
-        join_all(futures).await;
+        failed.extend(join_all(futures).await.into_iter().flatten());
+        failed
     }
 
     /// One `observation_update` service call carrying the absolute state of one
-    /// observer slot: its complete ordered member set. Best-effort: a stale
-    /// reply is success (a newer absolute state already landed), any other
-    /// failure is logged and swallowed.
-    async fn deliver(&self, target: &SlotUpdateTarget, delivery: &Delivery) {
-        if let Err(reason) = self.send_observation_update(target, delivery).await {
-            Self::warn_delivery_failure(delivery, &reason);
-        }
+    /// observer slot: its complete ordered member set. A stale reply is success
+    /// (a newer absolute state already landed); any other failure is logged and
+    /// returned with the slot.
+    async fn deliver(
+        &self,
+        target: &SlotUpdateTarget,
+        delivery: &Delivery,
+    ) -> Option<(SlotKey, String)> {
+        let reason = self.send_observation_update(target, delivery).await.err()?;
+        Self::warn_delivery_failure(delivery, &reason);
+        Some((delivery.slot.clone(), reason))
     }
 
     fn warn_delivery_failure(delivery: &Delivery, reason: &str) {
@@ -688,7 +784,6 @@ impl ObservationCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_node_api::encoding::ObservationTarget;
     use pmi::{Messenger, MessengerAdapter, MockAdapter};
 
     /// Minimal root manifest for a stack whose root instance doubles as the
@@ -784,6 +879,176 @@ mod tests {
         let coordinator = coordinator_observing_the_root(&directory);
         coordinator.register_planned(&[]);
         assert!(coordinator.registry.lock().unwrap().by_observer.is_empty());
+    }
+
+    /// A join grows a slot and a removal shrinks it: each replacement leaves
+    /// the slot holding exactly its set, in the order given, and never touches
+    /// a slot it does not name.
+    #[tokio::test]
+    async fn replacing_a_slot_follows_the_new_set_and_keeps_other_slots() {
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator = coordinator_observing_the_root(&directory);
+        let target = |instance: &str| ObservationTarget {
+            source: ProducerRef::new("core_a", instance),
+            source_link_id: "controller".into(),
+            peer: None,
+        };
+        let members_of = |slot: &str| -> Vec<String> {
+            coordinator.registry.lock().unwrap().by_observer[OBSERVER_INSTANCE]
+                .iter()
+                .filter(|record| record.observer_link_id == slot)
+                .map(|record| record.pin.producer.instance_id.clone())
+                .collect()
+        };
+        let observer = Name::new(OBSERVER_INSTANCE).unwrap();
+        let replace = |members: Vec<ObservationTarget>| {
+            BTreeMap::from([(
+                "fleet".to_string(),
+                ObservationTargets::new("fleet", members).expect("distinct members"),
+            )])
+        };
+
+        coordinator
+            .replace_slots(
+                &observer,
+                &replace(vec![target("alpha_arm"), target("bravo_arm")]),
+            )
+            .await;
+        assert_eq!(members_of("fleet"), ["alpha_arm", "bravo_arm"]);
+
+        coordinator
+            .replace_slots(&observer, &replace(vec![target("bravo_arm")]))
+            .await;
+        assert_eq!(members_of("fleet"), ["bravo_arm"]);
+
+        coordinator
+            .replace_slots(&observer, &replace(Vec::new()))
+            .await;
+        assert!(members_of("fleet").is_empty());
+        assert_eq!(
+            members_of("sole_arm"),
+            [SOURCE_INSTANCE],
+            "a slot the replacement does not name keeps its records"
+        );
+    }
+
+    /// A member a join adds is stamped like one the launch wrote: with the
+    /// incarnation its source reached before the join and live while it runs,
+    /// then not live, at its position, once the source stops, and with a newer
+    /// incarnation when the source runs again.
+    #[tokio::test]
+    async fn a_joined_member_follows_its_sources_incarnation_and_liveness() {
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator = coordinator_observing_the_root(&directory);
+        let joined = ProducerRef::new("core_b", "alpha_arm");
+        coordinator
+            .remote_source_reached_running(&joined.core_node, &joined.instance_id)
+            .await;
+        coordinator
+            .replace_slots(
+                &Name::new(OBSERVER_INSTANCE).unwrap(),
+                &BTreeMap::from([(
+                    "fleet".to_string(),
+                    ObservationTargets::new(
+                        "fleet",
+                        vec![ObservationTarget {
+                            source: joined.clone(),
+                            source_link_id: "controller".into(),
+                            peer: None,
+                        }],
+                    )
+                    .expect("one member is distinct"),
+                )]),
+            )
+            .await;
+        let stamped = || -> Vec<(String, u64, bool)> {
+            let registry = coordinator.registry.lock().unwrap();
+            let [delivery]: [Delivery; 1] = coordinator
+                .assemble_deliveries(
+                    &registry,
+                    BTreeSet::from([SlotKey {
+                        observer_instance_id: OBSERVER_INSTANCE.into(),
+                        observer_link_id: "fleet".into(),
+                    }]),
+                    &HashSet::new(),
+                    None,
+                )
+                .try_into()
+                .expect("one slot assembles one delivery");
+            delivery
+                .members
+                .iter()
+                .map(|member| {
+                    (
+                        member.source.producer.instance_id.clone(),
+                        member.source_generation,
+                        member.source_live,
+                    )
+                })
+                .collect()
+        };
+
+        assert_eq!(stamped(), [("alpha_arm".to_string(), 1, true)]);
+        coordinator
+            .remote_source_stopped(&joined.core_node, &joined.instance_id)
+            .await;
+        assert_eq!(stamped(), [("alpha_arm".to_string(), 1, false)]);
+        coordinator
+            .remote_source_reached_running(&joined.core_node, &joined.instance_id)
+            .await;
+        assert_eq!(stamped(), [("alpha_arm".to_string(), 2, true)]);
+    }
+
+    /// A source a removal took out of every slot, then brought back by a join
+    /// under the same instance id, carries a generation strictly newer than
+    /// the one it held before, so the observer tells the two incarnations apart.
+    #[tokio::test]
+    async fn a_source_rejoining_under_its_old_id_is_a_newer_incarnation() {
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator = coordinator_observing_the_root(&directory);
+        let joined = ProducerRef::new("core_b", "alpha_arm");
+        let observer = Name::new(OBSERVER_INSTANCE).unwrap();
+        let fleet = |members: Vec<ObservationTarget>| {
+            BTreeMap::from([(
+                "fleet".to_string(),
+                ObservationTargets::new("fleet", members).expect("distinct members"),
+            )])
+        };
+        let member = ObservationTarget {
+            source: joined.clone(),
+            source_link_id: "controller".into(),
+            peer: None,
+        };
+        let generation = || {
+            coordinator
+                .registry
+                .lock()
+                .unwrap()
+                .source_generation
+                .get(&SourceKey::new(&joined.core_node, &joined.instance_id))
+                .copied()
+        };
+
+        coordinator
+            .remote_source_reached_running(&joined.core_node, &joined.instance_id)
+            .await;
+        coordinator
+            .replace_slots(&observer, &fleet(vec![member.clone()]))
+            .await;
+        let before = generation().expect("an observed source keeps its generation");
+        coordinator
+            .replace_slots(&observer, &fleet(Vec::new()))
+            .await;
+        assert_eq!(generation(), None, "a source no slot observes is forgotten");
+
+        coordinator
+            .remote_source_reached_running(&joined.core_node, &joined.instance_id)
+            .await;
+        coordinator
+            .replace_slots(&observer, &fleet(vec![member]))
+            .await;
+        let after = generation().expect("the rejoined source is observed again");
+        assert!(after > before, "{after} must exceed {before}");
     }
 
     /// The seed-stamping invariants under a concurrent source lifecycle: an

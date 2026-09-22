@@ -449,7 +449,8 @@ fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
     assert_contains_all(
         &rendered,
         &[
-            ".bound_producers(\"cam_left\")",
+            "peppylib::runtime::subscribe_bound_set(",
+            "\"cam_left\",",
             ".sole_bound_producer(\"cam_left\")",
         ],
     );
@@ -465,7 +466,7 @@ fn consumed_topic_with_link_id_splices_runtime_bound_producer() {
 /// returning an `Option`, a `one_or_more` slot `bound_producers()` returning
 /// the never-empty `NonEmptyProducers` view (infallible `first()`), and a
 /// `zero_or_more` slot the same plural name returning a plain, possibly empty
-/// slice. The accessor emission is shared by every consumed interface kind,
+/// list. The accessor emission is shared by every consumed interface kind,
 /// so this topic-module test pins those three shapes; `consumed_topic` below
 /// pins the singular `one` shape.
 #[test]
@@ -482,7 +483,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
         (
             config::node::Cardinality::OneOrMore,
             "pub fn bound_producers(",
-            ") -> peppylib::messaging::NonEmptyProducers<'_>",
+            ") -> peppylib::messaging::NonEmptyProducers",
             ".non_empty_bound_producers(\"cam_left\")",
             "cardinality `one_or_more`",
             "pub fn bound_producer(",
@@ -490,7 +491,7 @@ fn consumed_topic_accessor_is_cardinality_typed() {
         (
             config::node::Cardinality::ZeroOrMore,
             "pub fn bound_producers(",
-            ") -> &[peppylib::messaging::ProducerRef]",
+            ") -> Vec<peppylib::messaging::ProducerRef>",
             ".bound_producers(\"cam_left\")",
             "cardinality `zero_or_more`",
             "pub fn bound_producer(",
@@ -573,7 +574,7 @@ fn consumed_topic() {
         &rendered,
         &[
             "pub struct Subscription",
-            "inner: peppylib::messaging::BoundSetSubscription",
+            "inner: peppylib::runtime::BoundSetSubscription",
             "pub async fn subscribe(",
             "node_runner: &crate::NodeRunner",
             "-> crate::Result<Subscription>",
@@ -588,15 +589,14 @@ fn consumed_topic() {
     // The cardinality-typed module surface: this `one` slot exposes the
     // singular, infallible `bound_producer()` (spliced from the
     // sole-producer processor lookup), never the plural accessor. The
-    // subscribe call still covers the complete (single-member) set through
-    // the plain slice lookup.
+    // subscribe call still follows the complete (single-member) set by the
+    // slot's link_id.
     assert_contains_all(
         &rendered,
         &[
             "pub fn bound_producer(",
             ") -> &peppylib::messaging::ProducerRef",
             ".sole_bound_producer(\"uvc_camera\")",
-            ".bound_producers(\"uvc_camera\")",
         ],
     );
     assert!(
@@ -621,15 +621,15 @@ fn consumed_topic() {
         ],
     );
 
-    // Topic metadata: the subscribe call covers the slot's complete bound
-    // set from the runtime binding map and threads the node's cancellation
-    // token so an empty `zero_or_more` set pends until shutdown.
+    // Topic metadata: the subscribe call follows the slot's complete bound
+    // set by its link_id through the node runner, which carries the node's
+    // cancellation token so an empty `zero_or_more` set pends until shutdown.
     assert_contains_all(
         &rendered,
         &[
             "let node_name = \"uvc_camera\";",
-            "peppylib::TopicMessenger::subscribe_bound_set(",
-            "node_runner.cancellation_token().clone()",
+            "peppylib::runtime::subscribe_bound_set(",
+            "node_runner,\n",
         ],
     );
 
@@ -648,7 +648,7 @@ fn consumed_topic() {
     // subscription the buffer keeps every message between `next` calls.
     assert_eq!(
         rendered
-            .matches("peppylib::TopicMessenger::subscribe_bound_set(")
+            .matches("peppylib::runtime::subscribe_bound_set(")
             .count(),
         1,
         "topic must be subscribed once, not per next() call; got: {rendered}"

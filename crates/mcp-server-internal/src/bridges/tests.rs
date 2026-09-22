@@ -162,7 +162,6 @@ async fn drive(
     let binding = MemberBinding {
         target: mesh.contract.clone(),
         member: MEMBER.to_owned(),
-        producers: vec![mesh.producer.clone()],
     };
     drive_goal(
         task,

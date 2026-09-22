@@ -12,18 +12,19 @@
 use crate::encoding::observation_update::ObservationUpdateRequest;
 use crate::messaging::{OBSERVATION_UPDATE_SERVICE, ObservationState, SenderTarget};
 use crate::runtime::TaskHandle;
-use crate::services::slot_update::{SlotSenders, SlotUpdate, listen_for_slot_update};
+use crate::services::slot_update::{SlotChannels, SlotUpdate, listen_for_slot_update};
 use crate::{MessengerHandle, PeppyResult};
+use config::node::Cardinality;
 
 /// Shared map of one watch channel per declared observer slot, keyed by the
 /// node's own observer-slot link_id.
-pub(crate) type ObservationSlotSenders = SlotSenders<ObservationState>;
+pub(crate) type ObservationSlotChannels = SlotChannels<ObservationState>;
 
 impl SlotUpdate for ObservationUpdateRequest {
     type State = ObservationState;
 
     const SERVICE: &'static str = OBSERVATION_UPDATE_SERVICE;
-    const UNKNOWN_SLOT_NOUN: &'static str = "observer slot";
+    const SLOT_NOUN: &'static str = "observer slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
         ObservationUpdateRequest::decode(payload)
@@ -51,6 +52,18 @@ impl SlotUpdate for ObservationUpdateRequest {
         }
     }
 
+    fn member_count(state: &ObservationState) -> usize {
+        state.members.len()
+    }
+
+    /// An observer set's membership is the plan's: the launch links it, a join
+    /// grows it and a removal shrinks it, each within the slot's cardinality.
+    /// A member whose source is down stays in the set, reading not live, so
+    /// liveness never changes the count.
+    fn admits(cardinality: Cardinality, members: usize) -> bool {
+        cardinality.admits(members)
+    }
+
     fn log_detail(&self) -> String {
         format!(
             "members={} live={}",
@@ -68,7 +81,7 @@ pub async fn listen_for_observation_update(
     core_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
-    slots: ObservationSlotSenders,
+    slots: ObservationSlotChannels,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
     listen_for_slot_update::<ObservationUpdateRequest>(
         messenger,
@@ -85,25 +98,25 @@ mod tests {
     use super::*;
     use crate::encoding::slot_update::SlotUpdateResponse;
     use crate::messaging::{ObservedMemberState, ObservedSource, ProducerRef};
-    use crate::services::slot_update::apply_slot_update;
+    use crate::services::slot_update::{SlotChannel, apply_slot_update};
     use std::collections::BTreeMap;
-    use tokio::sync::watch;
 
     fn apply(
-        slots: &BTreeMap<String, watch::Sender<ObservationState>>,
+        slots: &BTreeMap<String, SlotChannel<ObservationState>>,
         request: &ObservationUpdateRequest,
     ) -> SlotUpdateResponse {
         apply_slot_update::<ObservationUpdateRequest>(slots, request)
     }
 
-    fn slot_map(link_ids: &[&str]) -> BTreeMap<String, watch::Sender<ObservationState>> {
-        link_ids
-            .iter()
-            .map(|id| {
-                let (tx, _rx) = watch::channel(ObservationState::unregistered());
-                (id.to_string(), tx)
-            })
-            .collect()
+    fn slot_map(link_ids: &[&str]) -> BTreeMap<String, SlotChannel<ObservationState>> {
+        slot_map_of(Cardinality::ZeroOrMore, link_ids)
+    }
+
+    fn slot_map_of(
+        cardinality: Cardinality,
+        link_ids: &[&str],
+    ) -> BTreeMap<String, SlotChannel<ObservationState>> {
+        super::super::slot_update::slot_map(cardinality, link_ids, ObservationState::unregistered)
     }
 
     fn member(instance: &str, generation: u64, live: bool) -> ObservedMemberState {
@@ -141,7 +154,7 @@ mod tests {
     #[test]
     fn applies_members_then_advances_one_generation_in_place() {
         let slots = slot_map(&["observed_arm"]);
-        let watched = slots["observed_arm"].subscribe();
+        let watched = slots["observed_arm"].sender().subscribe();
 
         let first = apply(
             &slots,
@@ -180,7 +193,7 @@ mod tests {
     #[test]
     fn a_delivery_replaces_the_member_set_wholesale() {
         let slots = slot_map(&["observed_arm"]);
-        let watched = slots["observed_arm"].subscribe();
+        let watched = slots["observed_arm"].sender().subscribe();
 
         apply(
             &slots,
@@ -208,7 +221,7 @@ mod tests {
     #[test]
     fn a_down_source_stays_listed_with_liveness_cleared() {
         let slots = slot_map(&["observed_arm"]);
-        let watched = slots["observed_arm"].subscribe();
+        let watched = slots["observed_arm"].sender().subscribe();
 
         apply(
             &slots,
@@ -235,7 +248,7 @@ mod tests {
     #[test]
     fn rejects_strictly_stale_sequence_without_rollback() {
         let slots = slot_map(&["observed_arm"]);
-        let watched = slots["observed_arm"].subscribe();
+        let watched = slots["observed_arm"].sender().subscribe();
 
         apply(
             &slots,
@@ -258,7 +271,7 @@ mod tests {
     #[test]
     fn equal_sequence_retry_is_idempotent_and_accepted() {
         let slots = slot_map(&["observed_arm"]);
-        let mut watched = slots["observed_arm"].subscribe();
+        let mut watched = slots["observed_arm"].sender().subscribe();
 
         apply(
             &slots,
@@ -288,5 +301,37 @@ mod tests {
         assert!(!response.accepted);
         assert!(!response.stale_sequence);
         assert!(response.message.contains("observed_gripper"));
+    }
+
+    /// A member whose source is down stays listed, so an empty delivery to a
+    /// `one_or_more` observer slot is a miscount: it is refused, the slot
+    /// keeps what it observes, and no watcher hears of it.
+    #[test]
+    fn a_delivery_emptying_a_one_or_more_slot_is_refused() {
+        let slots = slot_map_of(Cardinality::OneOrMore, &["observed_arm"]);
+        apply(
+            &slots,
+            &request("observed_arm", 1, vec![member("arm_1", 1, true)]),
+        );
+        let mut watched = slots["observed_arm"].sender().subscribe();
+        watched.mark_unchanged();
+
+        let response = apply(&slots, &request("observed_arm", 2, Vec::new()));
+        assert!(!response.accepted, "{response:?}");
+        assert!(
+            response
+                .message
+                .contains("`one_or_more` admits no set of 0 members; the plan and this node's manifest disagree"),
+            "{response:?}"
+        );
+        assert!(
+            !watched.has_changed().unwrap(),
+            "a refusal wakes no watcher"
+        );
+        assert_eq!(
+            instances(&slots["observed_arm"].sender().borrow()),
+            ["arm_1"],
+            "the refused set never landed"
+        );
     }
 }

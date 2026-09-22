@@ -350,6 +350,27 @@ fn format_stack_list(
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+            // One row per slot the copy adds to, however many members it put
+            // there: a camera rig fills three slots of one panel. The slots
+            // keep the order the copy added them, as the record holds them.
+            let mut by_slot: Vec<((&config::runtime::Name, &str), Vec<&str>)> = Vec::new();
+            for member in &copy.set_members {
+                let slot = (&member.instance_id, member.link_id.as_str());
+                match by_slot.iter_mut().find(|(held, _)| *held == slot) {
+                    Some((_, targets)) => targets.push(member.target.as_str()),
+                    None => by_slot.push((slot, vec![member.target.as_str()])),
+                }
+            }
+            if !by_slot.is_empty() {
+                let _ = writeln!(body, "  Set members:");
+            }
+            for ((instance_id, link_id), targets) in by_slot {
+                let _ = writeln!(
+                    body,
+                    "    {instance_id}.links.{link_id} -> {}",
+                    targets.join(", ")
+                );
+            }
         }
         if !section.copies.is_empty() {
             let _ = writeln!(body);
@@ -1251,6 +1272,19 @@ mod tests {
                         config::runtime::Name::new("alpha_commander_inst").unwrap(),
                     ],
                     selections: vec!["commander=web_commander".to_string()],
+                    set_members: ["alpha_wrist_left", "alpha_chest"]
+                        .into_iter()
+                        .map(|target| core_node_api::encoding::SetMember {
+                            instance_id: config::runtime::Name::new("panel_inst").unwrap(),
+                            link_id: "cameras".to_string(),
+                            target: target.to_string(),
+                        })
+                        .chain([core_node_api::encoding::SetMember {
+                            instance_id: config::runtime::Name::new("monitor_inst").unwrap(),
+                            link_id: "robots".to_string(),
+                            target: "alpha_arm_inst".to_string(),
+                        }])
+                        .collect(),
                 },
                 core_node_api::encoding::CopyInfo {
                     name: config::runtime::Name::new("bravo").unwrap(),
@@ -1258,6 +1292,7 @@ mod tests {
                     core_node: config::runtime::CoreNodeName::new("jetson-2").unwrap(),
                     instance_ids: vec![config::runtime::Name::new("bravo_arm_inst").unwrap()],
                     selections: Vec::new(),
+                    set_members: Vec::new(),
                 },
             ],
             ..successful_section("cn-coordinator", "robo-a")
@@ -1270,6 +1305,23 @@ mod tests {
         assert!(
             out.contains("Instances: alpha_arm_inst, alpha_commander_inst"),
             "the copy lists its minted instances:\n{out}"
+        );
+        assert!(
+            out.contains("    monitor_inst.links.robots -> alpha_arm_inst"),
+            "the copy lists the set members it added:\n{out}"
+        );
+        assert!(
+            out.contains("    panel_inst.links.cameras -> alpha_wrist_left, alpha_chest"),
+            "every member of one slot shares that slot's row:\n{out}"
+        );
+        assert!(
+            out.find("panel_inst.links.cameras") < out.find("monitor_inst.links.robots"),
+            "the slots keep the record's order, not alphabetical order:\n{out}"
+        );
+        assert_eq!(
+            out.matches("Set members:").count(),
+            1,
+            "one label per copy, and none for a copy that added no member:\n{out}"
         );
         assert!(
             out.contains("Copy bravo of openarm_v2 on jetson-2") && !out.contains("jetson-2:"),

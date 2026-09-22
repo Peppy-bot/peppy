@@ -15,19 +15,18 @@ use crate::messaging::{
     TopicMessenger, TopicPublisher,
 };
 use crate::runtime::NodeRunner;
-use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
+use crate::runtime::slot_stream::{FollowedSlot, SlotStream, StreamWiring, start_slot_stream};
 use crate::types::{Message, Payload};
 use config::node::{Cardinality, QoSProfile};
 use pmi::PairingRecipient;
 use tokio::sync::watch;
 
 /// A scalar accessor read on a slot whose set cannot fit it: the generated
-/// code and the manifest disagree, which regenerating the node's bindings
-/// fixes.
+/// code and the manifest disagree.
 pub(crate) fn pairing_shape_panic(link_id: &str, accessor: &str, cardinality: &str) -> ! {
     panic!(
-        "pairing slot `{link_id}` declares cardinality `{cardinality}`, which `{accessor}` cannot read; \
-         regenerate the node's bindings so the slot is read through the accessor its cardinality declares"
+        "pairing slot `{link_id}` declares cardinality `{cardinality}`, which `{accessor}` cannot read: {}",
+        super::RESYNC_REMEDY
     )
 }
 
@@ -124,7 +123,7 @@ impl PeerSlotSet {
 /// unpaired and grows and shrinks with the slot's pairs.
 ///
 /// [`slot_stream`]: crate::runtime::slot_stream
-pub(crate) struct PeerFollow;
+struct PeerFollow;
 
 /// What every pin of a pairing or observer slot's stream subscribes against:
 /// the pairing's target and the recipient the subscriber stands for.
@@ -158,25 +157,17 @@ impl FollowedSlot for PeerFollow {
         &pin.producer
     }
 
-    async fn subscribe(
-        messenger: &MessengerHandle,
-        as_core_node: &str,
-        as_instance_id: &str,
-        wire: &PairingWire,
-        pin: &PeerInfo,
-        topic: &str,
-        qos: QoSProfile,
-    ) -> Result<Subscription> {
+    async fn subscribe(wiring: &StreamWiring<Self>, pin: &PeerInfo) -> Result<Subscription> {
         TopicMessenger::subscribe_peer_pinned(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            wire.target.clone(),
+            &wiring.messenger,
+            &wiring.as_core_node,
+            &wiring.as_instance_id,
+            wiring.wire.target.clone(),
             &pin.producer,
             &pin.peer_link_id,
-            wire.recipient.clone(),
-            topic,
-            qos,
+            wiring.wire.recipient.clone(),
+            &wiring.topic,
+            wiring.qos.clone(),
         )
         .await
     }
@@ -238,15 +229,17 @@ pub async fn subscribe_peer(
         topic.to_string(),
         qos,
     )
+    .await
 }
 
-/// Messenger-level core of [`subscribe_peer`]: the same forwarding-task
-/// machinery driven by an explicit watch channel instead of a `NodeRunner`'s
-/// processor-owned slot. `own_link_id` is this node's slot in every pair, the
-/// recipient each peer publishes to. Prefer [`subscribe_peer`] in nodes; this
-/// seam exists for embedders and tests that manage peer state themselves.
+/// Messenger-level core of [`subscribe_peer`]: the same engine driven by an
+/// explicit watch channel instead of a `NodeRunner`'s processor-owned slot.
+/// `own_link_id` is this node's slot in every pair, the recipient each peer
+/// publishes to. Prefer [`subscribe_peer`] in nodes; this seam exists for
+/// embedders and tests that manage peer state themselves. The stream ends when
+/// `watch_rx`'s sender drops.
 #[allow(clippy::too_many_arguments)]
-pub fn subscribe_peer_with_watch(
+pub async fn subscribe_peer_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,
     as_instance_id: String,
@@ -260,19 +253,19 @@ pub fn subscribe_peer_with_watch(
         pmi::Segment::try_link_id(&own_link_id)
             .map_err(|e| Error::PeppyMessagingInterface(e.into()))?,
     );
+    let wiring = StreamWiring {
+        messenger,
+        as_core_node,
+        as_instance_id,
+        wire: PairingWire {
+            target: pairing_target,
+            recipient,
+        },
+        topic,
+        qos,
+    };
     Ok(PeerSubscription {
-        stream: spawn_slot_stream::<PeerFollow>(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            watch_rx,
-            PairingWire {
-                target: pairing_target,
-                recipient,
-            },
-            topic,
-            qos,
-        ),
+        stream: start_slot_stream::<PeerFollow>(wiring, watch_rx).await?,
     })
 }
 
@@ -531,5 +524,24 @@ mod tests {
             slot.wait_paired().await,
             Err(Error::PairingSlotClosed)
         ));
+    }
+
+    /// `is_followed` answers as `desired` does for every pair the slot holds
+    /// and for one it does not, so the engine's read-time filter and its
+    /// converge task agree on the followed set.
+    #[test]
+    fn is_followed_agrees_with_desired() {
+        use crate::runtime::slot_stream::FollowedSlot;
+        let state = PeerSetState::seeded(vec![member("arm_1"), member("arm_2")]);
+        let desired = PeerFollow::desired(&state);
+        assert_eq!(desired.len(), 2);
+        for pin in &desired {
+            assert!(PeerFollow::is_followed(&state, pin));
+        }
+        assert!(!PeerFollow::is_followed(&state, &member("arm_3").info));
+
+        let shrunk = PeerSetState::seeded(vec![member("arm_2")]);
+        assert!(!PeerFollow::is_followed(&shrunk, &member("arm_1").info));
+        assert_eq!(PeerFollow::desired(&shrunk), [member("arm_2").info]);
     }
 }

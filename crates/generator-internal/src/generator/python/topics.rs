@@ -493,7 +493,7 @@ pub fn build_pair_topic_consumer(
         PairTopicConsumerKind::Observed(cardinality) => {
             emit_observer_module_header(&mut builder, &topic.name, qos, peer, cardinality);
             (
-                "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance.",
+                "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance. Where the slot's cardinality admits more than one source, the subscription follows the set as a join grows it or a removal shrinks it.",
                 SubscriptionTag::ObservedSource,
                 "Subscribe to this observed pairing topic. Legal before any source is resolved or live: the subscription stays silent until a member emits.",
                 "subscribe_observed",
@@ -580,12 +580,19 @@ pub fn build_consumed_topic(
     crate::generator::python::services::emit_bound_producer_accessor_fn(&mut builder, dependency);
 
     builder.blank_line();
+    let follows_the_set = if dependency.cardinality.is_scalar() {
+        ""
+    } else {
+        " The subscription follows the set as a join grows it or a removal shrinks it."
+    };
     emit_subscription_class(
         &mut builder,
-        "A merged subscription covering every producer bound to this slot. \
-Per-producer order is preserved (no total order across producers), ready \
-producers are merged fairly, and the bound set is fixed at startup; filter \
-on the yielded producer to follow a single member.",
+        &format!(
+            "A merged subscription covering every producer bound to this slot. \
+Per-producer order is preserved (no total order across producers), and ready \
+producers are merged fairly; filter on the yielded producer to follow a single \
+member.{follows_the_set}"
+        ),
         SubscriptionTag::Producer,
     );
 
@@ -600,21 +607,16 @@ on the yielded producer to follow a single member.",
         |builder| {
             builder.line(&format!("topic_name = \"{topic_name}\""));
             builder.call(
-                "inner = await peppylib.TopicMessenger.subscribe_bound_set(",
+                "inner = await node_runner.subscribe_bound_set(",
                 &[
-                    "node_runner.messenger(),",
-                    "node_runner.bound_core_node(),",
-                    "node_runner.bound_instance_id(),",
+                    // The slot's bound producer set, followed as the daemon
+                    // grows or shrinks it. It is empty on a zero_or_more slot
+                    // bound to nothing and on a vacant zero_or_one slot, where
+                    // the subscription yields nothing until shutdown.
+                    &format!("{:?},", dependency.link_id),
                     &format!("{from_target},"),
                     "topic_name,",
-                    // The slot's complete bound producer set: sized per the
-                    // declared cardinality at launch, re-validated at node
-                    // startup. It is empty on a zero_or_more slot bound to
-                    // nothing and on a vacant zero_or_one slot, where the
-                    // subscription yields nothing until shutdown.
-                    &format!("node_runner.bound_producers({:?}),", dependency.link_id),
                     "peppylib.QoSProfile.Standard,",
-                    "node_runner.cancellation_token(),",
                 ],
                 ")",
             );

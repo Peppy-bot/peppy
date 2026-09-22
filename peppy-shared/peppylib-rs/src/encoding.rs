@@ -1,3 +1,4 @@
+pub mod binding_update;
 pub mod endpoints;
 pub mod health;
 pub mod observation_update;

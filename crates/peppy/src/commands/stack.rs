@@ -54,7 +54,10 @@ pub enum StackCommands {
     /// Add a copy of one of the launcher's options to the running stack.
     ///
     /// The copy's instances are minted as NAME_<instance-id>, the way
-    /// `node run` adds an instance of a node.
+    /// `node run` adds an instance of a node. Where the option's fragments use
+    /// `add_links`, the copy also joins its instances to a running instance's
+    /// `one_or_more` or `zero_or_more` slot, which `stack list` then shows
+    /// under the copy.
     Join {
         /// The option to copy: one of a `zero_or_more` axis of the running
         /// launcher.
@@ -77,7 +80,11 @@ pub enum StackCommands {
         #[command(flatten)]
         timeouts: StackTimeouts,
     },
-    /// Stop and remove every instance of one copy.
+    /// Stop and remove every instance of one copy, and take the members it
+    /// added out of the running sets.
+    ///
+    /// A removal that would leave a `one_or_more` slot with no member is
+    /// refused, naming the slot.
     Remove {
         /// The copy's name, as listed by `stack list`.
         #[arg(value_parser = parse_copy_name)]

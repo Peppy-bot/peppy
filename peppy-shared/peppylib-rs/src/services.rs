@@ -1,3 +1,4 @@
+pub mod binding_update;
 pub mod clock_offset;
 pub mod daemon_watchdog;
 pub mod endpoints;
@@ -6,7 +7,7 @@ pub mod observation_update;
 pub mod peer_update;
 pub mod ready;
 pub mod shutdown;
-pub(crate) mod slot_update;
+pub mod slot_update;
 
 use crate::messaging::{SenderTarget, ServiceRequestContext};
 use crate::runtime::TaskHandle;

@@ -21,8 +21,8 @@ use core_node_api::ServiceId;
 use core_node_api::encoding::{
     FederationVerdict, LaunchIdentity, PairCommitRequest, ParticipantInstancesRemoveRequest,
     ParticipantReleaseRequest, ParticipantReserveRequest, ParticipantReserveResponse,
-    ParticipantSliceBeginRequest, ParticipantSliceBeginResponse, RelationshipEvent,
-    RelationshipNotification, RelationshipNotificationAck,
+    ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest, ParticipantSliceBeginResponse,
+    RelationshipEvent, RelationshipNotification, RelationshipNotificationAck,
 };
 use core_node_api::names;
 use daemon_config::repository::DeploymentPins;
@@ -108,6 +108,11 @@ federation_endpoint!(
     instances_remove_inner
 );
 federation_endpoint!(
+    listen_for_participant_sets_update,
+    ServiceId::ParticipantSetsUpdate,
+    sets_update_inner
+);
+federation_endpoint!(
     listen_for_pair_commit,
     ServiceId::PairCommit,
     pair_commit_inner
@@ -123,40 +128,90 @@ federation_endpoint!(
     notify_inner
 );
 
+/// The refusal a request gets when this daemon's reservation and its current
+/// stack slice do not both belong to `launch_id`, naming what the request left
+/// undone (`undone`) and how to clear the machine.
+fn refuse_outside_slice(
+    context: &FederationServiceContext,
+    launch_id: &str,
+    undone: &str,
+) -> String {
+    format!(
+        "the reservation and current stack slice must both belong to launch `{launch_id}`; \
+         {undone}. If `{core_node}` still runs this launch's instances, run the command again; \
+         otherwise clear it with `peppy stack reset --core-node {core_node}`",
+        core_node = context.core_node_name
+    )
+}
+
+/// Admits a request from the coordinator of the launch this daemon holds a
+/// slice of: the stack mutation, held for the request's lifetime, or the
+/// refusal, naming what the request left undone.
+fn admit_slice_change(
+    context: &FederationServiceContext,
+    launch_id: &str,
+    undone: &str,
+) -> std::result::Result<tokio::sync::OwnedRwLockWriteGuard<()>, FederationVerdict> {
+    let mutation = context
+        .ownership
+        .stack
+        .try_begin_change()
+        .map_err(|busy| FederationVerdict::refused(busy.to_string()))?;
+    if !holds_launch_slice(context, launch_id) {
+        return Err(FederationVerdict::refused(refuse_outside_slice(
+            context, launch_id, undone,
+        )));
+    }
+    Ok(mutation)
+}
+
+/// Whether this daemon's reservation and its current stack slice both belong
+/// to `launch_id`, driven by the coordinator holding the reservation.
+fn holds_launch_slice(context: &FederationServiceContext, launch_id: &str) -> bool {
+    let reserved = context.ownership.held_reservation();
+    let slice = context.ownership.slice();
+    reserved
+        .as_ref()
+        .zip(slice.as_ref())
+        .is_some_and(|((launch, coordinator), slice)| {
+            launch.as_str() == launch_id
+                && slice.launch_id == *launch
+                && slice.coordinator_core_node == *coordinator
+        })
+}
+
+/// Replaces set slots of instances this daemon runs, on behalf of the
+/// coordinator of the launch whose slice it holds.
+async fn sets_update_inner(
+    request: &ServiceRequestContext,
+    context: &FederationServiceContext,
+) -> Result<Payload> {
+    let decoded = ParticipantSetsUpdateRequest::decode(request.message().payload_bytes().as_ref())?;
+    let _mutation = match admit_slice_change(context, &decoded.launch_id, "no set was replaced") {
+        Ok(mutation) => mutation,
+        Err(refusal) => return refusal.encode().map_err(Into::into),
+    };
+    let failures = context.relationships.replace_sets(decoded.sets).await;
+    if failures.is_empty() {
+        return FederationVerdict::ok().encode().map_err(Into::into);
+    }
+    // One failed set per line, which the coordinator reports line by line.
+    FederationVerdict::refused(failures.join("\n"))
+        .encode()
+        .map_err(Into::into)
+}
+
 async fn instances_remove_inner(
     request: &ServiceRequestContext,
     context: &FederationServiceContext,
 ) -> Result<Payload> {
     let decoded =
         ParticipantInstancesRemoveRequest::decode(request.message().payload_bytes().as_ref())?;
-    let _mutation = match context.ownership.stack.try_begin_change() {
-        Ok(mutation) => mutation,
-        Err(busy) => {
-            return FederationVerdict::refused(busy.to_string())
-                .encode()
-                .map_err(Into::into);
-        }
-    };
-    let reserved = context.ownership.held_reservation();
-    let slice = context.ownership.slice();
-    let authorized =
-        reserved
-            .as_ref()
-            .zip(slice.as_ref())
-            .is_some_and(|((launch, coordinator), slice)| {
-                launch == &decoded.launch_id
-                    && slice.launch_id == *launch
-                    && slice.coordinator_core_node == *coordinator
-            });
-    if !authorized {
-        return FederationVerdict::refused(format!(
-            "the reservation and current stack slice must both belong to this launch; no \
-             instances were removed. Clear this machine with `peppy stack reset --core-node {}`",
-            context.core_node_name
-        ))
-        .encode()
-        .map_err(Into::into);
-    }
+    let _mutation =
+        match admit_slice_change(context, &decoded.launch_id, "no instances were removed") {
+            Ok(mutation) => mutation,
+            Err(refusal) => return refusal.encode().map_err(Into::into),
+        };
     if decoded
         .instance_ids
         .as_slice()

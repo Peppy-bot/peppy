@@ -17,7 +17,7 @@ use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
 use config::runtime::{CoreNodeName, CoreNodeNameError, Name};
-use core_node_api::encoding::ArgumentOverride;
+use core_node_api::encoding::{ArgumentOverride, SetMember};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// One copy on the stack: what it copies, how its axes were filled, and the
@@ -29,6 +29,9 @@ pub struct CopyRecord {
     pub option: String,
     pub selection: UnitSelection,
     pub instance_ids: Vec<Name>,
+    /// The members the copy added to stack instances' set slots, in the order
+    /// it added them. Removing the copy takes out exactly these.
+    pub set_members: Vec<SetMember>,
 }
 
 /// One write a copy makes to a stack instance: the field and the value the
@@ -60,6 +63,13 @@ pub(super) struct ComposedCopy {
 }
 
 impl ComposedCopy {
+    /// Whether `target`, `instance` or `instance/link_id`, names one of the
+    /// copy's own instances.
+    fn owns(&self, target: &str) -> bool {
+        let (instance, _) = split_link_target(target);
+        self.instance_ids.iter().any(|id| id.as_str() == instance)
+    }
+
     pub(super) fn record(&self) -> CopyRecord {
         CopyRecord {
             name: self.name.clone(),
@@ -67,6 +77,21 @@ impl ComposedCopy {
             option: self.option.clone(),
             selection: self.selection.clone(),
             instance_ids: self.instance_ids.clone(),
+            set_members: self
+                .stack_writes
+                .iter()
+                .filter_map(|entry| match &entry.write {
+                    AppliedChange::LinkAdded { slot, target } => Some(SetMember {
+                        instance_id: Name::new(&entry.instance).expect(
+                            "a composed copy writes only to instances the stack runs, whose ids \
+                             are names",
+                        ),
+                        link_id: slot.clone(),
+                        target: target.clone(),
+                    }),
+                    _ => None,
+                })
+                .collect(),
         }
     }
 }
@@ -565,7 +590,8 @@ fn apply_write(
 
 /// The running stack with one more copy: every field the copy writes on
 /// a stack instance already holds that value, except a slot the instance
-/// declares vacant, which the copy's relays pair into.
+/// declares vacant, which the copy's relays pair into, and a set slot the
+/// copy's own instances join.
 pub(super) fn attach(
     existing: &PeppyLauncher,
     copy: &ComposedCopy,
@@ -625,15 +651,15 @@ pub(super) fn attach(
                 }
             },
             AppliedChange::LinkAdded { slot, target } => {
-                let bound = match running.links.get(slot) {
-                    Some(LinkValue::Bound(Selection::Array(existing))) => {
-                        existing.as_slice().contains(target)
-                    }
-                    _ => false,
-                };
-                if !bound {
-                    return Err(refusal(format!("{field}: + {target}")));
+                if !copy.owns(target) {
+                    return Err(CompositionError::JoinAddsStackMember {
+                        name: copy.name.to_string(),
+                        instance: entry.instance.clone(),
+                        slot: slot.clone(),
+                        target: target.clone(),
+                    });
                 }
+                apply_write(running, &entry.write, &format!("copy `{}`", copy.name))?;
             }
             AppliedChange::Clock { new, .. } => {
                 let old = running.framework.clock.as_ref();
@@ -752,9 +778,9 @@ fn pairs_into(copy: &ComposedCopy, instance: &str, slot: &str) -> bool {
         })
 }
 
-/// The running stack without one copy: its instances and its placement link
-/// gone. A stack instance linking to one of the copy's instances keeps the
-/// copy.
+/// The running stack without one copy: its instances, the members it added
+/// to stack sets, and its placement link gone. A stack instance linking to
+/// one of the copy's instances through any other link keeps the copy.
 pub(super) fn detach(
     existing: &PeppyLauncher,
     copy: &CopyRecord,
@@ -774,6 +800,13 @@ pub(super) fn detach(
     remaining
         .core_nodes
         .retain(|link| link != copy.name.as_str());
+    for member in &copy.set_members {
+        // A copy composes over the bare stack, and a removal drops only the
+        // copy's own instances, so the instance a member joined is still here.
+        let running = instance_named_mut(&mut remaining.deployments, member.instance_id.as_str())
+            .expect("a copy's members join bare-stack instances, which a removal never drops");
+        drop_member(running, member);
+    }
     let mut linked: Vec<String> = Vec::new();
     for instance in remaining
         .deployments
@@ -799,6 +832,31 @@ pub(super) fn detach(
     }
     restore_vacancies(&mut remaining, bare, released);
     validate_flat(&remaining)
+}
+
+/// Takes one member a copy added out of the set slot it joined. A slot no
+/// longer holding the member leaves nothing to take out.
+fn drop_member(instance: &mut DeploymentInstance, member: &SetMember) {
+    let Some(LinkValue::Bound(Selection::Array(targets))) = instance.links.get(&member.link_id)
+    else {
+        panic!(
+            "`{}.links.{}` holds a member of a copy, so it holds an array",
+            instance.instance_id, member.link_id
+        );
+    };
+    let kept = LinkTargets::new(
+        targets
+            .as_slice()
+            .iter()
+            .filter(|target| **target != member.target)
+            .cloned()
+            .collect(),
+    )
+    .expect("a subset of a duplicate-free target list is duplicate-free");
+    instance.links.insert(
+        member.link_id.clone(),
+        LinkValue::Bound(Selection::Array(kept)),
+    );
 }
 
 fn add_copy(flat: &mut PeppyLauncher, copy: &ComposedCopy) -> Result<(), CompositionError> {

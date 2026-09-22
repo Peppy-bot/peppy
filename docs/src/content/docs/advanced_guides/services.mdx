@@ -347,7 +347,7 @@ Pass `peppy node sync --include-repositories` (`-r`) to let the daemon fall back
 ### Calling a service
 
 The code generator creates a module for each consumed service under `peppygen.consumed_services` (Python) / `peppygen::consumed_services` (Rust).
-Use `poll` to send a request and wait for a response. The caller selects which bound producer handles the call by passing one explicit `target`, obtained from the slot's [cardinality](/advanced_guides/topics/#dependency-cardinality)-typed accessor: on a `one` slot `bound_producer()` returns the sole producer directly, on a `zero_or_one` slot it returns an `Option` the caller branches on first (a vacant slot has no target, so there is nothing to poll), on a `one_or_more` slot `bound_producers()` returns a never-empty set whose `first()` needs no unwrap, and on a `zero_or_more` slot it returns a possibly empty slice whose empty case the caller must handle. The explicit `target` parameter itself has the same shape for every cardinality. The candidates are fixed by the application bindings at launch, so by the time `poll` runs the route set is already validated.
+Use `poll` to send a request and wait for a response. The caller selects which bound producer handles the call by passing one explicit `target`, obtained from the slot's [cardinality](/advanced_guides/topics/#dependency-cardinality)-typed accessor: on a `one` slot `bound_producer()` returns the sole producer directly, on a `zero_or_one` slot it returns an `Option` the caller branches on first (a vacant slot has no target, so there is nothing to poll), on a `one_or_more` slot `bound_producers()` returns a never-empty set whose `first()` needs no unwrap, and on a `zero_or_more` slot it returns a possibly empty list whose empty case the caller must handle. The explicit `target` parameter itself has the same shape for every cardinality. The candidates are the slot's bound set when the call is made, every member of it validated by the plan that bound it, so by the time `poll` runs the route set is already validated.
 
 <Tabs>
   <TabItem label="Python">
@@ -471,7 +471,7 @@ Codegen provides only single-target operations; calling every member of a multi-
 <Tabs>
   <TabItem label="Python">
 ```python
-# Runs once per bound producer, in binding declaration order.
+# Runs once per bound producer, in plan order.
 # `one_or_more`: the list is never empty, so the body runs at least once.
 # `zero_or_more`: an empty list makes the loop a no-op; no request is sent.
 for camera in enable_camera.bound_producers(node_runner):
@@ -482,15 +482,15 @@ for camera in enable_camera.bound_producers(node_runner):
   </TabItem>
   <TabItem label="Rust">
 ```rust
-// Runs once per bound producer, in binding declaration order.
+// Runs once per bound producer, in plan order.
 // `one_or_more`: the set is never empty, so the body runs at least once.
-// `zero_or_more`: an empty slice makes the loop a no-op; no request is sent.
+// `zero_or_more`: an empty list makes the loop a no-op; no request is sent.
 let cameras = enable_camera::bound_producers(&node_runner);
 for camera in cameras {
     let request = enable_camera::Request::new(true);
     let response = enable_camera::poll(
         &node_runner,
-        camera,
+        &camera,
         Duration::from_secs(5),
         request,
     )
@@ -514,7 +514,8 @@ camera = enable_camera.bound_producers(node_runner)[0]
   </TabItem>
   <TabItem label="Rust">
 ```rust
-let camera = enable_camera::bound_producers(&node_runner).first();
+let cameras = enable_camera::bound_producers(&node_runner);
+let camera = cameras.first();
 ```
   </TabItem>
 </Tabs>
@@ -602,7 +603,7 @@ The launcher validator runs these checks before the stack starts:
 2. **The value's shape must match the slot's cardinality.** A scalar slot (`one` or `zero_or_one`) takes a scalar, a multi slot takes an array, an empty array meets only `zero_or_more`, and duplicate targets within one slot are rejected. Repeated `--link KEY@…` flags accumulate on a multi slot and are a hard error on a scalar slot.
 3. **Every target must satisfy the slot, checked per bound instance.** A target `instance_id` that deploys a different node than the slot expects (or one that does not implement the requested contract) is rejected.
 4. **Stack-wide `instance_id` uniqueness.** Every `instance_id` must be unique across the entire stack, not just within a `(node_name, node_tag)` group. The `--link` syntax names producers by `instance_id`, so a duplicate would make the binding ambiguous.
-5. **Bindings are stamped with the producer's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps each target producer instance's resolved `core_node` into the binding (equal to the launching daemon's only in the single-machine case), preserving application declaration order, so generated calls address exactly the selected producer and never match on `instance_id` alone.
+5. **Bindings are stamped with the producer's `core_node`.** The wire addresses producers by the full `(core_node, instance_id)` pair; the validator stamps each target producer instance's resolved `core_node` into the binding (equal to the launching daemon's only in the single-machine case), preserving plan order, so generated calls address exactly the selected producer and never match on `instance_id` alone. Plan order is the launcher's array order, then the members each joined copy adds, in the order the copies joined (see [validator rule 5](/advanced_guides/topics/#validator-rules)).
 
 ## Error handling
 

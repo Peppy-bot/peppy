@@ -46,6 +46,11 @@
         path: "nodes/reactive_policy/peppy.json5"
       }
     },
+    set_watch: {
+      v1: {
+        path: "nodes/set_watch/peppy.json5"
+      }
+    },
     sim_clock_probe: {
       v1: {
         path: "nodes/sim_clock_probe/peppy.json5"

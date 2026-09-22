@@ -34,11 +34,11 @@ pub(crate) use topics::{
 /// `ActionFeedbackProducerGone` joins the `ConnectionError` family (the peer
 /// vanished), which keeps it type-distinguishable from the clean
 /// end-of-stream close (`ActionFeedbackChannelClosed` → `RuntimeError`).
-/// `UnknownPairingSlot`, `UnknownObservationSlot` and `TargetNotBound` are
-/// caller misuse (a link_id the manifest never declared as a pairing / observer
-/// slot / a producer outside the slot's bound set), so they map to `ValueError`
-/// — the same type `peer()` / `observation_slot()` raise for the same kind of
-/// input.
+/// `UnknownPairingSlot`, `UnknownObservationSlot`, `UnknownProducerSlot` and
+/// `TargetNotBound` are caller misuse (a link_id the manifest never declared as
+/// a pairing, observer or consumer slot, or a producer outside the slot's bound
+/// set), so they map to `ValueError`, the same type `peer()` and
+/// `observation_slot()` raise for the same kind of input.
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     match &err {
         PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
@@ -47,6 +47,7 @@ pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
         PeppyError::UnknownPairingSlot { .. }
         | PeppyError::UnknownObservationSlot { .. }
         | PeppyError::PeerNotPaired { .. }
+        | PeppyError::UnknownProducerSlot { .. }
         | PeppyError::TargetNotBound { .. }
         | PeppyError::UndeclaredEndpoint { .. }
         | PeppyError::EndpointAlreadyAnnounced { .. }

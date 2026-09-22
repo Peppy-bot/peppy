@@ -19,7 +19,7 @@ pub(crate) struct SlotUpdateTarget {
     producer: ProducerRef,
 }
 
-/// Shared transport and sequencing for the pairing and observation
+/// Shared transport and sequencing for the pairing, observation and binding
 /// coordinators' absolute-state update protocols.
 pub(crate) struct SlotUpdateClient {
     node_stack: Arc<NodeStack>,

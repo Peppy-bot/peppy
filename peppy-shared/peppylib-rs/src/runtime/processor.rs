@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use crate::error::{Error, ParameterDeserializationError, Result};
-use crate::messaging::{ObservationState, ObservedMemberState, PeerMember, PeerSetState};
+use crate::messaging::{
+    BoundSetState, ObservationState, ObservedMemberState, PeerMember, PeerSetState,
+};
 use config::{
     AnyType, NodeArguments,
     consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME},
@@ -18,6 +20,10 @@ use std::sync::atomic::AtomicU64;
 use tokio::sync::watch;
 
 use super::builder::StandaloneConfig;
+use crate::services::binding_update::BindingSlotChannels;
+use crate::services::observation_update::ObservationSlotChannels;
+use crate::services::peer_update::PairingSlotChannels;
+use crate::services::slot_update::SlotChannel;
 
 /// The core-node identity segment every standalone (daemon-less) node runs
 /// under. Generated test surfaces pin subscriptions and producer refs to the
@@ -31,16 +37,10 @@ pub const STANDALONE_CORE_NODE: &str = "standalone-core";
 pub struct Processor {
     runtime_config: RuntimeConfig,
     validated_arguments: NodeArguments,
-    /// The validated bound producer set per declared `link_id`, sized per
-    /// the slot's declared cardinality (the [`BoundProducers`] value type
-    /// carries the ordered / duplicate-free invariants). Computed once at
-    /// startup from the daemon-supplied `slot_bindings` plus the manifest's
-    /// `depends_on`; immutable for the node's lifetime (a producer
-    /// disconnecting never shrinks it), and cached so subscribe / poll /
-    /// send_goal call sites return a borrowed slice cheaply.
-    ///
-    /// [`BoundProducers`]: config::runtime::BoundProducers
-    bound_producers: BTreeMap<String, config::runtime::BoundProducers>,
+    /// Every `depends_on.{nodes,contracts}` slot, seeded from the boot config's
+    /// validated `slot_bindings`: a live channel for a set slot, the producer
+    /// its deployment bound for a scalar one (see [`BoundSlots`]).
+    bound_slots: BoundSlots,
     /// One live pairing-slot channel per `depends_on.pairings` entry, keyed
     /// by the slot's link_id. The map's key set is fixed at startup (slots
     /// are declared in the manifest); only the channel values move: the
@@ -48,25 +48,22 @@ pub struct Processor {
     /// `PeerSubscription`s, `PeerSlot`s, `PeerSlotSet`s and `PeerPublisher`s
     /// observe them. Behind an `Arc` so `Processor::clone` shares the live
     /// channels instead of forking them.
-    pairing_slots: Arc<BTreeMap<String, watch::Sender<PeerSetState>>>,
-    /// Each pairing slot's declared `cardinality`, keyed by link_id and read
-    /// from the same manifest entries that seed `pairing_slots`. It picks the
+    /// Each channel carries the slot's declared `cardinality`, which picks the
     /// slot's handle (`peer` vs `peer_set`) and which accessor that slot's
     /// generated module calls.
-    pairing_cardinalities: BTreeMap<String, Cardinality>,
+    pairing_slots: PairingSlotChannels,
     /// One live observation-slot channel per `depends_on.pairing_observers`
     /// entry, keyed by the slot's link_id. Same lifecycle shape as
     /// `pairing_slots`: the key set is fixed at startup and the daemon mutates
     /// the channel values over the `observation_update` service, while per-slot
     /// `ObservedTopicSubscription`s / `ObservationSlot`s observe them.
-    observation_slots: Arc<BTreeMap<String, watch::Sender<ObservationState>>>,
-    /// Each observer slot's declared `cardinality`, keyed by link_id and read
-    /// from the same manifest entries that seed `observation_slots`. It picks
-    /// the slot's handle (`observation_slot` vs `observation_slot_set`) and,
-    /// through the handle, which accessor that slot's generated module calls; it
-    /// also gates the slot's seed at startup, so a floored slot cannot boot
-    /// observing less than its manifest declares.
-    observation_cardinalities: BTreeMap<String, Cardinality>,
+    /// Each channel carries the slot's declared `cardinality`, which picks the
+    /// slot's handle (`observation_slot` vs `observation_slot_set`) and,
+    /// through the handle, which accessor that slot's generated module calls;
+    /// it also gates the slot's seed at startup, so a floored slot cannot boot
+    /// observing less than its manifest declares, and gates every delivery the
+    /// daemon makes into it.
+    observation_slots: ObservationSlotChannels,
     /// The instant this instance's clock last saw, shared by every handle that
     /// reads or writes it. A consumer's subscription feeds it; a publisher's
     /// `publish` commits to it and reads it straight back, which is how a
@@ -152,9 +149,9 @@ impl Processor {
             &node_config.execution.parameters,
         )?;
 
-        let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_cardinalities = build_pairing_cardinalities(&node_config);
         let pairing_slots = build_pairing_slots(&runtime_config, &pairing_cardinalities)?;
+        let bound_slots = build_bound_slots(&runtime_config, &node_config)?;
         let observation_cardinalities = build_observer_cardinalities(&node_config);
         let observation_slots =
             build_observation_slots(&runtime_config, &observation_cardinalities)?;
@@ -162,11 +159,9 @@ impl Processor {
         Ok(Self {
             runtime_config,
             validated_arguments,
-            bound_producers,
+            bound_slots,
             pairing_slots,
-            pairing_cardinalities,
             observation_slots,
-            observation_cardinalities,
             clock_cache: Arc::new(AtomicU64::new(0)),
             endpoint_labels: declared_endpoint_labels(&node_config),
         })
@@ -229,7 +224,7 @@ impl Processor {
         // launcher's validated binding map. Undeclared link_ids are ignored
         // with a warning (mirroring `peer_pins` below); a declared slot
         // whose seeded set violates its cardinality fails
-        // `build_bound_producers`, exactly like a daemon boot config with a
+        // `build_bound_slots`, exactly like a daemon boot config with a
         // bad binding. Duplicate seeded producers are rejected here, where
         // `BoundProducers::try_from` mirrors the boot-config parse rule.
         let mut slot_bindings = config::runtime::SlotBindings::new();
@@ -355,19 +350,17 @@ impl Processor {
             STANDALONE_CORE_NODE,
         )?;
 
-        let bound_producers = build_bound_producers(&runtime_config, &node_config)?;
         let pairing_slots = build_pairing_slots(&runtime_config, &pairing_cardinalities)?;
+        let bound_slots = build_bound_slots(&runtime_config, &node_config)?;
         let observation_slots =
             build_observation_slots(&runtime_config, &observation_cardinalities)?;
 
         Ok(Self {
             runtime_config,
             validated_arguments,
-            bound_producers,
+            bound_slots,
             pairing_slots,
-            pairing_cardinalities,
             observation_slots,
-            observation_cardinalities,
             clock_cache: Arc::new(AtomicU64::new(0)),
             endpoint_labels: declared_endpoint_labels(&node_config),
         })
@@ -462,126 +455,105 @@ impl Processor {
         &self.clock_cache
     }
 
-    /// The runtime-resolved, immutable, ordered producer set bound to the
-    /// consumer slot declared at `link_id`, from the daemon-supplied
-    /// `slot_bindings`, cached once at startup for the lifetime of the
-    /// node. Serves topic subscribes and service / action calls alike:
-    /// every interface kind sharing the slot's `link_id` sees the same set
-    /// in the same declaration order, so `.first()` is deterministic. The
-    /// set's validated size is the slot's declared cardinality (exactly one
-    /// for `one`, at most one for `zero_or_one`, at least one for
-    /// `one_or_more`, any size for `zero_or_more`); a producer disconnecting
-    /// at runtime never shrinks it. Startup validates every declared slot
-    /// into the cache, so a cache miss means the generated code and the
-    /// manifest disagree (version skew / stale codegen), a bug rather than a
-    /// user error, and panics.
+    /// The producer set currently bound to the consumer slot declared at
+    /// `link_id`, in plan order: the boot config's binding until the daemon
+    /// delivers another over `binding_update`, which it does for a set slot
+    /// alone. Serves topic subscribes and service / action calls alike, so every
+    /// interface kind sharing the slot's `link_id` reads the same set. Its size is
+    /// always one the slot's declared cardinality admits: node startup checks
+    /// the boot config's binding and the daemon plans every set it delivers. A
+    /// producer disconnecting never shrinks it. A slot the manifest does not
+    /// declare means the generated code and the manifest disagree (version skew
+    /// / stale codegen), a codegen bug, and panics.
     ///
-    /// The generated accessors are cardinality-typed: only `zero_or_more`
-    /// slots' `bound_producers()` splice this plain, possibly empty slice
-    /// directly. `one` slots go through [`Self::sole_bound_producer`],
-    /// `zero_or_one` slots through [`Self::optional_bound_producer`] and
-    /// `one_or_more` slots through [`Self::non_empty_bound_producers`];
-    /// every generated `subscribe()` passes this slice to
-    /// `subscribe_bound_set` regardless of cardinality.
-    pub fn bound_producers(&self, link_id: &str) -> &[crate::messaging::ProducerRef] {
-        self.bound_producers
-            .get(link_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "consumer slot `{link_id}` has no cached producer set: the generated code \
-                     and the manifest disagree (version skew / stale codegen) — regenerate \
-                     bindings for this node"
-                )
-            })
+    /// Generated `bound_producers()` module functions of `zero_or_more` slots
+    /// splice this directly. `one` slots go through
+    /// [`Self::sole_bound_producer`], `zero_or_one` slots through
+    /// [`Self::optional_bound_producer`] and `one_or_more` slots through
+    /// [`Self::non_empty_bound_producers`].
+    pub fn bound_producers(&self, link_id: &str) -> Vec<crate::messaging::ProducerRef> {
+        self.bound_channel(link_id)
+            .borrow()
+            .producers
             .as_slice()
+            .to_vec()
     }
 
-    /// The sole producer bound to a `cardinality: "one"` consumer slot.
-    /// Startup validated every slot's set size against its declared
-    /// cardinality, so exactly one member exists; any other size here means
-    /// the generated code and the manifest disagree (version skew / stale
-    /// codegen), a bug rather than a user error, and panics just like an
+    /// The sole producer bound to a `cardinality: "one"` consumer slot: the one
+    /// its deployment bound at launch, which a scalar slot holds for the node's
+    /// lifetime. A slot holding no producer, or a set slot, means the generated
+    /// code and the manifest disagree, a codegen bug, and panics just like an
     /// unknown `link_id` in [`Self::bound_producers`].
     ///
     /// Generated `bound_producer()` module functions of `one` slots splice
     /// `node_runner.processor().sole_bound_producer(<link_id>)`.
     pub fn sole_bound_producer(&self, link_id: &str) -> &crate::messaging::ProducerRef {
-        match self.bound_producers(link_id) {
-            [sole] => sole,
-            set => panic!(
-                "consumer slot `{link_id}` is bound to {} producers but the generated accessor \
-                 expects cardinality `one`: the generated code and the manifest disagree \
-                 (version skew / stale codegen); regenerate bindings for this node",
-                set.len()
-            ),
-        }
+        self.scalar_binding(link_id, Cardinality::One)
+            .as_ref()
+            .unwrap_or_else(|| {
+                panic!(
+                    "consumer slot `{link_id}` is bound to no producer but the generated \
+                     accessor expects cardinality `one`: {}",
+                    super::RESYNC_REMEDY
+                )
+            })
     }
 
-    /// The producer bound to a `cardinality: "zero_or_one"` consumer slot,
-    /// or `None` where the deployment wrote the slot vacant. Startup
-    /// validated the slot's set as holding at most one member, so a larger
-    /// one here means the generated code and the manifest disagree (version
-    /// skew / stale codegen), a bug rather than a user error, and panics
-    /// just like an unknown `link_id` in [`Self::bound_producers`].
+    /// The producer bound to a `cardinality: "zero_or_one"` consumer slot, or
+    /// `None` where the deployment wrote the slot vacant: what its deployment
+    /// bound at launch, which a scalar slot holds for the node's lifetime. A set
+    /// slot means the generated code and the manifest disagree, a codegen bug,
+    /// and panics just like an unknown `link_id` in [`Self::bound_producers`].
     ///
     /// Generated `bound_producer()` module functions of `zero_or_one` slots
     /// splice `node_runner.processor().optional_bound_producer(<link_id>)`.
     pub fn optional_bound_producer(&self, link_id: &str) -> Option<&crate::messaging::ProducerRef> {
-        match self.bound_producers(link_id) {
-            [] => None,
-            [sole] => Some(sole),
-            set => panic!(
-                "consumer slot `{link_id}` is bound to {} producers but the generated accessor \
-                 expects cardinality `zero_or_one`: the generated code and the manifest disagree \
-                 (version skew / stale codegen); regenerate bindings for this node",
-                set.len()
-            ),
-        }
+        self.scalar_binding(link_id, Cardinality::ZeroOrOne)
+            .as_ref()
     }
 
-    /// The producer set bound to a `cardinality: "one_or_more"` consumer
-    /// slot, as a [`NonEmptyProducers`](crate::messaging::NonEmptyProducers)
-    /// view whose `first()` is infallible. Startup validated the set as
-    /// non-empty; an empty set here means the generated code and the
-    /// manifest disagree (version skew / stale codegen), a bug rather than
-    /// a user error, and panics just like an unknown `link_id` in
+    /// The producer set bound to a `cardinality: "one_or_more"` consumer slot,
+    /// as a [`NonEmptyProducers`](crate::messaging::NonEmptyProducers) whose
+    /// `first()` is infallible. The slot admits no empty set: node startup
+    /// checks the boot config's binding and the daemon plans every set it
+    /// delivers, so an empty set here means the generated code and the manifest
+    /// disagree, a codegen bug, and panics just like an unknown `link_id` in
     /// [`Self::bound_producers`].
     ///
-    /// Generated `bound_producers()` module functions of `one_or_more`
-    /// slots splice
-    /// `node_runner.processor().non_empty_bound_producers(<link_id>)`.
-    pub fn non_empty_bound_producers(
-        &self,
-        link_id: &str,
-    ) -> crate::messaging::NonEmptyProducers<'_> {
+    /// Generated `bound_producers()` module functions of `one_or_more` slots
+    /// splice `node_runner.processor().non_empty_bound_producers(<link_id>)`.
+    pub fn non_empty_bound_producers(&self, link_id: &str) -> crate::messaging::NonEmptyProducers {
         crate::messaging::NonEmptyProducers::new(self.bound_producers(link_id)).unwrap_or_else(
             || {
                 panic!(
                     "consumer slot `{link_id}` is bound to an empty set but the generated \
-                     accessor expects cardinality `one_or_more`: the generated code and the \
-                     manifest disagree (version skew / stale codegen); regenerate bindings for \
-                     this node"
+                     accessor expects cardinality `one_or_more`: {}",
+                    super::RESYNC_REMEDY
                 )
             },
         )
     }
 
-    /// Checks that `target` is a member of the bound set of the slot
+    /// Checks that `target` is a member of the set currently bound to the slot
     /// declared at `link_id`, returning
     /// [`Error::TargetNotBound`](crate::error::Error::TargetNotBound)
-    /// otherwise. Generated service `poll` / action `fire_goal` wrappers
-    /// call this before anything reaches the wire: `ProducerRef` is plainly
-    /// constructible, and an out-of-set instance was never checked by
-    /// plan-time binding validation, so letting it through would reopen
-    /// undirected `from_any`-style calls. Membership is per slot — a
-    /// producer bound to a different slot of the same consumer is rejected
-    /// all the same.
+    /// otherwise. Generated service `poll` / action `fire_goal` wrappers call
+    /// this before anything reaches the wire: `ProducerRef` is plainly
+    /// constructible, and this check keeps every directed call on a member the
+    /// plan bound to the slot. Membership is per slot: a producer bound to a
+    /// different slot of the same consumer is rejected all the same.
     pub fn ensure_target_bound(
         &self,
         link_id: &str,
         target: &crate::messaging::ProducerRef,
     ) -> Result<()> {
-        if self.bound_producers(link_id).contains(target) {
+        if self
+            .bound_channel(link_id)
+            .borrow()
+            .producers
+            .as_slice()
+            .contains(target)
+        {
             return Ok(());
         }
         Err(Error::TargetNotBound {
@@ -591,19 +563,70 @@ impl Processor {
         })
     }
 
+    /// The channel of the consumer slot declared at `link_id`, set or scalar.
+    /// Every declared slot has one, so a miss is stale codegen and panics.
+    fn bound_channel(&self, link_id: &str) -> &watch::Sender<BoundSetState> {
+        self.bound_slots
+            .channel(link_id)
+            .unwrap_or_else(|| undeclared_consumer_slot(link_id))
+    }
+
+    /// The producer a scalar slot's deployment bound, which the slot holds for
+    /// the node's lifetime. A set slot is never read through a scalar accessor,
+    /// so naming one, or a slot the manifest does not declare, means the
+    /// generated code and the manifest disagree and panics.
+    fn scalar_binding(
+        &self,
+        link_id: &str,
+        accessor: Cardinality,
+    ) -> &Option<crate::messaging::ProducerRef> {
+        if self.bound_slots.sets.contains_key(link_id) {
+            panic!(
+                "consumer slot `{link_id}` holds a producer set, but the generated accessor \
+                 expects cardinality `{}`: {}",
+                accessor.as_str(),
+                super::RESYNC_REMEDY
+            );
+        }
+        match self.bound_slots.scalars.get(link_id) {
+            Some(slot) => &slot.producer,
+            None => undeclared_consumer_slot(link_id),
+        }
+    }
+
+    /// The watch channel for the consumer slot declared at `link_id`, or `None`
+    /// when the manifest declares no such slot. Read by
+    /// [`crate::runtime::subscribe_bound_set`] to follow the slot's producer
+    /// set; the `binding_update` service uses the set slots' sender side via
+    /// [`Self::binding_slot_channels`].
+    pub(crate) fn bound_set_watch(&self, link_id: &str) -> Option<watch::Receiver<BoundSetState>> {
+        self.bound_slots.channel(link_id).map(|tx| tx.subscribe())
+    }
+
+    /// Shared handle to the set slots' channels, handed to the pre-setup
+    /// `binding_update` service listener. A scalar slot is not in it, so no
+    /// delivery can replace what its deployment bound.
+    pub(crate) fn binding_slot_channels(&self) -> BindingSlotChannels {
+        Arc::clone(&self.bound_slots.sets)
+    }
+
     /// The live watch channel for the pairing slot declared at `link_id`, or
     /// `None` when the manifest declares no such slot. Used by
     /// [`crate::runtime::NodeRunner::peer`] and the generated
     /// `subscribe_peer` seam to observe the slot's pairs; the `peer_update` service uses
-    /// the sender side via [`Self::pairing_slot_senders`].
+    /// the sender side via [`Self::pairing_slot_channels`].
     pub(crate) fn peer_set_watch(&self, link_id: &str) -> Option<watch::Receiver<PeerSetState>> {
-        self.pairing_slots.get(link_id).map(|tx| tx.subscribe())
+        self.pairing_slots
+            .get(link_id)
+            .map(|slot| slot.sender().subscribe())
     }
 
     /// The declared cardinality of the pairing slot at `link_id`, or `None`
     /// when the manifest declares no such slot.
     pub(crate) fn pairing_slot_cardinality(&self, link_id: &str) -> Option<Cardinality> {
-        self.pairing_cardinalities.get(link_id).copied()
+        self.pairing_slots
+            .get(link_id)
+            .map(SlotChannel::cardinality)
     }
 
     /// The copy this instance belongs to, as the launch composed it; `None`
@@ -618,9 +641,7 @@ impl Processor {
 
     /// Shared handle to all pairing-slot channels, handed to the pre-setup
     /// `peer_update` service listener.
-    pub(crate) fn pairing_slot_senders(
-        &self,
-    ) -> Arc<BTreeMap<String, watch::Sender<PeerSetState>>> {
+    pub(crate) fn pairing_slot_channels(&self) -> PairingSlotChannels {
         Arc::clone(&self.pairing_slots)
     }
 
@@ -629,12 +650,14 @@ impl Processor {
     /// [`crate::runtime::NodeRunner::observation_slot`] and the generated
     /// `subscribe_observed` seam to observe the resolved source; the
     /// `observation_update` service uses the sender side via
-    /// [`Self::observation_slot_senders`].
+    /// [`Self::observation_slot_channels`].
     pub(crate) fn observation_slot_watch(
         &self,
         link_id: &str,
     ) -> Option<watch::Receiver<ObservationState>> {
-        self.observation_slots.get(link_id).map(|tx| tx.subscribe())
+        self.observation_slots
+            .get(link_id)
+            .map(|slot| slot.sender().subscribe())
     }
 
     /// The `cardinality` the manifest declares for the observer slot at
@@ -643,14 +666,14 @@ impl Processor {
     /// [`crate::runtime::NodeRunner::observation_slot`], the multi-member ones
     /// through [`crate::runtime::NodeRunner::observation_slot_set`].
     pub(crate) fn observation_slot_cardinality(&self, link_id: &str) -> Option<Cardinality> {
-        self.observation_cardinalities.get(link_id).copied()
+        self.observation_slots
+            .get(link_id)
+            .map(SlotChannel::cardinality)
     }
 
     /// Shared handle to all observation-slot channels, handed to the pre-setup
     /// `observation_update` service listener.
-    pub(crate) fn observation_slot_senders(
-        &self,
-    ) -> Arc<BTreeMap<String, watch::Sender<ObservationState>>> {
+    pub(crate) fn observation_slot_channels(&self) -> ObservationSlotChannels {
         Arc::clone(&self.observation_slots)
     }
 
@@ -659,6 +682,15 @@ impl Processor {
     pub fn declared_endpoints(&self) -> &BTreeSet<EndpointLabel> {
         &self.endpoint_labels
     }
+}
+
+/// A consumer slot the generated code reads and the manifest does not declare.
+/// Every declared slot is built at startup, so the miss is stale codegen.
+fn undeclared_consumer_slot(link_id: &str) -> ! {
+    panic!(
+        "consumer slot `{link_id}` is not declared in this node's manifest: {}",
+        super::RESYNC_REMEDY
+    )
 }
 
 /// The endpoint labels of `node_config`, the set the runtime admits
@@ -699,7 +731,7 @@ fn observer_deps(node_config: &NodeConfig) -> impl Iterator<Item = &PairingObser
 fn build_observation_slots(
     runtime_config: &RuntimeConfig,
     cardinalities: &BTreeMap<String, Cardinality>,
-) -> Result<Arc<BTreeMap<String, watch::Sender<ObservationState>>>> {
+) -> Result<ObservationSlotChannels> {
     let seeds = &runtime_config.node_instance.observation_seeds;
     if let Some(link_id) = seeds.keys().find(|k| !cardinalities.contains_key(*k)) {
         return Err(Error::ObservationSeedUndeclared {
@@ -737,7 +769,7 @@ fn build_observation_slots(
                 });
             }
             let (tx, _rx) = watch::channel(ObservationState::seeded(members));
-            Ok((link_id.clone(), tx))
+            Ok((link_id.clone(), SlotChannel::new(*cardinality, tx)))
         })
         .collect::<Result<_>>()
         .map(Arc::new)
@@ -768,7 +800,7 @@ fn build_observer_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Ca
 fn build_pairing_slots(
     runtime_config: &RuntimeConfig,
     cardinalities: &BTreeMap<String, Cardinality>,
-) -> Result<Arc<BTreeMap<String, watch::Sender<PeerSetState>>>> {
+) -> Result<PairingSlotChannels> {
     let seeds = &runtime_config.node_instance.pairing_slots;
     if let Some(link_id) = seeds.keys().find(|k| !cardinalities.contains_key(*k)) {
         return Err(Error::PairingSeedUndeclared {
@@ -797,7 +829,7 @@ fn build_pairing_slots(
                     });
                 }
             }
-            if !cardinality.admits_seed(seeded.len()) {
+            if !cardinality.admits_pairs(seeded.len()) {
                 return Err(Error::PairingSeedNotScalar {
                     link_id: link_id.clone(),
                     cardinality: cardinality.as_str().to_string(),
@@ -805,7 +837,7 @@ fn build_pairing_slots(
                 });
             }
             let (tx, _rx) = watch::channel(PeerSetState::seeded(seeded));
-            Ok((link_id.clone(), tx))
+            Ok((link_id.clone(), SlotChannel::new(*cardinality, tx)))
         })
         .collect::<Result<BTreeMap<_, _>>>()
         .map(Arc::new)
@@ -826,9 +858,10 @@ fn build_pairing_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Car
         .unwrap_or_default()
 }
 
-/// Pre-resolve the ordered bound producer set for every `link_id` declared
-/// in the consumer manifest's `depends_on`, from the daemon-supplied
-/// `slot_bindings`, enforcing each slot's declared cardinality:
+/// Seed every `link_id` declared in the consumer manifest's `depends_on` from
+/// the daemon-supplied `slot_bindings`: a live channel for a set slot, the
+/// producer its deployment bound for a scalar one. Each slot's declared
+/// cardinality is enforced:
 ///
 /// - `one`: the slot's entry must hold exactly one producer; a missing
 ///   entry is [`Error::SlotUnbound`], a wrong-sized one is
@@ -842,15 +875,14 @@ fn build_pairing_cardinalities(node_config: &NodeConfig) -> BTreeMap<String, Car
 ///
 /// The launcher validator enforces the same rules at plan time, so a
 /// violation here means version skew or a hand-edited boot config. Called
-/// once during [`Processor::new_daemon`] / [`Processor::new_standalone`] so
-/// the per-link_id accessor is a borrow into a stable cache. Member order
-/// is preserved verbatim from the boot config (application declaration
-/// order).
-fn build_bound_producers(
+/// once during [`Processor::new_daemon`] / [`Processor::new_standalone`].
+/// Member order is preserved verbatim from the boot config.
+fn build_bound_slots(
     runtime_config: &RuntimeConfig,
     node_config: &NodeConfig,
-) -> Result<BTreeMap<String, config::runtime::BoundProducers>> {
-    let mut out = BTreeMap::new();
+) -> Result<BoundSlots> {
+    let mut sets = BTreeMap::new();
+    let mut scalars = BTreeMap::new();
     if let Some(deps) = node_config.manifest.depends_on.as_ref() {
         let slot_bindings = &runtime_config.node_instance.slot_bindings;
         let node_slots = deps.nodes.iter().map(|dep| (&dep.link_id, dep.cardinality));
@@ -876,10 +908,50 @@ fn build_bound_producers(
                     bound: bound.len(),
                 });
             }
-            out.insert(link_id.clone(), bound);
+            let (channel, _rx) = watch::channel(BoundSetState::seeded(bound));
+            if cardinality.is_scalar() {
+                let producer = channel.borrow().producers.as_slice().first().cloned();
+                scalars.insert(link_id.clone(), ScalarSlot { producer, channel });
+            } else {
+                sets.insert(link_id.clone(), SlotChannel::new(cardinality, channel));
+            }
         }
     }
-    Ok(out)
+    Ok(BoundSlots {
+        sets: Arc::new(sets),
+        scalars: Arc::new(scalars),
+    })
+}
+
+/// A consumer's producer-binding slots. A set slot (`one_or_more`,
+/// `zero_or_more`) holds a live channel, whose set `binding_update` replaces
+/// when a copy joins or leaves. A scalar slot (`one`, `zero_or_one`) holds the
+/// producer its deployment bound at launch for the node's lifetime. Behind
+/// `Arc`s so `Processor::clone` shares them.
+#[derive(Clone)]
+struct BoundSlots {
+    sets: BindingSlotChannels,
+    scalars: Arc<BTreeMap<String, ScalarSlot>>,
+}
+
+/// A scalar producer slot: the producer its deployment bound, if any, and a
+/// channel holding that same binding for the subscriptions that follow the
+/// slot. `producer` is the head of `channel`'s seeded set, kept beside it so
+/// the scalar accessor can lend it. No service holds the sender, so nothing
+/// replaces either.
+struct ScalarSlot {
+    producer: Option<crate::messaging::ProducerRef>,
+    channel: watch::Sender<BoundSetState>,
+}
+
+impl BoundSlots {
+    /// The channel a subscription on `link_id` follows, set or scalar.
+    fn channel(&self, link_id: &str) -> Option<&watch::Sender<BoundSetState>> {
+        self.sets
+            .get(link_id)
+            .map(SlotChannel::sender)
+            .or_else(|| self.scalars.get(link_id).map(|slot| &slot.channel))
+    }
 }
 
 #[cfg(test)]
@@ -2061,19 +2133,19 @@ mod tests {
         .expect("a vacant zero_or_one slot is a valid empty set")
     }
 
-    /// Happy path: each slot's bound set reaches the startup cache with
-    /// member order preserved, and `ensure_target_bound` enforces per-slot
+    /// Happy path: each slot's boot binding reaches its accessors with member
+    /// order preserved, and `ensure_target_bound` enforces per-slot
     /// membership.
     #[test]
     fn daemon_boot_config_bindings_reach_bound_producer_cache() {
         let processor = multi_slot_processor();
 
         assert_eq!(
-            instance_ids(processor.bound_producers("main")),
+            instance_ids(&processor.bound_producers("main")),
             ["camera_1"]
         );
         assert_eq!(
-            instance_ids(processor.bound_producers("arms")),
+            instance_ids(&processor.bound_producers("arms")),
             ["right_arm", "left_arm"],
             "binding declaration order must be preserved, not sorted"
         );
@@ -2134,35 +2206,117 @@ mod tests {
         assert_eq!(
             arms.as_slice(),
             processor.bound_producers("arms"),
-            "the typed view exposes the same cached set as the plain slice"
+            "the typed view exposes the same set as the plain list"
         );
     }
 
-    /// A typed accessor whose guarantee the cached set does not meet is
-    /// codegen / runtime skew (the accessor and the startup validation come
-    /// from the same manifest), so it panics like an unknown `link_id`
-    /// rather than returning an error the caller could mishandle.
+    /// A typed accessor whose guarantee the slot does not meet is codegen /
+    /// runtime skew (the accessor and the startup validation come from the
+    /// same manifest), so it panics like an unknown `link_id` rather than
+    /// returning an error the caller could mishandle, and the panic names the
+    /// command that regenerates the code.
     #[test]
-    #[should_panic(expected = "expects cardinality `one`")]
-    fn sole_bound_producer_panics_on_a_multi_member_set() {
-        let _ = multi_slot_processor().sole_bound_producer("arms");
+    #[should_panic(expected = "bound to no producer but the generated accessor expects \
+                               cardinality `one`: the generated code and the manifest \
+                               disagree; run `peppy node sync`")]
+    fn sole_bound_producer_panics_on_a_vacant_slot() {
+        let _ = multi_slot_processor_with_vacant_wrist_camera().sole_bound_producer("wrist_camera");
     }
 
-    /// See [`sole_bound_producer_panics_on_a_multi_member_set`]: the
-    /// non-empty view refuses an empty `zero_or_more` set the same way.
+    /// See [`sole_bound_producer_panics_on_a_vacant_slot`]: the non-empty view
+    /// refuses an empty `zero_or_more` set the same way.
     #[test]
-    #[should_panic(expected = "expects cardinality `one_or_more`")]
+    #[should_panic(expected = "bound to an empty set but the generated accessor expects \
+                               cardinality `one_or_more`")]
     fn non_empty_bound_producers_panics_on_an_empty_set() {
         let _ = multi_slot_processor().non_empty_bound_producers("spare_cameras");
     }
 
-    /// See [`sole_bound_producer_panics_on_a_multi_member_set`]: the scalar
-    /// `Option` accessor refuses a set of two the same way. An empty set is
-    /// this accessor's `None`, so only the ceiling can be violated.
+    /// A scalar accessor naming a set slot, whose set the daemon replaces, is
+    /// the same skew: each scalar accessor refuses it, naming the cardinality it
+    /// was generated for.
     #[test]
-    #[should_panic(expected = "expects cardinality `zero_or_one`")]
-    fn optional_bound_producer_panics_on_a_multi_member_set() {
+    #[should_panic(
+        expected = "`arms` holds a producer set, but the generated accessor expects \
+                               cardinality `one`"
+    )]
+    fn sole_bound_producer_panics_on_a_set_slot() {
+        let _ = multi_slot_processor().sole_bound_producer("arms");
+    }
+
+    /// See [`sole_bound_producer_panics_on_a_set_slot`].
+    #[test]
+    #[should_panic(
+        expected = "`arms` holds a producer set, but the generated accessor expects \
+                               cardinality `zero_or_one`"
+    )]
+    fn optional_bound_producer_panics_on_a_set_slot() {
         let _ = multi_slot_processor().optional_bound_producer("arms");
+    }
+
+    /// A delivery naming a scalar slot is refused, and the slot keeps the
+    /// producer its deployment bound at launch.
+    #[test]
+    fn a_delivery_cannot_replace_a_scalar_slots_launch_binding() {
+        let processor = multi_slot_processor();
+        let response = crate::services::slot_update::apply_slot_update(
+            &processor.binding_slot_channels(),
+            &crate::encoding::binding_update::BindingUpdateRequest {
+                link_id: "main".to_string(),
+                sequence: 1,
+                producers: config::runtime::BoundProducers::from(
+                    config::runtime::ProducerRef::new("core-1234", "camera_9"),
+                ),
+            },
+        );
+        assert!(!response.accepted, "{response:?}");
+        assert_eq!(
+            processor.sole_bound_producer("main").instance_id,
+            "camera_1"
+        );
+        assert_eq!(
+            instance_ids(&processor.bound_producers("main")),
+            ["camera_1"],
+            "the channel a subscription follows keeps the launch binding too"
+        );
+    }
+
+    /// Every accessor reads the slot's live set: a `binding_update` delivery
+    /// growing a `zero_or_more` slot is what the next read returns, and the
+    /// membership check follows it; one shrinking it back takes the producer
+    /// out of both.
+    #[test]
+    fn accessors_read_the_set_the_daemon_delivers() {
+        let processor = multi_slot_processor();
+        let camera_3 = config::runtime::ProducerRef::new("core-1234", "camera_3");
+        let deliver = |sequence: u64, producers: Vec<config::runtime::ProducerRef>| {
+            crate::services::slot_update::apply_slot_update(
+                &processor.binding_slot_channels(),
+                &crate::encoding::binding_update::BindingUpdateRequest {
+                    link_id: "spare_cameras".to_string(),
+                    sequence,
+                    producers: config::runtime::BoundProducers::try_from(producers)
+                        .expect("distinct producers"),
+                },
+            )
+        };
+
+        assert!(deliver(1, vec![camera_3.clone()]).accepted);
+        assert_eq!(
+            instance_ids(&processor.bound_producers("spare_cameras")),
+            ["camera_3"]
+        );
+        processor
+            .ensure_target_bound("spare_cameras", &camera_3)
+            .expect("a delivered member passes the membership check");
+
+        assert!(deliver(2, Vec::new()).accepted);
+        assert!(processor.bound_producers("spare_cameras").is_empty());
+        assert!(
+            processor
+                .ensure_target_bound("spare_cameras", &camera_3)
+                .is_err()
+        );
     }
 
     /// A boot config carrying the removed pre-cardinality single-producer
@@ -2636,7 +2790,7 @@ mod tests {
         let processor = Processor::new_standalone(&peppy_config_path, &seeded)
             .expect("seeded slots should construct");
         assert_eq!(
-            instance_ids(processor.bound_producers("main")),
+            instance_ids(&processor.bound_producers("main")),
             ["camera_1"]
         );
         assert_eq!(
@@ -2646,7 +2800,7 @@ mod tests {
             Some("camera_2")
         );
         assert_eq!(
-            instance_ids(processor.bound_producers("arms")),
+            instance_ids(&processor.bound_producers("arms")),
             ["right_arm", "left_arm"],
             "with_bound_producer call order must be preserved"
         );

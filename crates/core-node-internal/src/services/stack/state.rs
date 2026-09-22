@@ -74,6 +74,7 @@ impl ActiveLaunch {
                             .map(|option| format!("{}={option}", entry.axis))
                     })
                     .collect(),
+                set_members: copy.record.set_members.clone(),
             })
             .collect()
     }

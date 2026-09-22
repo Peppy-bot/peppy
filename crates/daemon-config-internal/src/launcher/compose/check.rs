@@ -332,8 +332,9 @@ fn check_file_copies_over(
 
 /// Every copy every legal stack can run: as a launch of one copy, and as a
 /// join onto the bare stack, each under the settings of the launcher's
-/// entry for its option. A copy that writes to a stack instance is
-/// launch-only, which the join refuses by name at the time. Returns the
+/// entry for its option. A copy that writes to a stack instance, or adds a
+/// stack instance to a running set, is launch-only, which the join refuses
+/// by name at the time. Returns the
 /// copy selections some stack admits, by option.
 fn check_copies_over(
     prepared: &PreparedLauncher,
@@ -425,7 +426,11 @@ fn check_copies_over(
                     continue;
                 }
                 match attach(&existing, &copy) {
-                    Ok(_) | Err(CompositionError::JoinChangesExisting { .. }) => {}
+                    Ok(_)
+                    | Err(
+                        CompositionError::JoinChangesExisting { .. }
+                        | CompositionError::JoinAddsStackMember { .. },
+                    ) => {}
                     Err(e) => problems.push(format!("{label} ({echo}, joined): {e}")),
                 }
             }

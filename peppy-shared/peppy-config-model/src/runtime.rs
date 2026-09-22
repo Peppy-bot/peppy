@@ -148,20 +148,19 @@ pub fn first_duplicate<T: Eq + std::hash::Hash>(items: &[T]) -> Option<&T> {
     items.iter().find(|item| !seen.insert(*item))
 }
 
-/// The runtime-resolved, immutable, ordered producer set bound to one
-/// consumer slot. Order is the application declaration order (launcher
-/// array order / CLI flag occurrence order), preserved verbatim from the
-/// validator through boot configs to the generated bound-producer
-/// accessors, so selecting the first member is deterministic. Duplicates
-/// are rejected rather than removed or
-/// reordered. The set's validated size is the slot's declared
+/// The ordered producer set bound to one consumer slot. Order is plan order:
+/// the launcher's array order (or the CLI's flag order), then the members each
+/// joined copy adds, in the order the copies joined. It is preserved verbatim
+/// from the validator through boot configs and deliveries to the generated
+/// bound-producer accessors, so selecting the first member is deterministic.
+/// Duplicates are rejected. The set's validated size is the slot's declared
 /// `cardinality`: exactly one for `one` (the default), at most one for
 /// `zero_or_one`, one or more for `one_or_more`, zero or more for
-/// `zero_or_more`. An empty set has no bound edge, and it is the resolved
-/// form of two things: a `zero_or_more` slot the application bound nothing
-/// to, and a `zero_or_one` slot the deployment wrote vacant. The set is
-/// fixed when the node starts; producers disconnecting at runtime never
-/// shrink it.
+/// `zero_or_more`. An empty set has no bound edge, and it is the resolved form
+/// of two things: a `zero_or_more` slot the application bound nothing to, and a
+/// `zero_or_one` slot the deployment wrote vacant. A running consumer's set
+/// changes only when the daemon delivers a new one; producers disconnecting
+/// never shrink it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct BoundProducers(Vec<ProducerRef>);

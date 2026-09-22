@@ -56,6 +56,17 @@ pub struct PlannedObservation {
     pub peer: Option<ObservedPeer>,
 }
 
+impl PlannedObservation {
+    /// The member this observation contributes to its observer's slot.
+    pub fn target(&self) -> core_node_api::encoding::ObservationTarget {
+        core_node_api::encoding::ObservationTarget {
+            source: self.source.clone(),
+            source_link_id: self.source_link_id.clone(),
+            peer: self.peer.clone(),
+        }
+    }
+}
+
 /// The pairs an observation may name by their far end: every pair this plan
 /// establishes, recorded from both ends, and every pair the running stack
 /// already holds. Keyed by `(instance_id, link_id)`, valued by the peer slots

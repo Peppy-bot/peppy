@@ -92,6 +92,18 @@ impl ExecOutput {
     }
 }
 
+/// The output of a stack change that reached every set it changed. A set the
+/// daemon could not deliver is reported and the change stands, so a test that
+/// expects delivery has to look.
+fn require_delivered(output: ExecOutput, operation: &str) -> String {
+    let text = require_success(output, operation);
+    assert!(
+        !text.contains("did not reach their instances"),
+        "{operation}: a changed set did not reach its instance:\n{text}"
+    );
+    text
+}
+
 fn require_success(output: ExecOutput, operation: &str) -> String {
     if !output.success() {
         panic!(
@@ -1048,6 +1060,8 @@ const NODE_PROBE_LAUNCHER: &str = r#"{
 "#;
 
 const NAMED_FLEET_LAUNCHER_FILE: &str = "named_fleet.json5";
+const GROWING_GATES_LAUNCHER_FILE: &str = "growing_gates.json5";
+const SET_WATCH_LAUNCHER_FILE: &str = "set_watch_fleet.json5";
 const COPIES_ONLY_LAUNCHER_FILE: &str = "copies_only.json5";
 const ISOLATION_FLEET_LAUNCHER_FILE: &str = "isolation_fleet.json5";
 const MISSING_PUBLISHER_CLOCK_LAUNCHER_FILE: &str = "missing_publisher_clock_fleet.json5";
@@ -1558,6 +1572,8 @@ impl Substrate {
             )
         });
         for (file_name, launcher) in [
+            (GROWING_GATES_LAUNCHER_FILE, growing_gates_launcher()),
+            (SET_WATCH_LAUNCHER_FILE, set_watch_launcher()),
             (NAMED_FLEET_LAUNCHER_FILE, NAMED_FLEET_LAUNCHER.to_owned()),
             (COPIES_ONLY_LAUNCHER_FILE, COPIES_ONLY_LAUNCHER.to_owned()),
             (
@@ -3985,6 +4001,116 @@ async fn move_held_goals_on(
     }
 }
 
+/// One gate beside the coordinator and one placed on the peer through the
+/// `peer` label, each with an empty `zero_or_more` commander slot that every
+/// station copy adds its own commander to.
+fn growing_gates_launcher() -> String {
+    format!(
+        r#"{{
+  peppy_schema: "launcher/v1",
+  core_nodes: ["{PEER_LABEL}"],
+  deployments: [
+    {{ source: {{ name: "{GATE_NODE}", tag: "{GATE_TAG}" }},
+      instances: [
+        {{ instance_id: "{COORDINATOR_GATE}", arguments: {{ verb: "release" }} }},
+        {{ instance_id: "{PEER_GATE}", core_node: "{PEER_LABEL}", arguments: {{ verb: "release" }} }}
+      ] }}
+  ],
+  components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
+    station: {{
+      deployments: [
+        {{ source: {{ name: "isolation_arm", tag: "v1" }},
+          instances: [{{ instance_id: "arm_inst" }}] }},
+        {{ source: {{ name: "isolation_commander", tag: "v1" }},
+          instances: [{{ instance_id: "commander_inst", links: {{ arm: "arm_inst" }} }}] }}
+      ],
+      adjustments: [
+        {{ target: "{COORDINATOR_GATE}", add_links: {{ commander: ["commander_inst"] }} }},
+        {{ target: "{PEER_GATE}", add_links: {{ commander: ["commander_inst"] }} }}
+      ]
+    }}
+  }} }}]
+}}"#
+    )
+}
+
+/// A hub every leader pairs into, a consuming instance on the coordinator and
+/// an observing instance on the peer, both `set_watch` with empty
+/// `zero_or_more` slots, and a `fleet` axis whose copies bring a leader and an
+/// arm and add them to the two watches' sets.
+fn set_watch_launcher() -> String {
+    format!(
+        r#"{{
+  peppy_schema: "launcher/v1",
+  core_nodes: ["{PEER_LABEL}"],
+  deployments: [
+    {{ source: {{ name: "pairing_hub", tag: "v1" }}, instances: [{{ instance_id: "hub_inst" }}] }},
+    {{ source: {{ name: "set_watch", tag: "v1" }}, instances: [
+      {{ instance_id: "consumer_inst" }},
+      {{ instance_id: "observer_inst", core_node: "{PEER_LABEL}" }}
+    ] }}
+  ],
+  components: [{{ name: "fleet", cardinality: "zero_or_more", options: {{
+    member: {{
+      deployments: [
+        {{ source: {{ name: "pairing_leader", tag: "v1" }},
+          instances: [{{ instance_id: "leader_inst", arguments: {{ value: 1.0 }}, links: {{ hub: "hub_inst" }} }}] }},
+        {{ source: {{ name: "my_python_robot_arm", tag: "v1" }},
+          instances: [{{ instance_id: "arm_inst" }}] }}
+      ],
+      adjustments: [
+        {{ target: "consumer_inst",
+           add_links: {{ arms: ["arm_inst"], leaders: ["leader_inst/hub"] }} }},
+        {{ target: "observer_inst",
+           add_links: {{ arms: ["arm_inst"], leaders: ["leader_inst/hub"] }} }}
+      ]
+    }}
+  }} }}]
+}}"#
+    )
+}
+
+/// How many times `marker` appears in `instance_id`'s log on `daemon`, polled
+/// until it reaches `count`.
+async fn wait_for_log_count(daemon: &Daemon, instance_id: &str, marker: &str, count: usize) {
+    let started = Instant::now();
+    while started.elapsed() < TIMEOUT {
+        if daemon.node_log(instance_id).await.matches(marker).count() >= count {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("{instance_id} logged `{marker}` fewer than {count} times");
+}
+
+/// The producers slot `link_id` of `instance_id` is bound to, as a `stack list
+/// --json` section records them, each as `instance@core_node` in plan order.
+fn recorded_bindings(section: &serde_json::Value, instance_id: &str, link_id: &str) -> Vec<String> {
+    let instance = section["stack"]["nodes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a section lists its stack: {section}"))
+        .iter()
+        .flat_map(|node| node["instances"].as_array().into_iter().flatten())
+        .find(|instance| instance["instance_id"] == instance_id)
+        .unwrap_or_else(|| panic!("`{instance_id}` is in the section's stack: {section}"));
+    instance["slot_bindings"][link_id]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|producer| {
+            format!(
+                "{}@{}",
+                producer["instance_id"]
+                    .as_str()
+                    .expect("a producer names its instance"),
+                producer["core_node"]
+                    .as_str()
+                    .expect("a producer names its core node")
+            )
+        })
+        .collect()
+}
+
 /// The instances each copy owns, as a `stack list --json` section lists them.
 fn copy_instances(section: &serde_json::Value) -> BTreeMap<String, serde_json::Value> {
     section["copies"]
@@ -4658,5 +4784,385 @@ async fn a_multi_slot_holds_one_pair_per_leader_across_daemons() {
             .peppy(&["stack", "reset", "--federated"])
             .await,
         "reset the pairing fleet",
+    );
+}
+
+/// Copies grow and shrink the set slots of gates on both machines: a copy on
+/// the peer adds its commander to the gate the coordinator runs, a copy on the
+/// coordinator adds its commander to the gate the peer runs, each gate records
+/// its members in join order, `stack list` names them under the copy, removing
+/// a copy takes its commander out of both, and a federated reset clears the
+/// launch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn copies_grow_and_shrink_sets_on_both_machines() {
+    let federation = start_federation("peppy-growing-gates").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                "--place",
+                &format!("{PEER_LABEL}@{cloud}"),
+                &container_launcher(GROWING_GATES_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the gates",
+    );
+    let gates = |listed: &str| {
+        (
+            recorded_bindings(
+                &coordinator_section(listed, robot),
+                COORDINATOR_GATE,
+                "commander",
+            ),
+            recorded_bindings(&coordinator_section(listed, cloud), PEER_GATE, "commander"),
+        )
+    };
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "the gates before any copy",
+    );
+    assert_eq!(gates(&listed), (Vec::new(), Vec::new()), "{listed}");
+
+    require_delivered(
+        federation
+            .robot
+            .peppy(&["stack", "join", "station", "-i", "alpha", "--place", cloud])
+            .await,
+        "join a station on the peer",
+    );
+    require_delivered(
+        federation
+            .robot
+            .peppy(&["stack", "join", "station", "-i", "bravo"])
+            .await,
+        "join a station on the coordinator",
+    );
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "the grown gates",
+    );
+    let grown = vec![
+        format!("alpha_commander_inst@{cloud}"),
+        format!("bravo_commander_inst@{robot}"),
+    ];
+    assert_eq!(gates(&listed), (grown.clone(), grown), "{listed}");
+    let bravo = coordinator_section(&listed, robot)["copies"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the coordinator lists its copies: {listed}"))
+        .iter()
+        .find(|copy| copy["name"] == "bravo")
+        .unwrap_or_else(|| panic!("bravo is listed: {listed}"))
+        .clone();
+    assert_eq!(
+        bravo["set_members"],
+        serde_json::json!([
+            { "instance_id": COORDINATOR_GATE, "link_id": "commander", "target": "bravo_commander_inst" },
+            { "instance_id": PEER_GATE, "link_id": "commander", "target": "bravo_commander_inst" }
+        ]),
+        "{listed}"
+    );
+
+    require_delivered(
+        federation.robot.peppy(&["stack", "remove", "alpha"]).await,
+        "remove the peer's station",
+    );
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "the shrunken gates",
+    );
+    let shrunk = vec![format!("bravo_commander_inst@{robot}")];
+    assert_eq!(gates(&listed), (shrunk.clone(), shrunk), "{listed}");
+
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the federation",
+    );
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "the reset coordinator",
+    );
+    assert!(
+        copy_names(&coordinator_section(&listed, robot)).is_empty(),
+        "{listed}"
+    );
+}
+
+/// FRAMEWORK-221 with real nodes on two machines: a consuming instance on the
+/// coordinator and an observing instance on the peer both start with empty
+/// `zero_or_more` slots; two copies join, one of them on the peer, and both
+/// instances read the copies' members in join order and receive their
+/// emissions tagged with the member that sent them; removing one copy leaves
+/// the other; rejoining under the same name appears once, at the end, and is
+/// heard again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn joined_copies_grow_the_sets_a_consumer_and_an_observer_read() {
+    let federation = start_federation("peppy-set-watch").await;
+    let cloud = federation.cloud_core_node.clone();
+    let consumer = &federation.robot;
+    let observer = &federation.cloud;
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                "--place",
+                &format!("{PEER_LABEL}@{cloud}"),
+                &container_launcher(SET_WATCH_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the watches",
+    );
+    for (daemon, instance) in [(consumer, "consumer_inst"), (observer, "observer_inst")] {
+        daemon
+            .wait_for_node_log(instance, "[set-watch] members arms=[] leaders=[]\n")
+            .await;
+    }
+
+    require_delivered(
+        federation
+            .robot
+            .peppy(&["stack", "join", "member", "-i", "alpha"])
+            .await,
+        "join alpha on the coordinator",
+    );
+    require_delivered(
+        federation
+            .robot
+            .peppy(&["stack", "join", "member", "-i", "bravo", "--place", &cloud])
+            .await,
+        "join bravo on the peer",
+    );
+    consumer
+        .wait_for_node_log(
+            "consumer_inst",
+            "members arms=[alpha_arm_inst,bravo_arm_inst] \
+              leaders=[alpha_leader_inst,bravo_leader_inst]\n",
+        )
+        .await;
+    observer
+        .wait_for_node_log(
+            "observer_inst",
+            "members arms=[alpha_arm_inst,bravo_arm_inst] \
+              leaders=[alpha_leader_inst,bravo_leader_inst]\n",
+        )
+        .await;
+    for name in ["alpha", "bravo"] {
+        for (daemon, instance) in [(consumer, "consumer_inst"), (observer, "observer_inst")] {
+            for member in [format!("{name}_arm_inst"), format!("{name}_leader_inst")] {
+                daemon
+                    .wait_for_node_log(instance, &format!("received from {member}\n"))
+                    .await;
+            }
+        }
+    }
+
+    require_delivered(
+        federation.robot.peppy(&["stack", "remove", "alpha"]).await,
+        "remove alpha",
+    );
+    consumer
+        .wait_for_node_log(
+            "consumer_inst",
+            "members arms=[bravo_arm_inst] leaders=[bravo_leader_inst]\n",
+        )
+        .await;
+    observer
+        .wait_for_node_log(
+            "observer_inst",
+            "members arms=[bravo_arm_inst] leaders=[bravo_leader_inst]\n",
+        )
+        .await;
+
+    require_delivered(
+        federation
+            .robot
+            .peppy(&["stack", "join", "member", "-i", "alpha"])
+            .await,
+        "rejoin alpha on the coordinator",
+    );
+    consumer
+        .wait_for_node_log(
+            "consumer_inst",
+            "members arms=[bravo_arm_inst,alpha_arm_inst] \
+              leaders=[bravo_leader_inst,alpha_leader_inst]\n",
+        )
+        .await;
+    observer
+        .wait_for_node_log(
+            "observer_inst",
+            "members arms=[bravo_arm_inst,alpha_arm_inst] \
+              leaders=[bravo_leader_inst,alpha_leader_inst]\n",
+        )
+        .await;
+    wait_for_log_count(
+        consumer,
+        "consumer_inst",
+        "received from alpha_arm_inst\n",
+        2,
+    )
+    .await;
+    wait_for_log_count(
+        observer,
+        "observer_inst",
+        "received from alpha_leader_inst\n",
+        2,
+    )
+    .await;
+
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "reset", "--federated"])
+            .await,
+        "reset the federation",
+    );
+    for (daemon, instance) in [(consumer, "consumer_inst"), (observer, "observer_inst")] {
+        daemon
+            .wait_for_stack(|text| !holds_instance(text, instance))
+            .await;
+    }
+}
+
+/// A set whose instance is gone from the machine that ran it: the join that
+/// would grow it is refused at plan time, and the coordinator keeps the stack
+/// it had, with no copy and no instance of one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_growing_a_set_whose_instance_is_gone_is_refused_and_changes_nothing() {
+    let federation = start_federation("peppy-missing-set-holder").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                "--place",
+                &format!("{PEER_LABEL}@{cloud}"),
+                &container_launcher(GROWING_GATES_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the gates",
+    );
+    // The peer keeps running, but the gate whose set every station grows is
+    // gone from it.
+    require_success(
+        federation.cloud.peppy(&["stack", "reset"]).await,
+        "clear the peer",
+    );
+
+    let refused = federation
+        .robot
+        .peppy(&["stack", "join", "station", "-i", "alpha"])
+        .await;
+    assert!(!refused.success(), "{}", refused.text);
+    assert!(
+        refused.text.contains(&format!(
+            "grows `{PEER_GATE}.links.commander`, but `{PEER_GATE}` is not running on `{cloud}`"
+        )),
+        "{}",
+        refused.text
+    );
+
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "the coordinator after the refused join",
+    );
+    let coordinator = coordinator_section(&listed, robot);
+    assert!(copy_names(&coordinator).is_empty(), "{listed}");
+    assert!(
+        recorded_bindings(&coordinator, COORDINATOR_GATE, "commander").is_empty(),
+        "{listed}"
+    );
+    assert!(
+        !listed.contains("alpha_commander_inst"),
+        "a refused join starts nothing:\n{listed}"
+    );
+}
+
+/// A set on a machine that is not live: a join that would grow it is refused
+/// at plan time, naming the slot, the machine and the fix, and a removal
+/// delivers the coordinator's shrunken set and says the peer's set still
+/// lists the copy's members.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_set_on_an_offline_machine_refuses_a_join_and_stays_on_removal() {
+    let federation = start_federation("peppy-offline-gates").await;
+    let robot = federation.robot_core_node.as_str();
+    let cloud = federation.cloud_core_node.as_str();
+    require_success(
+        federation
+            .robot
+            .peppy(&[
+                "stack",
+                "launch",
+                "--place",
+                &format!("{PEER_LABEL}@{cloud}"),
+                &container_launcher(GROWING_GATES_LAUNCHER_FILE),
+            ])
+            .await,
+        "launch the gates",
+    );
+    require_success(
+        federation
+            .robot
+            .peppy(&["stack", "join", "station", "-i", "alpha"])
+            .await,
+        "join alpha while both machines are live",
+    );
+    federation.cloud.stop().await;
+
+    let refused = federation
+        .robot
+        .peppy(&["stack", "join", "station", "-i", "bravo"])
+        .await;
+    assert!(!refused.success(), "{}", refused.text);
+    assert!(
+        refused.text.contains(&format!(
+            "`{PEER_GATE}.links.commander` on `{cloud}`, which is not live"
+        )) && refused
+            .text
+            .contains(&format!("Bring `{cloud}`'s daemon back")),
+        "{}",
+        refused.text
+    );
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "the coordinator after the refused join",
+    );
+    let coordinator = coordinator_section(&listed, robot);
+    assert_eq!(copy_names(&coordinator), ["alpha"], "{listed}");
+    assert_eq!(
+        recorded_bindings(&coordinator, COORDINATOR_GATE, "commander"),
+        [format!("alpha_commander_inst@{robot}")],
+        "{listed}"
+    );
+
+    let removed = federation.robot.peppy(&["stack", "remove", "alpha"]).await;
+    assert!(removed.success(), "{}", removed.text);
+    assert!(
+        removed.text.contains(&format!(
+            "`{cloud}` is not live on the federation, so removing copy `alpha` did not update \
+             these sets there: `{PEER_GATE}.links.commander`"
+        )),
+        "{}",
+        removed.text
+    );
+    let listed = require_success(
+        federation.robot.peppy(&["stack", "list", "--json"]).await,
+        "the coordinator after the removal",
+    );
+    let coordinator = coordinator_section(&listed, robot);
+    assert!(copy_names(&coordinator).is_empty(), "{listed}");
+    assert!(
+        recorded_bindings(&coordinator, COORDINATOR_GATE, "commander").is_empty(),
+        "{listed}"
     );
 }

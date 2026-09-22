@@ -214,9 +214,9 @@ pub fn ensure_no_peer_collision(
 /// returning the sole `&ProducerRef`, `zero_or_one` the same name returning an
 /// `Option`, `one_or_more` exposes `bound_producers()` returning a never-empty
 /// `NonEmptyProducers`, and `zero_or_more` exposes `bound_producers()`
-/// returning a plain, possibly empty slice. Everything else is uniform across cardinalities: topics
-/// subscribe to the complete set, and services / actions take one
-/// explicit, membership-checked member of it.
+/// returning a plain, possibly empty list. Everything else is uniform across
+/// cardinalities: topics subscribe to the complete set, and services / actions
+/// take one explicit, membership-checked member of it.
 ///
 /// [`SenderTarget::Contract`]: pmi::SenderTarget::Contract
 /// [`SenderTarget::Node`]: pmi::SenderTarget::Node
@@ -334,19 +334,19 @@ impl DependencyContext {
                 "deployment wrote the slot vacant.",
             ],
             Cardinality::OneOrMore => &[
-                "The producer set bound to this module's slot, in declaration order.",
-                "The set is fixed when the node starts (no live discovery; a producer",
-                "disconnecting never shrinks it) and shared by every generated module",
-                "referencing this slot. This slot declares cardinality `one_or_more`:",
-                "the set is never empty, so",
+                "The producer set currently bound to this module's slot, in plan order.",
+                "A join can grow the set and a removal shrink it, so read it when it is",
+                "needed; a producer disconnecting never changes it. Every generated module",
+                "referencing this slot reads the same set.",
+                "This slot declares cardinality `one_or_more`: the set is never empty, so",
             ],
             Cardinality::ZeroOrMore => &[
-                "The producer set bound to this module's slot, in declaration order.",
-                "The set is fixed when the node starts (no live discovery; a producer",
-                "disconnecting never shrinks it) and shared by every generated module",
-                "referencing this slot. This slot declares cardinality `zero_or_more`:",
-                "the set may be empty (the launch bound no producers), so callers",
-                "handle the empty case.",
+                "The producer set currently bound to this module's slot, in plan order.",
+                "A join can grow the set and a removal shrink it, so read it when it is",
+                "needed; a producer disconnecting never changes it. Every generated module",
+                "referencing this slot reads the same set.",
+                "This slot declares cardinality `zero_or_more`: the set may be empty, so",
+                "callers handle the empty case.",
             ],
         }
     }
@@ -358,11 +358,12 @@ impl DependencyContext {
 /// the summary sentence.
 ///
 /// It carries the one difference that matters against a bound producer set: the
-/// daemon owns an observed set live, so each member's incarnation and liveness
-/// move under the reader. The set's size does not: the launcher sizes the slot
-/// at plan time and node startup re-checks its seed against the same rule, so
-/// the slot's declared floor holds on every read, which is what lets the
-/// accessor be typed.
+/// daemon keeps each member's incarnation and liveness current under the
+/// reader. Both kinds of set gain and lose members as copies join and leave;
+/// the planner sizes every set the slot holds, at launch and at each join or
+/// removal, and node startup re-checks the seed against the same rule, so the
+/// slot's declared floor holds on every read, which is what lets the accessor
+/// be typed.
 ///
 /// The `one_or_more` prose deliberately stops mid-sentence ("so"): the clause
 /// that finishes it names one language's API, so it comes from `language`
@@ -396,10 +397,11 @@ pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> 
         Cardinality::OneOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
             body: &[
-                "The daemon keeps each member's incarnation and liveness current, and a",
-                "member whose source is down stays in the set, at its position. This slot",
-                "declares cardinality `one_or_more`: the plan binds at least one pairing",
-                "to it, so the set is never empty and",
+                "The daemon keeps each member's incarnation and liveness current, a copy",
+                "joining or leaving adds or removes members, and a member whose source is",
+                "down stays in the set, at its position. This slot declares",
+                "cardinality `one_or_more`: every plan binds at least one pairing to it,",
+                "so the set is never empty and",
             ],
             api_note: Some(language.never_empty_tail()),
             closing: OBSERVER_CLOSING_NOTE,
@@ -407,10 +409,11 @@ pub fn observed_sources_doc(cardinality: Cardinality, language: DocLanguage) -> 
         Cardinality::ZeroOrMore => AccessorDoc {
             summary: "Every pairing this module's observer slot observes, in plan order.",
             body: &[
-                "The daemon keeps each member's incarnation and liveness current, and a",
-                "member whose source is down stays in the set, at its position. This slot",
-                "declares cardinality `zero_or_more`: the plan may bind no pairing at",
-                "all, so the empty set is an expected steady state.",
+                "The daemon keeps each member's incarnation and liveness current, a copy",
+                "joining or leaving adds or removes members, and a member whose source is",
+                "down stays in the set, at its position. This slot declares",
+                "cardinality `zero_or_more`: the plan may bind no pairing at all, so the",
+                "empty set is an expected steady state.",
             ],
             api_note: None,
             closing: OBSERVER_CLOSING_NOTE,

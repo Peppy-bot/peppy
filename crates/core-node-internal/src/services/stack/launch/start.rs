@@ -3,7 +3,7 @@
 
 use super::feedback::publish_stdout;
 use super::orchestrate::start_node_directly;
-use super::watchers::lifecycle_watchers;
+use super::watchers::LifecycleWatchers;
 use super::{NodeKey, PhaseChange, PhaseGoal, PlannedDeployment, federated};
 use crate::services::node::create_action_log_file;
 use crate::services::stack::action::StackChangeContext;
@@ -61,6 +61,10 @@ pub(in crate::services::stack) async fn start_node_instances(
     resolved_slot_bindings: &BTreeMap<String, config::runtime::SlotBindings>,
     planned_pairings: &[daemon_config::launcher::PlannedPairing],
     planned_observations: &[daemon_config::launcher::PlannedObservation],
+    // Where each started source's lifecycle transitions go: every machine
+    // running an observer of it anywhere in the plan, including observers
+    // this change leaves running.
+    watchers: &LifecycleWatchers,
     placements: &daemon_config::launcher::Placements,
     // The clock every instance of the change reads, as it was resolved: the
     // plan each one starts with carries its own.
@@ -100,16 +104,15 @@ pub(in crate::services::stack) async fn start_node_instances(
     // `ObservationTargets` below.
     let mut observations_by_instance: HashMap<&str, BTreeMap<String, Vec<ObservationTarget>>> =
         HashMap::new();
-    let mut watchers_by_source: HashMap<_, _> =
-        lifecycle_watchers(planned_observations, placements)?
-            .into_iter()
-            .map(|(instance, hosts)| {
-                (
-                    instance.to_string(),
-                    hosts.into_iter().map(|host| host.to_string()).collect(),
-                )
-            })
-            .collect();
+    let mut watchers_by_source: HashMap<_, _> = watchers
+        .iter()
+        .map(|(instance, hosts)| {
+            (
+                instance.to_string(),
+                hosts.iter().map(|host| host.to_string()).collect(),
+            )
+        })
+        .collect();
 
     // Every observer's own slots ride its `node_run` goal, wherever the plan
     // placed it. A peer daemon needs them to register the observation at all; a
@@ -124,14 +127,7 @@ pub(in crate::services::stack) async fn start_node_instances(
             .or_default()
             .entry(observation.observer_link_id.clone())
             .or_default()
-            .push(ObservationTarget {
-                peer: observation.peer.clone(),
-                ..ObservationTarget::new(
-                    observation.source.instance_id.clone(),
-                    observation.source_link_id.clone(),
-                    observation.source.core_node.clone(),
-                )
-            });
+            .push(observation.target());
     }
     publish_stdout(ctx, "Running nodes...", LaunchFeedbackStep::LauncherStep).await;
 

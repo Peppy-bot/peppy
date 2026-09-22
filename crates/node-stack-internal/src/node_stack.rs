@@ -1141,6 +1141,23 @@ impl NodeStack {
         guard.find_entity_by_instance_id(instance_id)
     }
 
+    /// Records the producer set one instance holds in slot `link_id` from now
+    /// on, so `node_info` and `stack list` report the set the daemon delivered.
+    /// Returns `false` when no entity tracks the instance.
+    pub fn set_instance_slot_binding(
+        &self,
+        instance_id: &Name,
+        link_id: &str,
+        producers: config::runtime::BoundProducers,
+    ) -> bool {
+        let Some(entity) = self.find_entity_by_instance_id(instance_id) else {
+            return false;
+        };
+        entity
+            .write()
+            .set_instance_slot_binding(instance_id, link_id, producers)
+    }
+
     /// Return the `(node_name, node_tag)` of any entity in the stack that
     /// tracks an instance with `instance_id` in any state: `Starting`,
     /// `Running`, etc. Used by the daemon to enforce stack-wide

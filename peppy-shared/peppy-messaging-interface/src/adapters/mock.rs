@@ -13,6 +13,7 @@ use super::super::wire::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -62,6 +63,25 @@ type MessageLog = Arc<Mutex<HashMap<String, Vec<Message>>>>;
 pub struct MockSubscription {
     tx: flume::Sender<TopicMessage>,
     drop_secondary: bool,
+    /// Cleared when the subscription's handle drops, the mock's undeclare: a
+    /// clone of its receiver stops receiving at once, as it does when a Zenoh
+    /// subscriber is undeclared.
+    declared: Arc<AtomicBool>,
+}
+
+impl MockSubscription {
+    fn receives(&self) -> bool {
+        self.declared.load(Ordering::Acquire) && !self.tx.is_disconnected()
+    }
+}
+
+/// Undeclares a mock subscription when its [`Subscription`] handle drops.
+struct MockUndeclare(Arc<AtomicBool>);
+
+impl Drop for MockUndeclare {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// Shared map of active subscriptions, keyed by pattern. Each pattern maps to
@@ -152,7 +172,7 @@ impl MockAdapter {
         let subscriptions = map.lock().unwrap();
         subscriptions.iter().any(|(declared, entries)| {
             Self::key_exprs_intersect(declared, &publish_keyexpr)
-                && entries.iter().any(|entry| !entry.tx.is_disconnected())
+                && entries.iter().any(MockSubscription::receives)
         })
     }
 }
@@ -731,7 +751,7 @@ impl MockAdapter {
                     continue;
                 }
                 for sub in subs.iter() {
-                    if sub.drop_secondary && !is_primary {
+                    if !sub.receives() || (sub.drop_secondary && !is_primary) {
                         continue;
                     }
                     matched.push(sub.tx.clone());
@@ -772,6 +792,7 @@ impl MockAdapter {
         }
 
         let (tx, rx) = flume::bounded(SubscriberBufferSizes::default().size_for(qos));
+        let declared = Arc::new(AtomicBool::new(true));
 
         {
             let mut subscriptions = self.subscriptions.lock().unwrap();
@@ -781,15 +802,15 @@ impl MockAdapter {
                 .push(MockSubscription {
                     tx: tx.clone(),
                     drop_secondary,
+                    declared: Arc::clone(&declared),
                 });
         }
 
-        // No background task or guard is needed — the mock writes directly
-        // into the sender from `publish_keyexpr`, so dropping the
-        // Subscription's `rx` is enough to stop reception. The stale `tx`
-        // clone in the subscriptions map is benign: `route_publish` ignores
-        // send errors on dead senders.
-        Ok(Subscription::new(rx, Box::new(())))
+        // The mock writes directly into the sender from `publish_keyexpr`, and
+        // the guard undeclares the subscription when its handle drops. The
+        // stale `tx` clone left in the subscriptions map is benign: routing and
+        // matching skip an undeclared subscription.
+        Ok(Subscription::new(rx, Box::new(MockUndeclare(declared))))
     }
 }
 

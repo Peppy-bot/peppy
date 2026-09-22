@@ -1353,6 +1353,28 @@ impl NodeEntity {
         Some(inst.state())
     }
 
+    /// Records the producer set one of this entity's instances holds in slot
+    /// `link_id` from now on. Returns `false` when the entity is not `Ready` or
+    /// tracks no such instance.
+    pub fn set_instance_slot_binding(
+        &mut self,
+        instance_id: &Name,
+        link_id: &str,
+        producers: config::runtime::BoundProducers,
+    ) -> bool {
+        let NodeStage::Ready { instances, .. } = &mut self.stage else {
+            return false;
+        };
+        let Some(instance) = instances
+            .iter_mut()
+            .find(|instance| instance.instance_id() == instance_id)
+        else {
+            return false;
+        };
+        instance.set_slot_binding(link_id, producers);
+        true
+    }
+
     /// Removes a `Running` or terminal (`Finished`/`Failed`) instance from a
     /// `Ready` entity. The entity stays in `Ready` regardless of whether the
     /// instance list becomes empty. `Starting` instances are intentionally left
@@ -1528,6 +1550,12 @@ impl TrackedNodeInstance {
     pub fn with_copy(mut self, copy: Option<config::runtime::Name>) -> Self {
         self.copy = copy;
         self
+    }
+
+    /// Replaces the producers recorded for one of this instance's slots with
+    /// the set the daemon delivered to it.
+    fn set_slot_binding(&mut self, link_id: &str, producers: config::runtime::BoundProducers) {
+        self.slot_bindings.insert(link_id.to_string(), producers);
     }
 
     /// The endpoints the instance serves, in label order, for `stack list`
@@ -1838,6 +1866,47 @@ mod tests {
             handle.read().instances()[0].endpoints(),
             endpoints.as_slice()
         );
+    }
+
+    /// A delivered producer set replaces the one instance's slot it names and
+    /// nothing else; an instance the entity does not track is reported.
+    #[test]
+    fn a_delivered_set_replaces_the_named_slot_of_the_named_instance() {
+        let planner = TrackedNodeInstance::new(
+            Name::new("planner_inst").unwrap(),
+            InstanceState::Running,
+            BTreeMap::from([(
+                "main".to_string(),
+                config::runtime::BoundProducers::from(config::runtime::ProducerRef::new(
+                    "core_a", "camera_1",
+                )),
+            )]),
+        );
+        let mut entity = NodeEntity::from_snapshot(
+            sensor_config(),
+            PathBuf::from("/tmp/sensor/peppy.json5"),
+            Some(PathBuf::from("/opt/peppy/bin/peppy")),
+            vec![planner],
+        );
+        let grown = config::runtime::BoundProducers::try_from(vec![
+            config::runtime::ProducerRef::new("core_a", "alpha_arm_inst"),
+            config::runtime::ProducerRef::new("core_b", "bravo_arm_inst"),
+        ])
+        .unwrap();
+
+        assert!(entity.set_instance_slot_binding(
+            &Name::new("planner_inst").unwrap(),
+            "robots",
+            grown.clone(),
+        ));
+        let bindings = entity.instances()[0].slot_bindings();
+        assert_eq!(bindings["robots"], grown);
+        assert_eq!(bindings["main"].as_slice()[0].instance_id, "camera_1");
+        assert!(!entity.set_instance_slot_binding(
+            &Name::new("absent_inst").unwrap(),
+            "robots",
+            grown,
+        ));
     }
 
     /// Guards the one line that places resolved bindings onto the `graph_json`

@@ -1,7 +1,8 @@
 use super::target::{PyProducerRef, PySenderTarget};
 use super::{PyMessengerHandle, duration_from_secs_f64, future_into_py_unit, to_py_err};
 use crate::config::PyQoSProfile;
-use peppylib::messaging::{BoundSetSubscription, Subscription, TopicMessenger, TopicPublisher};
+use peppylib::messaging::{Subscription, TopicMessenger, TopicPublisher};
+use peppylib::runtime::BoundSetSubscription;
 use peppylib::types::{Message, Payload};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -87,14 +88,16 @@ impl PySubscription {
     }
 }
 
-/// Python wrapper for a dep slot's merged bound-set subscription: one
-/// producer-pinned wire subscription per bound producer, merged behind a
+/// Python wrapper for a consumer slot's bound-set subscription, vended by
+/// `node_runner.subscribe_bound_set(...)`: one producer-pinned wire
+/// subscription per producer currently bound to the slot, merged behind a
 /// single `on_next_message` that yields `(producer, message)` tuples. See
-/// [`BoundSetSubscription`] for the merge semantics (per-producer order,
-/// fair polling, drain-before-shutdown, empty-set pending).
+/// [`BoundSetSubscription`] for the merge semantics (per-producer order, fair
+/// polling, drain-before-shutdown, empty-set pending, producers joining and
+/// leaving the set).
 #[pyclass(name = "BoundSetSubscription")]
 pub struct PyBoundSetSubscription {
-    inner: Arc<Mutex<BoundSetSubscription>>,
+    pub(crate) inner: Arc<Mutex<BoundSetSubscription>>,
 }
 
 #[pymethods]
@@ -129,8 +132,8 @@ impl PyTopicMessenger {
     /// [`ProducerRef`](peppylib::messaging::ProducerRef) identity pinned
     /// on the wire — only that producer's publishes reach the
     /// subscription. Generated consumed topics never splice this: they go
-    /// through [`subscribe_bound_set`](Self::subscribe_bound_set), which
-    /// covers the slot's complete bound set for every cardinality.
+    /// through `node_runner.subscribe_bound_set(...)`, which follows the
+    /// slot's complete bound set for every cardinality.
     #[staticmethod]
     #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, from_producer, qos))]
     #[allow(clippy::too_many_arguments)]
@@ -278,56 +281,6 @@ impl PyTopicMessenger {
             .map_err(to_py_err)?;
 
             Ok(PySubscription {
-                inner: Arc::new(Mutex::new(subscription)),
-            })
-        })
-    }
-
-    /// Subscribe to a topic across a dep slot's complete bound producer
-    /// set: one producer-pinned wire subscription per member of
-    /// `bound_producers`, merged behind one [`PyBoundSetSubscription`]
-    /// yielding `(producer, message)` tuples. An empty set opens zero wire
-    /// subscriptions and yields nothing until `shutdown` fires (a
-    /// `zero_or_more` slot with no binding, or a vacant `zero_or_one` slot).
-    /// Generated code splices
-    /// `node_runner.bound_producers(link_id)` and the node's cancellation
-    /// token here.
-    #[staticmethod]
-    #[pyo3(signature = (messenger, as_core_node, as_instance_id, from_target, to_topic, bound_producers, qos, shutdown))]
-    #[allow(clippy::too_many_arguments)]
-    fn subscribe_bound_set<'py>(
-        py: Python<'py>,
-        messenger: &PyMessengerHandle,
-        as_core_node: String,
-        as_instance_id: String,
-        from_target: PySenderTarget,
-        to_topic: String,
-        bound_producers: Vec<PyProducerRef>,
-        qos: PyQoSProfile,
-        shutdown: &crate::runtime::PyCancellationToken,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let handle = messenger.inner.clone();
-        let from_target = from_target.into_inner();
-        let producers: Vec<peppylib::messaging::ProducerRef> = bound_producers
-            .into_iter()
-            .map(PyProducerRef::into_inner)
-            .collect();
-        let shutdown = shutdown.inner_token();
-        crate::py_future::future_into_py(py, async move {
-            let subscription = TopicMessenger::subscribe_bound_set(
-                &handle,
-                &as_core_node,
-                &as_instance_id,
-                from_target,
-                &to_topic,
-                &producers,
-                qos.into(),
-                shutdown,
-            )
-            .await
-            .map_err(to_py_err)?;
-
-            Ok(PyBoundSetSubscription {
                 inner: Arc::new(Mutex::new(subscription)),
             })
         })

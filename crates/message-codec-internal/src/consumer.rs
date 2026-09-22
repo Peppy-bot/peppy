@@ -9,10 +9,10 @@
 use crate::{ConversionError, MessageCodec};
 use peppylib::config::QoSProfile;
 use peppylib::messaging::{
-    ActionGoalHandle, ActionMessenger, BoundSetSubscription, CancelState, ProducerRef,
-    ResultStatus, SenderTarget, ServiceMessenger, ServiceTarget, TopicMessenger, decode_cancel_ack,
+    ActionGoalHandle, ActionMessenger, CancelState, ProducerRef, ResultStatus, SenderTarget,
+    ServiceMessenger, ServiceTarget, decode_cancel_ack,
 };
-use peppylib::runtime::CancellationToken;
+use peppylib::runtime::BoundSetSubscription;
 use peppylib::{Message, MessengerHandle, Payload, PeppyError};
 use serde_json::{Map, Value};
 use std::time::Duration;
@@ -35,13 +35,11 @@ pub struct ConsumerIdentity {
 }
 
 /// A contract member the consumer is bound to: the target its provider
-/// serves it under, the member's name in the contract, and the producers
-/// bound to the slot.
+/// serves it under and the member's name in the contract.
 #[derive(Debug, Clone)]
 pub struct MemberBinding {
     pub target: SenderTarget,
     pub member: String,
-    pub producers: Vec<ProducerRef>,
 }
 
 /// A subscription to a topic member across every producer bound to its
@@ -52,31 +50,13 @@ pub struct TopicConsumer {
 }
 
 impl TopicConsumer {
-    /// Subscribes at the topic's declared QoS. The subscription ends when
-    /// `shutdown` fires.
-    pub async fn subscribe(
-        messenger: &MessengerHandle,
-        identity: &ConsumerIdentity,
-        binding: &MemberBinding,
-        qos: QoSProfile,
-        codec: MessageCodec,
-        shutdown: CancellationToken,
-    ) -> Result<Self, ConsumerError> {
-        let subscription = TopicMessenger::subscribe_bound_set(
-            messenger,
-            &identity.core_node,
-            &identity.instance_id,
-            binding.target.clone(),
-            &binding.member,
-            &binding.producers,
-            qos,
-            shutdown,
-        )
-        .await?;
-        Ok(Self {
+    /// Decodes what `subscription` receives from the topic's producers with
+    /// `codec`.
+    pub fn new(subscription: BoundSetSubscription, codec: MessageCodec) -> Self {
+        Self {
             codec,
             subscription,
-        })
+        }
     }
 
     /// The next message from any bound producer, or `None` once the

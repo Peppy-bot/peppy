@@ -458,7 +458,7 @@ fn consumed_topic_with_link_id_splices_runtime_binding_target() {
     assert_contains_all(
         &rendered,
         &[
-            "node_runner.bound_producers(\"cam_left\"),",
+            "inner = await node_runner.subscribe_bound_set(\n        \"cam_left\",",
             "return node_runner.bound_producer(\"cam_left\")",
         ],
     );
@@ -677,24 +677,24 @@ fn consumed_topic() {
         "from_instance_id should no longer appear as a generated parameter; rendered:\n{rendered}"
     );
 
-    // Topic metadata and subscribe call: the merged subscription covers the
-    // slot's complete bound set (resolved at runtime via
-    // `bound_producers(<link_id>)`) and threads the node's cancellation
-    // token so an empty `zero_or_more` set pends until shutdown.
+    // Topic metadata and subscribe call: the merged subscription follows the
+    // slot's complete bound set by its link_id through the node runner, which
+    // carries the node's cancellation token so an empty `zero_or_more` set
+    // pends until shutdown.
     assert_contains_all(
         &rendered,
         &[
             "\"uvc_camera\"",
             "\"video_stream\"",
-            "peppylib.TopicMessenger.subscribe_bound_set(",
-            "topic_name,\n        node_runner.bound_producers(\"uvc_camera\"),\n        peppylib.QoSProfile.Standard,\n        node_runner.cancellation_token(),",
+            "inner = await node_runner.subscribe_bound_set(\n        \"uvc_camera\",",
+            "topic_name,\n        peppylib.QoSProfile.Standard,",
         ],
     );
 
     // The cardinality-typed module surface: this `one` slot exposes the
     // singular, infallible `bound_producer()`, never the plural accessor.
-    // The subscribe splice above still covers the complete (single-member)
-    // set through the plain list lookup.
+    // The subscribe splice above still follows the complete (single-member)
+    // set by the slot's link_id.
     assert_contains_all(
         &rendered,
         &[
@@ -727,9 +727,7 @@ fn consumed_topic() {
     // published in the re-subscribe gap was silently lost; with a held
     // subscription the buffer keeps every message between `next` calls.
     assert_eq!(
-        rendered
-            .matches("peppylib.TopicMessenger.subscribe_bound_set(")
-            .count(),
+        rendered.matches("node_runner.subscribe_bound_set(").count(),
         1,
         "topic must be subscribed once, not per next() call; rendered:\n{rendered}"
     );

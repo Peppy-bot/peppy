@@ -1,15 +1,21 @@
-//! What the machines a join touches must hold before it starts anything: the
-//! nodes it reuses running unchanged since the launch resolved them, the
-//! instances it depends on live, and no instance already answering to a name
-//! the copy brings.
+//! What the machines a change touches must hold before it starts anything: the
+//! nodes a join reuses running unchanged since the launch resolved them, the
+//! instances it depends on live, no instance already answering to a name the
+//! copy brings, and the machines of the sets it changes live on the federation.
+//! A removal takes what it can: this module also splits its slots by whether
+//! their machine is live, and tells the operator which sets stayed behind.
 
 use super::super::action::StackChangeContext;
-use super::super::launch::{HostedNode, NodeKey, PlannedDeployment};
+use super::super::launch::feedback::publish_stderr;
+use super::super::launch::{HostedNode, NodeKey, PlannedDeployment, federated};
 use super::super::state::ActiveLaunch;
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
+use super::changed_slots::ChangedSlot;
 use super::stack_list_on;
+use config::runtime::Name;
+use core_node_api::encoding::LaunchFeedbackStep;
 use daemon_config::launcher::Placements;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// What `host` holds for `node`.
 pub(super) async fn node_info_on(
@@ -50,6 +56,9 @@ pub(super) struct LiveCheck<'a> {
     pub participants: &'a [String],
     pub new_ids: &'a HashSet<String>,
     pub required_ids: &'a HashSet<String>,
+    /// The set slots the join grows, whose instances must be running to take
+    /// them.
+    pub grown_slots: &'a [ChangedSlot],
 }
 
 /// What the machines a join touches hold.
@@ -75,6 +84,7 @@ pub(super) async fn check_live_stack(
         participants,
         new_ids,
         required_ids,
+        grown_slots,
     } = check;
     let mut reusable = HashSet::new();
     let mut fresh_hosts = Vec::new();
@@ -140,6 +150,37 @@ pub(super) async fn check_live_stack(
                 ));
             }
         }
+        for slot in grown_slots
+            .iter()
+            .filter(|slot| placements.of(slot.instance_id.as_str()) == host)
+        {
+            let state = graph
+                .nodes
+                .iter()
+                .flat_map(|node| &node.instances)
+                .find(|live| live.instance_id == slot.instance_id.as_str())
+                .map(|live| live.state);
+            match state {
+                Some(core_node_api::InstanceState::Running) => {}
+                Some(core_node_api::InstanceState::Starting) => {
+                    return Err(format!(
+                        "joining grows {}, but `{}` is starting on `{host}`; join again once it \
+                         is running, or join an option whose fragments do not add to that slot",
+                        slot.field(),
+                        slot.instance_id
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "joining grows {}, but `{}` is not running on `{host}`; relaunch the \
+                         stack so `{host}` runs it again, or join an option whose fragments do \
+                         not add to that slot",
+                        slot.field(),
+                        slot.instance_id
+                    ));
+                }
+            }
+        }
         for instance in active
             .flat
             .deployments
@@ -165,4 +206,97 @@ pub(super) async fn check_live_stack(
         reusable,
         fresh_hosts,
     })
+}
+
+/// The core nodes live on the federation, this daemon included, asked only when
+/// `hosts` names a machine other than this one: a change that touches this
+/// machine alone answers every liveness question from its own name.
+pub(super) async fn live_machines<'a>(
+    ctx: &StackChangeContext,
+    hosts: impl IntoIterator<Item = &'a str>,
+) -> ChangeResult<BTreeSet<String>> {
+    let mut live = BTreeSet::from([ctx.bound_core_node.clone()]);
+    if hosts.into_iter().all(|host| host == ctx.bound_core_node) {
+        return Ok(live);
+    }
+    live.extend(federated::live_core_nodes(&ctx.messenger).await?);
+    Ok(live)
+}
+
+/// Whether `slot`'s instance runs on one of the `live` machines, which
+/// [`live_machines`] always counts this daemon among.
+fn runs_on_live_machine(
+    slot: &ChangedSlot,
+    placements: &Placements,
+    live: &BTreeSet<String>,
+) -> bool {
+    live.contains(slot.host(placements))
+}
+
+/// Refuses a join that would grow a set whose instance runs on a machine that is
+/// not live on the federation, naming the slot and the fix.
+pub(super) fn check_hosts_live(
+    copy: &Name,
+    slots: &[ChangedSlot],
+    placements: &Placements,
+    live: &BTreeSet<String>,
+) -> Result<(), String> {
+    let Some(slot) = slots
+        .iter()
+        .find(|slot| !runs_on_live_machine(slot, placements, live))
+    else {
+        return Ok(());
+    };
+    let host = slot.host(placements);
+    Err(format!(
+        "joining `{copy}` would add members to {} on `{host}`, which is not live on the \
+         federation. Bring `{host}`'s daemon back, logged into this workspace: if it still runs \
+         `{}`, join again; if it does not, relaunch the stack. Or join an option whose fragments \
+         do not add to that slot",
+        slot.field(),
+        slot.instance_id
+    ))
+}
+
+/// Splits `slots` into those whose instance runs on a machine in `live`, and
+/// those whose instance runs on a machine that is not.
+pub(super) fn split_by_liveness(
+    slots: Vec<ChangedSlot>,
+    placements: &Placements,
+    live: &BTreeSet<String>,
+) -> (Vec<ChangedSlot>, Vec<ChangedSlot>) {
+    slots
+        .into_iter()
+        .partition(|slot| runs_on_live_machine(slot, placements, live))
+}
+
+/// Tells the operator which sets a removal left untouched because the machine
+/// holding them is not live, one line per machine.
+pub(super) async fn report_offline_sets(
+    ctx: &StackChangeContext,
+    copy: &Name,
+    slots: &[ChangedSlot],
+    placements: &Placements,
+) {
+    let mut by_host: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for slot in slots {
+        by_host
+            .entry(slot.host(placements))
+            .or_default()
+            .push(slot.field());
+    }
+    for (host, fields) in by_host {
+        publish_stderr(
+            ctx,
+            format!(
+                "`{host}` is not live on the federation, so removing copy `{copy}` did not \
+                 update these sets there: {}. If `{host}` comes back still running their \
+                 instances, the next `peppy stack join` or `peppy stack remove` changing one of \
+                 them delivers it whole; if it comes back without them, relaunch the stack",
+                fields.join(", ")
+            ),
+            LaunchFeedbackStep::LauncherStep,
+        )
+        .await;
+    }
 }

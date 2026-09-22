@@ -498,7 +498,9 @@ fn build_pair_topic_subscription(
                 /// members' messages surface (triple wire pin +
                 /// generation-tagged delivery check). A pairing is a live stream,
                 /// not a mailbox: messages published before observation are never
-                /// delivered.
+                /// delivered. Where the slot's cardinality admits more than one
+                /// source, the subscription follows the set as a join grows it or
+                /// a removal shrinks it.
             },
             quote!(peppylib::runtime::ObservedTopicSubscription),
             quote! {
@@ -646,19 +648,30 @@ pub fn build_consumed_topic_subscription(
     )?;
 
     let from_target_expr = consumed_to_target_expression(dependency);
-    let bound_producers_expr = consumed_bound_producers_expression(dependency);
+    let link_id_literal = Literal::string(&dependency.link_id);
     let bound_producer_accessor_fn = build_bound_producer_accessor_fn(dependency);
 
+    // A scalar slot's producer is the one its deployment bound; only a set slot
+    // follows a join or a removal.
+    let follows_the_set = if dependency.cardinality.is_scalar() {
+        quote! {}
+    } else {
+        quote! {
+            /// The subscription follows the set as a join grows it or a removal
+            /// shrinks it.
+        }
+    };
     let subscription_tokens = build_subscription_struct(
         quote! {
             /// A held subscription covering every producer bound to this slot: one
             /// producer-pinned wire subscription per member of the slot's bound
             /// set, merged client-side. Message order is preserved independently
-            /// per producer (no total ordering across producers), ready producers
-            /// are merged fairly, and the bound set is fixed at startup. To follow
-            /// a single producer, filter on the yielded producer identity.
+            /// per producer (no total ordering across producers), and ready
+            /// producers are merged fairly. To follow a single producer, filter on
+            /// the yielded producer identity.
+            #follows_the_set
         },
-        quote!(peppylib::messaging::BoundSetSubscription),
+        quote!(peppylib::runtime::BoundSetSubscription),
         quote! {
             /// Awaits the next message from any producer bound to this slot.
             ///
@@ -695,15 +708,12 @@ pub fn build_consumed_topic_subscription(
             let node_name = #node_name_literal;
             let qos = peppylib::config::QoSProfile::Standard;
 
-            let inner = peppylib::TopicMessenger::subscribe_bound_set(
-                node_runner.messenger(),
-                node_runner.processor().bound_core_node(),
-                node_runner.processor().bound_instance_id(),
+            let inner = peppylib::runtime::subscribe_bound_set(
+                node_runner,
+                #link_id_literal,
                 #from_target_expr,
                 topic_name,
-                #bound_producers_expr,
                 qos,
-                node_runner.cancellation_token().clone(),
             )
             .await
             .map_err(|source| crate::Error::TopicSubscribe {
@@ -719,24 +729,6 @@ pub fn build_consumed_topic_subscription(
     })
 }
 
-/// Returns the `&[ProducerRef]` expression spliced into generated
-/// [`peppylib::TopicMessenger::subscribe_bound_set`] calls (and the public
-/// `bound_producers()` body of `zero_or_more` slots):
-/// `Processor::bound_producers(<manifest link_id>)`, the slot's
-/// runtime-resolved ordered producer set. The validator pre-resolves the
-/// consumer's launcher / CLI binding map (sized per the slot's cardinality;
-/// anything else is rejected at launch) and the runtime processor caches
-/// the sets at startup, so the lookup is an infallible borrow shared by
-/// every interface kind. `subscribe()` always takes the plain slice: the
-/// merged wire subscription covers the complete set whatever the
-/// cardinality, so only the public accessor is cardinality-typed.
-pub fn consumed_bound_producers_expression(
-    dependency: &crate::generator::types::DependencyContext,
-) -> TokenStream {
-    let literal = Literal::string(&dependency.link_id);
-    quote!(node_runner.processor().bound_producers(#literal))
-}
-
 /// The module-level bound-producer accessor every consumed topic, service,
 /// and action module exposes. Its name and return type encode the slot's
 /// launch-validated cardinality instead of restating it in comments: `one`
@@ -744,10 +736,10 @@ pub fn consumed_bound_producers_expression(
 /// `zero_or_one` generates `bound_producer()` returning an `Option`,
 /// `one_or_more` generates `bound_producers()` returning a never-empty
 /// `NonEmptyProducers` whose `first()` is infallible, and `zero_or_more`
-/// generates `bound_producers()` returning a plain, possibly empty slice,
+/// generates `bound_producers()` returning a plain, possibly empty list,
 /// so the empty branch is forced by the type and is never dead code. Every
 /// module sharing this slot's `link_id` returns the same set in the same
-/// application declaration order, and flipping a slot's cardinality
+/// plan order, and flipping a slot's cardinality
 /// surfaces every call site that relied on the old guarantee at compile
 /// time. The accessor doc comes from
 /// [`DependencyContext::bound_producers_doc`] so both language generators
@@ -785,7 +777,7 @@ pub fn build_bound_producer_accessor_fn(
             quote! {
                 pub fn bound_producers(
                     node_runner: &crate::NodeRunner,
-                ) -> peppylib::messaging::NonEmptyProducers<'_> {
+                ) -> peppylib::messaging::NonEmptyProducers {
                     node_runner.processor().non_empty_bound_producers(#link_id_literal)
                 }
             },
@@ -795,7 +787,7 @@ pub fn build_bound_producer_accessor_fn(
             quote! {
                 pub fn bound_producers(
                     node_runner: &crate::NodeRunner,
-                ) -> &[peppylib::messaging::ProducerRef] {
+                ) -> Vec<peppylib::messaging::ProducerRef> {
                     node_runner.processor().bound_producers(#link_id_literal)
                 }
             },

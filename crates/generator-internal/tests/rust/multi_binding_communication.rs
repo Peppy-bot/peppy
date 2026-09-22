@@ -181,7 +181,7 @@ fn main() -> Result<()> {
             let request = cameras_enable_camera::Request::new(true);
             let response = cameras_enable_camera::poll(
                 &node_runner,
-                camera,
+                &camera,
                 Duration::from_secs(5),
                 request,
             )

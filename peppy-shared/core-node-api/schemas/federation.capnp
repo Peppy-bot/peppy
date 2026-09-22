@@ -133,9 +133,52 @@ struct ParticipantInstancesRemoveRequest {
     instanceIds @1 :List(Text);
 }
 
+# Replace set slots of instances this machine runs in a reserved launch's slice.
+# Each entry carries one slot's whole member set, after a join grew it or a
+# removal shrank it; the receiver delivers it to its own instance.
+struct ParticipantSetsUpdateRequest {
+    launchId @0 :Text;
+    sets @1 :List(SlotSet);
+}
+
+# One instance's slot and the set it holds from now on.
+struct SlotSet {
+    instanceId @0 :Text;
+    linkId @1 :Text;
+    members :union {
+        # Discriminant zero: a message that never set `members` decodes as
+        # `unset`, which the decoder refuses.
+        unset @2 :Void;
+        # A producer-binding slot's producers, in plan order.
+        producers @3 :List(InstanceAddress);
+        # An observer slot's observed pairings, in plan order.
+        observed @4 :List(ObservationMember);
+    }
+}
+
+# One pairing an observer slot taps: the source instance and its pairing slot.
+# Identical to `node.capnp:ObservationMember`, restated because each schema file
+# is compiled on its own.
+struct ObservationMember {
+    source @0 :InstanceAddress;
+    sourceLinkId @1 :Text;
+    # The pair's other end when the member is pinned to one pair. Absent, the
+    # member observes every pair of the source's slot.
+    peer @2 :ObservedPeer;
+}
+
+# One pair's other end, as an observed member names it. Identical to
+# `node.capnp:ObservedPeer`, restated because each schema file is compiled on
+# its own.
+struct ObservedPeer {
+    instance @0 :InstanceAddress;
+    linkId @1 :Text;
+}
+
 # The reply to every federation exchange whose answer is "did you do it, and if
-# not, why". Shared by `pair_commit` and `participant_release` rather than
-# restated per service: the two differ only in which verb `ok` reports, and that
+# not, why". Shared by `pair_commit`, `participant_release`,
+# `participant_instances_remove` and `participant_sets_update` rather than
+# restated per service: they differ only in which verb `ok` reports, and that
 # verb is already the service name.
 #
 # The refusal reason is load-bearing, not decoration. A `pair_commit` refusal

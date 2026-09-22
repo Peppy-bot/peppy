@@ -50,6 +50,7 @@ async fn spawn_stub_listener(server: MessengerHandle, graph: SerializedNodeGraph
                     core_node: config::runtime::CoreNodeName::new(CORE_NODE).unwrap(),
                     instance_ids: vec![config::runtime::Name::new("alpha_arm_inst").unwrap()],
                     selections: vec!["commander=web".into()],
+                    set_members: Vec::new(),
                 }];
                 Ok(response.encode().expect("encode StackListResponse"))
             })
