@@ -1,0 +1,36 @@
+{
+  peppy_schema: "node/v1",
+  manifest: {
+    name: "set_watch",
+    tag: "v1",
+    depends_on: {
+      // Every arm a copy adds: one slot bound to each arm's own joint_states.
+      nodes: [
+        { name: "my_python_robot_arm", tag: "v1", link_id: "arms", cardinality: "zero_or_more" }
+      ],
+      // Every leader a copy adds: one slot tapping each leader's setpoints on
+      // its pair with the hub.
+      pairing_observers: [
+        { name: "joint_link", tag: "v1", role: "leader", link_id: "leaders", cardinality: "zero_or_more" }
+      ]
+    },
+    labels: ["watch"]
+  },
+  execution: {
+    language: "python",
+    build_cmd: ["uv", "sync", "--no-editable"],
+    run_cmd: ["./.venv/bin/python", "-m", "set_watch"],
+    parameters: {
+      // How often the watch reads both member sets.
+      report_rate_hz: { $type: "u16", $default: 4 }
+    }
+  },
+  interfaces: {
+    topics: {
+      consumes: [
+        { link_id: "arms", name: "joint_states" },
+        { link_id: "leaders", name: "joint_setpoints" }
+      ]
+    }
+  }
+}

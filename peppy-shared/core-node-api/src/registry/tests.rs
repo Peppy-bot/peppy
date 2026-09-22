@@ -45,6 +45,7 @@ fn pinned_service_name(id: ServiceId) -> &'static str {
         ServiceId::ParticipantReserve => "participant_reserve",
         ServiceId::ParticipantSliceBegin => "participant_slice_begin",
         ServiceId::ParticipantInstancesRemove => "participant_instances_remove",
+        ServiceId::ParticipantSetsUpdate => "participant_sets_update",
         ServiceId::PairCommit => "pair_commit",
         ServiceId::ParticipantRelease => "participant_release",
         ServiceId::RelationshipNotify => "relationship_notify",

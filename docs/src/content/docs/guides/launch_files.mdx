@@ -198,7 +198,7 @@ $ peppy stack list
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The output confirms that all nodes have been added to the stack along with their dependency relationships. When an instance serves an endpoint, an `Instance endpoints` table follows the bindings, one row per URL with the endpoint's `KIND` and `LABEL`. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in binding order, and an empty slot, whether a `zero_or_more` slot bound to nothing or a `zero_or_one` slot declared vacant, shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) is either bound or, where its manifest declares `cardinality: "zero_or_one"`, declared [`vacant`](#links-optional); only a `zero_or_more` slot may be left out entirely, and a launcher that leaves any other one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow the same shape: a participant slot is paired and an observer slot is linked, or, where its manifest declares it `cardinality: "zero_or_one"`, declared vacant, unless its cardinality is `zero_or_more`, where omitting it IS its empty set. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
+The output confirms that all nodes have been added to the stack along with their dependency relationships. When an instance serves an endpoint, an `Instance endpoints` table follows the bindings, one row per URL with the endpoint's `KIND` and `LABEL`. The `Instance bindings` table breaks that down per instance: the consumers (`fake_robot_brain`, `fake_video_reconstruction`) list the `depends_on` slots they resolved, while the producers (`fake_openarm01_controller`, `fake_uvc_camera`) and the core node declare no slots and show `(none)`. A resolved binding shows the chosen producer(s) as `instance_id@core_node`, ordered by link ID; a multi-cardinality slot lists every bound member in plan order, and an empty slot, whether a `zero_or_more` slot bound to nothing or a `zero_or_one` slot declared vacant, shows `(empty set)`. Every declared producer slot (`depends_on.nodes` / `depends_on.contracts`) is either bound or, where its manifest declares `cardinality: "zero_or_one"`, declared [`vacant`](#links-optional); only a `zero_or_more` slot may be left out entirely, and a launcher that leaves any other one out is rejected at validation (see [dependency cardinality](/advanced_guides/topics/#dependency-cardinality)). Pairing and observer slots follow the same shape: a participant slot is paired and an observer slot is linked, or, where its manifest declares it `cardinality: "zero_or_one"`, declared vacant, unless its cardinality is `zero_or_more`, where omitting it IS its empty set. The launch also prints a `Slice of launch ...` line above the tables naming the launch that produced this stack and its coordinator.
 
 ## Instance attributes
 
@@ -478,7 +478,7 @@ adjustments: [
 | `set_arguments` | Replaces the target's value for each named argument key, creating it when absent. Nested objects replace wholesale. |
 | `set_framework` | Replaces the target's [framework knobs](#framework-optional), today its `clock`. How the fragment that selects a shared control or recorder fragment binds those instances to the [clock domain](#clock-domains) this selection runs on. |
 | `set_links` | Replaces the target's whole entry for each named slot, creating it when absent. The value uses the ordinary [links](#links-optional) grammar, including vacancies. |
-| `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent fragments each contribute bindings to one multi-cardinality slot. |
+| `add_links` | Appends targets to each named slot's array binding, creating the binding when the slot has no entry. Refused when the slot holds a scalar or a vacancy: replacing is `set_links`'s job. Appending is what lets independent fragments each contribute bindings to one multi-cardinality slot, and what lets a [copy](#copies) that joins add its own instances to a running instance's set. |
 | `unset_links` | Drops each named slot's entry entirely, returning the slot to absent. |
 
 Fragments refuse to fight: two selected fragments writing the same argument key, the same framework knob or the same slot on one target are refused, naming both. The launcher's own top-level `adjustments` apply after all fragment adjustments and may override anything a fragment set, which is how one launcher specializes fragments it shares with another. Within the launcher's own list, a later entry wins over an earlier one: both lines live in one file one author edits. A launcher adjustment guarded on a `zero_or_more` axis applies to every [copy](#copies) of the matching option, its target resolved inside each copy.
@@ -657,13 +657,49 @@ peppy stack join openarm_v2 -i charlie --with xr_commander \
   --set-arguments commander_inst.https_port=4444
 ```
 
-A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. Constraints see the stack's selection and the copy's together, so `openarm_v2_sim` on a `fleet` stack launched without a simulation is refused at join with the fleet's reason. A copy's adjustments may write to a stack instance, and each field they write is what the copy needs of it: two copies deployed together must agree on every field they both write, and a join may write to a stack instance only what already runs there, except that its own instances may pair into the slots the instance declares vacant: the pairing instance's `links` name the slot, and the copy's fragment releases the vacancy with `unset_links` on the instance. A join that would change a running instance is refused, naming the instance and each field that differs. That is why the rendered camera rig, which turns the simulation's rendering on, is selected in the file at launch.
+A launch snapshots its launcher and fragment files, and every join composes against that snapshot; launch again to load edits. Constraints see the stack's selection and the copy's together, so `openarm_v2_sim` on a `fleet` stack launched without a simulation is refused at join with the fleet's reason. A copy's adjustments may write to a stack instance, and each field they write is what the copy needs of it: two copies deployed together must agree on every field they both write, and a join may write to a stack instance only what already runs there, with two exceptions: its own instances may pair into the slots the instance declares vacant (the pairing instance's `links` name the slot, and the copy's fragment releases the vacancy with `unset_links` on the instance), and they may join the `one_or_more` or `zero_or_more` sets it declares, below. A join that would change a running instance any other way is refused, naming the instance and each field that differs. That is why the rendered camera rig, which turns the simulation's rendering on, is selected in the file at launch.
+
+A stack instance that watches or consumes every robot declares the slot as a set, and each robot's fragment adds itself. The stack runs the monitor:
+
+```json5
+deployments: [
+  { source: { name: "fleet_monitor", tag: "v1" },
+    instances: [{ instance_id: "monitor_inst" }] },
+],
+```
+
+where the monitor's own manifest declares the slot as a set:
+
+```json5
+depends_on: {
+  nodes: [
+    { name: "openarm_backbone", tag: "v1", link_id: "robots", cardinality: "zero_or_more" },
+  ],
+},
+```
+
+and the robot option's fragment adds each copy's backbone to that `robots` slot:
+
+```json5
+adjustments: [
+  { target: "monitor_inst", add_links: { robots: ["backbone_inst"] } },
+],
+```
+
+```sh
+peppy stack launch fleet                 # monitor_inst reads robots as []
+peppy stack join openarm_v2 -i alpha     # [alpha_backbone_inst]
+peppy stack join openarm_v2 -i bravo     # [alpha_backbone_inst, bravo_backbone_inst]
+peppy stack remove alpha                 # [bravo_backbone_inst]
+```
+
+The members follow the order the copies joined, and a copy that rejoins under the same name is a member once, at the end. A member a join adds behaves like one the launch writes: it is subscribed like any other, keeps its position, and an observed member reads as not live while its source is down. A join adds only the copy's own instances, and only to a `one_or_more` or `zero_or_more` producer or observer slot of the instance's manifest; naming an instance the stack runs, a `one` or `zero_or_one` slot, or a pairing slot is refused at join, naming the slot and the fix. A join reserves the machine of every instance whose set it grows, wherever that instance runs, and is refused when that machine is not live on the federation or no longer runs the instance, naming the slot, the machine and the fix. A copy the launcher file deploys at launch may add a stack instance to a set, beside or in place of its own; removing that copy takes the member out again, and rejoining it by name is refused, so such a copy is launched with the stack.
 
 One simulation per stack, and each simulated robot joins it as a copy that brings its own model: the `openarm_simulation` launcher ships one copy, an OpenArm v2, and `stack join` adds more, of any model the simulation's catalogue carries. Waldo and Isaac Sim stand as many robots as the machine can run; MuJoCo stands one at a time, so it refuses a second copy until the first is removed. Physical robots join beside simulated ones.
 
-`stack remove NAME` stops the copy's instances in reverse dependency order and takes it out of the stack; a copy another copy links to is refused until that copy goes first, and a copy the stack's own instances link to stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
+`stack remove NAME` stops the copy's instances in reverse dependency order, takes the members it added out of the running sets, and takes the copy out of the stack; every instance whose set shrank returns the smaller set at its accessor's next call. A set on a machine that is not live keeps the members it holds, and the removal says so; when the machine returns with the instance still running, the next join or removal changing that slot delivers it whole, and when it returns without it, launch again. A removal that would leave a `one_or_more` slot with no member is refused, naming the slot. A copy another copy links to is refused until that copy goes first, and a copy a stack instance links to any other way stays until the next launch. Removal leaves the stack's own instances running: removing a simulated robot takes it out of the simulation, which stays up for the next join, and `stack reset` stops everything. A copy that released a stack instance's vacancy to pair into that slot restores the vacancy when it goes, so the slot stands vacant again as the launch declared it, the mirror of pairing into a vacancy above. A failed join stops what it started, removes the nodes it added, and reports the failure; when that cleanup itself fails the copy stays in `stack list` and the message says to retry `stack remove`.
 
-`stack list` names each copy, the option it copies, its host, its selection and its instances; `stack list --json` carries the same under `copies`. Preview a launch, or a join onto it, without starting anything:
+`stack list` names each copy, the option it copies, its host, its selection, its instances and the set members it added, one row per slot under `Set members:` (`monitor_inst.links.robots → alpha_backbone_inst`, the target by the id the stack runs it under; the bindings table adds its machine), and its bindings table names the copy beside each member a copy brought (`robots → alpha_backbone_inst@cn-robot [copy alpha]`); `stack list --json` carries the same under `copies`, the members under `set_members`, and each member of a slot's `slot_bindings` under `producer`, with a `copy` key on a member a copy brought. The node holding the set reads the same fact through its [`bound_members()`](/advanced_guides/topics/#receiving-messages) accessor. Preview a launch, or a join onto it, without starting anything, which composes it and runs the link rules a launch runs, leaving what only a running stack can answer (whether the instance whose set grows is running, and whether its machine is live) to the join itself:
 
 ```sh
 peppy stack resolve openarm_simulation --with mujoco

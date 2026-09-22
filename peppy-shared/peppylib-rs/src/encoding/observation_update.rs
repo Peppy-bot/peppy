@@ -3,7 +3,7 @@
 //! contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{ObservedMemberState, ObservedSource, PeerInfo, ProducerRef};
+use crate::messaging::{ObservedMemberState, ObservedSource, PeerInfo};
 use crate::observation_update_capnp;
 use crate::types::Payload;
 
@@ -63,19 +63,13 @@ impl ObservationUpdateRequest {
                     .get_peer()
                     .map_err(|e| Error::Deserialization(e.to_string()))?;
                 Some(PeerInfo {
-                    producer: ProducerRef::new(
-                        super::read_text(
-                            wire_peer.get_core_node(),
-                            "observation_update",
-                            "peer.coreNode",
-                        )?,
-                        super::read_text(
-                            wire_peer.get_instance_id(),
-                            "observation_update",
-                            "peer.instanceId",
-                        )?,
-                    ),
-                    peer_link_id: super::read_text(
+                    producer: super::read_producer(
+                        wire_peer.get_core_node(),
+                        wire_peer.get_instance_id(),
+                        "observation_update",
+                        ("peer.coreNode", "peer.instanceId"),
+                    )?,
+                    peer_link_id: super::read_link_id(
                         wire_peer.get_link_id(),
                         "observation_update",
                         "peer.linkId",
@@ -85,19 +79,13 @@ impl ObservationUpdateRequest {
                 None
             };
             let source = ObservedSource {
-                producer: ProducerRef::new(
-                    super::read_text(
-                        wire.get_source_core_node(),
-                        "observation_update",
-                        "sourceCoreNode",
-                    )?,
-                    super::read_text(
-                        wire.get_source_instance_id(),
-                        "observation_update",
-                        "sourceInstanceId",
-                    )?,
-                ),
-                source_link_id: super::read_text(
+                producer: super::read_producer(
+                    wire.get_source_core_node(),
+                    wire.get_source_instance_id(),
+                    "observation_update",
+                    ("sourceCoreNode", "sourceInstanceId"),
+                )?,
+                source_link_id: super::read_link_id(
                     wire.get_source_link_id(),
                     "observation_update",
                     "sourceLinkId",
@@ -135,6 +123,7 @@ impl ObservationUpdateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messaging::ProducerRef;
 
     fn member(instance: &str, generation: u64, live: bool) -> ObservedMemberState {
         ObservedMemberState {
@@ -167,6 +156,33 @@ mod tests {
 
     fn round_trip(request: &ObservationUpdateRequest) -> ObservationUpdateRequest {
         ObservationUpdateRequest::decode(&request.encode().unwrap().into_inner()).unwrap()
+    }
+
+    /// A source or a pinned peer the wire cannot address, and a link_id it
+    /// cannot carry, refuse the delivery naming the field.
+    #[test]
+    fn a_member_the_wire_cannot_carry_refuses_the_delivery() {
+        let slashed_source_link = {
+            let mut member = member("arm_1", 1, true);
+            member.source.source_link_id = "a/b".to_string();
+            (member, "sourceLinkId")
+        };
+        let empty_peer_link = {
+            let mut member = pinned_member("arm_1", "ctrl_1");
+            member.source.peer.as_mut().unwrap().peer_link_id = String::new();
+            (member, "peer.linkId")
+        };
+        let sentinel_source = (member("*", 1, true), "sourceInstanceId");
+        for (member, field) in [slashed_source_link, empty_peer_link, sentinel_source] {
+            let request = ObservationUpdateRequest {
+                link_id: "fleet".to_string(),
+                sequence: 1,
+                members: vec![member],
+            };
+            let error = ObservationUpdateRequest::decode(&request.encode().unwrap().into_inner())
+                .expect_err("the wire cannot carry this member");
+            assert!(error.to_string().contains(field), "{field}: {error}");
+        }
     }
 
     /// Zero, one and several members all ride the same shape; the empty set is

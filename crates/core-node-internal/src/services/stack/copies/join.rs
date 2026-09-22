@@ -20,7 +20,8 @@ use super::super::state::{ActiveLaunch, StackCopy, instance_ids_in_start_order};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
 use super::{
     change_active_launch,
-    live::{LiveCheck, check_live_stack, node_info_on},
+    changed_slots::{Change, changed_slots, deliver_sets, grow_or_restore, holds_any, whole_sets},
+    live::{LiveCheck, check_hosts_live, check_live_stack, live_machines, node_info_on},
     plan::{ResolvedJoin, join_dependencies, selected_instances},
     remove::stop_copy,
 };
@@ -29,7 +30,7 @@ use core_node_api::encoding::{
     InstanceEndpoints, LaunchFeedbackStep, LaunchResult, NodeAddLogEntry, NodeBuildLogEntry,
     NodeRunLogEntry, StackJoinGoal,
 };
-use daemon_config::launcher::CopyRecord;
+use daemon_config::launcher::{CopyMembership, CopyRecord};
 use futures::FutureExt;
 use std::{
     collections::{HashMap, HashSet},
@@ -74,9 +75,6 @@ enum JoinStage {
     /// The participants were asked to hold this launch's slice and every
     /// source points at its new watchers.
     SlicesBegun,
-    /// The record names the copy. Every later stage is past it, which is the
-    /// boundary `restores_participants` is defined against.
-    RecordChanged,
     /// Node entities were being added; the add logs say which landed.
     NodesAdding,
     /// Instances were being started, their observers registered.
@@ -90,7 +88,6 @@ struct RollbackPlan {
     stops_instances: bool,
     removes_added_nodes: bool,
     clears_slices: bool,
-    restores_participants: bool,
 }
 
 impl JoinStage {
@@ -99,7 +96,6 @@ impl JoinStage {
             stops_instances: self >= Self::InstancesStarting,
             removes_added_nodes: self >= Self::NodesAdding,
             clears_slices: self >= Self::SlicesBegun,
-            restores_participants: self >= Self::RecordChanged,
         }
     }
 }
@@ -122,13 +118,19 @@ async fn join_inner(
         copy,
         resolved,
     } = ResolvedJoin::resolve(ctx, active, goal).await?;
+    let grown_slots = changed_slots(&copy, &planned, Change::Join)?;
+    let live = live_machines(ctx, &placements).await?;
+    check_hosts_live(&copy.name, &grown_slots, &placements, &live)?;
     let root = ctx.node_stack.root().read().config().clone();
     // A join follows the domains the stack already publishes: its known
     // lifetimes go in, so a copy binding to a running simulation reads the
     // clock that simulation is already supplying.
     let (clocks, incarnations) = plan_clocks(&combined, &placements, &active.clocks)?;
+    let copies = CopyMembership::of(active.copy_records().chain([&copy]));
     let (ordered, bindings, pairings, observations) =
-        validate_and_order_dependencies(ctx, &planned, &root, &placements, &clocks).await?;
+        validate_and_order_dependencies(ctx, &planned, &root, &placements, &copies, &clocks)
+            .await?;
+    let grown_sets = whole_sets(&grown_slots, &bindings, &observations);
     let watchers = lifecycle_watchers(&observations, &placements)?;
     // The instances supplying the clocks this join reads take part in it: a
     // copy cannot bind to a domain whose publisher is not there to supply it.
@@ -138,10 +140,14 @@ async fn join_inner(
         .filter_map(|(instance, _)| config::runtime::Name::new(instance).ok())
         .collect();
     let required_ids = join_dependencies(&planned, &new_ids, &clock_publishers);
+    // The machines of the instances whose sets grow are reserved too: the
+    // grown sets are delivered there once the copy runs.
     let touched = selected_instances(&planned, |instance| {
         required_ids.contains(instance.instance_id.as_str())
+            || holds_any(&grown_slots, &instance.instance_id)
     });
-    let change = preflight_change(ctx, &active.launch_id, &touched, &placements).await?;
+    let change =
+        preflight_change(ctx, &active.launch_id, &touched, &placements, Some(&live)).await?;
     let participants = change.reserved.core_nodes();
     let delta: HashMap<_, _> = selected_instances(&planned, |instance| {
         new_ids.contains(instance.instance_id.as_str())
@@ -161,6 +167,8 @@ async fn join_inner(
         },
         core_node: host,
     };
+    // Held past the record's move into the launch: a failed delivery puts the
+    // sets this copy's instances joined back the way they were.
     let phase = PhaseGoal {
         launch_id: active.launch_id.clone(),
         rebuild: false,
@@ -180,6 +188,7 @@ async fn join_inner(
                 participants: &participants,
                 new_ids: &new_ids,
                 required_ids: &required_ids,
+                grown_slots: &grown_slots,
             },
         )
         .await?;
@@ -212,6 +221,7 @@ async fn join_inner(
         let scope: &mut JoinScope = scope.insert(JoinScope {
             name: goal.name.clone(),
             copy: record.clone(),
+            copies: copies.clone(),
             existing_nodes: live.reusable,
             planned_nodes,
             fresh_hosts: live.fresh_hosts,
@@ -281,11 +291,19 @@ async fn join_inner(
             &bindings,
             &pairings,
             &observations,
+            &active.watchers,
             &placements,
             &clocks,
         )
         .await?;
-        Ok(())
+        // A set that did not reach its instance fails the join, and the sets
+        // that did reach theirs go back to what they held before the copy.
+        grow_or_restore(
+            |sets| deliver_sets(ctx, &phase.launch_id, &placements, sets),
+            grown_sets,
+            &copy,
+        )
+        .await
     };
     let outcome: ChangeResult<()> = AssertUnwindSafe(operation)
         .catch_unwind()
@@ -512,7 +530,6 @@ mod tests {
             stops_instances: false,
             removes_added_nodes: false,
             clears_slices: false,
-            restores_participants: false,
         };
         assert_eq!(JoinStage::Planned.rollback_plan(), nothing);
         assert_eq!(
@@ -523,19 +540,10 @@ mod tests {
             }
         );
         assert_eq!(
-            JoinStage::RecordChanged.rollback_plan(),
-            RollbackPlan {
-                clears_slices: true,
-                restores_participants: true,
-                ..nothing
-            }
-        );
-        assert_eq!(
             JoinStage::NodesAdding.rollback_plan(),
             RollbackPlan {
                 removes_added_nodes: true,
                 clears_slices: true,
-                restores_participants: true,
                 ..nothing
             }
         );
@@ -545,7 +553,6 @@ mod tests {
                 stops_instances: true,
                 removes_added_nodes: true,
                 clears_slices: true,
-                restores_participants: true,
             }
         );
     }

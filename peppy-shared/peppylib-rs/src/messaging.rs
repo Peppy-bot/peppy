@@ -6,6 +6,7 @@ mod tests;
 mod actions;
 mod bound_set;
 mod discovery;
+mod non_empty;
 mod observation;
 mod pairing;
 mod presence;
@@ -24,7 +25,8 @@ pub use actions::{
     decode_cancel_ack, encode_cancel_ack, generate_goal_id, unwrap_goal_payload, wrap_goal_ack,
     wrap_goal_payload, wrap_result_outcome,
 };
-pub use bound_set::NonEmptyProducers;
+pub use bound_set::{BoundSetState, NonEmptyMembers, NonEmptyProducers};
+pub use non_empty::NonEmpty;
 pub use observation::{
     NonEmptyObservedSources, ObservationState, ObservedMemberState, ObservedSource,
 };
@@ -33,20 +35,17 @@ pub use presence::CoreNodePresenceMessenger;
 pub use services::{
     ServiceEndpoint, ServiceMessenger, ServiceRequestContext, ServiceResponder, ServiceTarget,
 };
-pub use topics::{BoundSetSubscription, Subscription, TopicMessenger, TopicPublisher};
-// The fan-in rule every multi-source consumer merges through, shared with the
-// pinned-slot engine in `crate::runtime::slot_stream`.
-pub(crate) use topics::recv_first_ready;
+pub use topics::{Subscription, TopicMessenger, TopicPublisher};
 
 // Fully-qualified producer address, re-exported from the config model: the
 // wire addresses a producer by the `(core_node, instance_id)` pair. Every
-// consumer dep slot is bound to an ordered producer set sized by its
-// declared cardinality (the launcher validator resolves and stamps each
-// member at plan time). Wire operations stay per-producer: a bound-set
-// topic subscription opens one pinned subscription per member, and poll /
-// send_goal take the single selected member — there is no per-slot filter
-// type and no in-process producer filtering.
-pub use config::runtime::ProducerRef;
+// consumer dep slot is bound to an ordered producer set sized by its declared
+// cardinality: the launcher validator stamps the plan's set, and the daemon
+// replaces a set slot's whole set over `binding_update` as a join grows it or
+// a removal shrinks it. Wire operations stay per-producer: a bound-set topic
+// subscription opens one pinned subscription per member, and poll / send_goal
+// take the single selected member.
+pub use config::runtime::{BoundMember, ProducerRef};
 
 // Curated pmi re-exports. peppylib is a thin layer over PMI, so these types are
 // the shared vocabulary of its public messaging API rather than hidden
@@ -105,6 +104,12 @@ pub const PEER_UPDATE_SERVICE: &str = "peer_update";
 /// Registered pre-setup for the same reason as [`PEER_UPDATE_SERVICE`], and it
 /// triggers no user code.
 pub const OBSERVATION_UPDATE_SERVICE: &str = "observation_update";
+
+/// Framework service every node exposes: the daemon delivers absolute
+/// producer-binding state (a consumer slot's whole producer set) over it.
+/// Registered pre-setup for the same reason as [`PEER_UPDATE_SERVICE`], and it
+/// triggers no user code.
+pub const BINDING_UPDATE_SERVICE: &str = "binding_update";
 
 /// Timeout for a single reachability probe sent by `is_reachable`.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(500);

@@ -10,8 +10,9 @@ use crate::encoding::{
 use config::runtime::{CoreNodeName, Name};
 
 /// One copy on the stack: a named instance of an option of a `zero_or_more`
-/// axis, where it runs, the instances it minted, and the `axis=option`
-/// words its own axes were filled with.
+/// axis, where it runs, the instances it minted, the `axis=option` words its
+/// own axes were filled with, and the members it added to stack instances'
+/// set slots.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CopyInfo {
     pub name: Name,
@@ -19,6 +20,32 @@ pub struct CopyInfo {
     pub instance_ids: Vec<Name>,
     pub selections: Vec<String>,
     pub option: String,
+    pub set_members: Vec<SetMember>,
+}
+
+/// One member a copy added to a stack instance's set slot: the stack instance,
+/// its slot, and the instance that joined the set (`instance` or
+/// `instance/link_id`), by the id the stack runs it under.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SetMember {
+    pub instance_id: Name,
+    pub link_id: String,
+    pub target: String,
+}
+
+/// `members` grouped by the slot they were added to, each slot once in the
+/// order the copy first added to it, with its targets in the order they were
+/// added. The order `stack list` prints and a join or removal delivers by.
+pub fn slots_in_first_added_order(members: &[SetMember]) -> Vec<((&Name, &str), Vec<&str>)> {
+    let mut by_slot: Vec<((&Name, &str), Vec<&str>)> = Vec::new();
+    for member in members {
+        let slot = (&member.instance_id, member.link_id.as_str());
+        match by_slot.iter_mut().find(|(held, _)| *held == slot) {
+            Some((_, targets)) => targets.push(member.target.as_str()),
+            None => by_slot.push((slot, vec![member.target.as_str()])),
+        }
+    }
+    by_slot
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -149,22 +176,31 @@ impl StackListResponse {
             let mut copies = response
                 .reborrow()
                 .init_copies(capnp_list_len(self.copies.len(), "copies")?);
-            for (index, member) in self.copies.iter().enumerate() {
+            for (index, copy) in self.copies.iter().enumerate() {
                 let mut wire = copies.reborrow().get(index as u32);
-                wire.set_name(member.name.as_str());
-                wire.set_option(&member.option);
-                wire.set_core_node(member.core_node.as_str());
+                wire.set_name(copy.name.as_str());
+                wire.set_option(&copy.option);
+                wire.set_core_node(copy.core_node.as_str());
                 write_text_list(
                     wire.reborrow().init_instance_ids(capnp_list_len(
-                        member.instance_ids.len(),
+                        copy.instance_ids.len(),
                         "instance_ids",
                     )?),
-                    &member.instance_ids,
+                    &copy.instance_ids,
                 );
                 write_text_list(
-                    wire.init_selections(capnp_list_len(member.selections.len(), "selections")?),
-                    &member.selections,
+                    wire.reborrow()
+                        .init_selections(capnp_list_len(copy.selections.len(), "selections")?),
+                    &copy.selections,
                 );
+                let mut set_members =
+                    wire.init_set_members(capnp_list_len(copy.set_members.len(), "set_members")?);
+                for (entry_index, set_member) in copy.set_members.iter().enumerate() {
+                    let mut entry = set_members.reborrow().get(entry_index as u32);
+                    entry.set_instance_id(set_member.instance_id.as_str());
+                    entry.set_link_id(&set_member.link_id);
+                    entry.set_target(&set_member.target);
+                }
             }
             let mut launch = response.reborrow().init_launch();
             match &self.launch {
@@ -216,22 +252,42 @@ impl StackListResponse {
             copies: response
                 .get_copies()?
                 .iter()
-                .map(|member| {
+                .map(|copy| {
                     Ok(CopyInfo {
-                        name: read_name(member.get_name()?.to_str()?, "copies.name")?,
+                        name: read_name(copy.get_name()?.to_str()?, "copies.name")?,
                         core_node: read_core_node_name(
-                            member.get_core_node()?.to_str()?,
+                            copy.get_core_node()?.to_str()?,
                             "copies.core_node",
                         )?,
                         instance_ids: read_name_list(
-                            member.get_instance_ids()?,
+                            copy.get_instance_ids()?,
                             "copies.instance_ids",
                         )?,
                         selections: required_text_list(
-                            read_text_list(member.get_selections()?)?,
+                            read_text_list(copy.get_selections()?)?,
                             "copies.selections",
                         )?,
-                        option: required_text(member.get_option()?.to_str()?, "copies.option")?,
+                        option: required_text(copy.get_option()?.to_str()?, "copies.option")?,
+                        set_members: copy
+                            .get_set_members()?
+                            .iter()
+                            .map(|entry| {
+                                Ok(SetMember {
+                                    instance_id: read_name(
+                                        entry.get_instance_id()?.to_str()?,
+                                        "copies.set_members.instance_id",
+                                    )?,
+                                    link_id: required_text(
+                                        entry.get_link_id()?.to_str()?,
+                                        "copies.set_members.link_id",
+                                    )?,
+                                    target: required_text(
+                                        entry.get_target()?.to_str()?,
+                                        "copies.set_members.target",
+                                    )?,
+                                })
+                            })
+                            .collect::<Result<_>>()?,
                     })
                 })
                 .collect::<Result<_>>()?,
@@ -273,6 +329,37 @@ impl crate::encoding::Wire for StackListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Interleaved members group under their slot, slots in the order each was
+    /// first added to and targets in the order they were added.
+    #[test]
+    fn set_members_group_by_slot_in_first_added_order() {
+        let member = |instance: &str, link_id: &str, target: &str| SetMember {
+            instance_id: Name::new(instance).unwrap(),
+            link_id: link_id.into(),
+            target: target.into(),
+        };
+        let members = [
+            member("panel_inst", "cameras", "alpha_wrist_left"),
+            member("monitor_inst", "robots", "alpha_arm_inst"),
+            member("panel_inst", "cameras", "alpha_chest"),
+        ];
+        let grouped: Vec<(&str, &str, Vec<&str>)> = slots_in_first_added_order(&members)
+            .into_iter()
+            .map(|((instance, link_id), targets)| (instance.as_str(), link_id, targets))
+            .collect();
+        assert_eq!(
+            grouped,
+            [
+                (
+                    "panel_inst",
+                    "cameras",
+                    vec!["alpha_wrist_left", "alpha_chest"]
+                ),
+                ("monitor_inst", "robots", vec!["alpha_arm_inst"]),
+            ]
+        );
+    }
 
     #[test]
     fn request_round_trips() {
@@ -341,6 +428,11 @@ mod tests {
                 Name::new("alpha_commander_inst").unwrap(),
             ],
             selections: vec!["commander=xr_commander".into()],
+            set_members: vec![SetMember {
+                instance_id: Name::new("monitor_inst").unwrap(),
+                link_id: "robots".into(),
+                target: "alpha_backbone_inst".into(),
+            }],
         });
         assert_eq!(
             StackListResponse::decode(&response.encode().unwrap()).unwrap(),

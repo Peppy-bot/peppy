@@ -83,7 +83,7 @@ async fn declare_source_publisher_on_link(
 
 /// Observer-side subscription driven by a hand-held watch channel (standing in
 /// for the processor-owned slot the daemon mutates).
-fn subscribe(
+async fn subscribe(
     handle: &MessengerHandle,
     watch_rx: watch::Receiver<ObservationState>,
 ) -> ObservedTopicSubscription {
@@ -96,6 +96,8 @@ fn subscribe(
         TOPIC.to_string(),
         QoSProfile::Reliable,
     )
+    .await
+    .expect("every observed member declares its subscription")
 }
 
 /// Waits until the observer's wire subscription pinned to `source_instance` is
@@ -228,7 +230,7 @@ async fn an_empty_member_set_receives_nothing() {
     let source_handle = MessengerHandle::from_shared(shared);
 
     let (_tx, watch_rx) = watch::channel(ObservationState::unregistered());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
 
     let publisher = declare_source_publisher(&source_handle, "arm_1").await;
     publisher
@@ -245,7 +247,7 @@ async fn every_member_of_the_set_fans_into_one_stream() {
     let source_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(ObservationState::unregistered());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let arm_1 = declare_source_publisher(&source_handle, "arm_1").await;
     let arm_2 = declare_source_publisher(&source_handle, "arm_2").await;
 
@@ -273,7 +275,7 @@ async fn a_member_leaving_the_set_silences_only_itself() {
     let source_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(ObservationState::unregistered());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let arm_1 = declare_source_publisher(&source_handle, "arm_1").await;
     let arm_2 = declare_source_publisher(&source_handle, "arm_2").await;
 
@@ -308,7 +310,7 @@ async fn a_generation_bump_redeclares_only_that_member() {
     let source_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(ObservationState::unregistered());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let arm_1 = declare_source_publisher(&source_handle, "arm_1").await;
     let arm_2 = declare_source_publisher(&source_handle, "arm_2").await;
 
@@ -347,7 +349,7 @@ async fn members_sharing_one_instance_are_told_apart_by_source_link_id() {
     let source_handle = MessengerHandle::from_shared(shared);
 
     let (tx, watch_rx) = watch::channel(ObservationState::unregistered());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let left = declare_source_publisher_on_link(&source_handle, "backbone_1", "left_arm").await;
     let right = declare_source_publisher_on_link(&source_handle, "backbone_1", "right_arm").await;
 
@@ -432,7 +434,7 @@ async fn an_observation_pinned_to_a_pair_hears_that_pair_only() {
     };
 
     let (tx, watch_rx) = watch::channel(ObservationState::unregistered());
-    let mut subscription = subscribe(&client.caller_handle, watch_rx);
+    let mut subscription = subscribe(&client.caller_handle, watch_rx).await;
     let pinned = ObservedSource {
         producer: ProducerRef::new(CORE, "engine_1"),
         source_link_id: "limbs".to_string(),
@@ -476,10 +478,12 @@ async fn an_observation_pinned_to_a_pair_hears_that_pair_only() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observation_update_service_applies_daemon_deliveries_end_to_end() {
+    use config::node::Cardinality;
     use peppylib::encoding::observation_update::ObservationUpdateRequest;
     use peppylib::encoding::slot_update::SlotUpdateResponse;
     use peppylib::messaging::{OBSERVATION_UPDATE_SERVICE, ServiceMessenger, ServiceTarget};
     use peppylib::services::observation_update::listen_for_observation_update;
+    use peppylib::services::slot_update::SlotChannel;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -489,8 +493,10 @@ async fn observation_update_service_applies_daemon_deliveries_end_to_end() {
     // The "node": one declared observer slot 'observed_joints', service
     // listening.
     let (slot_tx, slot_rx) = watch::channel(ObservationState::unregistered());
-    let slots: Arc<BTreeMap<String, watch::Sender<ObservationState>>> =
-        Arc::new(BTreeMap::from([("observed_joints".to_string(), slot_tx)]));
+    let slots = Arc::new(BTreeMap::from([(
+        "observed_joints".to_string(),
+        SlotChannel::new(Cardinality::ZeroOrMore, slot_tx),
+    )]));
     let node_identity = SenderTarget::node("openarm_web_commander", "v1").expect("node target");
     let _listener = listen_for_observation_update(
         &client.caller_handle,

@@ -45,7 +45,9 @@ async def test_stack_list_parses_graph_and_includes_daemon_identity(tmp_path):
     """`stack.list(...)` returns the graph and the serving daemon's identity."""
     graph_json = _sample_graph_json()
     copies = [{"name": "alpha", "option": "real", "core_node": "core",
-               "instance_ids": ["alpha_arm_inst"], "selections": ["commander=web"]}]
+               "instance_ids": ["alpha_arm_inst"], "selections": ["commander=web"],
+               "set_members": [{"instance_id": "monitor_inst", "link_id": "robots",
+                                "target": "alpha_arm_inst"}]}]
     response = StackListResponse(
         graph_json, "core", "gen-1", "robo-a", copies, shutdown_grace_secs=11
     )

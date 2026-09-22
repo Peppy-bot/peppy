@@ -17,7 +17,7 @@ use super::prepared::PreparedLauncher;
 use super::report::{AppliedAdjustment, AppliedChange, SkippedAdjustment, render, render_option};
 use super::select::{CopyOrigin, UnitSelection, resolve_copy};
 use config::runtime::{CoreNodeName, CoreNodeNameError, Name};
-use core_node_api::encoding::ArgumentOverride;
+use core_node_api::encoding::{ArgumentOverride, SetMember};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// One copy on the stack: what it copies, how its axes were filled, and the
@@ -29,6 +29,41 @@ pub struct CopyRecord {
     pub option: String,
     pub selection: UnitSelection,
     pub instance_ids: Vec<Name>,
+    /// The members the copy added to stack instances' set slots, in the order
+    /// it added them. Removing the copy takes out exactly these.
+    pub set_members: Vec<SetMember>,
+}
+
+/// The copy each instance of a stack belongs to, over the copies the stack
+/// holds; an instance the launcher deploys outside any copy has no entry.
+/// Built from the copy records at launch, at join and at removal, and read
+/// wherever a plan names an instance by its copy: the members the validator
+/// stamps into a bound set, and the copy a spawned instance is told it is in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CopyMembership {
+    by_instance: BTreeMap<String, Name>,
+}
+
+impl CopyMembership {
+    /// The membership `copies` establish.
+    pub fn of<'a>(copies: impl IntoIterator<Item = &'a CopyRecord>) -> Self {
+        Self {
+            by_instance: copies
+                .into_iter()
+                .flat_map(|copy| {
+                    copy.instance_ids
+                        .iter()
+                        .map(move |id| (id.as_str().to_string(), copy.name.clone()))
+                })
+                .collect(),
+        }
+    }
+
+    /// The copy `instance_id` belongs to, or `None` for an instance the
+    /// launcher deploys outside any copy.
+    pub fn copy_of(&self, instance_id: &str) -> Option<&Name> {
+        self.by_instance.get(instance_id)
+    }
 }
 
 /// One write a copy makes to a stack instance: the field and the value the
@@ -59,7 +94,35 @@ pub(super) struct ComposedCopy {
     pub skipped: Vec<SkippedAdjustment>,
 }
 
+/// Whether `target`, `instance` or `instance/link_id`, names one of
+/// `instance_ids`.
+fn names_one_of(instance_ids: &[Name], target: &str) -> bool {
+    let (instance, _) = split_link_target(target);
+    instance_ids.iter().any(|id| id.as_str() == instance)
+}
+
+impl CopyRecord {
+    /// Whether `instance_id` is one of the copy's own instances.
+    pub fn owns_instance(&self, instance_id: &str) -> bool {
+        self.instance_ids
+            .iter()
+            .any(|id| id.as_str() == instance_id)
+    }
+
+    /// Whether `target`, `instance` or `instance/link_id`, names one of the
+    /// copy's own instances.
+    pub fn owns_target(&self, target: &str) -> bool {
+        names_one_of(&self.instance_ids, target)
+    }
+}
+
 impl ComposedCopy {
+    /// Whether `target`, `instance` or `instance/link_id`, names one of the
+    /// copy's own instances.
+    fn owns(&self, target: &str) -> bool {
+        names_one_of(&self.instance_ids, target)
+    }
+
     pub(super) fn record(&self) -> CopyRecord {
         CopyRecord {
             name: self.name.clone(),
@@ -67,6 +130,21 @@ impl ComposedCopy {
             option: self.option.clone(),
             selection: self.selection.clone(),
             instance_ids: self.instance_ids.clone(),
+            set_members: self
+                .stack_writes
+                .iter()
+                .filter_map(|entry| match &entry.write {
+                    AppliedChange::LinkAdded { slot, target } => Some(SetMember {
+                        instance_id: Name::new(&entry.instance).expect(
+                            "a composed copy writes only to instances the stack runs, whose ids \
+                             are names",
+                        ),
+                        link_id: slot.clone(),
+                        target: target.clone(),
+                    }),
+                    _ => None,
+                })
+                .collect(),
         }
     }
 }
@@ -565,7 +643,8 @@ fn apply_write(
 
 /// The running stack with one more copy: every field the copy writes on
 /// a stack instance already holds that value, except a slot the instance
-/// declares vacant, which the copy's relays pair into.
+/// declares vacant, which the copy's relays pair into, and a set slot the
+/// copy's own instances join.
 pub(super) fn attach(
     existing: &PeppyLauncher,
     copy: &ComposedCopy,
@@ -625,15 +704,15 @@ pub(super) fn attach(
                 }
             },
             AppliedChange::LinkAdded { slot, target } => {
-                let bound = match running.links.get(slot) {
-                    Some(LinkValue::Bound(Selection::Array(existing))) => {
-                        existing.as_slice().contains(target)
-                    }
-                    _ => false,
-                };
-                if !bound {
-                    return Err(refusal(format!("{field}: + {target}")));
+                if !copy.owns(target) {
+                    return Err(CompositionError::JoinAddsStackMember {
+                        name: copy.name.to_string(),
+                        instance: entry.instance.clone(),
+                        slot: slot.clone(),
+                        target: target.clone(),
+                    });
                 }
+                apply_write(running, &entry.write, &format!("copy `{}`", copy.name))?;
             }
             AppliedChange::Clock { new, .. } => {
                 let old = running.framework.clock.as_ref();
@@ -752,9 +831,9 @@ fn pairs_into(copy: &ComposedCopy, instance: &str, slot: &str) -> bool {
         })
 }
 
-/// The running stack without one copy: its instances and its placement link
-/// gone. A stack instance linking to one of the copy's instances keeps the
-/// copy.
+/// The running stack without one copy: its instances, the members it added
+/// to stack sets, and its placement link gone. A stack instance linking to
+/// one of the copy's instances through any other link keeps the copy.
 pub(super) fn detach(
     existing: &PeppyLauncher,
     copy: &CopyRecord,
@@ -774,6 +853,13 @@ pub(super) fn detach(
     remaining
         .core_nodes
         .retain(|link| link != copy.name.as_str());
+    for member in &copy.set_members {
+        // A copy composes over the bare stack, and a removal drops only the
+        // copy's own instances, so the instance a member joined is still here.
+        let running = instance_named_mut(&mut remaining.deployments, member.instance_id.as_str())
+            .expect("a copy's members join bare-stack instances, which a removal never drops");
+        drop_member(running, member);
+    }
     let mut linked: Vec<String> = Vec::new();
     for instance in remaining
         .deployments
@@ -799,6 +885,32 @@ pub(super) fn detach(
     }
     restore_vacancies(&mut remaining, bare, released);
     validate_flat(&remaining)
+}
+
+/// Takes one member a copy added out of the set slot it joined. Panics when
+/// the slot is not bound as an array; a slot without the member is left as it
+/// is.
+fn drop_member(instance: &mut DeploymentInstance, member: &SetMember) {
+    let Some(LinkValue::Bound(Selection::Array(targets))) = instance.links.get(&member.link_id)
+    else {
+        panic!(
+            "`{}.links.{}` holds a member of a copy, so it holds an array",
+            instance.instance_id, member.link_id
+        );
+    };
+    let kept = LinkTargets::new(
+        targets
+            .as_slice()
+            .iter()
+            .filter(|target| **target != member.target)
+            .cloned()
+            .collect(),
+    )
+    .expect("a subset of a duplicate-free target list is duplicate-free");
+    instance.links.insert(
+        member.link_id.clone(),
+        LinkValue::Bound(Selection::Array(kept)),
+    );
 }
 
 fn add_copy(flat: &mut PeppyLauncher, copy: &ComposedCopy) -> Result<(), CompositionError> {
@@ -864,4 +976,43 @@ pub(super) fn validate_flat(flat: &PeppyLauncher) -> Result<PeppyLauncher, Compo
     Ok(super::super::parse::PeppyLauncherParser::from_content(
         &text,
     )?)
+}
+
+#[cfg(test)]
+mod membership_tests {
+    use super::*;
+
+    fn copy(name: &str, instance_ids: &[&str]) -> CopyRecord {
+        CopyRecord {
+            name: Name::new(name).unwrap(),
+            axis: "robot".into(),
+            option: "real".into(),
+            selection: UnitSelection::default(),
+            instance_ids: instance_ids
+                .iter()
+                .map(|id| Name::new(*id).unwrap())
+                .collect(),
+            set_members: Vec::new(),
+        }
+    }
+
+    /// Every instance a copy minted answers that copy; an instance outside
+    /// every copy answers none.
+    #[test]
+    fn each_minted_instance_answers_its_copy() {
+        let membership = CopyMembership::of(&[
+            copy("alpha", &["alpha_arm_inst", "alpha_leader_inst"]),
+            copy("bravo", &["bravo_arm_inst"]),
+        ]);
+        assert_eq!(
+            membership.copy_of("alpha_leader_inst").map(Name::as_str),
+            Some("alpha")
+        );
+        assert_eq!(
+            membership.copy_of("bravo_arm_inst").map(Name::as_str),
+            Some("bravo")
+        );
+        assert_eq!(membership.copy_of("hub_inst"), None);
+        assert_eq!(CopyMembership::default().copy_of("alpha_arm_inst"), None);
+    }
 }

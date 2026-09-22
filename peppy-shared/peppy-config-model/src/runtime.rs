@@ -148,31 +148,63 @@ pub fn first_duplicate<T: Eq + std::hash::Hash>(items: &[T]) -> Option<&T> {
     items.iter().find(|item| !seen.insert(*item))
 }
 
-/// The runtime-resolved, immutable, ordered producer set bound to one
-/// consumer slot. Order is the application declaration order (launcher
-/// array order / CLI flag occurrence order), preserved verbatim from the
-/// validator through boot configs to the generated bound-producer
-/// accessors, so selecting the first member is deterministic. Duplicates
-/// are rejected rather than removed or
-/// reordered. The set's validated size is the slot's declared
-/// `cardinality`: exactly one for `one` (the default), at most one for
-/// `zero_or_one`, one or more for `one_or_more`, zero or more for
-/// `zero_or_more`. An empty set has no bound edge, and it is the resolved
-/// form of two things: a `zero_or_more` slot the application bound nothing
-/// to, and a `zero_or_one` slot the deployment wrote vacant. The set is
-/// fixed when the node starts; producers disconnecting at runtime never
-/// shrink it.
+/// One member of a bound producer set: the producer's wire address and the
+/// copy its instance belongs to (`None` for an instance the launcher deploys
+/// outside any copy). A node holding members from several copies groups them
+/// by `copy`. The boot-config, node-info and delivery twin of the wire's
+/// `BoundMember`; the producer-binding counterpart of [`PairedPeer`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct BoundMember {
+    pub producer: ProducerRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<Name>,
+}
+
+/// A member the launcher file binds outside any copy.
+impl From<ProducerRef> for BoundMember {
+    fn from(producer: ProducerRef) -> Self {
+        Self {
+            producer,
+            copy: None,
+        }
+    }
+}
+
+/// The ordered producer set bound to one consumer slot. Order is plan order:
+/// the launcher's array order (or the CLI's flag order), then the members each
+/// joined copy adds, in the order the copies joined. It is preserved verbatim
+/// from the validator through boot configs and deliveries to the generated
+/// bound-producer accessors, so selecting the first member is deterministic.
+/// A producer is a member once, whatever copy names it. The set's validated
+/// size is the slot's declared `cardinality`: exactly one for `one` (the
+/// default), at most one for `zero_or_one`, one or more for `one_or_more`,
+/// zero or more for `zero_or_more`. An empty set has no bound edge, and it is
+/// the resolved form of two things: a `zero_or_more` slot the application
+/// bound nothing to, and a `zero_or_one` slot the deployment wrote vacant. A
+/// running consumer's set changes only when the daemon delivers a new one;
+/// producers disconnecting never shrink it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-pub struct BoundProducers(Vec<ProducerRef>);
+pub struct BoundProducers(Vec<BoundMember>);
 
 impl BoundProducers {
-    pub fn as_slice(&self) -> &[ProducerRef] {
+    pub fn as_slice(&self) -> &[BoundMember] {
         &self.0
     }
 
-    pub fn iter(&self) -> std::slice::Iter<'_, ProducerRef> {
+    pub fn iter(&self) -> std::slice::Iter<'_, BoundMember> {
         self.0.iter()
+    }
+
+    /// Every member's producer, in plan order.
+    pub fn producers(&self) -> impl Iterator<Item = &ProducerRef> {
+        self.0.iter().map(|member| &member.producer)
+    }
+
+    /// Whether `producer` is a member, whatever copy it belongs to.
+    pub fn contains(&self, producer: &ProducerRef) -> bool {
+        self.producers().any(|member| member == producer)
     }
 
     pub fn len(&self) -> usize {
@@ -183,93 +215,72 @@ impl BoundProducers {
         self.0.is_empty()
     }
 
-    pub fn first(&self) -> Option<&ProducerRef> {
+    pub fn first(&self) -> Option<&BoundMember> {
         self.0.first()
     }
 }
 
-/// A one-producer set, for `cardinality: "one"` slots and tests.
+/// A one-producer set bound outside any copy, for `cardinality: "one"` slots
+/// and tests.
 impl From<ProducerRef> for BoundProducers {
     fn from(producer: ProducerRef) -> Self {
-        Self(vec![producer])
+        Self(vec![BoundMember::from(producer)])
     }
 }
 
-/// Ordered construction from an already-collected target list, rejecting
-/// duplicates. The single construction gate: the deserializer delegates
-/// here, and the launcher validator calls it when it materializes a
-/// slot's set, so every boundary rejects the same sets with the same
-/// error.
-impl TryFrom<Vec<ProducerRef>> for BoundProducers {
+/// Ordered construction from an already-collected member list, rejecting a
+/// producer named twice. The single construction gate: the deserializer
+/// delegates here, and the launcher validator calls it when it materializes a
+/// slot's set, so every boundary rejects the same sets with the same error.
+impl TryFrom<Vec<BoundMember>> for BoundProducers {
     type Error = ParsingError;
 
-    fn try_from(producers: Vec<ProducerRef>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(members: Vec<BoundMember>) -> std::result::Result<Self, Self::Error> {
         // The first duplicated producer in declaration order names the error.
+        let producers: Vec<&ProducerRef> = members.iter().map(|member| &member.producer).collect();
         if let Some(duplicate) = first_duplicate(&producers) {
             return Err(ParsingError::DuplicateBoundProducer {
                 core_node: duplicate.core_node.clone(),
                 instance_id: duplicate.instance_id.clone(),
             });
         }
-        Ok(Self(producers))
+        Ok(Self(members))
+    }
+}
+
+/// Ordered construction of a set bound outside any copy, as a launcher file
+/// or a `--link` flag binds it.
+impl TryFrom<Vec<ProducerRef>> for BoundProducers {
+    type Error = ParsingError;
+
+    fn try_from(producers: Vec<ProducerRef>) -> std::result::Result<Self, Self::Error> {
+        Self::try_from(
+            producers
+                .into_iter()
+                .map(BoundMember::from)
+                .collect::<Vec<_>>(),
+        )
     }
 }
 
 impl<'a> IntoIterator for &'a BoundProducers {
-    type Item = &'a ProducerRef;
-    type IntoIter = std::slice::Iter<'a, ProducerRef>;
+    type Item = &'a BoundMember;
+    type IntoIter = std::slice::Iter<'a, BoundMember>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
     }
 }
 
-/// Custom deserializer so the two failure shapes give actionable errors
-/// instead of generic serde type mismatches: a duplicate producer names the
-/// duplicated instance, and an object payload (the removed pre-cardinality
-/// single-producer shape) is called out as component version skew, since
-/// the daemon, CLI, generated bindings, and node runtime must be released
-/// together across the cardinality break.
+/// Deserializes through the construction gate, so a producer named twice
+/// fails the parse naming the duplicated instance.
 impl<'de> Deserialize<'de> for BoundProducers {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::de::Deserializer<'de>,
     {
-        struct BoundProducersVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for BoundProducersVisitor {
-            type Value = BoundProducers;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("an ordered array of {core_node, instance_id} producers")
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
-            where
-                A: serde::de::SeqAccess<'de>,
-            {
-                let mut producers: Vec<ProducerRef> =
-                    Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(producer) = seq.next_element::<ProducerRef>()? {
-                    producers.push(producer);
-                }
-                BoundProducers::try_from(producers).map_err(serde::de::Error::custom)
-            }
-
-            fn visit_map<A>(self, _map: A) -> std::result::Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                Err(serde::de::Error::custom(
-                    "slot binding uses the removed single-producer object shape; since the \
-                     cardinality release a slot binds an ordered ARRAY of producers (a \
-                     `cardinality: \"one\"` slot binds a one-element array). The daemon, CLI, \
-                     generated bindings, and node runtime must be upgraded together",
-                ))
-            }
-        }
-
-        deserializer.deserialize_any(BoundProducersVisitor)
+        let members = Vec::<BoundMember>::deserialize(deserializer)?;
+        BoundProducers::try_from(members).map_err(serde::de::Error::custom)
     }
 }
 
@@ -300,12 +311,11 @@ pub struct PairedPeer {
 /// The pairs of every participant pairing slot (a `depends_on.pairings`
 /// entry) of a node instance, keyed by slot link_id, each set in
 /// establishment order. A scalar slot holds zero or one; a multi slot holds
-/// what its cardinality admits. Deliberately NOT part of `slot_bindings`:
-/// slot bindings feed the immutable consumer-filter cache, while a pairing
-/// slot is live-mutable over the node's lifetime (the daemon delivers its
-/// set via the `peer_update` service). In boot configs every declared slot
-/// is empty: all pairs, including those requested at `node run`, arrive over
-/// the live channel after the instance commits to Running.
+/// what its cardinality admits. Kept apart from `slot_bindings`, which boots
+/// with the plan's producer sets and is replaced whole over `binding_update`:
+/// in boot configs every declared pairing slot is empty, and all pairs,
+/// including those requested at `node run`, arrive over the `peer_update`
+/// service after the instance commits to Running.
 pub type PairingSlots = BTreeMap<String, Vec<PairedPeer>>;
 
 /// The other end of the pair an observation is pinned to: the peer instance
@@ -1028,13 +1038,13 @@ mod tests {
     }
 
     /// Pin the wire contract of `slot_bindings`: each slot maps its
-    /// `link_id` to the ORDERED ARRAY of full `(core_node, instance_id)`
-    /// producer pairs bound to it — a one-element array for a
-    /// `cardinality: "one"` slot, an empty array for an unbound
-    /// `zero_or_more` slot and for a `zero_or_one` slot the deployment wrote
-    /// vacant. A shape change here is a `graph_json` /
-    /// launch-config wire break, so assert the exact JSON and that it
-    /// round-trips with member order preserved.
+    /// `link_id` to the ORDERED ARRAY of members bound to it, each a full
+    /// `(core_node, instance_id)` producer address plus the member's copy
+    /// when it has one: a one-element array for a `cardinality: "one"` slot,
+    /// an empty array for an unbound `zero_or_more` slot and for a
+    /// `zero_or_one` slot the deployment wrote vacant. A shape change here is
+    /// a `graph_json` / launch-config wire break, so assert the exact JSON and
+    /// that it round-trips with member order preserved.
     #[test]
     fn slot_bindings_serde_contract() {
         use serde_json::json;
@@ -1047,8 +1057,11 @@ mod tests {
             (
                 "camera".to_string(),
                 BoundProducers::try_from(vec![
-                    ProducerRef::new("core_a", "front_camera"),
-                    ProducerRef::new("core_a", "rear_camera"),
+                    BoundMember::from(ProducerRef::new("core_a", "front_camera")),
+                    BoundMember {
+                        producer: ProducerRef::new("core_b", "bravo_camera"),
+                        copy: Some(Name::new("bravo").unwrap()),
+                    },
                 ])
                 .expect("distinct producers"),
             ),
@@ -1059,10 +1072,11 @@ mod tests {
 
         let expected = json!({
             "camera": [
-                { "core_node": "core_a", "instance_id": "front_camera" },
-                { "core_node": "core_a", "instance_id": "rear_camera" }
+                { "producer": { "core_node": "core_a", "instance_id": "front_camera" } },
+                { "producer": { "core_node": "core_b", "instance_id": "bravo_camera" },
+                  "copy": "bravo" }
             ],
-            "main": [ { "core_node": "core_a", "instance_id": "p1" } ],
+            "main": [ { "producer": { "core_node": "core_a", "instance_id": "p1" } } ],
             "spare": []
         });
 
@@ -1076,56 +1090,41 @@ mod tests {
                 .get("camera")
                 .expect("camera slot")
                 .iter()
-                .map(|p| p.instance_id.as_str())
+                .map(|member| (member.producer.instance_id.as_str(), member.copy.as_ref()))
                 .collect::<Vec<_>>(),
-            ["front_camera", "rear_camera"],
-            "member order must survive the round-trip"
-        );
-    }
-
-    /// The removed pre-cardinality single-producer object shape must fail
-    /// with a message that names the break as component version skew, not a
-    /// generic serde type error: the daemon, CLI, generated bindings, and
-    /// node runtime ship together across this wire change.
-    #[test]
-    fn slot_bindings_reject_pre_cardinality_object_shape_with_clear_error() {
-        use serde_json::json;
-
-        let legacy_shape = json!({
-            "main": { "core_node": "core_a", "instance_id": "p1" }
-        });
-        let err = serde_json::from_value::<SlotBindings>(legacy_shape)
-            .expect_err("object-shaped slot binding must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("single-producer object shape"),
-            "error must name the removed shape: {msg}"
-        );
-        assert!(
-            msg.contains("upgraded together"),
-            "error must call out the version-skew fix: {msg}"
+            [
+                ("front_camera", None),
+                ("bravo_camera", Some(&Name::new("bravo").unwrap()))
+            ],
+            "member order and each member's copy must survive the round-trip"
         );
     }
 
     /// Malformed members and duplicate producers are hard parse errors:
-    /// half-addresses, unknown fields on a pair, non-object members, and a
-    /// producer appearing twice within one slot's set.
+    /// half-addresses, unknown fields on a member or its producer, non-object
+    /// members, a bare producer address in place of a member, and a producer
+    /// appearing twice within one slot's set, whatever copies name it.
     #[test]
     fn slot_bindings_reject_malformed_members_and_duplicates() {
         use serde_json::json;
 
         let rejected = [
             // Half an address.
-            json!([{ "instance_id": "p1" }]),
-            json!([{ "core_node": "core_a" }]),
-            // Unknown extra field on a pair.
-            json!([{ "core_node": "core_a", "instance_id": "p1", "extra": 1 }]),
-            // A bare string is not a producer pair.
+            json!([{ "producer": { "instance_id": "p1" } }]),
+            json!([{ "producer": { "core_node": "core_a" } }]),
+            // Unknown extra field on a member and on its producer.
+            json!([{ "producer": { "core_node": "core_a", "instance_id": "p1" }, "extra": 1 }]),
+            json!([{ "producer": { "core_node": "core_a", "instance_id": "p1", "extra": 1 } }]),
+            // A bare address is not a member.
+            json!([{ "core_node": "core_a", "instance_id": "p1" }]),
+            // A bare string is not a member.
             json!(["p1"]),
-            // Duplicate producer within one slot.
+            // A single member in place of the array.
+            json!({ "producer": { "core_node": "core_a", "instance_id": "p1" } }),
+            // Duplicate producer within one slot, under two copies.
             json!([
-                { "core_node": "core_a", "instance_id": "p1" },
-                { "core_node": "core_a", "instance_id": "p1" }
+                { "producer": { "core_node": "core_a", "instance_id": "p1" }, "copy": "alpha" },
+                { "producer": { "core_node": "core_a", "instance_id": "p1" }, "copy": "bravo" }
             ]),
         ];
         for payload in rejected {
@@ -1146,8 +1145,8 @@ mod tests {
 
         // The duplicate error names the duplicated producer.
         let dup = json!([
-            { "core_node": "core_a", "instance_id": "front_camera" },
-            { "core_node": "core_a", "instance_id": "front_camera" }
+            { "producer": { "core_node": "core_a", "instance_id": "front_camera" } },
+            { "producer": { "core_node": "core_a", "instance_id": "front_camera" } }
         ]);
         let msg = serde_json::from_value::<BoundProducers>(dup)
             .expect_err("duplicate must be rejected")
@@ -1160,8 +1159,8 @@ mod tests {
         // Same-instance producers on different core nodes are distinct, not
         // duplicates.
         let cross_core = json!([
-            { "core_node": "core_a", "instance_id": "cam" },
-            { "core_node": "core_b", "instance_id": "cam" }
+            { "producer": { "core_node": "core_a", "instance_id": "cam" } },
+            { "producer": { "core_node": "core_b", "instance_id": "cam" } }
         ]);
         let parsed: BoundProducers =
             serde_json::from_value(cross_core).expect("distinct core nodes must parse");
@@ -1169,7 +1168,8 @@ mod tests {
     }
 
     /// `BoundProducers::try_from` mirrors the deserializer: declaration
-    /// order is preserved and duplicates are rejected (not deduplicated).
+    /// order is preserved and a producer named twice is rejected, under one
+    /// copy or two.
     #[test]
     fn bound_producers_try_from_preserves_order_and_rejects_duplicates() {
         let ordered = BoundProducers::try_from(vec![
@@ -1179,31 +1179,77 @@ mod tests {
         .expect("distinct producers");
         assert_eq!(
             ordered
-                .iter()
-                .map(|p| p.instance_id.as_str())
+                .producers()
+                .map(|producer| producer.instance_id.as_str())
                 .collect::<Vec<_>>(),
             ["rear_camera", "front_camera"],
             "declaration order must be preserved, not sorted"
         );
         assert_eq!(
-            ordered.first().map(|p| p.instance_id.as_str()),
+            ordered
+                .first()
+                .map(|member| member.producer.instance_id.as_str()),
             Some("rear_camera")
         );
+        assert!(ordered.contains(&ProducerRef::new("core_a", "front_camera")));
+        assert!(!ordered.contains(&ProducerRef::new("core_b", "front_camera")));
 
-        let err = BoundProducers::try_from(vec![
-            ProducerRef::new("core_a", "cam"),
-            ProducerRef::new("core_a", "cam"),
-        ])
-        .expect_err("duplicates must be rejected");
-        let ParsingError::DuplicateBoundProducer {
-            core_node,
-            instance_id,
-        } = err
-        else {
-            panic!("expected DuplicateBoundProducer, got {err:?}");
+        let in_copy = |copy: &str| BoundMember {
+            producer: ProducerRef::new("core_a", "cam"),
+            copy: Some(Name::new(copy).unwrap()),
         };
-        assert_eq!(core_node, "core_a");
-        assert_eq!(instance_id, "cam");
+        for members in [
+            vec![
+                BoundMember::from(ProducerRef::new("core_a", "cam")),
+                BoundMember::from(ProducerRef::new("core_a", "cam")),
+            ],
+            vec![in_copy("alpha"), in_copy("bravo")],
+        ] {
+            let err =
+                BoundProducers::try_from(members).expect_err("a repeated producer is rejected");
+            let ParsingError::DuplicateBoundProducer {
+                core_node,
+                instance_id,
+            } = err
+            else {
+                panic!("expected DuplicateBoundProducer, got {err:?}");
+            };
+            assert_eq!(core_node, "core_a");
+            assert_eq!(instance_id, "cam");
+        }
+    }
+
+    /// Pin the wire contract of `BoundMember`: the member's full
+    /// `(core_node, instance_id)` producer address under `producer`, and its
+    /// copy only when it has one. This shape travels boot configs, node info
+    /// and `stack list` output, the same way `PairedPeer` does below.
+    #[test]
+    fn bound_member_serde_contract() {
+        use serde_json::json;
+
+        let cases = [
+            (
+                BoundMember::from(ProducerRef::new("core_a", "arm_1")),
+                json!({ "producer": { "core_node": "core_a", "instance_id": "arm_1" } }),
+            ),
+            (
+                BoundMember {
+                    producer: ProducerRef::new("core_a", "bravo_arm_inst"),
+                    copy: Some(Name::new("bravo").unwrap()),
+                },
+                json!({
+                    "producer": { "core_node": "core_a", "instance_id": "bravo_arm_inst" },
+                    "copy": "bravo"
+                }),
+            ),
+        ];
+        for (value, expected) in cases {
+            let encoded = serde_json::to_value(&value).expect("serialize BoundMember");
+            assert_eq!(encoded, expected, "BoundMember JSON shape changed");
+            let decoded: BoundMember =
+                serde_json::from_value(expected).expect("deserialize BoundMember");
+            assert_eq!(decoded, value, "BoundMember did not round-trip");
+        }
     }
 
     /// Pin the wire contract of `PairedPeer` (contrast with the plain-array

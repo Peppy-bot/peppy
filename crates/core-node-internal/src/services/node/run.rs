@@ -1843,7 +1843,11 @@ impl StartupProbe {
     /// The failure when the node process exits while this probe is pending.
     fn exited(self, status: std::process::ExitStatus) -> String {
         match self {
-            StartupProbe::Ready => format!("node process exited during startup (status={status})"),
+            StartupProbe::Ready => format!(
+                "node process exited during startup (status={status}); its log says why. If the \
+                 node was built before this daemon was upgraded, {} and launch again",
+                peppylib::runtime::REBUILD_REMEDY
+            ),
             StartupProbe::Health => {
                 format!("node process exited before becoming healthy (status={status})")
             }
@@ -2083,6 +2087,29 @@ fn vacant_slot_feedback(instance_id: &str, link_id: &str, reason: &VacantReason)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node that dies before it is ready is where a node built before its
+    /// daemon shows up, so that exit names the rebuild; the later probes' exits
+    /// say only what happened.
+    #[cfg(unix)]
+    #[test]
+    fn an_exit_during_startup_names_the_rebuild() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(1 << 8);
+        let during_startup = StartupProbe::Ready.exited(status);
+        assert!(
+            during_startup.contains("exited during startup")
+                && during_startup.contains(peppylib::runtime::REBUILD_REMEDY),
+            "{during_startup}"
+        );
+        for probe in [StartupProbe::Health, StartupProbe::Endpoints] {
+            assert!(
+                !probe.exited(status).contains("peppy node build"),
+                "{}",
+                probe.exited(status)
+            );
+        }
+    }
 
     /// The reason the deployment wrote down reaches the operator verbatim,
     /// which is the whole reason it rides the goal rather than staying in the

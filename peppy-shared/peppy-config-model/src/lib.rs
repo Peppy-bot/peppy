@@ -97,11 +97,12 @@ pub mod node {
 // -- runtime --
 pub mod runtime {
     pub use crate::internal::runtime::{
-        BoundProducers, ClockBinding, ClockDomainId, ClockIncarnation, ClockRole, CoreNodeName,
-        CoreNodeNameError, DiscoveryConfig, InvalidIncarnation, LifecycleRuntimeConfig,
-        MAX_CORE_NODE_NAME_LEN, Name, NodeInstanceConfig, NodeInstancePlan, ObservationSeedMember,
-        ObservationSeeds, ObservedPeer, PairedPeer, PairingSlots, ProducerRef, ResolvedFramework,
-        RuntimeConfig, SELF_CORE_NODE, SlotBindings, first_duplicate,
+        BoundMember, BoundProducers, ClockBinding, ClockDomainId, ClockIncarnation, ClockRole,
+        CoreNodeName, CoreNodeNameError, DiscoveryConfig, InvalidIncarnation,
+        LifecycleRuntimeConfig, MAX_CORE_NODE_NAME_LEN, Name, NodeInstanceConfig, NodeInstancePlan,
+        ObservationSeedMember, ObservationSeeds, ObservedPeer, PairedPeer, PairingSlots,
+        ProducerRef, ResolvedFramework, RuntimeConfig, SELF_CORE_NODE, SlotBindings,
+        first_duplicate,
     };
 }
 

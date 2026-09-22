@@ -103,6 +103,41 @@ pub(crate) fn emit_bound_producer_accessor_fn(
         },
     );
     builder.blank_line();
+    emit_bound_members_accessor_fn(builder, dependency);
+}
+
+/// Emits the `bound_members()` accessor a set slot carries beside its
+/// `bound_producers()`: the same set as a `List[peppylib.BoundMember]`, each
+/// member with the copy it belongs to. Nothing for a scalar slot. The
+/// docstring prose comes from `DependencyContext::bound_members_doc`, with
+/// the Python never-empty tail on a `one_or_more` slot.
+fn emit_bound_members_accessor_fn(
+    builder: &mut PythonCodeBuilder,
+    dependency: &crate::generator::types::DependencyContext,
+) {
+    let Some(doc) = dependency.bound_members_doc() else {
+        return;
+    };
+    let api_note = (dependency.cardinality == Cardinality::OneOrMore)
+        .then(|| crate::generator::types::DocLanguage::Python.never_empty_tail());
+    builder.add_import("from typing import List");
+    builder.block(
+        "def bound_members(node_runner: peppylib.NodeRunner) -> List[peppylib.BoundMember]:",
+        |builder| {
+            builder.line(&format!("\"\"\"{}", doc[0]));
+            builder.blank_line();
+            builder.lines(&doc[1..]);
+            if let Some(note) = api_note {
+                builder.line(note);
+            }
+            builder.line("\"\"\"");
+            builder.line(&format!(
+                "return node_runner.bound_members({:?})",
+                dependency.link_id
+            ));
+        },
+    );
+    builder.blank_line();
 }
 
 /// Emits the per-call membership check ahead of a consumed poll /

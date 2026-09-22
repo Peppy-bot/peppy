@@ -243,6 +243,13 @@ fn observed_topic_accessor_is_cardinality_typed() {
             !rendered.contains(absent_fn),
             "a {cardinality:?} slot must expose only `{expected_fn}`; got: {rendered}"
         );
+        // A set slot's subscription says it follows joins and removals; a
+        // scalar slot's does not.
+        assert_eq!(
+            rendered.contains("removal shrinks it"),
+            !cardinality.is_scalar(),
+            "{cardinality:?}: {rendered}"
+        );
         // Only the floored multi cardinality carries the Rust-API tail that
         // finishes its doc sentence.
         assert_eq!(

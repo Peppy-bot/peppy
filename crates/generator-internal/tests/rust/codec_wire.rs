@@ -23,7 +23,7 @@ use crate::helpers::{
 };
 use config::consts::{PEPPYGEN_OUTPUT_PATH, RUNTIME_CONFIG_VAR_NAME};
 use config::node::MessageFormat;
-use config::runtime::{Name, NodeInstanceConfig, RuntimeConfig};
+use config::runtime::{BoundProducers, Name, NodeInstanceConfig, RuntimeConfig};
 use daemon_config::contract::PeppyContractParser;
 use generator::{ContractOrigin, LanguageGenerator};
 use mcp_test_support::register_contract_members;
@@ -33,8 +33,8 @@ use message_codec::consumer::{
 };
 use peppy_mcp_runtime::bridge::bytes_to_base64;
 use peppylib::config::QoSProfile;
-use peppylib::messaging::{CancelState, ProducerRef, SenderTarget};
-use peppylib::runtime::CancellationToken;
+use peppylib::messaging::{BoundSetState, CancelState, ProducerRef, SenderTarget};
+use peppylib::runtime::{CancellationToken, subscribe_bound_set_with_watch};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
@@ -269,7 +269,6 @@ fn binding(member: &str) -> MemberBinding {
     MemberBinding {
         target: SenderTarget::contract(CONTRACT_NAME, CONTRACT_TAG).expect("valid target"),
         member: member.to_string(),
-        producers: vec![ProducerRef::new(TEST_CORE_NODE, STUB_INSTANCE_ID)],
     }
 }
 
@@ -427,16 +426,24 @@ async fn the_runtime_codec_exchanges_every_message_shape_with_a_generated_node()
 
     // --- A generated publisher to the runtime's subscription.
     let shutdown = CancellationToken::new();
-    let mut frames = TopicConsumer::subscribe(
-        &messenger,
-        &identity,
-        &binding("frame"),
-        QoSProfile::Standard,
+    let (_frame_producers, bound) = tokio::sync::watch::channel(BoundSetState::seeded(
+        BoundProducers::from(ProducerRef::new(TEST_CORE_NODE, STUB_INSTANCE_ID)),
+    ));
+    let mut frames = TopicConsumer::new(
+        subscribe_bound_set_with_watch(
+            messenger.clone(),
+            identity.core_node.clone(),
+            identity.instance_id.clone(),
+            bound,
+            binding("frame").target,
+            binding("frame").member,
+            QoSProfile::Standard,
+            shutdown.clone(),
+        )
+        .await
+        .expect("the frame producer declares"),
         codec("frame", FRAME_FORMAT),
-        shutdown.clone(),
-    )
-    .await
-    .expect("the frame subscription opens");
+    );
     let (from, message) = bounded("a frame arrives", frames.next_message())
         .await
         .expect("the subscription is open");

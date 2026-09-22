@@ -285,7 +285,7 @@ pub fn validate_clock_connections(
 
     for (consumer, slots) in slot_bindings {
         for (link_id, producers) in slots {
-            for producer in producers.as_slice() {
+            for producer in producers.producers() {
                 refuse(
                     consumer,
                     &producer.instance_id,

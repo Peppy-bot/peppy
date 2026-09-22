@@ -153,7 +153,7 @@ impl PreparedLauncher {
         for copy in copies {
             let record = copy.record();
             // A line about a stack instance names the copy behind it.
-            let owned = |target: &str| record.instance_ids.iter().any(|id| id.as_str() == target);
+            let owned = |target: &str| record.owns_instance(target);
             let attributed = |origin: &str, target: &str| {
                 if owned(target) {
                     origin.to_owned()

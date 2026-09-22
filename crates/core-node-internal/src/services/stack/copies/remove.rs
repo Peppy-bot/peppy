@@ -11,13 +11,18 @@ use super::super::launch::watchers::{LifecycleWatchers, lifecycle_watchers, watc
 use super::super::launch::{PlannedDeployment, federated};
 use super::super::state::{ActiveLaunch, StackCopy};
 use super::super::{ChangeResult, STACK_QUERY_TIMEOUT};
+use super::changed_slots::{
+    Change, ChangedSlot, UNDELIVERED_REMEDY, changed_slots, check_not_emptied, deliver_sets,
+    holds_any, whole_sets,
+};
+use super::live::{live_machines, report_offline_sets, split_by_liveness};
 use super::{change_active_launch, plan::selected_instances, stack_list_on};
 use crate::services::node::stop_named_instances;
 use config::runtime::Name;
 use core_node_api::encoding::{
     LaunchFeedbackStep, LaunchResult, ParticipantInstancesRemoveRequest, StackRemoveGoal,
 };
-use daemon_config::launcher::{DeploymentInstance, PeppyLauncher};
+use daemon_config::launcher::{CopyMembership, DeploymentInstance, PeppyLauncher};
 use peppylib::core_node::transport::poll;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Duration;
@@ -75,17 +80,19 @@ async fn remove_inner(
         format!("copy `{name}` is absent; peppy stack list shows the copies on the stack")
     })?;
     let staying: Vec<_> = active
-        .copies
-        .values()
-        .filter(|other| other.record.name != copy.record.name)
-        .map(|other| other.record.clone())
+        .copy_records()
+        .filter(|other| other.name != copy.record.name)
+        .cloned()
         .collect();
     let remaining = active
         .prepared
         .remove(&active.flat, &copy.record, &active.selection, &staying)
         .map_err(|e| e.to_string())?;
+    let shrunk_slots = changed_slots(&copy.record, &active.planned, Change::Removal)?;
+    check_not_emptied(&copy.record, &shrunk_slots, &remaining)?;
     let removed: HashSet<_> = copy.record.instance_ids.iter().map(Name::as_str).collect();
     let remaining_planned = planned_from(&remaining, &active.resolved);
+    let copies = CopyMembership::of(&staying);
     // The copy supplies a clock when one of its instances publishes a domain
     // this stack reads.
     let removed_domains: Vec<Name> = active
@@ -103,35 +110,38 @@ async fn remove_inner(
                 .flat_map(|item| &item.deployment.instances),
             &active.resolved_clocks,
             &removed_domains,
-            |instance| {
-                active
-                    .copies
-                    .iter()
-                    .find(|(_, copy)| copy.record.instance_ids.contains(instance))
-                    .map(|(name, _)| name)
-            },
+            &copies,
         );
         if !consumers.is_empty() {
             return Err(consumers.refusal(name, &removed_domains));
         }
     }
     let root = ctx.node_stack.root().read().config().clone();
-    let (_, _, _, observations) = validate_and_order_dependencies(
+    let (_, bindings, _, observations) = validate_and_order_dependencies(
         ctx,
         &remaining_planned,
         &root,
         &active.placements,
+        &copies,
         &active.resolved_clocks,
     )
     .await?;
     let watchers = lifecycle_watchers(&observations, &active.placements)?;
     let repointed = watchers_replacing(&active.watchers, &watchers);
-    let host_live = copy.core_node.as_str() == ctx.bound_core_node
-        || federated::live_core_nodes(&ctx.messenger)
-            .await?
-            .contains(copy.core_node.as_str());
-    let touched = removal_deployments(active, &copy, host_live, &repointed);
-    let change = preflight_change(ctx, &active.launch_id, &touched, &active.placements).await?;
+    let live = live_machines(ctx, &active.placements).await?;
+    let host_live = live.contains(copy.core_node.as_str());
+    let (reachable_slots, offline_slots) =
+        split_by_liveness(shrunk_slots, &active.placements, &live);
+    let shrunk_sets = whole_sets(&reachable_slots, &bindings, &observations);
+    let touched = removal_deployments(active, &copy, host_live, &repointed, &reachable_slots);
+    let change = preflight_change(
+        ctx,
+        &active.launch_id,
+        &touched,
+        &active.placements,
+        Some(&live),
+    )
+    .await?;
     let outcome = async {
         if host_live {
             stop_copy(ctx, &active.launch_id, &copy).await?;
@@ -160,9 +170,21 @@ async fn remove_inner(
             &active.placements,
         )
         .await;
+        // The copy's instances are stopped by now, so a set that did not reach
+        // its instance leaves the removal standing and says what heals it.
+        if let Err(failure) =
+            deliver_sets(ctx, &active.launch_id, &active.placements, shrunk_sets).await
+        {
+            publish_stderr(
+                ctx,
+                format!("{failure}\n{UNDELIVERED_REMEDY}"),
+                LaunchFeedbackStep::LauncherStep,
+            )
+            .await;
+        }
+        report_offline_sets(ctx, name, &offline_slots, &active.placements).await;
         // A domain leaves with the instance that supplied it. Its lifetime
-        // goes too, so a copy rejoining under the same name mints a new one
-        // rather than inheriting a timeline nothing publishes.
+        // goes too, so a copy rejoining under the same name mints a new one.
         for domain in &removed_domains {
             active.clocks.remove(domain);
         }
@@ -194,12 +216,12 @@ struct ClockConsumers {
 
 impl ClockConsumers {
     /// The readers of `domains` among `instances`, each filed under its copy
-    /// where `copy_of` names one.
+    /// where `copies` names one.
     fn of<'a>(
         instances: impl IntoIterator<Item = &'a DeploymentInstance>,
         clocks: &daemon_config::launcher::ResolvedClocks,
         domains: &[Name],
-        copy_of: impl Fn(&Name) -> Option<&'a Name>,
+        copies: &CopyMembership,
     ) -> Self {
         let mut consumers = Self::default();
         for instance in instances.into_iter().filter(|instance| {
@@ -208,7 +230,7 @@ impl ClockConsumers {
                 .domain()
                 .is_some_and(|domain| domains.contains(&domain.name))
         }) {
-            match copy_of(&instance.instance_id) {
+            match copies.copy_of(instance.instance_id.as_str()) {
                 Some(copy) => {
                     consumers.copies.insert(copy.clone());
                 }
@@ -253,19 +275,23 @@ fn clock_label(domains: &[Name]) -> String {
     }
 }
 
-/// Removal reserves the copy's host while it is live, and the host of every
-/// source whose watchers change.
+/// Removal reserves the copy's host while it is live, the host of every
+/// source whose watchers change, and the host of each of `shrunk_slots`,
+/// the sets it delivers.
 fn removal_deployments(
     active: &ActiveLaunch,
     copy: &StackCopy,
     host_live: bool,
     repointed: &LifecycleWatchers,
+    shrunk_slots: &[ChangedSlot],
 ) -> Vec<PlannedDeployment> {
     selected_instances(&active.planned, |instance| {
         let host = active
             .placements
             .core_node_of(instance.instance_id.as_str());
-        (host_live && host == &copy.core_node) || repointed.contains_key(&instance.instance_id)
+        (host_live && host == &copy.core_node)
+            || repointed.contains_key(&instance.instance_id)
+            || holds_any(shrunk_slots, &instance.instance_id)
     })
 }
 
@@ -309,23 +335,17 @@ pub(super) async fn stop_copy(
     )
     .await
     .map_err(|e| format!("cannot remove instances on `{host}`: {e}"))
-    .and_then(|response| {
-        if response.ok {
-            Ok(())
-        } else {
-            Err(format!(
-                "`{host}` refused to remove the copy's instances: {}",
-                response
-                    .rejection_reason
-                    .unwrap_or_else(|| String::from("no reason given"))
-            ))
-        }
+    .and_then(|verdict| {
+        verdict
+            .into_result()
+            .map_err(|reason| format!("`{host}` refused to remove the copy's instances: {reason}"))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daemon_config::launcher::CopyRecord;
 
     fn instance(id: &str) -> DeploymentInstance {
         DeploymentInstance::empty(Name::new(id).unwrap())
@@ -359,8 +379,18 @@ mod tests {
             ("wall_inst".to_owned(), config::runtime::ClockBinding::Wall),
         ]);
         let domains = [Name::new("robot").unwrap()];
-        let copy_of = |id: &Name| id.as_str().starts_with("alpha_").then_some(&alpha);
-        let consumers = ClockConsumers::of(&instances, &clocks, &domains, copy_of);
+        let copies = CopyMembership::of(&[CopyRecord {
+            name: alpha.clone(),
+            axis: "robot".into(),
+            option: "real".into(),
+            selection: Default::default(),
+            instance_ids: vec![
+                Name::new("alpha_arm_inst").unwrap(),
+                Name::new("alpha_cam_inst").unwrap(),
+            ],
+            set_members: Vec::new(),
+        }]);
+        let consumers = ClockConsumers::of(&instances, &clocks, &domains, &copies);
         assert_eq!(consumers.copies, BTreeSet::from([alpha.clone()]));
         assert_eq!(consumers.stack, [Name::new("shared_inst").unwrap()]);
         let source = Name::new("sim").unwrap();
@@ -382,7 +412,7 @@ mod tests {
             "the refusal says what to change in the launcher: {refusal}"
         );
 
-        let copies_only = ClockConsumers::of(&instances[..2], &clocks, &domains, copy_of);
+        let copies_only = ClockConsumers::of(&instances[..2], &clocks, &domains, &copies);
         assert!(!copies_only.is_empty());
         let refusal = copies_only.refusal(&source, &domains);
         assert!(
@@ -390,6 +420,6 @@ mod tests {
             "{refusal}"
         );
 
-        assert!(ClockConsumers::of(&instances[3..], &clocks, &domains, copy_of).is_empty());
+        assert!(ClockConsumers::of(&instances[3..], &clocks, &domains, &copies).is_empty());
     }
 }

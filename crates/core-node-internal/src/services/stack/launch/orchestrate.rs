@@ -282,6 +282,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
     planned: &[PlannedDeployment],
     root_config: &config::node::NodeConfig,
     placements: &daemon_config::launcher::Placements,
+    copies: &daemon_config::launcher::CopyMembership,
     clocks: &daemon_config::launcher::ResolvedClocks,
 ) -> std::result::Result<
     (
@@ -421,6 +422,7 @@ pub(in crate::services::stack) async fn validate_and_order_dependencies(
         // outside the validator's view.
         &daemon_config::launcher::ExternallyCoveredSlots::new(),
         placements,
+        copies,
         clocks,
     );
     if !validated.errors.is_empty() {

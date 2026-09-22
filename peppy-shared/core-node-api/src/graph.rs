@@ -483,13 +483,16 @@ mod tests {
             "arm".to_string(),
             BoundProducers::from(ProducerRef::new("core_a", "arm-1")),
         );
-        // A multi-cardinality slot's ordered set and a zero_or_more slot's
-        // empty set both round-trip.
+        // A multi-cardinality slot's ordered set, with the copy a member
+        // belongs to, and a zero_or_more slot's empty set both round-trip.
         bindings.insert(
             "cameras".to_string(),
             BoundProducers::try_from(vec![
-                ProducerRef::new("core_a", "cam-1"),
-                ProducerRef::new("core_a", "cam-2"),
+                config::runtime::BoundMember::from(ProducerRef::new("core_a", "cam-1")),
+                config::runtime::BoundMember {
+                    producer: ProducerRef::new("core_a", "bravo_cam"),
+                    copy: Some(config::runtime::Name::new("bravo").unwrap()),
+                },
             ])
             .expect("distinct producers"),
         );

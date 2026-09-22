@@ -14,18 +14,19 @@
 use crate::encoding::peer_update::PeerUpdateRequest;
 use crate::messaging::{PEER_UPDATE_SERVICE, PeerSetState, SenderTarget};
 use crate::runtime::TaskHandle;
-use crate::services::slot_update::{SlotSenders, SlotUpdate, listen_for_slot_update};
+use crate::services::slot_update::{SlotChannels, SlotUpdate, listen_for_slot_update};
 use crate::{MessengerHandle, PeppyResult};
+use config::node::Cardinality;
 
 /// Shared map of one watch channel per declared pairing slot, keyed by the
 /// node's own slot link_id.
-pub(crate) type PairingSlotSenders = SlotSenders<PeerSetState>;
+pub(crate) type PairingSlotChannels = SlotChannels<PeerSetState>;
 
 impl SlotUpdate for PeerUpdateRequest {
     type State = PeerSetState;
 
     const SERVICE: &'static str = PEER_UPDATE_SERVICE;
-    const UNKNOWN_SLOT_NOUN: &'static str = "pairing slot";
+    const SLOT_NOUN: &'static str = "pairing slot";
 
     fn decode_request(payload: &[u8]) -> PeppyResult<Self> {
         PeerUpdateRequest::decode(payload)
@@ -53,6 +54,17 @@ impl SlotUpdate for PeerUpdateRequest {
         }
     }
 
+    fn member_count(state: &PeerSetState) -> usize {
+        state.members.len()
+    }
+
+    /// A pairing slot holds the pairs that exist right now: a pair ends when
+    /// its peer stops, so a `one_or_more` slot reads empty until the peers
+    /// pair again, and a scalar slot holds at most one pair.
+    fn admits(cardinality: Cardinality, members: usize) -> bool {
+        cardinality.admits_pairs(members)
+    }
+
     fn log_detail(&self) -> String {
         format!("members={}", self.members.len())
     }
@@ -63,7 +75,7 @@ pub async fn listen_for_peer_update(
     core_node: &str,
     instance_id: &str,
     as_identity: SenderTarget,
-    slots: PairingSlotSenders,
+    slots: PairingSlotChannels,
 ) -> PeppyResult<TaskHandle<PeppyResult<()>>> {
     listen_for_slot_update::<PeerUpdateRequest>(
         messenger,
@@ -80,25 +92,26 @@ mod tests {
     use super::*;
     use crate::encoding::slot_update::SlotUpdateResponse;
     use crate::messaging::{PeerInfo, PeerMember, ProducerRef};
-    use crate::services::slot_update::apply_slot_update;
+    use crate::services::slot_update::{SlotChannel, apply_slot_update};
     use std::collections::BTreeMap;
     use tokio::sync::watch;
 
     fn apply(
-        slots: &BTreeMap<String, watch::Sender<PeerSetState>>,
+        slots: &BTreeMap<String, SlotChannel<PeerSetState>>,
         request: &PeerUpdateRequest,
     ) -> SlotUpdateResponse {
         apply_slot_update::<PeerUpdateRequest>(slots, request)
     }
 
-    fn slot_map(link_ids: &[&str]) -> BTreeMap<String, watch::Sender<PeerSetState>> {
-        link_ids
-            .iter()
-            .map(|id| {
-                let (tx, _rx) = watch::channel(PeerSetState::empty());
-                (id.to_string(), tx)
-            })
-            .collect()
+    fn slot_map(link_ids: &[&str]) -> BTreeMap<String, SlotChannel<PeerSetState>> {
+        slot_map_of(Cardinality::OneOrMore, link_ids)
+    }
+
+    fn slot_map_of(
+        cardinality: Cardinality,
+        link_ids: &[&str],
+    ) -> BTreeMap<String, SlotChannel<PeerSetState>> {
+        super::super::slot_update::slot_map(cardinality, link_ids, PeerSetState::empty)
     }
 
     fn pin(core: &str, inst: &str, peer_link: &str) -> PeerMember {
@@ -126,7 +139,7 @@ mod tests {
     #[test]
     fn applies_pair_then_clear() {
         let slots = slot_map(&["arm"]);
-        let watched = slots["arm"].subscribe();
+        let watched = slots["arm"].sender().subscribe();
 
         let paired = apply(
             &slots,
@@ -144,7 +157,7 @@ mod tests {
     #[test]
     fn rejects_strictly_stale_sequence_without_rollback() {
         let slots = slot_map(&["arm"]);
-        let watched = slots["arm"].subscribe();
+        let watched = slots["arm"].sender().subscribe();
 
         apply(
             &slots,
@@ -167,7 +180,7 @@ mod tests {
     #[test]
     fn equal_sequence_retry_is_idempotent_and_accepted() {
         let slots = slot_map(&["arm"]);
-        let mut watched = slots["arm"].subscribe();
+        let mut watched = slots["arm"].sender().subscribe();
 
         apply(
             &slots,
@@ -193,7 +206,7 @@ mod tests {
     #[test]
     fn equal_sequence_asserting_different_members_is_refused() {
         let slots = slot_map(&["arm"]);
-        let watched = slots["arm"].subscribe();
+        let watched = slots["arm"].sender().subscribe();
 
         apply(
             &slots,
@@ -212,6 +225,63 @@ mod tests {
         );
     }
 
+    /// A scalar pairing slot holds at most one pair, on the wire as at boot:
+    /// a delivery carrying two is refused and the slot keeps its pair.
+    #[test]
+    fn a_scalar_slot_refuses_a_second_pair() {
+        let slots = slot_map_of(Cardinality::ZeroOrOne, &["arm"]);
+        let watched = slots["arm"].sender().subscribe();
+        apply(
+            &slots,
+            &request("arm", 1, Some(pin("core_a", "arm_1", "controller"))),
+        );
+
+        let response = apply(
+            &slots,
+            &PeerUpdateRequest {
+                link_id: "arm".to_string(),
+                sequence: 2,
+                members: vec![
+                    pin("core_a", "arm_1", "controller"),
+                    pin("core_a", "arm_2", "controller"),
+                ],
+            },
+        );
+        assert!(!response.accepted, "{response:?}");
+        assert!(
+            response
+                .message
+                .contains("`zero_or_one` admits no set of 2 members"),
+            "{response:?}"
+        );
+        assert_eq!(held(&watched), Some(pin("core_a", "arm_1", "controller")));
+    }
+
+    /// A pairing slot holds the pairs that exist right now, so a `one_or_more`
+    /// slot reads empty when its peers stop and pairs again when they return:
+    /// the floor the producer and observer sets hold at the wire does not
+    /// apply to pairs.
+    #[test]
+    fn a_one_or_more_slot_takes_an_empty_delivery_when_its_pairs_end() {
+        let slots = slot_map(&["arm"]);
+        let watched = slots["arm"].sender().subscribe();
+        apply(
+            &slots,
+            &request("arm", 1, Some(pin("core_a", "arm_1", "controller"))),
+        );
+
+        let unpaired = apply(&slots, &request("arm", 2, None));
+        assert!(unpaired.accepted, "{unpaired:?}");
+        assert_eq!(held(&watched), None);
+
+        let repaired = apply(
+            &slots,
+            &request("arm", 3, Some(pin("core_a", "arm_1", "controller"))),
+        );
+        assert!(repaired.accepted, "{repaired:?}");
+        assert_eq!(held(&watched), Some(pin("core_a", "arm_1", "controller")));
+    }
+
     #[test]
     fn unknown_slot_is_rejected() {
         let slots = slot_map(&["arm"]);
@@ -227,7 +297,7 @@ mod tests {
     #[test]
     fn a_delivery_replaces_the_whole_set_in_its_order() {
         let slots = slot_map(&["arms"]);
-        let watched = slots["arms"].subscribe();
+        let watched = slots["arms"].sender().subscribe();
         let two = PeerUpdateRequest {
             link_id: "arms".to_string(),
             sequence: 3,

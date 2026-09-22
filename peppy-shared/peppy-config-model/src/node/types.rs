@@ -962,13 +962,13 @@ pub struct ActionTopicEndpoint {
 /// How many sources a slot takes: bound producers for
 /// `depends_on.{nodes,contracts}`, observed pairings for
 /// `depends_on.pairing_observers`. On producer slots it constrains only the
-/// size of the application-selected bound set, validated at plan time and
-/// fixed when the node starts; it never permits undeclared or unbound
-/// launched instances, and it is not live discovery. On observer slots the
-/// same spellings constrain the member count the planner accepts, and the
-/// member set the daemon delivers changes over the node's lifetime.
-/// On participant pairing slots the same spellings size the set of pairs the
-/// slot holds, and pairs join and leave a multi slot while the node runs.
+/// size of the application-selected bound set, which the planner validates at
+/// launch and at each join or removal that changes it; it never permits
+/// undeclared or unbound launched instances, and it is not live discovery. On
+/// observer slots the same spellings constrain the member count the planner
+/// accepts, at launch and at each join or removal. On participant pairing slots
+/// the same spellings size the set of pairs the slot holds, and pairs join and
+/// leave a multi slot while the node runs.
 ///
 /// All four spellings are valid on every slot kind that carries the key, and mean
 /// the same thing on each. The two scalar spellings ([`Cardinality::One`],
@@ -1001,11 +1001,12 @@ impl Cardinality {
 
     /// Whether the slot holds at most one source, so its generated accessor is
     /// singular rather than set-valued. The one shape rule, shared by the code
-    /// generator, the node runtime's observation-slot handles and the launcher's
+    /// generator, the node runtime's producer-binding and observation-slot
+    /// handles, the daemon's join and removal planning, and the launcher's
     /// error hints, so an accessor and the handle it calls can never disagree
-    /// about a slot's shape. It answers the singular/set-valued split only: what
-    /// each singular accessor returns is the cardinality's own business, since
-    /// `one` always resolves a source and `zero_or_one` may not.
+    /// about a slot's shape. It answers the singular/set-valued split only:
+    /// what each singular accessor returns is the cardinality's own business,
+    /// since `one` always resolves a source and `zero_or_one` may not.
     pub fn is_scalar(&self) -> bool {
         matches!(self, Cardinality::One | Cardinality::ZeroOrOne)
     }
@@ -1018,13 +1019,14 @@ impl Cardinality {
         matches!(self, Cardinality::ZeroOrMore)
     }
 
-    /// Whether a slot of this cardinality may already hold `len` members
-    /// before its owner has been delivered any. Only the ceiling applies: a
-    /// pairing slot's pairs arrive after the instance commits to Running, so a
-    /// seed of zero is legitimate at every cardinality, `one_or_more`
-    /// included. Contrast [`Self::admits`], which the seeds that arrive whole
-    /// (an observer's, a producer binding's) are held to.
-    pub fn admits_seed(&self, len: usize) -> bool {
+    /// Whether a pairing slot of this cardinality may hold `len` pairs, at
+    /// boot and on every delivery after. Only the ceiling applies: pairs
+    /// arrive after the instance commits to Running and end when a peer
+    /// stops, so zero is legitimate at every cardinality, `one_or_more`
+    /// included, and a scalar slot holds at most one. [`Self::admits`] is the
+    /// rule for the sets a plan fixes whole (an observer's, a producer
+    /// binding's).
+    pub fn admits_pairs(&self, len: usize) -> bool {
         match self {
             Cardinality::One | Cardinality::ZeroOrOne => len <= 1,
             Cardinality::OneOrMore | Cardinality::ZeroOrMore => true,
@@ -3064,12 +3066,12 @@ mod tests {
             "a whole set of none does not satisfy a floor of one"
         );
         assert!(
-            Cardinality::OneOrMore.admits_seed(0),
+            Cardinality::OneOrMore.admits_pairs(0),
             "a floored pairing slot still seeds empty and is paired after Running"
         );
-        assert!(Cardinality::One.admits_seed(0) && Cardinality::One.admits_seed(1));
+        assert!(Cardinality::One.admits_pairs(0) && Cardinality::One.admits_pairs(1));
         assert!(
-            !Cardinality::One.admits_seed(2),
+            !Cardinality::One.admits_pairs(2),
             "a scalar slot cannot seed two pairs whatever the floor"
         );
     }

@@ -33,6 +33,10 @@ struct NodeConfigOptions<'a> {
     run_cmd: &'a [&'a str],
     expects_uvc_camera: bool,
     emits_camera_stream: bool,
+    /// The manifest's `depends_on` object, written as is; empty for none.
+    depends_on: &'a str,
+    /// The node's `interfaces` object, written as is; empty for none.
+    interfaces: &'a str,
 }
 
 impl Default for NodeConfigOptions<'_> {
@@ -42,6 +46,8 @@ impl Default for NodeConfigOptions<'_> {
             run_cmd: &[],
             expects_uvc_camera: false,
             emits_camera_stream: false,
+            depends_on: "",
+            interfaces: "",
         }
     }
 }
@@ -194,7 +200,17 @@ fn write_node_config_with_options(
         run_cmd,
         expects_uvc_camera,
         emits_camera_stream,
+        depends_on: raw_depends_on,
+        interfaces: raw_interfaces,
     } = options;
+    assert!(
+        raw_depends_on.is_empty() || !expects_uvc_camera,
+        "a node config takes its `depends_on` from one option"
+    );
+    assert!(
+        raw_interfaces.is_empty() || !(emits_camera_stream || expects_uvc_camera),
+        "a node config takes its `interfaces` from one option"
+    );
     let node_dir = nodes_directory.join(node_name);
     fs::create_dir_all(&node_dir).expect("failed to create node directory");
 
@@ -226,7 +242,9 @@ fn write_node_config_with_options(
         ""
     };
 
-    let interfaces = if emits_camera_stream || expects_uvc_camera {
+    let interfaces = if !raw_interfaces.is_empty() {
+        format!("interfaces: {raw_interfaces},")
+    } else if emits_camera_stream || expects_uvc_camera {
         format!(
             r#"interfaces: {{
                 topics: {{
@@ -239,14 +257,17 @@ fn write_node_config_with_options(
         String::new()
     };
 
-    let depends_on = if expects_uvc_camera {
+    let depends_on = if !raw_depends_on.is_empty() {
+        format!("depends_on: {raw_depends_on},")
+    } else if expects_uvc_camera {
         r#"depends_on: {
                     nodes: [
                         { name: "uvc_camera", tag: "v1", link_id: "front_camera" }
                     ]
                 },"#
+        .to_string()
     } else {
-        ""
+        String::new()
     };
 
     let node_config_path = node_dir.join(NODE_CONFIG_FILE);
@@ -268,7 +289,7 @@ fn write_node_config_with_options(
             }"#
         .replace("{node_name}", node_name)
         .replace("{node_tag}", node_tag)
-        .replace("{depends_on}", depends_on)
+        .replace("{depends_on}", &depends_on)
         .replace("{build_cmd_json5}", &build_cmd_json5)
         .replace("{run_cmd_json5}", &run_cmd_json5)
         .replace("{interfaces}", &interfaces),

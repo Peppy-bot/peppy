@@ -19,7 +19,7 @@ pub(crate) struct SlotUpdateTarget {
     producer: ProducerRef,
 }
 
-/// Shared transport and sequencing for the pairing and observation
+/// Shared transport and sequencing for the pairing, observation and binding
 /// coordinators' absolute-state update protocols.
 pub(crate) struct SlotUpdateClient {
     node_stack: Arc<NodeStack>,
@@ -92,7 +92,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<SlotDelivery, String> {
         let target = self.resolve_target(instance_id)?;
         self.send_to(&target, service_name, payload, timeout, rejection_message)
             .await
@@ -105,7 +105,7 @@ impl SlotUpdateClient {
         payload: peppylib::types::Payload,
         timeout: Duration,
         rejection_message: &str,
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<SlotDelivery, String> {
         let reply = ServiceMessenger::poll(
             &self.messenger,
             &self.core_node_name,
@@ -121,14 +121,25 @@ impl SlotUpdateClient {
 
         let response = SlotUpdateResponse::decode(&reply.payload_bytes())
             .map_err(|error| error.to_string())?;
-        if response.accepted || response.stale_sequence {
-            Ok(())
+        if response.accepted {
+            Ok(SlotDelivery::Taken)
+        } else if response.stale_sequence {
+            Ok(SlotDelivery::HeldNewer)
         } else if response.message.is_empty() {
             Err(rejection_message.to_string())
         } else {
             Err(response.message)
         }
     }
+}
+
+/// How an instance answered a slot delivery it did not refuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlotDelivery {
+    /// The instance holds the delivered state from now on.
+    Taken,
+    /// The instance already holds a later delivery and kept it.
+    HeldNewer,
 }
 
 /// Extract a human-readable message from a panic payload.

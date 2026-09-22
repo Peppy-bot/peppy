@@ -98,14 +98,10 @@ impl PyPeerMember {
     }
 
     fn __repr__(&self) -> String {
-        let copy = match &self.inner.copy {
-            Some(copy) => format!("{copy:?}"),
-            None => "None".to_string(),
-        };
         format!(
             "PeerMember(info={}, copy={})",
             PyPeerInfo::from(self.inner.info.clone()).__repr__(),
-            copy
+            super::repr_copy(self.inner.copy.as_deref())
         )
     }
 }

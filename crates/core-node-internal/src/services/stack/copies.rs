@@ -5,6 +5,7 @@
 //! change here runs against the launch this daemon coordinates and writes it
 //! back, whatever the outcome.
 
+mod changed_slots;
 pub(in crate::services::stack) mod join;
 mod live;
 mod plan;

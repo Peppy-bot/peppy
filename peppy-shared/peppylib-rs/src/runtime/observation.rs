@@ -18,10 +18,11 @@
 use crate::error::{Error, Result};
 use crate::messaging::{
     MessengerHandle, NonEmptyObservedSources, ObservationState, ObservedSource, ProducerRef,
-    SenderTarget,
+    SenderTarget, Subscription, TopicMessenger,
 };
 use crate::runtime::NodeRunner;
-use crate::runtime::slot_stream::{FollowedSlot, SlotStream, spawn_slot_stream};
+use crate::runtime::pairing::{PairingWire, published_on_slot};
+use crate::runtime::slot_stream::{FollowedSlot, SlotStream, StreamWiring, start_slot_stream};
 use crate::types::Message;
 use config::node::QoSProfile;
 use pmi::{PairingRecipient, WirePeer};
@@ -35,24 +36,21 @@ use tokio::sync::watch;
 pub(crate) fn observer_shape_panic(link_id: &str, accessor: &str, declared: &str) -> ! {
     panic!(
         "observer slot `{link_id}` is declared `{declared}` but was read through `{accessor}`: \
-         the generated code and the manifest disagree (version skew / stale codegen); \
-         regenerate bindings for this node"
+         {}",
+        crate::runtime::RESYNC_REMEDY
     )
 }
 
 /// The panic a floored observer accessor raises when the slot observes nothing.
 /// The too-few counterpart of [`observer_shape_panic`]'s too-many case, and the
 /// observation twin of [`crate::runtime::Processor::non_empty_bound_producers`]:
-/// the launcher sizes the slot at plan time and node startup re-checks the seed
-/// against the same rule, so an empty set means the daemon and this node
-/// disagree about the manifest rather than that the application has a case to
-/// handle.
+/// the planner sizes every set the slot holds, at launch and at each join or
+/// removal, and node startup re-checks the seed against the same rule, so an
+/// empty set means the daemon and this node disagree about the manifest.
 pub(crate) fn observer_empty_panic(link_id: &str, declared: &str) -> ! {
     panic!(
-        "observer slot `{link_id}` is declared `{declared}` but observes nothing: \
-         the plan sizes this slot and node startup re-checks its seed, so an empty set means \
-         the daemon and the generated code disagree (version skew / stale codegen); \
-         regenerate bindings for this node"
+        "observer slot `{link_id}` is declared `{declared}` but observes nothing: {}",
+        crate::runtime::RESYNC_REMEDY
     )
 }
 
@@ -127,9 +125,9 @@ impl ObservationSlot {
 /// The member set is live in what it says about each member: the daemon owns it
 /// and keeps every member's incarnation and liveness current, so a set read now
 /// can differ from one read later and a member whose source is down stays in the
-/// set, at its position. What does not move is the size: the launcher fixes it
-/// at plan time and node startup re-checks the slot's seed against the same
-/// rule, so the slot's declared floor holds on every read.
+/// set, at its position. A copy joining or leaving adds or removes members, and
+/// the planner sizes every set the slot holds, at launch and at each join or
+/// removal, so the slot's declared floor holds on every read.
 #[derive(Clone)]
 pub struct ObservationSlotSet {
     link_id: String,
@@ -195,16 +193,32 @@ impl ObservationSlotSet {
 ///
 /// [`slot_stream`]: crate::runtime::slot_stream
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ObservedPin {
+struct ObservedPin {
     generation: u64,
     source: ObservedSource,
 }
 
-pub(crate) struct ObservedFollow;
+struct ObservedFollow;
+
+impl ObservedFollow {
+    /// A member pinned to one pair subscribes to the source's publishes to
+    /// that peer alone; every other member takes the slot's open recipient.
+    fn recipient(pin: &ObservedPin, slot_recipient: &PairingRecipient) -> Result<PairingRecipient> {
+        match &pin.source.peer {
+            Some(peer) => Ok(PairingRecipient::Peer(WirePeer::new(
+                &peer.producer.core_node,
+                &peer.producer.instance_id,
+                &peer.peer_link_id,
+            )?)),
+            None => Ok(slot_recipient.clone()),
+        }
+    }
+}
 
 impl FollowedSlot for ObservedFollow {
     type State = ObservationState;
     type Pin = ObservedPin;
+    type Wire = PairingWire;
 
     fn desired(state: &ObservationState) -> Vec<ObservedPin> {
         state
@@ -228,21 +242,23 @@ impl FollowedSlot for ObservedFollow {
         &pin.source.producer
     }
 
-    fn producer_link_id(pin: &ObservedPin) -> &str {
-        &pin.source.source_link_id
+    async fn subscribe(wiring: &StreamWiring<Self>, pin: &ObservedPin) -> Result<Subscription> {
+        TopicMessenger::subscribe_peer_pinned(
+            &wiring.messenger,
+            &wiring.as_core_node,
+            &wiring.as_instance_id,
+            wiring.wire.target.clone(),
+            &pin.source.producer,
+            &pin.source.source_link_id,
+            Self::recipient(pin, &wiring.wire.recipient)?,
+            &wiring.topic,
+            wiring.qos.clone(),
+        )
+        .await
     }
 
-    /// A member pinned to one pair subscribes to the source's publishes to
-    /// that peer alone; every other member takes the slot's open recipient.
-    fn recipient(pin: &ObservedPin, slot_recipient: &PairingRecipient) -> Result<PairingRecipient> {
-        match &pin.source.peer {
-            Some(peer) => Ok(PairingRecipient::Peer(WirePeer::new(
-                &peer.producer.core_node,
-                &peer.producer.instance_id,
-                &peer.peer_link_id,
-            )?)),
-            None => Ok(slot_recipient.clone()),
-        }
+    fn published_by(pin: &ObservedPin, message: &Message) -> bool {
+        published_on_slot(&pin.source.producer, &pin.source.source_link_id, message)
     }
 }
 
@@ -278,6 +294,8 @@ impl ObservedTopicSubscription {
 /// `peppygen::paired_topics::<link_id>::<topic>::subscribe` call sites of
 /// observer modules; `pairing_name` / `pairing_tag` / `topic` come from the
 /// pairing doc via codegen constants.
+/// Fails when a pin the slot follows now cannot be declared; a declaration
+/// failing while the stream runs is declared again on a backoff.
 pub async fn subscribe_observed(
     node_runner: &NodeRunner,
     link_id: &str,
@@ -294,7 +312,7 @@ pub async fn subscribe_observed(
                 link_id: link_id.to_string(),
             })?;
     let target = SenderTarget::pairing(pairing_name, pairing_tag)?;
-    Ok(subscribe_observed_with_watch(
+    subscribe_observed_with_watch(
         node_runner.messenger().clone(),
         processor.bound_core_node().to_string(),
         processor.bound_instance_id().to_string(),
@@ -302,14 +320,16 @@ pub async fn subscribe_observed(
         target,
         topic.to_string(),
         qos,
-    ))
+    )
+    .await
 }
 
-/// Messenger-level core of [`subscribe_observed`]: the same forwarding-task
-/// machinery driven by an explicit watch channel instead of a `NodeRunner`'s
-/// processor-owned slot. Prefer [`subscribe_observed`] in nodes; this seam
-/// exists for embedders and tests that manage observation state themselves.
-pub fn subscribe_observed_with_watch(
+/// Messenger-level core of [`subscribe_observed`]: the same engine driven by an
+/// explicit watch channel.
+/// Prefer [`subscribe_observed`] in nodes; this seam exists for embedders and
+/// tests that manage observation state themselves. The stream ends when
+/// `watch_rx`'s sender drops.
+pub async fn subscribe_observed_with_watch(
     messenger: MessengerHandle,
     as_core_node: String,
     as_instance_id: String,
@@ -317,19 +337,21 @@ pub fn subscribe_observed_with_watch(
     pairing_target: SenderTarget,
     topic: String,
     qos: QoSProfile,
-) -> ObservedTopicSubscription {
-    ObservedTopicSubscription {
-        stream: spawn_slot_stream::<ObservedFollow>(
-            messenger,
-            as_core_node,
-            as_instance_id,
-            watch_rx,
-            pairing_target,
-            pmi::PairingRecipient::Any,
-            topic,
-            qos,
-        ),
-    }
+) -> Result<ObservedTopicSubscription> {
+    let wiring = StreamWiring {
+        messenger,
+        as_core_node,
+        as_instance_id,
+        wire: PairingWire {
+            target: pairing_target,
+            recipient: PairingRecipient::Any,
+        },
+        topic,
+        qos,
+    };
+    Ok(ObservedTopicSubscription {
+        stream: start_slot_stream::<ObservedFollow>(wiring, watch_rx).await?,
+    })
 }
 
 #[cfg(test)]
@@ -522,5 +544,29 @@ mod tests {
             PairingRecipient::Peer(WirePeer::new("core_a", "ctrl_1", "arm").unwrap())
         );
         assert_eq!(ObservedFollow::recipient(&pins[2], &open).unwrap(), open);
+    }
+
+    /// `is_followed` answers as `desired` does for every member the slot holds
+    /// and for one it does not, across a generation change, so the engine's
+    /// read-time filter and its converge task agree on the followed set.
+    #[test]
+    fn is_followed_agrees_with_desired() {
+        use crate::runtime::slot_stream::FollowedSlot;
+        let state = ObservationState::seeded(vec![member("arm_1", 1), member("arm_2", 1)]);
+        let desired = ObservedFollow::desired(&state);
+        assert_eq!(desired.len(), 2);
+        for pin in &desired {
+            assert!(ObservedFollow::is_followed(&state, pin));
+        }
+
+        // A source restarting is a new pin under the same address.
+        let restarted = ObservationState::seeded(vec![member("arm_1", 2), member("arm_2", 1)]);
+        assert!(!ObservedFollow::is_followed(&restarted, &desired[0]));
+        assert!(ObservedFollow::is_followed(&restarted, &desired[1]));
+        let renewed = ObservedFollow::desired(&restarted);
+        for pin in &renewed {
+            assert!(ObservedFollow::is_followed(&restarted, pin));
+        }
+        assert!(!ObservedFollow::is_followed(&state, &renewed[0]));
     }
 }

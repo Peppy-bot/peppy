@@ -35,6 +35,35 @@ pub async fn wait_for_topic_subscriber(
     );
 }
 
+/// Inverse of [`wait_for_topic_subscriber`]: waits until `publisher`'s session
+/// no longer sees a subscriber for the topic, the sync point for a consumer
+/// dropping its wire subscription. Panics if one still routes after 2s.
+pub async fn wait_for_topic_subscriber_gone(
+    publisher: &MessengerHandle,
+    core_node: &str,
+    instance_id: &str,
+    target: SenderTarget,
+    topic_name: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while TopicMessenger::wait_for_subscriber(
+        publisher,
+        core_node,
+        instance_id,
+        target.clone(),
+        topic_name,
+        Duration::from_millis(25),
+    )
+    .await
+    .expect("wait_for_subscriber should not error")
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the subscriber for topic `{topic_name}` from `{instance_id}` did not go within 2s"
+        );
+    }
+}
+
 /// Declares a pairing publisher from the producer's OWN slot `link_id` to
 /// `peer`: the wire shape a pinned consumer (the paired peer, or an observer
 /// of that slot) subscribes against.

@@ -758,7 +758,7 @@ impl RustGenerator {
             ),
             PairTopicConsumerKind::Observed(cardinality) => (
                 build_observed_module_header(topic.name.as_str(), peer, cardinality),
-                build_observed_topic_subscription(spec)?,
+                build_observed_topic_subscription(spec, cardinality)?,
                 InterfaceKind::ObservedTopic,
             ),
         };

@@ -1,10 +1,12 @@
 mod actions;
+mod bound_set;
 mod observation;
 mod pairing;
 mod services;
 mod target;
 mod topics;
 
+pub(crate) use bound_set::PyBoundMember;
 pub(crate) use observation::{
     PyObservationSlot, PyObservationSlotSet, PyObservedSource, PyObservedSubscription,
 };
@@ -27,6 +29,12 @@ pub(crate) use topics::{
     PyBoundSetSubscription, PySubscription, PyTopicMessage, PyTopicMessenger, PyTopicPublisher,
 };
 
+/// A member's copy as the member reprs spell it: the quoted name, or `None`.
+pub(crate) fn repr_copy(copy: Option<&str>) -> String {
+    copy.map(|copy| format!("{copy:?}"))
+        .unwrap_or_else(|| "None".to_string())
+}
+
 /// Convert a `peppylib::error::Error` into an appropriate Python exception.
 ///
 /// Maps timeout and unreachable variants to their natural Python counterparts
@@ -34,11 +42,11 @@ pub(crate) use topics::{
 /// `ActionFeedbackProducerGone` joins the `ConnectionError` family (the peer
 /// vanished), which keeps it type-distinguishable from the clean
 /// end-of-stream close (`ActionFeedbackChannelClosed` → `RuntimeError`).
-/// `UnknownPairingSlot`, `UnknownObservationSlot` and `TargetNotBound` are
-/// caller misuse (a link_id the manifest never declared as a pairing / observer
-/// slot / a producer outside the slot's bound set), so they map to `ValueError`
-/// — the same type `peer()` / `observation_slot()` raise for the same kind of
-/// input.
+/// `UnknownPairingSlot`, `UnknownObservationSlot`, `UnknownProducerSlot` and
+/// `TargetNotBound` are caller misuse (a link_id the manifest never declared as
+/// a pairing, observer or consumer slot, or a producer outside the slot's bound
+/// set), so they map to `ValueError`, the same type `peer()` and
+/// `observation_slot()` raise for the same kind of input.
 pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
     match &err {
         PeppyError::ServiceTimeout { .. } | PeppyError::ActionResultTimeout { .. } => {
@@ -47,6 +55,7 @@ pub(crate) fn to_py_err(err: PeppyError) -> PyErr {
         PeppyError::UnknownPairingSlot { .. }
         | PeppyError::UnknownObservationSlot { .. }
         | PeppyError::PeerNotPaired { .. }
+        | PeppyError::UnknownProducerSlot { .. }
         | PeppyError::TargetNotBound { .. }
         | PeppyError::UndeclaredEndpoint { .. }
         | PeppyError::EndpointAlreadyAnnounced { .. }
@@ -276,6 +285,7 @@ pub(crate) fn register(parent_module: &Bound<'_, PyModule>) -> PyResult<()> {
     messaging_module.add_class::<PyProducerRef>()?;
     messaging_module.add_class::<PyPeerInfo>()?;
     messaging_module.add_class::<PyPeerMember>()?;
+    messaging_module.add_class::<PyBoundMember>()?;
     messaging_module.add_class::<PyPeerSlot>()?;
     messaging_module.add_class::<PyPeerSlotSet>()?;
     messaging_module.add_class::<PyPeerSubscription>()?;

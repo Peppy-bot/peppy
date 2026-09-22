@@ -350,6 +350,19 @@ fn format_stack_list(
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+            // One row per slot the copy adds to, however many members it put
+            // there: a camera rig fills three slots of one panel.
+            let by_slot = core_node_api::encoding::slots_in_first_added_order(&copy.set_members);
+            if !by_slot.is_empty() {
+                let _ = writeln!(body, "  Set members:");
+            }
+            for ((instance_id, link_id), targets) in by_slot {
+                let _ = writeln!(
+                    body,
+                    "    {instance_id}.links.{link_id} → {}",
+                    targets.join(", ")
+                );
+            }
         }
         if !section.copies.is_empty() {
             let _ = writeln!(body);
@@ -745,16 +758,12 @@ fn format_instance_pairings(instance: &SerializedInstance, colorize: bool) -> Ve
                             pair.peer.instance_id, pair.peer_link_id, pair.peer.core_node
                         ),
                     );
-                    // The copy is what tells one robot's limb from another's;
-                    // an instance running outside a copy has none to name.
-                    let copy = pair
-                        .copy
-                        .as_ref()
-                        .map(|copy| format!(" [copy {}]", copy.as_str()))
-                        .unwrap_or_default();
+                    // The copy is what tells one robot's limb from another's.
                     format!(
-                        "{link} ⇌ {peer}{copy} ({}:{})",
-                        slot.pairing_name, slot.pairing_tag,
+                        "{link} ⇌ {peer}{} ({}:{})",
+                        copy_label(pair.copy.as_ref()),
+                        slot.pairing_name,
+                        slot.pairing_tag,
                     )
                 })
                 .collect()
@@ -823,8 +832,9 @@ fn format_instance_bindings(instance: &SerializedInstance, colorize: bool) -> Ve
 /// Right-hand side of a `link_id -> …` binding line: the slot's bound
 /// producer set in declaration order, each member rendered as
 /// `instance_id@core_node` (the full wire address every binding carries)
-/// and joined with commas. An empty set (a `zero_or_more` slot bound to
-/// nothing, or a `zero_or_one` slot the deployment declared vacant) renders as
+/// followed by ` [copy NAME]` for a member a copy brought, and joined with
+/// commas. An empty set (a `zero_or_more` slot bound to nothing, or a
+/// `zero_or_one` slot the deployment declared vacant) renders as
 /// `(empty set)` so it never reads as a missing row.
 fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
     if bound.is_empty() {
@@ -832,9 +842,23 @@ fn format_slot_binding(bound: &config::runtime::BoundProducers) -> String {
     }
     bound
         .iter()
-        .map(|producer| format!("{}@{}", producer.instance_id, producer.core_node))
+        .map(|member| {
+            format!(
+                "{}@{}{}",
+                member.producer.instance_id,
+                member.producer.core_node,
+                copy_label(member.copy.as_ref())
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The ` [copy NAME]` a member of a set or a pair carries when a copy brought
+/// it; an instance running outside a copy has none to name.
+fn copy_label(copy: Option<&config::runtime::Name>) -> String {
+    copy.map(|copy| format!(" [copy {}]", copy.as_str()))
+        .unwrap_or_default()
 }
 
 /// Compact per-node instance summary. Detailed per-instance info is
@@ -1103,6 +1127,24 @@ mod tests {
     /// [`binding_node`]; each slot carries its ordered bound set.
     type InstanceSpec<'a> = (&'a str, InstanceState, Vec<(&'a str, Vec<ProducerRef>)>);
 
+    /// A bound member a copy brought names the copy beside its address; one
+    /// the launcher bound does not.
+    #[test]
+    fn a_bound_member_names_the_copy_it_belongs_to() {
+        let bound = config::runtime::BoundProducers::try_from(vec![
+            config::runtime::BoundMember::from(ProducerRef::new("core_a", "hub_arm")),
+            config::runtime::BoundMember {
+                producer: ProducerRef::new("core_b", "alpha_arm"),
+                copy: Some(config::runtime::Name::new("alpha").unwrap()),
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            format_slot_binding(&bound),
+            "hub_arm@core_a, alpha_arm@core_b [copy alpha]"
+        );
+    }
+
     /// Like [`node`] but lets each instance carry slot bindings, for
     /// exercising the bindings table. Always `Ready`/`v1`.
     fn binding_node(name: &str, instances: Vec<InstanceSpec<'_>>) -> SerializedNode {
@@ -1251,6 +1293,19 @@ mod tests {
                         config::runtime::Name::new("alpha_commander_inst").unwrap(),
                     ],
                     selections: vec!["commander=web_commander".to_string()],
+                    set_members: ["alpha_wrist_left", "alpha_chest"]
+                        .into_iter()
+                        .map(|target| core_node_api::encoding::SetMember {
+                            instance_id: config::runtime::Name::new("panel_inst").unwrap(),
+                            link_id: "cameras".to_string(),
+                            target: target.to_string(),
+                        })
+                        .chain([core_node_api::encoding::SetMember {
+                            instance_id: config::runtime::Name::new("monitor_inst").unwrap(),
+                            link_id: "robots".to_string(),
+                            target: "alpha_arm_inst".to_string(),
+                        }])
+                        .collect(),
                 },
                 core_node_api::encoding::CopyInfo {
                     name: config::runtime::Name::new("bravo").unwrap(),
@@ -1258,6 +1313,7 @@ mod tests {
                     core_node: config::runtime::CoreNodeName::new("jetson-2").unwrap(),
                     instance_ids: vec![config::runtime::Name::new("bravo_arm_inst").unwrap()],
                     selections: Vec::new(),
+                    set_members: Vec::new(),
                 },
             ],
             ..successful_section("cn-coordinator", "robo-a")
@@ -1270,6 +1326,23 @@ mod tests {
         assert!(
             out.contains("Instances: alpha_arm_inst, alpha_commander_inst"),
             "the copy lists its minted instances:\n{out}"
+        );
+        assert!(
+            out.contains("    monitor_inst.links.robots → alpha_arm_inst"),
+            "the copy lists the set members it added:\n{out}"
+        );
+        assert!(
+            out.contains("    panel_inst.links.cameras → alpha_wrist_left, alpha_chest"),
+            "every member of one slot shares that slot's row:\n{out}"
+        );
+        assert!(
+            out.find("panel_inst.links.cameras") < out.find("monitor_inst.links.robots"),
+            "the slots keep the record's order, not alphabetical order:\n{out}"
+        );
+        assert_eq!(
+            out.matches("Set members:").count(),
+            1,
+            "one label per copy, and none for a copy that added no member:\n{out}"
         );
         assert!(
             out.contains("Copy bravo of openarm_v2 on jetson-2") && !out.contains("jetson-2:"),

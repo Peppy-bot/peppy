@@ -1,6 +1,8 @@
 use super::*;
+use config::node::Cardinality;
 use core_node_api::encoding::{StackJoinGoal, StackListRequest, StackRemoveGoal};
 use peppylib::core_node::transport::{poll, send_goal};
+use peppylib::services::slot_update::SlotChannel;
 
 async fn participant_request<R: core_node_api::ServiceRequest>(
     started: &StartedCoreNode,
@@ -786,6 +788,66 @@ async fn a_coordinator_refuses_to_append_another_launch_onto_its_own_stack() {
     assert!(result.success, "{:?}", result.error_message);
 }
 
+/// The participant side of a set change: a daemon replaces sets only for the
+/// launch whose slice it holds, and only for instances it runs. Each refusal
+/// names what to do, and no set is replaced.
+#[tokio::test]
+async fn a_participant_refuses_sets_for_another_launch_or_an_instance_it_does_not_run() {
+    use core_node_api::encoding::{
+        ParticipantReserveRequest, ParticipantSetsUpdateRequest, ParticipantSliceBeginRequest,
+        SlotMembers, SlotSet,
+    };
+
+    let started = start_core_node_with_mock_messenger().await;
+    let launch_id = "sets-update-test";
+    let sets = |instance: &str| ParticipantSetsUpdateRequest {
+        launch_id: launch_id.to_string(),
+        sets: vec![SlotSet {
+            instance_id: Name::new(instance).unwrap(),
+            link_id: "robots".to_string(),
+            members: SlotMembers::Producers(config::runtime::BoundProducers::from(
+                config::runtime::ProducerRef::new(&started.core_node_name, "alpha_arm_inst"),
+            )),
+        }],
+    };
+
+    // No reservation, no slice: the sets belong to a launch this daemon is not
+    // part of.
+    let refused = participant_request(&started, &sets("monitor_inst")).await;
+    assert!(!refused.ok, "{refused:?}");
+    let reason = refused
+        .rejection_reason
+        .expect("a refusal names its reason");
+    assert!(
+        reason.contains("must both belong to launch") && reason.contains("peppy stack reset"),
+        "{reason}"
+    );
+
+    // Holding the slice, the daemon still refuses a set for an instance it does
+    // not run, naming the slot.
+    let reserved = participant_request(
+        &started,
+        &ParticipantReserveRequest::new(launch_id, "coordinator"),
+    )
+    .await;
+    assert!(reserved.accepted, "{:?}", reserved.rejection_reason);
+    let begun = participant_request(
+        &started,
+        &ParticipantSliceBeginRequest::new(launch_id, Vec::new()),
+    )
+    .await;
+    assert!(begun.ok, "{:?}", begun.rejection_reason);
+    let refused = participant_request(&started, &sets("monitor_inst")).await;
+    assert!(!refused.ok, "{refused:?}");
+    let reason = refused
+        .rejection_reason
+        .expect("a refusal names its reason");
+    assert!(
+        reason.contains("`monitor_inst.links.robots`") && reason.contains("no such instance"),
+        "{reason}"
+    );
+}
+
 /// A fleet whose every deployment comes from its repeatable robot axis, so
 /// the launcher file starts nothing of its own.
 fn fleet_of_copies_only(started: &StartedCoreNode) -> (tempfile::TempDir, PathBuf) {
@@ -855,4 +917,471 @@ async fn removing_the_last_copy_leaves_the_launcher_active_on_an_empty_stack() {
         "named_robot",
         "bravo_arm_inst"
     )));
+}
+
+/// The robot of a fleet with a monitor: it plays the follower of `joint_link`
+/// through a participant slot the launch writes vacant, and emits a heartbeat a
+/// consumer binds to.
+const MONITORED_ROBOT_DEPENDS_ON: &str = r#"{ pairings: [
+    { name: "joint_link", tag: "v1", role: "follower", link_id: "controller", cardinality: "zero_or_one" }
+] }"#;
+const MONITORED_ROBOT_INTERFACES: &str = r#"{ topics: {
+    emits: [{ name: "heartbeat" }, { link_id: "controller", name: "joint_states" }],
+    consumes: [{ link_id: "controller", name: "joint_setpoints" }]
+} }"#;
+const MONITOR_INTERFACES: &str = r#"{ topics: { consumes: [
+    { link_id: "robots", name: "heartbeat" },
+    { link_id: "fleet", name: "joint_states" }
+] } }"#;
+
+/// A stack running `monitor_inst`, whose producer slot `robots` and observer
+/// slot `fleet` both declare `cardinality`, and a `robot` axis whose `real`
+/// copies add their arm to both. The `ghost` option adds to a slot the monitor
+/// does not declare. `deployments` lists what the launch starts beside the
+/// monitor.
+fn fleet_with_a_monitor(
+    started: &StartedCoreNode,
+    cardinality: &str,
+    deployments: &str,
+) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempdir().unwrap();
+    let robot = write_node_config_with_options(
+        directory.path(),
+        "named_robot",
+        "v1",
+        "test-hash",
+        NodeConfigOptions {
+            run_cmd: &["sleep", "300"],
+            depends_on: MONITORED_ROBOT_DEPENDS_ON,
+            interfaces: MONITORED_ROBOT_INTERFACES,
+            ..Default::default()
+        },
+    );
+    let monitor_depends_on = format!(
+        r#"{{
+        nodes: [{{ name: "named_robot", tag: "v1", link_id: "robots", cardinality: "{cardinality}" }}],
+        pairing_observers: [{{ name: "joint_link", tag: "v1", role: "follower", link_id: "fleet", cardinality: "{cardinality}" }}]
+    }}"#
+    );
+    let monitor = write_node_config_with_options(
+        directory.path(),
+        "monitor",
+        "v1",
+        "test-hash",
+        NodeConfigOptions {
+            run_cmd: &["sleep", "300"],
+            depends_on: &monitor_depends_on,
+            interfaces: MONITOR_INTERFACES,
+            ..Default::default()
+        },
+    );
+    let pairing = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/launch_assets/waldo_codegen/pairings/joint_link.json5");
+    let body = fs::read_to_string(&pairing).expect("read the joint_link pairing fixture");
+    TestPackagesCache::new()
+        .fs_entry("named_robot", "v1", &robot)
+        .fs_entry("monitor", "v1", &monitor)
+        .pairing_fs_entry("joint_link", "v1", &pairing, &body)
+        .write(&started.peppy_dirs);
+    let launcher = directory.path().join("fleet.json5");
+    let robot_deployment = r#"deployments: [{ source: { name: "named_robot", tag: "v1" }, instances: [
+                    { instance_id: "arm_inst", links: { controller: { vacant: "observed, never driven" } } }
+                ] }]"#;
+    fs::write(
+        &launcher,
+        format!(
+            r#"{{
+        peppy_schema: "launcher/v1",
+        deployments: [
+            {{ source: {{ name: "monitor", tag: "v1" }}, instances: [{{ instance_id: "monitor_inst" }}] }},
+            {deployments}
+        ],
+        components: [{{ name: "robot", cardinality: "zero_or_more", options: {{
+            real: {{
+                {robot_deployment},
+                adjustments: [{{ target: "monitor_inst", add_links: {{ robots: ["arm_inst"], fleet: ["arm_inst/controller"] }} }}]
+            }},
+            ghost: {{
+                {robot_deployment},
+                adjustments: [{{ target: "monitor_inst", add_links: {{ ghosts: ["arm_inst"] }} }}]
+            }}
+        }} }}]
+    }}"#
+        ),
+    )
+    .unwrap();
+    (directory, launcher)
+}
+
+/// The monitor's emulated services, with each set slot's state held in a watch
+/// channel exactly as a node's processor holds it.
+struct MonitorSlots {
+    _services: Vec<AbortOnDrop<peppylib::PeppyResult<()>>>,
+    robots: tokio::sync::watch::Receiver<peppylib::messaging::BoundSetState>,
+    fleet: tokio::sync::watch::Receiver<peppylib::messaging::ObservationState>,
+}
+
+impl MonitorSlots {
+    async fn serve(started: &StartedCoreNode, robots_cardinality: Cardinality) -> Self {
+        Self::serve_holding(
+            started,
+            robots_cardinality,
+            peppylib::messaging::BoundSetState::seeded(config::runtime::BoundProducers::default()),
+        )
+        .await
+    }
+
+    /// [`Self::serve`] with `robots` already holding `held`, as a monitor that
+    /// took deliveries before this test looked.
+    async fn serve_holding(
+        started: &StartedCoreNode,
+        robots_cardinality: Cardinality,
+        held: peppylib::messaging::BoundSetState,
+    ) -> Self {
+        let messenger = MessengerHandle::from_shared(Arc::clone(&started.shared_messenger));
+        let mut services = answer_readiness(started, "monitor", "monitor_inst").await;
+        let (robots_tx, robots) = tokio::sync::watch::channel(held);
+        services.push(AbortOnDrop(
+            peppylib::services::binding_update::listen_for_binding_update(
+                &messenger,
+                &started.core_node_name,
+                "monitor_inst",
+                common::test_node_target("monitor"),
+                Arc::new(std::collections::BTreeMap::from([(
+                    "robots".to_string(),
+                    SlotChannel::new(robots_cardinality, robots_tx),
+                )])),
+            )
+            .await
+            .unwrap(),
+        ));
+        let (fleet_tx, fleet) =
+            tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
+        services.push(AbortOnDrop(
+            peppylib::services::observation_update::listen_for_observation_update(
+                &messenger,
+                &started.core_node_name,
+                "monitor_inst",
+                common::test_node_target("monitor"),
+                Arc::new(std::collections::BTreeMap::from([(
+                    "fleet".to_string(),
+                    SlotChannel::new(Cardinality::OneOrMore, fleet_tx),
+                )])),
+            )
+            .await
+            .unwrap(),
+        ));
+        Self {
+            _services: services,
+            robots,
+            fleet,
+        }
+    }
+
+    /// Each member of `robots` as `instance:copy`, the copy the daemon says
+    /// the member's instance belongs to.
+    fn robots(&self) -> Vec<String> {
+        self.robots
+            .borrow()
+            .producers
+            .iter()
+            .map(|member| {
+                format!(
+                    "{}:{}",
+                    member.producer.instance_id,
+                    member
+                        .copy
+                        .as_ref()
+                        .map(|copy| copy.as_str())
+                        .unwrap_or("-")
+                )
+            })
+            .collect()
+    }
+
+    fn fleet(&self) -> Vec<String> {
+        self.fleet
+            .borrow()
+            .members
+            .iter()
+            .map(|member| {
+                format!(
+                    "{}/{}",
+                    member.source.producer.instance_id, member.source.source_link_id
+                )
+            })
+            .collect()
+    }
+}
+
+/// A monitor already holding a later delivery answers a join's set as one it
+/// will not take: the join stands, the monitor keeps what it holds, and the
+/// stack keeps the set it recorded for the monitor.
+#[tokio::test]
+async fn a_monitor_holding_a_later_set_keeps_its_record_through_a_join() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_with_a_monitor(&started, "zero_or_more", "");
+    let monitor = MonitorSlots::serve_holding(
+        &started,
+        Cardinality::ZeroOrMore,
+        peppylib::messaging::BoundSetState {
+            sequence: u64::MAX,
+            producers: config::runtime::BoundProducers::default(),
+        },
+    )
+    .await;
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "stale-set-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let _responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
+
+    let result = execute(&started, &robot_goal("alpha", "real")).await;
+    assert!(result.success, "{:?}", result.error_message);
+    assert!(
+        monitor.robots().is_empty(),
+        "the monitor keeps the later set it holds"
+    );
+
+    let list = participant_request(&started, &StackListRequest::new()).await;
+    let graph: core_node_api::SerializedNodeGraph =
+        serde_json::from_str(&list.graph_json).expect("the listing carries the stack's graph");
+    let recorded = graph
+        .nodes
+        .iter()
+        .flat_map(|node| &node.instances)
+        .find(|instance| instance.instance_id == "monitor_inst")
+        .expect("the monitor runs")
+        .slot_bindings
+        .get("robots")
+        .map(|bound| bound.len());
+    assert_eq!(
+        recorded,
+        Some(0),
+        "the stack records what the monitor holds, which the refused set is not"
+    );
+}
+
+/// A running monitor's `zero_or_more` producer and observer slots follow the
+/// copies: each join adds the copy's arm to both in join order, a removal
+/// takes out that copy's arm alone, a rejoin under the same name adds it once,
+/// and the monitor keeps running throughout. `stack list` names the members
+/// each copy added, and a join adding to a slot the monitor does not declare
+/// is refused, naming it.
+#[tokio::test]
+async fn joins_grow_and_removals_shrink_a_running_monitors_sets() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_with_a_monitor(&started, "zero_or_more", "");
+    let monitor = MonitorSlots::serve(&started, Cardinality::ZeroOrMore).await;
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "growing-sets-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    assert!(
+        monitor.robots().is_empty(),
+        "the monitor starts binding no robot"
+    );
+    assert!(
+        monitor.fleet().is_empty(),
+        "the monitor starts observing no robot"
+    );
+    let monitor_pid = instance_pid(&started, "monitor", "monitor_inst");
+
+    let mut responders = Vec::new();
+    for name in ["alpha", "bravo"] {
+        responders
+            .extend(answer_readiness(&started, "named_robot", &format!("{name}_arm_inst")).await);
+    }
+    let join = async |name: &str| {
+        let result = execute(&started, &robot_goal(name, "real")).await;
+        assert!(result.success, "{name}: {:?}", result.error_message);
+    };
+
+    join("alpha").await;
+    assert_eq!(monitor.robots(), ["alpha_arm_inst:alpha"]);
+    assert_eq!(monitor.fleet(), ["alpha_arm_inst/controller"]);
+    join("bravo").await;
+    assert_eq!(
+        monitor.robots(),
+        ["alpha_arm_inst:alpha", "bravo_arm_inst:bravo"]
+    );
+    assert_eq!(
+        monitor.fleet(),
+        ["alpha_arm_inst/controller", "bravo_arm_inst/controller"]
+    );
+
+    let list = poll(
+        &StackListRequest::new(),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .unwrap();
+    let bravo = list
+        .copies
+        .iter()
+        .find(|copy| copy.name == "bravo")
+        .expect("bravo is listed");
+    assert_eq!(
+        bravo
+            .set_members
+            .iter()
+            .map(|member| format!(
+                "{}.links.{} -> {}",
+                member.instance_id, member.link_id, member.target
+            ))
+            .collect::<Vec<_>>(),
+        [
+            "monitor_inst.links.fleet -> bravo_arm_inst/controller",
+            "monitor_inst.links.robots -> bravo_arm_inst",
+        ]
+    );
+
+    let result = execute(&started, &StackRemoveGoal::new(Name::new("alpha").unwrap())).await;
+    assert!(result.success, "{:?}", result.error_message);
+    assert_eq!(monitor.robots(), ["bravo_arm_inst:bravo"]);
+    assert_eq!(monitor.fleet(), ["bravo_arm_inst/controller"]);
+
+    join("alpha").await;
+    assert_eq!(
+        monitor.robots(),
+        ["bravo_arm_inst:bravo", "alpha_arm_inst:alpha"]
+    );
+    assert_eq!(
+        monitor.fleet(),
+        ["bravo_arm_inst/controller", "alpha_arm_inst/controller"]
+    );
+
+    let refused = execute(&started, &robot_goal("charlie", "ghost")).await;
+    assert!(
+        !refused.success,
+        "a join adding to an undeclared slot is refused"
+    );
+    let message = refused
+        .error_message
+        .expect("a refused join names its reason");
+    assert!(
+        message.contains("`monitor_inst.links.ghosts`") && message.contains("does not declare"),
+        "{message}"
+    );
+    assert_eq!(
+        instance_pid(&started, "monitor", "monitor_inst"),
+        monitor_pid,
+        "the monitor keeps running while its sets change"
+    );
+}
+
+/// A member a join adds behaves like one the launch wrote: the monitor reads
+/// it stamped with its source's incarnation and live while the copy runs, and
+/// not live, at its position, once the copy's instance stops.
+#[tokio::test]
+async fn a_joined_member_reads_as_not_live_while_its_source_is_down() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_with_a_monitor(&started, "zero_or_more", "");
+    let monitor = MonitorSlots::serve(&started, Cardinality::ZeroOrMore).await;
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "joined-member-liveness-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let _responders = answer_readiness(&started, "named_robot", "alpha_arm_inst").await;
+    let result = execute(&started, &robot_goal("alpha", "real")).await;
+    assert!(result.success, "{:?}", result.error_message);
+
+    let liveness = |state: &peppylib::messaging::ObservationState| -> Vec<(String, bool)> {
+        state
+            .members
+            .iter()
+            .map(|member| {
+                (
+                    member.source.producer.instance_id.clone(),
+                    member.source_live,
+                )
+            })
+            .collect()
+    };
+    let mut fleet = monitor.fleet.clone();
+    let generation = tokio::time::timeout(
+        GOAL_TIMEOUT,
+        fleet.wait_for(|state| liveness(state) == [("alpha_arm_inst".to_string(), true)]),
+    )
+    .await
+    .expect("the joined member reads as live while its copy runs")
+    .unwrap()
+    .members[0]
+        .source_generation;
+    assert!(
+        generation >= 1,
+        "a joined member carries its source's incarnation"
+    );
+
+    let stopped = peppylib::core_node::transport::poll_node_stop(
+        &core_node_api::encoding::NodeStopRequest::new("alpha_arm_inst"),
+        &started.caller_handle,
+        &started.core_node_name,
+        CALLER_INSTANCE_ID,
+        common::core_node_target(&started.core_node_name),
+        &started.core_node_name,
+        GOAL_TIMEOUT,
+    )
+    .await
+    .unwrap();
+    assert!(stopped.success, "{:?}", stopped.error_message);
+    tokio::time::timeout(
+        GOAL_TIMEOUT,
+        fleet.wait_for(|state| liveness(state) == [("alpha_arm_inst".to_string(), false)]),
+    )
+    .await
+    .expect("the joined member reads as not live, at its position, while its source is down")
+    .unwrap();
+}
+
+/// A removal that would leave a running `one_or_more` set with no member is
+/// refused, naming the slot, and the copy keeps running.
+#[tokio::test]
+async fn a_removal_cannot_empty_a_running_one_or_more_set() {
+    let started = start_core_node_with_mock_messenger().await;
+    let (_directory, launcher) = fleet_with_a_monitor(
+        &started,
+        "one_or_more",
+        r#"{ robot: "real", instances: [{ instance_id: "first" }] }"#,
+    );
+    let _monitor = MonitorSlots::serve(&started, Cardinality::OneOrMore).await;
+    let _first = answer_readiness(&started, "named_robot", "first_arm_inst").await;
+    let launch = LaunchGoal::new(
+        LauncherOrigin::Fs(launcher),
+        "one-or-more-set-test",
+        StackBudgets::new(30, 30, 30, Some(120)),
+    );
+    let result = execute(&started, &launch).await;
+    assert!(result.success, "{:?}", result.error_message);
+    let pid = instance_pid(&started, "named_robot", "first_arm_inst");
+
+    let refused = execute(&started, &StackRemoveGoal::new(Name::new("first").unwrap())).await;
+    assert!(
+        !refused.success,
+        "the last member of a one_or_more set cannot leave"
+    );
+    let message = refused
+        .error_message
+        .expect("a refused removal names its reason");
+    assert!(
+        message.contains("`monitor_inst.links.fleet`") && message.contains("one_or_more"),
+        "{message}"
+    );
+    assert!(
+        is_process_running(pid),
+        "a refused removal leaves the copy running"
+    );
 }

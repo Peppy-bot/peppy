@@ -101,6 +101,13 @@ fn tag_annotation(tag: SubscriptionTag) -> &'static str {
     }
 }
 
+/// The set-following sentence as a docstring suffix, empty on a scalar slot.
+fn follows_the_set_suffix(cardinality: Cardinality) -> String {
+    crate::generator::types::follows_the_set_doc(cardinality)
+        .map(|sentence| format!(" {sentence}"))
+        .unwrap_or_default()
+}
+
 /// Emits the held-`Subscription` class shared by the bound-set, peer, and
 /// observer consumer modules; the docstring and the identity tag differ.
 /// `next()` mirrors the Rust `Subscription::next`: a `(tag, message)` tuple,
@@ -484,7 +491,7 @@ pub fn build_pair_topic_consumer(
         PairTopicConsumerKind::Peer => {
             emit_peer_module_header(&mut builder, &topic.name, qos, peer);
             (
-                "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired. Each message is tagged with the PeerInfo of the paired peer, the same identity paired() returns.",
+                "A held subscription that follows the slot's live pin: silent while unpaired, only the paired peer while paired. Each message is tagged with the PeerInfo of the paired peer, the same identity paired() returns.".to_string(),
                 SubscriptionTag::Peer,
                 "Subscribe to this pairing topic. Legal while unpaired: the subscription stays silent until a peer pairs.",
                 "subscribe_peer",
@@ -492,8 +499,11 @@ pub fn build_pair_topic_consumer(
         }
         PairTopicConsumerKind::Observed(cardinality) => {
             emit_observer_module_header(&mut builder, &topic.name, qos, peer, cardinality);
+            let follows_the_set = follows_the_set_suffix(cardinality);
             (
-                "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance.",
+                format!(
+                    "A held subscription fanned in across the observer slot's whole member set: silent until a member is live and emitting; a live stream, not a mailbox. Each message is tagged with the ObservedSource that published it, the same identity the slot's accessors enumerate, so members stay distinct even when they share one instance.{follows_the_set}"
+                ),
                 SubscriptionTag::ObservedSource,
                 "Subscribe to this observed pairing topic. Legal before any source is resolved or live: the subscription stays silent until a member emits.",
                 "subscribe_observed",
@@ -501,7 +511,7 @@ pub fn build_pair_topic_consumer(
         }
     };
 
-    emit_subscription_class(&mut builder, subscription_doc, subscription_tag);
+    emit_subscription_class(&mut builder, &subscription_doc, subscription_tag);
 
     builder.blank_line();
     builder.block(
@@ -580,12 +590,15 @@ pub fn build_consumed_topic(
     crate::generator::python::services::emit_bound_producer_accessor_fn(&mut builder, dependency);
 
     builder.blank_line();
+    let follows_the_set = follows_the_set_suffix(dependency.cardinality);
     emit_subscription_class(
         &mut builder,
-        "A merged subscription covering every producer bound to this slot. \
-Per-producer order is preserved (no total order across producers), ready \
-producers are merged fairly, and the bound set is fixed at startup; filter \
-on the yielded producer to follow a single member.",
+        &format!(
+            "A merged subscription covering every producer bound to this slot. \
+Per-producer order is preserved (no total order across producers), and ready \
+producers are merged fairly; filter on the yielded producer to follow a single \
+member.{follows_the_set}"
+        ),
         SubscriptionTag::Producer,
     );
 
@@ -600,21 +613,16 @@ on the yielded producer to follow a single member.",
         |builder| {
             builder.line(&format!("topic_name = \"{topic_name}\""));
             builder.call(
-                "inner = await peppylib.TopicMessenger.subscribe_bound_set(",
+                "inner = await node_runner.subscribe_bound_set(",
                 &[
-                    "node_runner.messenger(),",
-                    "node_runner.bound_core_node(),",
-                    "node_runner.bound_instance_id(),",
+                    // The slot's bound producer set, followed as the daemon
+                    // grows or shrinks it. It is empty on a zero_or_more slot
+                    // bound to nothing and on a vacant zero_or_one slot, where
+                    // the subscription yields nothing until shutdown.
+                    &format!("{:?},", dependency.link_id),
                     &format!("{from_target},"),
                     "topic_name,",
-                    // The slot's complete bound producer set: sized per the
-                    // declared cardinality at launch, re-validated at node
-                    // startup. It is empty on a zero_or_more slot bound to
-                    // nothing and on a vacant zero_or_one slot, where the
-                    // subscription yields nothing until shutdown.
-                    &format!("node_runner.bound_producers({:?}),", dependency.link_id),
                     "peppylib.QoSProfile.Standard,",
-                    "node_runner.cancellation_token(),",
                 ],
                 ")",
             );

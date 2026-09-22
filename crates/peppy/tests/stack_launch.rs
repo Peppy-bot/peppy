@@ -2861,6 +2861,7 @@ async fn stack_launch_establishes_launcher_pairings() {
                 node_name,
                 instance_id,
                 link_id,
+                config::node::Cardinality::One,
             )
             .await,
         );
@@ -3018,6 +3019,7 @@ async fn stack_launch_pairs_one_instance_and_vacates_another_of_the_same_node() 
                 node_name,
                 instance_id,
                 link_id,
+                config::node::Cardinality::One,
             )
             .await,
         );
@@ -3264,15 +3266,8 @@ async fn stack_launch_delivers_observer_member_sets() {
     .expect("shutdown service should start");
     // One watch channel per declared observer slot, exactly as a real node's
     // processor seeds them.
-    let mut obs_senders = std::collections::BTreeMap::new();
-    let mut obs_receivers = std::collections::BTreeMap::new();
-    for link_id in ["watch", "watched", "spare"] {
-        let (tx, rx) =
-            tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
-        obs_senders.insert(link_id.to_string(), tx);
-        obs_receivers.insert(link_id, rx);
-    }
-    let obs_slots = Arc::new(obs_senders);
+    let (obs_slots, obs_receivers) =
+        super::common::observer_slot_channels(&["watch", "watched", "spare"]);
     peppylib::services::observation_update::listen_for_observation_update(
         &node_messenger,
         &core_node_name,
@@ -3718,8 +3713,8 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
         ("openarm_gripper_leader", "grip_leader_1"),
         ("openarm_gripper_follower", "grip_follower_1"),
     ] {
-        let (tx, _rx) = tokio::sync::watch::channel(peppylib::messaging::PeerSetState::empty());
-        let slots = Arc::new(std::collections::BTreeMap::from([("limb".to_string(), tx)]));
+        let (slots, _rx) =
+            super::common::pairing_slot_channel("limb", config::node::Cardinality::ZeroOrOne);
         peer_handles.push(
             peppylib::services::peer_update::listen_for_peer_update(
                 &node_messenger,
@@ -3734,25 +3729,18 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     }
     // One observation watch per declared observer slot, as a real node's
     // processor seeds them.
-    let mut obs_senders = std::collections::BTreeMap::new();
-    let mut obs_receivers = std::collections::BTreeMap::new();
-    for link_id in [
+    let (obs_senders, obs_receivers) = super::common::observer_slot_channels(&[
         "observed_joints",
         "commanded_joints",
         "observed_grippers",
         "commanded_grippers",
-    ] {
-        let (tx, rx) =
-            tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
-        obs_senders.insert(link_id.to_string(), tx);
-        obs_receivers.insert(link_id, rx);
-    }
+    ]);
     let _obs_handle = peppylib::services::observation_update::listen_for_observation_update(
         &node_messenger,
         &core_node_name,
         "commander_inst",
         test_node_target("openarm_web_commander"),
-        Arc::new(obs_senders),
+        obs_senders,
     )
     .await
     .expect("observation_update service should start");
@@ -3851,7 +3839,7 @@ async fn stack_launch_serves_a_commander_panels_observer_slots() {
     );
     assert_eq!(
         runtime_config.node_instance.slot_bindings["backbone"]
-            .iter()
+            .producers()
             .map(|producer| producer.instance_id.as_str())
             .collect::<Vec<_>>(),
         ["backbone_inst"]

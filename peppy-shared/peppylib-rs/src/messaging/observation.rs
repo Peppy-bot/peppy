@@ -50,85 +50,14 @@ const _: fn() = || {
     assert_map_key::<ObservedSource>();
 };
 
-/// The observed member set of a `cardinality: "one_or_more"` observer slot: an
-/// ordered snapshot of the slot's members in plan order that is never empty by
-/// construction. Generated `sources()` accessors of `one_or_more` slots return
-/// this instead of a plain `Vec` so the plan-validated "at least one" guarantee
-/// lives in the type rather than in a comment: [`first`](Self::first) is
-/// infallible and there is no empty branch to write. The sibling cardinalities
-/// keep their own shapes (`one` returns the sole [`ObservedSource`] directly,
-/// `zero_or_one` an `Option<ObservedSource>`, `zero_or_more` a plain, possibly
-/// empty `Vec<ObservedSource>`), so flipping a slot's cardinality changes the
+/// The observed member set of a `cardinality: "one_or_more"` observer slot, in
+/// plan order and never empty. Generated `sources()` accessors of
+/// `one_or_more` slots return it. The sibling cardinalities keep their own
+/// shapes (`one` returns the sole [`ObservedSource`] directly, `zero_or_one` an
+/// `Option<ObservedSource>`, `zero_or_more` a plain, possibly empty
+/// `Vec<ObservedSource>`), so flipping a slot's cardinality changes the
 /// accessor's type and surfaces every affected call site at compile time.
-///
-/// It owns its members where the producer-binding counterpart
-/// [`NonEmptyProducers`](super::NonEmptyProducers) borrows: a bound producer set
-/// is a stable startup cache, while an observer slot keeps its state behind a
-/// [`tokio::sync::watch`] channel, so every read materializes the set from a
-/// borrow guard that ends with the call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NonEmptyObservedSources {
-    sources: Vec<ObservedSource>,
-}
-
-// `is_empty` is deliberately absent: the constructor rejects an empty vector,
-// so it would be a constant `false`.
-#[allow(clippy::len_without_is_empty)]
-impl NonEmptyObservedSources {
-    /// Wraps `sources` as a non-empty set, or `None` when the vector is empty.
-    /// Runtime callers go through [`ObservationSlotSet::non_empty_sources`],
-    /// which reads a slot the launcher sized at plan time and node startup
-    /// re-checked against its seed; this checked constructor exists so the
-    /// invariant cannot be sidestepped elsewhere.
-    ///
-    /// [`ObservationSlotSet::non_empty_sources`]: crate::runtime::ObservationSlotSet::non_empty_sources
-    pub fn new(sources: Vec<ObservedSource>) -> Option<Self> {
-        if sources.is_empty() {
-            return None;
-        }
-        Some(Self { sources })
-    }
-
-    /// The first member in plan order. Infallible: the set is never empty, so
-    /// unlike `slice::first` there is no `Option` to unwrap.
-    pub fn first(&self) -> &ObservedSource {
-        &self.sources[0]
-    }
-
-    /// Iterates the members in plan order.
-    pub fn iter(&self) -> std::slice::Iter<'_, ObservedSource> {
-        self.sources.iter()
-    }
-
-    /// Number of members, always at least 1.
-    pub fn len(&self) -> usize {
-        self.sources.len()
-    }
-
-    /// The members as a plain slice, for slice-shaped APIs and order assertions
-    /// in tests.
-    pub fn as_slice(&self) -> &[ObservedSource] {
-        &self.sources
-    }
-}
-
-impl IntoIterator for NonEmptyObservedSources {
-    type Item = ObservedSource;
-    type IntoIter = std::vec::IntoIter<ObservedSource>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.sources.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a NonEmptyObservedSources {
-    type Item = &'a ObservedSource;
-    type IntoIter = std::slice::Iter<'a, ObservedSource>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.sources.iter()
-    }
-}
+pub type NonEmptyObservedSources = super::NonEmpty<ObservedSource>;
 
 /// One member of an observer slot's set: the pairing this member taps, plus
 /// the two per-member facts the daemon keeps current.
@@ -256,42 +185,5 @@ mod tests {
         };
         assert_ne!(pinned_to("alpha_backbone"), pinned_to("bravo_backbone"));
         assert_ne!(pinned_to("alpha_backbone"), whole_slot);
-    }
-
-    #[test]
-    fn an_empty_vec_is_rejected_at_construction() {
-        assert_eq!(NonEmptyObservedSources::new(Vec::new()), None);
-    }
-
-    #[test]
-    fn first_iter_len_and_as_slice_preserve_plan_order() {
-        let sources = sources();
-        let set = NonEmptyObservedSources::new(sources.clone()).expect("two members are non-empty");
-
-        assert_eq!(set.first(), &sources[0], "first() is the plan's head");
-        assert_eq!(set.len(), 2);
-        assert_eq!(set.as_slice(), &sources[..]);
-        assert_eq!(
-            set.iter().collect::<Vec<_>>(),
-            sources.iter().collect::<Vec<_>>(),
-            "iteration follows plan order"
-        );
-    }
-
-    #[test]
-    fn for_loops_work_by_reference_and_by_value() {
-        let set = NonEmptyObservedSources::new(sources()).expect("two members are non-empty");
-
-        let mut seen = Vec::new();
-        for member in &set {
-            seen.push(member.producer.instance_id.clone());
-        }
-        // The set owns its members rather than borrowing them, so unlike
-        // `NonEmptyProducers` it is not `Copy` and the by-value loop consumes
-        // it. It therefore has to come last.
-        for member in set {
-            seen.push(member.producer.instance_id);
-        }
-        assert_eq!(seen, ["left_arm", "right_arm", "left_arm", "right_arm"]);
     }
 }

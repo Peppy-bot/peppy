@@ -1,4 +1,4 @@
-use crate::messaging::{PyMessengerHandle, PyProducerRef};
+use crate::messaging::{PyBoundMember, PyMessengerHandle, PyProducerRef};
 use peppylib::runtime::CancellationToken;
 use peppylib::runtime::{NodeBuilder, NodeRunner, Processor, StandaloneConfig};
 use pyo3::exceptions::PyRuntimeError;
@@ -757,15 +757,6 @@ pub struct PyCancellationToken {
     inner: CancellationToken,
 }
 
-impl PyCancellationToken {
-    /// Clone of the wrapped token, for bindings that thread it into
-    /// runtime primitives (e.g. the bound-set subscription's shutdown
-    /// signal).
-    pub(crate) fn inner_token(&self) -> CancellationToken {
-        self.inner.clone()
-    }
-}
-
 #[pymethods]
 impl PyCancellationToken {
     /// Returns true if the token has been cancelled.
@@ -949,13 +940,13 @@ impl PyNodeRunner {
         self.inner.processor().node_tag()
     }
 
-    /// The runtime-resolved, immutable, ordered producer set bound to the
-    /// consumer slot at `link_id`, in application declaration order. Its
-    /// validated size is the slot's declared cardinality (exactly one for
-    /// `one`, at most one for `zero_or_one`, at least one for `one_or_more`,
-    /// any size for `zero_or_more`); node startup rejects anything else, so
-    /// this cannot fail for a generated `link_id`: a miss means the generated
-    /// code and the manifest disagree (stale codegen), and panics.
+    /// The producer set currently bound to the consumer slot at `link_id`, in
+    /// plan order: the boot config's binding until the daemon delivers another.
+    /// Its size is always one the slot's declared cardinality admits (exactly
+    /// one for `one`, at most one for `zero_or_one`, at least one for
+    /// `one_or_more`, any size for `zero_or_more`), so this cannot fail for a
+    /// generated `link_id`: a miss means the generated code and the manifest
+    /// disagree (stale codegen), and panics.
     /// Python codegen splices this behind the generated `bound_producers()`
     /// module functions of `one_or_more` and `zero_or_more` slots; the scalar
     /// cardinalities use the singular
@@ -965,8 +956,24 @@ impl PyNodeRunner {
         self.inner
             .processor()
             .bound_producers(link_id)
-            .iter()
-            .map(|producer| PyProducerRef::from(producer.clone()))
+            .into_iter()
+            .map(PyProducerRef::from)
+            .collect()
+    }
+
+    /// The members of the set currently bound to the consumer slot at
+    /// `link_id`, in plan order: each producer with the copy its instance
+    /// belongs to, `None` for one the launcher deploys outside any copy. The
+    /// same set [`bound_producers`](Self::bound_producers) answers by
+    /// producer alone, under the same rules. Python codegen splices this
+    /// behind the generated `bound_members()` module functions of
+    /// `one_or_more` and `zero_or_more` slots.
+    fn bound_members(&self, link_id: &str) -> Vec<PyBoundMember> {
+        self.inner
+            .processor()
+            .bound_members(link_id)
+            .into_iter()
+            .map(PyBoundMember::from)
             .collect()
     }
 
@@ -1241,6 +1248,39 @@ impl PyNodeRunner {
             .map_err(crate::messaging::to_py_err)
     }
 
+    /// Subscribe to one topic across the consumer slot at `link_id`, for every
+    /// cardinality. Spliced by the generated
+    /// `peppygen.consumed_topics.<...>.subscribe` call sites; `from_target` is
+    /// the node or contract target the producers serve the topic under.
+    /// Messages from every producer currently bound to the slot fan into one
+    /// stream, each yielded as a `(producer, message)` tuple, and the stream
+    /// follows the set as the daemon grows or shrinks it.
+    fn subscribe_bound_set<'py>(
+        &self,
+        py: Python<'py>,
+        link_id: String,
+        from_target: crate::messaging::PySenderTarget,
+        topic: String,
+        qos: crate::config::PyQoSProfile,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let node_runner = Arc::clone(&self.inner);
+        let from_target = from_target.into_inner();
+        crate::py_future::future_into_py(py, async move {
+            let subscription = peppylib::runtime::subscribe_bound_set(
+                &node_runner,
+                &link_id,
+                from_target,
+                &topic,
+                qos.into(),
+            )
+            .await
+            .map_err(crate::messaging::to_py_err)?;
+            Ok(crate::messaging::PyBoundSetSubscription {
+                inner: Arc::new(tokio::sync::Mutex::new(subscription)),
+            })
+        })
+    }
+
     /// Subscribe to one topic emitted by an observer slot's sources, for every
     /// cardinality. Spliced by the generated
     /// `peppygen.paired_topics.<link_id>.<topic>.subscribe` call sites of
@@ -1414,6 +1454,26 @@ impl PyStandaloneConfig {
                 link_id,
                 producer_core_node,
                 producer_instance_id,
+            ),
+        }
+    }
+
+    /// `with_bound_producer` for a producer whose instance belongs to the copy
+    /// named `copy`: the member the node reads for this producer carries that
+    /// copy name.
+    fn with_bound_producer_in_copy(
+        &self,
+        link_id: String,
+        producer_core_node: String,
+        producer_instance_id: String,
+        copy: String,
+    ) -> Self {
+        Self {
+            inner: self.inner.clone().with_bound_producer_in_copy(
+                link_id,
+                producer_core_node,
+                producer_instance_id,
+                copy,
             ),
         }
     }

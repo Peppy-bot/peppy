@@ -323,12 +323,9 @@ impl PairingCoordinator {
         .await
         .map_err(|e| format!("`{}` did not answer: {e}", endpoint.slot.core_node))?;
 
-        if response.ok {
-            return Ok(());
-        }
-        Err(response
-            .rejection_reason
-            .unwrap_or_else(|| format!("`{}` refused the pair", endpoint.slot.core_node)))
+        response
+            .into_result()
+            .map_err(|reason| format!("`{}` refused the pair: {reason}", endpoint.slot.core_node))
     }
 
     /// Records this daemon's half of a cross-daemon pair on behalf of the
@@ -480,6 +477,7 @@ impl PairingCoordinator {
                 "peer_update rejected",
             )
             .await
+            .map(|_delivery| ())
     }
 }
 

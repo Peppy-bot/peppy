@@ -345,7 +345,7 @@ pub enum ParsingError {
     )]
     PairingSentinelLinkId(String),
     #[error(
-        "Duplicate producer `{instance_id}@{core_node}` in a slot's bound set — bound producers must be unique within a slot"
+        "Duplicate producer `{instance_id}@{core_node}` in a slot's bound set: a producer is a member of a slot once"
     )]
     DuplicateBoundProducer {
         core_node: String,

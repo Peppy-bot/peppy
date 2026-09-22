@@ -478,6 +478,7 @@ pub async fn emulate_pairing_node_services(
     node_name: &str,
     instance_id: &str,
     link_id: &str,
+    cardinality: config::node::Cardinality,
 ) -> tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState> {
     emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
     let (_shutdown, _) = peppylib::services::shutdown::listen_for_shutdown(
@@ -489,21 +490,15 @@ pub async fn emulate_pairing_node_services(
     .await
     .expect("shutdown service should start");
 
-    let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerSetState::empty());
-    let slots = Arc::new(std::collections::BTreeMap::from([(
-        link_id.to_string(),
-        tx,
-    )]));
-    peppylib::services::peer_update::listen_for_peer_update(
+    serve_peer_update(
         messenger,
         core_node_name,
+        node_name,
         instance_id,
-        test_node_target(node_name),
-        slots,
+        link_id,
+        cardinality,
     )
     .await
-    .expect("peer_update service should start");
-    rx
 }
 
 /// Emulates a spawned pairing instance's in-process services (ready, health,
@@ -516,6 +511,7 @@ pub async fn emulate_pairing_instance(
     node_name: &str,
     instance_id: &str,
     link_id: &str,
+    cardinality: config::node::Cardinality,
     pidfile: &std::path::Path,
 ) -> tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState> {
     emulate_startup_services(messenger, core_node_name, node_name, instance_id).await;
@@ -528,11 +524,36 @@ pub async fn emulate_pairing_instance(
     )
     .await;
 
-    let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerSetState::empty());
-    let slots = Arc::new(std::collections::BTreeMap::from([(
-        link_id.to_string(),
-        tx,
-    )]));
+    serve_peer_update(
+        messenger,
+        core_node_name,
+        node_name,
+        instance_id,
+        link_id,
+        cardinality,
+    )
+    .await
+}
+
+/// The channels a node's processor hands a slot-update service, one per
+/// declared slot.
+pub type SlotChannels<S> =
+    Arc<std::collections::BTreeMap<String, peppylib::services::slot_update::SlotChannel<S>>>;
+
+/// The watches that read those channels, keyed by the slot's link id.
+pub type SlotWatches<S> = std::collections::BTreeMap<String, tokio::sync::watch::Receiver<S>>;
+
+/// Serves `peer_update` for one pairing slot of the given cardinality and
+/// hands back the watch that reads what the daemon delivers to it.
+pub async fn serve_peer_update(
+    messenger: &MessengerHandle,
+    core_node_name: &str,
+    node_name: &str,
+    instance_id: &str,
+    link_id: &str,
+    cardinality: config::node::Cardinality,
+) -> tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState> {
+    let (slots, rx) = pairing_slot_channel(link_id, cardinality);
     peppylib::services::peer_update::listen_for_peer_update(
         messenger,
         core_node_name,
@@ -543,6 +564,48 @@ pub async fn emulate_pairing_instance(
     .await
     .expect("peer_update service should start");
     rx
+}
+
+/// One pairing slot's channel, declared `cardinality` as a node's processor
+/// seeds it from the manifest, and the watch that reads it.
+pub fn pairing_slot_channel(
+    link_id: &str,
+    cardinality: config::node::Cardinality,
+) -> (
+    SlotChannels<peppylib::messaging::PeerSetState>,
+    tokio::sync::watch::Receiver<peppylib::messaging::PeerSetState>,
+) {
+    let (tx, rx) = tokio::sync::watch::channel(peppylib::messaging::PeerSetState::empty());
+    let slots = Arc::new(std::collections::BTreeMap::from([(
+        link_id.to_string(),
+        peppylib::services::slot_update::SlotChannel::new(cardinality, tx),
+    )]));
+    (slots, rx)
+}
+
+/// One `zero_or_more` observer slot channel per link id, as a node's
+/// processor seeds them, and the watches that read them, keyed by link id.
+pub fn observer_slot_channels(
+    link_ids: &[&str],
+) -> (
+    SlotChannels<peppylib::messaging::ObservationState>,
+    SlotWatches<peppylib::messaging::ObservationState>,
+) {
+    let mut senders = std::collections::BTreeMap::new();
+    let mut receivers = std::collections::BTreeMap::new();
+    for link_id in link_ids {
+        let (tx, rx) =
+            tokio::sync::watch::channel(peppylib::messaging::ObservationState::unregistered());
+        senders.insert(
+            link_id.to_string(),
+            peppylib::services::slot_update::SlotChannel::new(
+                config::node::Cardinality::ZeroOrMore,
+                tx,
+            ),
+        );
+        receivers.insert(link_id.to_string(), rx);
+    }
+    (Arc::new(senders), receivers)
 }
 
 /// A minimal two-role pairing document, shared by the pairing e2e tests

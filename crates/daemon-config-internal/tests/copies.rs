@@ -1,5 +1,5 @@
 use config::{AnyType, runtime::Name};
-use core_node_api::encoding::ArgumentOverride;
+use core_node_api::encoding::{ArgumentOverride, SetMember};
 use daemon_config::launcher::{
     AppliedChange, ComposedLaunch, CompositionError, JoinRequest, LinkValue, PeppyLauncher,
     PeppyLauncherParser, PreparedLauncher, RunningStack, Selection, SkipReason, SkippedAdjustment,
@@ -755,7 +755,7 @@ fn fragment_files_are_snapshotted_at_launch() {
 }
 
 #[test]
-fn every_link_follows_the_prefix_and_a_join_cannot_change_a_stack_instance() {
+fn every_link_follows_the_prefix_and_a_join_grows_a_stack_set() {
     let document = |copies: &str| {
         format!(
             r#"{{
@@ -802,19 +802,21 @@ fn every_link_follows_the_prefix_and_a_join_cannot_change_a_stack_instance() {
         &["first", "eye_wrist"]
     );
     assert_eq!(launch.copies()[1].selection.echo(), "cameras=wrist");
-    // A later join cannot add itself to the running observer.
-    let error = join(
+    // A later join adds its own camera to the running observer.
+    let with_iris = join(
         &prepared,
         "wrist",
         "iris",
         &launch.selection,
         &launch.launcher,
     )
-    .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::JoinChangesExisting { name, instance, changes }
-            if name == "iris" && instance == "observer_inst" && changes.contains("links.robots")),
-        "{error}"
+    .unwrap();
+    assert_eq!(
+        instance(&with_iris, "observer_inst").links["robots"]
+            .selection()
+            .unwrap()
+            .targets(),
+        &["first", "eye_wrist", "iris_wrist"]
     );
     let joined = join(
         &prepared,
@@ -1343,9 +1345,10 @@ fn copies_writing_different_fields_of_one_stack_instance_agree() {
 }
 
 /// Every copy of an option that registers itself with a stack observer
-/// appends its own minted id; the appended set is the union.
+/// appends its own minted id, at launch and at join; the appended set is the
+/// union, in the order the copies came.
 #[test]
-fn copies_appending_to_one_stack_slot_union_at_launch_and_cannot_append_at_join() {
+fn copies_appending_to_one_stack_slot_union_at_launch_and_at_join() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
@@ -1376,18 +1379,20 @@ fn copies_appending_to_one_stack_slot_union_at_launch_and_cannot_append_at_join(
             .unwrap()
         ))
     );
-    let error = join(
+    let joined = join(
         &prepared,
         "wrist",
         "lens",
         &launch.selection,
         &launch.launcher,
     )
-    .unwrap_err();
-    assert!(
-        matches!(&error, CompositionError::JoinChangesExisting { instance, changes, .. }
-            if instance == "observer_inst" && changes == "links.robots: + lens_wrist"),
-        "{error}"
+    .unwrap();
+    assert_eq!(
+        instance(&joined, "observer_inst").links["robots"]
+            .selection()
+            .unwrap()
+            .targets(),
+        &["first", "eye_wrist", "iris_wrist", "lens_wrist"]
     );
 }
 
@@ -1575,10 +1580,10 @@ fn a_stack_fragment_cannot_guard_on_a_copy_axis() {
     );
 }
 
-/// Removing a copy leaves the stack as it runs; a stack instance that
-/// links to the copy keeps it.
+/// Removing a copy takes out the members it added to stack sets; a link a
+/// copy set on a stack instance keeps it.
 #[test]
-fn a_copy_the_stack_links_to_cannot_be_removed() {
+fn removing_a_copy_takes_out_its_members_and_a_stack_link_keeps_it() {
     let prepared = load(
         r#"{
         peppy_schema: "launcher/v1",
@@ -1588,40 +1593,48 @@ fn a_copy_the_stack_links_to_cannot_be_removed() {
                          adjustments: [{ target: "observer_inst", add_links: { robots: ["wrist"] } }] }
             } },
             { name: "robot", cardinality: "zero_or_more", options: {
-                sim: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }] }
+                sim: { deployments: [{ source: { name: "arm", tag: "v1" }, instances: [{ instance_id: "arm_inst" }] }],
+                       adjustments: [{ target: "recorder_inst", set_links: { arm: "arm_inst" } }] }
             } }
         ],
         deployments: [
             { source: { name: "observer", tag: "v1" }, instances: [{ instance_id: "observer_inst" }] },
+            { source: { name: "recorder", tag: "v1" }, instances: [{ instance_id: "recorder_inst" }] },
             { cameras: "wrist", instances: [{ instance_id: "eye" }] },
             { robot: "sim", instances: [{ instance_id: "alpha" }] }
         ]
     }"#,
     );
     let launch = prepared.launch(&[]).unwrap();
-    let eye = launch
-        .copies()
-        .iter()
-        .find(|copy| copy.name == "eye")
+    let record_of = |copy_name: &str| {
+        launch
+            .copies()
+            .iter()
+            .find(|record| record.name == copy_name)
+            .unwrap()
+    };
+    let without_eye = prepared
+        .remove(&launch.launcher, record_of("eye"), &launch.selection, &[])
         .unwrap();
+    assert_eq!(
+        ids(&without_eye),
+        ["observer_inst", "recorder_inst", "alpha_arm_inst"]
+    );
+    assert!(
+        instance(&without_eye, "observer_inst").links["robots"]
+            .selection()
+            .unwrap()
+            .targets()
+            .is_empty()
+    );
     let error = prepared
-        .remove(&launch.launcher, eye, &launch.selection, &[])
+        .remove(&launch.launcher, record_of("alpha"), &launch.selection, &[])
         .unwrap_err();
     assert!(
         matches!(&error, CompositionError::CopyStillLinked { copy, links }
-            if copy == "eye" && links == "observer_inst.robots -> eye_wrist"),
+            if copy == "alpha" && links == "recorder_inst.arm -> alpha_arm_inst"),
         "{error}"
     );
-    let alpha = launch
-        .copies()
-        .iter()
-        .find(|copy| copy.name == "alpha")
-        .unwrap();
-    let remaining = prepared
-        .remove(&launch.launcher, alpha, &launch.selection, &[])
-        .unwrap();
-    assert_eq!(ids(&remaining), ["observer_inst", "eye_wrist"]);
-    assert!(!remaining.core_nodes.iter().any(|link| link == "alpha"));
 }
 
 fn load_error(document: &str) -> CompositionError {
@@ -2628,4 +2641,198 @@ fn copy_adjustment_and_scoped_word_refusals_name_the_fix() {
         error.contains("takes no `instances`, `with`, `arguments` or `adjustments`"),
         "{error}"
     );
+}
+
+/// A join adds only its own instances to a running set: naming an instance
+/// the stack runs is refused, naming the set and the instance.
+#[test]
+fn a_join_cannot_add_a_stack_instance_to_a_running_set() {
+    let prepared = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "cameras", cardinality: "zero_or_more", options: {
+                wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
+                         adjustments: [{ target: "observer_inst", add_links: { robots: ["first"] } }] }
+            } }
+        ],
+        deployments: [
+            { source: { name: "observer", tag: "v1" }, instances: [{ instance_id: "observer_inst" }] },
+            { source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "first" }] }
+        ]
+    }"#,
+    );
+    let launch = prepared.launch(&[]).unwrap();
+    let error = join(
+        &prepared,
+        "wrist",
+        "lens",
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::JoinAddsStackMember { name, instance, slot, target }
+            if name == "lens" && instance == "observer_inst" && slot == "robots" && target == "first"),
+        "{error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        "joining `lens` would add `first` to `observer_inst.links.robots`, and `first` is not \
+         one of `lens`'s instances; a join adds only its own. In the option's `add_links` name \
+         an id the option's fragments deploy (the join mints it as `lens_<id>`), or list `lens` \
+         under the option's `instances` in the launcher, then `peppy stack reset` and `peppy \
+         stack launch`"
+    );
+}
+
+/// A running set follows joins in the order they came; removing a copy takes
+/// out its member alone, leaving the member the launcher wrote; and a copy
+/// rejoining under the same name is a member once, at the end.
+#[test]
+fn a_running_set_follows_joins_and_removals_and_a_rejoin_appears_once() {
+    let prepared = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "cameras", cardinality: "zero_or_more", options: {
+                wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
+                         adjustments: [{ target: "observer_inst", add_links: { robots: ["wrist"] } }] }
+            } }
+        ],
+        deployments: [
+            { source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "eye" }] },
+            { source: { name: "observer", tag: "v1" },
+              instances: [{ instance_id: "observer_inst", links: { robots: ["eye"] } }] }
+        ]
+    }"#,
+    );
+    let launch = prepared.launch(&[]).unwrap();
+    let join_copy = |copy_name: &str, existing: &PeppyLauncher| {
+        prepared
+            .join(
+                JoinRequest {
+                    option: "wrist",
+                    name: &name(copy_name),
+                    words: &[],
+                    arguments: &[],
+                },
+                RunningStack {
+                    selection: &launch.selection,
+                    launcher: existing,
+                },
+            )
+            .unwrap()
+    };
+    let robots = |flat: &PeppyLauncher| {
+        instance(flat, "observer_inst").links["robots"]
+            .selection()
+            .unwrap()
+            .targets()
+            .to_vec()
+    };
+    let alpha = join_copy("alpha", &launch.launcher);
+    let bravo = join_copy("bravo", &alpha.launcher);
+    assert_eq!(
+        robots(&bravo.launcher),
+        ["eye", "alpha_wrist", "bravo_wrist"]
+    );
+    assert_eq!(
+        bravo.copy.set_members,
+        [SetMember {
+            instance_id: Name::new("observer_inst").unwrap(),
+            link_id: "robots".into(),
+            target: "bravo_wrist".into(),
+        }]
+    );
+    let without_alpha = prepared
+        .remove(
+            &bravo.launcher,
+            &alpha.copy,
+            &launch.selection,
+            std::slice::from_ref(&bravo.copy),
+        )
+        .unwrap();
+    assert_eq!(
+        robots(&without_alpha),
+        ["eye", "bravo_wrist"],
+        "the member the launcher wrote stays where it was"
+    );
+    let rejoined = join_copy("alpha", &without_alpha);
+    assert_eq!(
+        robots(&rejoined.launcher),
+        ["eye", "bravo_wrist", "alpha_wrist"]
+    );
+}
+
+/// A join cannot append to a running slot holding a single member: the
+/// refusal names the slot, its instance and the manifest change that lets a
+/// set grow.
+#[test]
+fn a_join_cannot_add_to_a_slot_holding_a_single_member() {
+    let prepared = load(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "cameras", cardinality: "zero_or_more", options: {
+                wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
+                         adjustments: [{ target: "observer_inst", add_links: { primary: ["wrist"] } }] }
+            } }
+        ],
+        deployments: [
+            { source: { name: "observer", tag: "v1" }, instances: [
+                { instance_id: "observer_inst", links: { primary: "first" } }
+            ] },
+            { source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "first" }] }
+        ]
+    }"#,
+    );
+    let launch = prepared.launch(&[]).unwrap();
+    let error = join(
+        &prepared,
+        "wrist",
+        "lens",
+        &launch.selection,
+        &launch.launcher,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, CompositionError::AddLinksOnNonArray { target, slot, .. }
+            if target == "observer_inst" && slot == "primary"),
+        "{error}"
+    );
+    let refusal = error.to_string();
+    assert!(
+        refusal.contains("`add_links` appends only to a slot bound as an array")
+            && refusal.contains(
+                "declare it `one_or_more` or `zero_or_more` in the node's `depends_on` and run \
+                 `peppy node sync`"
+            ),
+        "the refusal names the fix: {refusal}"
+    );
+}
+
+/// A copy adding a stack instance to a running set is launch-only, which the
+/// join refuses by name at the time: the repository check composes it without
+/// reporting a problem.
+#[test]
+fn the_repository_check_accepts_a_copy_that_adds_a_stack_instance_to_a_set() {
+    let parsed = PeppyLauncherParser::from_content(
+        r#"{
+        peppy_schema: "launcher/v1",
+        components: [
+            { name: "cameras", cardinality: "zero_or_more", options: {
+                wrist: { deployments: [{ source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "wrist" }] }],
+                         adjustments: [{ target: "observer_inst", add_links: { robots: ["first"] } }] }
+            } }
+        ],
+        deployments: [
+            { source: { name: "observer", tag: "v1" }, instances: [{ instance_id: "observer_inst" }] },
+            { source: { name: "camera", tag: "v1" }, instances: [{ instance_id: "first" }] }
+        ]
+    }"#,
+    )
+    .unwrap();
+    let problems = daemon_config::launcher::check_composition(&parsed, Path::new("fleet.json5"));
+    assert!(problems.is_empty(), "{problems:?}");
 }

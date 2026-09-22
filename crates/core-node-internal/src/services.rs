@@ -572,6 +572,11 @@ impl CoreNode {
                 )
                 .boxed()
             }
+            ServiceId::ParticipantSetsUpdate => federation::listen_for_participant_sets_update(
+                self.federation_context(ctx),
+                self.node_name(),
+            )
+            .boxed(),
             ServiceId::PairCommit => {
                 federation::listen_for_pair_commit(self.federation_context(ctx), self.node_name())
                     .boxed()
@@ -861,8 +866,15 @@ impl CoreNode {
             self.instance_id(),
         ));
         let relationships = node::RelationshipCoordinators::new(
+            Arc::clone(&self.node_stack),
             Arc::clone(&pairing),
             Arc::new(node::ObservationCoordinator::new(
+                Arc::clone(&self.node_stack),
+                self.messenger.clone(),
+                core_node_name,
+                self.instance_id(),
+            )),
+            Arc::new(node::BindingCoordinator::new(
                 Arc::clone(&self.node_stack),
                 self.messenger.clone(),
                 core_node_name,

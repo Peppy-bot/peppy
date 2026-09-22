@@ -382,12 +382,16 @@ mod tests {
                 "wrist_left_camera".to_string(),
                 config::runtime::BoundProducers::from(ProducerRef::new("core_a", "cam1")),
             ),
-            // A multi-cardinality slot's ordered set must survive the trip.
+            // A multi-cardinality slot's ordered set must survive the trip,
+            // with the copy each member belongs to.
             (
                 "wrist_right_camera".to_string(),
                 config::runtime::BoundProducers::try_from(vec![
-                    ProducerRef::new("core_a", "cam2"),
-                    ProducerRef::new("core_a", "cam3"),
+                    config::runtime::BoundMember::from(ProducerRef::new("core_a", "cam2")),
+                    config::runtime::BoundMember {
+                        producer: ProducerRef::new("core_a", "bravo_cam"),
+                        copy: Some(config::runtime::Name::new("bravo").unwrap()),
+                    },
                 ])
                 .expect("distinct producers"),
             ),

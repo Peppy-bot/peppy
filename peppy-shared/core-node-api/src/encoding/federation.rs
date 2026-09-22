@@ -6,15 +6,18 @@
 //! and idempotent.
 
 use capnp::message::Builder;
-use config::runtime::{CoreNodeName, Name, ProducerRef, first_duplicate};
+use config::runtime::{
+    BoundMember, BoundProducers, CoreNodeName, Name, ObservedPeer, ProducerRef, first_duplicate,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::federation_capnp;
 use crate::{Payload, Result};
 
 use crate::encoding::{
-    capnp_list_len, decode_message, encode_message, optional_text, read_core_node_name, read_name,
-    read_name_list, read_text_list, required_text, required_text_list, write_text_list,
+    ObservationTarget, ObservationTargets, capnp_list_len, decode_message, encode_message,
+    optional_text, read_core_node_name, read_name, read_name_list, read_text_list, required_text,
+    required_text_list, write_text_list,
 };
 
 /// Reserves one participant for one launch, carrying the pins for every
@@ -384,10 +387,128 @@ impl crate::encoding::Wire for ParticipantInstancesRemoveRequest {
     type Root = federation_capnp::participant_instances_remove_request::Owned;
 }
 
+/// Replaces set slots of instances a participant runs in a reserved launch's
+/// slice, each with the whole member set it holds from now on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantSetsUpdateRequest {
+    pub launch_id: String,
+    pub sets: Vec<SlotSet>,
+}
+
+/// One instance's slot and the set it holds from now on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotSet {
+    pub instance_id: Name,
+    pub link_id: String,
+    pub members: SlotMembers,
+}
+
+/// A set slot's members, in plan order: a producer-binding slot's producers or
+/// an observer slot's observed pairings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotMembers {
+    Producers(BoundProducers),
+    Observed(ObservationTargets),
+}
+
+impl ParticipantSetsUpdateRequest {
+    pub fn encode(&self) -> Result<Payload> {
+        let mut builder = Builder::new_default();
+        {
+            let mut request =
+                builder.init_root::<federation_capnp::participant_sets_update_request::Builder>();
+            request.set_launch_id(&self.launch_id);
+            let mut sets = request.init_sets(capnp_list_len(self.sets.len(), "sets")?);
+            for (index, set) in self.sets.iter().enumerate() {
+                let mut wire = sets.reborrow().get(index as u32);
+                wire.set_instance_id(set.instance_id.as_str());
+                wire.set_link_id(&set.link_id);
+                let members = wire.init_members();
+                match &set.members {
+                    SlotMembers::Producers(producers) => {
+                        let mut list =
+                            members.init_producers(capnp_list_len(producers.len(), "producers")?);
+                        for (member_index, member) in producers.iter().enumerate() {
+                            write_bound_member(list.reborrow().get(member_index as u32), member);
+                        }
+                    }
+                    SlotMembers::Observed(targets) => {
+                        let mut list =
+                            members.init_observed(capnp_list_len(targets.len(), "observed")?);
+                        for (member_index, target) in targets.iter().enumerate() {
+                            write_observation_member(
+                                list.reborrow().get(member_index as u32),
+                                target,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        encode_message(&builder)
+    }
+
+    pub fn decode(data: &[u8]) -> Result<Self> {
+        let reader = decode_message(data)?;
+        let request =
+            reader.get_root::<federation_capnp::participant_sets_update_request::Reader>()?;
+        let sets = request
+            .get_sets()?
+            .iter()
+            .map(|wire| {
+                use federation_capnp::slot_set::members::Which;
+                let link_id = required_text(wire.get_link_id()?.to_str()?, "sets.link_id")?;
+                let members = match wire.get_members().which()? {
+                    Which::Producers(list) => {
+                        let members = list?
+                            .iter()
+                            .map(read_bound_member)
+                            .collect::<Result<Vec<_>>>()?;
+                        SlotMembers::Producers(BoundProducers::try_from(members).map_err(
+                            |error| crate::Error::Decoding(format!("slot `{link_id}`: {error}")),
+                        )?)
+                    }
+                    Which::Unset(()) => {
+                        return Err(crate::Error::Decoding(format!(
+                            "slot `{link_id}`: the set names neither producers nor observed \
+                             pairings"
+                        )));
+                    }
+                    Which::Observed(list) => {
+                        let targets = list?
+                            .iter()
+                            .map(read_observation_member)
+                            .collect::<Result<Vec<_>>>()?;
+                        SlotMembers::Observed(
+                            ObservationTargets::new(&link_id, targets).map_err(|duplicate| {
+                                crate::Error::Decoding(duplicate.to_string())
+                            })?,
+                        )
+                    }
+                };
+                Ok(SlotSet {
+                    instance_id: read_name(wire.get_instance_id()?.to_str()?, "sets.instance_id")?,
+                    link_id,
+                    members,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            launch_id: required_text(request.get_launch_id()?.to_str()?, "launch_id")?,
+            sets,
+        })
+    }
+}
+
+impl crate::encoding::Wire for ParticipantSetsUpdateRequest {
+    type Root = federation_capnp::participant_sets_update_request::Owned;
+}
+
 /// The reply to every federation exchange whose answer is "did you do it, and
-/// if not, why": `pair_commit` and `participant_release`. One codec rather than
-/// two, because the two differ only in which verb the bool reports and that
-/// verb is already the service name.
+/// if not, why": `pair_commit`, `participant_release`,
+/// `participant_instances_remove` and `participant_sets_update`. One codec for
+/// all of them, because they differ only in which verb the bool reports and
+/// that verb is already the service name.
 ///
 /// [`Self::rejection_reason`] is load-bearing on refusal — see the schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -409,6 +530,16 @@ impl FederationVerdict {
             ok: false,
             rejection_reason: Some(reason.into()),
         }
+    }
+
+    /// The verdict as a result: a refusal carries the participant's reason.
+    pub fn into_result(self) -> std::result::Result<(), String> {
+        if self.ok {
+            return Ok(());
+        }
+        Err(self
+            .rejection_reason
+            .unwrap_or_else(|| "no reason given".to_owned()))
     }
 
     pub fn encode(&self) -> Result<Payload> {
@@ -442,6 +573,72 @@ fn write_instance_address(
 ) {
     address.set_core_node(&producer.core_node);
     address.set_instance_id(&producer.instance_id);
+}
+
+/// Writes one member of a producer-binding slot into an initialized
+/// `BoundMember` builder; a member outside any copy writes an empty copy.
+fn write_bound_member(
+    mut member: federation_capnp::bound_member::Builder<'_>,
+    bound: &BoundMember,
+) {
+    write_instance_address(member.reborrow().init_producer(), &bound.producer);
+    member.set_copy(bound.copy.as_ref().map(Name::as_str).unwrap_or(""));
+}
+
+/// Inverse of [`write_bound_member`]. An empty copy is a member outside any
+/// copy.
+fn read_bound_member(member: federation_capnp::bound_member::Reader<'_>) -> Result<BoundMember> {
+    Ok(BoundMember {
+        producer: read_instance_address(member.get_producer()?, "sets.producers")?,
+        copy: optional_text(member.get_copy()?.to_str()?)
+            .map(|copy| read_name(&copy, "sets.producers.copy"))
+            .transpose()?,
+    })
+}
+
+/// Writes one observed pairing into an initialized `ObservationMember` builder.
+///
+/// The federation twin of `node::run`'s member codec: both schemas declare the
+/// struct separately because each `.capnp` is compiled on its own, and both
+/// decode to one [`ObservationTarget`].
+fn write_observation_member(
+    mut member: federation_capnp::observation_member::Builder<'_>,
+    target: &ObservationTarget,
+) {
+    member.set_source_link_id(&target.source_link_id);
+    write_instance_address(member.reborrow().init_source(), &target.source);
+    if let Some(peer) = &target.peer {
+        let mut wire_peer = member.init_peer();
+        wire_peer.set_link_id(&peer.peer_link_id);
+        write_instance_address(wire_peer.init_instance(), &peer.peer);
+    }
+}
+
+/// Inverse of [`write_observation_member`]. A member with no peer observes
+/// every pair of its source's slot.
+fn read_observation_member(
+    member: federation_capnp::observation_member::Reader<'_>,
+) -> Result<ObservationTarget> {
+    let peer = if member.has_peer() {
+        let wire_peer = member.get_peer()?;
+        Some(ObservedPeer {
+            peer: read_instance_address(wire_peer.get_instance()?, "sets.observed.peer")?,
+            peer_link_id: required_text(
+                wire_peer.get_link_id()?.to_str()?,
+                "sets.observed.peer.link_id",
+            )?,
+        })
+    } else {
+        None
+    };
+    Ok(ObservationTarget {
+        source: read_instance_address(member.get_source()?, "sets.observed.source")?,
+        source_link_id: required_text(
+            member.get_source_link_id()?.to_str()?,
+            "sets.observed.source_link_id",
+        )?,
+        peer,
+    })
 }
 
 /// Inverse of [`write_instance_address`]. Both halves are required: an address
@@ -711,6 +908,121 @@ impl crate::encoding::Wire for RelationshipNotificationAck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sets_update_round_trips_producer_and_observer_sets_in_plan_order() {
+        let pairing = |instance: &str| ObservationTarget {
+            source: ProducerRef::new("cn-robot", instance),
+            source_link_id: "controller".into(),
+            peer: None,
+        };
+        let pinned = ObservationTarget {
+            peer: Some(ObservedPeer {
+                peer: ProducerRef::new("cn-cloud", "alpha_leader_inst"),
+                peer_link_id: "followers".into(),
+            }),
+            ..pairing("hub_inst")
+        };
+        let request = ParticipantSetsUpdateRequest {
+            launch_id: "launch-abc123".into(),
+            sets: vec![
+                SlotSet {
+                    instance_id: Name::new("planner_inst").unwrap(),
+                    link_id: "robots".into(),
+                    members: SlotMembers::Producers(
+                        BoundProducers::try_from(vec![
+                            BoundMember {
+                                producer: ProducerRef::new("cn-robot", "bravo_arm_inst"),
+                                copy: Some(Name::new("bravo").unwrap()),
+                            },
+                            BoundMember {
+                                producer: ProducerRef::new("cn-cloud", "alpha_arm_inst"),
+                                copy: Some(Name::new("alpha").unwrap()),
+                            },
+                            BoundMember::from(ProducerRef::new("cn-robot", "fixed_arm_inst")),
+                        ])
+                        .unwrap(),
+                    ),
+                },
+                SlotSet {
+                    instance_id: Name::new("monitor_inst").unwrap(),
+                    link_id: "fleet".into(),
+                    members: SlotMembers::Observed(
+                        ObservationTargets::new(
+                            "fleet",
+                            vec![pairing("bravo_arm_inst"), pairing("alpha_arm_inst"), pinned],
+                        )
+                        .unwrap(),
+                    ),
+                },
+                SlotSet {
+                    instance_id: Name::new("monitor_inst").unwrap(),
+                    link_id: "spare".into(),
+                    members: SlotMembers::Observed(
+                        ObservationTargets::new("spare", Vec::new()).unwrap(),
+                    ),
+                },
+                // What removing the last copy delivers to a `zero_or_more`
+                // consumer slot.
+                SlotSet {
+                    instance_id: Name::new("planner_inst").unwrap(),
+                    link_id: "cameras".into(),
+                    members: SlotMembers::Producers(BoundProducers::default()),
+                },
+            ],
+        };
+        assert_eq!(
+            ParticipantSetsUpdateRequest::decode(&request.encode().unwrap()).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn sets_update_refuses_a_repeated_producer_and_an_unplaced_member() {
+        for (core_node, repeated) in [("cn-robot", true), ("", false)] {
+            let mut builder = Builder::new_default();
+            {
+                let mut request = builder
+                    .init_root::<federation_capnp::participant_sets_update_request::Builder>();
+                request.set_launch_id("launch-abc123");
+                let mut set = request.init_sets(1).get(0);
+                set.set_instance_id("planner_inst");
+                set.set_link_id("robots");
+                let count = if repeated { 2 } else { 1 };
+                let mut list = set.init_members().init_producers(count);
+                for index in 0..count {
+                    let mut address = list.reborrow().get(index).init_producer();
+                    address.set_core_node(core_node);
+                    address.set_instance_id("alpha_arm_inst");
+                }
+            }
+            assert!(
+                ParticipantSetsUpdateRequest::decode(&encode_message(&builder).unwrap()).is_err(),
+                "core_node `{core_node}`, repeated {repeated}"
+            );
+        }
+    }
+
+    /// A set naming neither producers nor observed pairings is a sender that
+    /// never filled the union in, and is refused at decode.
+    #[test]
+    fn sets_update_refuses_a_set_of_neither_kind() {
+        let mut builder = Builder::new_default();
+        {
+            let mut request =
+                builder.init_root::<federation_capnp::participant_sets_update_request::Builder>();
+            request.set_launch_id("launch-abc123");
+            let mut set = request.init_sets(1).get(0);
+            set.set_instance_id("planner_inst");
+            set.set_link_id("robots");
+        }
+        let error = ParticipantSetsUpdateRequest::decode(&encode_message(&builder).unwrap())
+            .expect_err("a set of neither kind is refused");
+        assert!(
+            error.to_string().contains("neither producers nor observed"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn reserve_request_round_trips() {

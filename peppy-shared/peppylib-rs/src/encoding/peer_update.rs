@@ -2,7 +2,7 @@
 //! delivery). See `schemas/peer_update.capnp` for the wire contract.
 
 use crate::error::{Error, Result};
-use crate::messaging::{PeerInfo, PeerMember, ProducerRef};
+use crate::messaging::{PeerInfo, PeerMember};
 use crate::peer_update_capnp;
 use crate::types::Payload;
 
@@ -50,11 +50,13 @@ impl PeerUpdateRequest {
         for idx in 0..wire_members.len() {
             let wire = wire_members.get(idx);
             let info = PeerInfo {
-                producer: ProducerRef::new(
-                    super::read_text(wire.get_peer_core_node(), "peer_update", "peerCoreNode")?,
-                    super::read_text(wire.get_peer_instance_id(), "peer_update", "peerInstanceId")?,
-                ),
-                peer_link_id: super::read_text(
+                producer: super::read_producer(
+                    wire.get_peer_core_node(),
+                    wire.get_peer_instance_id(),
+                    "peer_update",
+                    ("peerCoreNode", "peerInstanceId"),
+                )?,
+                peer_link_id: super::read_link_id(
                     wire.get_peer_link_id(),
                     "peer_update",
                     "peerLinkId",
@@ -86,6 +88,7 @@ impl PeerUpdateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messaging::ProducerRef;
 
     fn member(instance: &str, copy: Option<&str>) -> PeerMember {
         PeerMember {
@@ -116,6 +119,20 @@ mod tests {
                 PeerUpdateRequest::decode(&request.encode().unwrap().into_inner()).unwrap();
             assert_eq!(decoded, request);
         }
+    }
+
+    /// A peer link_id the wire cannot carry refuses the delivery.
+    #[test]
+    fn a_peer_link_id_the_wire_cannot_carry_is_refused() {
+        let mut request = PeerUpdateRequest {
+            link_id: "arm".to_string(),
+            sequence: 1,
+            members: vec![member("arm_1", None)],
+        };
+        request.members[0].info.peer_link_id = "a/b".to_string();
+        let error = PeerUpdateRequest::decode(&request.encode().unwrap().into_inner())
+            .expect_err("a slashed link_id is refused");
+        assert!(error.to_string().contains("peerLinkId"), "{error}");
     }
 
     #[test]

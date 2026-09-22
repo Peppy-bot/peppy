@@ -135,12 +135,11 @@ pub(in crate::services::stack) async fn live_core_nodes(
 /// Liveness is read from zenoh presence, not from the platform HTTP roster: a
 /// launch depends on being able to TALK to a machine right now, which the
 /// roster does not attest. `peppy platform list` stays the human-facing view.
-async fn reject_unreachable_core_nodes(
-    messenger: &MessengerHandle,
+fn reject_unreachable_core_nodes(
     wanted: &BTreeSet<String>,
+    live: &BTreeSet<String>,
 ) -> std::result::Result<(), String> {
-    let live = live_core_nodes(messenger).await?;
-    let missing: Vec<&String> = wanted.difference(&live).collect();
+    let missing: Vec<&String> = wanted.difference(live).collect();
     if missing.is_empty() {
         return Ok(());
     }
@@ -152,7 +151,7 @@ async fn reject_unreachable_core_nodes(
         if live.is_empty() {
             "nothing".to_owned()
         } else {
-            format_quoted_list(&live)
+            format_quoted_list(live)
         }
     ))
 }
@@ -362,18 +361,15 @@ async fn release_participants(
             RELEASE_TIMEOUT,
         )
         .await;
-        match result {
-            Ok(verdict) if verdict.ok => {}
+        match result.map(|verdict| verdict.into_result()) {
+            Ok(Ok(())) => {}
             // A refusal is not a transport failure: the participant is holding
             // a reservation for a DIFFERENT launch, so this one never owned it
             // and the presence lease will not clear it either. Worth its own
             // line, because it means two coordinators overlapped.
-            Ok(verdict) => tracing::warn!(
-                "`{core_node}` refused to release launch `{launch_id}`: {}",
-                verdict
-                    .rejection_reason
-                    .unwrap_or_else(|| "no reason given".to_owned())
-            ),
+            Ok(Err(reason)) => {
+                tracing::warn!("`{core_node}` refused to release launch `{launch_id}`: {reason}")
+            }
             Err(e) => tracing::warn!(
                 "could not release `{core_node}` from launch `{launch_id}` ({e}); its \
                  reservation drops on its own when this coordinator reserves it for its \
@@ -396,6 +392,7 @@ pub(in crate::services::stack) async fn preflight(
     launch_id: &str,
     planned: &[super::PlannedDeployment],
     placements: &Placements,
+    live: Option<&BTreeSet<String>>,
 ) -> std::result::Result<ReservedParticipants, String> {
     if !placements.is_federated() {
         return Ok(ReservedParticipants::new(ctx, launch_id, Vec::new()));
@@ -410,8 +407,13 @@ pub(in crate::services::stack) async fn preflight(
 
     // A wired core node is validated by live zenoh presence, not the platform
     // HTTP roster: what a launch needs is to be able to talk to the machine
-    // right now, which the roster does not attest.
-    reject_unreachable_core_nodes(&ctx.messenger, &peers.keys().cloned().collect()).await?;
+    // right now, which the roster does not attest. A change that already
+    // asked the federation hands its answer in.
+    let live = match live {
+        Some(live) => live.clone(),
+        None => live_core_nodes(&ctx.messenger).await?,
+    };
+    reject_unreachable_core_nodes(&peers.keys().cloned().collect(), &live)?;
 
     let participants = reserve_participants(
         &ctx.messenger,

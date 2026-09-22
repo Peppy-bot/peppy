@@ -46,16 +46,11 @@ pub(crate) struct Binding {
 }
 
 impl Binding {
-    /// The wire binding against every producer the launcher bound to the
-    /// slot.
-    fn member_binding(&self, node_runner: &NodeRunner) -> MemberBinding {
+    /// The wire binding of the member the launcher bound to the slot.
+    fn member_binding(&self) -> MemberBinding {
         MemberBinding {
             target: self.contract.clone(),
             member: self.member.clone(),
-            producers: node_runner
-                .processor()
-                .bound_producers(&self.target)
-                .to_vec(),
         }
     }
 }
@@ -265,18 +260,15 @@ fn feedback_qos(action: &NativeExposedAction) -> QoSProfile {
 /// subscription lives as long as the node.
 pub(crate) async fn pump_resource(
     node_runner: Arc<NodeRunner>,
-    identity: ConsumerIdentity,
     resource: PreparedResource,
     ingest: ResourceIngest,
 ) {
-    let binding = resource.binding.member_binding(&node_runner);
-    let mut subscription = match TopicConsumer::subscribe(
-        node_runner.messenger(),
-        &identity,
-        &binding,
+    let subscription = match peppylib::runtime::subscribe_bound_set(
+        &node_runner,
+        &resource.binding.target,
+        resource.binding.contract.clone(),
+        &resource.binding.member,
         resource.qos.clone(),
-        resource.codec.clone(),
-        node_runner.cancellation_token().child_token(),
     )
     .await
     {
@@ -290,6 +282,7 @@ pub(crate) async fn pump_resource(
             return;
         }
     };
+    let mut subscription = TopicConsumer::new(subscription, resource.codec.clone());
     while let Some((_producer, message)) = subscription.next_message().await {
         // The update-rate gate runs before any conversion or transcoding.
         let Some(token) = ingest.admit() else {
@@ -315,7 +308,7 @@ pub(crate) async fn call_tool(
     identity: &ConsumerIdentity,
     input: Value,
 ) -> Result<Value, ToolCallError> {
-    let binding = tool.binding.member_binding(node_runner);
+    let binding = tool.binding.member_binding();
     let producer = node_runner
         .processor()
         .sole_bound_producer(&tool.binding.target)
@@ -364,7 +357,7 @@ pub(crate) async fn run_task(
     input: Value,
     context: ActionContext,
 ) -> Result<Value, ActionExit> {
-    let binding = task.binding.member_binding(node_runner);
+    let binding = task.binding.member_binding();
     let producer = node_runner
         .processor()
         .sole_bound_producer(&task.binding.target)

@@ -197,7 +197,6 @@ async fn run(
     for (resource, ingest) in pumps {
         tokio::spawn(bridges::pump_resource(
             Arc::clone(&node_runner),
-            identity.clone(),
             resource,
             ingest,
         ));

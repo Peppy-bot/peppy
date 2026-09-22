@@ -1055,7 +1055,9 @@ mod tests {
         assert_eq!(decoded, goal);
         assert_eq!(decoded.instance_plan.clock, sim_clock());
         assert_eq!(
-            decoded.instance_plan.slot_bindings["camera"].as_slice()[0].core_node,
+            decoded.instance_plan.slot_bindings["camera"].as_slice()[0]
+                .producer
+                .core_node,
             "cn-robot-7"
         );
         assert_eq!(decoded.manifest_sha256, Some("a".repeat(64)));

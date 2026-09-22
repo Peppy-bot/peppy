@@ -74,6 +74,7 @@ impl ActiveLaunch {
                             .map(|option| format!("{}={option}", entry.axis))
                     })
                     .collect(),
+                set_members: copy.record.set_members.clone(),
             })
             .collect()
     }
@@ -138,6 +139,11 @@ impl ActiveLaunch {
                 },
             );
         }
+    }
+
+    /// The record of every copy on the stack.
+    pub(super) fn copy_records(&self) -> impl Iterator<Item = &CopyRecord> {
+        self.copies.values().map(|copy| &copy.record)
     }
 
     pub(super) fn check_name(&self, name: &Name) -> ChangeResult<()> {

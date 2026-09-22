@@ -133,8 +133,8 @@ impl PyObservationSlot {
 /// `node_runner.observation_slot_set(link_id)`. The set is live in what it says
 /// about each member: the daemon keeps every member's incarnation and liveness
 /// current, and a member whose source is down stays in the list, at its
-/// position. Its size does not move, so a `one_or_more` slot never reads empty
-/// and only a `zero_or_more` slot does.
+/// position. A copy joining or leaving adds or removes members; a `one_or_more`
+/// slot never reads empty, and only a `zero_or_more` slot does.
 #[pyclass(name = "ObservationSlotSet")]
 pub struct PyObservationSlotSet {
     pub(crate) inner: ObservationSlotSet,

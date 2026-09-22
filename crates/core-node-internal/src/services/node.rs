@@ -1,6 +1,7 @@
 mod add;
 mod add_batch;
 mod archive;
+pub(crate) mod binding;
 mod builder;
 pub(crate) mod cache;
 pub(crate) mod common;
@@ -19,15 +20,18 @@ pub(crate) mod pins;
 mod relationship_notify;
 mod remove;
 mod run;
+mod sets;
 mod stop;
 mod sync;
 
 use config::node::NodeConfig;
+use node_stack::NodeStack;
 use std::sync::Arc;
 
 // Crate-external re-exports (paths that other crates / other `services::`
 // submodules reference as `crate::services::node::X`).
 pub use add::listen_for_node_add;
+pub use binding::BindingCoordinator;
 pub use builder::listen_for_node_build;
 pub use health_monitor::HealthMonitorPolicy;
 pub use info::listen_for_node_info;
@@ -108,23 +112,32 @@ pub(crate) fn manifest_fingerprint_of_json5(config_json5: &str) -> String {
 ///
 /// Keeping them together gives every lifecycle path one complete dependency for
 /// teardown while still exposing each authority to flows that operate on one
-/// relationship type directly.
+/// relationship type directly. The set deliveries a join or a removal makes
+/// span two of them, and go through [`RelationshipCoordinators::replace_sets`]
+/// in `sets.rs`.
 #[derive(Clone)]
 pub(crate) struct RelationshipCoordinators {
+    /// The instances this daemon runs, which the sets it replaces must belong to.
+    node_stack: Arc<NodeStack>,
     pairing: Arc<PairingCoordinator>,
     observation: Arc<ObservationCoordinator>,
+    binding: Arc<BindingCoordinator>,
     notifier: Arc<RelationshipNotifier>,
 }
 
 impl RelationshipCoordinators {
     pub(crate) fn new(
+        node_stack: Arc<NodeStack>,
         pairing: Arc<PairingCoordinator>,
         observation: Arc<ObservationCoordinator>,
+        binding: Arc<BindingCoordinator>,
         notifier: Arc<RelationshipNotifier>,
     ) -> Self {
         Self {
+            node_stack,
             pairing,
             observation,
+            binding,
             notifier,
         }
     }

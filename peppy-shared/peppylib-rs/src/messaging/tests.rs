@@ -506,6 +506,19 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
     router.shutdown().await;
 }
 
+/// A consumer slot's watch channel holding `producers`, its sender kept in
+/// `held` so the set stays open while the test reads the subscription.
+fn fixed_bound_set(
+    held: &mut Vec<tokio::sync::watch::Sender<crate::messaging::BoundSetState>>,
+    producers: Vec<ProducerRef>,
+) -> tokio::sync::watch::Receiver<crate::messaging::BoundSetState> {
+    let (tx, rx) = tokio::sync::watch::channel(crate::messaging::BoundSetState::seeded(
+        config::runtime::BoundProducers::try_from(producers).expect("distinct producers"),
+    ));
+    held.push(tx);
+    rx
+}
+
 /// A multi-cardinality slot's merged subscription: one pinned wire
 /// subscription per bound producer, merged behind one `on_next_message`
 /// yielding `(producer, message)`. Messages from an unbound same-contract
@@ -513,6 +526,7 @@ async fn per_slot_pinned_subscriptions_isolate_producers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
     let router = TestRouterContext::start().await;
+    let mut held_sets = Vec::new();
 
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
@@ -525,18 +539,18 @@ async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
     let subscriber_handle = router.messenger().await;
     let bound = [ProducerRef::new(core, front), ProducerRef::new(core, rear)];
     let shutdown = crate::runtime::CancellationToken::new();
-    let mut subscription = TopicMessenger::subscribe_bound_set(
-        &subscriber_handle,
-        core,
-        "consumer_inst",
+    let mut subscription = crate::runtime::subscribe_bound_set_with_watch(
+        subscriber_handle.clone(),
+        core.to_string(),
+        "consumer_inst".to_string(),
+        fixed_bound_set(&mut held_sets, bound.to_vec()),
         test_node_target(node_name),
-        topic,
-        &bound,
+        topic.to_string(),
         qos.clone(),
         shutdown.clone(),
     )
     .await
-    .expect("bound-set subscribe should succeed");
+    .expect("the bound producers declare their subscriptions");
 
     let emitter_handle = router.messenger().await;
     for producer in [front, rear] {
@@ -610,6 +624,7 @@ async fn bound_set_subscription_merges_bound_producers_and_excludes_unbound() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
     let router = TestRouterContext::start().await;
+    let mut held_sets = Vec::new();
 
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
@@ -622,18 +637,18 @@ async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
     let subscriber_handle = router.messenger().await;
     let bound = [ProducerRef::new(core, busy), ProducerRef::new(core, quiet)];
     let shutdown = crate::runtime::CancellationToken::new();
-    let mut subscription = TopicMessenger::subscribe_bound_set(
-        &subscriber_handle,
-        core,
-        "consumer_inst",
+    let mut subscription = crate::runtime::subscribe_bound_set_with_watch(
+        subscriber_handle.clone(),
+        core.to_string(),
+        "consumer_inst".to_string(),
+        fixed_bound_set(&mut held_sets, bound.to_vec()),
         test_node_target(node_name),
-        topic,
-        &bound,
+        topic.to_string(),
         qos.clone(),
         shutdown.clone(),
     )
     .await
-    .expect("bound-set subscribe should succeed");
+    .expect("the bound producers declare their subscriptions");
 
     let emitter_handle = router.messenger().await;
     for producer in [busy, quiet] {
@@ -724,6 +739,7 @@ async fn bound_set_subscription_preserves_per_producer_order_and_is_fair() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before_none() {
     let router = TestRouterContext::start().await;
+    let mut held_sets = Vec::new();
 
     let qos = QoSProfile::Reliable;
     let node_name = "uvc_camera";
@@ -734,18 +750,18 @@ async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before
     // Empty set: pending until shutdown, then None.
     let subscriber_handle = router.messenger().await;
     let shutdown = crate::runtime::CancellationToken::new();
-    let mut empty_subscription = TopicMessenger::subscribe_bound_set(
-        &subscriber_handle,
-        core,
-        "consumer_inst",
+    let mut empty_subscription = crate::runtime::subscribe_bound_set_with_watch(
+        subscriber_handle.clone(),
+        core.to_string(),
+        "consumer_inst".to_string(),
+        fixed_bound_set(&mut held_sets, Vec::new()),
         test_node_target(node_name),
-        topic,
-        &[],
+        topic.to_string(),
         qos.clone(),
         shutdown.clone(),
     )
     .await
-    .expect("empty bound-set subscribe should succeed");
+    .expect("the bound producers declare their subscriptions");
 
     let pending = tokio::time::timeout(
         Duration::from_millis(300),
@@ -767,18 +783,18 @@ async fn bound_set_subscription_empty_set_pends_until_shutdown_and_drains_before
     // already-fired token is honored.
     let bound = [ProducerRef::new(core, front)];
     let shutdown = crate::runtime::CancellationToken::new();
-    let mut subscription = TopicMessenger::subscribe_bound_set(
-        &subscriber_handle,
-        core,
-        "consumer_inst",
+    let mut subscription = crate::runtime::subscribe_bound_set_with_watch(
+        subscriber_handle.clone(),
+        core.to_string(),
+        "consumer_inst".to_string(),
+        fixed_bound_set(&mut held_sets, bound.to_vec()),
         test_node_target(node_name),
-        topic,
-        &bound,
+        topic.to_string(),
         qos.clone(),
         shutdown.clone(),
     )
     .await
-    .expect("bound-set subscribe should succeed");
+    .expect("the bound producers declare their subscriptions");
 
     let emitter_handle = router.messenger().await;
     assert!(

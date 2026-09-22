@@ -17,9 +17,9 @@ pub use clocks::{
     ClockIncarnations, ResolvedClocks, mint_incarnation, resolve_clocks, validate_clock_connections,
 };
 pub use compose::{
-    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport, CopyRecord,
-    JoinRequest, PreparedLauncher, RunningStack, SELF_COPY_NAME_REFUSAL, SkipReason,
-    SkippedAdjustment, UnitSelection, check_composition,
+    AppliedChange, ComposedJoin, ComposedLaunch, CompositionError, CompositionReport,
+    CopyMembership, CopyRecord, JoinRequest, PreparedLauncher, RunningStack,
+    SELF_COPY_NAME_REFUSAL, SkipReason, SkippedAdjustment, UnitSelection, check_composition,
 };
 pub use composition::{ComponentAxis, FragmentPart, FragmentSpec, LauncherFragmentParser};
 pub use links::{validate_link_plan, validate_link_slots};

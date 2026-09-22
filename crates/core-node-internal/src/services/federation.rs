@@ -51,7 +51,8 @@ mod service;
 pub(crate) use service::{
     FederationServiceContext, listen_for_pair_commit, listen_for_participant_instances_remove,
     listen_for_participant_release, listen_for_participant_reserve,
-    listen_for_participant_slice_begin, listen_for_relationship_notify,
+    listen_for_participant_sets_update, listen_for_participant_slice_begin,
+    listen_for_relationship_notify,
 };
 
 use core_node_api::LaunchScoped;

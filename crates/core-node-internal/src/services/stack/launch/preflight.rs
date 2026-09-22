@@ -7,7 +7,7 @@ use super::federated::{self, ReservedParticipants};
 use crate::services::stack::action::StackChangeContext;
 use crate::services::stack::container_mounts::container_mount_sources_by_machine;
 use daemon_config::launcher::Placements;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// A change cleared to touch its machines, holding their reservations.
 pub(in crate::services::stack) struct ChangePlan {
@@ -24,8 +24,9 @@ pub(in crate::services::stack) async fn preflight_change(
     launch_id: &str,
     touched: &[PlannedDeployment],
     placements: &Placements,
+    live: Option<&BTreeSet<String>>,
 ) -> Result<ChangePlan, String> {
-    let reserved = federated::preflight(ctx, launch_id, touched, placements).await?;
+    let reserved = federated::preflight(ctx, launch_id, touched, placements, live).await?;
     let mounts = container_mount_sources_by_machine(touched, placements)?;
     Ok(ChangePlan { reserved, mounts })
 }

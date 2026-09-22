@@ -24,6 +24,7 @@ use crate::error::{
 };
 use config::node::{PairingObserverDependency, PairingParticipantDependency};
 use config::runtime::{ObservedPeer, ProducerRef};
+use core_node_api::encoding::ObservationTarget;
 use std::collections::{BTreeMap, HashSet};
 
 use super::pairings::{AlreadyPairedSlots, PairingValidationItem, PlannedPairing};
@@ -54,6 +55,17 @@ pub struct PlannedObservation {
     /// The pair's other end, when the link named the pair by it; `None`
     /// observes every pair of the source's slot.
     pub peer: Option<ObservedPeer>,
+}
+
+impl PlannedObservation {
+    /// The member this observation contributes to its observer's slot.
+    pub fn target(&self) -> ObservationTarget {
+        ObservationTarget {
+            source: self.source.clone(),
+            source_link_id: self.source_link_id.clone(),
+            peer: self.peer.clone(),
+        }
+    }
 }
 
 /// The pairs an observation may name by their far end: every pair this plan

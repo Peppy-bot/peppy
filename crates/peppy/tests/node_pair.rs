@@ -105,6 +105,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "robot_arm",
         "arm_1",
         "controller",
+        config::node::Cardinality::ZeroOrOne,
         &arm_pidfile,
     )
     .await;
@@ -131,6 +132,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "arm_controller",
         "ctrl_1",
         "arm",
+        config::node::Cardinality::ZeroOrOne,
         &ctrl_pidfile,
     )
     .await;
@@ -179,6 +181,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "arm_controller",
         "ctrl_2",
         "arm",
+        config::node::Cardinality::ZeroOrOne,
         &ctrl_pidfile,
     )
     .await;
@@ -249,6 +252,7 @@ async fn pairing_establish_stop_repair_exclusivity_and_remove() {
         "arm_controller",
         "ctrl_3",
         "arm",
+        config::node::Cardinality::ZeroOrOne,
         &ctrl_pidfile,
     )
     .await;
@@ -370,6 +374,7 @@ async fn a_multi_slot_holds_one_pair_per_peer_across_stops_and_reruns() {
         "sim_engine",
         "engine_1",
         "limbs",
+        config::node::Cardinality::ZeroOrMore,
         &engine_pidfile,
     )
     .await;
@@ -390,6 +395,7 @@ async fn a_multi_slot_holds_one_pair_per_peer_across_stops_and_reruns() {
             &controller_node(instance_id),
             instance_id,
             "arm",
+            config::node::Cardinality::One,
             pidfile,
         )
         .await;
@@ -542,6 +548,7 @@ async fn a_run_pairs_every_link_its_multi_slot_names() {
             &controller_node(instance_id),
             instance_id,
             "arm",
+            config::node::Cardinality::ZeroOrMore,
             &pidfile,
         )
         .await;
@@ -577,6 +584,7 @@ async fn a_run_pairs_every_link_its_multi_slot_names() {
         "sim_engine",
         "engine_1",
         "limbs",
+        config::node::Cardinality::ZeroOrMore,
         &engine_pidfile,
     )
     .await;
